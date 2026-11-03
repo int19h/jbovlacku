@@ -350,7 +350,10 @@ They reject invalid dimensions, nonfinite values, incorrect byte lengths, and ve
 Only provider output receives normalization.
 
 The Node host stores vectors and exact event, envelope, body, input, and extraction bindings in a separate SQLite database.
-Its [operator command](docs/semantic-search.md) prepares eligible definitions in bounded pages and resumes fresh indexing through the shared embedding budget.
+Its [operator command](docs/semantic-search.md) prepares eligible definitions in bounded pages and records indexing costs in the shared ledger.
+Operators can reuse a stored compatible profile and its exact-input vectors with `prepare --profile`.
+Operator runs support up to 32 concurrent requests and 128 inputs per fresh batch, with adaptive concurrency and an optional cost ceiling.
+Ordinary server requests keep their existing slot, input, and spending limits.
 Equal inputs share a vector under the same complete profile. Distinct publications retain their own associations.
 
 The job saves each operation link before dispatch. Interrupted sent batches need an explicit linked retry and keep their earlier charges.

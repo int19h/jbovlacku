@@ -114,21 +114,21 @@ Build the WebAssembly bindings before either command.
 
 The Node adapter accepts these environment variables:
 
-| Variable                    | Purpose                                                                                       |
-| --------------------------- | --------------------------------------------------------------------------------------------- |
-| `JVC_DATA_DIR`              | Persistent objects and SQLite databases. The default is `data/node` relative to the checkout. |
-| `HOST`                      | Listen address. The source default is `127.0.0.1`.                                            |
-| `PORT`                      | Listen port. The default is `8789`.                                                           |
-| `JVC_ASSETS_DIR`            | Browser assets. The source default is `apps/web/dist`.                                        |
-| `JVC_SERVER_ID`             | Service identifier. The source default is `local-node`.                                       |
-| `JVC_VIEW`                  | Explicit selected view event ID. A fresh service has no dictionary view.                      |
-| `JVC_STATE_TRAVERSAL_LIMIT` | Explicit state work budget from 1 through 1,000,000,000. It overrides the saved import limit. |
-| `JVC_PUBLIC_ORIGIN`         | Explicit public origin permitted to submit browser writes through a reverse proxy.            |
+| Variable                    | Purpose                                                                                         |
+| --------------------------- | ----------------------------------------------------------------------------------------------- |
+| `JVC_DATA_DIR`              | Persistent objects and SQLite databases. The default is `data/node` relative to the checkout.   |
+| `HOST`                      | Listen address. The source default is `127.0.0.1`.                                              |
+| `PORT`                      | Listen port. The default is `8789`.                                                             |
+| `JVC_ASSETS_DIR`            | Browser assets. The source default is `apps/web/dist`.                                          |
+| `JVC_SERVER_ID`             | Service identifier. The source default is `local-node`.                                         |
+| `JVC_VIEW`                  | Explicit selected view event ID. A fresh service has no dictionary view.                        |
+| `JVC_STATE_TRAVERSAL_LIMIT` | Explicit state work budget from 1 through 1,000,000,000. It overrides the saved import limit.   |
+| `JVC_PUBLIC_ORIGIN`         | Explicit public origin permitted to submit browser writes through a reverse proxy.              |
 | `JVC_SEMANTIC_INDEXING`     | Set `enabled` to index pending definitions in the running Node server under its shared budgets. |
-| `JVC_SNAPSHOT_LIMIT`        | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                  |
-| `JVC_CORS_ORIGINS`          | Comma-separated additional permitted origins.                                                 |
-| `JVC_POLICY_URL`            | Operator policy URL. The prototype placeholder is not a published policy.                     |
-| `JVC_PROTOTYPE_BATCH`       | Set `enabled` only for authorized local batch fixtures. The default disables batch admission. |
+| `JVC_SNAPSHOT_LIMIT`        | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                    |
+| `JVC_CORS_ORIGINS`          | Comma-separated additional permitted origins.                                                   |
+| `JVC_POLICY_URL`            | Operator policy URL. The prototype placeholder is not a published policy.                       |
+| `JVC_PROTOTYPE_BATCH`       | Set `enabled` only for authorized local batch fixtures. The default disables batch admission.   |
 
 A browser write is allowed when its `Origin` equals the request URL's origin.
 Set `JVC_PUBLIC_ORIGIN` when an HTTPS reverse proxy gives the browser a different public origin.
@@ -346,7 +346,6 @@ Admission requires canonical base64, so this reconstruction preserves every sign
 Cold evaluation and checkpoint restore fill the envelope cache from these private fields.
 The first admission after a restart needs no retained envelope reads.
 
-
 An extraction format or body-validation change requires another projection of existing data.
 Compact extraction version 7 and semantic extraction version 4 apply the current acute-accent word identity and body rules.
 Earlier derived rows require backfill before reuse. Original signed records remain unchanged.
@@ -363,7 +362,6 @@ A stored projection that fails the extraction decoder emits `verified_record_dec
 The server rebuilds that row from trusted original bytes and replaces the derived projection without another signature or body hash check.
 `verifiedRecordStatistics` exposes missing-row, decode-failure, and backfill counts for tests and diagnostic callers.
 Tests inspect committed rows directly before evaluation so automatic backfill cannot hide an admission defect.
-
 
 To complete backfill before startup, stop the service for that data directory and run this command:
 
@@ -432,13 +430,13 @@ They use the existing data directory in place, the default Node heap configurati
 The server, worker, and Wasm artifacts at reviewed revision `fedfec3` match those measured at `b6c0354`.
 The repaired host measurement uses revision `5aefd15`.
 
-| Measurement | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
-| --- | ---: | ---: |
-| Checkpoint recovery | 22.68 s | 7.07 s |
-| Trust choice visible | 30.37 s | 8.38 s |
-| Native publication visible | 46.71 s | 9.53 s |
-| Judgment visible | 35.51 s | 5.39 s |
-| Peak process memory during writes | 4.25 GiB | 3.94 GiB |
+| Measurement                       | Reviewed host, `b6c0354` | Repaired host, `5aefd15` |
+| --------------------------------- | -----------------------: | -----------------------: |
+| Checkpoint recovery               |                  22.68 s |                   7.07 s |
+| Trust choice visible              |                  30.37 s |                   8.38 s |
+| Native publication visible        |                  46.71 s |                   9.53 s |
+| Judgment visible                  |                  35.51 s |                   5.39 s |
+| Peak process memory during writes |                 4.25 GiB |                 3.94 GiB |
 
 A second restart of the reviewed artifacts took 29.33 seconds.
 The repaired core changed its digest, so its first recovery authenticated original records instead of restoring the incompatible checkpoint.
@@ -589,7 +587,7 @@ It affects every generation that shares that profile. Its status output reports 
 Repeating the command is harmless.
 It sends no provider request and does not read a provider key.
 It preserves batches, retry selections, spending charges, and profile suspensions.
-The next `run` still uses normal shared-budget admission and does not automatically replay earlier failed batches.
+The next `run` uses operator admission and keeps earlier failed batches available for explicit retry selection.
 
 The [semantic index guide](semantic-search.md#handle-provider-rate-limits) describes backoff, explicit retries, and command output.
 
@@ -683,7 +681,7 @@ The Node server accepts these variables:
 | `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
 | `JVC_AI_EMBEDDING_MODEL`           | Embedding model. The adapter permits only `qwen/qwen3-embedding-8b`, which is the default.                                                                           |
 | `JVC_AI_EMBEDDING_PROVIDER_ROUTE`  | Embedding route. The adapter permits only `nebius`, which is the default.                                                                                            |
-| `JVC_AI_EMBEDDING_INPUT_PRICE`     | Embedding input price in USD per million tokens. The default is 0.01.                                                                                               |
+| `JVC_AI_EMBEDDING_INPUT_PRICE`     | Embedding input price in USD per million tokens. The default is 0.01.                                                                                                |
 | `JVC_AI_HOURLY_BUDGET_USD`         | Server spending limit for the past hour. The default is 32 USD.                                                                                                      |
 | `JVC_AI_DAILY_BUDGET_USD`          | Server spending limit for the past day. The default is 160 USD.                                                                                                      |
 | `JVC_AI_NETWORK_HOURLY_BUDGET_USD` | Hourly allowance for each network. The default is one quarter of the configured server hourly limit.                                                                 |
@@ -870,14 +868,14 @@ A legacy record without a deadline uses the restart time. The lost job cannot re
 The ledger contains cost records, network hashes, and its private hash key. It contains no draft text or provider credential.
 An unreadable or unwritable ledger blocks new assistance jobs.
 The same ledger also controls host embedding calls through `AssistanceService.embed`.
-An embedding query uses the caller's network limits. Operator index and probe batches use the server limits.
+An embedding query uses the caller's network limits. Server index and probe batches use the server limits.
 Query callers must supply a valid IP address, a normalized IPv6 /64, or the trusted local host marker `local`.
-All these operations share the server's hourly and daily limits and execution slots with generation.
+These server operations share hourly and daily limits and execution slots with generation.
 The existing Node key file also serves embedding requests.
 An invalid or empty `JVC_AI_EMBEDDING_*` value disables embedding alone.
 The host emits a fixed warning that names the invalid field. Generation profiles and remembered browser consent stay unchanged.
 
-Each embedding batch permits one through eight inputs, with at most 4,096 UTF-8 bytes per input and 32 KiB in total.
+Each server embedding batch permits one through eight inputs, with at most 4,096 UTF-8 bytes per input and 32 KiB in total.
 Inputs already include the exact profile prefix. The adapter rejects malformed UTF-8 and preserves the remaining bytes.
 Encoded requests permit 64 KiB. Provider responses permit 2 MiB.
 The adapter pins the model and Nebius route, disables fallback and redirects, and makes no automatic retry.
@@ -910,12 +908,47 @@ A restart can also lose records for finished operations, including sent failures
 After any such loss, an absent ID leaves it unknown whether the service sent the request.
 An operator can inspect these records and request a new bounded attempt through the same service after a limit clears.
 The earlier charge remains. A stuck transport requires its completion or a service restart before its slot returns.
-Job pause, resume, and explicit retry links belong to later indexing work.
+The indexing command owns job pause, resume, and explicit retry links.
+
+### Operator indexing policy
+
+The stopped-directory `semantic-cli.ts run` command selects a separate host-only admission policy for index requests.
+It uses the existing key file, provider route, timeout, prices, and durable spending ledger.
+It bypasses `JVC_AI_CONCURRENCY`, server and network hourly/daily ceilings, and `JVC_AI_MAX_COST_USD` for its index batches.
+These settings still apply to ordinary server requests and background work.
+No HTTP field selects the operator policy.
+
+Operator runs default to concurrency eight and batch size 32.
+`--concurrency` accepts one through 32. `--batch-size` accepts one through 128.
+`--batch-bytes` bounds fresh-batch input bytes, up to 524,288 bytes, while each input remains limited to 4,096 bytes.
+The encoded request cap is 4 MiB and the response cap is 32 MiB.
+These local bounds do not claim a published maximum for the upstream provider.
+See the [provider references and examples](semantic-search.md#embed-bounded-batches).
+
+The optional `--max-cost-usd` flag bounds admission against charges and outstanding reservations from the current invocation.
+It has no default ceiling. A new invocation starts a new allowance.
+Unknown sent charges remain conservative, and unsent failures release their reservations.
+Operator costs still enter the shared ledger and its existing compaction and retention rules.
+Server requests continue to enforce their ceilings against that ledger.
+
+After provider 429 responses or embedding timeouts, adaptive scheduling halves the current concurrency, down to one.
+Eight successful batches raise it by one, up to the requested maximum.
+The command preserves saved cooldowns, `Retry-After`, bounded backoff, failed batches, and earlier charges.
+Timeout continuation selects fresh inputs and leaves the ambiguous batch for explicit retry.
+The [operator guide](semantic-search.md#handle-provider-rate-limits) describes output events and retry bounds.
+
+Use `prepare --profile PROFILE_ID` to build another view or snapshot under a stored compatible profile.
+Unchanged exact inputs then reuse vectors under that full profile and input hash.
+Changed inputs stay pending. Suspended or incompatible profiles are refused.
+Without the flag, preparation still creates a fresh random epoch.
+Its `prepared` event reports the distinct prepared inputs with reusable vectors as `reused_inputs`.
 
 These embedding host methods expose no browser route.
 The Node server exposes meaning search through the [semantic routes](semantic-search.md#enable-node-meaning-search).
 Those routes use compatible query caching and current-view filtering.
-At most 16,384 cost records remain within a day. Reaching this bound also refuses new jobs with a retry interval.
+At most 16,384 cost records remain within a day.
+Server admissions that reach this bound return a retry interval.
+Operator admission refuses before overflow with `billing_history_limit`.
 On a later admission, the service combines completed operator batches with known costs into hourly summary rows.
 Queries, generation jobs, errors, and unknown charges keep their individual rows.
 A summary ages from its latest charge, so earlier charges can stay counted for up to one extra hour.

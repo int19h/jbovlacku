@@ -567,3 +567,17 @@ test("timeout continuation waits for a saved provider cooldown", () =>
     assert.equal(result.coverage.indexed, 1);
     assert.equal(result.coverage.failed, 1);
   }));
+
+test("a local fresh-batch byte refusal leaves the generation resumable", () =>
+  fixture(2, async (store, id) => {
+    const embedder = provider();
+    const indexer = new SemanticIndexer(store, embedder);
+    await assert.rejects(
+      indexer.run(id, { operator: true, batchBytes: 1 }),
+      /input exceeds/,
+    );
+    assert.equal((await store.generation(id)).state, "paused");
+    assert.equal((await store.summary(id)).dispatch_intents, 0);
+    await indexer.run(id, { operator: true, batchBytes: 32768 });
+    assert.equal((await store.generation(id)).state, "completed");
+  }));

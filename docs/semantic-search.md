@@ -32,6 +32,24 @@ It uses `loaded-view.json`, with the same `JVC_VIEW` and `JVC_STATE_TRAVERSAL_LI
 It reads at most 128 semantic records per page. Missing projections use the existing private backfill path.
 Preparation reads no provider key and sends no inference request.
 
+Set `JVC_EMBEDDING_PROFILE` to the `generation.profile` value from an earlier generation.
+Use `prepare --profile PROFILE_ID` to reuse that stored application profile for another snapshot or view:
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command prepare --profile "$JVC_EMBEDDING_PROFILE"
+```
+
+The command refuses an unknown, suspended, or incompatible stored profile before it prepares a generation.
+The model, route, runtime, recipes, parameters, and epoch must match the application adapter.
+Without `--profile`, preparation keeps its existing behavior and creates a random fresh epoch.
+With `--job`, a supplied profile must match the saved job.
+
+The `prepared` JSON event includes `reused_inputs`, the count of distinct prepared inputs that already have a stored vector under that profile.
+This count covers staged pages when `--pages` limits preparation.
+Unchanged exact inputs reuse their vectors. Changed input bytes remain pending and need new vectors.
+Stored profile IDs and their legacy request-limit metadata stay intact.
+Operator transport limits do not alter the input recipes, provider routing, or vector normalization.
+
 The first JSON line names the generation ID in `generation.id`.
 The final line reports its source cursor, preparation state, and coverage.
 Save that ID as `JVC_INDEX_JOB` for the remaining commands:
@@ -48,8 +66,11 @@ An expired source snapshot requires a new generation. The command never substitu
 ## Embed bounded batches
 
 Use the existing [AI configuration](development.md#optional-ai-assistance), including `JVC_AI_ENABLED=enabled` and the server-held `JVC_AI_KEY_FILE`.
-The job uses the same spending database and server ceilings as generation and embedding queries.
-It uses operator spending identity and consumes no client network allowance.
+The job uses the same spending database and operator spending identity.
+Its execution slots and admission policy are independent of the server's ordinary request limits.
+The CLI ignores server hourly, daily, network, and per-request spending ceilings for index batches.
+It consumes no client network allowance.
+The server's query, probe, background-indexing, and generation limits keep their existing behavior.
 The provider process reads the configured key. Command output contains no key or definition text.
 
 Start with one bounded batch:
@@ -58,10 +79,41 @@ Start with one bounded batch:
 npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --job "$JVC_INDEX_JOB" --max-batches 1 --concurrency 1
 ```
 
-A batch contains at most eight distinct inputs, with the existing byte and provider limits.
 After the bounded pass, repeat `run` without `--max-batches` to index the remaining inputs.
-The default concurrency equals the configured shared provider slots, normally two.
-Use `--concurrency N` to select fewer slots. The maximum is four and cannot exceed the provider configuration.
+Operator runs default to eight concurrent requests and 32 distinct inputs per batch.
+Use `--concurrency N` for one through 32 requests and `--batch-size N` for one through 128 inputs.
+Use `--batch-bytes N` to bound total input bytes in a fresh batch, up to 524,288 bytes.
+Its default is `min(batch-size * 4096, 524288)`.
+Each input keeps the profile's 4,096-byte limit.
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --job "$JVC_INDEX_JOB" --concurrency 32 --batch-size 128 --batch-bytes 524288 --max-cost-usd 5
+```
+
+The adapter permits at most 4 MiB in an encoded operator request and 32 MiB in its response.
+These are local bounds, alongside the 128-input and 512-KiB input caps.
+The [OpenRouter embeddings API](https://openrouter.ai/docs/api/api-reference/embeddings/create-embeddings) and [Nebius schema](https://docs.tokenfactory.nebius.com/api-reference/inference/create-embeddings) accept arrays of strings.
+Those references do not publish a numeric batch-count or body-byte ceiling for this pinned route.
+Provider refusals still pause work and preserve its records.
+Choose smaller limits for new batches when the provider refuses a request size.
+
+Fresh claims stop before the byte boundary and keep later inputs available for the next claim.
+A single input above the selected batch-byte limit causes a local refusal before dispatch.
+An explicitly selected retry keeps its original batch and operation link, even when a new batch flag is smaller.
+It still stays within the adapter's absolute limits.
+
+Use optional `--max-cost-usd USD` to set a nonnegative ceiling for this `run` invocation.
+The ceiling counts concurrent reservations, reported charges, and conservative unknown charges from that invocation.
+A known final cost releases the unused part of its reservation.
+
+An unsent failure releases its reservation. An unknown sent charge keeps its conservative amount.
+A zero ceiling permits no paid admission, while cached inputs can still complete.
+A new invocation starts a new ceiling allowance.
+
+The ceiling uses configured price quotes for admission. Provider charges remain subject to the returned usage.
+The ledger keeps costs and unknown reservations, including earlier failed attempts.
+Completed known costs retain the existing hourly compaction and history bounds.
+Bulk charges remain in the shared ledger. Server requests still enforce their existing ceilings against that ledger.
 
 Completed inputs never enter another paid batch in that generation.
 Fresh claims resume from a saved input position and use an index for selected retries.
@@ -89,6 +141,16 @@ Its reported cost remains part of the index summary and the shared spending ledg
 ## Handle provider rate limits
 
 An HTTP 429 response stops new claims and lets active workers settle.
+Operator scheduling halves its current concurrency after each 429 or embedding timeout, with a minimum of one.
+After eight successful batches, it raises concurrency by one, up to the requested maximum.
+Active requests settle before the lower cap admits further work.
+The command emits a `concurrency` event with `concurrency` and `reason` whenever this cap changes.
+A new invocation starts at its requested concurrency.
+
+An operator timeout can continue fresh inputs at the reduced cap after active workers settle.
+It keeps the timed-out batch and its conservative charge for explicit retry selection.
+It does not automatically resend that batch.
+An unresolved transport keeps its execution slot. A local slot refusal can still pause the run.
 The command permits at most three automatic retry rounds per run.
 It waits at least one, two, then four seconds after each refusal, or longer for the saved `Retry-After` deadline.
 The header accepts integer seconds or an HTTP date.
@@ -111,7 +173,7 @@ Each automatic retry creates a linked batch and a new shared-budget operation.
 Earlier batches and charges remain intact. A spending refusal stops the job.
 The `--max-batches` bound includes every attempt across the retry rounds.
 SIGINT or SIGTERM cancels a backoff wait and stops further attempts.
-Only 429 failures from the current invocation qualify for automatic retry.
+Only 429 failures from the current invocation qualify for automatic retry of the failed batch.
 Other failures and ambiguous batches from earlier invocations require explicit retry selection.
 
 The command emits a `backoff` JSON event before each wait, with `delay_ms`, `attempt`, and `batches`.

@@ -382,7 +382,14 @@ export class SemanticIndexer {
           if (!pending.size) break;
           await Promise.race(pending);
         }
-        if (workerRejected) throw workerFailure;
+        if (workerRejected) {
+          if (
+            workerFailure instanceof SemanticError &&
+            workerFailure.code === "semantic_limit"
+          )
+            await this.store.pause(id, workerFailure.code);
+          throw workerFailure;
+        }
         if (
           options.operator &&
           options.adaptive &&

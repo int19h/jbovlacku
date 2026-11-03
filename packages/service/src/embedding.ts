@@ -17,6 +17,13 @@ export {
 } from "./inference.ts";
 export const EMBEDDING_DIMENSIONS = 4096;
 export const EMBEDDING_RESPONSE_BYTES = 2 * 1024 * 1024;
+/** Local operator transport caps. Public requests keep their existing limits. */
+export const OPERATOR_EMBEDDING_LIMITS = {
+  inputs: 128,
+  inputBytes: 512 * 1024,
+  requestBytes: 4 * 1024 * 1024,
+  responseBytes: 32 * 1024 * 1024,
+} as const;
 
 export interface EmbeddingUsage {
   inputTokens: number | null;
@@ -32,6 +39,7 @@ export interface PreparedEmbedding {
   body: string;
   count: number;
   estimatedUsd: number;
+  responseBytes?: number;
 }
 const error = (code: string, message: string) =>
   new AssistanceError(502, code, message);
@@ -57,6 +65,7 @@ export function qwenResponseModel(value: unknown): value is string {
 export function prepareEmbedding(
   inputs: readonly Uint8Array[],
   config: ProviderConfig,
+  operator = false,
 ): PreparedEmbedding {
   const embedding = config.embedding;
   if (
@@ -73,11 +82,17 @@ export function prepareEmbedding(
       config.embeddingDisabledReason ??
         "The embedding configuration is unavailable.",
     );
-  if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 8)
+  if (
+    !Array.isArray(inputs) ||
+    inputs.length < 1 ||
+    inputs.length > (operator ? OPERATOR_EMBEDDING_LIMITS.inputs : 8)
+  )
     throw new AssistanceError(
       400,
       "embedding_input",
-      "An embedding batch needs one through eight inputs.",
+      operator
+        ? "An operator embedding batch needs one through 128 inputs."
+        : "An embedding batch needs one through eight inputs.",
     );
   let texts: string[];
   try {
@@ -91,7 +106,8 @@ export function prepareEmbedding(
       )
         throw new Error();
       bytes += input.byteLength;
-      if (bytes > 32768) throw new Error();
+      if (bytes > (operator ? OPERATOR_EMBEDDING_LIMITS.inputBytes : 32768))
+        throw new Error();
       return decoder.decode(input);
     });
   } catch {
@@ -113,7 +129,10 @@ export function prepareEmbedding(
     },
     usage: { include: true },
   });
-  if (new TextEncoder().encode(body).byteLength > 65536)
+  if (
+    new TextEncoder().encode(body).byteLength >
+    (operator ? OPERATOR_EMBEDDING_LIMITS.requestBytes : 65536)
+  )
     throw new AssistanceError(
       400,
       "embedding_input",
@@ -122,6 +141,9 @@ export function prepareEmbedding(
   return {
     body,
     count: inputs.length,
+    ...(operator
+      ? { responseBytes: OPERATOR_EMBEDDING_LIMITS.responseBytes }
+      : {}),
     // A byte count alone does not bound tokens after provider normalization.
     estimatedUsd:
       (inputs.length * EMBEDDING_QUOTE_TOKENS * embedding.inputPrice) / 1000000,
@@ -131,15 +153,13 @@ export function prepareEmbedding(
 async function responseText(
   response: Response,
   signal: AbortSignal,
+  maximum = EMBEDDING_RESPONSE_BYTES,
 ): Promise<string> {
   const cancel = () => {
     void response.body?.cancel().catch(() => {});
   };
   const length = response.headers.get("content-length");
-  if (
-    length !== null &&
-    (!/^\d+$/.test(length) || Number(length) > EMBEDDING_RESPONSE_BYTES)
-  ) {
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > maximum)) {
     cancel();
     throw error(
       "embedding_response_size",
@@ -159,7 +179,7 @@ async function responseText(
       const item = await abortable(reader.read(), signal);
       if (item.done) break;
       size += item.value.byteLength;
-      if (size > EMBEDDING_RESPONSE_BYTES)
+      if (size > maximum)
         throw error(
           "embedding_response_size",
           "The embedding response exceeds its byte limit.",
@@ -281,7 +301,9 @@ export async function requestEmbedding(
       );
     let value: unknown;
     try {
-      value = JSON.parse(await responseText(response, signal));
+      value = JSON.parse(
+        await responseText(response, signal, prepared.responseBytes),
+      );
     } catch (failure) {
       signal.throwIfAborted();
       if (rateLimited) throw rateLimitError();

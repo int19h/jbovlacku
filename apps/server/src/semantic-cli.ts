@@ -8,7 +8,10 @@ import {
 import { AssistanceService } from "../../../packages/service/src/assistance.ts";
 import { DictionaryService } from "../../../packages/service/src/service.ts";
 import { SemanticIndexer } from "../../../packages/service/src/semantic/indexer.ts";
-import { createQwenProfile } from "../../../packages/service/src/semantic/profile.ts";
+import {
+  createQwenProfile,
+  profileId,
+} from "../../../packages/service/src/semantic/profile.ts";
 import { lockDataDirectory } from "../../../packages/importer/src/load-lock.ts";
 import {
   readLoadedView,
@@ -25,7 +28,7 @@ import { NodeEvaluationRuntime } from "./evaluation.ts";
 import { FileCheckpointStore } from "./checkpoint.ts";
 
 const usage =
-  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID] [--after BATCH_ID] [--max-batches N] [--concurrency N] [--pages N]. Stop the server for this directory first.";
+  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID] [--after BATCH_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
 const allowed = new Set([
   "data",
   "command",
@@ -35,6 +38,10 @@ const allowed = new Set([
   "concurrency",
   "pages",
   "after",
+  "profile",
+  "batch-size",
+  "batch-bytes",
+  "max-cost-usd",
 ]);
 function argumentsForCommand() {
   const args = process.argv.slice(2);
@@ -66,7 +73,27 @@ async function withSemanticService<T>(
     profile: Awaited<ReturnType<SqliteVectorStore["profile"]>>,
     generation: Awaited<ReturnType<SqliteVectorStore["generation"]>> | null,
   ) => Promise<T>,
+  selectedProfile?: string,
 ) {
+  const profile = job
+    ? await vectors.profile(job)
+    : selectedProfile
+      ? await vectors.storedProfile(selectedProfile)
+      : createQwenProfile();
+  if (selectedProfile) {
+    if (
+      profileId(profile) !== selectedProfile ||
+      profileId(profile) !== profileId(createQwenProfile(profile.epoch))
+    )
+      throw new Error(
+        "The stored profile is incompatible with the current embedding adapter.",
+      );
+    if (await vectors.compatibility(selectedProfile))
+      throw new Error(
+        "The stored profile is suspended. Prepare a fresh profile after repairing the provider.",
+      );
+  }
+  const generation = job ? await vectors.generation(job) : null;
   const coordinator = new SqliteCoordinator(
     join(directory, "coordinator.sqlite"),
   );
@@ -79,8 +106,6 @@ async function withSemanticService<T>(
   );
   const runtime = new NodeEvaluationRuntime(core);
   const loaded = await readLoadedView(directory);
-  const profile = job ? await vectors.profile(job) : createQwenProfile();
-  const generation = job ? await vectors.generation(job) : null;
   const traversal = stateTraversalLimit(
     process.env.JVC_STATE_TRAVERSAL_LIMIT ?? loaded?.state_traversal_limit,
   );
@@ -121,6 +146,7 @@ async function prepare(
   vectors: SqliteVectorStore,
   job: string | undefined,
   pages: number,
+  selectedProfile?: string,
 ) {
   return withSemanticService(
     directory,
@@ -140,8 +166,14 @@ async function prepare(
         },
       });
       const prepared = await indexer.prepare(created.id, source, pages);
+      output({
+        event: "prepared",
+        generation: prepared,
+        reused_inputs: await vectors.reusableInputs(created.id),
+      });
       return prepared;
     },
+    selectedProfile,
   );
 }
 
@@ -201,6 +233,12 @@ async function main() {
     throw new Error(usage);
   const job = args.get("job");
   if (command !== "prepare" && !job) throw new Error(usage);
+  const selectedProfile = args.get("profile");
+  if (selectedProfile && command !== "prepare")
+    throw new Error("Use --profile only with prepare.");
+  for (const flag of ["batch-size", "batch-bytes", "max-cost-usd"])
+    if (args.has(flag) && command !== "run")
+      throw new Error(`Use --${flag} only with run.`);
   const positive = (name: string, fallback: number) => {
     const value = args.get(name);
     if (value !== undefined && !/^[1-9][0-9]*$/.test(value))
@@ -235,6 +273,7 @@ async function main() {
           vectors,
           job,
           positive("pages", Number.MAX_SAFE_INTEGER),
+          selectedProfile,
         )
       ).id;
     else if (command === "run") {
@@ -246,22 +285,43 @@ async function main() {
         throw new Error(
           "The application profile requires the configured OpenRouter endpoint.",
         );
+      const concurrency = positive("concurrency", 8);
+      const batchSize = positive("batch-size", 32);
+      const batchBytes = positive(
+        "batch-bytes",
+        Math.min(batchSize * 4096, 524288),
+      );
+      const maximumCost = args.get("max-cost-usd");
+      const maxCostUsd =
+        maximumCost === undefined ? undefined : Number(maximumCost);
+      if (
+        concurrency > 32 ||
+        batchSize > 128 ||
+        batchBytes > 524288 ||
+        (maxCostUsd !== undefined &&
+          (!/^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(maximumCost!) ||
+            !Number.isFinite(maxCostUsd) ||
+            maxCostUsd < 0 ||
+            maximumCost!.trim() === ""))
+      )
+        throw new Error(
+          "Use at most 32 workers, 128 inputs, 524288 input bytes, and a nonnegative cost ceiling.",
+        );
+      options.operatorIndexing = { concurrency, maxCostUsd };
       assistance = new AssistanceService(
         options,
         "semantic-index-operator",
         async () => [],
       );
-      const concurrency = positive(
-        "concurrency",
-        options.provider?.concurrency ?? 2,
-      );
-      if (!options.provider || concurrency > options.provider.concurrency)
-        throw new Error(
-          "Enable the provider and keep index concurrency within its shared execution slots.",
-        );
       const started = performance.now();
       const result = await new SemanticIndexer(vectors, assistance).run(id!, {
         concurrency,
+        operator: true,
+        batchSize,
+        batchBytes,
+        adaptive: true,
+        onConcurrencyChange: (event) =>
+          output({ event: "concurrency", job: id, ...event }),
         maxBatches: positive("max-batches", Number.MAX_SAFE_INTEGER),
         signal: stop.signal,
         onBackoff: ({ attempt, delayMs, batches }) =>
