@@ -234,8 +234,14 @@ An extraction change starts a new generation when current coverage contains stal
 The preceding generation serves its still-valid hits until the new generation finishes preparation and publishes.
 If extraction preserves the exact input bytes, the new associations reuse stored vectors without another embedding call.
 The server does not create a new generation when all eligible targets have matching current bindings and admitted vectors.
-If a completed repair still leaves pending targets in the same snapshot, the server waits one hour before another attempt.
-A newer snapshot proceeds on the next cycle.
+
+After completion, the server calculates coverage directly from current bindings without sharing an unfinished profile read.
+If the storage revision changes during that calculation, it repeats the calculation before deciding on a wait.
+If pending targets remain, the server saves a one-hour repair wait bound to that snapshot and writes a `semantic_index_status` message.
+A newer snapshot or due held inputs bypass this repair wait on the next cycle.
+
+Provider cooldowns, budget windows, and other failure waits keep their own deadlines.
+The server discards older repair waits without a snapshot binding.
 When every valid input has a stored vector, `input_limit` errors trigger no provider probe and keep their failed counts.
 
 Completed background generations leave storage when no current, rollback, active background pointer, or in-flight search retains them.

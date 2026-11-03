@@ -13,6 +13,7 @@ export interface BackgroundRecovery {
   sent_attempts: number;
   exhausted: boolean;
   reason: string;
+  snapshot?: string;
 }
 
 export interface IndexGeneration extends IndexContext {

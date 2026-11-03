@@ -183,6 +183,8 @@ export class DictionaryService {
       assistance: this.assistance,
       source: (profile, snapshot) => this.semanticSource(profile, snapshot),
       probe: (generation, profile) => this.semantic!.probe(generation, profile),
+      bindings: (snapshot) =>
+        this.semanticBindings(snapshot, this.options.selectedView ?? zeroView),
       needed: async () =>
         (
           await this.semantic!.profiles(
