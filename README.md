@@ -187,7 +187,10 @@ Place-row updates with unchanged field values preserve the caret and undo histor
 
 The toolbar inserts places 1 to 3 directly. More places opens a six-column grid with places 4 to 50 and identifies declared places. Labeled dialogs insert word links and code, and Edit link changes an existing target or label. Accessible link names include their targets.
 
-The toolbar uses one tab stop with arrow-key navigation. The definition toolbar stays visible. Other toolbars appear while their field group has focus and keep their space reserved. Keyboard guidance is available to screen readers. The operand control follows current declarations and stays hidden when no operand exists. The same editor supports HTTPS links and operand references.
+The toolbar uses one tab stop with arrow-key navigation. The definition toolbar stays visible. Other toolbars follow the editor in display and keyboard order. They appear while their field group has focus and keep their space reserved.
+Toolbar dialogs return focus to a visible invoker or the editor. New link labels use one line, with selected line breaks changed to spaces.
+Existing multiline labels use multiline editing. Target-only edits retain their exact stored label.
+The place grid contains native buttons and scrolls within the viewport height. Keyboard guidance is available to screen readers. The operand control follows current declarations and stays hidden when no operand exists. The same editor supports HTTPS links and operand references.
 
 Typing `___` inserts the next free place, and `__N__` inserts place N from 1 through 50. Typed circled numbers also insert places. A semicolon restarts automatic numbering. Backspace restores the characters immediately after conversion. Literal mode keeps circled numbers and underscores as text. It preserves code and links.
 
@@ -204,7 +207,7 @@ Chromium and Firefox tests cover keyboard deletion and simulated deletion input 
 The simulated tests include events that cannot be canceled and later changes to the browser document.
 The editor command determines the saved result in those tests.
 Chromium tests also simulate text composition with an input method editor.
-Real macOS, Android, and iOS keyboard tests remain pending.
+Real macOS, Android, and iOS keyboard tests remain pending. Safari/WebKit editor behavior and physical screen-reader announcements remain untested.
 Word links and place derivations use the shared format rules. Valid uppercase references retain their exact targets and do not block publication.
 A draft saved by the earlier prototype opens a choice to export it, convert it into a wizard draft, or discard it. The old license and attribution fields stay in the export only, because new definitions publish under CC0 1.0.
 Remote lexical search, word pages, and downloaded language packages exclude definitions whose receipts are not effective.

@@ -1002,17 +1002,24 @@ Repeated references can name the same place. Textual order does not determine fi
 
 Each rich field uses an accessible editor over the stored node tree. Places and operands are inline chips. Code, word links, and web links are separate inline nodes.
 The toolbar provides places 1 to 3 directly. More places opens a six-column grid with places 4 to 50.
-Each grid control inserts its place and closes the grid. Declared places have an accent outline and the accessible name “Place N, declared”.
+Each grid cell contains a native button. Each button inserts its place and closes the grid.
+The grid fits the viewport height and scrolls internally. Focused rows stay visible, including at 360 by 360 CSS pixels.
+Tab leaves the grid and closes it. Declared places have an accent outline and the accessible name “Place N, declared”.
 Arrow keys move within the grid. Home and End move to its first and last place. Escape closes it and returns focus to More places.
 Place controls show bold digits inside drawn circles. Every standalone control retains a 44px target.
 
-Link a word, Web link, and Insert code open labeled dialogs. Link label uses a single-line input.
+Link a word, Web link, and Insert code open labeled dialogs. New link labels use a single-line input.
+Line breaks in a selected new label become spaces, as the dialog explains.
+Editing an existing multiline label uses a multiline field and preserves its line breaks as LF after a label edit.
 A target-only edit preserves the exact stored label, including an existing multiline label.
 A word link retains its word type even when its spelling starts with `https://`.
 A link's accessible name includes its label and target. Edit link changes an existing link through a labeled dialog.
 
 The toolbar is one tab stop. Left, Right, Home, and End move between its controls.
-The definition toolbar stays visible. Other rich-field toolbars appear while their field group has focus, with their space reserved.
+The definition toolbar stays visible above its editor.
+Other rich-field toolbars follow their editor, so forward Tab reaches them after editor focus reveals them.
+They appear while their field group has focus, with their space reserved.
+Closing a toolbar dialog returns focus to its visible invoker, or to the editor when the invoker is unavailable.
 The operand insertion control stays hidden until an operand exists.
 Operand changes refresh every retained editor's insertion controls.
 Toolbar keyboard guidance is available to screen readers through its accessible description.
@@ -1062,8 +1069,20 @@ Native paragraph insertion follows the same command as Enter, including when the
 Inside code and link labels, that command inserts a line break within the node.
 An ambiguous input with several target ranges preserves the complete value and asks the author to select one range and retry.
 During composition, the editor keeps the live text node until text entry settles.
-A boundary deletion waits for settlement and applies once only when its mapped range remains valid and its pending text stays unchanged.
+A boundary deletion waits for settlement and applies once only when its mapped range retains the exact selected content and container markup.
+Text inserted at its boundaries stays outside the deletion. Changed selected content cancels the deletion.
+The complete committed text settles before a deferred deletion. Undo of that deletion restores the committed document.
+Dirty recovery replays a known composition-start selection with the complete commit and preserves untouched neighbors.
+An explicit noncomposing input can settle a missing end event. A timer never ends active composition.
 Cancellation, replacement text, or superseding input cancels that deferred deletion. An uncertain operation asks the author to finish text entry and retry.
+The retry notice is announced after recovery and its first resuming input. A later successful edit clears the notice.
+The persistent polite announcement region receives repeated failures separately. This DOM behavior does not establish physical screen-reader announcements.
+Native history intents use editor undo and redo, including input-only browser commands. Restored literal tokens stay literal.
+A matching paired completion cannot apply history twice. An unchanged nonauthoritative completion, including a synthetic orphan, cannot consume a newer edit.
+A real native redo command can use model redo even when its browser DOM remains unchanged.
+Browser native history availability can change after DOM recovery. Keyboard editor undo and redo use the retained model history.
+Replacement input needs one mapped range and non-null text. Ambiguous mapped intents and dirty input-only replacement preserve the authoritative value and request a retry.
+An unchanged orphan replacement completion leaves the value unchanged without another retry notice.
 These protocol rules do not establish which sequences physical keyboards or IMEs emit.
 
 Paste reads only plain text. Clipboard content without usable plain text leaves the selection unchanged.
