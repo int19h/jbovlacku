@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { importSqlSnapshot } from "../../../packages/importer/src/sql.ts";
 import {
   initializeCore,
   contentHash,
@@ -33,6 +35,7 @@ test("imported places, official rafsi, source name and source date reach word an
           jargon: null,
           user_id: 89992,
           username: "fidelity source author",
+          time: 1046655416,
           created_at: "2026-01-01T00:00:00Z",
           official_rafsi: "fid",
           experimental_rafsi: "fai",
@@ -55,6 +58,10 @@ test("imported places, official rafsi, source name and source date reach word an
     roots: [],
   });
   expect(imported.report.incomplete).toBe(false);
+  expect(
+    imported.journal.entries["89991"].versions[0].carrier.body.legacy
+      .attribution.dates.time,
+  ).toBe("1046655416");
   await admit(
     fixture().origin,
     imported.carriers,
@@ -105,7 +112,7 @@ test("imported places, official rafsi, source name and source date reach word an
       .first()
       .getByRole("link", { name: "place 3", exact: true }),
   ).toBeVisible();
-  await expect(definition.locator(".byline")).toContainText("Jan 2026");
+  await expect(definition.locator(".byline")).toContainText("Mar 2003");
   await expect(
     page.locator(".rafsi-line").getByRole("link", { name: "fid", exact: true }),
   ).toBeVisible();
@@ -121,8 +128,81 @@ test("imported places, official rafsi, source name and source date reach word an
   await expect(row.locator(".rafsi")).toContainText("fid");
   await expect(row.locator(".rafsi")).toContainText("fai");
   await expect(row).toContainText("fidelity source author");
-  await expect(row).toContainText("Jan 2026");
+  await expect(row).toContainText("Mar 2003");
   await expect(
     row.getByRole("img", { name: "place 1", exact: true }),
   ).toBeVisible();
+});
+
+test("SQL imported definitions show exact original text in the Source disclosure", async ({
+  page,
+}) => {
+  await initializeCore(
+    await readFile("packages/core/generated/jvc_runtime_bg.wasm"),
+  );
+  const parent = process.env.JVC_TEST_ROOT!;
+  await mkdir(parent, { recursive: true });
+  const output = await mkdtemp(join(parent, "sql-disclosure-"));
+  try {
+    await importSqlSnapshot({
+      sourcePath: "packages/importer/fixtures/lensisku-sql-sample.sql",
+      manifestPath:
+        "packages/importer/fixtures/lensisku-sql-sample.manifest.json",
+      output,
+      seed: new Uint8Array(32).fill(150),
+      roots: [],
+    });
+    const records = (await readFile(join(output, "carriers.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const view = JSON.parse(
+      await readFile(join(output, "selected-view.json"), "utf8"),
+    );
+    const selection = await readFile(
+      join(output, "import-selection.json"),
+      "utf8",
+    );
+    const definition = records.find(
+      (item) =>
+        item.envelope.header.action.kind === "definition.publish" &&
+        item.body.legacy.record.id === 4,
+    );
+    await admit(fixture().origin, records, view, selection);
+    await expect
+      .poll(async () => {
+        const response = await page.request.get(
+          `/api/v1/words/${definition.envelope.header.action.word}?view=${view.envelope.id}`,
+        );
+        return (
+          response.ok() &&
+          (await response.json()).definitions.includes(definition.envelope.id)
+        );
+      })
+      .toBe(true);
+    await page.goto("/search");
+    await page.evaluate(async (id) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      await new LocalStore().setPreferences({
+        view: id,
+        searchMode: "remote",
+        useAiAssistance: false,
+      });
+    }, view.envelope.id);
+    await page.goto("/word/bajra?lang=en");
+    const article = page
+      .locator("article.definition")
+      .filter({
+        has: page.locator(`#def-${definition.envelope.id.slice(5, 17)}`),
+      });
+    await expect(article.locator(".prose").first()).not.toContainText("$x_");
+    await article.getByText("Source", { exact: true }).click();
+    await expect(
+      article.locator("p").filter({ hasText: "Original text:" }),
+    ).toHaveText(
+      `Original text: ${definition.body.legacy.original.definitions.definition}`,
+    );
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
 });
