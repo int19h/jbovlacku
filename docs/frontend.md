@@ -155,7 +155,7 @@ A remote search mode remains available for large languages or limited devices. S
 Before its first remote query, the app states that queries reach the named server.
 A change of mode does not silently upload previously local query history.
 Local mode keeps word and definition queries in the browser. Consented meaning search still sends each new query to the server and provider.
-After the reader allows meaning search, the line beside the box reads “Meaning search on · Turn off”.
+When remembered consent matches the current provider, scope, task, and fields, the line beside the box reads “Meaning search on · Turn off”.
 Before the reader makes a meaning-search choice, the line is absent.
 The Turn off control keeps the accessible name “Turn off meaning search”.
 That action saves a lasting search preference, separate from provider consent and the general AI preference.
@@ -164,6 +164,7 @@ After an explicit off choice, “Meaning search off · Turn on” offers to rest
 The Turn on control keeps the accessible name “Turn on meaning search”. Applicable provider consent is still required.
 The closed Search source and snapshot disclosure contains “Local search package from snapshot…” or “Searched on…”.
 The first remote-upload notice stays visible before the request. Segmentation limits remain visible outside the disclosure.
+“Searched on…” requires at least one successful remote response. A failed or offline attempt uses the neutral “Search server: …” label.
 
 Search normalization affects lookup only. It never rewrites signed spellings or definition text.
 Use NFC, case folding, and explicit apostrophe aliases in search indexes.
@@ -405,7 +406,8 @@ Remembered consent applies only to that provider and scope, under section 16. De
 “Not now” stops meaning search for this page, including a pending consent save. It keeps stored provider consent for later pages.
 Either off control blocks a pending Allow action before its save finishes. A failed off save keeps consent and off retry available.
 The reader must press Allow again before that canceled acceptance can start meaning search.
-A failed off save always announces the failure. After Not now, the group keeps its page-decline text while the announcement explains the failed save.
+A failed off save announces the failure once while its page remains active. After Not now, the group keeps its page-decline text while the announcement explains the failed save.
+A save that fails after navigation makes no announcement on the new page.
 When AI assistance is off, or the server lacks `features.semantic_search` and a `query_available` profile, this group is absent.
 An absent group leaves no gap. Pending or failed indexing appears as a coverage note beside meaning results.
 
@@ -428,6 +430,7 @@ Local counts state the full total and the shown count when rows remain hidden, i
 Lexical counts, expansions, Add it, and the retired filter never wait for meaning requests or matched definition reads.
 Each settled meaning update includes the last settled lexical counts before its meaning count, including while a lexical expansion waits.
 Each consent action, retry, or expansion announces its own settled results once.
+Search cards put judgment controls at the right end of their attribution row. They have no reviewer disclosure or visible reviewer count.
 Each group shows its count beside its heading. Group statuses remain visible ordinary text without a second visible copy.
 After expansion, focus moves to the first new row. A failed or empty expansion keeps focus on its retry, remaining control, or group status.
 A failed meaning definition read offers Retry reading for that definition. This retry retains successful rows and sends no inference request.
@@ -439,9 +442,12 @@ A rejected or deprecated result remains available through an explicit filter and
 A word page groups definitions by language. Each publication retains its own frame and attribution.
 Ranking selects a presentation layer, not one universal meaning. The UI does not call a lower-ranked sense false because another sense exists.
 The full definition block shows notes, etymology, glosses, places, examples, sources, parent revisions, and history.
+Reading language lists show names instead of raw tags, including Lojban, Klingon, Tok Pisin, and Guaspi. The lists omit the test tag.
 Language tabs show counts. Each block includes a permanent revision link, reviewer disclosure, place strip, and “Revise” action.
 A proposed revision includes a notice and “Compare.” A place strip without descriptions offers “Add descriptions.”
 After the definitions, offer “Add a definition,” “Add a translation,” and related word links.
+A closed Source and scores disclosure follows the word content. It contains snapshot and view IDs and “Check the scores locally”.
+Personal calculation controls and score-availability warnings remain visible without opaque identifiers. Detailed identifiers remain in the disclosure.
 Source disclosures retain original text, Lensisku attribution, numeric account evidence when known, and the importer signer.
 No “official” badge appears. Organizations use ordinary identities and endorsements.
 The intended baseline curator uses an ordinary key and actual signed endorsements of baseline publications.

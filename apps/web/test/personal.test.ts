@@ -186,6 +186,7 @@ test("recompute from records compares a local site view calculation with the ser
   page,
 }) => {
   await page.goto("/word/cukta");
+  await page.getByText("Source and scores", { exact: true }).click();
   await page.getByText("Check the scores locally").click();
   await page.getByRole("button", { name: "Recompute from records" }).click();
   await expect(page.locator("main").getByRole("status").last()).toContainText(

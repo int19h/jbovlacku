@@ -185,7 +185,16 @@ export function plural(
   return `${count} ${count === 1 ? singular : pluralForm}`;
 }
 const languageNames = new Intl.DisplayNames(["en"], { type: "language" });
+const readingLanguageNames: Record<string, string> = {
+  jbo: "Lojban",
+  tlh: "Klingon",
+  tpi: "Tok Pisin",
+  "art-x-guaspi": "Guaspi",
+};
+export const listedLanguage = (tag: string) => tag.toLowerCase() !== "test";
 export function languageName(tag: string): string {
+  const known = readingLanguageNames[tag.toLowerCase()];
+  if (known) return known;
   try {
     const name = languageNames.of(tag);
     return name && name !== tag ? name : tag;

@@ -279,13 +279,11 @@ test("reading preferences change orthography and preserve scores and singleton l
   await expect(page.locator(".word-head .zbalermorna")).toHaveCount(0);
 });
 
-test("search score details open by keyboard and list every supplied incoming identity", async ({
+test("word score details open by keyboard and list every supplied incoming identity", async ({
   page,
 }) => {
-  await page.goto("/search?q=book&lang=en");
-  const row = page
-    .locator("article.hit")
-    .filter({ has: page.getByRole("link", { name: "cukta", exact: true }) });
+  await page.goto("/word/cukta?lang=en");
+  const row = page.locator("article.definition").first();
   const summary = row.locator("details.judgment-details summary");
   await summary.focus();
   await page.keyboard.press("Enter");

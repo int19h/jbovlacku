@@ -11,7 +11,7 @@ import {
   download,
   checkbox,
 } from "../lib/dom.ts";
-import { languageName, plural } from "../lib/format.ts";
+import { listedLanguage, languageName, plural } from "../lib/format.ts";
 import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import { downloadPackage, type CachedPackage } from "../data/search.ts";
@@ -50,13 +50,16 @@ export async function preferencesPage(
   let packagesAvailable = true;
   try {
     const manifest = await getManifest({ signal: context.signal });
-    manifestLanguages = manifest.packages.map((pkg) => pkg.language);
+    manifestLanguages = manifest.packages
+      .map((pkg) => pkg.language)
+      .filter(listedLanguage);
     packagesAvailable = manifest.packages_available !== false;
     for (const tag of manifestLanguages) languages.add(tag);
   } catch {}
   if (!context.live()) return;
   const languageField = field("Definition language", {
     options: [...languages]
+      .filter(listedLanguage)
       .sort()
       .map((tag) => ({ value: tag, label: languageName(tag) })),
     value: prefs.definitionLanguage,

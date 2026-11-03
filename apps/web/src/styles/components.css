@@ -484,13 +484,24 @@ details.disclosure > .body {
   line-height: 1.55;
 }
 .hit .line3 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 8px;
+}
+.hit-attribution {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 14px;
+  gap: 4px 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-.hit .line3 .spacer {
-  flex: 1 1 auto;
+.hit .hit-judgment {
+  justify-self: end;
+}
+.hit .judgment-wrap {
+  max-width: 130px;
 }
 .end-line {
   padding: 14px 0;

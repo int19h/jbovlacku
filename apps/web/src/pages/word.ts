@@ -14,7 +14,7 @@ import {
   icon,
   disclosure,
 } from "../lib/dom.ts";
-import { languageName, plural } from "../lib/format.ts";
+import { listedLanguage, languageName, plural } from "../lib/format.ts";
 import {
   navigate,
   routes,
@@ -270,7 +270,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     }),
   );
   // Language tabs.
-  const languages = [...byLanguage.keys()].sort();
+  const languages = [...byLanguage.keys()].filter(listedLanguage).sort();
   const active = languages.includes(requestedLanguage)
     ? requestedLanguage
     : "all";
@@ -311,6 +311,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         mode: "personal",
         context,
         label: "Personal view",
+        includeSnapshot: false,
         onRefresh: rerender,
       }),
     );
@@ -323,8 +324,11 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   if (!context.live()) return;
   const myJudgmentsFirst = Boolean(own);
   if (view.personal && view.reason) {
+    const reason = view.stale
+      ? "The local calculation uses another snapshot or view. Recompute from records for these definitions."
+      : view.reason;
     const note = p(
-      `Personal scores are unavailable: ${view.reason} ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`,
+      `Personal scores are unavailable: ${reason} ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`,
       "small",
     );
     if (view.stale)
@@ -344,8 +348,18 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       );
     main.append(note);
   }
-  main.append(provenanceLine(view));
-  if (!personal) main.append(recomputePanel(app, id, word));
+  const sourceDetails = el(
+    "details",
+    { class: "disclosure word-source" },
+    el("summary", {}, icon("chevron", "chev"), "Source and scores"),
+    el(
+      "div",
+      { class: "body" },
+      provenanceLine(view),
+      view.stale && view.reason ? p(view.reason, "small") : null,
+      personal ? null : recomputePanel(app, id, word),
+    ),
+  );
   // Definition order follows layers. Unranked definitions follow.
   const visible = new Set(
     active === "all" ? records.keys() : (byLanguage.get(active) ?? []),
@@ -603,6 +617,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     section.append(line);
     main.append(section);
   }
+  main.append(sourceDetails);
   void disclosure;
   void RequestError;
 }

@@ -161,7 +161,7 @@ Each group shows its count once. One screen-reader-only region announces concise
 Local counts state the full total and the shown count when rows remain hidden. Each settled meaning update includes the last settled lexical counts before its meaning count.
 The active view appears in the footer. Local or remote search mode lives in Settings.
 The first remote request discloses the named server. Switching modes never uploads local query history silently.
-After the reader allows meaning search, the line beside search reads “Meaning search on · Turn off”.
+When saved consent matches the current provider, scope, task, and fields, the line beside search reads “Meaning search on · Turn off”.
 Before the reader makes a meaning-search choice, this line is absent and leaves no gap.
 Local mode keeps word and definition searches in the browser, while consented meaning search uses the server.
 The off choice persists separately from consent and other AI choices.
@@ -171,7 +171,8 @@ The controls keep the accessible names “Turn off meaning search” and “Turn
 Each row has three content lines, separated from the next row by a thin rule and 16px vertical padding.
 The first line shows the linked headword, italic rafsi, type, and selma'o for cmavo.
 The second line shows definition text, place markers, and highlighted query matches.
-The third line shows author attribution, month and year, optional “notes,” matching alternatives, and the judgment control at the right.
+The third line shows author attribution, month and year, optional “notes,” and matching alternatives. The judgment control stays at its right end.
+Search cards have no reviewer disclosure or visible reviewer count. Score availability remains accessible on the judgment value.
 “notes” opens that definition's notes. “also:” links to another matching definition and its author.
 Native authors link to their signing identity. Imported authors link to source-account evidence when available, without impersonating a signing identity.
 The importer signer remains inspectable separately. A shared display name never merges the two.
@@ -196,6 +197,7 @@ The meaning group ends with a closed Search source disclosure. It contains the s
 These details keep the meaning source distinct when lexical results use a local package.
 The existing Search source and snapshot disclosure contains “Local search package from snapshot…” or “Searched on…”.
 The first remote-upload disclosure and segmentation limits remain visible outside it.
+Only a successful remote response receives the label “Searched on…”. A failed or offline attempt uses “Search server: …”.
 The note about retained local publications and unavailable current statuses appears only when retired results are on.
 Individual cards follow in query order for words outside exact or contiguous compound spans, with repeated identities grouped.
 Subsequence matches keep those cards. A one-word query shows its exact word and prefix family before compounds that contain it.
@@ -213,9 +215,12 @@ The word surface corresponds to `/word/<word-id>?lang=en`.
 Its heading shows the 44px headword, Crisa rendering beside it, type, and accessible copy control.
 A lujvo composition line shows source words, component rafsi, and descriptive glosses when known.
 The rafsi line shows assignments or “none yet,” with “claim one.” Language tabs show definition counts.
+Reading language lists use readable names, including Lojban, Klingon, Tok Pisin, and Guaspi. They omit the test tag.
 
 Each definition block shows 21px prose, glosses, author, date, permanent event link, and judgment controls.
-“N reviewers” opens reviewer identities, units, and influence-route details under the actual selected view.
+“N reviewers” opens reviewer identities, units, and influence-route details under the actual selected view. A zero count uses “Score details” instead.
+A closed Source and scores disclosure follows the word content. It contains snapshot and view IDs and the local score comparison.
+Personal calculation controls and score-availability warnings remain visible. Detailed identifiers stay in Source and scores.
 When several routes contribute, summarize them and expose the complete details. Do not claim one route as the whole explanation.
 The explanation reads “The score adds the weight of each reviewer in your trust view.”
 The current user's weight follows the calculation and personal overlay. It never comes from an illustrative reviewer table.
