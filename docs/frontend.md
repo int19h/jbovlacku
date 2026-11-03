@@ -1001,17 +1001,22 @@ The wizard can suggest placeholder mappings, but the author approves numbering b
 Repeated references can name the same place. Textual order does not determine final place order.
 
 Each rich field uses an accessible editor over the stored node tree. Places and operands are inline chips. Code, word links, and web links are separate inline nodes.
-The toolbar provides places 1 to 3 directly and places 4 to 50 in a dropdown. The dropdown identifies declared places.
+The toolbar provides places 1 to 3 directly. More places opens a six-column grid with places 4 to 50.
+Each grid control inserts its place and closes the grid. Declared places have an accent outline and the accessible name “Place N, declared”.
+Arrow keys move within the grid. Home and End move to its first and last place. Escape closes it and returns focus to More places.
+Place controls show bold digits inside drawn circles. Every standalone control retains a 44px target.
 
-Link a word, Web link, and Insert code open labeled dialogs. A word link retains its word type even when its spelling starts with `https://`.
+Link a word, Web link, and Insert code open labeled dialogs. Link label uses a single-line input.
+A target-only edit preserves the exact stored label, including an existing multiline label.
+A word link retains its word type even when its spelling starts with `https://`.
 A link's accessible name includes its label and target. Edit link changes an existing link through a labeled dialog.
 
 The toolbar is one tab stop. Left, Right, Home, and End move between its controls.
-The place dropdown keeps its native keys. Alt with those keys moves to another toolbar control.
-
-Insert operand uses `aria-disabled` until an operand exists. An insertion attempt explains the missing declaration without opening a dialog.
+The definition toolbar stays visible. Other rich-field toolbars appear while their field group has focus, with their space reserved.
+The operand insertion control stays hidden until an operand exists.
 Operand changes refresh every retained editor's insertion controls.
-Keyboard guidance appears only for the focused toolbar.
+Toolbar keyboard guidance is available to screen readers through its accessible description.
+The full `___` and `__N__` hint appears once under the definition, rather than under every rich field.
 A toolbar insertion appends when the field never received focus.
 Web links require HTTPS addresses that [URL parsing](https://url.spec.whatwg.org/#concept-basic-url-parser) accepts.
 
@@ -1031,7 +1036,9 @@ An edited empty field remains `[]`, and an edited empty optional field stays abs
 
 Loading a saved single blank paragraph keeps its stored value until the first edit.
 After an edit, undo uses the edited-field rules and returns the canonical empty value.
-Updating place rows preserves each retained editor's caret and undo history.
+Updating place rows with unchanged field values preserves each retained editor's caret and undo history.
+A reference rewrite changes the affected field's value and starts a new history at the document end.
+Undo in that field cannot restore references that the rewrite removed or renumbered.
 Pointer focus and an existing native selection keep their chosen caret position.
 An editor repairs its native caret only after its retained wrapper moves, when no pointer or native selection chooses another position.
 
@@ -1048,6 +1055,16 @@ Existing explicit places reserve their numbers throughout that part. Typing `__N
 
 Backspace immediately after conversion restores the typed characters. Ordinary undo and redo also work.
 The rules run after input and after an IME commits text. They do not run inside code or link labels, on paste, or in literal mode.
+One committed insertion completes tokens in text order, as incremental typing does. Text after a completed token remains after its chip.
+An unrelated insertion does not convert an earlier complete literal token.
+
+Native paragraph insertion follows the same command as Enter, including when the browser reports only its completed input.
+Inside code and link labels, that command inserts a line break within the node.
+An ambiguous input with several target ranges preserves the complete value and asks the author to select one range and retry.
+During composition, the editor keeps the live text node until text entry settles.
+A boundary deletion waits for settlement and applies once only when its mapped range remains valid and its pending text stays unchanged.
+Cancellation, replacement text, or superseding input cancels that deferred deletion. An uncertain operation asks the author to finish text entry and retry.
+These protocol rules do not establish which sequences physical keyboards or IMEs emit.
 
 Paste reads only plain text. Clipboard content without usable plain text leaves the selection unchanged.
 Paste inside code or a link label stays within that node, including line breaks and circled numerals.
@@ -1057,6 +1074,7 @@ When pasted text contains circled numbers, the editor offers literal text or exp
 Literal mode turns place references into circled characters after confirmation. It keeps links, code, and operands as separate nodes.
 
 Returning to structured mode restores exact untouched values. Edited literal text reads circled characters as places again.
+It also reads `{place N}` for indices 1 through 65,535. Out-of-range notation remains literal text.
 In literal mode, removing or moving a place updates unchanged fields to keep their saved references aligned.
 The separate original Meaning field keeps its narrow backslash escape for circled numerals and its numbering proposal.
 

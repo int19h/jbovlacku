@@ -278,6 +278,7 @@ export async function lujvoPage(
     style: "display:flex;flex-direction:column;gap:14px",
   });
   const definitionField = richField("Current definition", {
+    main: true,
     multiline: true,
     rows: 4,
     value: draft.text,
@@ -286,10 +287,12 @@ export async function lujvoPage(
       draft.frameMode === "none"
         ? []
         : draft.places.map((place) => place.index),
+    operands: () => draft.operands.map((operand) => operand.id),
     lang: draft.language,
   });
   definitionField.input.addEventListener("input", () => {
     draft.text = definitionField.input.value;
+    draft.numberingApproved = false;
     saver.touch();
   });
   aside.append(

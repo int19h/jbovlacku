@@ -1161,19 +1161,12 @@ label:is(.check, .opt, .chip):has(> input:only-of-type)
   gap: 4px;
   margin-bottom: 6px;
 }
-.rich-toolbar-hint {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  z-index: 2;
-  width: min(36rem, calc(100vw - 48px));
-  max-width: 100%;
-  margin: 0 0 6px;
-  padding: 8px 12px;
-  border: 1px solid var(--ink3);
-  border-radius: 6px;
-  background: var(--bg);
-  pointer-events: none;
+.rich-field > .rich-toolbar {
+  visibility: hidden;
+}
+.rich-field:focus-within > .rich-toolbar,
+.rich-field-main > .rich-toolbar {
+  visibility: visible;
 }
 .rich-toolbar .btn,
 .rich-toolbar select {
@@ -1181,15 +1174,58 @@ label:is(.check, .opt, .chip):has(> input:only-of-type)
   min-height: 44px;
 }
 .rich-toolbar .btn {
-  padding-inline: 10px;
+  padding-inline: 8px;
 }
-.rich-place-menu {
+.rich-toolbar .rich-action {
+  font-size: 13px;
+}
+.rich-place-grid {
+  grid-template-columns: repeat(6, 44px);
+  gap: 4px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 8px;
+  border: 1px solid var(--ink3);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.rich-place-grid:popover-open {
+  display: grid;
+}
+.rich-place-grid-row {
+  display: contents;
+}
+.rich-place-grid .btn,
+.rich-place-button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 4px;
+}
+.rich-place-face {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 1.45em;
+  height: 1.45em;
+  padding-inline: 0.12em;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.rich-place-declared {
+  border: 2px solid var(--accent);
 }
 .rich-editor {
   padding: 10px 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  line-height: 1.5;
 }
 .rich-editor p {
   min-height: 1.5em;
@@ -1202,19 +1238,43 @@ label:is(.check, .opt, .chip):has(> input:only-of-type)
   white-space: pre-wrap;
 }
 .rich-chip {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
   min-width: 1.45em;
-  padding: 0 0.25em;
+  height: 1.45em;
+  padding: 0 0.12em;
   border: 1.5px solid var(--accent);
   border-radius: 1em;
   color: var(--accent);
   background: var(--accent-soft);
   text-align: center;
-  font-size: 0.85em;
   font-weight: 650;
-  vertical-align: baseline;
+  line-height: 1;
+  white-space: nowrap;
+  vertical-align: 0.12em;
+}
+.rich-chip-number {
+  font-size: 0.7em;
+}
+.rich-chip:not(.operand) {
+  /* Keep the prose line box while the circle uses its full drawn height. */
+  margin-block: -0.225em;
+  vertical-align: middle;
+}
+.rich-chip-wide {
+  min-width: 1.8em;
+}
+.rich-chip.ProseMirror-selectednode {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  box-shadow: none;
 }
 .rich-chip.operand {
+  height: auto;
+  padding: 0.15em 0.25em;
+  font-size: 0.85em;
   border-radius: 4px;
 }
 .rich-word-link,

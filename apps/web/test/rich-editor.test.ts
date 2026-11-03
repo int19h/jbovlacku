@@ -100,7 +100,7 @@ async function paste(field: Locator, plain: string, html = "") {
   );
 }
 
-test("typed places, exact TeX, undo, keyboard toolbar, and 50-place dropdown", async ({
+test("typed places, exact TeX, undo, keyboard toolbar, and 50-place grid", async ({
   page,
 }) => {
   await seed(page);
@@ -126,15 +126,16 @@ test("typed places, exact TeX, undo, keyboard toolbar, and 50-place dropdown", a
   await expect(
     field.getByRole("img", { name: "place 4", exact: true }),
   ).toHaveCount(1);
-  const more = toolbar(page).getByLabel("More places");
-  await more.focus();
-  await expect(more.locator('option[value="4"]')).toHaveText(
-    "Place 4 (declared)",
-  );
-  await more.selectOption("50");
-  await toolbar(page)
-    .getByRole("button", { name: "Insert selected place" })
-    .focus();
+  const more = toolbar(page).getByRole("button", {
+    name: "More places",
+    exact: true,
+  });
+  await more.click();
+  const grid = page.getByRole("grid", { name: "Places 4 to 50" });
+  await expect(
+    grid.getByRole("gridcell", { name: "Place 4, declared", exact: true }),
+  ).toBeVisible();
+  await grid.getByRole("gridcell", { name: "Place 50", exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(
     field.getByRole("img", { name: "place 50", exact: true }),
@@ -212,7 +213,7 @@ test("clearing a preexisting field and editing blank paragraphs keep valid store
   expect((await inspect()).core).toEqual([]);
 });
 
-test("the dropdown marks only places in the active frame as declared", async ({
+test("the grid marks only places in the active frame as declared", async ({
   page,
 }) => {
   await seed(page);
@@ -224,17 +225,27 @@ test("the dropdown marks only places in the active frame as declared", async ({
     await store.put("drafts", "current", draft);
   });
   await page.reload();
-  const more = toolbar(page).getByLabel("More places");
-  await more.focus();
-  await expect(more.locator('option[value="4"]')).toHaveText("Place 4");
+  const more = toolbar(page).getByRole("button", {
+    name: "More places",
+    exact: true,
+  });
+  await more.click();
+  const grid = page.getByRole("grid", { name: "Places 4 to 50" });
+  await expect(
+    grid.getByRole("gridcell", { name: "Place 4", exact: true }),
+  ).toBeVisible();
+  await grid.press("Escape");
   await page
     .getByLabel("Number of places", { exact: true })
     .selectOption("context");
-  await more.focus();
-  await expect(more.locator('option[value="4"]')).toHaveText(
-    "Place 4 (declared)",
-  );
-  await expect(more.locator('option[value="5"]')).toHaveText("Place 5");
+  await more.click();
+  await expect(
+    grid.getByRole("gridcell", { name: "Place 4, declared", exact: true }),
+  ).toBeVisible();
+  await expect(
+    grid.getByRole("gridcell", { name: "Place 5", exact: true }),
+  ).toBeVisible();
+  await grid.press("Escape");
 });
 
 test("word links and code use accessible dialogs and preserve empty labels", async ({
@@ -654,14 +665,20 @@ test("every definition rich field edits nodes and preserves untouched multiline 
     "Explanation of derivation 1 for place 1",
     "Rationale for rafsi 1",
   ];
+  await page
+    .getByRole("textbox", { name: "Type note", exact: true })
+    .first()
+    .focus();
   const hintPlaces = page
     .getByRole("toolbar", { name: "Type note formatting", exact: true })
     .first()
-    .getByLabel("More places");
-  await hintPlaces.focus();
-  await expect(hintPlaces.locator('option[value="4"]')).toHaveText(
-    "Place 4 (declared)",
-  );
+    .getByRole("button", { name: "More places", exact: true });
+  await hintPlaces.click();
+  const hintGrid = page.getByRole("grid", { name: "Places 4 to 50" });
+  await expect(
+    hintGrid.getByRole("gridcell", { name: "Place 4, declared", exact: true }),
+  ).toBeVisible();
+  await hintGrid.press("Escape");
   for (const label of labels) {
     const field = page
       .getByRole("textbox", { name: label, exact: true })

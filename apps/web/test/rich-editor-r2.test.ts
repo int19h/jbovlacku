@@ -15,6 +15,7 @@ async function mount(
       );
       const field = richField("Round two field", {
         value,
+        main: true,
         structured: !options.literal,
         ...(options.operands ? { operands: () => [] } : {}),
       });
@@ -197,7 +198,7 @@ test("r2 circled paste in a code label stays literal without a conversion dialog
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(await nodes(field)).toEqual([[{ code: "ab①\n\n___cd" }]]);
 });
-test("r2 toolbar has one tab stop and preserves native select keys", async ({
+test("r2 toolbar has one tab stop and the place grid returns keyboard focus", async ({
   page,
 }) => {
   const field = await mount(page, [["text"]]);
@@ -225,15 +226,22 @@ test("r2 toolbar has one tab stop and preserves native select keys", async ({
   ).toBeFocused();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
-  const select = toolbar.getByLabel("More places");
-  await expect(select).toBeFocused();
-  await select.press("ArrowDown");
-  await expect(select).toHaveValue("5");
-  await expect(select).toBeFocused();
-  await select.press("Alt+ArrowRight");
+  const more = toolbar.getByRole("button", {
+    name: "More places",
+    exact: true,
+  });
+  await expect(more).toBeFocused();
+  await more.press("Enter");
+  const grid = page.getByRole("grid", { name: "Places 4 to 50" });
   await expect(
-    toolbar.getByRole("button", { name: "Insert selected place", exact: true }),
+    grid.getByRole("gridcell", { name: "Place 4", exact: true }),
   ).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(
+    grid.getByRole("gridcell", { name: "Place 10", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(more).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(field).toBeFocused();
 });
@@ -276,18 +284,16 @@ test("r2 never-focused toolbar insertion appends to existing content", async ({
     .click();
   expect(await nodes(field)).toEqual([["existing", 2]]);
 });
-test("r2 unavailable operands explain the disabled control", async ({
-  page,
-}) => {
+test("r2 unavailable operands stay hidden until declared", async ({ page }) => {
   await mount(page, [["text"]], { operands: true });
-  const control = page.getByRole("button", {
-    name: "Insert operand",
-    exact: true,
-  });
-  await expect(control).toBeDisabled();
-  await expect(control).toHaveAccessibleDescription(
-    "Declare an operand first.",
-  );
+  await expect(
+    page.getByRole("button", {
+      name: "Insert operand",
+      exact: true,
+      includeHidden: true,
+    }),
+  ).toBeHidden();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 test("r2 literal mode replaces the place-rule hint", async ({ page }) => {
   const field = await mount(page, [["literal"]], { literal: true });
@@ -370,6 +376,7 @@ test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
   await page
     .getByRole("button", { name: "+ Add a place", exact: true })
     .click();
+  await description.focus();
   const descriptionToolbar = page.getByRole("toolbar", {
     name: "Description for place 1 formatting",
     exact: true,

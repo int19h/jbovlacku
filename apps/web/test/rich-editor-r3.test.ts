@@ -335,31 +335,24 @@ test("r3 outside typing preserves raw CR and CRLF while explicit newline edits a
   expect(await richNodes(field)).toEqual(afterCode);
 });
 
-test("r3 toolbar hints appear only for the focused toolbar and operand guidance follows an attempt", async ({
+test("r3 toolbar instructions remain available to screen readers and empty operand controls stay hidden", async ({
   page,
 }) => {
-  await mount(page, [["text"]]);
-  const text =
-    "Use Left, Right, Home, and End to move through the toolbar. In More places, use Alt with those keys.";
-  const hint = page.getByText(text, { exact: true });
-  await expect(hint).toBeHidden();
-  await expect(
-    page.getByText("Declare an operand first.", { exact: true }),
-  ).toBeHidden();
+  const field = await mount(page, [["text"]]);
+  await field.focus();
   const toolbar = page.getByRole("toolbar");
-  await toolbar
-    .getByRole("button", { name: "Insert place 1", exact: true })
-    .focus();
-  await expect(hint).toBeVisible();
-  const operand = toolbar.getByRole("button", {
-    name: "Insert operand",
-    exact: true,
-  });
-  await operand.evaluate((node) => (node as HTMLButtonElement).click());
+  await expect(toolbar).toHaveAccessibleDescription(
+    "Use Left, Right, Home, and End to move through the toolbar. In More places, use the arrow keys to choose a place. Escape returns to More places.",
+  );
+  const description = await toolbar.getAttribute("aria-describedby");
+  await expect(page.locator(`[id="${description}"]`)).toHaveClass("sr");
   await expect(
-    page.getByText("Declare an operand first.", { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+    toolbar.getByRole("button", {
+      name: "Insert operand",
+      exact: true,
+      includeHidden: true,
+    }),
+  ).toBeHidden();
 });
 
 test("r3 operand addition and renaming refresh every retained rich-field control", async ({
@@ -377,11 +370,18 @@ test("r3 operand addition and renaming refresh every retained rich-field control
   const controls = page.getByRole("button", {
     name: "Insert operand",
     exact: true,
+    includeHidden: true,
   });
   for (const control of await controls.all())
     await expect(control).toBeEnabled();
   await page.getByLabel("Operand 1 ID", { exact: true }).fill("sumti");
   for (const control of await controls.all()) {
+    await control.evaluate((node) =>
+      node
+        .closest(".rich-field")!
+        .querySelector<HTMLElement>("[role=textbox]")!
+        .focus(),
+    );
     await control.click();
     await expect(
       page.getByRole("dialog").getByLabel("Operand", { exact: true }),
@@ -402,10 +402,13 @@ test("r3 removing the last operand refreshes every retained rich-field control",
     .getByRole("button", { name: "Remove operand 1", exact: true })
     .click();
   for (const control of await page
-    .getByRole("button", { name: "Insert operand", exact: true })
+    .getByRole("button", {
+      name: "Insert operand",
+      exact: true,
+      includeHidden: true,
+    })
     .all()) {
-    await expect(control).toHaveAttribute("aria-disabled", "true");
-    await control.evaluate((node) => (node as HTMLButtonElement).click());
+    await expect(control).toBeHidden();
     await expect(page.getByRole("dialog")).toHaveCount(0);
   }
 });

@@ -324,7 +324,14 @@ The bottom actions are Back and “Use <form>.”
 The top shows headword, type, definition language, and “AI Fill in places and glosses.”
 The definition uses an actual accessible rich-text editor, with Place insertion, Link a word, and typed circled-number guidance.
 Places and operands use inline chips. Code and both link types use separate inline nodes.
-The toolbar inserts places 1 to 3 directly. A dropdown offers places 4 to 50 and identifies declared places.
+The toolbar inserts places 1 to 3 directly. More places opens a six-column grid with places 4 to 50.
+Declared places have an accent outline and the accessible name “Place N, declared”. Arrow keys move within the grid.
+Escape closes the grid and returns focus to More places. Activating a place inserts it once and closes the grid.
+The main definition toolbar stays visible. Other toolbars appear while their field group has focus and keep their space reserved.
+Place buttons use bold 15px digits inside drawn chip faces. Other actions use compact buttons, with Operand hidden until an operand exists.
+The full typed-place hint appears once under the definition. Toolbar keyboard instructions remain screen-reader-only.
+Editor place chips use 1.45em circles with wider badges for two digits and retain normal editor line height.
+Selected chips use a 2px focus-token outline with a 1px offset. Link label dialogs use single-line inputs.
 Link a word opens an accessible dialog. The toolbar also offers code insertion.
 Typed `___` and `__N__` convert on the final underscore. Backspace restores the typed characters.
 Literal mode and text-only paste follow the frontend specification.

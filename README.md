@@ -183,11 +183,11 @@ Cut copies selected text before deletion.
 Blank paragraphs stay editable. Edited fields omit whitespace-only paragraphs from saved drafts and published records.
 Edited empty optional fields stay absent. Untouched fields keep their exact values on loading, save, and publication.
 
-Place-row updates preserve the caret and undo history. Pointer focus keeps the clicked caret position. A word link stays a word link when its spelling starts with `https://`.
+Place-row updates with unchanged field values preserve the caret and undo history. An external reference rewrite starts new history, so undo cannot restore removed or renumbered references. Pointer focus keeps the clicked caret position. A word link stays a word link when its spelling starts with `https://`.
 
-The toolbar inserts places 1 to 3 directly. A dropdown offers places 4 to 50 and identifies declared places. Labeled dialogs insert word links and code, and Edit link changes an existing target or label. Accessible link names include their targets.
+The toolbar inserts places 1 to 3 directly. More places opens a six-column grid with places 4 to 50 and identifies declared places. Labeled dialogs insert word links and code, and Edit link changes an existing target or label. Accessible link names include their targets.
 
-The toolbar uses one tab stop with arrow-key navigation. Keyboard guidance appears for the focused toolbar. Operand controls follow the current declarations and explain a missing declaration after an insertion attempt. The same editor supports HTTPS links and operand references.
+The toolbar uses one tab stop with arrow-key navigation. The definition toolbar stays visible. Other toolbars appear while their field group has focus and keep their space reserved. Keyboard guidance is available to screen readers. The operand control follows current declarations and stays hidden when no operand exists. The same editor supports HTTPS links and operand references.
 
 Typing `___` inserts the next free place, and `__N__` inserts place N from 1 through 50. Typed circled numbers also insert places. A semicolon restarts automatic numbering. Backspace restores the characters immediately after conversion. Literal mode keeps circled numbers and underscores as text. It preserves code and links.
 

@@ -849,10 +849,11 @@ test("r6 composition deletion needs a mapped range inside one native text node",
       ["left\r\n", node("code", "a\ncd"), node("word", "raw\rword")],
       ["outside\r\n"],
     ]);
-  await reset(field, [
+  const canceledBoundary: RichText = [
     ["ab"],
     [node("code", "cd\r\nef"), node("web", "raw\r\n")],
-  ]);
+  ];
+  await reset(field, canceledBoundary);
   await choose(field, [1, 0, 0]);
   await field.dispatchEvent("compositionstart");
   expect(
@@ -867,9 +868,12 @@ test("r6 composition deletion needs a mapped range inside one native text node",
     ),
   ).toBe(true);
   await field.dispatchEvent("compositionend");
-  await expect
-    .poll(() => richNodes(field))
-    .toEqual([["ab", node("code", "cd\r\nef"), node("web", "raw\r\n")]]);
+  await expect.poll(() => richNodes(field)).toEqual(canceledBoundary);
+  await expect(field.locator("p")).toHaveCount(2);
+  expect(await field.locator(".rich-literal").textContent()).toBe("ab");
+  expect(await field.locator(".rich-code").textContent()).toBe("cd\r\nef");
+  expect(await field.locator(".rich-web-link").textContent()).toBe("raw\r\n");
+  await expect(page.getByRole("status")).toContainText("try again");
 });
 
 test("r6 canceled native composition deletion cannot repair a later owned CR deletion", async ({

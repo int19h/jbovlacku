@@ -11,12 +11,12 @@ import {
 } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { baseKeymap } from "prosemirror-commands";
-import { history, undo, redo } from "prosemirror-history";
+import { history, undo, redo, closeHistory } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { undoInputRule } from "prosemirror-inputrules";
 import { button, el, field, fieldId, type FieldOptions } from "../lib/dom.ts";
 import { onDisconnect } from "../lib/lifetime.ts";
-import { CIRCLED, placeGlyph } from "../model/place-glyphs.ts";
+import { CIRCLED } from "../model/place-glyphs.ts";
 import {
   editorToRich,
   editedTextPlugin,
@@ -43,6 +43,7 @@ export interface RichFieldOptions extends Omit<
   local?: boolean;
   places?: () => number[];
   operands?: () => string[];
+  main?: boolean;
 }
 export interface RichInput extends HTMLDivElement {
   value: RichText;
@@ -315,9 +316,8 @@ export function richField(label: string, options: RichFieldOptions) {
   const toolbarHintId = `${id}-toolbar-hint`;
   const toolbarHint = el("p", {
     id: toolbarHintId,
-    class: "hint rich-toolbar-hint",
-    hidden: true,
-    text: "Use Left, Right, Home, and End to move through the toolbar. In More places, use Alt with those keys.",
+    class: "sr",
+    text: "Use Left, Right, Home, and End to move through the toolbar. In More places, use the arrow keys to choose a place. Escape returns to More places.",
   });
   toolbar.setAttribute("aria-describedby", toolbarHintId);
   toolbar.append(toolbarHint);
@@ -326,13 +326,15 @@ export function richField(label: string, options: RichFieldOptions) {
     class: "hint",
     text:
       options.hint ??
-      (options.local === false
-        ? "Use the controls to insert links and code. Pasted text stays literal."
-        : "Type ___ for the next free place, __N__ for place N, or ① to ㊿. Paste can keep circled numbers literal."),
+      (options.main
+        ? "Type ___ for the next free place, __N__ for place N, or ① to ㊿. Paste can keep circled numbers literal."
+        : ""),
   });
   const wrapper = el(
     "div",
-    { class: options.wrapperClass ?? "field-group" },
+    {
+      class: `${options.wrapperClass ?? "field-group"} rich-field${options.main ? " rich-field-main" : ""}`,
+    },
     labelNode,
     toolbar,
     host,
@@ -361,6 +363,102 @@ export function richField(label: string, options: RichFieldOptions) {
   } | null = null;
   let compositionDoc: EditorNode | null = null;
   let compositionGeneration = 0;
+  let renderedDOM: Node[] = [];
+  const rememberDOM = () => {
+    renderedDOM = [...view.dom.childNodes].map((node) => node.cloneNode(true));
+  };
+  const matchesRenderedDOM = () =>
+    renderedDOM.length === view.dom.childNodes.length &&
+    renderedDOM.every((node, index) =>
+      node.isEqualNode(view.dom.childNodes[index]),
+    );
+  const operationStatus = el("p", {
+    class: "hint",
+    role: "status",
+    hidden: true,
+  });
+  wrapper.append(operationStatus);
+  const retryOperation = (message: string) => {
+    operationStatus.textContent = message;
+    operationStatus.hidden = false;
+  };
+  interface CompositionDelete {
+    generation: number;
+    doc: EditorNode;
+    from: number;
+    to: number;
+    text: string;
+    fromType: string;
+    toType: string;
+  }
+  let compositionDelete: CompositionDelete | null = null;
+  let compositionText = "";
+  let compositionRetry = false;
+  const announceCompositionRetry = () => {
+    retryOperation(
+      "That edit could not be applied during text entry. Finish entering text, select one range and try again.",
+    );
+    compositionRetry = false;
+  };
+  let compositionStartState: EditorState | null = null;
+  let compositionStartSelection: Selection | null = null;
+  let dirtyCompositionState: EditorState | null = null;
+  const cancelCompositionDelete = () => {
+    if (compositionDelete) compositionRetry = true;
+    compositionDelete = null;
+  };
+  function rejectRanges(input: InputEvent) {
+    if (input.cancelable) input.preventDefault();
+    if (view.composing || input.isComposing) {
+      cancelCompositionDelete();
+      compositionRetry = true;
+      if (!input.cancelable) dirtyCompositionState ??= view.state;
+    } else {
+      retryOperation(
+        "This selection cannot be edited at once. Select one range and try again.",
+      );
+      if (!input.cancelable) {
+        const stage: DeleteRecovery = {
+          type: input.inputType,
+          state: view.state,
+          transaction: null,
+          selection: view.state.selection,
+          settling: false,
+          timer: setTimeout(() => settleDeleteRecovery(stage, false), 0),
+        };
+        deleteRecovery = stage;
+      }
+    }
+    return true;
+  }
+  let paragraphInput: {
+    state: EditorState;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+  const paragraphCommand = (type: string, mark = true) => {
+    const { selection } = view.state;
+    const line =
+      type === "insertLineBreak" ||
+      ["code", "word_link", "web_link"].includes(
+        selection.$from.parent.type.name,
+      );
+    const command: Command = line
+      ? (state, dispatch) => {
+          dispatch?.(state.tr.insertText("\n"));
+          return true;
+        }
+      : baseKeymap.Enter;
+    command(view.state, dispatchEdit, view);
+    if (!mark) return;
+    if (paragraphInput) clearTimeout(paragraphInput.timer);
+    const marker = {
+      state: view.state,
+      timer: setTimeout(() => {
+        if (paragraphInput === marker) paragraphInput = null;
+      }, 0),
+    };
+    paragraphInput = marker;
+  };
   interface DeleteRecovery {
     type: RichDeleteType;
     state: EditorState;
@@ -410,8 +508,9 @@ export function richField(label: string, options: RichFieldOptions) {
     clearTimeout(deleteRecovery.timer);
     deleteRecovery = null;
   }
-  function restoreDeleteDOM() {
+  function restoreDeleteDOM(force = true) {
     if (restoringDelete || view.isDestroyed) return;
+    if (!force && !view.composing && matchesRenderedDOM()) return;
     restoringDelete = true;
     try {
       const previous = view;
@@ -424,6 +523,7 @@ export function richField(label: string, options: RichFieldOptions) {
       if (!host.contains(dom)) host.append(dom);
       view = new EditorView({ mount: dom }, props);
       if (focused) view.focus();
+      rememberDOM();
     } finally {
       restoringDelete = false;
     }
@@ -454,7 +554,7 @@ export function richField(label: string, options: RichFieldOptions) {
     stage.settling = true;
     clearTimeout(stage.timer);
     // Keep the guard active while rendering can flush native parsed mutations.
-    restoreDeleteDOM();
+    restoreDeleteDOM(Boolean(stage.transaction));
     deleteRecovery = null;
     if (view.state !== stage.state) return;
     if (commit && stage.transaction) dispatchEdit(stage.transaction);
@@ -606,7 +706,7 @@ export function richField(label: string, options: RichFieldOptions) {
     });
   };
   const placeControls: (HTMLButtonElement | HTMLSelectElement)[] = [];
-  let placeMenu: HTMLSelectElement | undefined;
+  const placeButtons = new Map<number, HTMLButtonElement>();
   let operandControl: HTMLButtonElement | undefined;
   let operandReason: HTMLElement | undefined;
   let activeToolbarControl: HTMLElement | undefined;
@@ -629,14 +729,17 @@ export function richField(label: string, options: RichFieldOptions) {
   };
   const syncMode = () => {
     for (const control of placeControls) control.disabled = !enabled();
-    if (placeMenu) {
-      const declared = new Set(options.places?.() ?? []);
-      for (const option of placeMenu.options) {
-        const label = `Place ${option.value}${declared.has(Number(option.value)) ? " (declared)" : ""}`;
-        if (option.textContent !== label) option.textContent = label;
-      }
+    const declared = new Set(options.places?.() ?? []);
+    for (const [index, control] of placeButtons) {
+      control.setAttribute(
+        "aria-label",
+        `Place ${index}${declared.has(index) ? ", declared" : ""}`,
+      );
+      control.classList.toggle("rich-place-declared", declared.has(index));
+      control.disabled = !enabled();
     }
     if (operandControl) {
+      operandControl.hidden = !operandIds().length;
       operandControl.disabled = !enabled();
       operandControl.setAttribute(
         "aria-disabled",
@@ -646,12 +749,13 @@ export function richField(label: string, options: RichFieldOptions) {
     if (operandReason && (operandIds().length || !enabled()))
       operandReason.hidden = true;
     hint.textContent =
-      !enabled() && options.local !== false
+      !enabled() && options.local !== false && options.main
         ? "Literal mode keeps typed characters as text. Pasted text stays literal."
         : (options.hint ??
-          (options.local === false
-            ? "Use the controls to insert links and code. Pasted text stays literal."
-            : "Type ___ for the next free place, __N__ for place N, or ① to ㊿. Paste can keep circled numbers literal."));
+          (options.main
+            ? "Type ___ for the next free place, __N__ for place N, or ① to ㊿. Paste can keep circled numbers literal."
+            : ""));
+    hint.hidden = !hint.textContent;
     rove();
   };
   view = new EditorView(host, {
@@ -668,6 +772,8 @@ export function richField(label: string, options: RichFieldOptions) {
     },
     dispatchTransaction(transaction) {
       if (restoringDelete) return;
+      if (dirtyCompositionState && view.composing && transaction.docChanged)
+        return;
       if (deleteRecovery) {
         if (transaction.docChanged) settleDeleteRecovery(deleteRecovery, true);
         return;
@@ -675,6 +781,8 @@ export function richField(label: string, options: RichFieldOptions) {
       const ownsCaret =
         transaction.getMeta("richDelete") ||
         transaction.getMeta("richRuleUndo");
+      if (compositionDelete && transaction.getMeta("richExplicit"))
+        cancelCompositionDelete();
       if (ownsCaret || transaction.getMeta("richExplicit")) nativeEdit = null;
       if (!ownsCaret && transaction.getMeta("richExplicit"))
         deletionCaret = null;
@@ -691,7 +799,22 @@ export function richField(label: string, options: RichFieldOptions) {
         nativeEdit = null;
       }
       const result = view.state.applyTransaction(transaction);
+      if (compositionDelete) {
+        for (const applied of result.transactions) {
+          if (compositionDelete.doc !== applied.before) {
+            cancelCompositionDelete();
+            break;
+          }
+          compositionDelete.from = applied.mapping.map(
+            compositionDelete.from,
+            -1,
+          );
+          compositionDelete.to = applied.mapping.map(compositionDelete.to, 1);
+          compositionDelete.doc = applied.doc;
+        }
+      }
       view.updateState(result.state);
+      rememberDOM();
       // ProseMirror can leave a visually equal caret in another inline node.
       if (ownsCaret) {
         deletionCaret = view.state.selection.empty
@@ -724,7 +847,23 @@ export function richField(label: string, options: RichFieldOptions) {
           ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a")
         )
           deletionCaret = null;
-        if (event.isComposing || event.keyCode === 229) return false;
+        if (event.isComposing || event.keyCode === 229 || view.composing)
+          return false;
+        if (event.key === "Tab") {
+          const selection = readNativeSelection();
+          if (selection && !selection.eq(view.state.selection))
+            dispatchEdit(view.state.tr.setSelection(selection));
+        }
+        if (event.key === "Enter") {
+          const selection = readNativeSelection();
+          if (selection && !selection.eq(view.state.selection))
+            dispatchEdit(view.state.tr.setSelection(selection));
+          event.preventDefault();
+          paragraphCommand(
+            event.shiftKey ? "insertLineBreak" : "insertParagraph",
+          );
+          return true;
+        }
         const type = deletionKey(event);
         if (!type) return false;
         const selection = readNativeSelection();
@@ -742,6 +881,25 @@ export function richField(label: string, options: RichFieldOptions) {
       input(_view, event) {
         const stage = deleteRecovery;
         const type = (event as InputEvent).inputType;
+        if (dirtyCompositionState && view.composing) return true;
+        if (
+          type === "deleteCompositionText" &&
+          (view.composing || (event as InputEvent).isComposing) &&
+          (compositionDelete || compositionRetry)
+        )
+          return true;
+        if (
+          (type === "insertParagraph" || type === "insertLineBreak") &&
+          !view.composing
+        ) {
+          if (matchesRenderedDOM()) return true;
+          const duplicate = paragraphInput?.state === view.state;
+          if (stage) settleDeleteRecovery(stage, false);
+          // Some browser commands emit only input. The model still holds the pre-edit state.
+          restoreDeleteDOM();
+          if (!duplicate) paragraphCommand(type, false);
+          return true;
+        }
         if (stage) {
           settleDeleteRecovery(stage, type === stage.type);
           return true;
@@ -750,7 +908,7 @@ export function richField(label: string, options: RichFieldOptions) {
         if (type === "deleteCompositionText" && nativeEdit?.deletion)
           return false;
         // An orphan or duplicate delete input cannot replace the current model.
-        restoreDeleteDOM();
+        restoreDeleteDOM(false);
         return true;
       },
       cut(_view, event) {
@@ -806,6 +964,26 @@ export function richField(label: string, options: RichFieldOptions) {
       },
       beforeinput(_view, event) {
         const input = event as InputEvent;
+        // A browser can leave composition without its end event after native repair.
+        // Keep the failed operation visible when ordinary input resumes.
+        if (
+          compositionRetry &&
+          !input.isComposing &&
+          !input.inputType.startsWith("delete")
+        )
+          announceCompositionRetry();
+        if ((input.getTargetRanges?.().length ?? 0) > 1)
+          return rejectRanges(input);
+        if (input.inputType === "insertCompositionText") {
+          if (input.data !== null && input.data !== compositionText)
+            cancelCompositionDelete();
+          compositionText = input.data ?? compositionText;
+        } else if (
+          compositionDelete &&
+          input.inputType !== "deleteCompositionText"
+        ) {
+          cancelCompositionDelete();
+        }
         // Read incoming DOM points before an older stage rebuilds their nodes.
         const incomingSelection = deleteRecovery
           ? isRichDeleteType(input.inputType)
@@ -821,6 +999,21 @@ export function richField(label: string, options: RichFieldOptions) {
             false,
             incomingSelection ?? deleteRecovery.selection,
           );
+        if (
+          (input.inputType === "insertParagraph" ||
+            input.inputType === "insertLineBreak") &&
+          input.cancelable &&
+          !input.isComposing &&
+          !view.composing
+        ) {
+          input.preventDefault();
+          const selection = insertionSelection(view, input, editingSelection);
+          if (selection && !selection.eq(view.state.selection))
+            dispatchEdit(view.state.tr.setSelection(selection));
+          if (paragraphInput?.state !== view.state)
+            paragraphCommand(input.inputType);
+          return true;
+        }
         if (
           input.inputType === "deleteCompositionText" &&
           (input.isComposing || view.composing)
@@ -840,6 +1033,42 @@ export function richField(label: string, options: RichFieldOptions) {
             nativeEdit = { doc: view.state.doc, ...target, deletion: true };
             return false;
           }
+          if (input.cancelable) input.preventDefault();
+          // Keep the browser's live composition node until its commit settles.
+          const mapped =
+            range &&
+            target &&
+            target.from < target.to &&
+            [range.startContainer, range.endContainer].every((node, index) => {
+              if (node.nodeType !== Node.TEXT_NODE) return false;
+              const position = index ? target.to : target.from;
+              const parent = view.state.doc.resolve(position).parent;
+              return parent.isInline && parent.textContent === node.textContent;
+            });
+          if (input.cancelable && mapped && target) {
+            if (
+              compositionDelete &&
+              (compositionDelete.from !== target.from ||
+                compositionDelete.to !== target.to)
+            ) {
+              cancelCompositionDelete();
+              compositionRetry = true;
+            } else if (!compositionRetry) {
+              compositionDelete ??= {
+                generation: compositionGeneration,
+                doc: view.state.doc,
+                ...target,
+                text: compositionText,
+                fromType: view.state.doc.resolve(target.from).parent.type.name,
+                toType: view.state.doc.resolve(target.to).parent.type.name,
+              };
+            }
+          } else {
+            cancelCompositionDelete();
+            compositionRetry = true;
+            if (!input.cancelable) dirtyCompositionState ??= view.state;
+          }
+          return true;
         }
         if (isRichDeleteType(input.inputType)) {
           nativeEdit = null;
@@ -904,16 +1133,31 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       compositionstart() {
+        cancelCompositionDelete();
+        // A replacement session must not erase an unannounced failed operation.
+        dirtyCompositionState = null;
+        compositionText = "";
+        compositionStartState = view.state;
+        compositionStartSelection =
+          readNativeSelection() ?? view.state.selection;
         compositionGeneration++;
         compositionDoc = view.state.doc;
         view.dispatch(view.state.tr.setMeta("richCompositionStart", true));
+        return false;
+      },
+      compositionupdate(_view, event) {
+        const text = (event as CompositionEvent).data;
+        if (text !== compositionText) cancelCompositionDelete();
+        compositionText = text;
         return false;
       },
       paste(_view, event) {
         event.preventDefault();
         const pasted = event.clipboardData?.getData("text/plain") ?? "";
         if (!pasted) return true;
-        const selection = view.state.selection;
+        const selection = readNativeSelection() ?? view.state.selection;
+        if (!selection.eq(view.state.selection))
+          dispatchEdit(view.state.tr.setSelection(selection));
         const inlineContext =
           selection.$from.sameParent(selection.$to) &&
           ["code", "word_link", "web_link"].includes(
@@ -928,13 +1172,58 @@ export function richField(label: string, options: RichFieldOptions) {
         event.preventDefault();
         return true;
       },
-      compositionend() {
+      compositionend(_view, event) {
         const generation = compositionGeneration;
+        const text = (event as CompositionEvent).data;
+        if (!text || text !== compositionDelete?.text)
+          cancelCompositionDelete();
         // Android can commit DOM changes without handleTextInput.
         setTimeout(() => {
           if (generation !== compositionGeneration) return;
-          if (!view.isDestroyed)
-            view.dispatch(view.state.tr.setMeta("richCompositionEnd", true));
+          if (view.isDestroyed) return;
+          if (dirtyCompositionState) {
+            const start = compositionStartState;
+            const selection = compositionStartSelection;
+            if (
+              start &&
+              selection &&
+              selection.$from.sameParent(selection.$to)
+            ) {
+              view.updateState(start);
+              if (text)
+                dispatchEdit(
+                  view.state.tr.setSelection(selection).insertText(text),
+                );
+            } else view.updateState(dirtyCompositionState);
+            dirtyCompositionState = null;
+            current = editorToRich(view.state.doc);
+            restoreDeleteDOM();
+            view.dom.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+          view.dispatch(view.state.tr.setMeta("richCompositionEnd", true));
+          const intent = compositionDelete;
+          compositionDelete = null;
+          if (
+            intent &&
+            intent.generation === generation &&
+            intent.doc === view.state.doc &&
+            intent.from < intent.to &&
+            intent.to <= view.state.doc.content.size &&
+            view.state.doc.resolve(intent.from).parent.type.name ===
+              intent.fromType &&
+            view.state.doc.resolve(intent.to).parent.type.name === intent.toType
+          ) {
+            const tr = closeHistory(view.state.tr).setSelection(
+              TextSelection.between(
+                view.state.doc.resolve(intent.from),
+                view.state.doc.resolve(intent.to),
+              ),
+            );
+            deleteRichInput(tr, "deleteCompositionText", dispatchEdit);
+          } else if (intent) compositionRetry = true;
+          if (compositionRetry) announceCompositionRetry();
+          compositionStartState = null;
+          compositionStartSelection = null;
           nativeEdit = null;
           compositionDoc = null;
         }, 0);
@@ -942,6 +1231,7 @@ export function richField(label: string, options: RichFieldOptions) {
       },
     },
   });
+  rememberDOM();
   const input = view.dom as RichInput;
   function readNativeSelection(): Selection | null {
     const selection = input.ownerDocument.getSelection();
@@ -1008,6 +1298,9 @@ export function richField(label: string, options: RichFieldOptions) {
       current = value;
       nativeEdit = null;
       if (!unchanged) {
+        cancelCompositionDelete();
+        dirtyCompositionState = null;
+        compositionStartState = null;
         deletionCaret = null;
         cancelDeleteRecovery();
         compositionGeneration++;
@@ -1022,6 +1315,7 @@ export function richField(label: string, options: RichFieldOptions) {
         view.updateState(state(view.state.doc, view.state.selection));
       }
       previousMode = enabled();
+      rememberDOM();
       syncMode();
       syncLinkAction();
     },
@@ -1044,34 +1338,114 @@ export function richField(label: string, options: RichFieldOptions) {
   };
   if (options.local !== false) {
     for (const index of [1, 2, 3]) {
-      const control = button(placeGlyph(index), () => addPlace(index), {
+      const control = button("", () => addPlace(index), {
         class: "btn rich-place-button",
         "aria-label": `Insert place ${index}`,
       });
+      control.append(
+        el("span", {
+          class: "rich-place-face",
+          "aria-hidden": "true",
+          text: String(index),
+        }),
+      );
       placeControls.push(control);
       toolbar.append(control);
     }
-    const place = field("More places", {
-      value: "4",
-      options: Array.from({ length: 47 }, (_, index) => ({
-        value: String(index + 4),
-        label: `Place ${index + 4}${options.places?.().includes(index + 4) ? " (declared)" : ""}`,
-      })),
-      wrapperClass: "rich-place-menu",
-      labelClass: "sr",
+    const grid = el("div", {
+      id: `${id}-places`,
+      class: "rich-place-grid",
+      role: "grid",
+      "aria-label": "Places 4 to 50",
+      popover: "auto",
     });
-    placeMenu = place.input;
-    place.input.addEventListener("focus", syncMode);
-    const apply = button(
-      "Insert selected place",
-      () => addPlace(Number(place.input.value)),
-      { class: "btn btn-quiet" },
+    const more = button(
+      "More places",
+      () => {
+        syncMode();
+        if (grid.matches(":popover-open")) grid.hidePopover();
+        else {
+          grid.showPopover();
+          placeButtons.get(4)!.focus();
+        }
+      },
+      {
+        class: "btn rich-action",
+        "aria-haspopup": "grid",
+        "aria-expanded": "false",
+        "aria-controls": `${id}-places`,
+      },
     );
-    placeControls.push(place.input, apply);
-    toolbar.append(place.wrapper, apply);
+    grid.addEventListener("toggle", () =>
+      more.setAttribute("aria-expanded", String(grid.matches(":popover-open"))),
+    );
+    let row: HTMLElement;
+    for (let index = 4; index <= 50; index++) {
+      if ((index - 4) % 6 === 0) {
+        row = el("div", { role: "row", class: "rich-place-grid-row" });
+        grid.append(row);
+      }
+      const control = button(
+        "",
+        () => {
+          grid.hidePopover();
+          addPlace(index);
+        },
+        {
+          class: "btn rich-place-button",
+          role: "gridcell",
+          tabindex: index === 4 ? "0" : "-1",
+        },
+      );
+      control.append(
+        el("span", {
+          class: "rich-place-face",
+          "aria-hidden": "true",
+          text: String(index),
+        }),
+      );
+      control.addEventListener("focus", () => {
+        for (const [number, cell] of placeButtons)
+          cell.tabIndex = number === index ? 0 : -1;
+      });
+      placeButtons.set(index, control);
+      row!.append(control);
+    }
+    grid.addEventListener("keydown", (event) => {
+      const index = [...placeButtons].find(
+        ([, control]) => control === event.target,
+      )?.[0];
+      if (event.key === "Escape") {
+        event.preventDefault();
+        grid.hidePopover();
+        more.focus();
+        return;
+      }
+      if (index === undefined) return;
+      const movement: Record<string, number> = {
+        ArrowLeft: -1,
+        ArrowRight: 1,
+        ArrowUp: -6,
+        ArrowDown: 6,
+      };
+      const next =
+        event.key === "Home"
+          ? 4
+          : event.key === "End"
+            ? 50
+            : movement[event.key] === undefined
+              ? null
+              : Math.max(4, Math.min(50, index + movement[event.key]));
+      if (next === null) return;
+      event.preventDefault();
+      placeButtons.get(next)!.focus();
+    });
+    placeControls.push(more);
+    toolbar.append(more);
+    wrapper.append(grid);
     if (options.operands) {
       const operand = button(
-        "Insert operand",
+        "Operand",
         () => {
           const ids = operandIds();
           if (!ids.length) {
@@ -1090,7 +1464,7 @@ export function richField(label: string, options: RichFieldOptions) {
             return true;
           });
         },
-        { class: "btn btn-quiet" },
+        { class: "btn rich-action", "aria-label": "Insert operand" },
       );
       placeControls.push(operand);
       operandControl = operand;
@@ -1116,7 +1490,7 @@ export function richField(label: string, options: RichFieldOptions) {
       "",
     );
   const linkWord = button(
-    "Link a word",
+    "Word link",
     () => {
       const spelling = field("Lojban word", {
         value: selectedText(),
@@ -1126,8 +1500,6 @@ export function richField(label: string, options: RichFieldOptions) {
       });
       const label = field("Link label", {
         value: selectedText(),
-        multiline: true,
-        rows: 2,
         hint: "The label can be empty.",
       });
       openDialog(
@@ -1154,7 +1526,7 @@ export function richField(label: string, options: RichFieldOptions) {
         },
       );
     },
-    { class: "btn btn-quiet" },
+    { class: "btn rich-action", "aria-label": "Link a word" },
   );
   const linkWeb = button(
     "Web link",
@@ -1162,8 +1534,6 @@ export function richField(label: string, options: RichFieldOptions) {
       const target = field("HTTPS address", { type: "url", required: true });
       const label = field("Link label", {
         value: selectedText(),
-        multiline: true,
-        rows: 2,
         hint: "The label can be empty.",
       });
       const error = el("p", { role: "status", class: "notice", hidden: true });
@@ -1194,10 +1564,10 @@ export function richField(label: string, options: RichFieldOptions) {
         },
       );
     },
-    { class: "btn btn-quiet" },
+    { class: "btn rich-action" },
   );
   const code = button(
-    "Insert code",
+    "Code",
     () => {
       const content = field("Code", {
         value: selectedText(),
@@ -1217,7 +1587,7 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       });
     },
-    { class: "btn btn-quiet" },
+    { class: "btn rich-action", "aria-label": "Insert code" },
   );
   toolbar.append(linkWord, linkWeb, code);
   editLink = button(
@@ -1235,8 +1605,6 @@ export function richField(label: string, options: RichFieldOptions) {
       });
       const label = field("Link label", {
         value: existing.node.textContent,
-        multiline: true,
-        rows: 2,
         hint: "The label can be empty.",
       });
       let labelEdited = false;
@@ -1289,16 +1657,23 @@ export function richField(label: string, options: RichFieldOptions) {
         "Save",
       );
     },
-    { class: "btn btn-quiet" },
+    { class: "btn rich-action" },
   );
   toolbar.append(editLink);
   toolbar.addEventListener("focusin", (event) => {
-    toolbarHint.hidden = false;
+    const selection = readNativeSelection();
+    if (selection && !selection.eq(view.state.selection))
+      dispatchEdit(view.state.tr.setSelection(selection));
     if (
       event.target instanceof HTMLElement &&
       event.target.matches("button,select")
     )
       rove(event.target);
+  });
+  toolbar.addEventListener("pointerdown", () => {
+    const selection = readNativeSelection();
+    if (selection && !selection.eq(view.state.selection))
+      dispatchEdit(view.state.tr.setSelection(selection));
   });
   toolbar.addEventListener("focusout", (event) => {
     if (
@@ -1306,7 +1681,6 @@ export function richField(label: string, options: RichFieldOptions) {
       toolbar.contains(event.relatedTarget)
     )
       return;
-    toolbarHint.hidden = true;
     if (operandReason) operandReason.hidden = true;
   });
   toolbar.addEventListener("keydown", (event) => {
@@ -1461,6 +1835,11 @@ export function richField(label: string, options: RichFieldOptions) {
     node.showModal();
   }
   onDisconnect(wrapper, () => {
+    compositionDelete = null;
+    dirtyCompositionState = null;
+    compositionStartState = null;
+    if (paragraphInput) clearTimeout(paragraphInput.timer);
+    paragraphInput = null;
     deletionCaret = null;
     cancelDeleteRecovery();
     nativeEdit = null;

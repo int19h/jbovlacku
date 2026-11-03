@@ -714,6 +714,7 @@ export async function placesPage(
     return field;
   };
   const editor = richField("Definition text", {
+    main: true,
     multiline: true,
     structured: () => draft.structured,
     places: () =>
@@ -726,7 +727,6 @@ export async function placesPage(
     labelClass: "sr",
   });
   editor.input.style.fontSize = "19px";
-  editor.input.style.lineHeight = "1.7";
   const nextPlaceNumber = () =>
     Math.max(0, ...draft.places.map((place) => place.index)) + 1;
   const structured = checkbox(
