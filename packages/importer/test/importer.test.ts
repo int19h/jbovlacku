@@ -1430,3 +1430,18 @@ test("braced forms in longer ASCII identifiers do not count as blocked rows", ()
   assert.equal(blocked.report.fidelity.places.blocked, 1);
   assert.equal(blocked.report.fidelity.places.untouched, 0);
 });
+
+test("REST publications keep nested lu and quoted li'u entirely literal", () => {
+  for (const definition of [
+    "lu zo li'u $x_2$ li'u",
+    "lu lu $x_1$ li'u $x_2$ li'u",
+  ]) {
+    const result = capture([{ ...rows()[0], definition }]);
+    const body = result.journal.entries["4"].versions[0].carrier.body;
+    assert.deepEqual(body.text, [[definition]]);
+    assert.equal(body.frame ?? null, null);
+    assert.deepEqual(body.legacy.conversion.mappings, []);
+    assert.equal(body.legacy.conversion.method, "literal");
+    assert.ok(body.legacy.conversion.warnings.length > 0);
+  }
+});

@@ -138,6 +138,7 @@ Finished delimited places can convert before prose dashes and inside gloss brack
 They also accept adjacent Han, Hiragana, Katakana, and Hangul characters. Other scripts retain their letter boundaries.
 
 Quotations, component variables, notes, and etymology remain literal.
+The Lojban quotation guard preserves nested quotes and quoted closing markers.
 Mathematical expressions stay literal when the [finite operator guards](docs/format.md#placeholder-conversion-during-import) recognize them.
 New SQL and REST publications omit derived vectors and caches with explicit source limitations.
 REST publications also omit viewer-specific values.

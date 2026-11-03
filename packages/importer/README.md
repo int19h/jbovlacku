@@ -162,9 +162,13 @@ An unreadable lookup row blocks definitions that reference its missing key, rath
 An unpaired owner row without a readable owner still makes that dependent table incomplete.
 
 The calibrated estimate before signing includes staging, the existing journal, proposed carriers, journal growth, temporary reserves, and a projected loaded copy.
+Claim planning uses the staged selections plus prior selections that remain after absent or unresolved source rows.
+New claim keys are deduplicated before the budget decision. The estimate reports their count in `new_rafsi_claim_count`.
+
 Before estimating, the importer counts staged definitions that need a new publication under its ordinary reuse rules.
-New carrier bytes and added space for the loaded copy use that count, with a reserve for one new view.
+New carrier bytes and the loaded-copy projection include new definitions, new claims, and one new view.
 Observation growth still uses every staged definition row.
+
 It uses measured SQL v2 costs and file-allocation allowances. It is not a strict filesystem upper bound.
 The normal SQL command stops when that estimate exceeds 3,000,000,000 bytes.
 The final output compares measured proposal files with their estimate and reports a miss above ten percent.
@@ -229,7 +233,7 @@ Source account management, cross-post marker reconciliation, and model-assisted 
 
 ## Places, rafsi, and attribution
 
-Extraction versions `lensisku-list-fidelity-v3` and `lensisku-sql-fidelity-v3` use the `explicit-x-places-v6` conversion recipe.
+Extraction versions `lensisku-list-fidelity-v3` and `lensisku-sql-fidelity-v3` use the `explicit-x-places-v7` conversion recipe.
 The [format specification](../../docs/format.md#placeholder-conversion-during-import) defines its supported forms and limits.
 The importer preserves exact source strings and records each converted span with Unicode scalar offsets.
 It declares observed indices in a context frame. It does not infer a complete place list.
@@ -238,6 +242,10 @@ Finished delimited forms allow adjacent Han, Hiragana, Katakana, and Hangul char
 CJK punctuation needs no separating spaces. Other scripts retain their letter boundaries, including Latin ordinals and genitives.
 Bare forms, digits, and mathematical guards keep their existing boundaries.
 Extra math closers immediately after a finished form keep that form literal.
+
+The `lu` guard preserves nested quotations and skips closing markers protected by `zo`.
+Unresolved boundaries keep the uncertain remainder literal with a warning.
+Clear parenthetical marker mentions stay ordinary text. An ASCII-started `zo` token stops before a CJK continuation.
 
 Notes, etymology, examples, source history, component variables, and quoted relations remain literal.
 Mathematical expressions use the finite guards in the format specification.

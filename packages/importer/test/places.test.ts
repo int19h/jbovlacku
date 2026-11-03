@@ -289,3 +289,54 @@ test("extra math closers after finished places stay literal", () => {
     [1, " ", 2],
   ]);
 });
+
+test("lu quotations protect quoted closers and nested quotations", () => {
+  for (const source of [
+    "lu zo li'u $x_2$ li'u",
+    "lu lu $x_1$ li'u $x_2$ li'u",
+    "lu zo broda.lu $x_1$ li'u $x_2$ li'u",
+  ]) {
+    const result = convertPlaces(source, "/definition");
+    assert.deepEqual(result.text, [[source]]);
+    assert.equal(result.frame, null);
+    assert.deepEqual(result.conversion.mappings, []);
+    assert.ok(result.conversion.warnings.length > 0);
+    const outside = convertPlaces(source + " $x_3$", "/definition");
+    assert.deepEqual(outside.text, [[source + " ", 3]]);
+    assert.deepEqual(
+      outside.frame?.places.map((place) => place.index),
+      [3],
+    );
+  }
+  for (const source of [
+    "lu zo li'u $x_2$",
+    "lu lu $x_1$ li'u $x_2$",
+    "lu zoi gy. li'u $x_2$ gy.",
+  ]) {
+    const result = convertPlaces(source, "/definition");
+    assert.deepEqual(result.text, [[source]]);
+    assert.equal(result.frame, null);
+    assert.ok(
+      result.conversion.warnings.some((warning) =>
+        warning.includes("boundary is unresolved"),
+      ),
+    );
+  }
+});
+
+test("clear parenthetical marker mentions do not open quotations", () => {
+  for (const mention of [
+    "(lu; quote)",
+    "(zoi)",
+    "(zoi quote)",
+    "(lo'u or zoi)",
+  ]) {
+    const source = `${mention} $x_2$`;
+    assert.deepEqual(convertPlaces(source, "/definition").text, [
+      [mention + " ", 2],
+    ]);
+  }
+  const ambiguous = "(lu something) $x_2$";
+  assert.deepEqual(convertPlaces(ambiguous, "/definition").text, [[ambiguous]]);
+  assert.equal(convertPlaces(ambiguous, "/definition").frame, null);
+});

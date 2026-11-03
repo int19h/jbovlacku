@@ -1877,7 +1877,7 @@ A deterministic conversion pass recognizes a versioned set of explicit x-place f
 It never assigns place order from the appearance order of component variables such as g_1 or m_4.
 Foreign quotations, component equivalences, nested relations, and ambiguous math remain literal unless an explicit mapping resolves them.
 
-The `explicit-x-places-v6` recipe annotates only the main definition text.
+The `explicit-x-places-v7` recipe annotates only the main definition text.
 It recognizes lowercase `x_N` and `x_{N}`, where N uses ASCII digits without leading zeros and ranges from 1 through 65,535.
 Supported matching delimiters are `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`.
 A delimited expression must contain one supported form, with optional surrounding whitespace.
@@ -1911,8 +1911,21 @@ The guards recognize lowercase Lojban `lu` and `lo'u` quotation markers.
 Marker boundaries exclude ASCII letters, digits, underscores, and apostrophes. A period can mark a boundary.
 Thus `lu'e`, `lu'a`, and `lu'o` do not open quotations.
 
+A `lu` guard tracks nested `lu` and unquoted `li'u` markers. A `zo` token cannot close that quotation.
+Supported text, code, and math units remain opaque during the boundary scan.
+Other nested quote syntax or a missing closing marker leaves the uncertain remainder literal, with a warning.
+
+Outside quotations, short parenthetical marker mentions do not open quotes.
+These mentions contain marker names, optional `quote` or `quotation` labels, and `or` or `and` marker lists, within 120 characters.
+Their parentheses must match.
+Examples include `(lu; quote)`, `(zoi)`, `(zoi quote)`, and `(lo'u or zoi)`.
+Other ambiguous mentions retain the quotation guard.
+
 Single quoted forms also remain literal when their quotes do not belong to adjacent words.
-A `zo` quotation keeps its next token literal. After `zoi` or `la'o`, the rest stays literal because the recipe does not parse their delimiters.
+A `zo` quotation keeps its next token literal.
+An ASCII-started token continues through non-CJK letters, combining marks, numbers, underscores, and apostrophes.
+CJK characters and other punctuation end that token. Other payloads keep the non-whitespace token rule.
+After `zoi` or `la'o`, the rest stays literal because the recipe does not parse their delimiters.
 
 The recipe leaves notes, etymology, examples, and source history literal.
 It records recognized unresolved patterns and their counts in signed conversion warnings.
