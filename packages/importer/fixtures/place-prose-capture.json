@@ -30,6 +30,27 @@
       "language": "ru",
       "definition": "$x_1$ — пакет/сверток/пачка/стопка/связка/пучок/гроздь предметов $x_2$, удерживаемых вместе при помощи $x_3$",
       "places": [1, 2, 3]
+    },
+    {
+      "id": 239,
+      "word": "cusku",
+      "language": "en",
+      "definition": "$x_{1}$ (agent) expresses/says $x_{2}$ (sedu'u/text/lu'e concept) for audience $x_{3}$ via expressive medium $x_{4}$.",
+      "places": [1, 2, 3, 4]
+    },
+    {
+      "id": 15880,
+      "word": "valsi",
+      "language": "zh",
+      "definition": "$x_1$ 是有着意义 $x_2$的词，从属于语言 $x_3$ (形容性：$x_1$ 是词)",
+      "places": [1, 2, 3, 1]
+    },
+    {
+      "id": 16745,
+      "word": "badna",
+      "language": "zh",
+      "definition": "$x_1$是$x_2$品种的香蕉/车前草（既指果实也指整株植物）",
+      "places": [1, 2]
     }
   ]
 }

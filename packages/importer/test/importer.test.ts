@@ -1396,3 +1396,26 @@ test("invalid retained rafsi leave only their omitted journal row unresolved", (
     assert.equal(second.report.fidelity.experimental_rafsi_claims, 0);
   }
 });
+
+test("fidelity separates all explicit places blocked from untouched text", () => {
+  const definitions = [
+    "Plain prose.",
+    "$x_1$ goes.",
+    "$x_1$ relates g_1",
+    "a$x_1$",
+    "g_1=m_4",
+    "lu.$x_1$ li'u",
+  ];
+  const result = capture(
+    definitions.map((definition, index) => ({
+      ...rows()[0],
+      definitionid: 90001 + index,
+      definition,
+    })),
+  );
+  const places = result.report.fidelity.places;
+  assert.equal(places.fully_converted, 1);
+  assert.equal(places.partly_converted, 1);
+  assert.equal(places.blocked, 2);
+  assert.equal(places.untouched, 2);
+});

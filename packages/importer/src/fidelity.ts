@@ -1,6 +1,6 @@
 import { rafsiPairId, wordId } from "../../core/src/index.ts";
 import type { Carrier, Lexical } from "./index.ts";
-import { convertPlaces } from "./places.ts";
+import { convertPlaces, explicitPlaceCount } from "./places.ts";
 
 /** Display evidence never supplies the numeric account association. */
 export function displayUsername(value: unknown): string | null {
@@ -172,6 +172,7 @@ export function emptyFidelity() {
     places: {
       fully_converted: 0,
       partly_converted: 0,
+      blocked: 0,
       untouched: 0,
       unconverted_patterns: {} as Record<string, number>,
     },
@@ -200,7 +201,9 @@ export function countFidelity(
       ? Object.keys(conversion.unresolved).length
         ? "partly_converted"
         : "fully_converted"
-      : "untouched"
+      : explicitPlaceCount(typeof source === "string" ? source : "") > 0
+        ? "blocked"
+        : "untouched"
   ]++;
   for (const [pattern, count] of Object.entries(conversion.unresolved))
     result.places.unconverted_patterns[pattern] =

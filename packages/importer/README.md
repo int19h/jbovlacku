@@ -229,10 +229,15 @@ Source account management, cross-post marker reconciliation, and model-assisted 
 
 ## Places, rafsi, and attribution
 
-Extraction versions `lensisku-list-fidelity-v3` and `lensisku-sql-fidelity-v3` use the `explicit-x-places-v4` conversion recipe.
+Extraction versions `lensisku-list-fidelity-v3` and `lensisku-sql-fidelity-v3` use the `explicit-x-places-v5` conversion recipe.
 The [format specification](../../docs/format.md#placeholder-conversion-during-import) defines its supported forms and limits.
 The importer preserves exact source strings and records each converted span with Unicode scalar offsets.
 It declares observed indices in a context frame. It does not infer a complete place list.
+
+Finished delimited forms allow adjacent Han, Hiragana, Katakana, and Hangul characters, including their script-specific combining marks.
+CJK punctuation needs no separating spaces. Other scripts retain their letter boundaries, including Latin ordinals and genitives.
+Bare forms, digits, and mathematical guards keep their existing boundaries.
+
 Notes, etymology, examples, source history, component variables, and quoted relations remain literal.
 Mathematical expressions use the finite guards in the format specification.
 
@@ -247,15 +252,23 @@ A token present in both fields retains separate source claims for the same pair.
 
 SQL `cached_username` and REST `username` supply names for display only.
 The pinned [Lensisku cache migration](https://github.com/lojban/lensisku/blob/38eb956ad81138b52a4ac1d2f77589548e49cde9/migrations/V156__cached_glosswords_pipe_separator.sql#L61-L79) joins names through `definitions.userid`.
-Source references identify those fields. SQL bodies retain the lookup separately from numeric account evidence.
+Source references identify those fields. SQL bodies retain display lookup references separately from numeric account evidence.
+
+The source field `cached_username` remains in `legacy.original.definitions`. Importer-made lookup metadata stays outside `legacy.original`.
 A username alone never supplies an account number or author controls.
+
 SQL `time` supplies the source timestamp as its original seconds string.
 The browser uses that timestamp before `created_at`, which can date a later database migration.
 Unknown dates stay absent. The Source disclosure keeps each original date label.
 
-The proposal's `fidelity` report counts fully converted, partly converted, and untouched selected definitions.
+The proposal's `fidelity` report counts fully converted, partly converted, blocked, and untouched selected definitions.
 A fully converted definition contains converted places and no remaining recognized variable patterns in its main text.
-A partly converted definition contains both. An untouched definition contains no converted places.
+A partly converted definition contains both.
+
+A blocked definition contains no converted places but has a recognized own-place candidate, even inside protected literal text.
+Candidates use `x_N` or `x_{N}` within the supported range, outside longer ASCII identifiers. They need not pass the conversion guards.
+An untouched definition has neither converted places nor recognized own-place candidates. Component-only patterns remain in this category.
+
 The report also counts unconverted patterns, named definitions, and selected rafsi claims by source field.
 These counts describe the selected output, including publications reused from an earlier extraction.
 A routine repeat import does not rewrite old signed bodies to apply new software.

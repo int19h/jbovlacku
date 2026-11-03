@@ -133,7 +133,10 @@ Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports readin
 The importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. Repeat imports reuse signed records and retain source evidence.
 It converts supported explicit x-place forms and preserves unknown fields as unknown. It does not infer individual votes.
 The versioned conversion preserves exact source text, records Unicode scalar spans, and declares observed indices without a fixed arity claim.
+
 Finished delimited places can convert before prose dashes and inside gloss brackets. The surrounding punctuation stays text.
+They also accept adjacent Han, Hiragana, Katakana, and Hangul characters. Other scripts retain their letter boundaries.
+
 Quotations, component variables, notes, and etymology remain literal.
 Mathematical expressions stay literal when the [finite operator guards](docs/format.md#placeholder-conversion-during-import) recognize them.
 New SQL and REST publications omit derived vectors and caches with explicit source limitations.

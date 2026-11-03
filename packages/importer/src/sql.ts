@@ -136,7 +136,7 @@ const omittedColumn = (key: string) =>
   key === "embedding" ||
   key === "metadata" ||
   key === "canonical_word" ||
-  key.startsWith("cached_");
+  (key.startsWith("cached_") && key !== "cached_username");
 function retainedRow(row: Row): Row {
   return Object.fromEntries(
     Object.entries(row).filter(([key]) => !omittedColumn(key)),
@@ -782,7 +782,7 @@ function extract(
     "Official word-level and experimental definition-level rafsi produce separate unreviewed imported claims.",
     "The source contains no rights statement. Rights remain unknown.",
     "The exact source remains at the verified external archive path. Keep that file and the original manifest available.",
-    "Derived source columns are excluded from published rows: embedding, metadata (including processed_text), cached_*, canonical_word, and cached_decomposition. Their exact values remain in the source archive. Cached usernames supply display evidence only. Numeric author evidence comes from definitions.userid.",
+    "Derived source columns are excluded from published rows: embedding, metadata (including processed_text), cached_* except cached_username, canonical_word, and cached_decomposition. Their exact values remain in the source archive. The cached_username source field supplies display evidence only. Numeric author evidence comes from definitions.userid.",
     ...manifest.notes,
   ];
   if (mappedKind !== kind)
@@ -875,18 +875,6 @@ function extract(
       locator,
       original: {
         definitions: retainedRow(row),
-        ...(username
-          ? {
-              username_lookup: {
-                username,
-                evidence: {
-                  kind: "username-lookup",
-                  source: { ...source, locator: `${locator}/cached_username` },
-                },
-                purpose: "display-only",
-              },
-            }
-          : {}),
         valsi: retainedRow(word),
         valsitypes: type,
         languages: lang,

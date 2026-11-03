@@ -71,6 +71,18 @@ test("equations, component variables, quotations, nested relations and malformed
     "lu x_1 li'u",
     "lo'u x_2 le'u",
     "ax_1",
+    "a$x_1$",
+    "$x_1$b",
+    "$x_5$th",
+    "$x_2$s",
+    "1$x_1$0**-15",
+    "１$x_1$",
+    "α$x_1$",
+    "a\u0301$x_1$",
+    "$x_1$\u0301",
+    "$x_1$б",
+    "ع$x_1$",
+    "漢x_1",
     "x_1a",
     "a\u0301x_1",
     "x_1\u0301",
@@ -93,6 +105,9 @@ test("equations, component variables, quotations, nested relations and malformed
     "la'o gy. x_1 gy.",
     "zo x_1",
     "lu x_1",
+    "lu.$x_1$ li'u",
+    "lo'u.$x_1$ le'u",
+    "zo.$x_1$",
     "lo'u x_1",
     "$$x_1$",
     "$x_1$$",
@@ -110,7 +125,37 @@ test("equations, component variables, quotations, nested relations and malformed
   }
 });
 
-test("real capture gloss dashes and brackets retain every explicit place and source span", () => {
+test("finished places next to CJK scripts and punctuation need no spaces", () => {
+  for (const char of [
+    "漢",
+    "𠀀",
+    "あ",
+    "ア",
+    "ー",
+    "가",
+    "。",
+    "、",
+    "（",
+    "）",
+  ]) {
+    const source = `${char}$x_1$${char}`;
+    const result = convertPlaces(source, "/definition");
+    assert.deepEqual(result.text, [[char, 1, char]], source);
+    assert.equal(result.conversion.mappings[0].start, 1, source);
+    assert.equal(result.conversion.mappings[0].end, 6, source);
+  }
+});
+
+test("apostrophe cmavo do not open lu quotations", () => {
+  for (const cmavo of ["lu'e", "lu'a", "lu'o"]) {
+    const source = `${cmavo} $x_3$ via $x_4$`;
+    const result = convertPlaces(source, "/definition");
+    assert.deepEqual(result.text, [[`${cmavo} `, 3, " via ", 4]]);
+    assert.deepEqual(result.unresolved, {});
+  }
+});
+
+test("real capture places retain expected frames and exact source spans", () => {
   const capture = JSON.parse(
     readFileSync(
       new URL("../fixtures/place-prose-capture.json", import.meta.url),

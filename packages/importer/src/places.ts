@@ -1,9 +1,18 @@
-export const PLACE_CONVERSION_VERSION = "explicit-x-places-v4";
+export const PLACE_CONVERSION_VERSION = "explicit-x-places-v5";
 export interface PlaceMapping {
   field: string;
   start: number;
   end: number;
   place: number;
+}
+
+/** Recognized own-place candidates, including forms in protected literal text. */
+export function explicitPlaceCount(source: string): number {
+  return [
+    ...source.matchAll(
+      /(?<![a-zA-Z0-9_])x_(?:([1-9][0-9]{0,4})(?![a-zA-Z0-9_])|\{([1-9][0-9]{0,4})\})/g,
+    ),
+  ].filter((match) => Number(match[1] ?? match[2]) <= 65535).length;
 }
 
 /** This recipe annotates only the definition's own, explicit x-place forms. */
@@ -14,7 +23,7 @@ export function convertPlaces(source: string | null, field: string) {
   const unresolved: Record<string, number> = {};
   // Treat each delimited expression as one unit. Never rewrite part of an equation.
   const units =
-    /(`{2,})[\s\S]*?(?:\1|''|$)|`[^`]*(?:`|$)|"(?:\\.|[^"\\])*(?:"|$)|“[^”]*(?:”|$)|«[^»]*(?:»|$)|(?<![a-zA-Z])'[^'\n]+'(?![a-zA-Z])|\b(?:zoi|la'o)\b[\s\S]*$|\bzo\s+\S+|\blu\b[\s\S]*?(?:\bli'u\b|$)|\blo'u\b[\s\S]*?(?:\ble'u\b|$)|\$\$[\s\S]*?(?:\$\$|$)|\$[^$]*(?:\$|$)|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\\[a-zA-Z]+(?:\{[^{}]*\})?|(?<![a-zA-Z0-9])[a-zA-Z][a-zA-Z0-9]*_(?:\{[^{}]*\}|[a-zA-Z0-9]+)|\bx[0-9]+\b|\$[\s\S]*$|\\[([][\s\S]*$/g;
+    /(`{2,})[\s\S]*?(?:\1|''|$)|`[^`]*(?:`|$)|"(?:\\.|[^"\\])*(?:"|$)|“[^”]*(?:”|$)|«[^»]*(?:»|$)|(?<![a-zA-Z])'[^'\n]+'(?![a-zA-Z])|(?<![a-zA-Z0-9_'])(?:zoi|la'o)(?![a-zA-Z0-9_'])[\s\S]*$|(?<![a-zA-Z0-9_'])zo(?![a-zA-Z0-9_'])(?:\s|\.)+\S+|(?<![a-zA-Z0-9_'])lu(?![a-zA-Z0-9_'])[\s\S]*?(?:(?<![a-zA-Z0-9_'])li'u(?![a-zA-Z0-9_'])|$)|(?<![a-zA-Z0-9_'])lo'u(?![a-zA-Z0-9_'])[\s\S]*?(?:(?<![a-zA-Z0-9_'])le'u(?![a-zA-Z0-9_'])|$)|\$\$[\s\S]*?(?:\$\$|$)|\$[^$]*(?:\$|$)|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\\[a-zA-Z]+(?:\{[^{}]*\})?|(?<![a-zA-Z0-9])[a-zA-Z][a-zA-Z0-9]*_(?:\{[^{}]*\}|[a-zA-Z0-9]+)|\bx[0-9]+\b|\$[\s\S]*$|\\[([][\s\S]*$/g;
   let end = 0;
   let scalarEnd = 0;
   const nesting: string[] = [];
@@ -57,9 +66,18 @@ export function convertPlaces(source: string | null, field: string) {
     const delimited = stripped !== raw;
     const before = text.slice(0, start);
     const after = text.slice(start + raw.length);
+    const left = [...before.slice(-2)].at(-1) ?? "";
+    const right = [...after.slice(0, 2)][0] ?? "";
+    const cjk = (char: string) =>
+      delimited &&
+      /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}]/u.test(
+        char,
+      );
     const boundary =
-      !/[\p{L}\p{M}\p{N}_\\{]$/u.test(before.slice(-2)) &&
-      !/^[\p{L}\p{M}\p{N}_{}^]/u.test(after.slice(0, 2));
+      !/[\p{N}_\\{]/u.test(left) &&
+      !/[\p{N}_{}^]/u.test(right) &&
+      (!/[\p{L}\p{M}]/u.test(left) || cjk(left)) &&
+      (!/[\p{L}\p{M}]/u.test(right) || cjk(right));
     const malformedNeighbor =
       !raw.startsWith("$") &&
       !raw.startsWith("\\(") &&

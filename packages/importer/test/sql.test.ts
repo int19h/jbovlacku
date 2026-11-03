@@ -686,7 +686,7 @@ function withSyntheticRelatedRows(bytes: Buffer): Buffer {
   );
 }
 
-test("r2 F1 derived vectors, cache columns, metadata, and computed word values stay only in the archive", async () => {
+test("derived columns stay in the archive except captured usernames", async () => {
   const input = await setup();
   await importSqlSnapshot(input);
   for (const carrier of (await carriers(input.output)).filter(
@@ -704,7 +704,7 @@ test("r2 F1 derived vectors, cache columns, metadata, and computed word values s
             key !== "embedding" &&
             key !== "metadata" &&
             key !== "canonical_word" &&
-            !key.startsWith("cached_"),
+            (!key.startsWith("cached_") || key === "cached_username"),
         ),
         Object.keys(row).join(","),
       );
@@ -1629,10 +1629,22 @@ test("fidelity import retains source spans, cached display names, original dates
     body.legacy.attribution.author_account.evidence.kind,
     "source-id",
   );
-  assert.equal(body.legacy.original.username_lookup.purpose, "display-only");
+  assert.equal(body.legacy.original.username_lookup, undefined);
   assert.equal(
-    body.legacy.original.username_lookup.evidence.kind,
-    "username-lookup",
+    body.legacy.original.definitions.cached_username,
+    "officialdata",
+  );
+  assert.ok(
+    body.sources.some(
+      (source: any) =>
+        source.label === "Cached Lensisku username for display only" &&
+        source.locator.endsWith("/cached_username"),
+    ),
+  );
+  assert.ok(
+    body.legacy.limitations.some((text: string) =>
+      text.includes("display evidence only"),
+    ),
   );
   assert.equal(body.legacy.attribution.dates.time, "1046655416");
   const claims = records.filter(
