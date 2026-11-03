@@ -33,6 +33,8 @@ import { appendReadRetry } from "./readretry.ts";
 import {
   meaningSearchDataScope as dataScope,
   meaningSearchTask as task,
+  meaningSearchConsented,
+  meaningSearchScope,
   onMeaningSearchOff,
   saveMeaningSearchOff,
 } from "./meaning-privacy.ts";
@@ -158,13 +160,7 @@ export async function meaningSearchGroup(
         ? savedMeaning(query, language)
         : null;
     const consented = (provider: string, scope: string) =>
-      app.session.preferences.aiConsents.some(
-        (consent) =>
-          consent.provider === provider &&
-          consent.scope === scope &&
-          consent.tasks.includes(task) &&
-          dataScope.every((field) => consent.dataScope.includes(field)),
-      );
+      meaningSearchConsented(app, provider, scope);
     if (saved && !consented(saved.provider, saved.scope)) saved = null;
     let source: SemanticContext;
     let profile: EmbeddingProfile;
@@ -196,11 +192,7 @@ export async function meaningSearchGroup(
       if (!live() || !available) return;
       profile = available;
       provider = profile.label;
-      scope = JSON.stringify({
-        server: capabilities.server_id,
-        profile: profile.id,
-        task: "search-meaning-v1",
-      });
+      scope = meaningSearchScope(capabilities.server_id, profile.id);
       server = `${selfPeer.label} (${capabilities.server_id})`;
     }
     if (!live()) return;
@@ -484,11 +476,11 @@ export async function meaningSearchGroup(
             navigate(location.pathname + location.search, { replace: true });
         } catch (error) {
           const failure = `The saved meaning search choice is unchanged. ${describe(error)}`;
-          app.announce(failure);
-          if (live() && current === consentVersion) {
+          if (!live()) return;
+          if (current === consentVersion) {
             setStatus(failure);
             expansion.changed();
-          }
+          } else app.announce(failure);
         }
       });
       consentActions = { accept, off: turnOff };

@@ -50,17 +50,23 @@ export async function saveMeaningSearchOff(app: App, context: RenderContext) {
   }
 }
 
-export function meaningSearchEnabled(app: App): boolean {
-  return (
-    app.session.preferences.useAiAssistance !== false &&
-    app.session.preferences.useMeaningSearch !== false &&
-    app.session.preferences.aiConsents.some(
-      (consent) =>
-        consent.tasks.includes(meaningSearchTask) &&
-        meaningSearchDataScope.every((field) =>
-          consent.dataScope.includes(field),
-        ),
-    )
+export function meaningSearchScope(server: string, profile: string): string {
+  return JSON.stringify({ server, profile, task: "search-meaning-v1" });
+}
+
+export function meaningSearchConsented(
+  app: App,
+  provider: string,
+  scope: string,
+): boolean {
+  return app.session.preferences.aiConsents.some(
+    (consent) =>
+      consent.provider === provider &&
+      consent.scope === scope &&
+      consent.tasks.includes(meaningSearchTask) &&
+      meaningSearchDataScope.every((field) =>
+        consent.dataScope.includes(field),
+      ),
   );
 }
 
@@ -75,12 +81,9 @@ export function meaningPrivacy(
   let saving = false;
   let available = false;
   let discovering = false;
+  let current: { provider: string; scope: string } | null = null;
   const discover = async () => {
-    if (
-      discovering ||
-      app.session.preferences.useAiAssistance === false ||
-      app.session.preferences.useMeaningSearch !== false
-    )
+    if (discovering || app.session.preferences.useAiAssistance === false)
       return;
     discovering = true;
     try {
@@ -88,11 +91,18 @@ export function meaningPrivacy(
       const capabilities = await getCapabilities(options);
       if (!context.live() || !capabilities.features.semantic_search) return;
       const profiles = await embeddingProfiles(null, language, options);
-      available = profiles.some(
+      const profile = profiles.find(
         (profile) =>
           profile.query_available &&
           capabilities.embedding_profiles.includes(profile.id),
       );
+      available = Boolean(profile);
+      current = profile
+        ? {
+            provider: profile.label,
+            scope: meaningSearchScope(capabilities.server_id, profile.id),
+          }
+        : null;
     } catch {
       available = false;
     } finally {
@@ -104,10 +114,9 @@ export function meaningPrivacy(
     node.hidden = true;
     if (app.session.preferences.useAiAssistance === false) return;
     const enabled = app.session.preferences.useMeaningSearch !== false;
-    const remembered = app.session.preferences.aiConsents.some((consent) =>
-      consent.tasks.includes(meaningSearchTask),
-    );
-    if (!enabled || meaningSearchEnabled(app) || remembered) {
+    const applicable =
+      current && meaningSearchConsented(app, current.provider, current.scope);
+    if (!enabled || applicable) {
       node.hidden = false;
       node.append(
         el("span", { text: `Meaning search ${enabled ? "on" : "off"}` }),
@@ -134,6 +143,7 @@ export function meaningPrivacy(
                       replace: true,
                     });
                 } catch (error) {
+                  if (!context.live()) return;
                   failure = `The saved meaning search choice is unchanged. This browser did not save the change. ${describe(error)}`;
                   app.announce(failure);
                 } finally {
