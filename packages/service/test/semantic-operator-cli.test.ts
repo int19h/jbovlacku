@@ -287,6 +287,24 @@ test("operator prepare reuses an existing profile across views and rejects unsaf
         ),
         (failure: any) => failure.stdout.includes("incompatible"),
       );
+      await assert.rejects(
+        cli(
+          directory,
+          [
+            "--command",
+            "prepare",
+            "--job",
+            prepared.generation.id,
+            "--profile",
+            fresh[0].generation.profile,
+          ],
+          env,
+        ),
+        (failure: any) =>
+          failure.stdout.includes(
+            "The selected profile does not match the saved job.",
+          ),
+      );
       await vectors.suspend(selected, "semantic_model_drift");
       await assert.rejects(
         cli(directory, ["--command", "prepare", "--profile", selected], env),

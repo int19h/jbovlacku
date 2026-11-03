@@ -81,10 +81,9 @@ async function withSemanticService<T>(
       ? await vectors.storedProfile(selectedProfile)
       : createQwenProfile();
   if (selectedProfile) {
-    if (
-      profileId(profile) !== selectedProfile ||
-      profileId(profile) !== profileId(createQwenProfile(profile.epoch))
-    )
+    if (profileId(profile) !== selectedProfile)
+      throw new Error("The selected profile does not match the saved job.");
+    if (profileId(profile) !== profileId(createQwenProfile(profile.epoch)))
       throw new Error(
         "The stored profile is incompatible with the current embedding adapter.",
       );
