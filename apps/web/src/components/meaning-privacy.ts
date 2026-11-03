@@ -120,6 +120,8 @@ export function meaningPrivacy(
     }
   };
   const refresh = (retryDiscovery = true) => {
+    const restoreFocus =
+      node.querySelector("button") === document.activeElement;
     node.replaceChildren();
     node.hidden = true;
     if (app.session.preferences.useAiAssistance === false) return;
@@ -150,7 +152,11 @@ export function meaningPrivacy(
               enabled ? "Turn off" : "Turn on",
               async () => {
                 if (saving) return;
-                const restoreFocus = node.contains(document.activeElement);
+                let restoreFocus = document.activeElement === off;
+                const movedFocus = (event: FocusEvent) => {
+                  if (event.target !== off) restoreFocus = false;
+                };
+                document.addEventListener("focusin", movedFocus);
                 saving = true;
                 off.disabled = true;
                 try {
@@ -168,6 +174,7 @@ export function meaningPrivacy(
                   failure = `The saved meaning search choice is unchanged. This browser did not save the change. ${describe(error)}`;
                   app.announce(failure);
                 } finally {
+                  document.removeEventListener("focusin", movedFocus);
                   saving = false;
                   if (context.live() && node.isConnected) {
                     refresh();
@@ -189,6 +196,7 @@ export function meaningPrivacy(
         );
     }
     if (failure) node.append(p(failure, "notice"));
+    if (restoreFocus) node.querySelector<HTMLElement>("button")?.focus();
     if (retryDiscovery) void discover();
   };
   refresh();

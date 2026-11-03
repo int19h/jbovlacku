@@ -159,7 +159,8 @@ When remembered consent matches the current provider, scope, task, and fields, t
 Before the reader makes a meaning-search choice, the line is absent.
 If the current provider is known but saved consent does not match, the line reads “Meaning search needs consent · Turn off”. This keeps the lasting off action available before renewed consent.
 With saved consent and AI assistance on, an unknown or unavailable provider keeps the neutral “Meaning search · Turn off” line.
-A later refresh retries failed discovery.
+A later refresh retries failed discovery. Discovery updates keep focus on the off control if it still holds focus.
+After a failed save, focus stays with the off control unless the reader chooses another element.
 The Turn off control keeps the accessible name “Turn off meaning search”.
 That action saves a lasting search preference, separate from provider consent and the general AI preference.
 While it is off, new queries and reloads show no meaning consent or results and send no meaning request.

@@ -2679,3 +2679,116 @@ test("stored meaning consent on a server without meaning search keeps a neutral 
   await expect(privacy).toContainText("Meaning search off");
   expect(state.calls).toHaveLength(1);
 });
+
+async function holdPrivacyProfile(page: Page) {
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let waiting = 0;
+  await page.route("**/api/v1/embedding-profiles**", async (route) => {
+    if (new URL(route.request().url()).searchParams.has("snapshot"))
+      return route.fallback();
+    waiting++;
+    await barrier;
+    return route.fallback();
+  });
+  return { release, waiting: () => waiting };
+}
+
+for (const move of [false, true])
+  test(`privacy discovery completion ${move ? "keeps the reader's new focus" : "keeps Turn off focused and Enter usable"}`, async ({
+    page,
+  }) => {
+    await meaningService(page);
+    await page.goto("/search?q=book&lang=en");
+    const meaning = group(page, "Similar in meaning");
+    await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+    await expect(page.locator(".meaning-privacy")).toContainText(
+      "Meaning search on",
+    );
+    const held = await holdPrivacyProfile(page);
+    try {
+      await page.evaluate(async () => {
+        const { navigate } = await import(String("/src/app/router.ts"));
+        navigate("/search?q=travel&lang=en");
+      });
+      await expect(meaning.locator("article")).toHaveCount(1);
+      await expect.poll(held.waiting).toBeGreaterThan(0);
+      const privacy = page.locator(".meaning-privacy");
+      const off = privacy.getByRole("button", {
+        name: "Turn off meaning search",
+        exact: true,
+      });
+      const search = page.getByRole("searchbox", {
+        name: "Search words and meanings",
+        exact: true,
+      });
+      await holdMeaningWrites(page);
+      await off.focus();
+      if (move) await search.focus();
+      held.release();
+      await expect(privacy).toContainText("Meaning search on");
+      await expect(move ? search : off).toBeFocused();
+      if (move) await off.focus();
+      await page.keyboard.press("Enter");
+      await expect.poll(() => meaningWrites(page)).toEqual(["off"]);
+      await releaseMeaningWrite(page, 0);
+      await expect(privacy).toContainText("Meaning search off");
+    } finally {
+      held.release();
+    }
+  });
+
+for (const move of ["none", "during save", "during discovery"] as const)
+  test(`privacy failed off save and later discovery keep focus with movement ${move}`, async ({
+    page,
+  }) => {
+    await meaningService(page);
+    await page.goto("/search?q=book&lang=en");
+    const meaning = group(page, "Similar in meaning");
+    await meaning.getByRole("button", { name: "Allow meaning search" }).click();
+    await expect(meaning.locator("article")).toHaveCount(1);
+    const privacy = page.locator(".meaning-privacy");
+    await expect(privacy).toContainText("Meaning search on");
+    const held = await holdPrivacyProfile(page);
+    try {
+      await holdMeaningWrites(page);
+      const off = privacy.getByRole("button", {
+        name: "Turn off meaning search",
+        exact: true,
+      });
+      const search = page.getByRole("searchbox", {
+        name: "Search words and meanings",
+        exact: true,
+      });
+      await off.focus();
+      await page.keyboard.press("Enter");
+      await expect.poll(() => meaningWrites(page)).toEqual(["off"]);
+      if (move === "during save") await search.focus();
+      await releaseMeaningWrite(page, 0, true);
+      await expect(privacy).toContainText(
+        "Synthetic delayed preference failure.",
+      );
+      await expect.poll(held.waiting).toBeGreaterThan(0);
+      await expect(move === "during save" ? search : off).toBeFocused();
+      if (move === "during discovery") await search.focus();
+      const previousStatus = await privacy
+        .locator("span")
+        .first()
+        .elementHandle();
+      held.release();
+      await expect
+        .poll(() => previousStatus!.evaluate((node) => node.isConnected))
+        .toBe(false);
+      await expect(privacy).toContainText("Meaning search on");
+      await expect(move === "none" ? off : search).toBeFocused();
+      if (move !== "none") await off.focus();
+      await page.keyboard.press("Enter");
+      await expect.poll(() => meaningWrites(page)).toEqual(["off", "off"]);
+      await releaseMeaningWrite(page, 1);
+      await expect(privacy).toContainText("Meaning search off");
+    } finally {
+      held.release();
+    }
+  });

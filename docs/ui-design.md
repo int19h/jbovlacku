@@ -167,6 +167,7 @@ An older consent that does not match keeps “Meaning search needs consent · Tu
 Local mode keeps word and definition searches in the browser, while consented meaning search uses the server.
 The off choice persists separately from consent and other AI choices.
 After an explicit off choice, the line reads “Meaning search off · Turn on” when AI and a query profile are available.
+Discovery updates preserve focus on the off control. A failed save and its later discovery keep that focus unless the reader moves elsewhere.
 The controls keep the accessible names “Turn off meaning search” and “Turn on meaning search”.
 
 Each row has three content lines, separated from the next row by a thin rule and 16px vertical padding.
