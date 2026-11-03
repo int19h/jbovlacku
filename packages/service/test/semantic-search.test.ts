@@ -3142,39 +3142,46 @@ test("completion repeats direct coverage when its SQLite revision changes betwee
     }
   }));
 
-test("a completed retry keeps its completed state when direct coverage fails", async () =>
-  fixture(async ({ store, scanner }) => {
+test("a completed repair keeps its completed state when direct coverage fails", async () =>
+  fixture(async ({ store, scanner, path, docs, ctx }) => {
     const { BackgroundSemanticIndexer } =
       await import("../src/semantic/background.ts");
-    const docs = rows(5);
-    const ctx = context(docs, hash(19997));
-    const { generation } = await failedBackgroundGeneration(
-      store,
-      docs,
-      ctx,
-      "failed",
-    );
+    const sql = new DatabaseSync(path);
+    sql.prepare("UPDATE semantic_associations SET extraction_version=2").run();
+    const identity = profileId(profile);
+    const old = await store.current(identity, ctx.evaluation.selected_view);
     const provider = recordingEmbedder();
     const engine = new SemanticSearch(
-      { profile: generation.profile, store, cache: store.queryCache, scanner },
+      { profile: identity, store, cache: store.queryCache, scanner },
       provider.assistance,
       true,
     );
     const background = new BackgroundSemanticIndexer({
       store,
-      profile: generation.profile,
-      view: generation.view,
+      profile: identity,
+      view: ctx.evaluation.selected_view,
       assistance: provider.assistance,
+      needed: async () =>
+        (await engine.profiles(ctx)).some((row) => row.pending > 0),
       source: async () => ({
-        context: { ...generation, eligible: docs.length },
-        page: async () => {
-          throw new Error("No page is needed");
+        context: {
+          snapshot: ctx.snapshot.snapshot,
+          view: ctx.evaluation.selected_view,
+          profile: identity,
+          eligible: docs.length,
         },
+        page: async () => ({
+          documents: docs,
+          next: docs.at(-1)!.event,
+          done: true,
+        }),
       }),
       bindings: async () => {
         throw new Error("Current bindings are unavailable");
       },
-      probe: (selected, profile) => engine.probe(selected, profile),
+      probe: async () => {
+        throw new Error("Cached vectors need no probe");
+      },
       report: (error) => {
         throw error;
       },
@@ -3182,16 +3189,23 @@ test("a completed retry keeps its completed state when direct coverage fails", a
     });
     try {
       await background.cycle();
-      const completed = await store.generation(generation.id, true);
+      const current = (await store.current(
+        identity,
+        ctx.evaluation.selected_view,
+      ))!;
+      assert.notEqual(current, old);
+      const completed = await store.generation(current, true);
       assert.equal(completed.state, "completed");
       assert.equal(completed.background_recovery, undefined);
       assert.equal(
-        (await store.backgroundWait(generation.profile, generation.view))!
+        (await store.backgroundWait(identity, ctx.evaluation.selected_view))!
           .reason,
         "background_index_failed",
       );
+      assert.deepEqual(provider.calls, []);
     } finally {
       await background.close();
+      sql.close();
     }
   }));
 
@@ -3262,6 +3276,168 @@ for (const reason of ["semantic_rebuild_pending", "embedding_busy"])
           assert.deepEqual(provider.calls, []);
           assert.deepEqual(await store.backgroundWait(identity, view), wait);
         }
+      } finally {
+        await background.close();
+      }
+    }));
+
+for (const cooldown of [false, true])
+  test(`a stale due-input resume leaves the next cycle free to rebuild (cooldown: ${cooldown})`, async (t) =>
+    fixture(async ({ store, scanner }) => {
+      const { BackgroundSemanticIndexer } =
+        await import("../src/semantic/background.ts");
+      let now = Date.now();
+      t.mock.method(Date, "now", () => now);
+      const docs = rows(2).map((row, i) => {
+        const input = utf8(`Stale retry definition ${i}`);
+        return { ...row, input, input_hash: inputHash(input) };
+      });
+      const ctx = context(docs, hash(20001));
+      const identity = profileId(profile);
+      const view = ctx.evaluation.selected_view;
+      const generation = await store.create(
+        {
+          snapshot: ctx.snapshot.snapshot,
+          view,
+          profile: identity,
+          eligible: docs.length,
+        },
+        profile,
+      );
+      await store.stage(generation.id, null, {
+        documents: docs.map((row) => ({ ...row, extraction_version: 2 })),
+        next: docs.at(-1)!.event,
+        done: true,
+      });
+      await store.setBackgroundGeneration(generation.id);
+      await store.start(generation.id);
+      const batch = (await store.claim(generation.id))!;
+      await store.fail(batch.id, "embedding_provider");
+      await store.pause(generation.id, "embedding_provider");
+      await store.holdBackgroundInputs(
+        batch,
+        {
+          next_attempt: now,
+          not_before: 0,
+          sent_attempts: 4,
+          refusals: 0,
+          exhausted: true,
+          reason: "embedding_provider",
+        },
+        false,
+        now,
+      );
+      await store.start(generation.id);
+      await store.finish(generation.id);
+      assert.equal((await store.generation(generation.id)).state, "completed");
+      assert(
+        await store.publish(generation.id, await store.current(identity, view)),
+      );
+      const provider = recordingEmbedder();
+      const engine = new SemanticSearch(
+        { profile: identity, store, cache: store.queryCache, scanner },
+        provider.assistance,
+        true,
+      );
+      let ordinary = false;
+      let neededReads = 0;
+      let bindingReads = 0;
+      let pages = 0;
+      const options = {
+        store,
+        profile: identity,
+        view,
+        assistance: provider.assistance,
+        now: () => now,
+        needed: async () => {
+          assert.equal(
+            ordinary,
+            true,
+            "Retry cycles must skip shared coverage",
+          );
+          neededReads++;
+          return (await engine.profiles(ctx)).some((row) => row.pending > 0);
+        },
+        bindings: async () => {
+          bindingReads++;
+          return expectedAssociations(ctx);
+        },
+        source: async () => ({
+          context: {
+            snapshot: ctx.snapshot.snapshot,
+            view,
+            profile: identity,
+            eligible: docs.length,
+          },
+          page: async () => {
+            pages++;
+            return { documents: docs, next: docs.at(-1)!.event, done: true };
+          },
+        }),
+        probe: async () => {
+          throw new Error(
+            "The initial retry has no reference vectors and the rebuild reuses its vectors",
+          );
+        },
+        report: (error: unknown) => {
+          throw error;
+        },
+        status: () => {},
+      };
+      let background = new BackgroundSemanticIndexer(options);
+      try {
+        if (cooldown) await store.defer(identity, now + 1000, now);
+        await background.cycle();
+        if (cooldown) {
+          assert.equal((await store.generation(generation.id)).state, "paused");
+          assert.deepEqual(provider.calls, []);
+          assert.equal(await store.backgroundWait(identity, view), null);
+          now += 5000;
+          await background.close();
+          background = new BackgroundSemanticIndexer(options);
+          await background.cycle();
+        }
+        assert.equal(
+          (await store.generation(generation.id)).state,
+          "completed",
+        );
+        assert.equal(await store.current(identity, view), generation.id);
+        assert.equal(neededReads, 0);
+        assert.equal(bindingReads, 0);
+        assert.equal(pages, 0);
+        assert.equal(await store.backgroundWait(identity, view), null);
+        assert.deepEqual(provider.calls, ["index", "index"]);
+        assert.deepEqual(
+          (await store.coverageFor(generation.id, expectedAssociations(ctx)))
+            .all,
+          { eligible: 2, indexed: 0, pending: 2, failed: 0 },
+        );
+        ordinary = true;
+        now += 5000;
+        await background.cycle();
+        const current = (await store.current(identity, view))!;
+        assert.notEqual(current, generation.id);
+        assert.equal(
+          (await store.generation(current)).snapshot,
+          ctx.snapshot.snapshot,
+        );
+        assert.equal((await store.generation(current)).state, "completed");
+        assert(
+          (await store.page(current)).rows.every(
+            (row) => row.extraction_version === semanticProjectionVersion(),
+          ),
+        );
+        assert.deepEqual(await store.coverage(current), {
+          eligible: 2,
+          indexed: 2,
+          pending: 0,
+          failed: 0,
+        });
+        assert.equal(neededReads, 1);
+        assert.equal(bindingReads, 1);
+        assert.equal(pages, 1);
+        assert.equal(await store.backgroundWait(identity, view), null);
+        assert.deepEqual(provider.calls, ["index", "index"]);
       } finally {
         await background.close();
       }

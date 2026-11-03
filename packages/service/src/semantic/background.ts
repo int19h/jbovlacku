@@ -198,7 +198,7 @@ export class BackgroundSemanticIndexer {
       if (job.state === "completed") {
         if (!job.background_inputs)
           await store.setBackgroundRecovery(job.id, null);
-        if (this.options.bindings) {
+        if (needed && this.options.bindings) {
           const latest = await this.options.source(profile);
           if (
             latest.context.snapshot === job.snapshot &&

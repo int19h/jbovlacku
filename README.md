@@ -357,6 +357,8 @@ Background indexing rebuilds stale associations after an extraction change, even
 After a completed repair, the server reads coverage directly and repeats the read if its storage revision changes.
 If current coverage still contains pending targets, the server saves a one-hour repair wait for that snapshot.
 A newer snapshot or due held inputs bypass this repair wait on the next cycle.
+The server saves a repair wait only when current coverage requests a repair during that cycle.
+A completed due-input retry leaves the next cycle free to rebuild stale extraction bindings.
 Provider cooldowns, budget windows, and other failure waits keep their own deadlines.
 
 The preceding generation serves still-valid hits until the replacement publishes. Unchanged input bytes reuse stored vectors without another embedding call.

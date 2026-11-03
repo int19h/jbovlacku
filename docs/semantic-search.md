@@ -239,6 +239,8 @@ After completion, the server calculates coverage directly from current bindings 
 If the storage revision changes during that calculation, it repeats the calculation before deciding on a wait.
 If pending targets remain, the server saves a one-hour repair wait bound to that snapshot and writes a `semantic_index_status` message.
 A newer snapshot or due held inputs bypass this repair wait on the next cycle.
+The server saves a repair wait only when current coverage requests a repair during that cycle.
+A completed due-input retry leaves the next cycle free to rebuild stale extraction bindings.
 
 Provider cooldowns, budget windows, and other failure waits keep their own deadlines.
 The server discards older repair waits without a snapshot binding.
