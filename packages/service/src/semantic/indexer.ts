@@ -199,7 +199,7 @@ export class SemanticIndexer {
         };
       }
       await this.store.start(id);
-      for (let round = 0; ; round++) {
+      for (let round = 0; ; ) {
         let halted = false;
         let stopCode: string | undefined;
         const retries: string[] = [];
@@ -308,6 +308,12 @@ export class SemanticIndexer {
                 );
               }
               if (rateLimited) retries.push(batch.id);
+              else if (
+                options.operator &&
+                options.adaptive &&
+                code === "embedding_timeout"
+              )
+                stopCode ??= code;
               else stopCode = code;
               if (
                 rateLimited ||
@@ -378,6 +384,26 @@ export class SemanticIndexer {
         }
         if (workerRejected) throw workerFailure;
         if (
+          options.operator &&
+          options.adaptive &&
+          stopCode === "embedding_timeout" &&
+          claims < maximum &&
+          !options.signal?.aborted
+        ) {
+          const generation = await this.store.generation(id);
+          if (
+            generation.state === "paused" &&
+            generation.error === "embedding_timeout" &&
+            !(await this.store.compatibility(identity)) &&
+            (await waitForCooldown(0, 0))
+          ) {
+            // Failed batches keep their input ownership until an explicit retry selects them.
+            // Do not select the timeout batch for retry when the next round starts.
+            await this.store.start(id);
+            continue;
+          }
+        }
+        if (
           options.automaticRetries === false ||
           !retries.length ||
           stopCode ||
@@ -399,6 +425,7 @@ export class SemanticIndexer {
         }
         if (options.signal?.aborted) break;
         await this.store.start(id);
+        round++;
       }
       await this.store.finish(id);
       const generation = await this.store.generation(id);

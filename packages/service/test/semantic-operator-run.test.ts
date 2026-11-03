@@ -242,12 +242,21 @@ test("adaptive rate limits halve concurrency and successful batches restore it",
     assert.equal(retry.state, "completed");
   }));
 
-test("timeout lowers concurrency without automatically replaying an ambiguous batch", () =>
+test("adaptive timeout continues fresh inputs at a lower cap without replay", () =>
   fixture(30, async (store, id) => {
     const events: IndexConcurrencyChange[] = [];
+    let active = 0;
+    let continued = 0;
     const embedder = provider(async (_inputs, call) => {
       if (call === 1)
         throw new AssistanceError(504, "embedding_timeout", "Timed out.");
+      active++;
+      if (call > 8) {
+        continued++;
+        assert(active <= events.at(-1)!.concurrency);
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+      active--;
     });
     const indexer = new SemanticIndexer(store, embedder);
     const options = {
@@ -259,20 +268,37 @@ test("timeout lowers concurrency without automatically replaying an ambiguous ba
         events.push(event),
     };
     const result = await indexer.run(id, options);
-    assert.equal(result.generation.error, "embedding_timeout");
-    assert.deepEqual(events, [{ concurrency: 4, reason: "embedding_timeout" }]);
+    assert.equal(result.generation.state, "paused");
+    assert.equal(result.generation.error, "index_incomplete");
+    assert.equal(result.coverage.indexed, 29);
+    assert.equal(result.coverage.failed, 1);
+    assert.equal(continued, 22);
+    assert.deepEqual(events[0], {
+      concurrency: 4,
+      reason: "embedding_timeout",
+    });
     const batch = (await store.batches(id)).find(
       (batch) => batch.error === "embedding_timeout",
     )!;
     assert.equal(batch.state, "ambiguous");
+    assert.equal(batch.previous, null);
+    assert.notEqual(batch.operation, null);
     const failedInput = batch.inputs[0];
+    const calls = embedder.calls.length;
     await indexer.run(id, options);
+    assert.equal(embedder.calls.length, calls);
     assert.equal(
       embedder.calls
         .flat()
         .map(inputHash)
         .filter((hash) => hash === failedInput).length,
       1,
+    );
+    assert.equal(
+      (await store.batches(id)).filter(
+        (attempt) => attempt.previous === batch.id,
+      ).length,
+      0,
     );
     await store.retry(batch.id);
     await indexer.run(id, { operator: true, concurrency: 1, batchSize: 1 });
@@ -393,4 +419,151 @@ test("adaptive decreases stop at one and failed intents count toward the maximum
       [4, 2, 1],
     );
     assert.equal((await store.summary(id)).dispatch_intents, 4);
+  }));
+
+test("timeouts keep the existing stop behavior without operator adaptation", async () => {
+  for (const operator of [false, true])
+    await fixture(16, async (store, id) => {
+      const embedder = provider(async (_inputs, call) => {
+        if (call === 1)
+          throw new AssistanceError(504, "embedding_timeout", "Timed out.");
+      });
+      const result = await new SemanticIndexer(store, embedder).run(id, {
+        operator,
+        concurrency: 4,
+        batchSize: 1,
+      });
+      assert.equal(result.generation.error, "embedding_timeout");
+      assert.equal(embedder.calls.length, 4);
+      assert.equal(result.coverage.pending, 12);
+    });
+});
+
+test("adaptive timeout continuation ends when no fresh inputs remain", () =>
+  fixture(3, async (store, id) => {
+    const embedder = provider(async () => {
+      throw new AssistanceError(504, "embedding_timeout", "Timed out.");
+    });
+    let claims = 0;
+    const claim = store.claim.bind(store);
+    store.claim = (...args) => {
+      claims++;
+      return claim(...args);
+    };
+    const result = await new SemanticIndexer(store, embedder).run(id, {
+      operator: true,
+      adaptive: true,
+      concurrency: 1,
+      batchSize: 1,
+    });
+    assert.equal(embedder.calls.length, 3);
+    assert.equal(claims, 4);
+    assert.equal(result.generation.state, "paused");
+    assert.equal(result.generation.error, "index_incomplete");
+    assert.equal(result.coverage.failed, 3);
+    assert.equal(
+      (await store.batches(id)).filter((batch) => batch.previous !== null)
+        .length,
+      0,
+    );
+  }));
+
+test("timeout continuation respects the batch maximum and cancellation", async () => {
+  for (const cancel of [false, true])
+    await fixture(10, async (store, id) => {
+      const controller = new AbortController();
+      const embedder = provider(async (_inputs, call) => {
+        if (call === 1)
+          throw new AssistanceError(504, "embedding_timeout", "Timed out.");
+      });
+      const result = await new SemanticIndexer(store, embedder).run(id, {
+        operator: true,
+        adaptive: true,
+        concurrency: 2,
+        batchSize: 1,
+        maxBatches: cancel ? 10 : 2,
+        signal: controller.signal,
+        onFailure: () => {
+          if (cancel) controller.abort();
+        },
+      });
+      assert.equal(embedder.calls.length, 2);
+      assert.equal(result.generation.state, "paused");
+      assert.equal((await store.batches(id)).length, 2);
+    });
+});
+
+test("a busy service after a timeout pauses without replaying the pending operation", () =>
+  fixture(10, async (store, id) => {
+    const base = provider(async (_inputs, call) => {
+      if (call === 1)
+        throw new AssistanceError(504, "embedding_timeout", "Timed out.");
+    });
+    const embedder: IndexEmbedder = {
+      embeddingOperationPending: () => true,
+      async embed(...args) {
+        if (base.calls.length >= 2)
+          throw new AssistanceError(
+            429,
+            "embedding_busy",
+            "The embedding service is busy.",
+          );
+        return base.embed(...args);
+      },
+    };
+    const result = await new SemanticIndexer(store, embedder).run(id, {
+      operator: true,
+      adaptive: true,
+      concurrency: 2,
+      batchSize: 1,
+    });
+    assert.equal(result.generation.error, "embedding_busy");
+    assert.equal(base.calls.length, 2);
+    const batches = await store.batches(id);
+    assert.equal(batches.length, 3);
+    assert.equal(
+      batches.filter((batch) => batch.state === "ambiguous").length,
+      1,
+    );
+    assert.equal(
+      batches.filter(
+        (batch) => batch.state === "failed" && batch.operation === null,
+      ).length,
+      1,
+    );
+    assert.equal(batches.filter((batch) => batch.previous !== null).length, 0);
+  }));
+
+test("timeout continuation waits for a saved provider cooldown", () =>
+  fixture(2, async (store, id) => {
+    let now = 0;
+    const waits: number[] = [];
+    const embedder = provider(async (_inputs, call) => {
+      if (call === 1) {
+        const failure = new AssistanceError(
+          504,
+          "embedding_timeout",
+          "Timed out.",
+        );
+        failure.retryAfterMs = 1000;
+        throw failure;
+      }
+      assert.equal(now, 1000);
+    });
+    const result = await new SemanticIndexer(store, embedder, {
+      now: () => now,
+      async sleep(delay) {
+        waits.push(delay);
+        now += delay;
+      },
+    }).run(id, {
+      operator: true,
+      adaptive: true,
+      concurrency: 1,
+      batchSize: 1,
+    });
+    assert.deepEqual(waits, [1000]);
+    assert.equal(embedder.calls.length, 2);
+    assert.equal(result.coverage.indexed, 1);
+    assert.equal(result.coverage.failed, 1);
   }));
