@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { corePath } from "./helpers.ts";
+import { corePath, fixture } from "./helpers.ts";
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
@@ -166,16 +166,15 @@ test("reading language lists show names and hide the test tag", async ({
     page.getByLabel("Definition language", { exact: true }).locator("option"),
   ).toHaveText(["Guaspi", "English", "Lojban", "Klingon", "Tok Pisin"]);
   await page.goto("/about");
-  await page.evaluate(
+  const before = (await (await page.request.get("/api/v1/manifest")).json())
+    .packages;
+  const synthetic = await page.evaluate(
     async ({ corePath, tags }) => {
       const core = await import(corePath);
       await core.initializeCore();
-      const { postEvent, getManifest } = await import(
-        String("/src/data/api.ts")
-      );
-      const word = { language: "jbo", spelling: "broda" };
-      for (const [index, language] of tags.entries()) {
-        const event = core.createEvent(
+      const word = { language: "jbo", spelling: "rerlanguas" };
+      const records = tags.map((language, index) =>
+        core.createEvent(
           crypto.getRandomValues(new Uint8Array(32)),
           [],
           (index + 1).toString(16).padStart(32, "0"),
@@ -193,20 +192,60 @@ test("reading language lists show names and hide the test tag", async ({
             classification: { kind: "other" },
             license: { expression: "CC0-1.0" },
           },
-        );
-        await postEvent(JSON.stringify(event));
-      }
-      await getManifest({ fresh: true });
+        ),
+      );
+      return { word, id: core.wordId(word), records };
     },
     { corePath, tags },
   );
-  await page.goto("/word/broda?lang=en");
+  const base = await (
+    await page.request.get(
+      `/api/v1/words/${encodeURIComponent(fixture().words.cukta)}`,
+    )
+  ).json();
+  const ids = synthetic.records.map((record: any) => record.envelope.id);
+  await page.route(
+    `**/api/v1/words/${encodeURIComponent(synthetic.id)}*`,
+    (route) =>
+      route.fulfill({
+        json: {
+          ...base,
+          word: synthetic.word,
+          definitions: ids,
+          rafsi: [],
+          assignments: [],
+          scores: [],
+          layers: [],
+          calculation: null,
+          unavailable_scores: ids,
+          statuses: ids.map((event: string) => ({ event, state: "active" })),
+        },
+      }),
+  );
+  await page.route("**/api/v1/events/**", (route) => {
+    const record = synthetic.records.find((record: any) =>
+      decodeURIComponent(route.request().url()).includes(record.envelope.id),
+    );
+    return record ? route.fulfill({ json: record.envelope }) : route.fallback();
+  });
+  await page.route("**/api/v1/bodies/**", (route) => {
+    const record = synthetic.records.find((record: any) =>
+      decodeURIComponent(route.request().url()).includes(
+        record.envelope.header.content.hash,
+      ),
+    );
+    return record ? route.fulfill({ json: record.body }) : route.fallback();
+  });
+  await page.goto(`/word/${encodeURIComponent(synthetic.id)}?lang=en`);
   const tabs = page.getByRole("navigation", { name: "Definition language" });
   for (const name of ["English", "Lojban", "Klingon", "Tok Pisin", "Guaspi"])
     await expect(
       tabs.getByRole("link", { name: new RegExp(`^${name} `) }),
     ).toBeVisible();
   await expect(tabs.getByRole("link", { name: /^test / })).toHaveCount(0);
+  expect(
+    (await (await page.request.get("/api/v1/manifest")).json()).packages,
+  ).toEqual(before);
 });
 
 test("personal word status stays visible without snapshot identifiers", async ({
