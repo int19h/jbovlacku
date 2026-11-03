@@ -233,7 +233,7 @@ Source account management, cross-post marker reconciliation, and model-assisted 
 
 ## Places, rafsi, and attribution
 
-Extraction versions `lensisku-list-fidelity-v3` and `lensisku-sql-fidelity-v3` use the `explicit-x-places-v7` conversion recipe.
+Extraction versions `lensisku-list-fidelity-v3` and `lensisku-sql-fidelity-v3` use the `explicit-x-places-v8` conversion recipe.
 The [format specification](../../docs/format.md#placeholder-conversion-during-import) defines its supported forms and limits.
 The importer preserves exact source strings and records each converted span with Unicode scalar offsets.
 It declares observed indices in a context frame. It does not infer a complete place list.
@@ -244,7 +244,10 @@ Bare forms, digits, and mathematical guards keep their existing boundaries.
 Extra math closers immediately after a finished form keep that form literal.
 
 The `lu` guard preserves nested quotations and skips closing markers protected by `zo`.
-Unresolved boundaries keep the uncertain remainder literal with a warning.
+The `lo'u` guard ends at its first unprotected `le'u` and skips tokens protected by `zo`.
+Neither `lo'u` nor `lu` inside that guard protects `le'u`.
+Inside either guard, `zoi` or `la'o` keeps the uncertain remainder literal with a warning.
+Unresolved boundaries take the same conservative path.
 Clear parenthetical marker mentions stay ordinary text. An ASCII-started `zo` token stops before a CJK continuation.
 
 Notes, etymology, examples, source history, component variables, and quoted relations remain literal.

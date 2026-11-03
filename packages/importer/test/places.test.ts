@@ -324,6 +324,50 @@ test("lu quotations protect quoted closers and nested quotations", () => {
   }
 });
 
+test("opaque quotations inside lo'u keep the uncertain remainder literal", () => {
+  for (const source of [
+    "lo'u zoi gy. le'u gy. $x_2$ le'u $x_3$",
+    "lo'u la'o gy. le'u gy. $x_2$ le'u $x_3$",
+  ]) {
+    const result = convertPlaces(source, "/definition");
+    assert.deepEqual(result.text, [[source]], source);
+    assert.equal(result.frame, null, source);
+    assert.deepEqual(result.conversion.mappings, [], source);
+    assert.ok(
+      result.conversion.warnings.some((warning) =>
+        warning.includes("boundary is unresolved"),
+      ),
+      source,
+    );
+  }
+});
+
+test("lo'u closes at its first unprotected le'u without nesting", () => {
+  for (const opener of ["lo'u", "lu"]) {
+    const quoted = `lo'u ${opener} $x_1$ le'u`;
+    const result = convertPlaces(`${quoted} $x_2$ le'u $x_3$`, "/definition");
+    assert.deepEqual(result.text, [[quoted + " ", 2, " le'u ", 3]]);
+    assert.deepEqual(result.frame?.places, [{ index: 2 }, { index: 3 }]);
+    assert.deepEqual(
+      result.conversion.mappings.map((mapping) => mapping.place),
+      [2, 3],
+    );
+    assert.ok(
+      !result.conversion.warnings.some((warning) =>
+        warning.includes("boundary is unresolved"),
+      ),
+    );
+  }
+  const quoted = "lo'u zo le'u $x_1$ le'u";
+  const result = convertPlaces(`${quoted} $x_2$`, "/definition");
+  assert.deepEqual(result.text, [[quoted + " ", 2]]);
+  assert.deepEqual(result.frame?.places, [{ index: 2 }]);
+  assert.deepEqual(
+    result.conversion.mappings.map((mapping) => mapping.place),
+    [2],
+  );
+});
+
 test("clear parenthetical marker mentions do not open quotations", () => {
   for (const mention of [
     "(lu; quote)",

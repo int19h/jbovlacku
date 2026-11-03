@@ -1877,7 +1877,7 @@ A deterministic conversion pass recognizes a versioned set of explicit x-place f
 It never assigns place order from the appearance order of component variables such as g_1 or m_4.
 Foreign quotations, component equivalences, nested relations, and ambiguous math remain literal unless an explicit mapping resolves them.
 
-The `explicit-x-places-v7` recipe annotates only the main definition text.
+The `explicit-x-places-v8` recipe annotates only the main definition text.
 It recognizes lowercase `x_N` and `x_{N}`, where N uses ASCII digits without leading zeros and ranges from 1 through 65,535.
 Supported matching delimiters are `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`.
 A delimited expression must contain one supported form, with optional surrounding whitespace.
@@ -1913,7 +1913,10 @@ Thus `lu'e`, `lu'a`, and `lu'o` do not open quotations.
 
 A `lu` guard tracks nested `lu` and unquoted `li'u` markers. A `zo` token cannot close that quotation.
 Supported text, code, and math units remain opaque during the boundary scan.
-Other nested quote syntax or a missing closing marker leaves the uncertain remainder literal, with a warning.
+A `lo'u` guard ends at the first unprotected `le'u`. Neither an inner `lo'u` nor an inner `lu` protects that closer.
+A `zo` token protects its payload inside either guard.
+Inside either guard, `zoi` or `la'o` leaves the uncertain remainder literal, with a warning.
+Inside `lu`, an inner `lo'u` takes the same conservative path. A missing closing marker also takes that path.
 
 Outside quotations, short parenthetical marker mentions do not open quotes.
 These mentions contain marker names, optional `quote` or `quotation` labels, and `or` or `and` marker lists, within 120 characters.

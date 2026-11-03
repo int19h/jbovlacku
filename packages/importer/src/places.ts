@@ -1,4 +1,4 @@
-export const PLACE_CONVERSION_VERSION = "explicit-x-places-v7";
+export const PLACE_CONVERSION_VERSION = "explicit-x-places-v8";
 export interface PlaceMapping {
   field: string;
   start: number;
@@ -81,7 +81,10 @@ function quotationEnd(text: string, after: number, opener: string) {
       depth++;
     } else if (word === (opener === "lu" ? "li'u" : "le'u")) {
       if (--depth === 0) return { end: tokens.lastIndex, uncertain: false };
-    } else if (opener === "lu" && ["lo'u", "zoi", "la'o"].includes(word)) {
+    } else if (
+      ["zoi", "la'o"].includes(word) ||
+      (opener === "lu" && word === "lo'u")
+    ) {
       break;
     }
   }
