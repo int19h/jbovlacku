@@ -411,7 +411,7 @@ export function replaceInline(
     $from.parent.isInline &&
     $from.parent.type.name !== "literal"
   ) {
-    const start = $from.after();
+    const start = $from.parentOffset === 0 ? $from.before() : $from.after();
     const tr = state.tr.insert(start, node);
     return tr.setSelection(
       TextSelection.near(tr.doc.resolve(start + node.nodeSize)),
@@ -1269,7 +1269,7 @@ export function placeInputPlugins(options: PlaceRuleOptions): Plugin[] {
 export function pastedRichText(text: string, convertPlaces: boolean): RichText {
   return text
     .replace(/\r\n?/gu, "\n")
-    .split(/\n\n/u)
+    .split(/\n\s*\n/u)
     .map((paragraph) => {
       if (!convertPlaces) return paragraph ? [paragraph] : ["\n"];
       return paragraph

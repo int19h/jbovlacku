@@ -203,7 +203,7 @@ export function richTextToText(value: RichText): string {
         .map((node) => {
           if (typeof node === "string") return node;
           if (typeof node === "number")
-            return placeGlyph(node);
+            return node <= 50 ? placeGlyph(node) : `{place ${node}}`;
           if ("label" in node && typeof node.label === "string")
             return node.label;
           if ("code" in node) return node.code;
