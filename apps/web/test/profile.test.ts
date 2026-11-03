@@ -294,7 +294,7 @@ test("a rafsi pair link opens the pair's word, rafsi, and judgment, and an unkno
 
 /** Signs a profile claim with links and code in the biography, as another client can. */
 async function signRichProfile(page: Page) {
-  await page.evaluate(async (corePath) => {
+  return page.evaluate(async (corePath) => {
     const core = await import(corePath);
     await core.initializeCore();
     const { createKey } = await import(String("/src/data/keys.ts"));
@@ -337,6 +337,7 @@ async function signRichProfile(page: Page) {
       self: { origin: location.origin, base: "/api/v1", label: "this server" },
     });
     await store.queueGroup([item]);
+    return created.backup.identity;
   }, corePath);
 }
 
@@ -344,7 +345,7 @@ test("changing only the name keeps a rich biography exact, and replacing it need
   page,
 }) => {
   await page.goto("/");
-  await signRichProfile(page);
+  const identity = await signRichProfile(page);
   // Delivery runs by itself once a page is open.
   await page.goto("/outbox");
   await expect
@@ -356,6 +357,16 @@ test("changing only the name keeps a rich biography exact, and replacing it need
       }),
     )
     .toBe("accepted");
+  // Delivery can finish before the server serves this fixture profile.
+  await expect
+    .poll(async () => {
+      const response = await page.request.get(
+        `/api/v1/identities/${encodeURIComponent(identity)}`,
+      );
+      expect(response.ok()).toBe(true);
+      return (await response.json()).profile.state;
+    })
+    .toBe("known");
   await page.goto("/identity");
   await page
     .getByLabel("Passphrase", { exact: true })

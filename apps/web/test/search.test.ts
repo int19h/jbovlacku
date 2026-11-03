@@ -422,7 +422,7 @@ test("local search ranks match classes, keeps the strongest match, and sends not
       return ["broda", "brode", "brodi"];
     }, corePath);
     const privacy = await guardLocalQuery(page, "I");
-    await page.goto("/search?q=I&lang=en");
+    await page.goto("/search?q=I&lang=en&retired=1");
     const results = page.getByRole("region", { name: "Search results" });
     await expect(results.locator("article")).toHaveCount(3);
     expect(await results.locator("article .hw").allTextContents()).toEqual(
@@ -631,7 +631,7 @@ test("local search pages through many results in stable order, keeps equal-class
   await expect(page.getByRole("button", { name: "show all" })).toHaveCount(0);
   await expect(
     page.getByText("Local results include every retained publication."),
-  ).toBeVisible();
+  ).toHaveCount(0);
   privacy.assertPrivate();
   expect(await results.locator("img").count()).toBe(0);
   expect(await page.evaluate(() => Boolean((window as any).bad))).toBe(false);
