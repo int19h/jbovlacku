@@ -7,6 +7,34 @@ export function displayUsername(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
+/** Validate before a source row can change the journal or its selection. */
+export function invalidSourceRafsi(lexical: Lexical): string | null {
+  for (const field of ["official_rafsi", "experimental_rafsi"] as const) {
+    const value = lexical[field];
+    if (!("known" in value) || !Array.isArray(value.known)) continue;
+    for (const token of value.known as string[]) {
+      try {
+        if (
+          token.length === 0 ||
+          new TextEncoder().encode(token).length > 64 ||
+          token.normalize("NFC") !== token ||
+          /\p{Cc}|^\p{White_Space}|\p{White_Space}$/u.test(token)
+        )
+          throw new Error(
+            "Rafsi tokens require nonempty NFC text of at most 64 bytes, without controls or edge whitespace.",
+          );
+        if (token.normalize("NFD").includes("\u0301"))
+          throw new Error(
+            "Rafsi claims require a token without acute accents.",
+          );
+      } catch (error) {
+        return `Invalid ${field} token ${JSON.stringify(token)}: ${error instanceof Error ? error.message : String(error)} The source row remains unresolved.`;
+      }
+    }
+  }
+  return null;
+}
+
 export function originalField(original: Record<string, any>, key: string) {
   if (Array.isArray(original.$source_object)) {
     const index = original.$source_object.findIndex(

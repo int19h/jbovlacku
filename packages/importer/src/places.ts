@@ -1,4 +1,4 @@
-export const PLACE_CONVERSION_VERSION = "explicit-x-places-v1";
+export const PLACE_CONVERSION_VERSION = "explicit-x-places-v2";
 export interface PlaceMapping {
   field: string;
   start: number;
@@ -14,7 +14,7 @@ export function convertPlaces(source: string | null, field: string) {
   const unresolved: Record<string, number> = {};
   // Treat each delimited expression as one unit. Never rewrite part of an equation.
   const units =
-    /`[^`]*(?:`|$)|"(?:\\.|[^"\\])*(?:"|$)|“[^”]*(?:”|$)|«[^»]*(?:»|$)|(?<![a-zA-Z])'[^'\n]+'(?![a-zA-Z])|\b(?:zoi|la'o)\b[\s\S]*$|\bzo\s+\S+|\blu\b[\s\S]*?(?:\bli'u\b|$)|\blo'u\b[\s\S]*?(?:\ble'u\b|$)|\$\$[\s\S]*?(?:\$\$|$)|\$[^$]*(?:\$|$)|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\\[a-zA-Z]+(?:\{[^{}]*\})?|(?<![a-zA-Z0-9])[a-zA-Z][a-zA-Z0-9]*_(?:\{[^{}]*\}|[a-zA-Z0-9]+)|\bx[0-9]+\b|\$[\s\S]*$|\\[([][\s\S]*$/g;
+    /(`{2,})[\s\S]*?(?:\1|''|$)|`[^`]*(?:`|$)|"(?:\\.|[^"\\])*(?:"|$)|“[^”]*(?:”|$)|«[^»]*(?:»|$)|(?<![a-zA-Z])'[^'\n]+'(?![a-zA-Z])|\b(?:zoi|la'o)\b[\s\S]*$|\bzo\s+\S+|\blu\b[\s\S]*?(?:\bli'u\b|$)|\blo'u\b[\s\S]*?(?:\ble'u\b|$)|\$\$[\s\S]*?(?:\$\$|$)|\$[^$]*(?:\$|$)|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\\[a-zA-Z]+(?:\{[^{}]*\})?|(?<![a-zA-Z0-9])[a-zA-Z][a-zA-Z0-9]*_(?:\{[^{}]*\}|[a-zA-Z0-9]+)|\bx[0-9]+\b|\$[\s\S]*$|\\[([][\s\S]*$/g;
   let end = 0;
   let scalarEnd = 0;
   const nesting: string[] = [];
@@ -59,14 +59,20 @@ export function convertPlaces(source: string | null, field: string) {
     const boundary =
       !/[\p{L}\p{M}\p{N}_\\{]$/u.test(before.slice(-2)) &&
       !/^[\p{L}\p{M}\p{N}_{}^]/u.test(after.slice(0, 2));
+    const malformedNeighbor =
+      !raw.startsWith("$") &&
+      !raw.startsWith("\\(") &&
+      !raw.startsWith("\\[") &&
+      (before.endsWith("$") || /^\$|^\\[)\]]/.test(after));
     const equation =
-      /(?:[\p{Sm}\p{Pd}*/^]|\\[a-zA-Z]+)\s*$/u.test(before) ||
-      /^\s*(?:[\p{Sm}\p{Pd}*/^]|\\[a-zA-Z]+)/u.test(after);
+      /(?:[\p{Sm}\p{Pd}*/^·:]|\\[a-zA-Z]+)\s*$/u.test(before) ||
+      /^\s*(?:[\p{Sm}\p{Pd}*/^·:]|\\[a-zA-Z]+)/u.test(after);
     if (
       place > 0 &&
       place <= 65535 &&
       boundary &&
       !equation &&
+      !malformedNeighbor &&
       nesting.length === 0 &&
       !(raw.startsWith("$") && (before.endsWith("$") || after.startsWith("$")))
     ) {
@@ -111,7 +117,11 @@ export function convertPlaces(source: string | null, field: string) {
       mappings,
       warnings: Object.keys(unresolved).length
         ? [
-            "Unconverted variables or mathematics remain literal. Notes, etymology, examples, and quoted relations receive no place annotations.",
+            "Unconverted variable patterns remain literal. Notes, etymology, examples, and source history receive no place annotations.",
+            ...Object.entries(unresolved).map(
+              ([pattern, count]) =>
+                `Unconverted pattern ${JSON.stringify(pattern)} (${count} ${count === 1 ? "occurrence" : "occurrences"}).`,
+            ),
           ]
         : [],
     },

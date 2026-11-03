@@ -1281,3 +1281,87 @@ test("a username-only correction records provenance without replacing an old sig
     ),
   );
 });
+
+test("invalid rafsi tokens leave only their source row unresolved", () => {
+  for (const field of ["official_rafsi", "experimental_rafsi"]) {
+    for (const token of [
+      "már",
+      "ma\u0301r",
+      "a".repeat(65),
+      "æ".repeat(33),
+      "ba\u0000j",
+    ]) {
+      const bad = {
+        ...rows()[0],
+        official_rafsi: null,
+        experimental_rafsi: null,
+        [field]: `baj ${token}`,
+      };
+      const good = {
+        ...rows()[0],
+        definitionid: 89999,
+        official_rafsi: "baj",
+        experimental_rafsi: null,
+      };
+      const result = capture([bad, good], undefined, []);
+      assert.equal(result.report.added, 1);
+      assert.deepEqual(
+        result.report.unresolved.map((issue) => issue.record),
+        [4],
+      );
+      assert.ok(
+        result.report.notices.some((notice) =>
+          notice.includes(`Invalid ${field} token`),
+        ),
+      );
+      assert.equal(result.journal.entries["4"], undefined);
+      assert.deepEqual(
+        result.carriers
+          .filter((item) => item.body.rafsi)
+          .map((item) => item.body.rafsi),
+        ["baj"],
+      );
+    }
+  }
+});
+
+test("preserved non-ASCII rafsi whitespace keeps its claim and review notice", () => {
+  const result = capture(
+    [{ ...rows()[0], official_rafsi: "ba\u00a0j", experimental_rafsi: null }],
+    undefined,
+    [],
+  );
+  const claim = result.carriers.find(
+    (item) => item.body.rafsi === "ba\u00a0j",
+  )!;
+  assert.ok(result.selection.ids.includes(claim.envelope.id));
+  assert.ok(
+    result.report.notices.some((notice) =>
+      notice.includes("non-ASCII whitespace"),
+    ),
+  );
+});
+
+test("REST publications retain source edit time and specific unresolved warnings", () => {
+  const result = capture([
+    {
+      ...rows()[0],
+      definition: "x_1 relates g_1=m_4 and $x_2 + 1$",
+      time: 1046655416,
+      created_at: "2026-01-01T00:00:00Z",
+    },
+  ]);
+  const body = result.journal.entries["4"].versions[0].carrier.body;
+  assert.equal(body.legacy.attribution.dates.time, "1046655416");
+  assert.equal(
+    body.legacy.attribution.dates.created_at,
+    "2026-01-01T00:00:00Z",
+  );
+  assert.deepEqual(body.legacy.original.time, { $source_number: "1046655416" });
+  for (const pattern of ["g_1", "m_4", "$x_2 + 1$"])
+    assert.ok(
+      body.legacy.conversion.warnings.some((warning: string) =>
+        warning.includes(pattern),
+      ),
+    );
+});

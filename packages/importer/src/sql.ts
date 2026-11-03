@@ -1,6 +1,7 @@
 import { convertPlaces } from "./places.ts";
 import {
   displayUsername,
+  invalidSourceRafsi,
   importedRafsiClaims,
   emptyFidelity,
   countFidelity,
@@ -723,6 +724,11 @@ function extract(
     official_rafsi: known(tokens(word.rafsi)),
     experimental_rafsi: known(tokens(row.rafsi)),
   };
+  const rafsiError = invalidSourceRafsi(lexical);
+  if (rafsiError) {
+    output.notices.push(`Definition ${id}: ${rafsiError}`);
+    throw new SourceRowError(rafsiError);
+  }
   const history = getRows(stage, "definition_versions", "owner", id);
   const wordEtymology = getRows(
     stage,
@@ -1188,7 +1194,9 @@ function publishView(
 ): string {
   const body = {
     name: "Pinned Lensisku SQL import",
-    description: [["Attributed extraction from the pinned local SQL snapshot."]],
+    description: [
+      ["Attributed extraction from the pinned local SQL snapshot."],
+    ],
     roots: [...options.roots].sort((a, b) =>
       a.identity.localeCompare(b.identity),
     ),

@@ -1706,3 +1706,83 @@ test("SQL experimental rafsi retain definition evidence and share no official so
     ),
   );
 });
+
+test("invalid SQL rafsi leave only the affected source row unresolved", async () => {
+  for (const token of [
+    "már",
+    "ma\u0301r",
+    "a".repeat(65),
+    "æ".repeat(33),
+    "ba\u0000j",
+  ]) {
+    const input = await setup(
+      mutate(fixture, (fields) => {
+        if (fields[3] === "4") fields[25] = `baj ${token}`;
+      }),
+    );
+    const result = await importSqlSnapshot(input);
+    assert.equal(result.report.added, 3);
+    assert.deepEqual(
+      result.report.unresolved.map((issue) => issue.record),
+      [4],
+    );
+    assert.ok(
+      result.report.notices.some((notice) =>
+        notice.includes("Invalid experimental_rafsi token"),
+      ),
+    );
+    const records = await carriers(input.output);
+    assert.ok(
+      !records.some(
+        (item) =>
+          item.body.legacy?.record.kind === "definition" &&
+          item.body.legacy.record.id === 4,
+      ),
+    );
+    assert.ok(
+      records.some(
+        (item) => item.envelope.header.action.kind === "definition.publish",
+      ),
+    );
+  }
+});
+
+test("SQL rafsi removal retains exact carriers outside the new selection", async () => {
+  const input = await setup();
+  await importSqlSnapshot(input);
+  const old = (await carriers(input.output)).find(
+    (item) => item.body.rafsi === "bajr",
+  )!;
+  const changed = Buffer.from(
+    fixture.toString().replace("\tbaj bajr\t", "\tbaj\t"),
+  );
+  await updateSource(input, changed);
+  const result = await importSqlSnapshot(input);
+  const records = await carriers(input.output);
+  assert.ok(records.some((item) => canonical(item) === canonical(old)));
+  const selected = JSON.parse(
+    await readFile(join(input.output, "import-selection.json"), "utf8"),
+  );
+  assert.ok(!selected.includes(old.envelope.id));
+  assert.equal(result.report.fidelity.official_rafsi_claims, 4);
+});
+
+test("SQL publications retain specific unresolved conversion warnings", async () => {
+  const input = await setup(
+    mutate(fixture, (fields) => {
+      if (fields[3] === "4") fields[4] = "x_1 relates g_1=m_4 and $x_2 + 1$";
+    }),
+  );
+  await importSqlSnapshot(input);
+  const body = (await carriers(input.output)).find(
+    (item) =>
+      item.envelope.header.action.kind === "definition.publish" &&
+      item.body.legacy.record.id === 4,
+  )!.body;
+  for (const pattern of ["g_1", "m_4", "$x_2 + 1$"])
+    assert.ok(
+      body.legacy.conversion.warnings.some((warning: string) =>
+        warning.includes(pattern),
+      ),
+    );
+});

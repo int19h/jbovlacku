@@ -36,6 +36,8 @@ test("equations, component variables, quotations, nested relations and malformed
     "$x_1 + x_2$",
     "g_1 and m_4",
     "x_1 = g_1",
+    "x_1 · x_2",
+    "x_1: x_2",
     "x_1 ∈ S",
     "x_1 ≤ x_2",
     "x_1 → x_2",
@@ -43,6 +45,11 @@ test("equations, component variables, quotations, nested relations and malformed
     "x_1 \\times x_2",
     '"x_1 sees x_2"',
     "`x_1`",
+    "``x_1``",
+    "```x_1```",
+    "``x_1''",
+    "“x_1 sees x_2”",
+    "«x_1 sees x_2»",
     "(x_1 sees x_2)",
     "lu x_1 li'u",
     "lo'u x_2 le'u",
@@ -72,6 +79,11 @@ test("equations, component variables, quotations, nested relations and malformed
     "lo'u x_1",
     "$$x_1$",
     "$x_1$$",
+    "x_1$",
+    "x_1$$",
+    "x_1\\)",
+    "x_1\\]",
+    "$5 and $x_1$",
   ]) {
     const converted = convertPlaces(source, "/definition");
     assert.deepEqual(converted.text, [[source]], source);
@@ -91,6 +103,12 @@ test("mixed real TeX forms convert conservative places and retain unresolved exp
   );
   assert.ok(converted.conversion.warnings.length > 0);
   assert.deepEqual(converted.unresolved, { g_1: 1, m_4: 1, "$x_2 + 1$": 1 });
+  for (const pattern of Object.keys(converted.unresolved))
+    assert.ok(
+      converted.conversion.warnings.some((warning) =>
+        warning.includes(pattern),
+      ),
+    );
   assert.equal(convertPlaces("", "/definition").text.length, 0);
 });
 

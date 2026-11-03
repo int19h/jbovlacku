@@ -1,6 +1,7 @@
 import { convertPlaces } from "./places.ts";
 import {
   displayUsername,
+  invalidSourceRafsi,
   originalField,
   importedRafsiClaims,
   rafsiClaimKey,
@@ -382,6 +383,17 @@ function definition(
       .filter((key) => typeof row[key] === "string")
       .map((key) => [key, row[key]]),
   );
+  if (row.time !== undefined && row.time !== null) {
+    const time = encodeOriginal(row.time);
+    if (typeof time === "string") dates.time = time;
+    else if (
+      time &&
+      typeof time === "object" &&
+      "$source_number" in time &&
+      typeof time.$source_number === "string"
+    )
+      dates.time = time.$source_number;
+  }
   return {
     word: { language: "jbo", spelling: spelling.normalize("NFC") },
     language: "en",
@@ -678,6 +690,11 @@ export function importCapture(options: ImportOptions): ImportResult {
       sourceKind(row, manifest);
       const lexical = extract(row, manifest),
         lexicalDigest = digest(lexical);
+      const rafsiError = invalidSourceRafsi(lexical);
+      if (rafsiError) {
+        report.notices.push(`Definition ${id}: ${rafsiError}`);
+        throw new Error(rafsiError);
+      }
       for (const field of ["official_rafsi", "experimental_rafsi"] as const) {
         const value = lexical[field];
         if (
@@ -701,7 +718,7 @@ export function importCapture(options: ImportOptions): ImportResult {
         )!;
         const original = encodeOriginal(row) as Record<string, unknown>;
         if (
-          ["user_id", "username", "created_at", "updated_at"].some(
+          ["user_id", "username", "time", "created_at", "updated_at"].some(
             (field) =>
               Object.hasOwn(original, field) &&
               !same(
@@ -879,7 +896,9 @@ export function importCapture(options: ImportOptions): ImportResult {
   );
   const viewBody = {
     name: "Pinned Lensisku import",
-    description: [["Attributed extraction of a pinned local Lensisku capture."]],
+    description: [
+      ["Attributed extraction of a pinned local Lensisku capture."],
+    ],
     roots,
     rafsi_threshold: { numerator: 1, denominator: 1 },
     H: { numerator: 3, denominator: 1 },

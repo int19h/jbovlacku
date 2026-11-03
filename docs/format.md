@@ -1877,21 +1877,27 @@ A deterministic conversion pass recognizes a versioned set of explicit x-place f
 It never assigns place order from the appearance order of component variables such as g_1 or m_4.
 Foreign quotations, component equivalences, nested relations, and ambiguous math remain literal unless an explicit mapping resolves them.
 
-The `explicit-x-places-v1` recipe annotates only the main definition text.
+The `explicit-x-places-v2` recipe annotates only the main definition text.
 It recognizes lowercase `x_N` and `x_{N}`, where N uses ASCII digits without leading zeros and ranges from 1 through 65,535.
 Supported matching delimiters are `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`.
 A delimited expression must contain one supported form, with optional surrounding whitespace.
 A converted span includes its math delimiters and their internal whitespace.
 
 Adjacent letters, digits, underscores, braces, or exponent notation prevent a conversion within a larger expression.
-Equations, component variables, ordinary bracketed relations, code, and quotations remain literal.
+Component variables and forms inside ordinary brackets remain literal.
+The operator guard holds a form literal beside Unicode math symbols, Unicode dashes, `*`, `/`, `^`, `·`, `:`, or bare TeX commands.
+The guard examines neighboring operators and whitespace. It does not detect every mathematical expression.
 
-Quoted text includes paired straight or typographic double quotes, guillemets, backticks, and Lojban `lu` or `lo'u` quotations.
+The quote guards recognize paired straight or typographic double quotes, guillemets, and single or repeated backticks.
+Repeated backticks also accept the TeX double-apostrophe closer.
+The guards recognize lowercase Lojban `lu` and `lo'u` quotation markers.
 Single quoted forms also remain literal when their quotes do not belong to adjacent words.
 A `zo` quotation keeps its next token literal. After `zoi` or `la'o`, the rest stays literal because the recipe does not parse their delimiters.
 
 The recipe leaves notes, etymology, examples, and source history literal.
-It records unresolved variable patterns as warnings. Its annotations remain unreviewed importer claims.
+It records recognized unresolved patterns and their counts in signed conversion warnings.
+Pattern labels use at most 80 Unicode scalars. Full original strings remain available.
+Its annotations remain unreviewed importer claims.
 
 A conservative mapping can declare observed indices in a context frame without claiming a fixed final arity.
 A fixed frame requires evidence that the declared list is complete. The importer records that evidence or its review decision.

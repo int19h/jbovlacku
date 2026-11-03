@@ -537,3 +537,48 @@ test("r3 N2 new REST observations reference the exact archive instead of copying
     false,
   );
 });
+
+test("REST and SQL rafsi retain separate evidence through a shared journal", async () => {
+  const f = await fixture();
+  const sql = await importSqlSnapshot({ ...f, seed, roots: [] });
+  const before = (await readJournal(f.output))!;
+  const wordClaims = before.rafsi_claims!.filter(
+    (item) => item.body.rafsi === "baj",
+  );
+  assert.equal(wordClaims.length, 1);
+  f.rows[0].official_rafsi = "baj";
+  const bytes = utf8(JSON.stringify({ definitions: f.rows }));
+  const result = await rest(f, bytes, {
+    ...f.restManifest,
+    sha256: contentHash(bytes),
+    unavailable_fields: f.restManifest.unavailable_fields.filter(
+      (field) => field !== "official_rafsi",
+    ),
+  });
+  const claims = result.journal.rafsi_claims!.filter(
+    (item) => item.body.rafsi === "baj",
+  );
+  assert.equal(claims.length, 2);
+  assert.deepEqual(
+    new Set(claims.map((item) => item.body.legacy.record.kind)),
+    new Set(["word", "definition"]),
+  );
+  assert.equal(
+    claims[0].envelope.header.action.assignment,
+    claims[1].envelope.header.action.assignment,
+  );
+  assert.notEqual(claims[0].body.legacy.locator, claims[1].body.legacy.locator);
+  assert.ok(
+    result.carriers.some(
+      (item) => canonical(item) === canonical(wordClaims[0]),
+    ),
+  );
+  const repeated = await importSqlSnapshot({ ...f, seed, roots: [] });
+  const after = (await readJournal(f.output))!;
+  for (const claim of claims)
+    assert.ok(
+      after.rafsi_claims!.some((item) => canonical(item) === canonical(claim)),
+    );
+  assert.ok(repeated.report.fidelity.official_rafsi_claims > 0);
+  assert.ok(sql.report.fidelity.official_rafsi_claims > 0);
+});
