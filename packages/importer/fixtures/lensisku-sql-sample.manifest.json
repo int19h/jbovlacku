@@ -5,7 +5,7 @@
   "retrieved_at": "2026-09-13T00:00:00+00:00",
   "sha256": "sha256:a6fa2a9ab39c724d4a4061fff1030b5149de0130c622afe41ea1c391fc03ad61",
   "bytes": 24919,
-  "extraction": "lensisku-sql-literal-v2",
+  "extraction": "lensisku-sql-fidelity-v3",
   "recipe": "lensisku-sql-copy-v1",
   "expected_rows": {
     "definitions": 4,

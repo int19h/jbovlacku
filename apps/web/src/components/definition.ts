@@ -124,7 +124,10 @@ export function sourceDisclosureBody(
     for (const [label, value] of Object.entries(dates))
       if (typeof value === "string")
         nodes.push(p(`Source ${label}: ${value}`, "meta"));
-    const original = legacy.original?.definition ?? legacy.original?.text;
+    const original =
+      legacy.original?.definitions?.definition ??
+      legacy.original?.definition ??
+      legacy.original?.text;
     if (typeof original === "string") {
       const code = el("code", { text: original });
       nodes.push(el("p", { class: "small" }, text("Original text: "), code));

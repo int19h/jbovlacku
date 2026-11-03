@@ -1,0 +1,84 @@
+{
+  "source": "Lensisku",
+  "capture": "lensisku-public-data.sanitized-v3.sql",
+  "sha256": "bc5ad87fda0668bf8fa2010aeddf71d1d0395549086bd5085bd9d87d77f93ddb",
+  "definitions": [
+    {
+      "id": 63,
+      "word": "bolci",
+      "language": "en",
+      "definition": "$x_{1}$ is a ball/sphere/orb/globe [shape/form] of material $x_{2}$; $x_{1}$ is a spherical object [made of $x_{2}$].",
+      "places": [1, 2, 1, 2]
+    },
+    {
+      "id": 182,
+      "word": "claxu",
+      "language": "en",
+      "definition": "$x_{1}$ is without/lacking/free of/lacks $x_{2}$; $x_{1}$ is $x_{2}$-less.",
+      "places": [1, 2, 1, 2]
+    },
+    {
+      "id": 1061,
+      "word": "softo",
+      "language": "en",
+      "definition": "$x_{1}$ reflects Russian empire/USSR/ex-USSR (Soviet]/CIS culture/nationality in aspect $x_{2}$.",
+      "places": [1, 2]
+    },
+    {
+      "id": 16330,
+      "word": "bakfu",
+      "language": "ru",
+      "definition": "$x_1$ — пакет/сверток/пачка/стопка/связка/пучок/гроздь предметов $x_2$, удерживаемых вместе при помощи $x_3$",
+      "places": [1, 2, 3]
+    },
+    {
+      "id": 239,
+      "word": "cusku",
+      "language": "en",
+      "definition": "$x_{1}$ (agent) expresses/says $x_{2}$ (sedu'u/text/lu'e concept) for audience $x_{3}$ via expressive medium $x_{4}$.",
+      "places": [1, 2, 3, 4]
+    },
+    {
+      "id": 15880,
+      "word": "valsi",
+      "language": "zh",
+      "definition": "$x_1$ 是有着意义 $x_2$的词，从属于语言 $x_3$ (形容性：$x_1$ 是词)",
+      "places": [1, 2, 3, 1]
+    },
+    {
+      "id": 16745,
+      "word": "badna",
+      "language": "zh",
+      "definition": "$x_1$是$x_2$品种的香蕉/车前草（既指果实也指整株植物）",
+      "places": [1, 2]
+    },
+    {
+      "id": 53920,
+      "word": "lerfu",
+      "language": "zh",
+      "definition": "$x_1$（la'e zo BY/字母等）是字母/数字/符号，在字母表/符号集$x_2$中，代表/表征$x_3$",
+      "places": [1, 2, 3]
+    },
+    {
+      "id": 68087,
+      "word": "jbogimkra",
+      "language": "en",
+      "definition": "$x_1$ is a source language for Lojbanic gismu $x_2$, contributing word $x_3$ (zoi) to make it, which were adapted into the Lojban alphabet as $x_4$ (lo'u or zoi), the language having weight in the algorithm $x_5$ (li)",
+      "places": [1, 2, 3, 4, 5]
+    },
+    {
+      "id": 70449,
+      "word": "tcuskuue",
+      "language": "en",
+      "definition": "$x_1$ (lu; quote) is said/expressed by $x_2$, followed by expression $x_3$ (lu; quote), via expressive medium $x_4$, and then continuing on/proceeding/serially resuming to express/say $x_5$ (lu; quote), and then $x_6$ (lu; quote), and then $x_7$ (lu; quote), ... (open-ended terbri structure of arbitrarily many sumti slots).",
+      "places": [1, 2, 3, 4, 5, 6, 7]
+    },
+    {
+      "id": 71625,
+      "word": "slakypevgra",
+      "language": "en",
+      "definition": " $x_1$ (zoi quote) is $x_2$ moras/morae in 'weight' (default: 1) by standard $x_3$.",
+      "places": [1, 2, 3]
+    }
+  ]
+}
