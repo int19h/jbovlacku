@@ -574,6 +574,7 @@ async function profileEditor(
     rows: 4,
     hint: "Use the controls to insert links and code. Enter starts a new paragraph.",
   });
+  const originalBio = current?.bio ?? [];
   const links = field("Links", {
     multiline: true,
     rows: 3,
@@ -611,7 +612,10 @@ async function profileEditor(
       errors.push(
         `The name has ${[...nameValue].length} characters. The limit is ${PROFILE_LIMITS.name}.`,
       );
-    const bioRich = richHasContent(bio.input.value) ? bio.input.value : [];
+    const biography = bio.input.value;
+    const unchangedBio =
+      JSON.stringify(biography) === JSON.stringify(originalBio);
+    const bioRich = unchangedBio || richHasContent(biography) ? biography : [];
     const nodes = countNodes(bioRich);
     if (nodes > PROFILE_LIMITS.nodes)
       errors.push(

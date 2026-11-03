@@ -1,5 +1,5 @@
 /** Direct mappings keep every stored inline node and paragraph boundary. */
-import { Schema, type Node as EditorNode, type Slice } from "prosemirror-model";
+import { Schema, type Node as EditorNode } from "prosemirror-model";
 import {
   EditorState,
   Plugin,
@@ -40,13 +40,14 @@ export const richEditorSchema = new Schema({
       toDOM: (node) => [
         "span",
         {
-          class: "rich-chip",
+          class:
+            node.attrs.index >= 10 ? "rich-chip rich-chip-wide" : "rich-chip",
           role: "img",
           "aria-label": `place ${node.attrs.index}`,
           contenteditable: "false",
           "data-place": String(node.attrs.index),
         },
-        String(node.attrs.index),
+        ["span", { class: "rich-chip-number" }, String(node.attrs.index)],
       ],
     },
     operand: {
@@ -886,32 +887,156 @@ export interface PlaceRuleOptions {
   enabled: () => boolean;
   composing?: () => boolean;
 }
-function insertedContent(transaction: Transaction): boolean {
-  return transaction.steps.some((step, index) => {
-    const { slice, from, to } = step as {
-      slice?: Slice;
-      from?: number;
-      to?: number;
-    };
-    if (!slice?.size || from === undefined || to === undefined) return false;
-    const inserted = slice.content.textBetween(
-      0,
-      slice.content.size,
-      "",
-      "\ufffc",
-    );
-    const removed = transaction.docs[index].textBetween(from, to, "", "\ufffc");
-    // DOM deletion may replace a whole container with its remaining text.
-    let matched = 0;
-    for (let offset = 0; offset < removed.length; offset++)
-      if (removed[offset] === inserted[matched]) matched++;
-    return matched < inserted.length;
+/** Compare logical line endings without changing document coordinates or bytes. */
+function inputUnits(doc: EditorNode, from: number, to: number) {
+  const raw: { text: string; from: number; to: number }[] = [];
+  if (from >= to) return raw;
+  doc.nodesBetween(from, to, (node, position) => {
+    if (node.isInline && !node.isText && node.type.name !== "literal") {
+      raw.push({
+        text: `\ufffc${node.type.name}`,
+        from: Math.max(from, position),
+        to: Math.min(to, position + node.nodeSize),
+      });
+      return false;
+    } else if (node.isText) {
+      for (
+        let offset = Math.max(0, from - position);
+        offset < Math.min(node.text!.length, to - position);
+        offset++
+      )
+        raw.push({
+          text: node.text![offset],
+          from: position + offset,
+          to: position + offset + 1,
+        });
+    } else if (
+      position >= from &&
+      (node.isLeaf || node.type.name === "paragraph")
+    )
+      raw.push({
+        text: node.isLeaf ? "\ufffc" : "\u2029",
+        from: position,
+        to: position + 1,
+      });
   });
+  const units: typeof raw = [];
+  for (let index = 0; index < raw.length; index++) {
+    const unit = raw[index];
+    if (unit.text !== "\r") units.push(unit);
+    else {
+      const next = raw[index + 1];
+      units.push({
+        ...unit,
+        text: "\n",
+        to: next?.text === "\n" ? next.to : unit.to,
+      });
+      if (next?.text === "\n") index++;
+    }
+  }
+  return units;
+}
+/** Track only new text, including when native parsing replaces a whole container. */
+function insertionRanges(
+  transaction: Transaction,
+  previous: RichDeleteRange[] = [],
+  collect = true,
+): RichDeleteRange[] {
+  let ranges = previous;
+  for (const [index, step] of transaction.steps.entries()) {
+    const map = step.getMap();
+    const before = transaction.docs[index];
+    const after = transaction.docs[index + 1] ?? transaction.doc;
+    const changes: {
+      oldFrom: number;
+      oldTo: number;
+      old: ReturnType<typeof inputUnits>;
+      next: ReturnType<typeof inputUnits>;
+      prefix: number;
+      suffix: number;
+    }[] = [];
+    map.forEach((oldFrom, oldTo, newFrom, newTo) => {
+      const old = inputUnits(before, oldFrom, oldTo);
+      const next = inputUnits(after, newFrom, newTo);
+      let prefix = 0,
+        suffix = 0;
+      while (
+        prefix < old.length &&
+        prefix < next.length &&
+        old[prefix].text === next[prefix].text
+      )
+        prefix++;
+      while (
+        suffix < old.length - prefix &&
+        suffix < next.length - prefix &&
+        old[old.length - suffix - 1].text ===
+          next[next.length - suffix - 1].text
+      )
+        suffix++;
+      changes.push({ oldFrom, oldTo, old, next, prefix, suffix });
+    });
+    const mapped = (position: number, association: number) => {
+      for (const change of changes) {
+        if (
+          !change.old.length ||
+          !change.next.length ||
+          position < change.oldFrom ||
+          position > change.oldTo
+        )
+          continue;
+        let boundary = change.old.findIndex((unit) => position <= unit.from);
+        if (boundary < 0) boundary = change.old.length;
+        const target =
+          boundary <= change.prefix
+            ? boundary
+            : boundary >= change.old.length - change.suffix
+              ? change.next.length - (change.old.length - boundary)
+              : null;
+        if (target !== null)
+          return (
+            change.next[target]?.from ?? change.next[change.next.length - 1].to
+          );
+      }
+      return map.map(position, association);
+    };
+    ranges = ranges
+      .map((range) => ({
+        from: mapped(range.from, 1),
+        to: mapped(range.to, -1),
+      }))
+      .filter((range) => range.from < range.to);
+    if (!collect) continue;
+    for (const change of changes) {
+      let matched = 0;
+      for (const unit of change.old)
+        if (unit.text === change.next[matched]?.text) matched++;
+      // A native deletion can replace a container without adding any text.
+      if (matched === change.next.length) continue;
+      const last = change.next.length - change.suffix - 1;
+      if (change.prefix <= last)
+        ranges.push({
+          from: change.next[change.prefix].from,
+          to: change.next[last].to,
+        });
+    }
+    const merged: RichDeleteRange[] = [];
+    for (const range of ranges.sort((a, b) => a.from - b.from)) {
+      const last = merged[merged.length - 1];
+      if (last && range.from <= last.to) last.to = Math.max(last.to, range.to);
+      else merged.push({ ...range });
+    }
+    ranges = merged;
+  }
+  return ranges;
+}
+function insertedContent(transaction: Transaction): boolean {
+  return insertionRanges(transaction).length > 0;
 }
 interface CompositionState {
   before: EditorNode | null;
   inserted: boolean;
   committed: boolean;
+  ranges: RichDeleteRange[];
 }
 export function placeInputPlugins(options: PlaceRuleOptions): Plugin[] {
   const replacement = (
@@ -945,33 +1070,62 @@ export function placeInputPlugins(options: PlaceRuleOptions): Plugin[] {
   rules.props.handleDOMEvents!.compositionend = () => false;
   const fallback: Plugin<CompositionState> = new Plugin<CompositionState>({
     state: {
-      init: () => ({ before: null, inserted: false, committed: false }),
+      init: () => ({
+        before: null,
+        inserted: false,
+        committed: false,
+        ranges: [],
+      }),
       apply(tr, previous) {
-        if (tr.getMeta("richNormalization")) return previous;
-        if (tr.getMeta("richCompositionStart"))
-          return { before: tr.doc, inserted: false, committed: false };
-        if (tr.getMeta("richCompositionEnd"))
+        if (tr.getMeta("richNormalization"))
           return {
-            before: null,
-            inserted: false,
-            committed:
-              previous.inserted &&
-              previous.before !== null &&
-              !tr.doc.eq(previous.before),
+            ...previous,
+            ranges: insertionRanges(tr, previous.ranges, false),
           };
+        if (tr.getMeta("richCompositionStart"))
+          return {
+            before: tr.doc,
+            inserted: false,
+            committed: false,
+            ranges: [],
+          };
+        if (tr.getMeta("richCompositionEnd")) {
+          const committed =
+            previous.inserted &&
+            previous.before !== null &&
+            !tr.doc.eq(previous.before);
+          return {
+            before: committed ? previous.before : null,
+            inserted: false,
+            committed,
+            ranges: committed ? previous.ranges : [],
+          };
+        }
         if (
           tr.getMeta(rules) ||
           tr.getMeta("richExternal") ||
           tr.getMeta("richRuleUndo")
         )
-          return { before: null, inserted: false, committed: false };
+          return {
+            before: null,
+            inserted: false,
+            committed: false,
+            ranges: [],
+          };
         const pasted = ["paste", "drop"].includes(tr.getMeta("uiEvent"));
+        const active = previous.committed
+          ? { before: null, inserted: false, committed: false, ranges: [] }
+          : previous;
         return {
-          ...previous,
+          ...active,
           committed: false,
           inserted:
-            previous.inserted ||
-            (previous.before !== null && !pasted && insertedContent(tr)),
+            active.inserted ||
+            (active.before !== null && !pasted && insertedContent(tr)),
+          ranges:
+            active.before !== null && !pasted
+              ? insertionRanges(tr, active.ranges)
+              : [],
         };
       },
     },
@@ -1000,10 +1154,39 @@ export function placeInputPlugins(options: PlaceRuleOptions): Plugin[] {
       const { $from, empty } = state.selection;
       if (!empty || !["paragraph", "literal"].includes($from.parent.type.name))
         return null;
-      const found = placeMatch(state.doc, $from.pos);
-      if (!found) return null;
-      const tr = replacement(state, found.match, found.from, $from.pos);
-      if (!tr) return null;
+      const ranges = committed
+        ? (fallback.getState(state)?.ranges ?? [])
+        : transactions.reduce<RichDeleteRange[]>(
+            (ranges, tr) =>
+              insertionRanges(tr, ranges, !tr.getMeta("richNormalization")),
+            [],
+          );
+      const tr = state.tr;
+      // Read completion points in input order, including a saved token prefix.
+      // Mapping keeps later points correct after an earlier token becomes a chip.
+      const points = new Set(
+        ranges.flatMap(({ from, to }) =>
+          Array.from({ length: to - from }, (_, offset) => from + offset + 1),
+        ),
+      );
+      for (const point of [...points].sort((a, b) => a - b)) {
+        const position = tr.mapping.map(point, 1);
+        if (position > tr.doc.content.size) break;
+        const found = placeMatch(tr.doc, position);
+        if (!found) continue;
+        const working = EditorState.create({
+          doc: tr.doc,
+          selection: tr.selection,
+        });
+        const converted = replacement(
+          working,
+          found.match,
+          found.from,
+          position,
+        );
+        if (converted) for (const step of converted.steps) tr.step(step);
+      }
+      if (!tr.docChanged) return null;
       return tr.setMeta(rules, {
         transform: tr,
         from: $from.pos,

@@ -1136,8 +1136,10 @@ function structureStrings(value: RichText): RichText {
       let index = 0;
       const pattern = /([①-⑳㉑-㉟㊱-㊿])|\{place (\d{1,5})\}/gu;
       for (const match of node.matchAll(pattern)) {
+        const place = match[1] ? circledPlace(match[1])! : Number(match[2]);
+        if (place < 1 || place > 65535) continue;
         if (match.index! > index) out.push(node.slice(index, match.index));
-        out.push(match[1] ? circledPlace(match[1])! : Number(match[2]));
+        out.push(place);
         index = match.index! + match[0].length;
       }
       if (index < node.length) out.push(node.slice(index));

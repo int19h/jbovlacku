@@ -392,6 +392,7 @@ export function applyProposals(draft: Draft, result: Suggestion) {
         break;
       case "/text":
         draft.text = editedRich(value as RichText, draft.text);
+        draft.numberingApproved = false;
         break;
       case "/frame":
         applyFrame(
