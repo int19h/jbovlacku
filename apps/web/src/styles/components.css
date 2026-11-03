@@ -1194,7 +1194,9 @@ label:is(.check, .opt, .chip):has(> input:only-of-type)
   display: grid;
 }
 .rich-place-grid-row {
-  display: contents;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
 }
 .rich-place-grid .btn,
 .rich-place-button {

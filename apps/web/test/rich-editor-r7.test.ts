@@ -1267,6 +1267,33 @@ for (const colorScheme of ["light", "dark"] as const) {
     await more.click();
     const grid = page.getByRole("grid", { name: "Places 4 to 50" });
     await expect(grid.getByRole("gridcell")).toHaveCount(47);
+    const gridRows = await grid.getByRole("row").evaluateAll((rows) =>
+      rows.map((row) =>
+        [...row.children].map((cell) => {
+          const { x, y, width, height } = cell.getBoundingClientRect();
+          return { x, y, width, height };
+        }),
+      ),
+    );
+    expect(gridRows).toHaveLength(8);
+    expect(gridRows[0]).toHaveLength(6);
+    for (const [index, row] of gridRows.entries()) {
+      expect(row).toHaveLength(index === gridRows.length - 1 ? 5 : 6);
+      for (const [column, cell] of row.entries()) {
+        expect(cell.width).toBeGreaterThanOrEqual(44);
+        expect(cell.height).toBeGreaterThanOrEqual(44);
+        expect(Math.abs(cell.x - gridRows[0][column].x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(cell.y - row[0].y)).toBeLessThanOrEqual(1);
+        if (column)
+          expect(cell.x).toBeGreaterThanOrEqual(
+            row[column - 1].x + row[column - 1].width,
+          );
+      }
+      if (index)
+        expect(row[0].y).toBeGreaterThanOrEqual(
+          gridRows[index - 1][0].y + gridRows[index - 1][0].height,
+        );
+    }
     expect(
       await grid.evaluate(
         (node) => getComputedStyle(node).gridTemplateColumns.split(" ").length,

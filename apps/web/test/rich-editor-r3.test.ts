@@ -117,6 +117,7 @@ test("r3 a native selection chosen before focus stays at its requested offset", 
   page,
 }) => {
   const field = await mount(page, [["hello world"]]);
+  await field.focus();
   await page
     .getByRole("button", { name: "Insert place 1", exact: true })
     .focus();

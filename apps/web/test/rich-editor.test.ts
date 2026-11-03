@@ -294,11 +294,13 @@ test("word links and code use accessible dialogs and preserve empty labels", asy
   await web
     .getByLabel("HTTPS address", { exact: true })
     .fill("https://example.org/");
-  await web.getByLabel("Link label", { exact: true }).fill("source\n\nlabel");
+  const label = web.getByLabel("Link label", { exact: true });
+  expect(await label.evaluate((node) => node.tagName)).toBe("INPUT");
+  await label.fill("source label");
   await web.getByRole("button", { name: "Insert", exact: true }).click();
   expect((await nodes(editor(page)))[0].at(-1)).toEqual({
     url: "https://example.org/",
-    label: "source\n\nlabel",
+    label: "source label",
   });
 });
 
