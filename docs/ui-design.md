@@ -347,7 +347,7 @@ The bottom actions are Back and “Use <form>.”
 ## Places screen, step 4
 
 The top shows headword, type, definition language, and “AI Fill in places and glosses.”
-The definition uses an actual accessible rich-text editor, with Place insertion, Link a word, and typed circled-number guidance.
+The definition uses an actual accessible rich-text editor, with Place insertion, Word link, and typed circled-number guidance.
 Places and operands use inline chips. Code and both link types use separate inline nodes.
 The toolbar inserts places 1 to 3 directly. More places opens a six-column grid with places 4 to 50.
 Each grid cell contains a native button. Declared places have an accent outline and the accessible name “Place N, declared”.
@@ -362,7 +362,8 @@ Editor place chips use 1.45em circles with wider badges for two digits and retai
 Selected chips use a 2px focus-token outline with a 1px offset.
 New link labels use single-line inputs. Selected line breaks become spaces, as the dialog explains.
 Existing multiline labels use multiline editing. Target-only edits preserve their exact stored labels.
-Link a word opens an accessible dialog. The toolbar also offers code insertion.
+Word link opens the “Link a word” dialog. Its accessible name starts with “Word link”.
+The toolbar also offers code insertion.
 Typed `___` and `__N__` convert on the final underscore. Backspace restores the typed characters.
 Literal mode and text-only paste follow the frontend specification.
 Glosses appear as removable chips with an add field. Every removal target meets the 44px rule.

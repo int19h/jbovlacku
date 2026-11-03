@@ -1031,7 +1031,8 @@ Tab leaves the grid and closes it. Declared places have an accent outline and th
 Arrow keys move within the grid. Home and End move to its first and last place. Escape closes it and returns focus to More places.
 Place controls show bold digits inside drawn circles. Every standalone control retains a 44px target.
 
-Link a word, Web link, and Insert code open labeled dialogs. New link labels use a single-line input.
+Word link, Web link, and Insert code open labeled dialogs.
+The Word link control has the accessible name “Word link, link a Lojban word”. New link labels use a single-line input.
 Line breaks in a selected new label become spaces, as the dialog explains.
 Editing an existing multiline label uses a multiline field and preserves its line breaks as LF after a label edit.
 A target-only edit preserves the exact stored label, including an existing multiline label.
@@ -1050,7 +1051,9 @@ The full `___` and `__N__` hint appears once under the definition, rather than u
 A toolbar insertion appends when the field never received focus.
 Web links require HTTPS addresses that [URL parsing](https://url.spec.whatwg.org/#concept-basic-url-parser) accepts.
 
-The editor preserves adjacent saved nodes, empty labels, paragraph boundaries, and every unchanged field. New prose joins nearby text unless an untouched saved boundary separates it.
+The editor preserves adjacent saved nodes, empty labels, paragraph boundaries, and every unchanged field.
+Typing and line or paragraph insertion across nodes preserve the type and link target of each unselected suffix.
+At the start of a code node or link label, chip insertion places the chip before that node. New prose joins nearby text unless an untouched saved boundary separates it.
 
 CR is a carriage return. LF is a line feed. CRLF is their two-character sequence.
 
@@ -1111,6 +1114,7 @@ These protocol rules do not establish which sequences physical keyboards or IMEs
 Paste reads only plain text. Clipboard content without usable plain text leaves the selection unchanged.
 Paste inside code or a link label stays within that node, including line breaks and circled numerals.
 HTML and editor markup stay inert text.
+Outside code and link labels, whitespace-only blank lines separate pasted paragraphs. Runs of blank lines make one paragraph break.
 
 When pasted text contains circled numbers, the editor offers literal text or explicit circled-number conversion. It never converts pasted underscores into places.
 Literal mode turns place references into circled characters after confirmation. It keeps links, code, and operands as separate nodes.

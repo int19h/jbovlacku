@@ -183,7 +183,8 @@ Changing only a link target keeps its label unchanged. New prose joins nearby te
 Character, word, line, selection, and cut requests use editor commands.
 Composition deletion can stay native inside one mapped text node.
 These commands join saved paragraphs without turning inline line breaks into paragraph breaks.
-Partial deletions keep surviving code and link labels in their original node types.
+Partial deletions and text replacements keep surviving code and link labels in their original node types and keep their link targets.
+Enter preserves those containers when it splits a paragraph. Inside code and link labels, Enter and Shift+Enter insert LF.
 Cut copies selected text before deletion.
 
 Blank paragraphs stay editable. Edited fields omit whitespace-only paragraphs from saved drafts and published records.
@@ -191,7 +192,7 @@ Edited empty optional fields stay absent. Untouched fields keep their exact valu
 
 Place-row updates with unchanged field values preserve the caret and undo history. An external reference rewrite starts new history, so undo cannot restore removed or renumbered references. Pointer focus keeps the clicked caret position. A word link stays a word link when its spelling starts with `https://`.
 
-The toolbar inserts places 1 to 3 directly. More places opens a six-column grid with places 4 to 50 and identifies declared places. Labeled dialogs insert word links and code, and Edit link changes an existing target or label. Accessible link names include their targets.
+The toolbar inserts places 1 to 3 directly. More places opens a six-column grid with places 4 to 50 and identifies declared places. The Word link control and labeled dialogs insert word links and code, and Edit link changes an existing target or label. Accessible link names include their targets.
 
 The toolbar uses one tab stop with arrow-key navigation. The definition toolbar stays visible. Other toolbars follow the editor in display and keyboard order. They appear while their field group has focus and keep their space reserved.
 Toolbar dialogs return focus to a visible invoker or the editor. New link labels use one line, with selected line breaks changed to spaces.
