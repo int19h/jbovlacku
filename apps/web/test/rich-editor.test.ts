@@ -253,14 +253,17 @@ test("word links and code use accessible dialogs and preserve empty labels", asy
 }) => {
   await seed(page);
   await toolbar(page)
-    .getByRole("button", { name: "Link a word", exact: true })
+    .getByRole("button", { name: "Word link, link a Lojban word", exact: true })
     .click();
   const dialog = page.getByRole("dialog", { name: "Link a word", exact: true });
   await expect(dialog.getByLabel("Lojban word")).toBeFocused();
   await dialog.getByLabel("Lojban word").fill("https://cukta");
   await dialog.getByRole("button", { name: "Insert", exact: true }).click();
   await expect(
-    toolbar(page).getByRole("button", { name: "Link a word", exact: true }),
+    toolbar(page).getByRole("button", {
+      name: "Word link, link a Lojban word",
+      exact: true,
+    }),
   ).toBeFocused();
   await toolbar(page)
     .getByRole("button", { name: "Insert code", exact: true })

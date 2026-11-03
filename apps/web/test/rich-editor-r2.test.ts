@@ -420,7 +420,7 @@ for (const kind of ["code", "word link", "web link"]) {
           kind === "code"
             ? "Insert code"
             : kind === "word link"
-              ? "Link a word"
+              ? "Word link, link a Lojban word"
               : "Web link",
         exact: true,
       })

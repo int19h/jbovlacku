@@ -236,7 +236,8 @@ for (const dialog of ["Link a word", "Web link", "Insert code", "Edit link"]) {
       [{ url: "https://example.org/", label: "label" }],
     ]);
     await choose(field, [0, 0, 2]);
-    const name = dialog === "Insert code" ? "Insert code" : dialog;
+    const name =
+      dialog === "Link a word" ? "Word link, link a Lojban word" : dialog;
     const invoker = page
       .getByRole("toolbar")
       .getByRole("button", { name, exact: true });

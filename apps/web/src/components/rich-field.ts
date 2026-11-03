@@ -490,6 +490,38 @@ export function richField(label: string, options: RichFieldOptions) {
     state: EditorState;
     timer: ReturnType<typeof setTimeout>;
   } | null = null;
+  const splitParagraph: Command = (state, dispatch, editor) => {
+    if (state.selection.$from.sameParent(state.selection.$to))
+      return baseKeymap.Enter(state, dispatch, editor);
+    let tr = state.tr;
+    deleteRichInput(tr, "deleteContentBackward", (next) => {
+      tr = next;
+    });
+    const splits: Transaction[] = [];
+    const trimmed = EditorState.create({
+      doc: tr.doc,
+      selection: tr.selection,
+    });
+    if (!baseKeymap.Enter(trimmed, (next) => splits.push(next), editor))
+      return false;
+    const split = splits[0];
+    if (split) {
+      for (const step of split.steps) tr.step(step);
+      tr.setSelection(
+        TextSelection.create(
+          tr.doc,
+          split.selection.anchor,
+          split.selection.head,
+        ),
+      );
+      dispatch?.(tr.setMeta("richDelete", false).scrollIntoView());
+    }
+    return true;
+  };
+  const insertLineBreak: Command = (state, dispatch) => {
+    dispatch?.(replaceRichText(state.tr, "\n"));
+    return true;
+  };
   const paragraphCommand = (type: string, mark = true) => {
     const { selection } = view.state;
     const line =
@@ -497,12 +529,7 @@ export function richField(label: string, options: RichFieldOptions) {
       ["code", "word_link", "web_link"].includes(
         selection.$from.parent.type.name,
       );
-    const command: Command = line
-      ? (state, dispatch) => {
-          dispatch?.(state.tr.insertText("\n"));
-          return true;
-        }
-      : baseKeymap.Enter;
+    const command = line ? insertLineBreak : splitParagraph;
     command(view.state, dispatchEdit, view);
     if (!mark) return;
     if (paragraphInput) clearTimeout(paragraphInput.timer);
@@ -665,10 +692,10 @@ export function richField(label: string, options: RichFieldOptions) {
               if (view.composing) return false;
               const selection = editingSelection(view.state, from, to);
               dispatchEdit(
-                view.state.tr
-                  .setSelection(selection)
-                  .insertText(value)
-                  .scrollIntoView(),
+                replaceRichText(
+                  view.state.tr.setSelection(selection),
+                  value,
+                ).scrollIntoView(),
               );
               return true;
             },
@@ -726,10 +753,7 @@ export function richField(label: string, options: RichFieldOptions) {
             );
             return true;
           },
-          "Shift-Enter": (state, dispatch) => {
-            dispatch?.(state.tr.insertText("\n"));
-            return true;
-          },
+          "Shift-Enter": insertLineBreak,
           Enter: (state, dispatch) => {
             if (
               !["code", "word_link", "web_link"].includes(
@@ -737,8 +761,7 @@ export function richField(label: string, options: RichFieldOptions) {
               )
             )
               return false;
-            dispatch?.(state.tr.insertText("\n"));
-            return true;
+            return insertLineBreak(state, dispatch);
           },
           "Mod-z": (state, dispatch) =>
             undo(
@@ -756,7 +779,7 @@ export function richField(label: string, options: RichFieldOptions) {
               dispatch && ((tr) => dispatch(tr.setMeta("richRuleUndo", true))),
             ),
         }),
-        commandKeymap(baseKeymap),
+        commandKeymap({ ...baseKeymap, Enter: splitParagraph }),
       ],
     });
   };
@@ -1313,7 +1336,7 @@ export function richField(label: string, options: RichFieldOptions) {
         const { from, to } = view.state.selection;
         const text = input.data;
         const insert = () =>
-          view.state.tr.insertText(text, from, to).scrollIntoView();
+          replaceRichText(view.state.tr, text).scrollIntoView();
         if (
           !view.someProp("handleTextInput", (handler) =>
             handler(view, from, to, text, insert),
@@ -1736,7 +1759,7 @@ export function richField(label: string, options: RichFieldOptions) {
         },
       );
     },
-    { class: "btn rich-action", "aria-label": "Link a word" },
+    { class: "btn rich-action", "aria-label": "Word link, link a Lojban word" },
   );
   const linkWeb = button(
     "Web link",
