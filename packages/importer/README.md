@@ -229,11 +229,12 @@ Source account management, cross-post marker reconciliation, and model-assisted 
 
 ## Places, rafsi, and attribution
 
-Extraction versions `lensisku-list-fidelity-v3` and `lensisku-sql-fidelity-v3` use the `explicit-x-places-v3` conversion recipe.
+Extraction versions `lensisku-list-fidelity-v3` and `lensisku-sql-fidelity-v3` use the `explicit-x-places-v4` conversion recipe.
 The [format specification](../../docs/format.md#placeholder-conversion-during-import) defines its supported forms and limits.
 The importer preserves exact source strings and records each converted span with Unicode scalar offsets.
 It declares observed indices in a context frame. It does not infer a complete place list.
-Notes, etymology, examples, source history, equations, component variables, and quoted relations remain literal.
+Notes, etymology, examples, source history, component variables, and quoted relations remain literal.
+Mathematical expressions use the finite guards in the format specification.
 
 Known `official_rafsi` and `experimental_rafsi` tokens create separate `rafsi.publish` records under the importer's key.
 SQL official claims cite `valsi.rafsi` with a word record. Experimental claims cite `definitions.rafsi` with a definition record.

@@ -1,4 +1,4 @@
-export const PLACE_CONVERSION_VERSION = "explicit-x-places-v3";
+export const PLACE_CONVERSION_VERSION = "explicit-x-places-v4";
 export interface PlaceMapping {
   field: string;
   start: number;
@@ -78,7 +78,7 @@ export function convertPlaces(source: string | null, field: string) {
       /(?:[\p{Sm}\p{Pd}*/^·:]|\\[a-zA-Z]+)\s*$/u.test(equationBefore) ||
       /^\s*(?:[\p{Sm}*/^·:]|\\[a-zA-Z]+)/u.test(equationAfter) ||
       (delimited
-        ? /^\s*\p{Pd}\s*(?:[$\\([{\p{N}\p{Sm}\p{Pd}]|\p{L}[\p{L}\p{M}\p{N}]*_|\p{L}\p{M}*\p{N}*(?![\p{L}\p{M}\p{N}_]))/u.test(
+        ? /^\s*\p{Pd}\s*(?:[$\\([{\p{N}\p{Sm}\p{Pd}*/^·:]|\p{L}[\p{L}\p{M}\p{N}]*_|\p{L}\p{M}*\p{N}*(?![\p{L}\p{M}\p{N}_]))/u.test(
             equationAfter,
           )
         : /^\s*\p{Pd}/u.test(equationAfter));

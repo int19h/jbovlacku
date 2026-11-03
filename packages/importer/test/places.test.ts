@@ -195,3 +195,21 @@ test("unconverted pattern summaries retain complete Unicode scalar values", () =
   );
   assert.deepEqual(result.text, [[source]]);
 });
+
+test("a dash does not hide the five extra mathematical operators", () => {
+  for (const operator of ["*", "/", "^", "·", ":", "+"]) {
+    for (const source of [`$x_1$ - ${operator} 2`, `$x_1$-${operator}2`]) {
+      const result = convertPlaces(source, "/definition");
+      assert.deepEqual(result.text, [[source]], source);
+      assert.equal(result.frame, null, source);
+      assert.deepEqual(result.conversion.mappings, [], source);
+      assert.deepEqual(result.unresolved, { $x_1$: 1 }, source);
+      assert.ok(
+        result.conversion.warnings.some((warning) =>
+          warning.includes('"$x_1$"'),
+        ),
+        source,
+      );
+    }
+  }
+});

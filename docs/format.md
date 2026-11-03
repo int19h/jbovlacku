@@ -1877,7 +1877,7 @@ A deterministic conversion pass recognizes a versioned set of explicit x-place f
 It never assigns place order from the appearance order of component variables such as g_1 or m_4.
 Foreign quotations, component equivalences, nested relations, and ambiguous math remain literal unless an explicit mapping resolves them.
 
-The `explicit-x-places-v3` recipe annotates only the main definition text.
+The `explicit-x-places-v4` recipe annotates only the main definition text.
 It recognizes lowercase `x_N` and `x_{N}`, where N uses ASCII digits without leading zeros and ranges from 1 through 65,535.
 Supported matching delimiters are `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`.
 A delimited expression must contain one supported form, with optional surrounding whitespace.
@@ -1891,6 +1891,7 @@ The operator guard holds a form literal beside Unicode math symbols, `*`, `/`, `
 Unicode dashes before a form remain operator guards.
 After a finished delimited form, a dash can introduce a prose gloss or suffix.
 After that dash, a dollar sign, backslash, opening bracket, digit, math symbol, or dash keeps the form literal.
+The extra operators `*`, `/`, `^`, `·`, and `:` also keep the form literal after a dash.
 A single letter with optional combining marks and numbers, or a component variable, also keeps it literal.
 Undelimited forms retain the dash guard on both sides.
 The guards also recognize neighboring operators across ordinary brackets and an adjacent function-call opening.
