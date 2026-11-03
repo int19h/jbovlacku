@@ -179,7 +179,15 @@ test("remote and local-fallback queries name the host before the first request",
     expect(statements[0]).toContain(
       `Search sends this query to ${new URL(page.url()).host}.`,
     );
-    expect(statements[1]).toContain(`Searched on ${new URL(page.url()).host}.`);
+    expect(statements[1]).toContain(
+      `Search sends this query to ${new URL(page.url()).host}.`,
+    );
+    await expect(
+      page.getByText(`Searched on ${new URL(page.url()).host}.`, {
+        exact: true,
+      }),
+    ).toBeHidden();
+    await page.getByText("Search source and snapshot", { exact: true }).click();
     await expect(
       page.getByText(`Searched on ${new URL(page.url()).host}.`, {
         exact: true,
@@ -271,13 +279,11 @@ test("reading preferences change orthography and preserve scores and singleton l
   await expect(page.locator(".word-head .zbalermorna")).toHaveCount(0);
 });
 
-test("search score details open by keyboard and list every supplied incoming identity", async ({
+test("word score details open by keyboard and list every supplied incoming identity", async ({
   page,
 }) => {
-  await page.goto("/search?q=book&lang=en");
-  const row = page
-    .locator("article.hit")
-    .filter({ has: page.getByRole("link", { name: "cukta", exact: true }) });
+  await page.goto("/word/cukta?lang=en");
+  const row = page.locator("article.definition").first();
   const summary = row.locator("details.judgment-details summary");
   await summary.focus();
   await page.keyboard.press("Enter");
@@ -474,8 +480,15 @@ test("failed disclosure persistence keeps remote reading and the session acknowl
   expect(statements[0]).toContain(
     `Search sends this query to ${new URL(page.url()).host}.`,
   );
-  for (const statement of statements.slice(1))
-    expect(statement).toContain(`Searched on ${new URL(page.url()).host}.`);
+  expect(statements[1]).toContain(
+    `Search sends this query to ${new URL(page.url()).host}.`,
+  );
+  for (const statement of statements.slice(2))
+    expect(statement).not.toContain("Search sends this query");
+  await page.getByText("Search source and snapshot", { exact: true }).click();
+  await expect(
+    page.getByText(`Searched on ${new URL(page.url()).host}.`, { exact: true }),
+  ).toBeVisible();
   expect(await page.evaluate(() => (window as any).disclosureWrites)).toBe(1);
   await expect(page.locator("main")).not.toContainText(
     "Preference storage failed",

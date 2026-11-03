@@ -493,7 +493,9 @@ test("word pages show tied layers, deprecated and unavailable definitions, and n
   await serveWord(page, records, { ...patch, calculation: null });
   await page.reload();
   await expect(
-    page.getByText(/ranking unavailable for this word. No score is assumed./),
+    page.getByText(
+      "Ranking is unavailable for this word. No score is assumed.",
+    ),
   ).toBeVisible();
   await expect(articles).toHaveCount(4);
   await expect(

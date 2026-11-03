@@ -248,9 +248,10 @@ export function scoreDetails(
   options: JudgmentOptions,
 ): HTMLElement {
   const score = options.unavailable ? null : options.score;
-  const summaryText = score
-    ? plural(score.direct_reviewers, "reviewer")
-    : "Score details";
+  const summaryText =
+    score && score.direct_reviewers > 0
+      ? plural(score.direct_reviewers, "reviewer")
+      : "Score details";
   const details = el("details", { class: "judgment-details" });
   const summary = el(
     "summary",
