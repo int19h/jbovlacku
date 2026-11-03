@@ -2586,14 +2586,14 @@ test("a completed extraction repair with mismatched bindings waits before rebuil
       assert.equal(wait.next_attempt, now + 60 * 60 * 1000);
       now += 5000;
       await background.cycle();
-      assert.equal(sources, 1);
+      assert.equal(sources, 2);
       assert.equal(
         await store.current(identity, ctx.evaluation.selected_view),
         current,
       );
       now = wait.next_attempt;
       await background.cycle();
-      assert.equal(sources, 2);
+      assert.equal(sources, 4);
     } finally {
       await background.close();
       sql.close();
@@ -2709,5 +2709,93 @@ test("a coverage callback failure enters the guarded background wait", async () 
       assert.equal(calls, 1);
     } finally {
       await background.close();
+    }
+  }));
+
+test("a newer snapshot after extraction repair proceeds without the same-snapshot wait", async () =>
+  fixture(async ({ store, scanner, docs, ctx, path }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const sql = new DatabaseSync(path);
+    sql.prepare("UPDATE semantic_associations SET extraction_version=2").run();
+    const identity = profileId(profile);
+    const nextDocs = rows(5);
+    const next = context(nextDocs, hash(9990));
+    let latest = ctx;
+    let now = Date.now();
+    const provider = recordingEmbedder();
+    const engine = new SemanticSearch(
+      { profile: identity, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: identity,
+      view: ctx.evaluation.selected_view,
+      assistance: provider.assistance,
+      now: () => now,
+      needed: async () =>
+        (await engine.profiles(latest)).some((row) => row.pending > 0),
+      source: async () => {
+        const selected = latest;
+        const documents = selected === ctx ? docs : nextDocs;
+        return {
+          context: {
+            snapshot: selected.snapshot.snapshot,
+            view: selected.evaluation.selected_view,
+            profile: identity,
+            eligible: documents.length,
+          },
+          page: async () => {
+            // A new completed snapshot arrives while the earlier source is prepared.
+            latest = next;
+            return { documents, next: documents.at(-1)!.event, done: true };
+          },
+        };
+      },
+      probe: (generation, selected) => engine.probe(generation, selected),
+      report: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await background.cycle();
+      const first = (await store.current(
+        identity,
+        ctx.evaluation.selected_view,
+      ))!;
+      assert.equal(
+        (await store.generation(first)).snapshot,
+        ctx.snapshot.snapshot,
+      );
+      assert.equal((await store.generation(first)).state, "completed");
+      assert.equal((await engine.profiles(latest))[0].pending, 1);
+      assert.equal(
+        await store.backgroundWait(identity, ctx.evaluation.selected_view),
+        null,
+      );
+      now += 5000;
+      await background.cycle();
+      const second = (await store.current(
+        identity,
+        ctx.evaluation.selected_view,
+      ))!;
+      assert.notEqual(second, first);
+      assert.equal(
+        (await store.generation(second)).snapshot,
+        next.snapshot.snapshot,
+      );
+      assert.equal((await store.generation(second)).state, "completed");
+      assert.deepEqual(await store.coverage(second), {
+        eligible: 5,
+        indexed: 5,
+        pending: 0,
+        failed: 0,
+      });
+      assert.deepEqual(provider.calls, ["probe", "index"]);
+    } finally {
+      await background.close();
+      sql.close();
     }
   }));

@@ -353,7 +353,8 @@ New definitions remain pending while unchanged definitions stay searchable. Opti
 
 Stale event bindings count as pending. Operator status compares every binding field against the retained snapshot.
 Background indexing rebuilds stale associations after an extraction change, even within the same snapshot.
-If a completed repair leaves pending targets, it waits one hour before another attempt.
+If a completed repair leaves pending targets in the same snapshot, it waits one hour before another attempt.
+A newer snapshot proceeds on the next cycle.
 The preceding generation serves still-valid hits until the replacement publishes. Unchanged input bytes reuse stored vectors without another embedding call.
 Matching associations with input errors or failed provider attempts still count as failed.
 When every valid input has a stored vector, `input_limit` errors trigger no provider probe and keep their failed counts.

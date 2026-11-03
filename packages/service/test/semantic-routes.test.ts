@@ -510,6 +510,37 @@ test("routes advertise compatible partial indexes, retain lexical reads, and val
       0,
     );
 
+    // Start the shipped host with a stale completed generation for its exact snapshot.
+    const staleSource = await service.semanticSource(profile);
+    const stale = await store.create(staleSource.context, profile);
+    await indexer.prepare(stale.id, staleSource);
+    await indexer.run(stale.id);
+    assert.equal((await store.generation(stale.id)).state, "completed");
+    assert(
+      await store.publish(
+        stale.id,
+        await store.current(profileId(profile), view.envelope.id),
+      ),
+    );
+    const staleSql = new DatabaseSync(
+      join(directory, "semantic-vectors.sqlite"),
+    );
+    try {
+      staleSql
+        .prepare(
+          "UPDATE semantic_associations SET extraction_version=2 WHERE generation=?",
+        )
+        .run(stale.id);
+    } finally {
+      staleSql.close();
+    }
+    assert.deepEqual(await store.coverage(stale.id), {
+      eligible: 1,
+      indexed: 0,
+      pending: 1,
+      failed: 0,
+    });
+
     // Exercise the shipped host, its directory lock, and its own background timer.
     const key = join(directory, "mock-key.txt");
     await writeFile(key, "disposable-semantic-key", { mode: 0o600 });
@@ -559,6 +590,40 @@ test("routes advertise compatible partial indexes, retain lexical reads, and val
       await until(async () => logs.includes('"event":"listening"'));
       const profiles = async () =>
         (await read(await fetch(baseUrl + "/embedding-profiles"))).profiles[0];
+      assert.equal((await profiles()).pending, 1);
+      assert.equal((await profiles()).indexed, 0);
+      await until(async () => (await profiles()).pending === 0);
+      const rebuilt = (await store.current(
+        profileId(profile),
+        view.envelope.id,
+      ))!;
+      assert.notEqual(rebuilt, stale.id);
+      assert.equal((await store.generation(rebuilt)).snapshot, stale.snapshot);
+      assert.equal((await store.generation(rebuilt)).state, "completed");
+      assert.deepEqual(await store.coverage(rebuilt), {
+        eligible: 1,
+        indexed: 1,
+        pending: 0,
+        failed: 0,
+      });
+      assert.equal((await store.summary(rebuilt)).batches, 0);
+      assert.equal(
+        (await read(await fetch(baseUrl + "/manifest"))).snapshot,
+        stale.snapshot,
+      );
+      const providerCalls = async () => {
+        const reply = once(child, "message");
+        child.send({ stats: true });
+        return (await reply)[0].calls;
+      };
+      assert.equal(await providerCalls(), 0);
+      // The real background timer completes another idle cycle without replacement.
+      await new Promise((resolve) => setTimeout(resolve, 5500));
+      assert.equal(
+        await store.current(profileId(profile), view.envelope.id),
+        rebuilt,
+      );
+      assert.equal(await providerCalls(), 0);
       for (let n = 0; n < 2; n++) {
         const added = createEvent(
           seed,

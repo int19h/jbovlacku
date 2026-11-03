@@ -182,7 +182,12 @@ export class BackgroundSemanticIndexer {
       if (result.generation.state === "completed") {
         if (!result.generation.background_inputs)
           await store.setBackgroundRecovery(job.id, null);
-        if (needed && (await this.options.needed?.())) {
+        if (
+          needed &&
+          (await this.options.needed?.()) &&
+          (await this.options.source(profile)).context.snapshot ===
+            result.generation.snapshot
+        ) {
           await store.setBackgroundWait(identity, view, {
             next_attempt: this.now() + LONG_COOLDOWN,
             not_before: 0,
