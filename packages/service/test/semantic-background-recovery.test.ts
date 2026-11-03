@@ -3,7 +3,11 @@ import { before, test, type TestContext } from "node:test";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initializeCore, utf8 } from "../../core/src/index.ts";
+import {
+  initializeCore,
+  semanticProjectionVersion,
+  utf8,
+} from "../../core/src/index.ts";
 import { SqliteVectorStore } from "../../../apps/server/src/semantic.ts";
 import { SqliteAssistanceBudgetStore } from "../../../apps/server/src/assistance.ts";
 import { AssistanceService } from "../src/assistance.ts";
@@ -61,7 +65,7 @@ function documents(count: number): IndexDocument[] {
       event: hash(i + 1, "jve1:"),
       envelope: hash(i + 100),
       body: hash(i + 200),
-      extraction_version: 2,
+      extraction_version: semanticProjectionVersion(),
       word: hash(i + 300, "jvw1:"),
       language: "en",
       input,

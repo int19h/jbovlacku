@@ -13,7 +13,11 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { initializeCore, utf8 } from "../../core/src/index.ts";
+import {
+  semanticProjectionVersion,
+  initializeCore,
+  utf8,
+} from "../../core/src/index.ts";
 import { lockDataDirectory } from "../../importer/src/load-lock.ts";
 import { SqliteVectorStore } from "../../../apps/server/src/semantic.ts";
 import { SqliteAssistanceBudgetStore } from "../../../apps/server/src/assistance.ts";
@@ -73,7 +77,7 @@ async function prepare(
         event,
         envelope: hash(n + 100),
         body: hash(n + 200),
-        extraction_version: 1,
+        extraction_version: semanticProjectionVersion(),
         word: hash(n, "jvw1:"),
         language: "en",
         input,
@@ -303,7 +307,8 @@ globalThis.fetch = async (url, init) => {
 
     const completed = await status("run", fresh.id, "success");
     assert.equal(completed.generation.state, "completed");
-    assert.equal(completed.coverage.indexed, 1);
+    assert.equal(completed.coverage.indexed, 0);
+    assert.equal(completed.coverage.pending, 1);
     assert.equal(completed.batches.length, 1);
     assert.equal(completed.batches[0].previous, null);
     assert.notEqual(completed.batches[0].operation, batch.operation);
@@ -387,7 +392,7 @@ test("R7 the CLI retires a suspended completed background job after exact unpubl
               event: hash(200, "jve1:"),
               envelope: hash(300),
               body: hash(400),
-              extraction_version: 2,
+              extraction_version: semanticProjectionVersion(),
               word: hash(200, "jvw1:"),
               language: "en",
               input,

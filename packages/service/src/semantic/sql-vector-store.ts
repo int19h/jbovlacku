@@ -1,3 +1,4 @@
+import { semanticProjectionVersion } from "../../../core/src/index.ts";
 import {
   canonicalBytes,
   inputHash,
@@ -479,7 +480,7 @@ export class SqlVectorStore implements VectorStore {
             row.extraction_version !== binding.extraction_version);
         const language = (languages[binding.language] ??= empty());
         const status = mismatch
-          ? "failed"
+          ? "pending"
           : row?.indexed && !row.error
             ? "indexed"
             : row &&
@@ -810,16 +811,41 @@ export class SqlVectorStore implements VectorStore {
       );
     });
   }
-  async coverage(id: string, language?: string) {
+  async needsEmbedding(id: string): Promise<boolean> {
+    const generation = this.active(id);
+    return (
+      this.sql.exec(
+        `SELECT 1 FROM semantic_associations a
+      LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
+      WHERE a.generation=? AND a.error IS NULL AND a.input IS NOT NULL AND v.input IS NULL LIMIT 1`,
+        generation.profile,
+        id,
+      ).length > 0
+    );
+  }
+  async coverage(
+    id: string,
+    language?: string,
+    expected?: ExpectedAssociation[],
+  ) {
+    if (expected) {
+      const selected =
+        language === undefined
+          ? expected
+          : expected.filter((row) => row.language === language);
+      return (await this.coverageFor(id, selected)).all;
+    }
     const generation = this.active(id);
     const row = this.sql.exec(
       `SELECT COUNT(*) AS eligible,
-      COALESCE(SUM(v.input IS NOT NULL),0) AS indexed,
-      COALESCE(SUM(a.error IS NOT NULL OR (v.input IS NULL AND (h.input IS NOT NULL OR b.state IN ('failed','ambiguous')))),0) AS failed
+      COALESCE(SUM(a.extraction_version=? AND a.error IS NULL AND v.input IS NOT NULL),0) AS indexed,
+      COALESCE(SUM(a.extraction_version=? AND (a.error IS NOT NULL OR (v.input IS NULL AND (h.input IS NOT NULL OR b.state IN ('failed','ambiguous'))))),0) AS failed
       FROM semantic_associations a LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=a.input
       LEFT JOIN semantic_background_inputs h ON h.profile=? AND h.input=a.input
       LEFT JOIN semantic_batch_inputs bi ON bi.generation=a.generation AND bi.input=a.input
       LEFT JOIN semantic_batches b ON b.id=bi.batch WHERE a.generation=? ${language === undefined ? "" : "AND a.language=?"}`,
+      semanticProjectionVersion(),
+      semanticProjectionVersion(),
       generation.profile,
       generation.profile,
       id,

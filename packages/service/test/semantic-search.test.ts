@@ -13,7 +13,11 @@ import {
 import { SqliteVectorStore } from "../../../apps/server/src/semantic.ts";
 import { NodeVectorScanner } from "../../../apps/server/src/semantic-scanner.ts";
 import { SqlQueryCache } from "../src/semantic/query-cache.ts";
-import { SemanticSearch, type SearchContext } from "../src/semantic/search.ts";
+import {
+  SemanticSearch,
+  expectedAssociations,
+  type SearchContext,
+} from "../src/semantic/search.ts";
 import {
   createQwenProfile,
   inputHash,
@@ -24,6 +28,7 @@ import { scanPages, type VectorScanner } from "../src/semantic/scan.ts";
 import { AssistanceService } from "../src/assistance.ts";
 import { providerConfig } from "../src/inference.ts";
 import type { IndexDocument } from "../src/semantic/source.ts";
+import type { IndexEmbedder } from "../src/semantic/indexer.ts";
 import type { Snapshot } from "../src/storage.ts";
 
 before(async () =>
@@ -210,6 +215,53 @@ function mock() {
       drift = true;
     },
   };
+}
+function recordingEmbedder(axis = 0) {
+  const calls: string[] = [];
+  const assistance: IndexEmbedder = {
+    embed: async (inputs, caller, _signal, before) => {
+      calls.push(caller.kind);
+      const operation = `embedding:${caller.kind}:recorded-${calls.length}`;
+      await before?.(operation);
+      return {
+        operation,
+        vectors: inputs.map(() => unit(axis)),
+        usage,
+        model: profile.model,
+      };
+    },
+    embeddingOperationPending: () => false,
+  };
+  return { calls, assistance };
+}
+async function failedBackgroundGeneration(
+  store: SqliteVectorStore,
+  docs: IndexDocument[],
+  ctx: SearchContext,
+  state: "failed" | "ambiguous",
+) {
+  const generation = await store.create(
+    {
+      snapshot: ctx.snapshot.snapshot,
+      view: ctx.evaluation.selected_view,
+      profile: profileId(profile),
+      eligible: docs.length,
+    },
+    profile,
+  );
+  await store.stage(generation.id, null, {
+    documents: docs,
+    next: docs.at(-1)!.event,
+    done: true,
+  });
+  await store.setBackgroundGeneration(generation.id);
+  await store.start(generation.id);
+  const batch = (await store.claim(generation.id))!;
+  if (state === "ambiguous")
+    await store.sent(batch.id, "embedding:index:failed-parent");
+  await store.fail(batch.id, "embedding_provider");
+  await store.pause(generation.id, "embedding_provider");
+  return { generation, batch };
 }
 const request = (query = "a meaning") => ({
   query,
@@ -495,7 +547,7 @@ test("query cache enforces byte and entry limits without retaining query text", 
   }
 });
 
-test("current coverage filters old inert associations and checks exact extraction and body bindings", async () =>
+test("current coverage filters old inert associations and counts stale bindings as pending", async () =>
   fixture(async ({ store, scanner, path, docs, ctx }) => {
     const provider = mock();
     const current = structuredClone(ctx.evaluation);
@@ -521,29 +573,55 @@ test("current coverage filters old inert associations and checks exact extractio
     );
     const sql = new DatabaseSync(path);
     try {
-      for (const mutation of [
-        "extraction_version=1",
-        `body='${hash(99999)}'`,
-      ]) {
-        sql.exec(
-          `UPDATE semantic_associations SET ${mutation} WHERE event='${docs[2].event}'`,
-        );
+      for (const [field, value] of [
+        ["extraction_version", 2],
+        ["envelope", hash(99998)],
+        ["body", hash(99999)],
+        ["word", hash(99999, "jvw1:")],
+        ["language", "fr"],
+      ] as const) {
+        sql
+          .prepare(`UPDATE semantic_associations SET ${field}=? WHERE event=?`)
+          .run(value, docs[2].event);
         const changed = new SemanticSearch(options, provider.assistance, true);
-        assert.equal(
-          (await changed.profiles(selected))[0].query_available,
-          true,
+        const description = (await changed.profiles(selected))[0];
+        assert.equal(description.query_available, true);
+        assert.equal(description.pending, 1);
+        assert(
+          !description.limitations.some((line) =>
+            line.includes("failed indexing"),
+          ),
+        );
+        assert.deepEqual(
+          await store.coverage(
+            (await store.current(
+              profileId(profile),
+              ctx.evaluation.selected_view,
+            ))!,
+            undefined,
+            expectedAssociations(selected),
+          ),
+          {
+            eligible: 2,
+            indexed: 1,
+            pending: 1,
+            failed: 0,
+          },
         );
         const result = await changed.search(selected, request(), "local");
-        assert.equal(result.coverage.failed, 1);
+        assert.deepEqual(result.coverage, {
+          eligible: 2,
+          indexed: 1,
+          pending: 1,
+          failed: 0,
+        });
         assert.deepEqual(
           result.hits.map((hit) => hit.event),
           [docs[3].event],
         );
         sql
-          .prepare(
-            `UPDATE semantic_associations SET extraction_version=${semanticProjectionVersion()},body=? WHERE event=?`,
-          )
-          .run(docs[2].body, docs[2].event);
+          .prepare(`UPDATE semantic_associations SET ${field}=? WHERE event=?`)
+          .run(docs[2][field], docs[2].event);
       }
       // Equal aggregate counts cannot hide one absent currently eligible association.
       sql
@@ -562,6 +640,97 @@ test("current coverage filters old inert associations and checks exact extractio
     }
     assert.deepEqual(provider.calls, ["probe", "query"]);
   }));
+
+for (const batchState of ["failed", "ambiguous"] as const)
+  test(`exact input and provider failures stay failed while stale failures become pending (${batchState})`, async () =>
+    fixture(async ({ store, scanner, path }) => {
+      const docs = rows(6);
+      docs[4] = {
+        ...docs[4],
+        input: null,
+        input_hash: null,
+        error: "input_limit",
+      };
+      const ctx = context(docs, hash(9850));
+      const generation = await store.create(
+        {
+          snapshot: ctx.snapshot.snapshot,
+          view: ctx.evaluation.selected_view,
+          profile: profileId(profile),
+          eligible: docs.length,
+        },
+        profile,
+      );
+      await store.stage(generation.id, null, {
+        documents: docs,
+        next: docs.at(-1)!.event,
+        done: true,
+      });
+      await store.start(generation.id);
+      const batch = (await store.claim(generation.id))!;
+      assert.deepEqual(batch.inputs, [docs[5].input_hash]);
+      if (batchState === "ambiguous")
+        await store.sent(batch.id, "embedding:index:provider-failure");
+      await store.fail(batch.id, "embedding_provider");
+      await store.pause(generation.id, "embedding_provider");
+      await store.publish(
+        generation.id,
+        await store.current(generation.profile, generation.view),
+      );
+      const engine = new SemanticSearch(
+        {
+          profile: generation.profile,
+          store,
+          cache: store.queryCache,
+          scanner,
+        },
+        mock().assistance,
+        true,
+      );
+      const exact = await engine.search(
+        ctx,
+        { ...request(), limit: 100 },
+        "local",
+      );
+      assert.deepEqual(exact.coverage, {
+        eligible: 6,
+        indexed: 4,
+        pending: 0,
+        failed: 2,
+      });
+      assert(
+        (await engine.profiles(ctx))[0].limitations.includes(
+          "2 definitions failed indexing.",
+        ),
+      );
+      const sql = new DatabaseSync(path);
+      try {
+        sql
+          .prepare(
+            "UPDATE semantic_associations SET extraction_version=2 WHERE event IN (?,?)",
+          )
+          .run(docs[4].event, docs[5].event);
+        const stale = await engine.search(
+          ctx,
+          { ...request(), limit: 100 },
+          "local",
+        );
+        assert.deepEqual(stale.coverage, {
+          eligible: 6,
+          indexed: 4,
+          pending: 2,
+          failed: 0,
+        });
+        assert.deepEqual(await store.coverage(generation.id), stale.coverage);
+        assert.equal((await store.batches(generation.id))[0].state, batchState);
+        assert.equal(
+          (await store.page(generation.id)).rows[4].error,
+          "input_limit",
+        );
+      } finally {
+        sql.close();
+      }
+    }));
 
 test("a complete empty context returns no hits or paid probe and a warm hit survives budget exhaustion", async () =>
   fixture(async ({ store, scanner, ctx }) => {
@@ -695,7 +864,7 @@ test("partial coverage retains unchanged definitions and omits missing or mismat
     const description = (await engine.profiles(changed))[0];
     assert.equal(description.query_available, true);
     assert.equal(description.indexed, 3);
-    assert.equal(description.pending, 1);
+    assert.equal(description.pending, 2);
     const result = await engine.search(
       changed,
       { ...request(), limit: 100 },
@@ -705,8 +874,8 @@ test("partial coverage retains unchanged definitions and omits missing or mismat
     assert.deepEqual(result.coverage, {
       eligible: 5,
       indexed: 3,
-      pending: 1,
-      failed: 1,
+      pending: 2,
+      failed: 0,
     });
     assert.deepEqual(
       result.hits.map((hit) => hit.event),
@@ -1702,6 +1871,405 @@ for (const mode of ["batch", "probe"] as const)
       }
     }));
 
+for (const owner of ["operator", "background"] as const)
+  test(`${owner} generation with stale extraction rebuilds in the same snapshot and reuses vectors`, async () =>
+    fixture(async ({ store, scanner, path, docs, ctx }) => {
+      const { BackgroundSemanticIndexer } =
+        await import("../src/semantic/background.ts");
+      const identity = profileId(profile);
+      const view = ctx.evaluation.selected_view;
+      const old = (await store.current(identity, view))!;
+      if (owner === "background") await store.setBackgroundGeneration(old);
+      const sql = new DatabaseSync(path);
+      const staleCount = owner === "operator" ? 2 : docs.length;
+      sql
+        .prepare(
+          `UPDATE semantic_associations SET extraction_version=2 WHERE event IN (${docs
+            .slice(0, staleCount)
+            .map(() => "?")
+            .join(",")})`,
+        )
+        .run(...docs.slice(0, staleCount).map((row) => row.event));
+      assert.deepEqual(await store.coverage(old), {
+        eligible: docs.length,
+        indexed: docs.length - staleCount,
+        pending: staleCount,
+        failed: 0,
+      });
+      const engine = new SemanticSearch(
+        { profile: identity, store, cache: store.queryCache, scanner },
+        mock().assistance,
+        true,
+      );
+      let staged!: () => void;
+      const staging = new Promise<void>((resolve) => {
+        staged = resolve;
+      });
+      let resume!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      let sources = 0;
+      let pages = 0;
+      const background = new BackgroundSemanticIndexer({
+        store,
+        profile: identity,
+        view,
+        bindings: async () => expectedAssociations(ctx),
+        needed: async () =>
+          (await engine.profiles(ctx)).some((row) => row.pending > 0),
+        source: async () => {
+          sources++;
+          return {
+            context: {
+              snapshot: ctx.snapshot.snapshot,
+              view,
+              profile: identity,
+              eligible: docs.length,
+            },
+            page: async (after) => {
+              pages++;
+              if (after === null)
+                return {
+                  documents: docs.slice(0, 2),
+                  next: docs[1].event,
+                  done: false,
+                };
+              assert.equal(after, docs[1].event);
+              staged();
+              await gate;
+              return {
+                documents: docs.slice(2),
+                next: docs.at(-1)!.event,
+                done: true,
+              };
+            },
+          };
+        },
+        assistance: {
+          embed: async () => {
+            throw new Error("Unchanged inputs need no embedding call");
+          },
+        },
+        probe: async () => {
+          throw new Error("Reused vectors need no new indexing probe");
+        },
+        report: (error) => {
+          throw error;
+        },
+      });
+      const work = background.cycle();
+      try {
+        assert.equal(
+          await Promise.race([
+            staging.then(() => true),
+            work.then(() => false),
+          ]),
+          true,
+          "Pending extraction changes must start a new generation for the same snapshot",
+        );
+        assert.equal(await store.current(identity, view), old);
+        const partial = await engine.search(
+          ctx,
+          { ...request(), limit: 100 },
+          "local",
+        );
+        assert.deepEqual(partial.coverage, {
+          eligible: 4,
+          indexed: docs.length - staleCount,
+          pending: staleCount,
+          failed: 0,
+        });
+        assert.deepEqual(
+          partial.hits.map((hit) => hit.event),
+          docs.slice(staleCount).map((row) => row.event),
+        );
+        resume();
+        await work;
+        const current = (await store.current(identity, view))!;
+        assert.notEqual(current, old);
+        assert.equal(
+          (await store.generation(current)).snapshot,
+          ctx.snapshot.snapshot,
+        );
+        assert.equal((await store.generation(current)).state, "completed");
+        assert.equal((await store.summary(current)).batches, 0);
+        assert(
+          (await store.page(current)).rows.every(
+            (row) => row.extraction_version === semanticProjectionVersion(),
+          ),
+        );
+        for (const table of ["semantic_inputs", "semantic_vectors"])
+          assert.equal(
+            sql.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()!.n,
+            docs.length,
+          );
+        const rebuilt = await engine.search(
+          ctx,
+          { ...request(), limit: 100 },
+          "local",
+        );
+        assert.deepEqual(rebuilt.coverage, {
+          eligible: 4,
+          indexed: 4,
+          pending: 0,
+          failed: 0,
+        });
+        assert.deepEqual(
+          rebuilt.hits.map((hit) => hit.event),
+          docs.map((row) => row.event),
+        );
+        await background.cycle();
+        assert.equal(await store.current(identity, view), current);
+        assert.equal(sources, 2);
+        assert.equal(pages, 2);
+      } finally {
+        resume();
+        await work;
+        await background.close();
+        sql.close();
+      }
+    }));
+
+test("stale cached inputs and an unchanged input limit rebuild without any embedding or probe call", async () =>
+  fixture(async ({ store, scanner }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const docs = rows(5);
+    docs[4] = {
+      ...docs[4],
+      input: null,
+      input_hash: null,
+      error: "input_limit",
+    };
+    const ctx = context(docs, hash(9650));
+    const old = await publish(
+      store,
+      docs.map((row) => ({ ...row, extraction_version: 2 })),
+      ctx,
+    );
+    const provider = recordingEmbedder();
+    const engine = new SemanticSearch(
+      { profile: old.profile, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    assert.equal((await engine.profiles(ctx))[0].pending, docs.length);
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: old.profile,
+      view: old.view,
+      assistance: provider.assistance,
+      source: async () => ({
+        context: {
+          snapshot: old.snapshot,
+          view: old.view,
+          profile: old.profile,
+          eligible: docs.length,
+        },
+        page: async () => ({
+          documents: docs,
+          next: docs.at(-1)!.event,
+          done: true,
+        }),
+      }),
+      bindings: async () => expectedAssociations(ctx),
+      needed: async () =>
+        (await engine.profiles(ctx)).some((row) => row.pending > 0),
+      probe: (generation, selectedProfile) =>
+        engine.probe(generation, selectedProfile),
+      report: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await background.cycle();
+      const current = (await store.current(old.profile, old.view))!;
+      assert.notEqual(current, old.id);
+      assert.equal((await store.generation(current)).snapshot, old.snapshot);
+      assert.equal((await store.generation(current)).state, "completed");
+      assert.deepEqual(await store.coverage(current), {
+        eligible: 5,
+        indexed: 4,
+        pending: 0,
+        failed: 1,
+      });
+      assert.equal((await store.summary(current)).batches, 0);
+      assert.equal((await store.page(current)).rows[4].error, "input_limit");
+      assert(
+        (await engine.profiles(ctx))[0].limitations.includes(
+          "1 definitions failed indexing.",
+        ),
+      );
+      assert.deepEqual(provider.calls, []);
+    } finally {
+      await background.close();
+    }
+  }));
+
+for (const state of ["failed", "ambiguous"] as const)
+  for (const outcome of ["missing", "cached", "drift"] as const)
+    test(`${state} background retry probes only missing vectors before dispatch (${outcome})`, async () =>
+      fixture(async ({ store, scanner }) => {
+        const { BackgroundSemanticIndexer } =
+          await import("../src/semantic/background.ts");
+        const docs = rows(5);
+        const ctx = context(docs, hash(9660));
+        const { generation, batch } = await failedBackgroundGeneration(
+          store,
+          docs,
+          ctx,
+          state,
+        );
+        if (outcome === "cached") await publish(store, docs, ctx);
+        const provider = recordingEmbedder(outcome === "drift" ? 1 : 0);
+        const statuses: string[] = [];
+        const engine = new SemanticSearch(
+          {
+            profile: generation.profile,
+            store,
+            cache: store.queryCache,
+            scanner,
+          },
+          provider.assistance,
+          true,
+        );
+        const background = new BackgroundSemanticIndexer({
+          store,
+          profile: generation.profile,
+          view: generation.view,
+          assistance: provider.assistance,
+          source: async () => {
+            throw new Error("A prepared retry needs no source read");
+          },
+          probe: (selected, selectedProfile) =>
+            engine.probe(selected, selectedProfile),
+          report: (error) => {
+            throw error;
+          },
+          status: (message) => statuses.push(message),
+        });
+        try {
+          await background.cycle();
+          const batches = await store.batches(generation.id);
+          assert.equal(
+            batches.find((row) => row.id === batch.id)!.state,
+            state,
+          );
+          if (outcome === "drift") {
+            assert.deepEqual(provider.calls, ["probe"]);
+            assert.equal(
+              await store.compatibility(generation.profile),
+              "semantic_model_drift",
+            );
+            assert.equal(
+              (await store.generation(generation.id)).state,
+              "paused",
+            );
+            assert.equal(batches.length, 1);
+            assert(
+              statuses.some((message) =>
+                message.includes("semantic_model_drift"),
+              ),
+            );
+          } else {
+            assert.deepEqual(
+              provider.calls,
+              outcome === "cached" ? [] : ["probe", "index"],
+            );
+            assert.equal(
+              (await store.generation(generation.id)).state,
+              "completed",
+            );
+            assert.deepEqual(await store.coverage(generation.id), {
+              eligible: 5,
+              indexed: 5,
+              pending: 0,
+              failed: 0,
+            });
+            assert.equal(batches.length, outcome === "cached" ? 1 : 2);
+            if (outcome === "missing")
+              assert.equal(
+                batches.find((row) => row.previous === batch.id)!.state,
+                "completed",
+              );
+          }
+        } finally {
+          await background.close();
+        }
+      }));
+
+test("a held input that becomes due before claim still receives a drift probe", async (t) =>
+  fixture(async ({ store, scanner }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    let now = Date.now();
+    t.mock.method(Date, "now", () => now);
+    const docs = rows(5);
+    const ctx = context(docs, hash(9670));
+    const { generation, batch } = await failedBackgroundGeneration(
+      store,
+      docs,
+      ctx,
+      "failed",
+    );
+    const deadline = now + 1000;
+    await store.holdBackgroundInputs(
+      batch,
+      {
+        next_attempt: deadline,
+        not_before: 0,
+        sent_attempts: 4,
+        refusals: 0,
+        exhausted: true,
+        reason: "embedding_provider",
+      },
+      false,
+      now,
+    );
+    const provider = recordingEmbedder();
+    const engine = new SemanticSearch(
+      { profile: generation.profile, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: generation.profile,
+      view: generation.view,
+      assistance: provider.assistance,
+      source: async () => {
+        throw new Error("A prepared retry needs no source read");
+      },
+      probe: (selected, selectedProfile) =>
+        engine.probe(selected, selectedProfile),
+      report: (error) => {
+        throw error;
+      },
+    });
+    const start = store.start.bind(store);
+    store.start = async (id) => {
+      assert.deepEqual(provider.calls, ["probe"]);
+      now = deadline;
+      await start(id);
+    };
+    try {
+      await background.cycle();
+      assert.deepEqual(provider.calls, ["probe", "index"]);
+      assert.equal((await store.generation(generation.id)).state, "completed");
+      assert.equal((await store.coverage(generation.id)).indexed, docs.length);
+      const batches = await store.batches(generation.id);
+      assert.equal(batches.length, 2);
+      assert.equal(
+        batches.find((row) => row.previous === batch.id)!.state,
+        "completed",
+      );
+    } finally {
+      store.start = start;
+      await background.close();
+    }
+  }));
+
 test("a snapshot change with complete exact coverage does not create a background generation", async () =>
   fixture(async ({ store, scanner, docs, ctx }) => {
     const { BackgroundSemanticIndexer } =
@@ -1889,3 +2457,988 @@ test("profile coverage holds a generation lease across background publication an
       await work;
     }
   }));
+
+test("an extraction rebuild embeds changed bytes and reuses unchanged inputs", async () =>
+  fixture(async ({ store, scanner, docs, ctx }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const oldDocs = docs.map((row) => ({ ...row, extraction_version: 2 }));
+    docs = docs.map((row, i) => {
+      const input = i < 2 ? utf8(`New extraction recipe ${i}`) : row.input!;
+      return { ...row, input, input_hash: inputHash(input) };
+    });
+    const old = await publish(store, oldDocs, ctx);
+    const provider = recordingEmbedder();
+    const embedded: string[] = [];
+    const embed = provider.assistance.embed;
+    provider.assistance.embed = async (inputs, ...args) => {
+      if (args[0].kind === "index") embedded.push(...inputs.map(inputHash));
+      return embed(inputs, ...args);
+    };
+    const engine = new SemanticSearch(
+      { profile: old.profile, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: old.profile,
+      view: old.view,
+      assistance: provider.assistance,
+      needed: async () =>
+        (await engine.profiles(ctx)).some((row) => row.pending > 0),
+      source: async () => ({
+        context: { ...old, eligible: docs.length },
+        page: async () => ({
+          documents: docs,
+          next: docs.at(-1)!.event,
+          done: true,
+        }),
+      }),
+      probe: (generation, selected) => engine.probe(generation, selected),
+      report: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await background.cycle();
+      const current = (await store.current(old.profile, old.view))!;
+      assert.notEqual(current, old.id);
+      assert.deepEqual(provider.calls, ["probe", "index"]);
+      assert.deepEqual(
+        embedded.sort(),
+        docs
+          .slice(0, 2)
+          .map((row) => row.input_hash!)
+          .sort(),
+      );
+      assert.deepEqual(await store.coverage(current), {
+        eligible: 4,
+        indexed: 4,
+        pending: 0,
+        failed: 0,
+      });
+      assert.equal((await store.generation(current)).state, "completed");
+      await background.cycle();
+      assert.equal(await store.current(old.profile, old.view), current);
+      assert.deepEqual(provider.calls, ["probe", "index"]);
+    } finally {
+      await background.close();
+    }
+  }));
+
+test("a completed extraction repair with mismatched bindings waits before rebuilding again", async () =>
+  fixture(async ({ store, scanner, docs, ctx, path }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    let now = Date.now();
+    const sql = new DatabaseSync(path);
+    sql.prepare("UPDATE semantic_associations SET extraction_version=2").run();
+    const identity = profileId(profile);
+    const engine = new SemanticSearch(
+      { profile: identity, store, cache: store.queryCache, scanner },
+      recordingEmbedder().assistance,
+      true,
+    );
+    let sources = 0;
+    const statuses: string[] = [];
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: identity,
+      view: ctx.evaluation.selected_view,
+      now: () => now,
+      assistance: recordingEmbedder().assistance,
+      bindings: async () => expectedAssociations(ctx),
+      status: (message) => statuses.push(message),
+      needed: async () =>
+        (await engine.profiles(ctx)).some((row) => row.pending > 0),
+      source: async () => {
+        sources++;
+        return {
+          context: {
+            snapshot: ctx.snapshot.snapshot,
+            view: ctx.evaluation.selected_view,
+            profile: identity,
+            eligible: docs.length,
+          },
+          page: async () => ({
+            documents: docs.map((row) => ({
+              ...row,
+              word: hash(9970, "jvw1:"),
+            })),
+            next: docs.at(-1)!.event,
+            done: true,
+          }),
+        };
+      },
+      probe: async () => {},
+      report: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await background.cycle();
+      const current = (await store.current(
+        identity,
+        ctx.evaluation.selected_view,
+      ))!;
+      assert.equal((await store.generation(current)).state, "completed");
+      assert.equal((await engine.profiles(ctx))[0].pending, docs.length);
+      const wait = (await store.backgroundWait(
+        identity,
+        ctx.evaluation.selected_view,
+      ))!;
+      assert.equal(wait.next_attempt, now + 60 * 60 * 1000);
+      assert.equal(wait.snapshot, ctx.snapshot.snapshot);
+      assert.deepEqual(statuses, [
+        `Background semantic indexing for profile ${identity} and view ${ctx.evaluation.selected_view} paused: semantic_rebuild_pending. Retry at ${new Date(wait.next_attempt).toISOString()}.`,
+      ]);
+      now += 5000;
+      await background.cycle();
+      assert.equal(sources, 3);
+      assert.equal(statuses.length, 1);
+      assert.equal(
+        await store.current(identity, ctx.evaluation.selected_view),
+        current,
+      );
+      now = wait.next_attempt;
+      await background.cycle();
+      assert.equal(sources, 5);
+      assert.equal(statuses.length, 2);
+    } finally {
+      await background.close();
+      sql.close();
+    }
+  }));
+
+test("due held inputs resume without calling a failing coverage callback", async (t) =>
+  fixture(async ({ store, scanner }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    let now = Date.now();
+    t.mock.method(Date, "now", () => now);
+    const docs = rows(5);
+    const ctx = context(docs, hash(9980));
+    const { generation, batch } = await failedBackgroundGeneration(
+      store,
+      docs,
+      ctx,
+      "failed",
+    );
+    await store.holdBackgroundInputs(
+      batch,
+      {
+        next_attempt: now + 1000,
+        not_before: 0,
+        sent_attempts: 4,
+        refusals: 0,
+        exhausted: true,
+        reason: "embedding_provider",
+      },
+      false,
+      now,
+    );
+    await store.start(generation.id);
+    await store.finish(generation.id);
+    assert.equal((await store.generation(generation.id)).state, "completed");
+    await store.setBackgroundWait(generation.profile, generation.view, {
+      next_attempt: now + 60 * 60 * 1000,
+      not_before: 0,
+      sent_attempts: 0,
+      refusals: 0,
+      exhausted: false,
+      reason: "semantic_rebuild_pending",
+      snapshot: generation.snapshot,
+    });
+    now += 1000;
+    const provider = recordingEmbedder();
+    const engine = new SemanticSearch(
+      { profile: generation.profile, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    let needed = 0;
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: generation.profile,
+      view: generation.view,
+      assistance: provider.assistance,
+      needed: async () => {
+        needed++;
+        throw new Error("Coverage is unavailable");
+      },
+      source: async () => ({
+        context: { ...generation, eligible: docs.length },
+        page: async () => {
+          throw new Error("The prepared retry needs no page");
+        },
+      }),
+      probe: (selected, p) => engine.probe(selected, p),
+      report: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await background.cycle();
+      assert.equal(needed, 0);
+      assert.equal(
+        await store.backgroundWait(generation.profile, generation.view),
+        null,
+      );
+      assert.deepEqual(provider.calls, ["probe", "index"]);
+      assert.deepEqual(await store.coverage(generation.id), {
+        eligible: 5,
+        indexed: 5,
+        pending: 0,
+        failed: 0,
+      });
+    } finally {
+      await background.close();
+    }
+  }));
+
+test("a coverage callback failure enters the guarded background wait", async () =>
+  fixture(async ({ store, ctx }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const identity = profileId(profile);
+    await store.setBackgroundGeneration(
+      (await store.current(identity, ctx.evaluation.selected_view))!,
+    );
+    let calls = 0;
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: identity,
+      view: ctx.evaluation.selected_view,
+      assistance: recordingEmbedder().assistance,
+      needed: async () => {
+        calls++;
+        throw new Error("Coverage is unavailable");
+      },
+      source: async () => {
+        throw new Error("No source is needed");
+      },
+      probe: async () => {},
+      report: () => {},
+      status: () => {},
+    });
+    try {
+      await background.cycle();
+      assert.equal(
+        (await store.backgroundWait(identity, ctx.evaluation.selected_view))!
+          .reason,
+        "background_index_failed",
+      );
+      await background.cycle();
+      assert.equal(calls, 1);
+    } finally {
+      await background.close();
+    }
+  }));
+
+test("a newer snapshot after extraction repair proceeds without the same-snapshot wait", async () =>
+  fixture(async ({ store, scanner, docs, ctx, path }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const sql = new DatabaseSync(path);
+    sql.prepare("UPDATE semantic_associations SET extraction_version=2").run();
+    const identity = profileId(profile);
+    const nextDocs = rows(5);
+    const next = context(nextDocs, hash(9990));
+    let latest = ctx;
+    let now = Date.now();
+    const provider = recordingEmbedder();
+    const engine = new SemanticSearch(
+      { profile: identity, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: identity,
+      view: ctx.evaluation.selected_view,
+      assistance: provider.assistance,
+      now: () => now,
+      bindings: async (snapshot) =>
+        expectedAssociations(snapshot === ctx.snapshot.snapshot ? ctx : next),
+      needed: async () =>
+        (await engine.profiles(latest)).some((row) => row.pending > 0),
+      source: async () => {
+        const selected = latest;
+        const documents = selected === ctx ? docs : nextDocs;
+        return {
+          context: {
+            snapshot: selected.snapshot.snapshot,
+            view: selected.evaluation.selected_view,
+            profile: identity,
+            eligible: documents.length,
+          },
+          page: async () => {
+            // A new completed snapshot arrives while the earlier source is prepared.
+            latest = next;
+            return { documents, next: documents.at(-1)!.event, done: true };
+          },
+        };
+      },
+      probe: (generation, selected) => engine.probe(generation, selected),
+      report: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await background.cycle();
+      const first = (await store.current(
+        identity,
+        ctx.evaluation.selected_view,
+      ))!;
+      assert.equal(
+        (await store.generation(first)).snapshot,
+        ctx.snapshot.snapshot,
+      );
+      assert.equal((await store.generation(first)).state, "completed");
+      assert.equal((await engine.profiles(latest))[0].pending, 1);
+      assert.equal(
+        await store.backgroundWait(identity, ctx.evaluation.selected_view),
+        null,
+      );
+      now += 5000;
+      await background.cycle();
+      const second = (await store.current(
+        identity,
+        ctx.evaluation.selected_view,
+      ))!;
+      assert.notEqual(second, first);
+      assert.equal(
+        (await store.generation(second)).snapshot,
+        next.snapshot.snapshot,
+      );
+      assert.equal((await store.generation(second)).state, "completed");
+      assert.deepEqual(await store.coverage(second), {
+        eligible: 5,
+        indexed: 5,
+        pending: 0,
+        failed: 0,
+      });
+      assert.deepEqual(provider.calls, ["probe", "index"]);
+    } finally {
+      await background.close();
+      sql.close();
+    }
+  }));
+
+test("concurrent paged profile coverage does not impose a false repair wait", async () =>
+  fixture(async ({ store, scanner }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const docs = rows(129);
+    const ctx = context(docs, hash(19980));
+    const old = await publish(
+      store,
+      docs.map((row) => ({ ...row, extraction_version: 2 })),
+      ctx,
+    );
+    const input = utf8("Changed extraction for first page");
+    docs[0] = { ...docs[0], input, input_hash: inputHash(input) };
+    const provider = recordingEmbedder();
+    const engine = new SemanticSearch(
+      { profile: old.profile, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    let latest = ctx;
+    let concurrent: ReturnType<typeof engine.profiles> | undefined;
+    let observePage = false;
+    let firstPage!: () => void;
+    const firstPageRead = new Promise<void>((resolve) => {
+      firstPage = resolve;
+    });
+    // Observe the real first SQL page. Do not alter its rows or add a delay.
+    const sql = (store as any).sql;
+    const exec = sql.exec.bind(sql);
+    sql.exec = (statement: string, ...args: unknown[]) => {
+      const result = exec(statement, ...args);
+      if (
+        observePage &&
+        statement.startsWith("SELECT a.*,v.input IS NOT NULL")
+      ) {
+        observePage = false;
+        firstPage();
+      }
+      return result;
+    };
+    const embed = provider.assistance.embed;
+    provider.assistance.embed = async (...args) => {
+      const result = await embed(...args);
+      if (args[1].kind === "index" && !concurrent) {
+        observePage = true;
+        concurrent = engine.profiles(ctx);
+        await firstPageRead;
+      }
+      return result;
+    };
+    let now = Date.now();
+    const nextDocs = [...docs, rows(130)[129]];
+    let sources = 0;
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: old.profile,
+      view: old.view,
+      assistance: provider.assistance,
+      now: () => now,
+      bindings: async (snapshot) =>
+        expectedAssociations(snapshot === ctx.snapshot.snapshot ? ctx : latest),
+      needed: async () =>
+        (await engine.profiles(latest)).some((p) => p.pending > 0),
+      source: async () => {
+        sources++;
+        const selected = latest;
+        const documents = selected === ctx ? docs : nextDocs;
+        return {
+          context: {
+            snapshot: selected.snapshot.snapshot,
+            view: old.view,
+            profile: old.profile,
+            eligible: documents.length,
+          },
+          page: async (after: string | null) => {
+            const offset =
+              after === null
+                ? 0
+                : documents.findIndex((row) => row.event === after) + 1;
+            const page = documents.slice(offset, offset + 128);
+            return {
+              documents: page,
+              next: page.at(-1)!.event,
+              done: offset + page.length === documents.length,
+            };
+          },
+        };
+      },
+      probe: (generation, profile) => engine.probe(generation, profile),
+      report: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await background.cycle();
+      const id = (await store.current(old.profile, old.view))!;
+      assert.equal((await store.generation(id)).state, "completed");
+      assert.equal((await store.coverage(id)).pending, 0);
+      assert.equal((await concurrent!)[0].pending, 1);
+      assert.equal((await engine.profiles(ctx))[0].pending, 0);
+      assert.equal(await store.backgroundWait(old.profile, old.view), null);
+      latest = context(nextDocs, hash(19981));
+      now += 5000;
+      await background.cycle();
+      const nextId = (await store.current(old.profile, old.view))!;
+      assert.notEqual(nextId, id);
+      assert.equal(
+        (await store.generation(nextId)).snapshot,
+        latest.snapshot.snapshot,
+      );
+      assert.equal((await store.generation(nextId)).state, "completed");
+      assert.deepEqual(await store.coverage(nextId), {
+        eligible: 130,
+        indexed: 130,
+        pending: 0,
+        failed: 0,
+      });
+      assert.equal((await engine.profiles(latest))[0].pending, 0);
+      assert.equal(await store.backgroundWait(old.profile, old.view), null);
+      assert.deepEqual(provider.calls, ["probe", "index", "index"]);
+    } finally {
+      sql.exec = exec;
+      await background.close();
+      await concurrent;
+    }
+  }));
+
+test("a newer snapshot bypasses a saved repair wait after restarting the indexer", async () =>
+  fixture(async ({ store, scanner, docs, ctx, path }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const sql = new DatabaseSync(path);
+    sql.prepare("UPDATE semantic_associations SET extraction_version=2").run();
+    const identity = profileId(profile);
+    let latest = ctx;
+    let now = Date.now();
+    const nextDocs = rows(5);
+    const next = context(nextDocs, hash(19990));
+    const provider = recordingEmbedder();
+    const engine = new SemanticSearch(
+      { profile: identity, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    const options = {
+      store,
+      profile: identity,
+      view: ctx.evaluation.selected_view,
+      assistance: provider.assistance,
+      now: () => now,
+      bindings: async (snapshot: string) =>
+        expectedAssociations(snapshot === ctx.snapshot.snapshot ? ctx : next),
+      needed: async () =>
+        (await engine.profiles(latest)).some((row) => row.pending > 0),
+      source: async () => {
+        const selected = latest;
+        const documents =
+          selected === ctx
+            ? docs.map((row) => ({ ...row, word: hash(19991, "jvw1:") }))
+            : nextDocs;
+        return {
+          context: {
+            snapshot: selected.snapshot.snapshot,
+            profile: identity,
+            view: selected.evaluation.selected_view,
+            eligible: documents.length,
+          },
+          page: async () => ({
+            documents,
+            next: documents.at(-1)!.event,
+            done: true,
+          }),
+        };
+      },
+      probe: (
+        generation: Parameters<typeof engine.probe>[0],
+        selected: Parameters<typeof engine.probe>[1],
+      ) => engine.probe(generation, selected),
+      report: (error: unknown) => {
+        throw error;
+      },
+      status: () => {},
+    };
+    let background = new BackgroundSemanticIndexer(options);
+    try {
+      await background.cycle();
+      const first = (await store.current(identity, options.view))!;
+      const wait = (await store.backgroundWait(identity, options.view))!;
+      assert.equal(wait.reason, "semantic_rebuild_pending");
+      assert.equal(wait.snapshot, ctx.snapshot.snapshot);
+      assert.equal(wait.next_attempt, now + 60 * 60 * 1000);
+      await background.close();
+      background = new BackgroundSemanticIndexer(options);
+      now += 5000;
+      await background.cycle();
+      assert.equal(await store.current(identity, options.view), first);
+      assert.deepEqual(
+        await store.backgroundWait(identity, options.view),
+        wait,
+      );
+      latest = next;
+      await background.cycle();
+      const second = (await store.current(identity, options.view))!;
+      assert.notEqual(second, first);
+      assert.equal(
+        (await store.generation(second)).snapshot,
+        next.snapshot.snapshot,
+      );
+      assert.deepEqual(await store.coverage(second), {
+        eligible: 5,
+        indexed: 5,
+        pending: 0,
+        failed: 0,
+      });
+      assert.equal(await store.backgroundWait(identity, options.view), null);
+    } finally {
+      await background.close();
+      sql.close();
+    }
+  }));
+
+test("completion repeats direct coverage when its SQLite revision changes between pages", async () =>
+  fixture(async ({ store, scanner, path }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const docs = rows(129);
+    const ctx = context(docs, hash(19995));
+    const old = await publish(
+      store,
+      docs.map((row) => ({ ...row, extraction_version: 2 })),
+      ctx,
+    );
+    const provider = recordingEmbedder();
+    const engine = new SemanticSearch(
+      { profile: old.profile, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    const sql = (store as any).sql;
+    const exec = sql.exec.bind(sql);
+    const writer = new DatabaseSync(path);
+    let direct = false;
+    let changed = false;
+    let scans = 0;
+    const coverage = store.coverageFor.bind(store);
+    store.coverageFor = async (...args) => {
+      if (direct) scans++;
+      return coverage(...args);
+    };
+    sql.exec = (statement: string, ...args: unknown[]) => {
+      const result = exec(statement, ...args);
+      if (
+        direct &&
+        !changed &&
+        statement.startsWith("SELECT a.*,v.input IS NOT NULL")
+      ) {
+        changed = true;
+        writer
+          .prepare(
+            "UPDATE semantic_associations SET word=? WHERE generation=? AND event=?",
+          )
+          .run(docs[0].word, String(args[2]), docs[0].event);
+      }
+      return result;
+    };
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: old.profile,
+      view: old.view,
+      assistance: provider.assistance,
+      needed: async () =>
+        (await engine.profiles(ctx)).some((row) => row.pending > 0),
+      bindings: async () => {
+        direct = true;
+        return expectedAssociations(ctx);
+      },
+      source: async () => ({
+        context: { ...old, eligible: docs.length },
+        page: async (after) => {
+          const offset =
+            after === null
+              ? 0
+              : docs.findIndex((row) => row.event === after) + 1;
+          const documents = docs
+            .slice(offset, offset + 128)
+            .map((row) =>
+              row.event === docs[0].event
+                ? { ...row, word: hash(19996, "jvw1:") }
+                : row,
+            );
+          return {
+            documents,
+            next: documents.at(-1)!.event,
+            done: offset + documents.length === docs.length,
+          };
+        },
+      }),
+      probe: async () => {},
+      report: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await background.cycle();
+      assert.equal(changed, true);
+      assert.equal(scans, 2);
+      assert.equal(await store.backgroundWait(old.profile, old.view), null);
+      assert.deepEqual(provider.calls, []);
+    } finally {
+      sql.exec = exec;
+      store.coverageFor = coverage;
+      writer.close();
+      await background.close();
+    }
+  }));
+
+test("a completed repair keeps its completed state when direct coverage fails", async () =>
+  fixture(async ({ store, scanner, path, docs, ctx }) => {
+    const { BackgroundSemanticIndexer } =
+      await import("../src/semantic/background.ts");
+    const sql = new DatabaseSync(path);
+    sql.prepare("UPDATE semantic_associations SET extraction_version=2").run();
+    const identity = profileId(profile);
+    const old = await store.current(identity, ctx.evaluation.selected_view);
+    const provider = recordingEmbedder();
+    const engine = new SemanticSearch(
+      { profile: identity, store, cache: store.queryCache, scanner },
+      provider.assistance,
+      true,
+    );
+    const background = new BackgroundSemanticIndexer({
+      store,
+      profile: identity,
+      view: ctx.evaluation.selected_view,
+      assistance: provider.assistance,
+      needed: async () =>
+        (await engine.profiles(ctx)).some((row) => row.pending > 0),
+      source: async () => ({
+        context: {
+          snapshot: ctx.snapshot.snapshot,
+          view: ctx.evaluation.selected_view,
+          profile: identity,
+          eligible: docs.length,
+        },
+        page: async () => ({
+          documents: docs,
+          next: docs.at(-1)!.event,
+          done: true,
+        }),
+      }),
+      bindings: async () => {
+        throw new Error("Current bindings are unavailable");
+      },
+      probe: async () => {
+        throw new Error("Cached vectors need no probe");
+      },
+      report: (error) => {
+        throw error;
+      },
+      status: () => {},
+    });
+    try {
+      await background.cycle();
+      const current = (await store.current(
+        identity,
+        ctx.evaluation.selected_view,
+      ))!;
+      assert.notEqual(current, old);
+      const completed = await store.generation(current, true);
+      assert.equal(completed.state, "completed");
+      assert.equal(completed.background_recovery, undefined);
+      assert.equal(
+        (await store.backgroundWait(identity, ctx.evaluation.selected_view))!
+          .reason,
+        "background_index_failed",
+      );
+      assert.deepEqual(provider.calls, []);
+    } finally {
+      await background.close();
+      sql.close();
+    }
+  }));
+
+for (const reason of ["semantic_rebuild_pending", "embedding_busy"])
+  test(`a newer snapshot bypasses only an unbound legacy repair wait (${reason})`, async () =>
+    fixture(async ({ store, scanner, ctx }) => {
+      const { BackgroundSemanticIndexer } =
+        await import("../src/semantic/background.ts");
+      const identity = profileId(profile);
+      const view = ctx.evaluation.selected_view;
+      const first = await store.current(identity, view);
+      const docs = rows(5);
+      const latest = context(docs, hash(19998));
+      const wait = {
+        next_attempt: Date.now() + 60 * 60 * 1000,
+        not_before: 0,
+        sent_attempts: 0,
+        refusals: 0,
+        exhausted: false,
+        reason,
+      };
+      await store.setBackgroundWait(identity, view, wait);
+      const provider = recordingEmbedder();
+      const engine = new SemanticSearch(
+        { profile: identity, store, cache: store.queryCache, scanner },
+        provider.assistance,
+        true,
+      );
+      let sources = 0;
+      const background = new BackgroundSemanticIndexer({
+        store,
+        profile: identity,
+        view,
+        assistance: provider.assistance,
+        needed: async () =>
+          (await engine.profiles(latest)).some((row) => row.pending > 0),
+        bindings: async () => expectedAssociations(latest),
+        source: async () => {
+          sources++;
+          return {
+            context: {
+              snapshot: latest.snapshot.snapshot,
+              profile: identity,
+              view,
+              eligible: docs.length,
+            },
+            page: async () => ({
+              documents: docs,
+              next: docs.at(-1)!.event,
+              done: true,
+            }),
+          };
+        },
+        probe: (generation, selected) => engine.probe(generation, selected),
+        report: (error) => {
+          throw error;
+        },
+      });
+      try {
+        await background.cycle();
+        if (reason === "semantic_rebuild_pending") {
+          assert.notEqual(await store.current(identity, view), first);
+          assert.equal((await engine.profiles(latest))[0].pending, 0);
+          assert.equal(await store.backgroundWait(identity, view), null);
+        } else {
+          assert.equal(await store.current(identity, view), first);
+          assert.equal(sources, 0);
+          assert.deepEqual(provider.calls, []);
+          assert.deepEqual(await store.backgroundWait(identity, view), wait);
+        }
+      } finally {
+        await background.close();
+      }
+    }));
+
+for (const cooldown of [false, true])
+  test(`a stale due-input resume leaves the next cycle free to rebuild (cooldown: ${cooldown})`, async (t) =>
+    fixture(async ({ store, scanner }) => {
+      const { BackgroundSemanticIndexer } =
+        await import("../src/semantic/background.ts");
+      let now = Date.now();
+      t.mock.method(Date, "now", () => now);
+      const docs = rows(2).map((row, i) => {
+        const input = utf8(`Stale retry definition ${i}`);
+        return { ...row, input, input_hash: inputHash(input) };
+      });
+      const ctx = context(docs, hash(20001));
+      const identity = profileId(profile);
+      const view = ctx.evaluation.selected_view;
+      const generation = await store.create(
+        {
+          snapshot: ctx.snapshot.snapshot,
+          view,
+          profile: identity,
+          eligible: docs.length,
+        },
+        profile,
+      );
+      await store.stage(generation.id, null, {
+        documents: docs.map((row) => ({ ...row, extraction_version: 2 })),
+        next: docs.at(-1)!.event,
+        done: true,
+      });
+      await store.setBackgroundGeneration(generation.id);
+      await store.start(generation.id);
+      const batch = (await store.claim(generation.id))!;
+      await store.fail(batch.id, "embedding_provider");
+      await store.pause(generation.id, "embedding_provider");
+      await store.holdBackgroundInputs(
+        batch,
+        {
+          next_attempt: now,
+          not_before: 0,
+          sent_attempts: 4,
+          refusals: 0,
+          exhausted: true,
+          reason: "embedding_provider",
+        },
+        false,
+        now,
+      );
+      await store.start(generation.id);
+      await store.finish(generation.id);
+      assert.equal((await store.generation(generation.id)).state, "completed");
+      assert(
+        await store.publish(generation.id, await store.current(identity, view)),
+      );
+      const provider = recordingEmbedder();
+      const engine = new SemanticSearch(
+        { profile: identity, store, cache: store.queryCache, scanner },
+        provider.assistance,
+        true,
+      );
+      let ordinary = false;
+      let neededReads = 0;
+      let bindingReads = 0;
+      let pages = 0;
+      const options = {
+        store,
+        profile: identity,
+        view,
+        assistance: provider.assistance,
+        now: () => now,
+        needed: async () => {
+          assert.equal(
+            ordinary,
+            true,
+            "Retry cycles must skip shared coverage",
+          );
+          neededReads++;
+          return (await engine.profiles(ctx)).some((row) => row.pending > 0);
+        },
+        bindings: async () => {
+          bindingReads++;
+          return expectedAssociations(ctx);
+        },
+        source: async () => ({
+          context: {
+            snapshot: ctx.snapshot.snapshot,
+            view,
+            profile: identity,
+            eligible: docs.length,
+          },
+          page: async () => {
+            pages++;
+            return { documents: docs, next: docs.at(-1)!.event, done: true };
+          },
+        }),
+        probe: async () => {
+          throw new Error(
+            "The initial retry has no reference vectors and the rebuild reuses its vectors",
+          );
+        },
+        report: (error: unknown) => {
+          throw error;
+        },
+        status: () => {},
+      };
+      let background = new BackgroundSemanticIndexer(options);
+      try {
+        if (cooldown) await store.defer(identity, now + 1000, now);
+        await background.cycle();
+        if (cooldown) {
+          assert.equal((await store.generation(generation.id)).state, "paused");
+          assert.deepEqual(provider.calls, []);
+          assert.equal(await store.backgroundWait(identity, view), null);
+          now += 5000;
+          await background.close();
+          background = new BackgroundSemanticIndexer(options);
+          await background.cycle();
+        }
+        assert.equal(
+          (await store.generation(generation.id)).state,
+          "completed",
+        );
+        assert.equal(await store.current(identity, view), generation.id);
+        assert.equal(neededReads, 0);
+        assert.equal(bindingReads, 0);
+        assert.equal(pages, 0);
+        assert.equal(await store.backgroundWait(identity, view), null);
+        assert.deepEqual(provider.calls, ["index", "index"]);
+        assert.deepEqual(
+          (await store.coverageFor(generation.id, expectedAssociations(ctx)))
+            .all,
+          { eligible: 2, indexed: 0, pending: 2, failed: 0 },
+        );
+        ordinary = true;
+        now += 5000;
+        await background.cycle();
+        const current = (await store.current(identity, view))!;
+        assert.notEqual(current, generation.id);
+        assert.equal(
+          (await store.generation(current)).snapshot,
+          ctx.snapshot.snapshot,
+        );
+        assert.equal((await store.generation(current)).state, "completed");
+        assert(
+          (await store.page(current)).rows.every(
+            (row) => row.extraction_version === semanticProjectionVersion(),
+          ),
+        );
+        assert.deepEqual(await store.coverage(current), {
+          eligible: 2,
+          indexed: 2,
+          pending: 0,
+          failed: 0,
+        });
+        assert.equal(neededReads, 1);
+        assert.equal(bindingReads, 1);
+        assert.equal(pages, 1);
+        assert.equal(await store.backgroundWait(identity, view), null);
+        assert.deepEqual(provider.calls, ["index", "index"]);
+      } finally {
+        await background.close();
+      }
+    }));

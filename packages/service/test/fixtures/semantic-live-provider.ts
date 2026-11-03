@@ -1,11 +1,14 @@
 /** Disposable provider for the real Node host test. No network request leaves this process. */
+let calls = 0;
 const gates: (() => void)[] = [];
-process.on("message", (message: { release?: boolean }) => {
+process.on("message", (message: { release?: boolean; stats?: boolean }) => {
   if (message.release) gates.splice(0).forEach((resolve) => resolve());
+  if (message.stats) process.send?.({ event: "provider_stats", calls });
 });
 globalThis.fetch = async (input, init) => {
   if (String(input) !== "https://openrouter.ai/api/v1/embeddings")
     throw new Error("Unexpected network request in the semantic host fixture.");
+  calls++;
   const body = JSON.parse(String(init?.body));
   if (body.input.some((text: string) => text.includes("new traveler"))) {
     const gate = new Promise<void>((resolve) => gates.push(resolve));
