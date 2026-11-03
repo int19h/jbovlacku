@@ -257,9 +257,27 @@ test("personal word status stays visible without snapshot identifiers", async ({
   page,
 }) => {
   await page.goto("/trust");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    const pending = new Promise<void>((resolve) => {
+      (window as any).releasePersonalChoice = resolve;
+    });
+    LocalStore.prototype.setPreferences = async function (patch: any) {
+      if (patch.viewMode === "personal") await pending;
+      return original.call(this, patch);
+    };
+  });
   await page
     .getByRole("radio", { name: "Mine: site view + my choices" })
     .check();
+  await expect(
+    page.getByRole("link", { name: "Trust: site view", exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => (window as any).releasePersonalChoice());
+  await expect(
+    page.getByRole("link", { name: "Trust: personal view", exact: true }),
+  ).toBeVisible();
   await page.goto("/word/cukta?lang=en");
   const panel = page.getByRole("region", {
     name: "Personal view",
