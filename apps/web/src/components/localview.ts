@@ -197,7 +197,10 @@ export function calculationPanel(
   return region;
 }
 /** A short line that states where the shown scores come from. */
-export function provenanceLine(view: ViewScores): HTMLElement {
+export function provenanceLine(
+  view: ViewScores,
+  includeAvailability = true,
+): HTMLElement {
   const line = el("p", { class: "meta", style: "margin-top:8px" });
   line.append(
     text(
@@ -210,7 +213,7 @@ export function provenanceLine(view: ViewScores): HTMLElement {
         ` · personal view calculated in this browser · overlay ${view.calculation?.overlay.slice(7, 19) ?? "unknown"}…`,
       ),
     );
-  if (view.personal && view.reason)
+  if (includeAvailability && view.personal && view.reason)
     line.append(
       text(
         view.stale
@@ -219,7 +222,7 @@ export function provenanceLine(view: ViewScores): HTMLElement {
         "meta",
       ),
     );
-  if (!view.personal && view.calculation === null)
+  if (includeAvailability && !view.personal && view.calculation === null)
     line.append(
       text(
         " · ranking unavailable for this word. No score is assumed.",

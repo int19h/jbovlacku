@@ -348,6 +348,10 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       );
     main.append(note);
   }
+  if (!view.personal && view.calculation === null)
+    main.append(
+      p("Ranking is unavailable for this word. No score is assumed.", "small"),
+    );
   const sourceDetails = el(
     "details",
     { class: "disclosure word-source" },
@@ -355,7 +359,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     el(
       "div",
       { class: "body" },
-      provenanceLine(view),
+      provenanceLine(view, false),
       view.stale && view.reason ? p(view.reason, "small") : null,
       personal ? null : recomputePanel(app, id, word),
     ),

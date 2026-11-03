@@ -793,18 +793,20 @@ test("the personal view refuses a calculation from another snapshot and offers a
   await expect(page).toHaveTitle("cukta · jbovlacku");
   await expect(
     page.getByText(
-      /Personal scores are unavailable: The local calculation is for snapshot .* but this content is from snapshot/,
+      /Personal scores are unavailable: The local calculation uses another snapshot or view/,
     ),
   ).toBeVisible();
   await expect(firstScore(page)).toHaveAttribute(
     "aria-label",
     "Score unavailable in the personal view",
   );
-  await expect(
-    page.getByText(
-      "personal scores unavailable: the local calculation is for another snapshot",
-    ),
-  ).toBeVisible();
+  const provenance = page.locator("details.word-source");
+  const mismatch = provenance.getByText(
+    /^The local calculation is for snapshot .* but this content is from snapshot/,
+  );
+  await expect(mismatch).toBeHidden();
+  await provenance.locator(":scope > summary").click();
+  await expect(mismatch).toBeVisible();
   await page
     .getByRole("button", { name: "Recompute for this snapshot" })
     .click();
@@ -1468,7 +1470,14 @@ test("the Personal view panel completes with available scores when the snapshot 
   await openWord(page, "cukta");
   const panel = page.getByRole("region", { name: "Personal view" });
   await expect(panel).toContainText(
-    `Personal view calculated in this browser from ${synthetic.events} verified records of snapshot ${synthetic.snapshot.slice(7, 19)}`,
+    `Personal view calculated in this browser from ${synthetic.events} verified records.`,
+  );
+  await expect(panel).not.toContainText(synthetic.snapshot.slice(7, 19));
+  const provenance = page.locator("details.word-source");
+  await expect(provenance.getByText(/^Snapshot /)).toBeHidden();
+  await provenance.locator(":scope > summary").click();
+  await expect(provenance.getByText(/^Snapshot /)).toContainText(
+    synthetic.snapshot.slice(7, 19),
   );
   await expect(panel).not.toContainText("The evaluation reports");
   await expect(firstScore(page)).toHaveAttribute(
