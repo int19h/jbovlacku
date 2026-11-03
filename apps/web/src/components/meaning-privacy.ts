@@ -50,84 +50,113 @@ export async function saveMeaningSearchOff(app: App, context: RenderContext) {
   }
 }
 
-export function meaningSearchEnabled(app: App): boolean {
-  return (
-    app.session.preferences.useAiAssistance !== false &&
-    app.session.preferences.useMeaningSearch !== false &&
-    app.session.preferences.aiConsents.some(
-      (consent) =>
-        consent.tasks.includes(meaningSearchTask) &&
-        meaningSearchDataScope.every((field) =>
-          consent.dataScope.includes(field),
-        ),
-    )
+export function meaningSearchScope(server: string, profile: string): string {
+  return JSON.stringify({ server, profile, task: "search-meaning-v1" });
+}
+
+export function meaningSearchConsented(
+  app: App,
+  provider: string,
+  scope: string,
+): boolean {
+  return app.session.preferences.aiConsents.some(
+    (consent) =>
+      consent.provider === provider &&
+      consent.scope === scope &&
+      consent.tasks.includes(meaningSearchTask) &&
+      meaningSearchDataScope.every((field) =>
+        consent.dataScope.includes(field),
+      ),
   );
 }
 
-/** Keep the upload notice beside search, including the empty search page. */
+/** Keep the saved meaning choice beside search, including the empty page. */
 export function meaningPrivacy(
   app: App,
-  local: boolean,
   language: string,
   context: RenderContext,
 ): HTMLElement {
-  const node = el("div", { class: "meta" });
+  const node = el("div", { class: "meaning-privacy meta" });
   let failure = "";
   let saving = false;
   let available = false;
   let discovering = false;
+  let current: { provider: string; scope: string } | null = null;
   const discover = async () => {
     if (
       discovering ||
       app.session.preferences.useAiAssistance === false ||
-      app.session.preferences.useMeaningSearch !== false
+      (app.session.preferences.useMeaningSearch !== false &&
+        !app.session.preferences.aiConsents.some((consent) =>
+          consent.tasks.includes(meaningSearchTask),
+        ))
     )
       return;
     discovering = true;
+    available = false;
+    current = null;
     try {
       const options = { signal: context.signal };
       const capabilities = await getCapabilities(options);
       if (!context.live() || !capabilities.features.semantic_search) return;
       const profiles = await embeddingProfiles(null, language, options);
-      available = profiles.some(
+      const profile = profiles.find(
         (profile) =>
           profile.query_available &&
           capabilities.embedding_profiles.includes(profile.id),
       );
+      available = Boolean(profile);
+      current = profile
+        ? {
+            provider: profile.label,
+            scope: meaningSearchScope(capabilities.server_id, profile.id),
+          }
+        : null;
     } catch {
       available = false;
     } finally {
-      if (context.live()) refresh();
+      discovering = false;
+      if (context.live()) refresh(false);
     }
   };
-  const refresh = () => {
+  const refresh = (retryDiscovery = true) => {
+    const restoreFocus =
+      node.querySelector("button") === document.activeElement;
     node.replaceChildren();
+    node.hidden = true;
     if (app.session.preferences.useAiAssistance === false) return;
     const enabled = app.session.preferences.useMeaningSearch !== false;
+    const applicable =
+      current && meaningSearchConsented(app, current.provider, current.scope);
     const remembered = app.session.preferences.aiConsents.some((consent) =>
       consent.tasks.includes(meaningSearchTask),
     );
-    if (!enabled || meaningSearchEnabled(app) || remembered) {
+    if (!enabled || applicable || remembered) {
+      node.hidden = false;
       node.append(
-        p(
-          !enabled
-            ? local
-              ? "Meaning search is off. Queries stay in this browser."
-              : "Meaning search is off. Word and definition searches remain available."
-            : meaningSearchEnabled(app)
-              ? "Meaning search sends each query to the dictionary server and provider. This needs applicable consent and an available profile."
-              : "Meaning search sends queries only with applicable consent. Older consent is saved in this browser.",
-          "meta",
-        ),
+        el("span", {
+          text: !enabled
+            ? "Meaning search off"
+            : applicable
+              ? "Meaning search on"
+              : current
+                ? "Meaning search needs consent"
+                : "Meaning search",
+        }),
       );
       if (enabled || available)
         node.append(
+          el("span", { text: "·", "aria-hidden": "true" }),
           (() => {
             const off = button(
-              enabled ? "Turn off meaning search" : "Turn on meaning search",
+              enabled ? "Turn off" : "Turn on",
               async () => {
                 if (saving) return;
-                const restoreFocus = node.contains(document.activeElement);
+                let restoreFocus = document.activeElement === off;
+                const movedFocus = (event: FocusEvent) => {
+                  if (event.target !== off) restoreFocus = false;
+                };
+                document.addEventListener("focusin", movedFocus);
                 saving = true;
                 off.disabled = true;
                 try {
@@ -141,31 +170,34 @@ export function meaningPrivacy(
                       replace: true,
                     });
                 } catch (error) {
+                  if (!context.live()) return;
                   failure = `The saved meaning search choice is unchanged. This browser did not save the change. ${describe(error)}`;
                   app.announce(failure);
                 } finally {
+                  document.removeEventListener("focusin", movedFocus);
                   saving = false;
-                  if (node.isConnected) {
+                  if (context.live() && node.isConnected) {
                     refresh();
                     if (restoreFocus)
                       node.querySelector<HTMLElement>("button")?.focus();
                   }
                 }
               },
+              {
+                class: "btn btn-quiet",
+                "aria-label": enabled
+                  ? "Turn off meaning search"
+                  : "Turn on meaning search",
+              },
             );
             off.disabled = saving;
             return off;
           })(),
         );
-    } else if (local)
-      node.append(
-        p(
-          "Queries stay in this browser. Meaning search sends queries only after you allow it.",
-          "meta",
-        ),
-      );
+    }
     if (failure) node.append(p(failure, "notice"));
-    void discover();
+    if (restoreFocus) node.querySelector<HTMLElement>("button")?.focus();
+    if (retryDiscovery) void discover();
   };
   refresh();
   const unsubscribe = app.session.subscribe(() => {

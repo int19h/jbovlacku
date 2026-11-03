@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import {
   initializeCore,
+  semanticProjectionVersion,
   utf8,
   wordId,
   type Evaluation,
@@ -75,7 +76,7 @@ function documents(count: number, duplicates = false): IndexDocument[] {
       event: hash(i + 1, "jve1:"),
       envelope: hash(i + 300),
       body: hash(i + 600),
-      extraction_version: 1,
+      extraction_version: semanticProjectionVersion(),
       word: hash(i + 1000, "jvw1:"),
       language: i % 2 ? "en" : "ru",
       input,

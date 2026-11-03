@@ -77,16 +77,22 @@ Version 2 packages store their ordering view once, with a status per entry. Olde
 A chosen view that differs from the package view keeps Definitions first and explains that limit without asking for another download.
 
 Meaning search uses inline consent for the named provider and scope. It stays absent when AI is off or the service is unavailable.
+The prompt has Allow and Not now buttons. Details contains the fields sent, consent duration, profile, and lasting off choice.
 “Not now” stops meaning search for this page, including a pending consent save. Stored provider consent stays available for later pages.
-Pending and failed indexing remain visible beside meaning results. The meaning snapshot and view stay visible in local mode.
+Pending and failed indexing remain visible beside meaning results. Search source at the end of the group contains its snapshot, view, and profile.
 Back restores saved meaning results without another provider request. A failed matched-definition read retries without repeating inference.
 
-A visible notice explains meaning uploads. The notice and the consent box offer a lasting off choice. That choice keeps consent and other AI choices.
+With consent for the current provider, scope, task, and fields, “Meaning search on · Turn off” appears beside search. Before a meaning-search choice, that line is absent.
+Consent for a different known provider or scope shows “Meaning search needs consent · Turn off”.
+An unknown or unavailable provider keeps the neutral “Meaning search · Turn off” line for saved consent. The line and consent details offer a lasting off choice. That choice keeps consent and other AI choices.
+Discovery updates and failed saves keep focus on the off control unless the reader moves elsewhere.
 When AI and a query profile are available, the on control returns beside search. Lexical counts and controls do not wait for meaning requests or definition reads.
+Source metadata stays in Search source and snapshot. The first upload notice stays outside it before the request. The local status-limit note appears only when retired results are on.
 
 One screen-reader count region announces lexical groups in displayed order. Local counts include the full total and the shown count when rows remain hidden.
-A settled meaning update includes those lexical counts before its meaning count. Group counts stay visible without a second status line.
-Each expansion preserves keyboard focus.
+A settled meaning update includes those lexical counts before its meaning count. Smaller group headings show their counts on the same line.
+Each expansion preserves keyboard focus. Search cards keep votes beside attribution and omit reviewer disclosures.
+Word pages fold snapshot and view IDs and the local score comparison into Source and scores. Reading language lists show names and omit the test tag unless it is active.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 
 Local and server search share TypeScript morphology and match ranking. Compound cmavo match exact component sequences, contiguous runs, and ordered subsequences.
@@ -373,41 +379,71 @@ Recipe inputs preserve literal imported markers and mathematics. They exclude to
 The codecs encode unit vectors as little-endian float32.
 They reject invalid dimensions, nonfinite values, incorrect byte lengths, and vectors outside the unit norm tolerance.
 Only provider output receives normalization.
+
 The Node host stores vectors and exact event, envelope, body, input, and extraction bindings in a separate SQLite database.
 Its [operator command](docs/semantic-search.md) prepares eligible definitions in bounded pages and resumes fresh indexing through the shared embedding budget.
 Equal inputs share a vector under the same complete profile. Distinct publications retain their own associations.
+
 The job saves each operation link before dispatch. Interrupted sent batches need an explicit linked retry and keep their earlier charges.
 Saved claim positions avoid scans of completed inputs. Active batches reserve vector capacity before provider admission.
 Over-limit inputs retain their exclusion reasons while the remaining generation can complete.
+
 HTTP 429 responses use bounded backoff that respects `Retry-After` and retains each earlier charge.
 The saved profile cooldown survives restart and has a one-hour cap. Operators can clear it without changing batches or charges.
 Known usage remains available even when a returned model or vector is invalid.
 Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.
+
 The Node host serves meaning searches from compatible published vectors with exact event bindings in the requested snapshot and view.
 New definitions remain pending while unchanged definitions stay searchable. Optional background indexing uses the same host budgets without stopping dictionary reads.
+
+Stale event bindings count as pending. Operator status compares every binding field against the retained snapshot.
+Background indexing rebuilds stale associations after an extraction change, even within the same snapshot.
+
+After a completed repair, the server reads coverage directly and repeats the read if its storage revision changes.
+If current coverage still contains pending targets, the server saves a one-hour repair wait for that snapshot.
+A newer snapshot or due held inputs bypass this repair wait on the next cycle.
+The server saves a repair wait only when current coverage requests a repair during that cycle.
+A completed due-input retry leaves the next cycle free to rebuild stale extraction bindings.
+Provider cooldowns, budget windows, and other failure waits keep their own deadlines.
+
+The preceding generation serves still-valid hits until the replacement publishes. Unchanged input bytes reuse stored vectors without another embedding call.
+Matching associations with input errors or failed provider attempts still count as failed.
+When every valid input has a stored vector, `input_limit` errors trigger no provider probe and keep their failed counts.
+
 Background jobs retry transient failures with bounded backoff and linked retries. They preserve earlier charges and wait for provider cooldowns and budget windows.
 Paid or unknown probe failures receive three retries, then a one-hour cooldown. Their counts and deadlines survive server restarts.
+
 Exhausted batches split into individual inputs. Failing inputs wait one hour while healthy inputs and newer snapshots proceed.
 Input holds preserve retry counts, prior batch links, and deadlines across restarts and snapshots. Due inputs return without a new snapshot.
 An unsettled earlier transport does not restart a completed pass. Other ready inputs and newer snapshots can still proceed.
+
 Oversized requests split before dispatch. Permanent refusals use long cooldowns and log only state changes. Operator CLI recovery remains manual.
+
 Cold coverage yields between bounded metadata pages. Concurrent requests share coverage work, and partial coverage stays cached until index progress changes.
 Ordinary generation and public profile reads do not scan parked inputs. Operator diagnostics yield between pages of at most 128 holds.
+
 Generation retirement yields between bounded deletion transactions and resumes interrupted cleanup.
 Operators can unpublish and retire an idle background generation, including a suspended profile, without retaining its background pointer.
+
 Each client network can hold at most one scan worker. Empty or absent networks share that same limit.
 The API rejects malformed language tags and retains the required coverage fields.
 `GET /embedding-profiles` reports coverage and query availability. `POST /search/semantic` returns definition events with cosine distances.
+
 Two worker threads scan bounded vector pages and keep only the requested best results. Lexical reads remain available during inference and scans.
+
 The persistent query cache stores complete profile hashes, exact input hashes, and vectors. Concurrent cache misses share one computation.
 Cache hits require no provider request or spending reservation. Each search still filters the selected view and excludes inert definitions.
+
 Public reference probes detect model drift before new query computations. A detected mismatch suspends that profile, including its cached queries.
 Cancellation stops the caller's wait. Admitted embedding work still settles and can fill the shared cache without a replacement request.
+
 Offline browser meaning search remains unfinished. An unconfigured host reports meaning search as unavailable.
+
 A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
 The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
 Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
 Every output limit stays at or below 20,480 tokens, including explicit limits and decision reports.
+
 Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
 The [development guide](docs/development.md#optional-ai-assistance) gives the configuration and retention limits.
 

@@ -161,28 +161,50 @@ Each group shows its count once. One screen-reader-only region announces concise
 Local counts state the full total and the shown count when rows remain hidden. Each settled meaning update includes the last settled lexical counts before its meaning count.
 The active view appears in the footer. Local or remote search mode lives in Settings.
 The first remote request discloses the named server. Switching modes never uploads local query history silently.
-While meaning search is on, a visible note beside search names its query upload and offers “Turn off meaning search”.
+When saved consent matches the current provider, scope, task, and fields, the line beside search reads “Meaning search on · Turn off”.
+Before the reader makes a meaning-search choice, this line is absent and leaves no gap.
+An older consent that does not match keeps “Meaning search needs consent · Turn off”. This keeps the lasting off action available before renewed consent.
 Local mode keeps word and definition searches in the browser, while consented meaning search uses the server.
-The off choice persists separately from consent and other AI choices. “Turn on meaning search” remains beside search when AI and a query profile are available.
+The off choice persists separately from consent and other AI choices.
+After an explicit off choice, the line reads “Meaning search off · Turn on” when AI and a query profile are available.
+Discovery updates preserve focus on the off control. A failed save and its later discovery keep that focus unless the reader moves elsewhere.
+The controls keep the accessible names “Turn off meaning search” and “Turn on meaning search”.
 
 Each row has three content lines, separated from the next row by a thin rule and 16px vertical padding.
 The first line shows the linked headword, italic rafsi, type, and selma'o for cmavo.
 The second line shows definition text, place markers, and highlighted query matches.
-The third line shows author attribution, month and year, optional “notes,” matching alternatives, and the judgment control at the right.
+The third line shows author attribution, month and year, optional “notes,” and matching alternatives. The judgment control stays at its right end.
+Meaning results keep “Matched definition” inside the attribution, before the judgment control.
+Search cards have no reviewer disclosure or visible reviewer count. Score availability remains accessible on the judgment value.
 “notes” opens that definition's notes. “also:” links to another matching definition and its author.
 Native authors link to their signing identity. Imported authors link to source-account evidence when available, without impersonating a signing identity.
 The importer signer remains inspectable separately. A shared display name never merges the two.
 
 Search order follows exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, and token matches.
 One search box has no mode switch. Visible headings divide results into Lojban words, Definitions, and Similar in meaning.
+Group headings use 13px text, weight 600, and ink3. The count appears beside the heading on the same line.
+The short count keeps the full announced sentence as its accessible name, including when it receives focus.
+The first group has 12px of space above it. Later groups have 20px.
 Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
 When every space-separated query word has an exact normalized headword, Lojban words comes first. Otherwise, Definitions comes first.
 The eligible language index must hold each complete spelling. Pause periods, commas, and the `h` apostrophe alias use that same spelling.
 Cmavo segments alone cannot establish a known word.
 Pattern queries show only Lojban words. Each group keeps its own pagination and “show all” action.
 Meaning search needs one inline consent under the frontend's provider and scope rules.
+The prompt reads “Find similar meanings too? Your search text goes to [server] and [provider].”
+Allow and Not now appear below that sentence.
+A closed Details disclosure names the server, provider, task, profile, fields sent, and duration of consent.
+The reader can open it before Allow.
+An unknown or unavailable provider keeps the neutral “Meaning search · Turn off” line for saved consent.
+Details also explains the off choices and contains “Turn off meaning search”. Opening it sends no query.
 When AI is off or meaning search is unavailable, that group is absent and leaves no gap.
-The meaning group shows its own server snapshot and view when lexical results use a local package.
+The meaning group ends with a closed Search source disclosure. It contains the server, provider, snapshot, view, profile ID, and profile limits.
+These details keep the meaning source distinct when lexical results use a local package.
+The existing Search source and snapshot disclosure contains “Local search package from snapshot…” or “Searched on…”.
+The upload notice stays outside that disclosure. The reader sees it before the first remote request.
+Segmentation limits stay outside the disclosure.
+Only a successful remote response receives the label “Searched on…”. A failed or offline attempt uses “Search server: …”.
+The note about retained local publications and unavailable current statuses appears only when retired results are on.
 Individual cards follow in query order for words outside exact or contiguous compound spans, with repeated identities grouped.
 Subsequence matches keep those cards. A one-word query shows its exact word and prefix family before compounds that contain it.
 Case and acute headword stress marks do not change the order.
@@ -199,9 +221,12 @@ The word surface corresponds to `/word/<word-id>?lang=en`.
 Its heading shows the 44px headword, Crisa rendering beside it, type, and accessible copy control.
 A lujvo composition line shows source words, component rafsi, and descriptive glosses when known.
 The rafsi line shows assignments or “none yet,” with “claim one.” Language tabs show definition counts.
+Reading language lists use readable names, including Lojban, Klingon, Tok Pisin, and Guaspi. They omit the test tag unless it is the active language.
 
 Each definition block shows 21px prose, glosses, author, date, permanent event link, and judgment controls.
-“N reviewers” opens reviewer identities, units, and influence-route details under the actual selected view.
+“N reviewers” opens reviewer identities, units, and influence-route details under the actual selected view. A zero count uses “Score details” instead.
+A closed Source and scores disclosure follows the word content. It contains snapshot and view IDs and the local score comparison.
+Personal calculation controls and score-availability warnings remain visible. Detailed identifiers stay in Source and scores.
 When several routes contribute, summarize them and expose the complete details. Do not claim one route as the whole explanation.
 The explanation reads “The score adds the weight of each reviewer in your trust view.”
 The current user's weight follows the calculation and personal overlay. It never comes from an illustrative reviewer table.

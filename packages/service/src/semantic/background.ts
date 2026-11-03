@@ -4,6 +4,7 @@ import type { EmbeddingProfile } from "./types.ts";
 import { MAX_PROFILE_COOLDOWN_MS } from "./vector-store.ts";
 import type {
   BackgroundRecovery,
+  ExpectedAssociation,
   IndexGeneration,
   IndexBatch,
   VectorStore,
@@ -32,6 +33,8 @@ export class BackgroundSemanticIndexer {
         profile: EmbeddingProfile,
       ): Promise<void>;
       needed?(): Promise<boolean>;
+      /** Expected bindings let completion prove coverage without the shared search cache. */
+      bindings?(snapshot: string): Promise<ExpectedAssociation[]>;
       now?(): number;
       report(error: unknown): void;
       status?(message: string): void;
@@ -58,8 +61,9 @@ export class BackgroundSemanticIndexer {
     );
     if (!current) return;
     const wait = await store.backgroundWait(identity, view);
-    if (wait && Math.max(wait.next_attempt, wait.not_before) > this.now())
-      return;
+    const waiting =
+      wait && Math.max(wait.next_attempt, wait.not_before) > this.now();
+    if (waiting && wait.reason !== "semantic_rebuild_pending") return;
     const profile = await store.profile(current.id);
     let job = await store.backgroundGeneration(identity, view);
     // An unfinished operator job can contain failed or ambiguous sends. Do not adopt or replay it.
@@ -116,24 +120,35 @@ export class BackgroundSemanticIndexer {
           )
         : null;
     const dueInputs = schedule !== null && schedule <= this.now();
-    if (
-      (!job || job.state === "completed") &&
-      !dueInputs &&
-      this.options.needed &&
-      !(await this.options.needed())
-    )
-      return;
     try {
+      let latestSource: SemanticSource | undefined;
+      if (waiting) {
+        if (!dueInputs && wait.snapshot) {
+          latestSource = await this.options.source(profile);
+          if (latestSource.context.snapshot === wait.snapshot) return;
+        }
+        // Due inputs, newer snapshots, and legacy unbound repair waits can proceed.
+        await store.setBackgroundWait(identity, view, null);
+      }
+      // Due held inputs resume even when current coverage cannot be evaluated.
+      const needed =
+        !dueInputs && (!job || job.state === "completed")
+          ? await this.options.needed?.()
+          : undefined;
+      if (!dueInputs && needed === false) return;
       let source =
         job?.source_done && job.state !== "completed"
           ? undefined
-          : await this.options.source(
-              profile,
-              job && job.state !== "completed" ? job.snapshot : undefined,
-            );
+          : latestSource && (!job || job.state === "completed")
+            ? latestSource
+            : await this.options.source(
+                profile,
+                job && job.state !== "completed" ? job.snapshot : undefined,
+              );
       if (this.stop.signal.aborted) return;
       if (!job || job.state === "completed") {
-        if (source!.context.snapshot === (job ?? current).snapshot) {
+        // Changed extraction can require fresh associations for the same snapshot.
+        if (source!.context.snapshot === (job ?? current).snapshot && !needed) {
           if (!job || !dueInputs) return;
           await store.resumeBackground(job.id);
           job = await store.generation(job.id, true);
@@ -160,9 +175,8 @@ export class BackgroundSemanticIndexer {
         await this.defer(await store.generation(job.id, true), undefined);
         return;
       }
-      const coverage = await store.coverage(job.id);
       if (
-        (coverage.pending || coverage.failed) &&
+        (await store.needsEmbedding(job.id)) &&
         (await store.references(current.id)).length
       )
         await this.options.probe(current, profile);
@@ -180,15 +194,35 @@ export class BackgroundSemanticIndexer {
           attempt = batch;
         },
       });
-      if (result.generation.state === "completed") {
-        if (!result.generation.background_inputs)
+      job = result.generation;
+      if (job.state === "completed") {
+        if (!job.background_inputs)
           await store.setBackgroundRecovery(job.id, null);
+        if (needed && this.options.bindings) {
+          const latest = await this.options.source(profile);
+          if (
+            latest.context.snapshot === job.snapshot &&
+            (await this.pending(job))
+          ) {
+            const recovery: BackgroundRecovery = {
+              next_attempt: this.now() + LONG_COOLDOWN,
+              not_before: 0,
+              refusals: 0,
+              sent_attempts: 0,
+              exhausted: false,
+              reason: "semantic_rebuild_pending",
+              snapshot: job.snapshot,
+            };
+            await store.setBackgroundWait(identity, view, recovery);
+            this.reportWait(job, recovery, true);
+          }
+        }
       } else if (!this.stop.signal.aborted) {
         await this.defer(result.generation, failure, attempt);
       }
       await store.pruneBackgroundGenerations(identity, view);
     } catch (failure) {
-      if (!job) {
+      if (!job || job.state === "completed") {
         await this.defer(current, failure, undefined, true);
         return;
       }
@@ -230,6 +264,34 @@ export class BackgroundSemanticIndexer {
       if (!this.stop.signal.aborted)
         await this.defer(await store.generation(job.id, true), failure);
     }
+  }
+  private async pending(job: IndexGeneration) {
+    const { store } = this.options;
+    const release = await store.retainGeneration(job.id);
+    try {
+      const expected = await this.options.bindings!(job.snapshot);
+      while (!this.stop.signal.aborted) {
+        const revision = await store.coverageRevision(job.id);
+        const coverage = await store.coverageFor(job.id, expected);
+        if (revision === (await store.coverageRevision(job.id)))
+          return coverage.all.pending > 0;
+      }
+      return false;
+    } finally {
+      release();
+    }
+  }
+  private reportWait(
+    job: IndexGeneration,
+    recovery: BackgroundRecovery,
+    beforeJob = false,
+  ) {
+    const subject = beforeJob
+      ? `Background semantic indexing for profile ${job.profile} and view ${job.view}`
+      : `Background semantic job ${job.id}`;
+    const message = `${subject} paused: ${recovery.reason}. ${recovery.exhausted ? "Automatic retries exhausted. " : ""}Retry at ${new Date(recovery.next_attempt).toISOString()}.`;
+    if (this.options.status) this.options.status(message);
+    else this.options.report(new Error(message));
   }
   private now() {
     return this.options.now?.() ?? Date.now();
@@ -345,18 +407,12 @@ export class BackgroundSemanticIndexer {
     else await store.setBackgroundRecovery(job.id, recovery);
     if (exhausted && !beforeJob)
       await store.pause(job.id, "background_retry_exhausted");
-    const subject = beforeJob
-      ? `Background semantic indexing for profile ${job.profile} and view ${job.view}`
-      : `Background semantic job ${job.id}`;
-    const message = `${subject} paused: ${reason}. ${exhausted ? "Automatic retries exhausted. " : ""}Retry at ${new Date(recovery.next_attempt).toISOString()}.`;
     if (
       previous?.reason !== reason ||
       previous?.exhausted !== exhausted ||
       split
-    ) {
-      if (this.options.status) this.options.status(message);
-      else this.options.report(new Error(message));
-    }
+    )
+      this.reportWait(job, recovery, beforeJob);
   }
   start() {
     if (this.timer || this.stop.signal.aborted) return;

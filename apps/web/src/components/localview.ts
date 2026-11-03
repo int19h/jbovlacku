@@ -84,7 +84,10 @@ export async function viewScores(
     };
   }
 }
-export function statusText(status: PersonalStatus): string {
+export function statusText(
+  status: PersonalStatus,
+  includeSnapshot = true,
+): string {
   switch (status.state) {
     case "idle":
       return "No local calculation yet.";
@@ -103,7 +106,7 @@ export function statusText(status: PersonalStatus): string {
     case "evaluating":
       return `Calculating the ${status.mode} view from ${plural(status.events, "verified record")}…`;
     case "ready":
-      return `${status.mode === "personal" ? "Personal" : "Site"} view calculated in this browser from ${plural(status.events, "verified record")} of snapshot ${status.snapshot.slice(7, 19)}…${status.available ? "" : ` The evaluation reports: ${status.reasons.join("; ")}.`}`;
+      return `${status.mode === "personal" ? "Personal" : "Site"} view calculated in this browser from ${plural(status.events, "verified record")}${includeSnapshot ? ` of snapshot ${status.snapshot.slice(7, 19)}…` : "."}${status.available ? "" : ` The evaluation reports: ${status.reasons.join("; ")}.`}`;
     case "failed":
       return status.message;
   }
@@ -116,6 +119,7 @@ export function calculationPanel(
   app: App,
   options: {
     label: string;
+    includeSnapshot?: boolean;
     onRefresh?: () => void;
   } & (
     | { mode: "personal"; context: RenderContext }
@@ -179,7 +183,7 @@ export function calculationPanel(
   if (options.mode === "personal") actions.append(useSite);
   region.append(line, limits, actions);
   const update = (status: PersonalStatus) => {
-    line.textContent = statusText(status);
+    line.textContent = statusText(status, options.includeSnapshot);
     const busy =
       status.state === "downloading" || status.state === "evaluating";
     cancel.hidden = !busy;
@@ -193,7 +197,10 @@ export function calculationPanel(
   return region;
 }
 /** A short line that states where the shown scores come from. */
-export function provenanceLine(view: ViewScores): HTMLElement {
+export function provenanceLine(
+  view: ViewScores,
+  includeAvailability = true,
+): HTMLElement {
   const line = el("p", { class: "meta", style: "margin-top:8px" });
   line.append(
     text(
@@ -206,7 +213,7 @@ export function provenanceLine(view: ViewScores): HTMLElement {
         ` · personal view calculated in this browser · overlay ${view.calculation?.overlay.slice(7, 19) ?? "unknown"}…`,
       ),
     );
-  if (view.personal && view.reason)
+  if (includeAvailability && view.personal && view.reason)
     line.append(
       text(
         view.stale
@@ -215,7 +222,7 @@ export function provenanceLine(view: ViewScores): HTMLElement {
         "meta",
       ),
     );
-  if (!view.personal && view.calculation === null)
+  if (includeAvailability && !view.personal && view.calculation === null)
     line.append(
       text(
         " · ranking unavailable for this word. No score is assumed.",
