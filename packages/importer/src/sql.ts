@@ -1027,6 +1027,14 @@ function precedingContext(
 }
 
 /** Use the same source checks and reuse rules before the budget and signing. */
+function selectedDefinitions(journal: DatabaseSync) {
+  return journal
+    .prepare(
+      "SELECT entries.record,versions.carrier,versions.lexical FROM entries JOIN versions ON entries.selected=versions.event ORDER BY entries.record",
+    )
+    .iterate();
+}
+
 function planDefinition(
   stage: DatabaseSync,
   journal: DatabaseSync,
@@ -1671,6 +1679,16 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
     );
     let newPublications = 0;
     const newClaims = new Set<string>();
+    const plannedRecords = new Set<number>();
+    const planClaims = (definition: Carrier, lexical: Lexical) => {
+      for (const claim of importedRafsiClaims(definition, lexical, () => {}))
+        if (
+          !journal!
+            .prepare("SELECT 1 FROM rafsi_claims WHERE claim_key=?")
+            .get(claim.key)
+        )
+          newClaims.add(claim.key);
+    };
     for (const group of stage
       .prepare(
         "SELECT DISTINCT source_id FROM rows WHERE table_name='definitions' ORDER BY source_id",
@@ -1684,6 +1702,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
           manifest,
           report(),
         );
+        plannedRecords.add(group.source_id as number);
         if (!planned.reuse) newPublications++;
         const retainedVersion = planned.reuse
           ? journal
@@ -1696,23 +1715,18 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         const selectedLexical = retainedVersion
           ? JSON.parse(retainedVersion.lexical as string)
           : planned.lexical;
-        for (const claim of importedRafsiClaims(
-          selectedBody as Carrier,
-          selectedLexical,
-          (reason) => {
-            throw new SourceRowError(reason);
-          },
-        ))
-          if (
-            !journal
-              .prepare("SELECT 1 FROM rafsi_claims WHERE claim_key=?")
-              .get(claim.key)
-          )
-            newClaims.add(claim.key);
+        planClaims(selectedBody as Carrier, selectedLexical);
       } catch (error) {
         if (!(error instanceof SourceRowError)) throw error;
       }
     }
+    // Failed or absent source rows keep their prior selection, as signing does.
+    for (const selected of selectedDefinitions(journal))
+      if (!plannedRecords.has(selected.record as number))
+        planClaims(
+          JSON.parse(selected.carrier as string),
+          JSON.parse(selected.lexical as string),
+        );
     await estimateSize(
       stageBytes,
       definitionRows,
@@ -1876,11 +1890,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         official: new Set<string>(),
         experimental: new Set<string>(),
       };
-      for (const selected of journal
-        .prepare(
-          "SELECT versions.carrier,versions.lexical FROM entries JOIN versions ON entries.selected=versions.event ORDER BY entries.record",
-        )
-        .iterate()) {
+      for (const selected of selectedDefinitions(journal)) {
         const definition = JSON.parse(selected.carrier as string) as Carrier;
         ids.push(definition.envelope.id);
         countFidelity(result.fidelity, definition);

@@ -238,6 +238,8 @@ test("official rafsi growth enters the proposal and loaded copy estimates", () =
     ...input,
     new_rafsi_claim_count: 3,
   });
+  assert.equal(definitions.new_rafsi_claim_count, 0);
+  assert.equal(claims.new_rafsi_claim_count, 3);
   assert.equal(
     claims.components.carrier_bytes - definitions.components.carrier_bytes,
     3 * 6144,

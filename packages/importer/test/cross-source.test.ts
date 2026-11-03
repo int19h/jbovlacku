@@ -582,3 +582,87 @@ test("REST and SQL rafsi retain separate evidence through a shared journal", asy
   assert.ok(repeated.report.fidelity.official_rafsi_claims > 0);
   assert.ok(sql.report.fidelity.official_rafsi_claims > 0);
 });
+
+test("SQL claim planning includes retained upgrade selections and excludes replaced ones", async () => {
+  for (const scenario of ["absent", "replaced", "invalid"]) {
+    const f = await fixture();
+    f.rows[0].official_rafsi = "baj bajr";
+    const bytes = utf8(JSON.stringify({ definitions: f.rows }));
+    const manifest = { ...f.restManifest, sha256: contentHash(bytes) };
+    const legacy = importCapture({
+      sourceBytes: bytes,
+      manifest,
+      seed,
+      roots: [],
+    });
+    // Earlier journals kept known rafsi without separate claim publications.
+    const entry = legacy.journal.entries["4"];
+    entry.baseline.official_rafsi = entry.versions[0].lexical.official_rafsi = {
+      known: ["baj", "bajr"],
+    };
+    entry.versions[0].digest = contentHash(
+      utf8(canonical(entry.versions[0].lexical)),
+    );
+    await publishProposal(f.output, bytes, manifest, legacy);
+    const before = (await readJournal(f.output))!;
+    assert.equal(before.rafsi_claims?.length ?? 0, 0);
+    let inDefinitions = false;
+    let sql = (await readFile(f.sourcePath, "utf8"))
+      .split("\r\n")
+      .filter((line) => {
+        if (line.startsWith("COPY "))
+          inDefinitions = line.startsWith("COPY public.definitions ");
+        if (line === "\\.") inDefinitions = false;
+        return (
+          scenario !== "absent" || !inDefinitions || line.split("\t")[3] !== "4"
+        );
+      })
+      .map((line) => {
+        if (line.startsWith("COPY "))
+          inDefinitions = line.startsWith("COPY public.definitions ");
+        if (line === "\\.") inDefinitions = false;
+        if (
+          scenario === "invalid" &&
+          inDefinitions &&
+          line.split("\t")[3] === "4"
+        ) {
+          const fields = line.split("\t");
+          fields[25] = "már";
+          return fields.join("\t");
+        }
+        return line;
+      })
+      .join("\r\n");
+    if (scenario === "replaced") sql = sql.replace("\tbaj bajr\t", "\tbaj\t");
+    const source = Buffer.from(sql);
+    const sqlManifest = JSON.parse(await readFile(f.manifestPath, "utf8"));
+    sqlManifest.sha256 = contentHash(source);
+    sqlManifest.bytes = source.length;
+    if (scenario === "absent") sqlManifest.expected_rows.definitions = 3;
+    await writeFile(f.sourcePath, source);
+    await writeFile(f.manifestPath, canonical(sqlManifest));
+    const result = await importSqlSnapshot({ ...f, seed, roots: [] });
+    const after = (await readJournal(f.output))!;
+    const growth =
+      after.rafsi_claims!.length - (before.rafsi_claims?.length ?? 0);
+    assert.equal(growth, scenario === "replaced" ? 4 : 5, scenario);
+    assert.equal(result.size_estimate.new_rafsi_claim_count, growth, scenario);
+    assert.equal(
+      result.size_estimate.new_publication_count,
+      result.report.added + result.report.revised,
+      scenario,
+    );
+    if (scenario === "absent") assert.equal(result.report.unresolved.length, 0);
+    if (scenario === "invalid")
+      assert.deepEqual(
+        result.report.unresolved.map((issue) => issue.record),
+        [4],
+      );
+    const repeated = await importSqlSnapshot({ ...f, seed, roots: [] });
+    assert.equal(repeated.size_estimate.new_rafsi_claim_count, 0);
+    assert.equal(
+      (await readJournal(f.output))!.rafsi_claims!.length,
+      after.rafsi_claims!.length,
+    );
+  }
+});

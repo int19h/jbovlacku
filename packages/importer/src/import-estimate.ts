@@ -23,6 +23,7 @@ export interface ImportSizeEstimate {
   stage_bytes: number;
   definition_rows: number;
   new_publication_count: number;
+  new_rafsi_claim_count: number;
   estimated_proposal_bytes: number;
   estimated_proposal_peak_bytes: number;
   estimated_total_bytes: number;
@@ -124,6 +125,10 @@ export function estimateImportArtifacts(
     stage_bytes: stage,
     definition_rows: rows,
     new_publication_count: publications,
+    new_rafsi_claim_count: size(
+      input.new_rafsi_claim_count ?? 0,
+      "new_rafsi_claim_count",
+    ),
     estimated_proposal_bytes: proposal,
     estimated_proposal_peak_bytes: proposalPeak,
     estimated_total_bytes: total,
