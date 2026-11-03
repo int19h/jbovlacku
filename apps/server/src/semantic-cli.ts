@@ -57,11 +57,15 @@ function argumentsForCommand() {
 const output = (value: unknown) =>
   process.stdout.write(JSON.stringify(value) + "\n");
 
-async function prepare(
+async function withSemanticService<T>(
   directory: string,
   vectors: SqliteVectorStore,
   job: string | undefined,
-  pages: number,
+  action: (
+    service: DictionaryService,
+    profile: Awaited<ReturnType<SqliteVectorStore["profile"]>>,
+    generation: Awaited<ReturnType<SqliteVectorStore["generation"]>> | null,
+  ) => Promise<T>,
 ) {
   const coordinator = new SqliteCoordinator(
     join(directory, "coordinator.sqlite"),
@@ -103,26 +107,75 @@ async function prepare(
   );
   try {
     await service.initialize();
-    const source = await service.semanticSource(
-      profile,
-      generation?.snapshot ?? null,
-    );
-    const created =
-      generation ?? (await vectors.create(source.context, profile));
-    output({ event: "generation", generation: created });
-    const indexer = new SemanticIndexer(vectors, {
-      embed: async () => {
-        throw new Error("Preparation sends no inference request.");
-      },
-    });
-    const prepared = await indexer.prepare(created.id, source, pages);
-    return prepared;
+    return await action(service, profile, generation);
   } finally {
     await service.prepareEvaluationShutdown();
     await runtime.close();
     index.close();
     coordinator.close();
   }
+}
+
+async function prepare(
+  directory: string,
+  vectors: SqliteVectorStore,
+  job: string | undefined,
+  pages: number,
+) {
+  return withSemanticService(
+    directory,
+    vectors,
+    job,
+    async (service, profile, generation) => {
+      const source = await service.semanticSource(
+        profile,
+        generation?.snapshot ?? null,
+      );
+      const created =
+        generation ?? (await vectors.create(source.context, profile));
+      output({ event: "generation", generation: created });
+      const indexer = new SemanticIndexer(vectors, {
+        embed: async () => {
+          throw new Error("Preparation sends no inference request.");
+        },
+      });
+      const prepared = await indexer.prepare(created.id, source, pages);
+      return prepared;
+    },
+  );
+}
+
+async function statusCoverage(
+  directory: string,
+  vectors: SqliteVectorStore,
+  id: string,
+) {
+  const generation = await vectors.generation(id);
+  const coordinator = new SqliteCoordinator(
+    join(directory, "coordinator.sqlite"),
+  );
+  let retained: boolean;
+  try {
+    retained = Boolean(await coordinator.getSnapshot(generation.snapshot));
+  } finally {
+    coordinator.close();
+  }
+  if (!retained) {
+    // An expired snapshot cannot prove any current binding.
+    return {
+      eligible: generation.eligible,
+      indexed: 0,
+      failed: 0,
+      pending: generation.eligible,
+    };
+  }
+  return withSemanticService(directory, vectors, id, async (service) =>
+    vectors.coverage(
+      id,
+      undefined,
+      await service.semanticBindings(generation.snapshot, generation.view),
+    ),
+  );
 }
 
 async function main() {
@@ -277,7 +330,9 @@ async function main() {
       event: "status",
       generation,
       coverage:
-        generation.state === "retired" ? null : await vectors.coverage(id!),
+        generation.state === "retired"
+          ? null
+          : await statusCoverage(directory, vectors, id!),
       summary: await vectors.summary(id!),
       compatibility: await vectors.compatibility(generation.profile),
       probe: await vectors.probeEvidence(generation.profile),

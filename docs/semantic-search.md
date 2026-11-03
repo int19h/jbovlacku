@@ -210,6 +210,8 @@ Trusted semantic projections retain these authenticated bindings, so scans do no
 Unchanged targets remain searchable after other events change the snapshot. New targets remain pending until their vectors exist.
 
 Missing or mismatched associations count as pending and cannot enter the results.
+Operator status uses the same binding comparison against the generation's retained snapshot.
+If that snapshot expires, status reports all targets as pending because it cannot prove their bindings.
 An extraction-version change can make an association stale even when its snapshot stays unchanged.
 Failed coverage requires matching current associations and follows the format's [SemanticCoverage](format.md#semantic-coverage) rules.
 A failed entry does not disable unrelated indexed definitions.
@@ -224,13 +226,15 @@ The operator must first publish a completed generation for the selected profile 
 The server does not adopt unfinished operator jobs, which can contain failed or ambiguous sends.
 
 The background job stages bounded pages, publishes partial coverage, and embeds one batch at a time.
-Before embedding missing document vectors, it probes the retained profile.
+Before embedding missing document vectors, it probes the retained profile when reference vectors exist and the hourly probe is due.
+It skips the probe when either condition is absent.
 Existing exact input hashes reuse retained vectors. Other inputs receive fresh vectors.
 
 An extraction change starts a new generation when current coverage contains stale associations, including within the same snapshot.
 The preceding generation serves its still-valid hits until the new generation finishes preparation and publishes.
 If extraction preserves the exact input bytes, the new associations reuse stored vectors without another embedding call.
 The server does not create a new generation when all eligible targets have matching current bindings and admitted vectors.
+If a completed repair still leaves pending targets, the server waits one hour before another attempt.
 When every valid input has a stored vector, `input_limit` errors trigger no provider probe and keep their failed counts.
 
 Completed background generations leave storage when no current, rollback, active background pointer, or in-flight search retains them.

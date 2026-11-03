@@ -6,7 +6,11 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { initializeCore, utf8 } from "../../core/src/index.ts";
+import {
+  semanticProjectionVersion,
+  initializeCore,
+  utf8,
+} from "../../core/src/index.ts";
 import { SqliteVectorStore } from "../../../apps/server/src/semantic.ts";
 import { SqliteAssistanceBudgetStore } from "../../../apps/server/src/assistance.ts";
 import { AssistanceService } from "../src/assistance.ts";
@@ -86,7 +90,7 @@ async function prepare(store: SqliteVectorStore, count = 1, snapshot = 2000) {
       event: hash(i + 1, "jve1:"),
       envelope: hash(i + 100),
       body: hash(i + 200),
-      extraction_version: 1,
+      extraction_version: semanticProjectionVersion(),
       word: hash(i + 300, "jvw1:"),
       language: "en",
       input,
@@ -845,7 +849,13 @@ globalThis.fetch = async (url, init) => {
         pending: 0,
         failed: 0,
       });
-      assert.deepEqual(status.coverage, result.coverage);
+      // This fixture has no retained snapshot to prove current bindings.
+      assert.deepEqual(status.coverage, {
+        eligible: 1,
+        indexed: 0,
+        pending: 1,
+        failed: 0,
+      });
       assert(Number.isSafeInteger(status.retry_after));
       const events = (await readFile(eventsPath, "utf8"))
         .trim()

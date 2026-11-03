@@ -116,12 +116,13 @@ export class BackgroundSemanticIndexer {
           )
         : null;
     const dueInputs = schedule !== null && schedule <= this.now();
-    const needed =
-      !job || job.state === "completed"
-        ? await this.options.needed?.()
-        : undefined;
-    if (!dueInputs && needed === false) return;
     try {
+      // Due held inputs resume even when current coverage cannot be evaluated.
+      const needed =
+        !dueInputs && (!job || job.state === "completed")
+          ? await this.options.needed?.()
+          : undefined;
+      if (!dueInputs && needed === false) return;
       let source =
         job?.source_done && job.state !== "completed"
           ? undefined
@@ -181,12 +182,22 @@ export class BackgroundSemanticIndexer {
       if (result.generation.state === "completed") {
         if (!result.generation.background_inputs)
           await store.setBackgroundRecovery(job.id, null);
+        if (needed && (await this.options.needed?.())) {
+          await store.setBackgroundWait(identity, view, {
+            next_attempt: this.now() + LONG_COOLDOWN,
+            not_before: 0,
+            refusals: 0,
+            sent_attempts: 0,
+            exhausted: false,
+            reason: "semantic_rebuild_pending",
+          });
+        }
       } else if (!this.stop.signal.aborted) {
         await this.defer(result.generation, failure, attempt);
       }
       await store.pruneBackgroundGenerations(identity, view);
     } catch (failure) {
-      if (!job) {
+      if (!job || job.state === "completed") {
         await this.defer(current, failure, undefined, true);
         return;
       }

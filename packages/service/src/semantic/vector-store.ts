@@ -125,7 +125,11 @@ export interface VectorStore {
   ): Promise<IndexGeneration>;
   profile(id: string): Promise<EmbeddingProfile>;
   stage(id: string, after: string | null, page: DocumentPage): Promise<void>;
-  coverage(id: string, language?: string): Promise<IndexCoverage>;
+  coverage(
+    id: string,
+    language?: string,
+    expected?: ExpectedAssociation[],
+  ): Promise<IndexCoverage>;
   /** Report missing vectors independently of batch state and retry deadlines. */
   needsEmbedding(id: string): Promise<boolean>;
   summary(id: string): Promise<IndexSummary>;

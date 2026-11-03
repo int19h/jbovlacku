@@ -6,6 +6,7 @@ import type { EmbeddingProfile } from "./semantic/types.ts";
 import { SemanticError } from "./semantic/types.ts";
 import {
   SemanticSearch,
+  expectedAssociations,
   type SemanticOptions,
   type SearchContext,
 } from "./semantic/search.ts";
@@ -213,6 +214,10 @@ export class DictionaryService {
       retained: async () =>
         Boolean(await this.coordinator.getSnapshot(snapshot.snapshot)),
     };
+  }
+  /** Host diagnostics use the same binding calculation as search. */
+  async semanticBindings(snapshot: string, view: string) {
+    return expectedAssociations(await this.semanticContext(snapshot, view));
   }
   async drainSemanticQueries() {
     await this.semantic?.drain();

@@ -1,4 +1,7 @@
-import { spawn } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
@@ -273,6 +276,62 @@ test("routes advertise compatible partial indexes, retain lexical reads, and val
     assert.equal(pendingOnly.coverage.pending, 1);
     assert.equal(sends, 0);
     await indexer.run(generation.id);
+    const sql = new DatabaseSync(join(directory, "semantic-vectors.sqlite"));
+    const original = sql
+      .prepare("SELECT * FROM semantic_associations WHERE generation=?")
+      .get(generation.id)!;
+    const operatorStatus = async () => {
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          fileURLToPath(
+            new URL(
+              "../../../apps/server/src/semantic-cli.ts",
+              import.meta.url,
+            ),
+          ),
+          "--data",
+          directory,
+          "--command",
+          "status",
+          "--job",
+          generation.id,
+        ],
+        { env: { PATH: process.env.PATH, TMPDIR: directory }, timeout: 20000 },
+      );
+      return JSON.parse(stdout.trim().split("\n").at(-1)!);
+    };
+    try {
+      assert.equal((await operatorStatus()).coverage.indexed, 1);
+      for (const [field, value] of [
+        ["extraction_version", 2],
+        ["envelope", "sha256:" + "f".repeat(64)],
+        ["body", "sha256:" + "e".repeat(64)],
+        ["word", "jvw1:" + "d".repeat(64)],
+        ["language", "fr"],
+      ] as const) {
+        sql
+          .prepare(
+            `UPDATE semantic_associations SET ${field}=? WHERE generation=?`,
+          )
+          .run(value, generation.id);
+        assert.deepEqual((await operatorStatus()).coverage, {
+          eligible: 1,
+          indexed: 0,
+          failed: 0,
+          pending: 1,
+        });
+        sql
+          .prepare(
+            `UPDATE semantic_associations SET ${field}=? WHERE generation=?`,
+          )
+          .run(original[field] as string | number, generation.id);
+      }
+    } finally {
+      sql.close();
+    }
     assert.equal(
       (await read(await service.fetch(request("/capabilities")))).features
         .semantic_search,

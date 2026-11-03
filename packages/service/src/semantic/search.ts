@@ -36,6 +36,22 @@ export interface SearchContext {
   evaluation: Evaluation;
   retained(): Promise<boolean>;
 }
+/** Share the current evaluation bindings with host diagnostics. */
+export function expectedAssociations(context: SearchContext) {
+  return eligibleEvents(context).map((id) => {
+    const event = context.snapshot.events[id];
+    const publication = context.evaluation.publications[id];
+    if (!event?.body_hash || !publication.language) throw unavailable();
+    return {
+      event: id,
+      envelope: event.envelope_hash,
+      body: event.body_hash,
+      word: publication.word,
+      language: publication.language,
+      extraction_version: semanticProjectionVersion(),
+    };
+  });
+}
 export interface ProfileDescription {
   id: string;
   label: string;
@@ -115,19 +131,7 @@ export class SemanticSearch {
       this.coverageCache.set(context.evaluation, (cached = new Map()));
     const old = cached.get(generation.id);
     if (old && (old.pending || old.revision === revision)) return old.work;
-    const expected = eligibleEvents(context).map((id) => {
-      const event = context.snapshot.events[id];
-      const publication = context.evaluation.publications[id];
-      if (!event?.body_hash || !publication.language) throw unavailable();
-      return {
-        event: id,
-        envelope: event.envelope_hash,
-        body: event.body_hash,
-        word: publication.word,
-        language: publication.language,
-        extraction_version: semanticProjectionVersion(),
-      };
-    });
+    const expected = expectedAssociations(context);
     const work = this.options.store.coverageFor(generation.id, expected);
     // A changed revision invalidates settled work. Concurrent readers share the bounded scan.
     const entry = { revision, pending: true, work };

@@ -351,7 +351,9 @@ Mocked tests cover partial progress, restart, failures, retirement, atomic publi
 The Node host serves meaning searches from compatible published vectors with exact event bindings in the requested snapshot and view.
 New definitions remain pending while unchanged definitions stay searchable. Optional background indexing uses the same host budgets without stopping dictionary reads.
 
-Stale event bindings count as pending. Background indexing rebuilds them after an extraction change, even within the same snapshot.
+Stale event bindings count as pending. Operator status compares every binding field against the retained snapshot.
+Background indexing rebuilds stale associations after an extraction change, even within the same snapshot.
+If a completed repair leaves pending targets, it waits one hour before another attempt.
 The preceding generation serves still-valid hits until the replacement publishes. Unchanged input bytes reuse stored vectors without another embedding call.
 Matching associations with input errors or failed provider attempts still count as failed.
 When every valid input has a stored vector, `input_limit` errors trigger no provider probe and keep their failed counts.
