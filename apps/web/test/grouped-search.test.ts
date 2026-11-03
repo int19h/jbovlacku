@@ -109,6 +109,9 @@ test("one local box orders known Lojban and English queries and keeps group page
   await expect(words.locator("article")).toHaveCount(20);
   await expect(definitions.locator("article")).toHaveCount(20);
   await expect(words.locator(".count")).toHaveText("· 20 of 46");
+  await expect(words.locator(".count")).toHaveAccessibleName(
+    "46 Lojban results, 20 shown.",
+  );
   await expect(page.locator("main [aria-live=polite]")).toHaveCount(1);
   await words.getByRole("button", { name: "Show more", exact: true }).focus();
   await page.keyboard.press("Enter");
@@ -914,8 +917,14 @@ for (const empty of [false, true])
     });
     await more.focus();
     await page.keyboard.press("Enter");
-    if (empty) await expect(more).toHaveCount(0);
-    else await expect(definitions).toContainText("Synthetic expansion busy.");
+    if (empty) {
+      await expect(more).toHaveCount(0);
+      await expect(definitions.locator(".count")).toBeFocused();
+      await expect(definitions.locator(".count")).toHaveText("· 1");
+      await expect(definitions.locator(".count")).toHaveAccessibleName(
+        "1 definition result.",
+      );
+    } else await expect(definitions).toContainText("Synthetic expansion busy.");
     expect(
       await page.evaluate(() => document.activeElement === document.body),
     ).toBe(false);
@@ -1134,6 +1143,10 @@ test("r2: failed meaning expansion focuses its definition retry and an empty res
   await meaning.getByRole("button", { name: "Allow meaning search" }).click();
   await expect(meaning).toContainText("No similar meanings in this index.");
   await expect(meaning.locator(".count")).toBeFocused();
+  await expect(meaning.locator(".count")).toHaveText("· 0");
+  await expect(meaning.locator(".count")).toHaveAccessibleName(
+    "0 meaning results.",
+  );
 });
 
 test("r2: an old package keeps its hits and visibly explains missing ordering evidence", async ({
@@ -1843,6 +1856,10 @@ test("r4: local singular and zero counts and remote open totals keep their wordi
   await expect(counts).toHaveText(
     "1 or more definition results. 0 Lojban results.",
   );
+  await expect(group(page, "Definitions").locator(".count")).toHaveText("· 1+");
+  await expect(
+    group(page, "Definitions").locator(".count"),
+  ).toHaveAccessibleName("1 or more definition results.");
 });
 
 test("r4: a failed consent-box off save keeps consent and retry usable", async ({

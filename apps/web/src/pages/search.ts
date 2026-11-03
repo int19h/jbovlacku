@@ -487,22 +487,23 @@ export async function searchPage(
     allLojban || pattern
       ? [groups.lojban, groups.definitions]
       : [groups.definitions, groups.lojban];
+  const groupSummary = (group: typeof groups.lojban) => {
+    const label = group === groups.lojban ? "Lojban" : "definition";
+    if (!group.loaded)
+      return `${label === "Lojban" ? label : "Definition"} results are unavailable.`;
+    const total = cached ? group.total : group.hits.length;
+    const amount = cached ? total.toLocaleString("en-US") : String(total);
+    const shown =
+      cached && total !== group.hits.length
+        ? `, ${group.hits.length.toLocaleString("en-US")} shown`
+        : "";
+    return `${amount}${!cached && group.next ? " or more" : ""} ${label} ${total === 1 && (cached || !group.next) ? "result" : "results"}${shown}.`;
+  };
   const announceCounts = () => {
     if (!initialized || expanding || !context.live()) return;
     const message = orderedGroups()
       .filter((group) => !group.node.hidden)
-      .map((group) => {
-        const label = group === groups.lojban ? "Lojban" : "definition";
-        if (!group.loaded)
-          return `${label === "Lojban" ? label : "Definition"} results are unavailable.`;
-        const total = cached ? group.total : group.hits.length;
-        const amount = cached ? total.toLocaleString("en-US") : String(total);
-        const shown =
-          cached && total !== group.hits.length
-            ? `, ${group.hits.length.toLocaleString("en-US")} shown`
-            : "";
-        return `${amount}${!cached && group.next ? " or more" : ""} ${label} ${total === 1 && (cached || !group.next) ? "result" : "results"}${shown}.`;
-      })
+      .map(groupSummary)
       .join(" ");
     lexicalCount = message;
     if (count.textContent !== message) count.textContent = message;
@@ -561,6 +562,10 @@ export async function searchPage(
         : `· ${group.hits.length}${remaining === null ? "+" : cached && remaining > 0 ? ` of ${group.total}` : ""}`;
       if (group.status.textContent !== statusText)
         group.status.textContent = statusText;
+      group.status.setAttribute(
+        "aria-label",
+        group.loaded || group.failed ? groupSummary(group) : statusText,
+      );
       group.end.replaceChildren();
       if (remaining === null || remaining > 0) {
         group.end.append(

@@ -181,6 +181,7 @@ The importer signer remains inspectable separately. A shared display name never 
 Search order follows exact headword, exact gloss, exact component sequence, contiguous sequence, headword prefix, gloss prefix, ordered subsequence, and token matches.
 One search box has no mode switch. Visible headings divide results into Lojban words, Definitions, and Similar in meaning.
 Group headings use 13px text, weight 600, and ink3. The count appears beside the heading on the same line.
+The short count keeps the full announced sentence as its accessible name, including when it receives focus.
 The first group has 12px of space above it. Later groups have 20px.
 Lojban words includes headword, segmented, pattern, and rafsi matches. Definitions includes gloss and text matches.
 When every space-separated query word has an exact normalized headword, Lojban words comes first. Otherwise, Definitions comes first.
@@ -197,7 +198,8 @@ When AI is off or meaning search is unavailable, that group is absent and leaves
 The meaning group ends with a closed Search source disclosure. It contains the server, provider, snapshot, view, profile ID, and profile limits.
 These details keep the meaning source distinct when lexical results use a local package.
 The existing Search source and snapshot disclosure contains “Local search package from snapshot…” or “Searched on…”.
-The first remote-upload disclosure and segmentation limits remain visible outside it.
+The upload notice stays outside that disclosure. The reader sees it before the first remote request.
+Segmentation limits stay outside the disclosure.
 Only a successful remote response receives the label “Searched on…”. A failed or offline attempt uses “Search server: …”.
 The note about retained local publications and unavailable current statuses appears only when retired results are on.
 Individual cards follow in query order for words outside exact or contiguous compound spans, with repeated identities grouped.

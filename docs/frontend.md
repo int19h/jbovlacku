@@ -433,6 +433,7 @@ Each settled meaning update includes the last settled lexical counts before its 
 Each consent action, retry, or expansion announces its own settled results once.
 Search cards put judgment controls at the right end of their attribution row. They have no reviewer disclosure or visible reviewer count.
 Each group shows its count beside its heading. Group statuses remain visible ordinary text without a second visible copy.
+Each count has the full count sentence as its accessible name. It uses the same wording as the live announcement.
 After expansion, focus moves to the first new row. A failed or empty expansion keeps focus on its retry, remaining control, or group status.
 A failed meaning definition read offers Retry reading for that definition. This retry retains successful rows and sends no inference request.
 A rafsi lookup identifies the related word, for example “cku ← cukta,” and exposes competing assignments when present.

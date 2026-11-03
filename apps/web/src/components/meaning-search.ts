@@ -213,6 +213,7 @@ export async function meaningSearchGroup(
     group.hidden = false;
     const setStatus = (message: string, summary = message) => {
       if (status.textContent !== message) status.textContent = message;
+      status.setAttribute("aria-label", summary);
       status.hidden = !message;
       expansion.summary(summary);
     };
