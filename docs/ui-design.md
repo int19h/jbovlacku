@@ -163,6 +163,7 @@ The active view appears in the footer. Local or remote search mode lives in Sett
 The first remote request discloses the named server. Switching modes never uploads local query history silently.
 When saved consent matches the current provider, scope, task, and fields, the line beside search reads “Meaning search on · Turn off”.
 Before the reader makes a meaning-search choice, this line is absent and leaves no gap.
+An older consent that does not match keeps “Meaning search needs consent · Turn off”. This keeps the lasting off action available before renewed consent.
 Local mode keeps word and definition searches in the browser, while consented meaning search uses the server.
 The off choice persists separately from consent and other AI choices.
 After an explicit off choice, the line reads “Meaning search off · Turn on” when AI and a query profile are available.

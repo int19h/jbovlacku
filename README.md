@@ -83,7 +83,7 @@ Pending and failed indexing remain visible beside meaning results. Search source
 Back restores saved meaning results without another provider request. A failed matched-definition read retries without repeating inference.
 
 With consent for the current provider, scope, task, and fields, “Meaning search on · Turn off” appears beside search. Before a meaning-search choice, that line is absent.
-The line and consent details offer a lasting off choice. That choice keeps consent and other AI choices.
+An older consent shows “Meaning search needs consent · Turn off”. The line and consent details offer a lasting off choice. That choice keeps consent and other AI choices.
 When AI and a query profile are available, the on control returns beside search. Lexical counts and controls do not wait for meaning requests or definition reads.
 Source metadata stays in Search source and snapshot. The first upload notice stays outside it before the request. The local status-limit note appears only when retired results are on.
 

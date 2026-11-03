@@ -499,9 +499,10 @@ details.disclosure > .body {
 }
 .hit .hit-judgment {
   justify-self: end;
+  width: min-content;
 }
-.hit .judgment-wrap {
-  max-width: 130px;
+.hit .score {
+  white-space: nowrap;
 }
 .end-line {
   padding: 14px 0;

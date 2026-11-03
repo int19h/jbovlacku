@@ -83,7 +83,14 @@ export function meaningPrivacy(
   let discovering = false;
   let current: { provider: string; scope: string } | null = null;
   const discover = async () => {
-    if (discovering || app.session.preferences.useAiAssistance === false)
+    if (
+      discovering ||
+      app.session.preferences.useAiAssistance === false ||
+      (app.session.preferences.useMeaningSearch !== false &&
+        !app.session.preferences.aiConsents.some((consent) =>
+          consent.tasks.includes(meaningSearchTask),
+        ))
+    )
       return;
     discovering = true;
     try {
@@ -116,10 +123,19 @@ export function meaningPrivacy(
     const enabled = app.session.preferences.useMeaningSearch !== false;
     const applicable =
       current && meaningSearchConsented(app, current.provider, current.scope);
-    if (!enabled || applicable) {
+    const remembered = app.session.preferences.aiConsents.some((consent) =>
+      consent.tasks.includes(meaningSearchTask),
+    );
+    if (!enabled || applicable || remembered) {
       node.hidden = false;
       node.append(
-        el("span", { text: `Meaning search ${enabled ? "on" : "off"}` }),
+        el("span", {
+          text: !enabled
+            ? "Meaning search off"
+            : applicable
+              ? "Meaning search on"
+              : "Meaning search needs consent",
+        }),
       );
       if (enabled || available)
         node.append(
@@ -148,7 +164,7 @@ export function meaningPrivacy(
                   app.announce(failure);
                 } finally {
                   saving = false;
-                  if (node.isConnected) {
+                  if (context.live() && node.isConnected) {
                     refresh();
                     if (restoreFocus)
                       node.querySelector<HTMLElement>("button")?.focus();

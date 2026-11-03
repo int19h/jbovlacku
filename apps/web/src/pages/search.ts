@@ -1033,8 +1033,7 @@ function hitRow(
         rafsiSpan.textContent = entry.rafsi.join(", ");
         rafsiSpan.hidden = false;
       }
-    } else
-      meta.append(text("Author unavailable in this package"));
+    } else meta.append(text("Author unavailable in this package"));
     if (entry?.classification.selmaho.length) {
       selmaho.textContent = entry.classification.selmaho.join(", ");
       selmaho.hidden = false;

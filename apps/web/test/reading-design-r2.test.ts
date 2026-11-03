@@ -21,11 +21,9 @@ for (const failure of ["offline", "server error"] as const)
     await expect(
       page.getByRole("region", { name: "Search results", exact: true }),
     ).toHaveAttribute("aria-busy", "false");
-    const source = page
-      .locator("details")
-      .filter({
-        has: page.getByText("Search source and snapshot", { exact: true }),
-      });
+    const source = page.locator("details").filter({
+      has: page.getByText("Search source and snapshot", { exact: true }),
+    });
     await source.locator("summary").click();
     await expect(source).toContainText(
       `Search server: ${new URL(page.url()).host}.`,
@@ -92,6 +90,22 @@ for (const width of [360, 1024])
       expect(geometry.fits).toBe(true);
       await page.screenshot({
         path: test.info().outputPath(`cards-${mode}-${width}.png`),
+        fullPage: true,
+      });
+      // A large rational score must fit on one line beside the attribution too.
+      await row.locator(".score").evaluate((node) => {
+        node.textContent = "1234567/32";
+      });
+      expect((await row.locator(".score").boundingBox())!.height).toBeLessThan(
+        44,
+      );
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      await page.screenshot({
+        path: test.info().outputPath(`cards-score-stress-${mode}-${width}.png`),
         fullPage: true,
       });
     });
@@ -193,4 +207,63 @@ test("reading language lists show names and hide the test tag", async ({
       tabs.getByRole("link", { name: new RegExp(`^${name} `) }),
     ).toBeVisible();
   await expect(tabs.getByRole("link", { name: /^test / })).toHaveCount(0);
+});
+
+test("personal word status stays visible without snapshot identifiers", async ({
+  page,
+}) => {
+  await page.goto("/trust");
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await page.goto("/word/cukta?lang=en");
+  const panel = page.getByRole("region", {
+    name: "Personal view",
+    exact: true,
+  });
+  await expect(panel).toContainText(
+    /Personal view calculated in this browser from \d+ verified records/,
+    { timeout: 60000 },
+  );
+  await expect(panel).not.toContainText(/snapshot [0-9a-f]{12}/);
+  await expect(
+    panel.getByRole("button", { name: "Recompute from records", exact: true }),
+  ).toBeVisible();
+  const source = page.locator("details.word-source");
+  await expect(source.getByText(/^Snapshot /)).toBeHidden();
+  await source.locator(":scope > summary").click();
+  await expect(source.getByText(/^Snapshot /)).toBeVisible();
+});
+
+test("a zero reviewer count has a neutral score disclosure label", async ({
+  page,
+}) => {
+  await page.goto("/about");
+  await page.evaluate(async () => {
+    const { scoreDetails } = await import(
+      String("/src/components/judgment.ts")
+    );
+    const zero = { numerator: "0", denominator: "1" };
+    document.querySelector("main")!.append(
+      scoreDetails(
+        {} as any,
+        { id: "test", word: null, describe: () => "test" },
+        {
+          unavailable: false,
+          score: {
+            support: [zero, zero],
+            opposition: [zero, zero],
+            net: [zero, zero],
+            direct_reviewers: 0,
+          },
+        } as any,
+      ),
+    );
+  });
+  await expect(page.locator("details.judgment-details summary")).toHaveText(
+    "Score details",
+  );
+  await expect(
+    page.locator("details.judgment-details summary"),
+  ).not.toContainText("0 reviewers");
 });

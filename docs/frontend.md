@@ -157,6 +157,7 @@ A change of mode does not silently upload previously local query history.
 Local mode keeps word and definition queries in the browser. Consented meaning search still sends each new query to the server and provider.
 When remembered consent matches the current provider, scope, task, and fields, the line beside the box reads “Meaning search on · Turn off”.
 Before the reader makes a meaning-search choice, the line is absent.
+An older consent that does not match keeps “Meaning search needs consent · Turn off”. This keeps the lasting off action available before renewed consent.
 The Turn off control keeps the accessible name “Turn off meaning search”.
 That action saves a lasting search preference, separate from provider consent and the general AI preference.
 While it is off, new queries and reloads show no meaning consent or results and send no meaning request.

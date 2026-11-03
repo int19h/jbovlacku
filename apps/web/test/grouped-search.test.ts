@@ -364,7 +364,12 @@ test("inline meaning consent can be declined, accepted, remembered, and renewed 
     meaning.getByRole("button", { name: "Allow meaning search" }),
   ).toBeVisible();
   expect(state.calls).toHaveLength(2);
-  await expect(page.locator(".meaning-privacy")).toBeHidden();
+  await expect(page.locator(".meaning-privacy")).toContainText(
+    "Meaning search needs consent",
+  );
+  await expect(page.locator(".meaning-privacy")).not.toContainText(
+    "Meaning search on",
+  );
   const replies = state.profileReplies;
   await page.goto("/search?lang=en");
   await expect.poll(() => state.profileReplies).toBeGreaterThan(replies);
@@ -374,7 +379,12 @@ test("inline meaning consent can be declined, accepted, remembered, and renewed 
         requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       ),
   );
-  await expect(page.locator(".meaning-privacy")).toBeHidden();
+  await expect(page.locator(".meaning-privacy")).toContainText(
+    "Meaning search needs consent",
+  );
+  await expect(page.locator(".meaning-privacy")).not.toContainText(
+    "Meaning search on",
+  );
   await page.goto("/search?q=travel&lang=en");
   await meaning.getByRole("button", { name: "Allow meaning search" }).click();
   await expect(meaning.locator("article")).toHaveCount(1);
@@ -384,7 +394,12 @@ test("inline meaning consent can be declined, accepted, remembered, and renewed 
     meaning.getByRole("button", { name: "Allow meaning search" }),
   ).toBeVisible();
   expect(state.calls).toHaveLength(3);
-  await expect(page.locator(".meaning-privacy")).toBeHidden();
+  await expect(page.locator(".meaning-privacy")).toContainText(
+    "Meaning search needs consent",
+  );
+  await expect(page.locator(".meaning-privacy")).not.toContainText(
+    "Meaning search on",
+  );
 });
 
 test("AI off, missing semantic capability, unavailable profiles, and patterns have no meaning group", async ({
@@ -2505,6 +2520,11 @@ test("an incomplete remembered field list does not show meaning search on", asyn
       name: "Allow meaning search",
     }),
   ).toBeVisible();
-  await expect(page.locator(".meaning-privacy")).toBeHidden();
+  await expect(page.locator(".meaning-privacy")).toContainText(
+    "Meaning search needs consent",
+  );
+  await expect(page.locator(".meaning-privacy")).not.toContainText(
+    "Meaning search on",
+  );
   expect(state.calls).toHaveLength(1);
 });
