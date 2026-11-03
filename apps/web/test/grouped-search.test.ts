@@ -1695,6 +1695,7 @@ for (const unavailable of [
       const { LocalStore } = await import(String("/src/data/store.ts"));
       await new LocalStore().setPreferences({
         useMeaningSearch: false,
+        remoteSearchDisclosed: true,
         useAiAssistance: unavailable !== "AI off",
       });
     }, unavailable);
