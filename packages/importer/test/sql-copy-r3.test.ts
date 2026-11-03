@@ -146,7 +146,10 @@ test("r4 R3-1 history breaks in two fields leave only their owner unresolved", a
     .map((line) => JSON.parse(line));
   assert.deepEqual(
     carriers
-      .filter((carrier) => carrier.body.legacy)
+      .filter(
+        (carrier) =>
+          carrier.envelope.header.action.kind === "definition.publish",
+      )
       .map((carrier) => carrier.body.legacy.record.id)
       .sort((a, b) => a - b),
     [4, 36101, 53191],
@@ -201,7 +204,10 @@ test("r3 N1 independent malformed history owners both stay unpublished", async (
     .map((line) => JSON.parse(line));
   assert.deepEqual(
     carriers
-      .filter((carrier) => carrier.body.legacy)
+      .filter(
+        (carrier) =>
+          carrier.envelope.header.action.kind === "definition.publish",
+      )
       .map((carrier) => carrier.body.legacy.record.id)
       .sort((a, b) => a - b),
     [36101, 53191],

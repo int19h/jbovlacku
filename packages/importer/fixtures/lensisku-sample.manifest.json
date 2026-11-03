@@ -3,7 +3,7 @@
   "url": "https://lensisku.lojban.org/api/jbovlaste/definitions/list?source_langid=1&user_id=1&languages=2&per_page=4000&page=1&sort_by=created_at&sort_order=asc",
   "retrieved_at": "2026-10-08T11:59:28.884298+00:00",
   "sha256": "sha256:1566a6cc32fed10ba6c9ececf60194416215326423f3b97ef6c58c60e09fb343",
-  "extraction": "lensisku-list-literal-v2",
+  "extraction": "lensisku-list-fidelity-v3",
   "recipe": "lensisku-definitions-list-v1",
   "unavailable_fields": [
     "official_rafsi",

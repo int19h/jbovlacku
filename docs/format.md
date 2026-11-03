@@ -1790,6 +1790,8 @@ If the normalized spelling fails the word rules, retain the row in the source ar
 Keep exact SQL place indices when available. Preserve missing API indices as unassigned legacy keywords.
 
 Keep older word-level rafsi and newer definition-level rafsi as distinct source evidence for separate word-level claims.
+Official and experimental source fields produce separate imported claims. Each rationale and legacy object identifies its source field.
+Both kinds start active and unreviewed, without an importer-created blessing. A source official marker grants no ranking privilege.
 An importer does not infer authenticated individual votes from aggregate scores.
 The initial jbovlaste import lacks change history. Lensisku history does not retroactively reconstruct it.
 
@@ -1874,6 +1876,65 @@ The importer first preserves the exact source text in legacy.original and produc
 A deterministic conversion pass recognizes a versioned set of explicit x-place forms, including x_1, x_{1}, and their supported math delimiters.
 It never assigns place order from the appearance order of component variables such as g_1 or m_4.
 Foreign quotations, component equivalences, nested relations, and ambiguous math remain literal unless an explicit mapping resolves them.
+
+The `explicit-x-places-v8` recipe annotates only the main definition text.
+It recognizes lowercase `x_N` and `x_{N}`, where N uses ASCII digits without leading zeros and ranges from 1 through 65,535.
+Supported matching delimiters are `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`.
+A delimited expression must contain one supported form, with optional surrounding whitespace.
+A converted span includes its math delimiters and their internal whitespace.
+An extra `$`, `\)`, or `\]` immediately after a supported form keeps that form and closer literal.
+
+Adjacent letters, digits, underscores, braces, or exponent notation prevent a conversion within a larger expression.
+Finished delimited forms allow adjacent letters or combining marks from Han, Hiragana, Katakana, and Hangul, using Unicode Script_Extensions.
+These scripts and CJK punctuation need no separating spaces. Other scripts retain the letter and combining-mark boundaries.
+Digits and structural boundaries still apply to every script.
+
+Component variables and undelimited forms inside ordinary brackets remain literal.
+Finished delimited forms can convert inside gloss parentheses or square brackets. The brackets stay text.
+An unmatched closing bracket does not block later finished delimited forms.
+
+The operator guard holds a form literal beside Unicode math symbols, `*`, `/`, `^`, `·`, `:`, or bare TeX commands.
+Unicode dashes before a form remain operator guards.
+After a finished delimited form, a dash can introduce a prose gloss or suffix.
+After that dash, a dollar sign, backslash, opening bracket, digit, math symbol, or dash keeps the form literal.
+The extra operators `*`, `/`, `^`, `·`, and `:` also keep the form literal after a dash.
+A single letter with optional combining marks and numbers, or a component variable, also keeps it literal.
+
+Undelimited forms retain the dash guard on both sides.
+The guards also recognize neighboring operators across ordinary brackets and an adjacent function-call opening.
+The guard examines neighboring operators and whitespace. It does not detect every mathematical expression.
+
+The quote guards recognize paired straight or typographic double quotes, guillemets, and single or repeated backticks.
+Repeated backticks also accept the TeX double-apostrophe closer.
+
+The guards recognize lowercase Lojban `lu` and `lo'u` quotation markers.
+Marker boundaries exclude ASCII letters, digits, underscores, and apostrophes. A period can mark a boundary.
+Thus `lu'e`, `lu'a`, and `lu'o` do not open quotations.
+
+A `lu` guard tracks nested `lu` and unquoted `li'u` markers. A `zo` token cannot close that quotation.
+Supported text, code, and math units remain opaque during the boundary scan.
+
+A `lo'u` guard ends at the first unprotected `le'u`. Neither an inner `lo'u` nor an inner `lu` protects that closer.
+A `zo` token protects its payload inside either guard.
+Inside either guard, `zoi` or `la'o` leaves the uncertain remainder literal, with a warning.
+Inside `lu`, an inner `lo'u` takes the same conservative path. A missing closing marker also takes that path.
+
+Outside quotations, short parenthetical marker mentions do not open quotes.
+These mentions contain marker names, optional `quote` or `quotation` labels, and `or` or `and` marker lists, within 120 characters.
+Their parentheses must match.
+Examples include `(lu; quote)`, `(zoi)`, `(zoi quote)`, and `(lo'u or zoi)`.
+Other ambiguous mentions retain the quotation guard.
+
+Single quoted forms also remain literal when their quotes do not belong to adjacent words.
+A `zo` quotation keeps its next token literal.
+An ASCII-started token continues through non-CJK letters, combining marks, numbers, underscores, and apostrophes.
+CJK characters and other punctuation end that token. Other payloads keep the non-whitespace token rule.
+After `zoi` or `la'o`, the rest stays literal because the recipe does not parse their delimiters.
+
+The recipe leaves notes, etymology, examples, and source history literal.
+It records recognized unresolved patterns and their counts in signed conversion warnings.
+Pattern labels use at most 80 Unicode scalars. Full original strings remain available.
+Its annotations remain unreviewed importer claims.
 
 A conservative mapping can declare observed indices in a context frame without claiming a fixed final arity.
 A fixed frame requires evidence that the declared list is complete. The importer records that evidence or its review decision.

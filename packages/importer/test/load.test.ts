@@ -583,7 +583,7 @@ test("SQL proposals load into the service and serve French and Russian definitio
     proposal: output,
     directory: f.directory,
   });
-  assert.equal(loaded.selected, 4);
+  assert.equal(loaded.selected, 9);
   const records = (await readFile(join(output, "carriers.jsonl"), "utf8"))
     .trim()
     .split("\n")
