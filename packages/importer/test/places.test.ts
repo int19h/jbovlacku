@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { convertPlaces, PLACE_CONVERSION_VERSION } from "../src/places.ts";
 
 test("explicit x-place forms retain Unicode scalar source spans and declare only observed places", () => {
@@ -42,6 +43,22 @@ test("equations, component variables, quotations, nested relations and malformed
     "x_1 ≤ x_2",
     "x_1 → x_2",
     "x_1–x_2",
+    "$x_1$ - $x_2$",
+    "$x_1$ — g_1",
+    "$x_1$-1",
+    "$x_1$ - y",
+    "$x_1$ - α",
+    "$x_1$ - ٢",
+    "$x_1$ - x2",
+    "$x_1$ - foo_1",
+    "f(($x_1$))",
+    "[$x_1$ + $x_2$]",
+    "($x_1$/$x_2$)",
+    "($x_1$)^2",
+    "2*($x_1$)",
+    "f($x_1$)",
+    "$x_1$ + ($x_2$)",
+    "$x_1$ - \\alpha",
     "x_1 \\times x_2",
     '"x_1 sees x_2"',
     "`x_1`",
@@ -91,6 +108,52 @@ test("equations, component variables, quotations, nested relations and malformed
     assert.equal(converted.conversion.method, "literal", source);
     assert.deepEqual(converted.conversion.mappings, [], source);
   }
+});
+
+test("real capture gloss dashes and brackets retain every explicit place and source span", () => {
+  const capture = JSON.parse(
+    readFileSync(
+      new URL("../fixtures/place-prose-capture.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  for (const row of capture.definitions) {
+    const result = convertPlaces(row.definition, "/definitions/definition");
+    assert.deepEqual(
+      result.conversion.mappings.map((mapping) => mapping.place),
+      row.places,
+      `source definition ${row.id}`,
+    );
+    assert.deepEqual(
+      result.frame?.places.map((place) => place.index),
+      [...new Set<number>(row.places)].sort((a, b) => a - b),
+    );
+    assert.deepEqual(result.unresolved, {});
+    let index = 0;
+    const restored = result.text[0]
+      .map((node) => {
+        if (typeof node === "string") return node;
+        const mapping = result.conversion.mappings[index++];
+        assert.equal(mapping.place, node);
+        return [...row.definition].slice(mapping.start, mapping.end).join("");
+      })
+      .join("");
+    assert.equal(restored, row.definition);
+  }
+});
+
+test("gloss brackets and stray closers stay text around finished delimited places", () => {
+  const result = convertPlaces("[$x_1$] ) $x_2$ and ($x_{3}$)", "/definition");
+  assert.deepEqual(result.text, [["[", 1, "] ) ", 2, " and (", 3, ")"]]);
+  assert.deepEqual(result.unresolved, {});
+  assert.deepEqual(convertPlaces("] x_1", "/definition").text, [["] ", 1]]);
+  assert.deepEqual(
+    convertPlaces("[$$x_1$$] (\\(x_2\\)) [\\[x_3\\]]", "/definition").text,
+    [["[", 1, "] (", 2, ") [", 3, "]"]],
+  );
+  assert.deepEqual(convertPlaces("$x_1$ - runner", "/definition").text, [
+    [1, " - runner"],
+  ]);
 });
 
 test("mixed real TeX forms convert conservative places and retain unresolved expressions", () => {

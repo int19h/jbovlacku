@@ -1877,15 +1877,23 @@ A deterministic conversion pass recognizes a versioned set of explicit x-place f
 It never assigns place order from the appearance order of component variables such as g_1 or m_4.
 Foreign quotations, component equivalences, nested relations, and ambiguous math remain literal unless an explicit mapping resolves them.
 
-The `explicit-x-places-v2` recipe annotates only the main definition text.
+The `explicit-x-places-v3` recipe annotates only the main definition text.
 It recognizes lowercase `x_N` and `x_{N}`, where N uses ASCII digits without leading zeros and ranges from 1 through 65,535.
 Supported matching delimiters are `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`.
 A delimited expression must contain one supported form, with optional surrounding whitespace.
 A converted span includes its math delimiters and their internal whitespace.
 
 Adjacent letters, digits, underscores, braces, or exponent notation prevent a conversion within a larger expression.
-Component variables and forms inside ordinary brackets remain literal.
-The operator guard holds a form literal beside Unicode math symbols, Unicode dashes, `*`, `/`, `^`, `·`, `:`, or bare TeX commands.
+Component variables and undelimited forms inside ordinary brackets remain literal.
+Finished delimited forms can convert inside gloss parentheses or square brackets. The brackets stay text.
+An unmatched closing bracket does not block later finished delimited forms.
+The operator guard holds a form literal beside Unicode math symbols, `*`, `/`, `^`, `·`, `:`, or bare TeX commands.
+Unicode dashes before a form remain operator guards.
+After a finished delimited form, a dash can introduce a prose gloss or suffix.
+After that dash, a dollar sign, backslash, opening bracket, digit, math symbol, or dash keeps the form literal.
+A single letter with optional combining marks and numbers, or a component variable, also keeps it literal.
+Undelimited forms retain the dash guard on both sides.
+The guards also recognize neighboring operators across ordinary brackets and an adjacent function-call opening.
 The guard examines neighboring operators and whitespace. It does not detect every mathematical expression.
 
 The quote guards recognize paired straight or typographic double quotes, guillemets, and single or repeated backticks.

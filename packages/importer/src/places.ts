@@ -1,4 +1,4 @@
-export const PLACE_CONVERSION_VERSION = "explicit-x-places-v2";
+export const PLACE_CONVERSION_VERSION = "explicit-x-places-v3";
 export interface PlaceMapping {
   field: string;
   start: number;
@@ -24,7 +24,7 @@ export function convertPlaces(source: string | null, field: string) {
       else if (")]}".includes(char)) {
         const expected = { ")": "(", "]": "[", "}": "{" }[char];
         if (nesting.at(-1) === expected) nesting.pop();
-        else nesting.push("?");
+        else if (nesting.length) nesting.push("?");
       }
     }
   };
@@ -54,6 +54,7 @@ export function convertPlaces(source: string | null, field: string) {
       stripped,
     );
     const place = match ? Number(match[1] ?? match[2]) : 0;
+    const delimited = stripped !== raw;
     const before = text.slice(0, start);
     const after = text.slice(start + raw.length);
     const boundary =
@@ -64,16 +65,30 @@ export function convertPlaces(source: string | null, field: string) {
       !raw.startsWith("\\(") &&
       !raw.startsWith("\\[") &&
       (before.endsWith("$") || /^\$|^\\[)\]]/.test(after));
+    // Finished delimiters separate a place from prose brackets and suffixes.
+    // Keep mathematical operators visible across those brackets.
+    const equationBefore = delimited
+      ? before.replace(/(?:[([{]\s*)+$/u, "")
+      : before;
+    const equationAfter = delimited
+      ? after.replace(/^(?:\s*[)\]}])+/u, "")
+      : after;
     const equation =
-      /(?:[\p{Sm}\p{Pd}*/^·:]|\\[a-zA-Z]+)\s*$/u.test(before) ||
-      /^\s*(?:[\p{Sm}\p{Pd}*/^·:]|\\[a-zA-Z]+)/u.test(after);
+      /[\p{L}\p{N}_](?:\(\s*)+$/u.test(before) ||
+      /(?:[\p{Sm}\p{Pd}*/^·:]|\\[a-zA-Z]+)\s*$/u.test(equationBefore) ||
+      /^\s*(?:[\p{Sm}*/^·:]|\\[a-zA-Z]+)/u.test(equationAfter) ||
+      (delimited
+        ? /^\s*\p{Pd}\s*(?:[$\\([{\p{N}\p{Sm}\p{Pd}]|\p{L}[\p{L}\p{M}\p{N}]*_|\p{L}\p{M}*\p{N}*(?![\p{L}\p{M}\p{N}_]))/u.test(
+            equationAfter,
+          )
+        : /^\s*\p{Pd}/u.test(equationAfter));
     if (
       place > 0 &&
       place <= 65535 &&
       boundary &&
       !equation &&
       !malformedNeighbor &&
-      nesting.length === 0 &&
+      (delimited || nesting.length === 0) &&
       !(raw.startsWith("$") && (before.endsWith("$") || after.startsWith("$")))
     ) {
       nodes.push(place);

@@ -1,0 +1,35 @@
+{
+  "source": "Lensisku",
+  "capture": "lensisku-public-data.sanitized-v3.sql",
+  "sha256": "bc5ad87fda0668bf8fa2010aeddf71d1d0395549086bd5085bd9d87d77f93ddb",
+  "definitions": [
+    {
+      "id": 63,
+      "word": "bolci",
+      "language": "en",
+      "definition": "$x_{1}$ is a ball/sphere/orb/globe [shape/form] of material $x_{2}$; $x_{1}$ is a spherical object [made of $x_{2}$].",
+      "places": [1, 2, 1, 2]
+    },
+    {
+      "id": 182,
+      "word": "claxu",
+      "language": "en",
+      "definition": "$x_{1}$ is without/lacking/free of/lacks $x_{2}$; $x_{1}$ is $x_{2}$-less.",
+      "places": [1, 2, 1, 2]
+    },
+    {
+      "id": 1061,
+      "word": "softo",
+      "language": "en",
+      "definition": "$x_{1}$ reflects Russian empire/USSR/ex-USSR (Soviet]/CIS culture/nationality in aspect $x_{2}$.",
+      "places": [1, 2]
+    },
+    {
+      "id": 16330,
+      "word": "bakfu",
+      "language": "ru",
+      "definition": "$x_1$ — пакет/сверток/пачка/стопка/связка/пучок/гроздь предметов $x_2$, удерживаемых вместе при помощи $x_3$",
+      "places": [1, 2, 3]
+    }
+  ]
+}
