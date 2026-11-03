@@ -312,6 +312,177 @@ test("adaptive timeout continues fresh inputs at a lower cap without replay", ()
     );
   }));
 
+test("timeout continuation retries concurrent 429 batches without losing or replaying inputs", async () => {
+  for (const timeoutCall of [1, 3])
+    await fixture(8, async (store, id) => {
+      let now = 0;
+      const waits: number[] = [];
+      const completed: string[] = [];
+      const embedder = provider(async (inputs, call) => {
+        if (call <= 3) {
+          // All three requests enter the provider before the failures settle.
+          await new Promise((resolve) => setImmediate(resolve));
+          if (call === timeoutCall)
+            throw new AssistanceError(504, "embedding_timeout", "Timed out.");
+          const failure = new AssistanceError(
+            429,
+            "embedding_rate_limited",
+            "Rate limited.",
+          );
+          failure.retryAfterMs = call === 2 ? 5000 : 2000;
+          throw failure;
+        }
+        assert(now >= 5000);
+        completed.push(...inputs.map(inputHash));
+      });
+      const indexer = new SemanticIndexer(store, embedder, {
+        now: () => now,
+        async sleep(delay) {
+          const identity = (await store.generation(id)).profile;
+          assert.equal(await store.retryAfter(identity), now + delay);
+          waits.push(delay);
+          now += delay;
+        },
+      });
+      const options = {
+        operator: true,
+        adaptive: true,
+        concurrency: 3,
+        batchSize: 1,
+      };
+      const result = await indexer.run(id, options);
+      assert.deepEqual(waits, [5000]);
+      assert.equal(result.coverage.indexed, 7);
+      assert.equal(result.coverage.failed, 1);
+      assert.equal(result.coverage.pending, 0);
+      assert.equal(result.generation.error, "index_incomplete");
+      const batches = await store.batches(id);
+      const limited = batches.filter(
+        (batch) => batch.error === "embedding_rate_limited",
+      );
+      assert.equal(limited.length, 2);
+      for (const batch of limited) {
+        const linked = batches.filter((retry) => retry.previous === batch.id);
+        assert.equal(linked.length, 1);
+        assert.equal(linked[0].state, "completed");
+        assert.deepEqual(linked[0].inputs, batch.inputs);
+      }
+      const timeout = batches.find(
+        (batch) => batch.error === "embedding_timeout",
+      )!;
+      assert.equal(timeout.state, "ambiguous");
+      assert.equal(
+        batches.filter((batch) => batch.previous === timeout.id).length,
+        0,
+      );
+      const attempts = embedder.calls.flat().map(inputHash);
+      assert.equal(
+        attempts.filter((input) => input === timeout.inputs[0]).length,
+        1,
+      );
+      for (const input of new Set(attempts))
+        assert.equal(
+          attempts.filter((sent) => sent === input).length,
+          limited.some((batch) => batch.inputs.includes(input)) ? 2 : 1,
+        );
+      assert.equal(completed.length, 7);
+      assert.equal(new Set(completed).size, 7);
+      const calls = embedder.calls.length;
+      await indexer.run(id, options);
+      assert.equal(embedder.calls.length, calls);
+      await store.retry(timeout.id);
+      const final = await indexer.run(id, options);
+      assert.equal(final.generation.state, "completed");
+      assert.equal(final.coverage.indexed, 8);
+      assert.equal(completed.length, 8);
+      assert.equal(new Set(completed).size, 8);
+    });
+});
+
+test("mixed timeout retries retain automatic retry and wait bounds", async () => {
+  for (const mode of [
+    "rounds",
+    "disabled",
+    "maximum",
+    "long-wait",
+    "total-wait",
+    "cancel",
+  ])
+    await fixture(8, async (store, id) => {
+      let now = 0;
+      let limitedInput: string;
+      const waits: number[] = [];
+      const controller = new AbortController();
+      const embedder = provider(async (inputs, call) => {
+        if (call <= 2) await new Promise((resolve) => setImmediate(resolve));
+        if (call === 1)
+          throw new AssistanceError(504, "embedding_timeout", "Timed out.");
+        if (call === 2 || inputHash(inputs[0]) === limitedInput) {
+          limitedInput = inputHash(inputs[0]);
+          const failure = new AssistanceError(
+            429,
+            "embedding_rate_limited",
+            "Rate limited.",
+          );
+          failure.retryAfterMs =
+            mode === "long-wait" ? 60001 : mode === "total-wait" ? 60000 : 0;
+          throw failure;
+        }
+      });
+      await new SemanticIndexer(store, embedder, {
+        now: () => now,
+        async sleep(delay) {
+          waits.push(delay);
+          now += delay;
+        },
+      }).run(id, {
+        operator: true,
+        adaptive: true,
+        concurrency: 2,
+        batchSize: 1,
+        automaticRetries: mode !== "disabled",
+        maxBatches: mode === "maximum" ? 2 : 100,
+        signal: controller.signal,
+        onFailure: () => {
+          if (mode === "cancel") controller.abort();
+        },
+      });
+      const batches = await store.batches(id);
+      const limited = batches.filter(
+        (batch) => batch.error === "embedding_rate_limited",
+      );
+      assert.equal(
+        limited.length,
+        mode === "rounds" ? 4 : mode === "total-wait" ? 3 : 1,
+      );
+      assert.equal(
+        limited.filter((batch) => batch.previous !== null).length,
+        limited.length - 1,
+      );
+      assert.deepEqual(
+        waits,
+        mode === "rounds"
+          ? [1000, 2000, 4000]
+          : mode === "disabled"
+            ? [1000]
+            : mode === "total-wait"
+              ? [60000, 60000]
+              : [],
+      );
+      assert.equal(
+        batches.filter((batch) => batch.error === "embedding_timeout").length,
+        1,
+      );
+      assert.equal(
+        embedder.calls
+          .flat()
+          .map(inputHash)
+          .filter((input) => input === inputHash(embedder.calls[0][0])).length,
+        1,
+      );
+    });
+});
+
 test("explicit linked retries keep a larger batch intact under smaller new limits", () =>
   fixture(12, async (store, id) => {
     await store.start(id);

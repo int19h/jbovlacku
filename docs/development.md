@@ -935,6 +935,7 @@ After provider 429 responses or embedding timeouts, adaptive scheduling halves t
 Eight successful batches raise it by one, up to the requested maximum.
 The command preserves saved cooldowns, `Retry-After`, bounded backoff, failed batches, and earlier charges.
 Timeout continuation selects fresh inputs and leaves the ambiguous batch for explicit retry.
+Concurrent 429 batches retain automatic retries within the existing retry and wait bounds.
 The [operator guide](semantic-search.md#handle-provider-rate-limits) describes output events and retry bounds.
 
 Use `prepare --profile PROFILE_ID` to build another view or snapshot under a stored compatible profile.

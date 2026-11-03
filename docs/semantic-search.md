@@ -150,6 +150,7 @@ A new invocation starts at its requested concurrency.
 An operator timeout can continue fresh inputs at the reduced cap after active workers settle.
 It keeps the timed-out batch and its conservative charge for explicit retry selection.
 It does not automatically resend that batch.
+Concurrent 429 batches keep their linked automatic retries within the same retry and wait bounds.
 An unresolved transport keeps its execution slot. A local slot refusal can still pause the run.
 The command permits at most three automatic retry rounds per run.
 It waits at least one, two, then four seconds after each refusal, or longer for the saved `Retry-After` deadline.

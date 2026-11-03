@@ -390,49 +390,45 @@ export class SemanticIndexer {
             await this.store.pause(id, workerFailure.code);
           throw workerFailure;
         }
-        if (
+        const continueAfterTimeout =
           options.operator &&
           options.adaptive &&
-          stopCode === "embedding_timeout" &&
-          claims < maximum &&
-          !options.signal?.aborted
-        ) {
-          const generation = await this.store.generation(id);
-          if (
-            generation.state === "paused" &&
-            generation.error === "embedding_timeout" &&
-            !(await this.store.compatibility(identity)) &&
-            (await waitForCooldown(0, 0))
-          ) {
-            // Failed batches keep their input ownership until an explicit retry selects them.
-            // Do not select the timeout batch for retry when the next round starts.
-            await this.store.start(id);
-            continue;
-          }
-        }
+          stopCode === "embedding_timeout";
+        const retryRateLimited =
+          options.automaticRetries !== false && retries.length > 0 && round < 3;
         if (
-          options.automaticRetries === false ||
-          !retries.length ||
-          stopCode ||
-          round >= 3 ||
+          (!continueAfterTimeout && (!retryRateLimited || stopCode)) ||
           claims >= maximum ||
           options.signal?.aborted
         )
           break;
         const generation = await this.store.generation(id);
         if (
-          generation.error !== "embedding_rate_limited" ||
+          (continueAfterTimeout
+            ? generation.state !== "paused" ||
+              generation.error !== "embedding_timeout"
+            : generation.error !== "embedding_rate_limited") ||
           (await this.store.compatibility(identity))
         )
           break;
-        if (!(await waitForCooldown(round + 1, retries.length))) break;
-        for (const retry of retries) {
-          if (options.signal?.aborted) break;
-          await this.store.retry(retry);
+        if (
+          !(await waitForCooldown(
+            retryRateLimited ? round + 1 : 0,
+            retryRateLimited ? retries.length : 0,
+          ))
+        )
+          break;
+        if (retryRateLimited) {
+          // Select only 429 batches, including those that overlap a timeout.
+          // Timeout batches keep their ownership until an explicit retry.
+          for (const retry of retries) {
+            if (options.signal?.aborted) break;
+            await this.store.retry(retry);
+          }
+          round++;
         }
         if (options.signal?.aborted) break;
         await this.store.start(id);
-        round++;
       }
       await this.store.finish(id);
       const generation = await this.store.generation(id);
