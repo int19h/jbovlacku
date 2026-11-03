@@ -873,7 +873,9 @@ test("r6 composition deletion needs a mapped range inside one native text node",
   expect(await field.locator(".rich-literal").textContent()).toBe("ab");
   expect(await field.locator(".rich-code").textContent()).toBe("cd\r\nef");
   expect(await field.locator(".rich-web-link").textContent()).toBe("raw\r\n");
-  await expect(page.getByRole("status")).toContainText("try again");
+  await expect(
+    page.locator(".rich-field > p.hint").filter({ hasText: "try again" }),
+  ).toContainText("try again");
 });
 
 test("r6 canceled native composition deletion cannot repair a later owned CR deletion", async ({

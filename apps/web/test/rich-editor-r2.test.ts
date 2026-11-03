@@ -234,16 +234,18 @@ test("r2 toolbar has one tab stop and the place grid returns keyboard focus", as
   await more.press("Enter");
   const grid = page.getByRole("grid", { name: "Places 4 to 50" });
   await expect(
-    grid.getByRole("gridcell", { name: "Place 4", exact: true }),
+    grid.getByRole("button", { name: "Place 4", exact: true }),
   ).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(
-    grid.getByRole("gridcell", { name: "Place 10", exact: true }),
+    grid.getByRole("button", { name: "Place 10", exact: true }),
   ).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(more).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(field).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(more).toBeFocused();
 });
 for (const kind of containers.filter((kind) => kind.name !== "code")) {
   test(`r2 ${kind.name} exposes its target and supports editing`, async ({
@@ -376,14 +378,8 @@ test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
   await page
     .getByRole("button", { name: "+ Add a place", exact: true })
     .click();
-  await description.focus();
-  const descriptionToolbar = page.getByRole("toolbar", {
-    name: "Description for place 1 formatting",
-    exact: true,
-  });
-  await descriptionToolbar
-    .getByRole("button", { name: "Insert place 1", exact: true })
-    .focus();
+  // The context-frame number input precedes this secondary editor.
+  await page.getByLabel("Place number 1", { exact: true }).focus();
   await page.keyboard.press("Tab");
   await expect(description).toBeFocused();
   await page.keyboard.type("from Tab");

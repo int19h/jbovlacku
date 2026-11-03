@@ -1163,6 +1163,12 @@ label:is(.check, .opt, .chip):has(> input:only-of-type)
 }
 .rich-field > .rich-toolbar {
   visibility: hidden;
+  margin-top: 6px;
+  margin-bottom: 0;
+}
+.rich-field-main > .rich-toolbar {
+  margin-top: 0;
+  margin-bottom: 6px;
 }
 .rich-field:focus-within > .rich-toolbar,
 .rich-field-main > .rich-toolbar {
@@ -1184,6 +1190,10 @@ label:is(.check, .opt, .chip):has(> input:only-of-type)
   gap: 4px;
   width: max-content;
   max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  box-sizing: border-box;
+  overflow: auto;
   padding: 8px;
   border: 1px solid var(--ink3);
   border-radius: 8px;
@@ -1196,7 +1206,12 @@ label:is(.check, .opt, .chip):has(> input:only-of-type)
 .rich-place-grid-row {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: subgrid;
+  grid-template-columns: repeat(6, 44px);
+  gap: 4px;
+}
+.rich-place-cell {
+  min-width: 44px;
+  min-height: 44px;
 }
 .rich-place-grid .btn,
 .rich-place-button {

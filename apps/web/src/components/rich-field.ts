@@ -24,6 +24,10 @@ import {
   isRichDeleteType,
   type RichDeleteType,
   type RichDeleteRange,
+  type RichRangeSnapshot,
+  snapshotRichRange,
+  mapRichRange,
+  replaceRichText,
   pastedRichText,
   placeInputPlugins,
   replaceInline,
@@ -336,8 +340,7 @@ export function richField(label: string, options: RichFieldOptions) {
       class: `${options.wrapperClass ?? "field-group"} rich-field${options.main ? " rich-field-main" : ""}`,
     },
     labelNode,
-    toolbar,
-    host,
+    ...(options.main ? [toolbar, host] : [host, toolbar]),
     hint,
   );
   const enabled = () =>
@@ -349,6 +352,7 @@ export function richField(label: string, options: RichFieldOptions) {
   let view: EditorView;
   let current = options.value;
   let moved = false;
+  let resetSelection: { doc: EditorNode; selection: Selection } | null = null;
   let pointerFocus = false;
   let tabSelection: boolean | null = null;
   let tabTimer: number | undefined;
@@ -364,6 +368,7 @@ export function richField(label: string, options: RichFieldOptions) {
   let compositionDoc: EditorNode | null = null;
   let compositionGeneration = 0;
   let renderedDOM: Node[] = [];
+  let lastAppliedTransactions: readonly Transaction[] = [];
   const rememberDOM = () => {
     renderedDOM = [...view.dom.childNodes].map((node) => node.cloneNode(true));
   };
@@ -374,22 +379,43 @@ export function richField(label: string, options: RichFieldOptions) {
     );
   const operationStatus = el("p", {
     class: "hint",
-    role: "status",
     hidden: true,
   });
-  wrapper.append(operationStatus);
+  const operationAnnouncement = el("span", {
+    class: "sr",
+    "aria-live": "polite",
+    "aria-atomic": "true",
+  });
+  wrapper.append(operationStatus, operationAnnouncement);
+  let announcementGeneration = 0;
+  let announcementFrame: number | undefined;
+  let settlingComposition = false;
+  const clearOperation = () => {
+    if (settlingComposition) return;
+    announcementGeneration++;
+    if (announcementFrame !== undefined)
+      cancelAnimationFrame(announcementFrame);
+    announcementFrame = undefined;
+    operationStatus.textContent = "";
+    operationStatus.hidden = true;
+    operationAnnouncement.textContent = "";
+  };
   const retryOperation = (message: string) => {
+    const generation = ++announcementGeneration;
+    if (announcementFrame !== undefined)
+      cancelAnimationFrame(announcementFrame);
     operationStatus.textContent = message;
     operationStatus.hidden = false;
+    operationAnnouncement.textContent = "";
+    announcementFrame = requestAnimationFrame(() => {
+      announcementFrame = undefined;
+      if (generation === announcementGeneration && wrapper.isConnected)
+        operationAnnouncement.textContent = message;
+    });
   };
-  interface CompositionDelete {
+  interface CompositionDelete extends RichRangeSnapshot {
     generation: number;
-    doc: EditorNode;
-    from: number;
-    to: number;
     text: string;
-    fromType: string;
-    toType: string;
   }
   let compositionDelete: CompositionDelete | null = null;
   let compositionText = "";
@@ -408,6 +434,12 @@ export function richField(label: string, options: RichFieldOptions) {
     compositionDelete = null;
   };
   function rejectRanges(input: InputEvent) {
+    if (deleteRecovery)
+      settleDeleteRecovery(
+        deleteRecovery,
+        false,
+        readNativeSelection() ?? deleteRecovery.selection,
+      );
     if (input.cancelable) input.preventDefault();
     if (view.composing || input.isComposing) {
       cancelCompositionDelete();
@@ -431,6 +463,29 @@ export function richField(label: string, options: RichFieldOptions) {
     }
     return true;
   }
+  let ownedInput: {
+    type: string;
+    state: EditorState;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+  const markOwnedInput = (type: string) => {
+    if (ownedInput) clearTimeout(ownedInput.timer);
+    const marker = {
+      type,
+      state: view.state,
+      timer: setTimeout(() => {
+        if (ownedInput === marker) ownedInput = null;
+      }, 0),
+    };
+    ownedInput = marker;
+  };
+  const historyTransaction = (type: string) => {
+    let transaction: Transaction | null = null;
+    (type === "historyUndo" ? undo : redo)(view.state, (tr) => {
+      transaction = tr.setMeta("richRuleUndo", true);
+    });
+    return transaction;
+  };
   let paragraphInput: {
     state: EditorState;
     timer: ReturnType<typeof setTimeout>;
@@ -778,6 +833,8 @@ export function richField(label: string, options: RichFieldOptions) {
         if (transaction.docChanged) settleDeleteRecovery(deleteRecovery, true);
         return;
       }
+      if (transaction.docChanged || transaction.getMeta("richExplicit"))
+        resetSelection = null;
       const ownsCaret =
         transaction.getMeta("richDelete") ||
         transaction.getMeta("richRuleUndo");
@@ -799,18 +856,15 @@ export function richField(label: string, options: RichFieldOptions) {
         nativeEdit = null;
       }
       const result = view.state.applyTransaction(transaction);
+      lastAppliedTransactions = result.transactions;
       if (compositionDelete) {
         for (const applied of result.transactions) {
-          if (compositionDelete.doc !== applied.before) {
+          const mapped = mapRichRange(compositionDelete, applied);
+          if (!mapped) {
             cancelCompositionDelete();
             break;
           }
-          compositionDelete.from = applied.mapping.map(
-            compositionDelete.from,
-            -1,
-          );
-          compositionDelete.to = applied.mapping.map(compositionDelete.to, 1);
-          compositionDelete.doc = applied.doc;
+          compositionDelete = { ...compositionDelete, ...mapped };
         }
       }
       view.updateState(result.state);
@@ -834,6 +888,7 @@ export function richField(label: string, options: RichFieldOptions) {
         deletionCaret = null;
       syncLinkAction();
       if (result.transactions.some((tr) => tr.docChanged)) {
+        clearOperation();
         current = editorToRich(view.state.doc, compositionDoc ?? undefined);
         view.dom.dispatchEvent(new Event("input", { bubbles: true }));
       }
@@ -881,6 +936,38 @@ export function richField(label: string, options: RichFieldOptions) {
       input(_view, event) {
         const stage = deleteRecovery;
         const type = (event as InputEvent).inputType;
+        if (
+          type === "historyUndo" ||
+          type === "historyRedo" ||
+          type === "insertReplacementText"
+        ) {
+          if (stage) {
+            settleDeleteRecovery(stage, type === stage.type);
+            return true;
+          }
+          const dirty = !matchesRenderedDOM();
+          if (
+            ownedInput?.type === type &&
+            (ownedInput.state === view.state || !event.isTrusted)
+          ) {
+            if (dirty) restoreDeleteDOM();
+            return true;
+          }
+          // A genuine native command can name an old, replaced DOM history item.
+          // Synthetic unchanged completions carry no new history authority.
+          if (!dirty && (!event.isTrusted || type === "insertReplacementText"))
+            return true;
+          if (dirty) restoreDeleteDOM();
+          if (type === "insertReplacementText") {
+            retryOperation(
+              "This selection cannot be edited at once. Select one range and try again.",
+            );
+          } else {
+            const transaction = historyTransaction(type);
+            if (transaction) dispatchEdit(transaction);
+          }
+          return true;
+        }
         if (dirtyCompositionState && view.composing) return true;
         if (
           type === "deleteCompositionText" &&
@@ -930,11 +1017,29 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       focus(view) {
+        const reset =
+          resetSelection?.doc === view.state.doc ? resetSelection : null;
         const before =
           blurSelection?.doc === view.state.doc ? blurSelection : null;
+        const native = view.dom.ownerDocument.getSelection();
+        // A reset can focus with a browser default at the root or first paragraph.
+        // A known pre-focus selection or pointer choice takes precedence.
+        const defaultStartCaret =
+          native?.isCollapsed &&
+          native.anchorOffset === 0 &&
+          (native.anchorNode === view.dom ||
+            native.anchorNode === view.dom.firstChild);
+        const repairReset =
+          reset &&
+          !pointerFocus &&
+          !before?.selection &&
+          tabSelection !== true &&
+          defaultStartCaret;
+        resetSelection = null;
         const repair =
           moved &&
           !pointerFocus &&
+          tabSelection !== true &&
           (before
             ? before.selection === null
             : tabSelection === false || !readNativeSelection());
@@ -943,9 +1048,15 @@ export function richField(label: string, options: RichFieldOptions) {
             ? (before?.selection ?? readNativeSelection())
             : null;
         clearMove();
-        if (chosen && !chosen.eq(view.state.selection))
-          dispatchEdit(view.state.tr.setSelection(chosen));
-        if (repair) view.focus();
+        if (repairReset && reset) {
+          if (!reset.selection.eq(view.state.selection))
+            dispatchEdit(view.state.tr.setSelection(reset.selection));
+          view.focus();
+        } else {
+          if (chosen && !chosen.eq(view.state.selection))
+            dispatchEdit(view.state.tr.setSelection(chosen));
+          if (repair) view.focus();
+        }
         pointerFocus = false;
         return false;
       },
@@ -964,10 +1075,47 @@ export function richField(label: string, options: RichFieldOptions) {
       },
       beforeinput(_view, event) {
         const input = event as InputEvent;
+        const resuming = Boolean(
+          dirtyCompositionState &&
+          !input.isComposing &&
+          !input.inputType.includes("Composition"),
+        );
+        let resumedSelection: Selection | null = null;
+        if (resuming) {
+          resumedSelection = insertionSelection(view, input, editingSelection);
+          settlingComposition = true;
+          cancelCompositionDelete();
+          compositionGeneration++;
+          dirtyCompositionState = null;
+          // The explicit ordinary event supplies settlement, without a timer.
+          restoreDeleteDOM();
+          view.dispatch(view.state.tr.setMeta("richCompositionEnd", true));
+          if (resumedSelection)
+            for (const applied of lastAppliedTransactions)
+              resumedSelection = resumedSelection.map(
+                applied.doc,
+                applied.mapping,
+              );
+          compositionStartState = null;
+          compositionStartSelection = null;
+          compositionDoc = null;
+          nativeEdit = null;
+          if (resumedSelection && resumedSelection.$from.doc === view.state.doc)
+            dispatchEdit(view.state.tr.setSelection(resumedSelection));
+          // Announce after this input's handlers and model transactions finish.
+          const generation = compositionGeneration;
+          setTimeout(() => {
+            if (view.isDestroyed || generation !== compositionGeneration)
+              return;
+            settlingComposition = false;
+            if (compositionRetry) announceCompositionRetry();
+          }, 0);
+        }
         // A browser can leave composition without its end event after native repair.
         // Keep the failed operation visible when ordinary input resumes.
         if (
           compositionRetry &&
+          !resuming &&
           !input.isComposing &&
           !input.inputType.startsWith("delete")
         )
@@ -999,6 +1147,50 @@ export function richField(label: string, options: RichFieldOptions) {
             false,
             incomingSelection ?? deleteRecovery.selection,
           );
+        if (
+          ["historyUndo", "historyRedo", "insertReplacementText"].includes(
+            input.inputType,
+          )
+        ) {
+          if (input.isComposing || view.composing) return rejectRanges(input);
+          const selection =
+            resumedSelection ??
+            incomingSelection ??
+            insertionSelection(view, input, editingSelection);
+          const replacement = input.inputType === "insertReplacementText";
+          const transaction = replacement
+            ? selection && input.data !== null
+              ? replaceRichText(
+                  view.state.tr.setSelection(selection),
+                  input.data,
+                ).scrollIntoView()
+              : null
+            : historyTransaction(input.inputType);
+          if (input.cancelable) {
+            input.preventDefault();
+            if (transaction) dispatchEdit(transaction);
+            else if (replacement)
+              retryOperation(
+                "This selection cannot be edited at once. Select one range and try again.",
+              );
+            markOwnedInput(input.inputType);
+          } else {
+            const stage: DeleteRecovery = {
+              type: input.inputType,
+              state: view.state,
+              transaction,
+              selection: selection ?? view.state.selection,
+              settling: false,
+              timer: setTimeout(() => settleDeleteRecovery(stage, false), 0),
+            };
+            deleteRecovery = stage;
+            if (replacement && !transaction)
+              retryOperation(
+                "This selection cannot be edited at once. Select one range and try again.",
+              );
+          }
+          return true;
+        }
         if (
           (input.inputType === "insertParagraph" ||
             input.inputType === "insertLineBreak") &&
@@ -1056,11 +1248,8 @@ export function richField(label: string, options: RichFieldOptions) {
             } else if (!compositionRetry) {
               compositionDelete ??= {
                 generation: compositionGeneration,
-                doc: view.state.doc,
-                ...target,
+                ...snapshotRichRange(view.state.doc, target.from, target.to),
                 text: compositionText,
-                fromType: view.state.doc.resolve(target.from).parent.type.name,
-                toType: view.state.doc.resolve(target.to).parent.type.name,
               };
             }
           } else {
@@ -1113,6 +1302,7 @@ export function richField(label: string, options: RichFieldOptions) {
         )
           return false;
         const selection =
+          resumedSelection ??
           incomingSelection ??
           insertionSelection(view, input, editingSelection);
         if (!selection) return false;
@@ -1133,6 +1323,7 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       compositionstart() {
+        settlingComposition = false;
         cancelCompositionDelete();
         // A replacement session must not erase an unannounced failed operation.
         dirtyCompositionState = null;
@@ -1181,21 +1372,20 @@ export function richField(label: string, options: RichFieldOptions) {
         setTimeout(() => {
           if (generation !== compositionGeneration) return;
           if (view.isDestroyed) return;
+          settlingComposition = true;
           if (dirtyCompositionState) {
+            cancelCompositionDelete();
             const start = compositionStartState;
             const selection = compositionStartSelection;
-            if (
-              start &&
-              selection &&
-              selection.$from.sameParent(selection.$to)
-            ) {
+            const clean = dirtyCompositionState;
+            dirtyCompositionState = null;
+            if (start && selection && selection.$from.doc === start.doc) {
               view.updateState(start);
               if (text)
                 dispatchEdit(
-                  view.state.tr.setSelection(selection).insertText(text),
+                  replaceRichText(view.state.tr.setSelection(selection), text),
                 );
-            } else view.updateState(dirtyCompositionState);
-            dirtyCompositionState = null;
+            } else view.updateState(clean);
             current = editorToRich(view.state.doc);
             restoreDeleteDOM();
             view.dom.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1209,9 +1399,7 @@ export function richField(label: string, options: RichFieldOptions) {
             intent.doc === view.state.doc &&
             intent.from < intent.to &&
             intent.to <= view.state.doc.content.size &&
-            view.state.doc.resolve(intent.from).parent.type.name ===
-              intent.fromType &&
-            view.state.doc.resolve(intent.to).parent.type.name === intent.toType
+            view.state.doc.slice(intent.from, intent.to).eq(intent.slice)
           ) {
             const tr = closeHistory(view.state.tr).setSelection(
               TextSelection.between(
@@ -1221,6 +1409,7 @@ export function richField(label: string, options: RichFieldOptions) {
             );
             deleteRichInput(tr, "deleteCompositionText", dispatchEdit);
           } else if (intent) compositionRetry = true;
+          settlingComposition = false;
           if (compositionRetry) announceCompositionRetry();
           compositionStartState = null;
           compositionStartSelection = null;
@@ -1298,7 +1487,12 @@ export function richField(label: string, options: RichFieldOptions) {
       current = value;
       nativeEdit = null;
       if (!unchanged) {
+        settlingComposition = false;
+        clearOperation();
+        if (ownedInput) clearTimeout(ownedInput.timer);
+        ownedInput = null;
         cancelCompositionDelete();
+        compositionRetry = false;
         dirtyCompositionState = null;
         compositionStartState = null;
         deletionCaret = null;
@@ -1308,8 +1502,11 @@ export function richField(label: string, options: RichFieldOptions) {
       }
       if (view.isDestroyed) return;
       // External draft changes start a new history for this field.
-      if (!unchanged) view.updateState(state());
-      else if (enabled() !== previousMode) {
+      if (!unchanged) {
+        const next = state();
+        view.updateState(next);
+        resetSelection = { doc: next.doc, selection: next.selection };
+      } else if (enabled() !== previousMode) {
         // Mode changes start a new undo boundary without moving the caret.
         deletionCaret = null;
         view.updateState(state(view.state.doc, view.state.selection));
@@ -1363,9 +1560,11 @@ export function richField(label: string, options: RichFieldOptions) {
       "More places",
       () => {
         syncMode();
-        if (grid.matches(":popover-open")) grid.hidePopover();
+        if (!grid.isConnected || !enabled()) return;
+        if (grid.matches(":popover-open")) closeGrid();
         else {
           grid.showPopover();
+          more.setAttribute("aria-expanded", "true");
           placeButtons.get(4)!.focus();
         }
       },
@@ -1376,6 +1575,15 @@ export function richField(label: string, options: RichFieldOptions) {
         "aria-controls": `${id}-places`,
       },
     );
+    const closeGrid = () => {
+      if (grid.isConnected && grid.matches(":popover-open")) grid.hidePopover();
+      more.setAttribute("aria-expanded", "false");
+    };
+    grid.addEventListener("focusout", () => {
+      setTimeout(() => {
+        if (!grid.contains(document.activeElement)) closeGrid();
+      });
+    });
     grid.addEventListener("toggle", () =>
       more.setAttribute("aria-expanded", String(grid.matches(":popover-open"))),
     );
@@ -1388,12 +1596,11 @@ export function richField(label: string, options: RichFieldOptions) {
       const control = button(
         "",
         () => {
-          grid.hidePopover();
+          closeGrid();
           addPlace(index);
         },
         {
           class: "btn rich-place-button",
-          role: "gridcell",
           tabindex: index === 4 ? "0" : "-1",
         },
       );
@@ -1405,11 +1612,14 @@ export function richField(label: string, options: RichFieldOptions) {
         }),
       );
       control.addEventListener("focus", () => {
+        control.scrollIntoView({ block: "nearest", inline: "nearest" });
         for (const [number, cell] of placeButtons)
           cell.tabIndex = number === index ? 0 : -1;
       });
       placeButtons.set(index, control);
-      row!.append(control);
+      row!.append(
+        el("div", { role: "gridcell", class: "rich-place-cell" }, control),
+      );
     }
     grid.addEventListener("keydown", (event) => {
       const index = [...placeButtons].find(
@@ -1417,7 +1627,7 @@ export function richField(label: string, options: RichFieldOptions) {
       )?.[0];
       if (event.key === "Escape") {
         event.preventDefault();
-        grid.hidePopover();
+        closeGrid();
         more.focus();
         return;
       }
@@ -1499,8 +1709,8 @@ export function richField(label: string, options: RichFieldOptions) {
         required: true,
       });
       const label = field("Link label", {
-        value: selectedText(),
-        hint: "The label can be empty.",
+        value: selectedText().replace(/\r\n?|\n/gu, " "),
+        hint: "The label can be empty. New labels use one line. Line breaks become spaces.",
       });
       openDialog(
         "Link a word",
@@ -1533,8 +1743,8 @@ export function richField(label: string, options: RichFieldOptions) {
     () => {
       const target = field("HTTPS address", { type: "url", required: true });
       const label = field("Link label", {
-        value: selectedText(),
-        hint: "The label can be empty.",
+        value: selectedText().replace(/\r\n?|\n/gu, " "),
+        hint: "The label can be empty. New labels use one line. Line breaks become spaces.",
       });
       const error = el("p", { role: "status", class: "notice", hidden: true });
       openDialog(
@@ -1605,6 +1815,8 @@ export function richField(label: string, options: RichFieldOptions) {
       });
       const label = field("Link label", {
         value: existing.node.textContent,
+        multiline: /[\r\n]/u.test(existing.node.textContent),
+        rows: 3,
         hint: "The label can be empty.",
       });
       let labelEdited = false;
@@ -1763,11 +1975,23 @@ export function richField(label: string, options: RichFieldOptions) {
       "close",
       () => {
         node.remove();
-        if (dialog === node) dialog = null;
-        if (invoker.isConnected) {
-          // A later native focus must retain the editor's saved caret.
+        const returning = dialog === node;
+        if (returning) dialog = null;
+        if (returning && wrapper.isConnected && !view.isDestroyed) {
+          // Native focus can choose another caret while revealing the toolbar.
+          const desired = {
+            doc: view.state.doc,
+            selection: view.state.selection,
+          };
           watchNativeFocus();
-          invoker.focus();
+          view.focus();
+          if (
+            view.state.doc === desired.doc &&
+            !view.state.selection.eq(desired.selection)
+          )
+            dispatchEdit(view.state.tr.setSelection(desired.selection));
+          if (invoker.isConnected) invoker.focus();
+          if (document.activeElement !== invoker) view.focus();
         }
       },
       { once: true },
@@ -1835,6 +2059,11 @@ export function richField(label: string, options: RichFieldOptions) {
     node.showModal();
   }
   onDisconnect(wrapper, () => {
+    settlingComposition = false;
+    clearOperation();
+    if (ownedInput) clearTimeout(ownedInput.timer);
+    ownedInput = null;
+    resetSelection = null;
     compositionDelete = null;
     dirtyCompositionState = null;
     compositionStartState = null;

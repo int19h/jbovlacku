@@ -89,8 +89,8 @@ async function trace(field: Locator) {
         },
         true,
       );
-      // This bubble listener runs after the component handler, in the same dispatch.
-      field.addEventListener(type, (event) => {
+      // The stable host receives bubbling after any recreated field handlers.
+      field.parentElement!.addEventListener(type, (event) => {
         const record = pending.get(event);
         if (!record) return;
         record.preventedAfterHandlers = event.defaultPrevented;
@@ -327,9 +327,12 @@ test("r7 ranges F7 rejects two disjoint cancelable targets as one operation", as
   expect(prevented).toBe(true);
   expect(await richNodes(field)).toEqual([["abcdef"]]);
   await expect(field).toHaveText("abcdef");
-  await expect(page.getByRole("status")).toContainText(
-    /range|selection|one at a time/i,
-  );
+  await expect(
+    page.locator(".rich-field > p.hint").filter({
+      hasText:
+        "This selection cannot be edited at once. Select one range and try again.",
+    }),
+  ).toBeVisible();
 });
 
 test("r7 integration T3 deletion saves actual draft nodes and visible content after reload", async ({
@@ -478,16 +481,47 @@ test("r7 contract F11 reference renumbering starts history without reviving the 
     name: "Description for place 4",
     exact: true,
   });
+  const caretPhases: unknown[] = [];
+  const recordCaret = async (phase: string) => {
+    const state = await snapshot(renamed);
+    const prefix = await renamed.evaluate((field) => {
+      const selection = getSelection();
+      if (!selection?.focusNode || !field.contains(selection.focusNode))
+        return null;
+      const range = document.createRange();
+      range.selectNodeContents(field);
+      range.setEnd(selection.focusNode, selection.focusOffset);
+      return range.toString();
+    });
+    caretPhases.push({ phase, prefix, state });
+    return prefix;
+  };
+  const afterTabPrefix = await recordCaret("after-rewrite-and-Tab");
   await expect(
     renamed.getByRole("img", { name: "place 4", exact: true }),
   ).toHaveCount(1);
   expect(await retained!.evaluate((node) => node.isConnected)).toBe(true);
   await renamed.focus();
+  await recordCaret("after-renamed-focus");
   await renamed.press("Control+z");
+  await recordCaret("after-empty-history-Control-z");
+  await evidence(page, renamed, info, "F11-caret-phases", { caretPhases });
+  expect(afterTabPrefix).toBe("4 role edited");
   expect(await richNodes(renamed)).toEqual([[4, " role edited"]]);
   await expect(
     renamed.getByRole("img", { name: "place 1", exact: true }),
   ).toHaveCount(0);
+  expect(
+    await renamed.evaluate((field) => {
+      const selection = getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(field);
+      range.setEnd(selection!.focusNode!, selection!.focusOffset);
+      return range.toString();
+    }),
+  ).toBe("4 role edited");
+  await page.keyboard.type("X");
+  await expect.poll(() => richNodes(renamed)).toEqual([[4, " role editedX"]]);
   await evidence(page, renamed, info, "F11-reference-rewrite", {
     stored: await currentDraft(page),
   });
@@ -517,14 +551,38 @@ test("r7 gate F2 actual Shift-Delete copies before removing the selected range",
     browserName === "chromium"
       ? await page.evaluate(() => navigator.clipboard.readText())
       : null;
+  await page.evaluate(() => {
+    const probe = document.createElement("input");
+    probe.setAttribute("aria-label", "Clipboard round trip");
+    probe.addEventListener("paste", (event) => {
+      (window as any).r7NativePaste = {
+        trusted: event.isTrusted,
+        text: event.clipboardData?.getData("text/plain"),
+      };
+    });
+    document.body.append(probe);
+  });
+  const probe = page.getByRole("textbox", {
+    name: "Clipboard round trip",
+    exact: true,
+  });
+  await probe.focus();
+  await page.keyboard.press("Control+v");
+  const nativePaste = await page.evaluate(() => (window as any).r7NativePaste);
   await evidence(page, field, info, "F2-real-cut", {
     copied,
     clipboard,
-    limit:
-      browserName === "firefox"
-        ? "Clipboard event data only. No system clipboard read."
-        : null,
+    nativePaste,
   });
+  expect(nativePaste).toEqual({ trusted: true, text: "bcodec" });
+  await expect(probe).toHaveValue("bcodec");
+  const events = await page.evaluate(() => (window as any).r7Events);
+  expect(
+    events.some(
+      (event: any) =>
+        event.type === "cut" && event.trusted && event.preventedAfterHandlers,
+    ),
+  ).toBe(true);
   expect(copied).toBe("bcodec");
   if (browserName === "chromium") expect(clipboard).toBe("bcodec");
   await expect.poll(() => richNodes(field)).toEqual([["ad"]]);
@@ -550,6 +608,16 @@ for (const backwards of [false, true]) {
       afterCut,
       threshold: "A cut/Delete affinity difference alone is not a defect.",
     });
+    const events = await page.evaluate(() => (window as any).r7Events);
+    expect(
+      events.some(
+        (event: any) =>
+          event.type === "cut" && event.trusted && event.preventedAfterHandlers,
+      ),
+    ).toBe(true);
+    expect(
+      events.some((event: any) => event.type === "keydown" && event.trusted),
+    ).toBe(true);
     await expect(field).toHaveText("axd");
     expect(
       (await richNodes(field))[0].filter((node) => typeof node === "number"),
@@ -582,6 +650,8 @@ test("r7 gate F10 trusted internal drag keeps text when the drop is canceled", a
   });
   await page.mouse.move(points.x, points.y);
   await page.mouse.down();
+  // Native dragging of selected text requires the press to remain held first.
+  await page.waitForTimeout(350);
   await page.mouse.move(points.targetX, points.targetY, { steps: 20 });
   await page.mouse.up();
   const events = await page.evaluate(() => (window as any).r7Events);
@@ -591,7 +661,16 @@ test("r7 gate F10 trusted internal drag keeps text when the drop is canceled", a
       (event: any) => event.type === "drop" && event.trusted,
     ),
   });
-  // The observation is inconclusive without a trusted drop. Never inject a deletion to fill that gap.
+  for (const type of ["dragstart", "dragover", "drop", "dragend"])
+    expect(
+      events.some((event: any) => event.type === type && event.trusted),
+    ).toBe(true);
+  expect(
+    events.some(
+      (event: any) =>
+        event.type === "drop" && event.trusted && event.preventedAfterHandlers,
+    ),
+  ).toBe(true);
   expect(await richNodes(field)).toEqual(original);
   await expect(field).toHaveText("alpha beta gamma delta omega");
 });
@@ -834,7 +913,18 @@ for (const action of [
             selectionStart: 0,
             selectionEnd: 0,
           });
-        else {
+        else if (action === "dirty-multiple-range") {
+          // Script damage ends native composition. Commit this dirty protocol
+          // explicitly, rather than treating a later ordinary CDP insertion as its end.
+          await field.evaluate((field) =>
+            field.dispatchEvent(
+              new CompositionEvent("compositionend", {
+                bubbles: true,
+                data: "漢字",
+              }),
+            ),
+          );
+        } else {
           if (action === "boundary-replacement")
             await cdp.send("Input.imeSetComposition", {
               text: "漢",
@@ -880,18 +970,72 @@ for (const action of [
           await field.press("Control+Shift+z");
           await expect.poll(() => richNodes(field)).toEqual(expected);
         } else {
-          await expect(page.getByRole("status")).toContainText("try again");
+          await expect(
+            page
+              .locator(".rich-field > p.hint")
+              .filter({ hasText: "try again" }),
+          ).toContainText("try again");
         }
         await evidence(page, field, info, "F6-settled-intent", {
           action,
           expected,
         });
+        if (action === "dirty-multiple-range") {
+          await choose(field, [0, 0, 3]);
+          await page.keyboard.type("X");
+          await evidence(
+            page,
+            field,
+            info,
+            "F6-dirty-protocol-then-native-input",
+            {
+              limit:
+                "The complete commit is an explicit synthetic compositionend after script damage. X is separate real keyboard input.",
+            },
+          );
+          const events = await page.evaluate(() => (window as any).r7Events);
+          expect(
+            events.some(
+              (event: any) =>
+                event.type === "beforeinput" &&
+                event.inputType === "insertText" &&
+                event.data === "X" &&
+                event.trusted &&
+                !event.isComposing &&
+                event.preventedAfterHandlers,
+            ),
+          ).toBe(true);
+          await expect
+            .poll(() => richNodes(field))
+            .toEqual([[{ code: "a漢字Xb" }], [untouched]]);
+        }
         return;
       }
       await evidence(page, field, info, "F6-native-pending", {
         action,
         pending,
       });
+      const events = await page.evaluate(() => (window as any).r7Events);
+      expect(
+        events.some(
+          (event: any) => event.type === "compositionstart" && event.trusted,
+        ),
+      ).toBe(true);
+      expect(
+        events.some(
+          (event: any) =>
+            event.type === "input" &&
+            event.inputType === "insertCompositionText" &&
+            event.trusted,
+        ),
+      ).toBe(true);
+      expect(
+        events.some(
+          (event: any) =>
+            event.type === "compositionend" &&
+            event.data === (action === "cancel" ? "" : "漢"),
+        ),
+      ).toBe(true);
       await expect
         .poll(() => richNodes(field))
         .toEqual([
@@ -1031,7 +1175,9 @@ test("r7 composition F6 Firefox protocol fixture includes pending DOM text", asy
   await expect
     .poll(() => richNodes(field))
     .toEqual([[{ code: "a漢字b" }], ["outside\r\n"]]);
-  await expect(page.getByRole("status")).toContainText("try again");
+  await expect(
+    page.locator(".rich-field > p.hint").filter({ hasText: "try again" }),
+  ).toContainText("try again");
 });
 
 test("r7 biography L2 a name-only signed profile edit preserves stored whitespace", async ({
@@ -1300,15 +1446,20 @@ for (const colorScheme of ["light", "dark"] as const) {
       ),
     ).toBe(6);
     await expect(
-      grid.getByRole("gridcell", { name: "Place 4", exact: true }),
+      grid.getByRole("button", { name: "Place 4", exact: true }),
     ).toBeFocused();
     await page.keyboard.press("ArrowDown");
     await expect(
-      grid.getByRole("gridcell", { name: "Place 10", exact: true }),
+      grid.getByRole("button", { name: "Place 10", exact: true }),
     ).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(more).toBeFocused();
     await more.press("Enter");
+    await page.keyboard.press("End");
+    await page.keyboard.press("Home");
+    await expect(
+      grid.getByRole("button", { name: "Place 4", exact: true }),
+    ).toBeFocused();
     await page.keyboard.press("End");
     await page.keyboard.press("Space");
     await expect(grid).toBeHidden();
@@ -1385,7 +1536,7 @@ for (const colorScheme of ["light", "dark"] as const) {
   });
 }
 
-test("r7 dialog single-line label keeps an untouched stored multiline label on target edits", async ({
+test("r7 dialog multiline label keeps its exact stored value on target edits", async ({
   page,
 }) => {
   const field = await mount(page, [
@@ -1398,7 +1549,7 @@ test("r7 dialog single-line label keeps an untouched stored multiline label on t
     await dialog
       .getByLabel("Link label", { exact: true })
       .evaluate((node) => node.tagName),
-  ).toBe("INPUT");
+  ).toBe("TEXTAREA");
   await dialog
     .getByLabel("HTTPS address", { exact: true })
     .fill("https://example.org/new");

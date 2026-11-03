@@ -1,5 +1,5 @@
 /** Direct mappings keep every stored inline node and paragraph boundary. */
-import { Schema, type Node as EditorNode } from "prosemirror-model";
+import { Schema, type Slice, type Node as EditorNode } from "prosemirror-model";
 import {
   EditorState,
   Plugin,
@@ -578,6 +578,73 @@ export function isRichDeleteType(
 export interface RichDeleteRange {
   from: number;
   to: number;
+}
+
+export interface RichRangeSnapshot extends RichDeleteRange {
+  doc: EditorNode;
+  slice: Slice;
+  fromParents: EditorNode[];
+  toParents: EditorNode[];
+}
+/** Keep the selected content and its containers, rather than only their names. */
+export function snapshotRichRange(
+  doc: EditorNode,
+  from: number,
+  to: number,
+): RichRangeSnapshot {
+  const parents = (position: number) => {
+    const resolved = doc.resolve(position);
+    return Array.from({ length: resolved.depth + 1 }, (_, depth) =>
+      resolved.node(depth),
+    );
+  };
+  return {
+    doc,
+    from,
+    to,
+    slice: doc.slice(from, to),
+    fromParents: parents(from),
+    toParents: parents(to),
+  };
+}
+
+/** Boundary insertions stay outside a deferred deletion. Changed content cancels it. */
+export function mapRichRange(
+  range: RichRangeSnapshot,
+  transaction: Transaction,
+): RichRangeSnapshot | null {
+  if (range.doc !== transaction.before) return null;
+  if (transaction.doc.eq(transaction.before))
+    return { ...range, doc: transaction.doc };
+  const start = transaction.mapping.mapResult(range.from, 1);
+  const end = transaction.mapping.mapResult(range.to, -1);
+  if (
+    start.deletedAcross ||
+    end.deletedAcross ||
+    start.pos >= end.pos ||
+    end.pos > transaction.doc.content.size
+  )
+    return null;
+  const next = snapshotRichRange(transaction.doc, start.pos, end.pos);
+  const sameParents = (before: EditorNode[], after: EditorNode[]) =>
+    before.length === after.length &&
+    before.every((node, index) => node.sameMarkup(after[index]));
+  if (
+    !next.slice.eq(range.slice) ||
+    !sameParents(range.fromParents, next.fromParents) ||
+    !sameParents(range.toParents, next.toParents)
+  )
+    return null;
+  return next;
+}
+
+/** Replace one known selection while retaining partial code and link containers. */
+export function replaceRichText(tr: Transaction, text: string): Transaction {
+  if (!tr.selection.$from.sameParent(tr.selection.$to))
+    deleteRichInput(tr, "deleteContentBackward", (next) => {
+      tr = next;
+    });
+  return tr.insertText(text).setMeta("richDelete", false);
 }
 
 /** Flatten one paragraph for bounded word motion without changing its nodes. */

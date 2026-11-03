@@ -133,9 +133,9 @@ test("typed places, exact TeX, undo, keyboard toolbar, and 50-place grid", async
   await more.click();
   const grid = page.getByRole("grid", { name: "Places 4 to 50" });
   await expect(
-    grid.getByRole("gridcell", { name: "Place 4, declared", exact: true }),
+    grid.getByRole("button", { name: "Place 4, declared", exact: true }),
   ).toBeVisible();
-  await grid.getByRole("gridcell", { name: "Place 50", exact: true }).focus();
+  await grid.getByRole("button", { name: "Place 50", exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(
     field.getByRole("img", { name: "place 50", exact: true }),
@@ -232,7 +232,7 @@ test("the grid marks only places in the active frame as declared", async ({
   await more.click();
   const grid = page.getByRole("grid", { name: "Places 4 to 50" });
   await expect(
-    grid.getByRole("gridcell", { name: "Place 4", exact: true }),
+    grid.getByRole("button", { name: "Place 4", exact: true }),
   ).toBeVisible();
   await grid.press("Escape");
   await page
@@ -240,10 +240,10 @@ test("the grid marks only places in the active frame as declared", async ({
     .selectOption("context");
   await more.click();
   await expect(
-    grid.getByRole("gridcell", { name: "Place 4, declared", exact: true }),
+    grid.getByRole("button", { name: "Place 4, declared", exact: true }),
   ).toBeVisible();
   await expect(
-    grid.getByRole("gridcell", { name: "Place 5", exact: true }),
+    grid.getByRole("button", { name: "Place 5", exact: true }),
   ).toBeVisible();
   await grid.press("Escape");
 });
@@ -678,7 +678,7 @@ test("every definition rich field edits nodes and preserves untouched multiline 
   await hintPlaces.click();
   const hintGrid = page.getByRole("grid", { name: "Places 4 to 50" });
   await expect(
-    hintGrid.getByRole("gridcell", { name: "Place 4, declared", exact: true }),
+    hintGrid.getByRole("button", { name: "Place 4, declared", exact: true }),
   ).toBeVisible();
   await hintGrid.press("Escape");
   for (const label of labels) {
