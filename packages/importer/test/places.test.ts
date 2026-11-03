@@ -258,3 +258,34 @@ test("a dash does not hide the five extra mathematical operators", () => {
     }
   }
 });
+
+test("extra math closers after finished places stay literal", () => {
+  for (const source of [
+    "$x_1$\\)",
+    "$x_1$\\]",
+    "\\(x_1\\)$",
+    "\\[x_1\\]$",
+    "$$ x_{2} $$\\)",
+    "$$ x_{2} $$\\]",
+  ]) {
+    const result = convertPlaces(source, "/definition");
+    assert.deepEqual(result.text, [[source]], source);
+    assert.equal(result.frame, null, source);
+    assert.equal(result.conversion.method, "literal", source);
+    assert.deepEqual(result.conversion.mappings, [], source);
+    assert.equal(
+      Object.values(result.unresolved).reduce((sum, count) => sum + count, 0),
+      1,
+      source,
+    );
+    assert.ok(
+      result.conversion.warnings.some((warning) =>
+        warning.startsWith("Unconverted pattern "),
+      ),
+      source,
+    );
+  }
+  assert.deepEqual(convertPlaces("\\(x_1\\) $x_2$", "/definition").text, [
+    [1, " ", 2],
+  ]);
+});

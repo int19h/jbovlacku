@@ -1419,3 +1419,14 @@ test("fidelity separates all explicit places blocked from untouched text", () =>
   assert.equal(places.blocked, 2);
   assert.equal(places.untouched, 2);
 });
+
+test("braced forms in longer ASCII identifiers do not count as blocked rows", () => {
+  for (const definition of ["x_{1}foo", "x_{1}_", "x_{1}0", "x_1foo"]) {
+    const result = capture([{ ...rows()[0], definition }]);
+    assert.equal(result.report.fidelity.places.blocked, 0, definition);
+    assert.equal(result.report.fidelity.places.untouched, 1, definition);
+  }
+  const blocked = capture([{ ...rows()[0], definition: "x_{1} + 2" }]);
+  assert.equal(blocked.report.fidelity.places.blocked, 1);
+  assert.equal(blocked.report.fidelity.places.untouched, 0);
+});

@@ -1,4 +1,4 @@
-export const PLACE_CONVERSION_VERSION = "explicit-x-places-v5";
+export const PLACE_CONVERSION_VERSION = "explicit-x-places-v6";
 export interface PlaceMapping {
   field: string;
   start: number;
@@ -10,7 +10,7 @@ export interface PlaceMapping {
 export function explicitPlaceCount(source: string): number {
   return [
     ...source.matchAll(
-      /(?<![a-zA-Z0-9_])x_(?:([1-9][0-9]{0,4})(?![a-zA-Z0-9_])|\{([1-9][0-9]{0,4})\})/g,
+      /(?<![a-zA-Z0-9_])x_(?:([1-9][0-9]{0,4})|\{([1-9][0-9]{0,4})\})(?![a-zA-Z0-9_])/g,
     ),
   ].filter((match) => Number(match[1] ?? match[2]) <= 65535).length;
 }
@@ -79,10 +79,7 @@ export function convertPlaces(source: string | null, field: string) {
       (!/[\p{L}\p{M}]/u.test(left) || cjk(left)) &&
       (!/[\p{L}\p{M}]/u.test(right) || cjk(right));
     const malformedNeighbor =
-      !raw.startsWith("$") &&
-      !raw.startsWith("\\(") &&
-      !raw.startsWith("\\[") &&
-      (before.endsWith("$") || /^\$|^\\[)\]]/.test(after));
+      /^\$|^\\[)\]]/.test(after) || (!delimited && before.endsWith("$"));
     // Finished delimiters separate a place from prose brackets and suffixes.
     // Keep mathematical operators visible across those brackets.
     const equationBefore = delimited
@@ -107,7 +104,7 @@ export function convertPlaces(source: string | null, field: string) {
       !equation &&
       !malformedNeighbor &&
       (delimited || nesting.length === 0) &&
-      !(raw.startsWith("$") && (before.endsWith("$") || after.startsWith("$")))
+      !(raw.startsWith("$") && before.endsWith("$"))
     ) {
       nodes.push(place);
       mappings.push({

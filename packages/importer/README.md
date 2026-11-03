@@ -229,7 +229,7 @@ Source account management, cross-post marker reconciliation, and model-assisted 
 
 ## Places, rafsi, and attribution
 
-Extraction versions `lensisku-list-fidelity-v3` and `lensisku-sql-fidelity-v3` use the `explicit-x-places-v5` conversion recipe.
+Extraction versions `lensisku-list-fidelity-v3` and `lensisku-sql-fidelity-v3` use the `explicit-x-places-v6` conversion recipe.
 The [format specification](../../docs/format.md#placeholder-conversion-during-import) defines its supported forms and limits.
 The importer preserves exact source strings and records each converted span with Unicode scalar offsets.
 It declares observed indices in a context frame. It does not infer a complete place list.
@@ -237,6 +237,7 @@ It declares observed indices in a context frame. It does not infer a complete pl
 Finished delimited forms allow adjacent Han, Hiragana, Katakana, and Hangul characters, including their script-specific combining marks.
 CJK punctuation needs no separating spaces. Other scripts retain their letter boundaries, including Latin ordinals and genitives.
 Bare forms, digits, and mathematical guards keep their existing boundaries.
+Extra math closers immediately after a finished form keep that form literal.
 
 Notes, etymology, examples, source history, component variables, and quoted relations remain literal.
 Mathematical expressions use the finite guards in the format specification.

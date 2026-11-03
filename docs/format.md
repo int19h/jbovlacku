@@ -1877,11 +1877,12 @@ A deterministic conversion pass recognizes a versioned set of explicit x-place f
 It never assigns place order from the appearance order of component variables such as g_1 or m_4.
 Foreign quotations, component equivalences, nested relations, and ambiguous math remain literal unless an explicit mapping resolves them.
 
-The `explicit-x-places-v5` recipe annotates only the main definition text.
+The `explicit-x-places-v6` recipe annotates only the main definition text.
 It recognizes lowercase `x_N` and `x_{N}`, where N uses ASCII digits without leading zeros and ranges from 1 through 65,535.
 Supported matching delimiters are `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`.
 A delimited expression must contain one supported form, with optional surrounding whitespace.
 A converted span includes its math delimiters and their internal whitespace.
+An extra `$`, `\)`, or `\]` immediately after a supported form keeps that form and closer literal.
 
 Adjacent letters, digits, underscores, braces, or exponent notation prevent a conversion within a larger expression.
 Finished delimited forms allow adjacent letters or combining marks from Han, Hiragana, Katakana, and Hangul, using Unicode Script_Extensions.
