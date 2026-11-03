@@ -1913,6 +1913,7 @@ Thus `lu'e`, `lu'a`, and `lu'o` do not open quotations.
 
 A `lu` guard tracks nested `lu` and unquoted `li'u` markers. A `zo` token cannot close that quotation.
 Supported text, code, and math units remain opaque during the boundary scan.
+
 A `lo'u` guard ends at the first unprotected `le'u`. Neither an inner `lo'u` nor an inner `lu` protects that closer.
 A `zo` token protects its payload inside either guard.
 Inside either guard, `zoi` or `la'o` leaves the uncertain remainder literal, with a warning.

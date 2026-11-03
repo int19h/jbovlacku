@@ -248,6 +248,7 @@ The `lo'u` guard ends at its first unprotected `le'u` and skips tokens protected
 Neither `lo'u` nor `lu` inside that guard protects `le'u`.
 Inside either guard, `zoi` or `la'o` keeps the uncertain remainder literal with a warning.
 Unresolved boundaries take the same conservative path.
+
 Clear parenthetical marker mentions stay ordinary text. An ASCII-started `zo` token stops before a CJK continuation.
 
 Notes, etymology, examples, source history, component variables, and quoted relations remain literal.
