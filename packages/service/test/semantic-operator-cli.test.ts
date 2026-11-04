@@ -322,8 +322,8 @@ test("operator prepare selects a route and preserves stored profile routes", asy
       ).generation;
     const fresh = await prepared([]);
     const freshProfile = await vectors.profile(fresh.id);
-    assert.equal(freshProfile.provider, "openrouter:nebius");
-    assert.equal(freshProfile.parameters.route, "nebius");
+    assert.equal(freshProfile.provider, "openrouter:deepinfra/us");
+    assert.equal(freshProfile.parameters.route, "deepinfra/us");
     const routed = await prepared(["--route", "deepinfra/us"]);
     const routedProfile = await vectors.profile(routed.id);
     assert.equal(routedProfile.provider, "openrouter:deepinfra/us");
@@ -355,9 +355,15 @@ test("operator prepare selects a route and preserves stored profile routes", asy
     assert.equal(matchingJob.profile, routed.profile);
     const legacy = await prepared(["--profile", profileId(profile)]);
     assert.equal(legacy.profile, profileId(profile));
-    const explicitDefault = await prepared(["--route", "nebius"]);
+    assert.equal((await vectors.profile(legacy.id)).parameters.route, "nebius");
+    const legacyJob = await prepared(["--job", legacy.id]);
     assert.equal(
-      (await vectors.profile(explicitDefault.id)).provider,
+      (await vectors.profile(legacyJob.id)).provider,
+      "openrouter:nebius",
+    );
+    const explicitNebius = await prepared(["--route", "nebius"]);
+    assert.equal(
+      (await vectors.profile(explicitNebius.id)).provider,
       "openrouter:nebius",
     );
     for (const selector of [
@@ -373,7 +379,13 @@ test("operator prepare selects a route and preserves stored profile routes", asy
           ),
       );
     }
-    for (const route of ["unknown", "deepinfra", "DeepInfra/US", ""]) {
+    for (const route of [
+      "unknown",
+      "deepinfra",
+      "DeepInfra/US",
+      "siliconflow/fp8",
+      "",
+    ]) {
       await assert.rejects(prepared(["--route", route]), (failure: any) =>
         failure.stdout.includes(
           route

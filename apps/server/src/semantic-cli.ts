@@ -87,7 +87,7 @@ async function withSemanticService<T>(
     ? await vectors.profile(job)
     : selectedProfile
       ? await vectors.storedProfile(selectedProfile)
-      : createQwenProfile(undefined, selectedRoute);
+      : createQwenProfile(undefined, selectedRoute ?? "deepinfra/us");
   if (selectedProfile) {
     if (profileId(profile) !== selectedProfile)
       throw new Error("The selected profile does not match the saved job.");

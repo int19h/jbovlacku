@@ -377,7 +377,9 @@ The host service also admits bounded embedding batches through the same spending
 Caller cancellation during embedding admission prevents dispatch and removes any unsent reservation.
 Its provider adapter pins `qwen/qwen3-embedding-8b` to each profile's Nebius or DeepInfra route through OpenRouter, with fallback and redirects disabled.
 Operators select a fresh profile's route with `prepare --route nebius` or `prepare --route deepinfra/us`.
-Nebius remains the default. The providers use separate profile IDs and vector spaces, including for queries and compatibility probes.
+Fresh CLI profiles default to DeepInfra. Existing Nebius profiles keep their route.
+The providers use separate profile IDs and vector spaces, including for queries and compatibility probes.
+A route change requires a fresh profile and a full re-embed.
 Invalid embedding configuration disables embedding alone and preserves generation.
 Interrupted operations retain unknown-cost charges after restart. Errors after reservation carry their operation IDs.
 Completed operator batches with known costs share hourly ledger rows, while recent diagnostics retain their individual charges.

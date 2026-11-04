@@ -38,7 +38,12 @@ For a fresh profile, use `prepare --route deepinfra/us` to select DeepInfra thro
 npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command prepare --route deepinfra/us
 ```
 
-The allowed routes are `nebius` and `deepinfra/us`. Without `--route`, a fresh profile uses `nebius`.
+The allowed routes are `nebius` and `deepinfra/us`. Without `--route`, a fresh profile uses `deepinfra/us`.
+Use `prepare --route nebius` to choose Nebius for a fresh profile.
+In a local probe, DeepInfra returned HTTP 200 for all 24 requests across three waves of eight parallel 128-input requests.
+Each wave took about eight to nine seconds, with no 429 responses.
+Under the measured load, Nebius admitted about one 128-input batch every two minutes.
+These measurements set the fresh-profile default to DeepInfra.
 The profile records its route in `provider` and `parameters.route`. The route therefore changes the complete profile ID.
 Document, query, background, and compatibility-probe requests use that profile's route, with `allow_fallbacks: false`.
 The server serves either route through `JVC_SEMANTIC_PROFILE`; no route override is needed.
@@ -47,7 +52,9 @@ Existing Nebius profiles and their IDs stay unchanged.
 A measured comparison of 32 identical inputs gave cross-provider cosine similarities from 0.9951 to 0.9977, with distance up to 0.0049.
 The compatibility probe permits a maximum cosine distance of 0.0005.
 The measured cross-provider distance exceeds that tolerance, so Nebius and DeepInfra must use separate profiles and vector spaces.
-Changing the route requires a fresh profile and new vectors, even when input bytes stay unchanged.
+A separate measurement put `siliconflow/fp8` within 0.000156 cosine distance of Nebius.
+Both differed from `deepinfra/us` by about 0.005. SiliconFlow is not a selectable route in this version.
+Changing the route always requires a fresh profile and a full re-embed, even when input bytes stay unchanged.
 
 Set `JVC_EMBEDDING_PROFILE` to the `generation.profile` value from an earlier generation.
 Use `prepare --profile PROFILE_ID` to reuse that stored application profile for another snapshot or view:

@@ -954,13 +954,18 @@ Older attempts whose inputs now belong to later attempts remain excluded.
 Review ambiguous batches first. Retrying them can repeat paid work whose earlier result remains unknown.
 The [operator guide](semantic-search.md#handle-provider-rate-limits) describes output events and retry bounds.
 
-Use `prepare --route deepinfra/us` for a fresh DeepInfra profile. The default fresh-profile route stays `nebius`.
+Fresh `prepare` profiles default to `deepinfra/us`. Use `prepare --route nebius` for a fresh Nebius profile.
+A local probe sent three waves of eight parallel 128-input requests to DeepInfra. All 24 returned HTTP 200 without a 429.
+Each wave took about eight to nine seconds. Nebius admitted about one 128-input batch every two minutes under the measured load.
 The allowed routes are `nebius` and `deepinfra/us`. Each route changes both profile provider fields and the complete profile ID.
 Document, query, and compatibility-probe requests always use the stored profile route with fallback disabled.
 The server accepts either route under `JVC_SEMANTIC_PROFILE`.
 A measured 32-input comparison gave cross-provider cosine similarities of 0.9951 to 0.9977, with distance up to 0.0049.
 The compatibility probe tolerance is 0.0005, so the providers require separate profiles and vector spaces.
-Existing Nebius profiles keep their exact identity. Changing a route requires a fresh profile and new vectors.
+Another measurement put `siliconflow/fp8` within 0.000156 cosine distance of Nebius.
+Both differed from `deepinfra/us` by about 0.005. SiliconFlow is not a selectable route in this version.
+Existing Nebius profiles keep their exact identity and route.
+Changing a route always requires a fresh profile and a full re-embed.
 
 Use `prepare --profile PROFILE_ID` to build another view or snapshot under a stored compatible profile.
 A stored profile or job keeps its route. A conflicting `--route` fails preparation.
