@@ -15,7 +15,8 @@ concurrency:
 jobs:
   native-wasm-and-browser:
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    # Recent runs took about 65 minutes before the Firefox step.
+    timeout-minutes: 90
     env:
       CARGO_BUILD_JOBS: "2"
       CARGO_TARGET_DIR: /build/jbovlacku/target
@@ -39,7 +40,7 @@ jobs:
       - name: Install JavaScript and browser tools
         run: |
           npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium firefox
+          npx playwright install --with-deps chromium
       - name: Format Rust
         run: cargo fmt --all --check
       - name: Lint Rust
@@ -72,6 +73,37 @@ jobs:
         run: npm run test:web-unit
       - name: Test browser behavior
         run: npm run test:web -- --project chromium
+
+  firefox-editing-and-authoring:
+    runs-on: ubuntu-24.04
+    # Firefox took about 10 minutes, plus about 4 minutes for setup and builds.
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: /build/jbovlacku/target
+      JVC_TEST_ROOT: /build/jbovlacku/tests
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.21.0"
+          cache: npm
+      - name: Prepare test files
+        run: |
+          sudo mkdir -p /build/jbovlacku
+          sudo chown "$(id -u):$(id -g)" /build/jbovlacku
+      - name: Install Rust tools
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.105 --locked --jobs 2
+      - name: Install JavaScript and browser tools
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps firefox
+      - name: Build shared WebAssembly
+        run: npm run build:core
+      - name: Build browser application
+        run: npm run build:web
       - name: Test Firefox editing and authoring
         run: npm run test:web -- --project firefox-editor --project firefox-authoring
 
