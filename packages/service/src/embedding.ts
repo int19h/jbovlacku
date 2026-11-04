@@ -3,7 +3,7 @@ import {
   AssistanceError,
   isObject,
   EMBEDDING_MODEL,
-  EMBEDDING_ROUTE,
+  isEmbeddingRoute,
   EMBEDDING_QUOTE_TOKENS,
   validEmbeddingInputPrice,
   type ProviderConfig,
@@ -71,7 +71,7 @@ export function prepareEmbedding(
   if (
     !embedding ||
     embedding.model !== EMBEDDING_MODEL ||
-    embedding.route !== EMBEDDING_ROUTE ||
+    !isEmbeddingRoute(embedding.route) ||
     !validEmbeddingInputPrice(embedding.inputPrice) ||
     !Number.isFinite(config.maxPrice) ||
     config.maxPrice <= 0

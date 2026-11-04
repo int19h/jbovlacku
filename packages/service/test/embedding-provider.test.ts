@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   providerConfig,
   AssistanceError,
+  isEmbeddingRoute,
   type ProviderConfig,
 } from "../src/inference.ts";
 import {
@@ -125,6 +126,45 @@ test("embedding configuration pins the model and route with a separate input pri
     prepareEmbedding([bytes("a")], configured).estimatedUsd,
     0.00064,
   );
+});
+
+test("embedding routes accept only the two exact provider names", () => {
+  for (const route of ["nebius", "deepinfra/us"] as const) {
+    assert.equal(isEmbeddingRoute(route), true);
+    const provider = providerConfig(
+      { JVC_AI_ENABLED: "enabled", JVC_AI_EMBEDDING_PROVIDER_ROUTE: route },
+      async () => "unused",
+    )!;
+    assert.equal(provider.embedding?.route, route);
+    const prepared = prepareEmbedding([bytes("public")], provider);
+    assert.deepEqual(JSON.parse(prepared.body).provider, {
+      order: [route],
+      only: [route],
+      allow_fallbacks: false,
+      max_price: { prompt: 0.01 },
+    });
+    assert.equal(prepared.estimatedUsd, 0.00032);
+  }
+  for (const route of [
+    "deepinfra",
+    "deepinfra/eu",
+    "DeepInfra/us",
+    "nebius ",
+    "",
+    null,
+    undefined,
+    {},
+    ["nebius"],
+    1,
+  ]) {
+    assert.equal(isEmbeddingRoute(route), false);
+    const provider = config(fetch);
+    Object.assign(provider.embedding!, { route });
+    assert.throws(
+      () => prepareEmbedding([bytes("public")], provider),
+      (failure: any) => failure.code === "embedding_configuration",
+    );
+  }
 });
 
 test("the provider preserves exact input bytes and forbids redirects and route fallback", async () => {

@@ -5,6 +5,10 @@ import type { EmbeddingUsage } from "./embedding.ts";
 
 export const EMBEDDING_MODEL = "qwen/qwen3-embedding-8b";
 export const EMBEDDING_ROUTE = "nebius";
+export type EmbeddingRoute = "nebius" | "deepinfra/us";
+export function isEmbeddingRoute(value: unknown): value is EmbeddingRoute {
+  return value === "nebius" || value === "deepinfra/us";
+}
 export const EMBEDDING_QUOTE_TOKENS = 32000;
 export function validEmbeddingInputPrice(value: unknown): value is number {
   return (
@@ -17,7 +21,7 @@ export function validEmbeddingInputPrice(value: unknown): value is number {
 }
 export interface EmbeddingConfig {
   model: typeof EMBEDDING_MODEL;
-  route: typeof EMBEDDING_ROUTE;
+  route: EmbeddingRoute;
   inputPrice: number;
 }
 
@@ -329,21 +333,21 @@ export function providerConfig(
   let embedding: EmbeddingConfig | undefined;
   let embeddingDisabledReason: string | undefined;
   const embeddingPrice = Number(env.JVC_AI_EMBEDDING_INPUT_PRICE ?? 0.01);
+  const embeddingRoute = env.JVC_AI_EMBEDDING_PROVIDER_ROUTE ?? EMBEDDING_ROUTE;
   const invalidEmbeddingField =
     (env.JVC_AI_EMBEDDING_MODEL ?? EMBEDDING_MODEL) !== EMBEDDING_MODEL
       ? "JVC_AI_EMBEDDING_MODEL"
-      : (env.JVC_AI_EMBEDDING_PROVIDER_ROUTE ?? EMBEDDING_ROUTE) !==
-          EMBEDDING_ROUTE
+      : !isEmbeddingRoute(embeddingRoute)
         ? "JVC_AI_EMBEDDING_PROVIDER_ROUTE"
         : !validEmbeddingInputPrice(embeddingPrice)
           ? "JVC_AI_EMBEDDING_INPUT_PRICE"
           : null;
   if (invalidEmbeddingField)
     embeddingDisabledReason = `Embedding inference is disabled because ${invalidEmbeddingField} is invalid.`;
-  else
+  else if (isEmbeddingRoute(embeddingRoute))
     embedding = {
       model: EMBEDDING_MODEL,
-      route: EMBEDDING_ROUTE,
+      route: embeddingRoute,
       inputPrice: embeddingPrice,
     };
   const hourlyBudgetUsd = number(
