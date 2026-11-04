@@ -442,6 +442,8 @@ Cold coverage yields between bounded metadata pages. Concurrent requests share c
 Ordinary generation and public profile reads do not scan parked inputs. Operator diagnostics yield between pages of at most 128 holds.
 
 Generation retirement yields between bounded deletion transactions and resumes interrupted cleanup.
+Cleanup reclaims unfinished idle background jobs after their current, rollback, and background pointers end.
+Operator status lists generations for the same profile and view through separate diagnostic pages.
 Operators can unpublish and retire an idle background generation, including a suspended profile, without retaining its background pointer.
 
 Each client network can hold at most one scan worker. Empty or absent networks share that same limit.

@@ -2139,6 +2139,7 @@ for (const state of ["failed", "ambiguous"] as const)
           profile: generation.profile,
           view: generation.view,
           assistance: provider.assistance,
+          needed: async () => outcome !== "cached",
           source: async () => {
             throw new Error("A prepared retry needs no source read");
           },
@@ -2179,9 +2180,14 @@ for (const state of ["failed", "ambiguous"] as const)
             );
             assert.equal(
               (await store.generation(generation.id)).state,
-              "completed",
+              outcome === "cached" ? "retired" : "completed",
             );
-            assert.deepEqual(await store.coverage(generation.id), {
+            // The operator's cached publication keeps its vectors after orphan cleanup.
+            const serving =
+              outcome === "cached"
+                ? (await store.current(generation.profile, generation.view))!
+                : generation.id;
+            assert.deepEqual(await store.coverage(serving), {
               eligible: 5,
               indexed: 5,
               pending: 0,

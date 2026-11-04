@@ -141,6 +141,10 @@ A normal bounded pass remains paused when eligible definitions still lack vector
 Its `index_incomplete` reason describes that partial coverage. It does not erase progress.
 Status lists at most 64 batches and exposes a cursor when more diagnostic rows remain.
 Use `status --job GENERATION_ID --after BATCH_ID` to read the next diagnostic page.
+Status also lists at most 64 generations for that job's profile and view, including retired generations.
+The `generations_next` field holds the cursor for the next page, or null when the page is shorter.
+Use `status --job GENERATION_ID --generations-after LAST_GENERATION_ID` to read the next generation page.
+The generation cursor is separate from the batch cursor.
 Its summary counts completed inputs, retained dispatch intents, reported tokens and cost, and batches with missing usage.
 Dispatch intents include interrupted sends whose actual delivery remains uncertain.
 Reported totals exclude unknown values. The shared spending ledger keeps those unknown charges separately.
@@ -353,7 +357,9 @@ It yields between transactions. New readers and publication cannot select that g
 Each transaction removes only inputs and vectors without a remaining association. It updates storage counts in the same transaction.
 
 An interrupted retirement keeps its cleanup marker. A later background prune or explicit retirement continues that cleanup.
-Operator-created generations remain under explicit operator control. The existing capacity limits still apply.
+Background cleanup also retires unfinished background jobs after their background, current, and rollback pointers end.
+It first recovers idle interrupted jobs. Active readers, live index jobs, and unsettled provider transports defer cleanup.
+Cleanup never retires operator-created generations. They remain under explicit operator control. The existing capacity limits still apply.
 
 To remove a completed background generation, stop the server that holds its data directory lock.
 Set `JVC_DATA_DIR` to that directory and `JVC_INDEX_JOB` to the exact generation ID.
