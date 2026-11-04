@@ -402,18 +402,15 @@ test("operator prepare selects a route and preserves stored profile routes", asy
         ),
       );
     }
-    await assert.rejects(
-      cli(directory, [
-        "--command",
-        "status",
-        "--job",
-        routed.id,
-        "--route",
-        "deepinfra/us",
-      ]),
-      (failure: any) =>
-        failure.stdout.includes("Use --route only with prepare or run."),
-    );
+    const status = await cli(directory, [
+      "--command",
+      "status",
+      "--job",
+      routed.id,
+      "--route",
+      "deepinfra/us",
+    ]);
+    assert.equal(status.at(-1).request_route, "deepinfra/us");
     assert.equal((await vectors.generation(routed.id)).profile, routed.profile);
   }));
 
@@ -662,7 +659,7 @@ return Response.json({model:'qwen/qwen3-embedding-8b',data:body.input.map((_,ind
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-    assert.equal(resumedCalls.length, 9);
+    assert.equal(resumedCalls.length, 10);
     assert.equal(resumedCalls.at(-1).count, 32);
   }));
 
@@ -1010,3 +1007,147 @@ test("status lists every saved generation in its job scope with a separate curso
         cli(directory, ["--command", "status", "--job", anchor.id, ...args]),
       );
   }));
+
+for (const result of [
+  "healthy",
+  "drift",
+  "model-mismatch",
+  "rate-limit",
+  "nebius",
+] as const) {
+  test(`operator probes its request route before document writes: ${result}`, async () =>
+    fixture(async ({ directory, vectors, service, view, profile }) => {
+      const third = createEvent(
+        seed,
+        [view],
+        "d".repeat(32),
+        {
+          kind: "definition.publish",
+          word: wordId(word),
+          language: "en",
+          parents: [],
+          origin: "native",
+        },
+        definitionBody("A new definition needs a new vector."),
+      );
+      await service.admitMany([utf8(JSON.stringify(third))]);
+      const prepared = await cli(
+        directory,
+        ["--command", "prepare", "--profile", profileId(profile)],
+        { JVC_VIEW: view },
+      );
+      const job = prepared.at(-1).generation;
+      assert.equal((await vectors.coverage(job.id)).pending, 1);
+      const key = join(directory, "probe-key.txt");
+      const evidence = join(directory, "probe-calls.jsonl");
+      const preload = join(directory, "probe-provider.mjs");
+      await writeFile(key, "disposable-probe-key", { mode: 0o600 });
+      await writeFile(
+        preload,
+        `import {appendFileSync} from 'node:fs'; let sends=0;
+      globalThis.fetch=async(url,init)=>{
+        if(String(url)!=='https://openrouter.ai/api/v1/embeddings')throw new Error('Unexpected network request');
+        const body=JSON.parse(init.body);
+        appendFileSync(process.env.PROBE_EVIDENCE,JSON.stringify(body)+'\\n');
+        if(process.env.PROBE_RESULT==='rate-limit' && sends++===0)return new Response('',{status:429,headers:{'retry-after':'0'}});
+        return Response.json({model:process.env.PROBE_RESULT==='model-mismatch'?'unknown-model':'Qwen/Qwen3-Embedding-8B',data:body.input.map((_,index)=>({index,embedding:Array.from({length:4096},(_,i)=>i===(process.env.PROBE_RESULT==='drift'?1:0)?1:0)})),usage:{prompt_tokens:1,total_tokens:1,cost:0.00000001}});
+      };`,
+      );
+      const env = {
+        JVC_AI_ENABLED: "enabled",
+        JVC_AI_KEY_FILE: key,
+        PROBE_EVIDENCE: evidence,
+        PROBE_RESULT: result,
+      };
+      const args = ["--command", "run", "--job", job.id];
+      const succeeds = result !== "drift" && result !== "model-mismatch";
+      if (result === "nebius") args.push("--route", "nebius");
+      if (succeeds) {
+        const output = await cli(directory, args, env, preload);
+        assert.equal(
+          output.find((row) => row.event === "run").generation.state,
+          "completed",
+        );
+      } else
+        await assert.rejects(
+          cli(directory, args, env, preload),
+          (failure: any) =>
+            failure.stdout.includes(
+              result === "drift"
+                ? "semantic_model_drift"
+                : "embedding_model_mismatch",
+            ),
+        );
+      const calls = (await readFile(evidence, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(
+        calls.length,
+        result === "rate-limit" ? 3 : succeeds ? 2 : 1,
+      );
+      if (succeeds) {
+        assert.equal(calls[0].input.length, 2);
+        assert.equal(calls.at(-1).input.length, 1);
+        assert.equal(
+          (await vectors.batches(job.id))[0].route,
+          result === "nebius" ? "nebius" : "siliconflow/fp8",
+        );
+      } else {
+        assert.equal((await vectors.batches(job.id)).length, 0);
+        assert.equal(
+          await vectors.compatibility(profileId(profile)),
+          result === "drift"
+            ? "semantic_model_drift"
+            : "embedding_model_mismatch",
+        );
+      }
+      assert(
+        calls.every(
+          (call) =>
+            JSON.stringify(call.provider.only) ===
+              JSON.stringify([
+                result === "nebius" ? "nebius" : "siliconflow/fp8",
+              ]) &&
+            JSON.stringify(call.provider.order) ===
+              JSON.stringify([
+                result === "nebius" ? "nebius" : "siliconflow/fp8",
+              ]) &&
+            call.provider.allow_fallbacks === false,
+        ),
+      );
+      if (result === "healthy") {
+        const now = Date.now();
+        await vectors.defer(profileId(profile), now + 60000, now, "nebius");
+        await vectors.defer(
+          profileId(profile),
+          now + 120000,
+          now,
+          "siliconflow/fp8",
+        );
+        const status = await cli(directory, [
+          "--command",
+          "status",
+          "--job",
+          job.id,
+          "--route",
+          "nebius",
+        ]);
+        assert.equal(status.at(-1).request_route, "nebius");
+        assert.equal(status.at(-1).retry_after, now + 60000);
+        const cleared = await cli(directory, [
+          "--command",
+          "clear-cooldown",
+          "--job",
+          job.id,
+          "--route",
+          "nebius",
+        ]);
+        assert.equal(cleared.at(-1).retry_after, null);
+        assert.equal(
+          await vectors.retryAfter(profileId(profile), "siliconflow/fp8"),
+          now + 120000,
+        );
+      }
+    }));
+}

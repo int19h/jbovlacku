@@ -7,6 +7,7 @@ import {
 } from "../../../packages/core/src/index.ts";
 import { AssistanceService } from "../../../packages/service/src/assistance.ts";
 import { DictionaryService } from "../../../packages/service/src/service.ts";
+import { probeCompatibility } from "../../../packages/service/src/semantic/probe.ts";
 import { SemanticIndexer } from "../../../packages/service/src/semantic/indexer.ts";
 import {
   createQwenProfile,
@@ -256,8 +257,13 @@ async function main() {
   if (selectedProfile && command !== "prepare")
     throw new Error("Use --profile only with prepare.");
   const route = args.get("route");
-  if (route !== undefined && !["prepare", "run"].includes(command))
-    throw new Error("Use --route only with prepare or run.");
+  if (
+    route !== undefined &&
+    !["prepare", "run", "status", "clear-cooldown"].includes(command)
+  )
+    throw new Error(
+      "Use --route only with prepare, run, status, or clear-cooldown.",
+    );
   if (route !== undefined && !isEmbeddingRoute(route))
     throw new Error(
       "Use nebius, siliconflow/fp8, or deepinfra/us with --route.",
@@ -305,7 +311,8 @@ async function main() {
       ).id;
     else if (command === "run") {
       const profile = await vectors.profile(id!);
-      if (qwenRequestRoute(profile, route) === null)
+      const requestRoute = qwenRequestRoute(profile, route);
+      if (requestRoute === null)
         throw new Error(
           "The selected route is incompatible with the stored profile.",
         );
@@ -346,10 +353,24 @@ async function main() {
         async () => [],
       );
       const started = performance.now();
+      const runStore = vectors;
+      const references = await runStore.profileReferences(profileId(profile));
       const result = await new SemanticIndexer(vectors, assistance).run(id!, {
         concurrency,
         operator: true,
         route,
+        beforeFirstBatch: async () => {
+          if (references.length && (await runStore.needsEmbedding(id!)))
+            await probeCompatibility(
+              runStore,
+              assistance!,
+              profileId(profile),
+              profile,
+              requestRoute!,
+              references,
+              stop.signal,
+            );
+        },
         batchSize,
         batchBytes,
         adaptive: true,
@@ -374,7 +395,7 @@ async function main() {
       });
     } else if (command === "clear-cooldown") {
       const generation = await vectors.generation(id!);
-      await vectors.clearCooldown(generation.profile);
+      await vectors.clearCooldown(generation.profile, route);
     } else if (command === "recover") await vectors.recover(id!);
     else if (command === "retry") {
       const batch = args.get("batch");
@@ -463,7 +484,11 @@ async function main() {
       summary: await vectors.summary(id!),
       compatibility: await vectors.compatibility(generation.profile),
       probe: await vectors.probeEvidence(generation.profile),
-      retry_after: await vectors.retryAfter(generation.profile),
+      request_route: qwenRequestRoute(
+        await vectors.storedProfile(generation.profile),
+        route,
+      ),
+      retry_after: await vectors.retryAfter(generation.profile, route),
       current: await vectors.current(generation.profile, generation.view),
       batches,
       batches_next: batches.length === 64 ? batches.at(-1)!.id : null,

@@ -10,7 +10,7 @@ import {
 import type { AssistanceService } from "../assistance.ts";
 import type { Snapshot } from "../storage.ts";
 import { inputHash, qwenRequestRoute, queryInput } from "./profile.ts";
-import { distance, vectorBytes, vectorFromBytes } from "./vector.ts";
+import { vectorBytes, vectorFromBytes } from "./vector.ts";
 import { SemanticError } from "./types.ts";
 import type { EmbeddingProfile } from "./types.ts";
 import type {
@@ -21,8 +21,8 @@ import type {
 import type { QueryCache } from "./query-cache.ts";
 import type { VectorScanner } from "./scan.ts";
 
-/** Earlier Nebius reference tests found differences near 0.0002. This fixed tolerance is not fitted to search targets. */
-export const PROBE_MAX_DISTANCE = 0.0005;
+import { probeCompatibility } from "./probe.ts";
+export { PROBE_MAX_DISTANCE } from "./probe.ts";
 
 export interface SemanticOptions {
   profile: string;
@@ -248,43 +248,14 @@ export class SemanticSearch {
     let work = this.probeWork.get(key);
     if (!work) {
       work = (async () => {
-        const references = await this.options.store.references(generation.id);
-        if (!references.length) throw unavailable();
-        const result = await this.inference.embed(
-          references.map((r) => r.input),
-          { kind: "probe", route },
-        );
-        if (result.vectors.length !== references.length) throw unavailable();
-        const comparisons = result.vectors.map((v, i) => ({
-          input: inputHash(references[i].input),
-          distance: distance(
-            v,
-            vectorFromBytes(references[i].vector, profile.dimension),
-          ),
-        }));
-        await this.options.store.recordProbe(generation.profile, {
-          operation: result.operation,
+        await probeCompatibility(
+          this.options.store,
+          this.inference,
+          generation.profile,
+          profile,
           route,
-          checked_at: Date.now(),
-          tolerance: PROBE_MAX_DISTANCE,
-          model: result.model,
-          references: comparisons,
-        });
-        if (
-          comparisons.some(
-            (reference) => reference.distance > PROBE_MAX_DISTANCE,
-          )
-        ) {
-          await this.options.store.suspend(
-            generation.profile,
-            "semantic_model_drift",
-          );
-          throw new SemanticError(
-            503,
-            "semantic_model_drift",
-            "The provider vectors changed beyond the compatibility tolerance. This profile is suspended.",
-          );
-        }
+          await this.options.store.references(generation.id),
+        );
         this.checked.set(key, Date.now());
       })()
         .catch(async (failure) => {
@@ -330,7 +301,10 @@ export class SemanticSearch {
         // Another waiter can fill the cache while this caller waits for its first read.
         const retained = await this.options.cache.get(generation.profile, hash);
         if (retained) return vectorFromBytes(retained, profile.dimension);
-        const retry = await this.options.store.retryAfter(generation.profile);
+        const retry = await this.options.store.retryAfter(
+          generation.profile,
+          route,
+        );
         if (retry !== null && retry > Date.now())
           throw new SemanticError(
             429,
@@ -370,6 +344,8 @@ export class SemanticSearch {
               await this.options.store.defer(
                 generation.profile,
                 Date.now() + Math.max(1000, failure.retryAfterMs ?? 1000),
+                Date.now(),
+                route,
               );
           }
           throw failure;

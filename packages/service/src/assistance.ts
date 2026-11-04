@@ -1399,7 +1399,7 @@ export class AssistanceService {
         "An embedding query requires a client network.",
       );
     const operator =
-      caller.kind === "index" ? this.options.operatorIndexing : undefined;
+      caller.kind !== "query" ? this.options.operatorIndexing : undefined;
     if (
       operator &&
       (!Number.isInteger(operator.concurrency) ||

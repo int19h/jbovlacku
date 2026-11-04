@@ -3717,3 +3717,91 @@ test("query and probe requests follow an explicit compatible route on an existin
       await assistance.drainEmbeddingTransports();
     }
   }));
+
+for (const limited of ["nebius", "siliconflow/fp8"] as const) {
+  test(`a saved ${limited} rate limit leaves the other route available after restart`, async () =>
+    fixture(async ({ store, scanner, ctx, path }) => {
+      const other = limited === "nebius" ? "siliconflow/fp8" : "nebius";
+      const config = providerConfig(
+        { JVC_AI_ENABLED: "enabled" },
+        async () => "disposable-cooldown-key",
+      )!;
+      const calls: string[] = [];
+      config.fetch = async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        const route = body.provider.only[0];
+        calls.push(route);
+        if (route === limited)
+          return new Response("", {
+            status: 429,
+            headers: { "retry-after": "60" },
+          });
+        return Response.json({
+          model: profile.model,
+          data: body.input.map((_: unknown, index: number) => ({
+            index,
+            embedding: [...unit()],
+          })),
+          usage: { prompt_tokens: 1, total_tokens: 1, cost: 0.000001 },
+        });
+      };
+      const assistance = new AssistanceService(
+        { provider: config },
+        "route-cooldown",
+        async () => [],
+      );
+      const make = (route: "nebius" | "siliconflow/fp8") =>
+        new SemanticSearch(
+          {
+            profile: profileId(profile),
+            route,
+            store,
+            scanner,
+            cache: store.queryCache,
+          },
+          assistance,
+          true,
+        );
+      try {
+        await assert.rejects(
+          make(limited).search(
+            ctx,
+            { ...request(), query: "rate limit route" },
+            "local",
+          ),
+          (error: any) => error.code === "embedding_rate_limited",
+        );
+        assert(
+          (await store.retryAfter(profileId(profile), limited))! > Date.now(),
+        );
+        assert.equal(await store.retryAfter(profileId(profile), other), null);
+        const reopened = new SqliteVectorStore(path);
+        try {
+          assert.equal(
+            await reopened.retryAfter(profileId(profile), limited),
+            await store.retryAfter(profileId(profile), limited),
+          );
+          assert.equal(
+            await reopened.retryAfter(profileId(profile), other),
+            null,
+          );
+        } finally {
+          reopened.close();
+        }
+        await make(other).search(
+          ctx,
+          { ...request(), query: "different provider succeeds" },
+          "local",
+        );
+        assert.deepEqual(calls, [limited, other, other]);
+        await store.clearCooldown(profileId(profile), other);
+        assert(
+          (await store.retryAfter(profileId(profile), limited))! > Date.now(),
+        );
+        await store.clearCooldown(profileId(profile), limited);
+        assert.equal(await store.retryAfter(profileId(profile), limited), null);
+      } finally {
+        await assistance.drainEmbeddingTransports();
+      }
+    }));
+}

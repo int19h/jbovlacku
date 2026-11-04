@@ -4,13 +4,14 @@ import {
   inputHash,
   parseProfile,
   profileId,
+  qwenRequestRoute,
 } from "./profile.ts";
 import { SemanticError, type EmbeddingProfile } from "./types.ts";
 import { vectorBytes, vectorFromBytes } from "./vector.ts";
 import { languageTag } from "../language.ts";
 import type { DocumentPage, IndexContext } from "./source.ts";
 import type { EmbeddingUsage } from "../embedding.ts";
-import { isEmbeddingRoute } from "../inference.ts";
+import { isEmbeddingRoute, type EmbeddingRoute } from "../inference.ts";
 import { MAX_PROFILE_COOLDOWN_MS } from "./vector-store.ts";
 import type {
   BackgroundRecovery,
@@ -98,7 +99,7 @@ export class SqlVectorStore implements VectorStore {
       "CREATE TABLE IF NOT EXISTS semantic_profiles(id TEXT PRIMARY KEY, value BLOB NOT NULL)",
       "CREATE TABLE IF NOT EXISTS semantic_profile_suspensions(profile TEXT PRIMARY KEY, reason TEXT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS semantic_probe_evidence(profile TEXT PRIMARY KEY,value TEXT NOT NULL)",
-      "CREATE TABLE IF NOT EXISTS semantic_profile_backoff(profile TEXT PRIMARY KEY, retry_after INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS semantic_profile_backoff(profile TEXT NOT NULL, route TEXT NOT NULL, retry_after INTEGER NOT NULL, PRIMARY KEY(profile,route))",
       "CREATE TABLE IF NOT EXISTS semantic_generations(id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, view TEXT NOT NULL, profile TEXT NOT NULL, eligible INTEGER NOT NULL, state TEXT NOT NULL, cursor TEXT, source_done INTEGER NOT NULL DEFAULT 0, error TEXT)",
       "CREATE INDEX IF NOT EXISTS semantic_generation_scope ON semantic_generations(profile,view,id)",
       "CREATE TABLE IF NOT EXISTS semantic_associations(generation TEXT NOT NULL, event TEXT NOT NULL, envelope TEXT NOT NULL, body TEXT NOT NULL, extraction_version INTEGER NOT NULL, word TEXT NOT NULL, language TEXT NOT NULL, input TEXT, error TEXT, PRIMARY KEY(generation,event))",
@@ -107,7 +108,7 @@ export class SqlVectorStore implements VectorStore {
       "CREATE INDEX IF NOT EXISTS semantic_association_language ON semantic_associations(generation,language,event)",
       "CREATE TABLE IF NOT EXISTS semantic_inputs(profile TEXT NOT NULL, input TEXT NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY(profile,input))",
       "CREATE TABLE IF NOT EXISTS semantic_vectors(profile TEXT NOT NULL, input TEXT NOT NULL, bytes BLOB NOT NULL, operation TEXT NOT NULL, PRIMARY KEY(profile,input))",
-      "CREATE TABLE IF NOT EXISTS semantic_batches(id TEXT PRIMARY KEY, generation TEXT NOT NULL, state TEXT NOT NULL, operation TEXT, previous TEXT, inputs TEXT NOT NULL, error TEXT, usage TEXT, retry INTEGER NOT NULL DEFAULT 0)",
+      "CREATE TABLE IF NOT EXISTS semantic_batches(id TEXT PRIMARY KEY, generation TEXT NOT NULL, state TEXT NOT NULL, operation TEXT, route TEXT, previous TEXT, inputs TEXT NOT NULL, error TEXT, usage TEXT, retry INTEGER NOT NULL DEFAULT 0)",
       "CREATE INDEX IF NOT EXISTS semantic_batch_generation ON semantic_batches(generation,id)",
       "CREATE INDEX IF NOT EXISTS semantic_batch_retry ON semantic_batches(generation,retry,id)",
       "CREATE INDEX IF NOT EXISTS semantic_batch_active ON semantic_batches(generation,id) WHERE state IN ('prepared','sent')",
@@ -145,6 +146,41 @@ export class SqlVectorStore implements VectorStore {
         ON CONFLICT(scope) DO UPDATE SET revision=revision+1;
         END`);
     sql.transaction(() => {
+      // Older attempts retain unknown provenance. New dispatches record their exact route.
+      if (
+        !sql
+          .exec("PRAGMA table_info(semantic_batches)")
+          .some((column) => column.name === "route")
+      )
+        sql.exec("ALTER TABLE semantic_batches ADD COLUMN route TEXT");
+      if (
+        !sql
+          .exec("PRAGMA table_info(semantic_profile_backoff)")
+          .some((column) => column.name === "route")
+      ) {
+        // Old profile-only waits retain their effect on the previous default request route.
+        const legacy = sql.exec("SELECT * FROM semantic_profile_backoff");
+        sql.exec("DROP TABLE semantic_profile_backoff");
+        sql.exec(
+          "CREATE TABLE semantic_profile_backoff(profile TEXT NOT NULL, route TEXT NOT NULL, retry_after INTEGER NOT NULL, PRIMARY KEY(profile,route))",
+        );
+        for (const row of legacy) {
+          const stored = sql.exec(
+            "SELECT value FROM semantic_profiles WHERE id=?",
+            String(row.profile),
+          )[0];
+          const route =
+            stored &&
+            qwenRequestRoute(parseProfile(stored.value as Uint8Array));
+          if (route)
+            sql.exec(
+              "INSERT INTO semantic_profile_backoff VALUES(?,?,?)",
+              String(row.profile),
+              route,
+              Number(row.retry_after),
+            );
+        }
+      }
       if (
         !sql
           .exec("PRAGMA table_info(semantic_generations)")
@@ -564,6 +600,20 @@ export class SqlVectorStore implements VectorStore {
     }
     return { all, languages };
   }
+  async profileReferences(identity: string) {
+    this.compatible(identity);
+    return this.sql
+      .exec(
+        `SELECT i.bytes AS input,v.bytes AS vector FROM semantic_vectors v
+      JOIN semantic_inputs i ON i.profile=v.profile AND i.input=v.input
+      WHERE v.profile=? ORDER BY v.input LIMIT 2`,
+        identity,
+      )
+      .map((row) => ({
+        input: row.input as Uint8Array,
+        vector: row.vector as Uint8Array,
+      }));
+  }
   async references(id: string) {
     const generation = this.active(id);
     this.compatible(generation.profile);
@@ -705,7 +755,21 @@ export class SqlVectorStore implements VectorStore {
       reason,
     );
   }
-  async defer(profile: string, until: number, now = Date.now()): Promise<void> {
+  private async requestRoute(profile: string, route?: EmbeddingRoute) {
+    const selected = qwenRequestRoute(await this.storedProfile(profile), route);
+    if (!selected)
+      fail(
+        "semantic_profile",
+        "The request route is incompatible with the profile.",
+      );
+    return selected!;
+  }
+  async defer(
+    profile: string,
+    until: number,
+    now = Date.now(),
+    route?: EmbeddingRoute,
+  ): Promise<void> {
     if (
       !hash(profile) ||
       !Number.isSafeInteger(until) ||
@@ -719,24 +783,30 @@ export class SqlVectorStore implements VectorStore {
       now + MAX_PROFILE_COOLDOWN_MS,
     );
     this.sql.exec(
-      "INSERT INTO semantic_profile_backoff VALUES(?,?) ON CONFLICT(profile) DO UPDATE SET retry_after=MIN(MAX(retry_after,excluded.retry_after),?)",
+      "INSERT INTO semantic_profile_backoff VALUES(?,?,?) ON CONFLICT(profile,route) DO UPDATE SET retry_after=MIN(MAX(retry_after,excluded.retry_after),?)",
       profile,
+      await this.requestRoute(profile, route),
       Math.min(until, maximum),
       maximum,
     );
   }
-  async clearCooldown(profile: string): Promise<void> {
+  async clearCooldown(profile: string, route?: EmbeddingRoute): Promise<void> {
     if (!hash(profile))
       fail("semantic_profile", "The embedding profile is invalid.");
     this.sql.exec(
-      "DELETE FROM semantic_profile_backoff WHERE profile=?",
+      "DELETE FROM semantic_profile_backoff WHERE profile=? AND route=?",
       profile,
+      await this.requestRoute(profile, route),
     );
   }
-  async retryAfter(profile: string): Promise<number | null> {
+  async retryAfter(
+    profile: string,
+    route?: EmbeddingRoute,
+  ): Promise<number | null> {
     const row = this.sql.exec(
-      "SELECT retry_after FROM semantic_profile_backoff WHERE profile=?",
+      "SELECT retry_after FROM semantic_profile_backoff WHERE profile=? AND route=?",
       profile,
+      await this.requestRoute(profile, route),
     )[0];
     return row ? Number(row.retry_after) : null;
   }
@@ -1076,6 +1146,7 @@ export class SqlVectorStore implements VectorStore {
       generation: String(row.generation),
       state: row.state as IndexBatch["state"],
       operation: row.operation === null ? null : String(row.operation),
+      route: row.route === null ? null : (row.route as EmbeddingRoute),
       previous: row.previous === null ? null : String(row.previous),
       inputs: JSON.parse(String(row.inputs)),
       error: row.error === null ? null : String(row.error),
@@ -1309,7 +1380,11 @@ export class SqlVectorStore implements VectorStore {
         )[0].bytes as Uint8Array,
     );
   }
-  async sent(id: string, operation: string) {
+  async sent(id: string, operation: string, route?: EmbeddingRoute) {
+    const selected = await this.requestRoute(
+      this.active(this.batch(id).generation).profile,
+      route,
+    );
     this.sql.transaction(() => {
       const batch = this.batch(id);
       this.compatible(this.active(batch.generation).profile);
@@ -1319,8 +1394,9 @@ export class SqlVectorStore implements VectorStore {
       )
         fail("semantic_batch", "The batch cannot enter the sent state.");
       this.sql.exec(
-        "UPDATE semantic_batches SET state='sent',operation=? WHERE id=?",
+        "UPDATE semantic_batches SET state='sent',operation=?,route=? WHERE id=?",
         operation,
+        selected,
         id,
       );
     });

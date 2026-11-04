@@ -11,6 +11,7 @@ export interface IndexBatchLimits {
 }
 
 export interface BackgroundRecovery {
+  route?: EmbeddingRoute;
   next_attempt: number;
   not_before: number;
   operation?: string;
@@ -36,6 +37,7 @@ export interface IndexBatch {
   generation: string;
   state: "prepared" | "sent" | "completed" | "failed" | "ambiguous";
   operation: string | null;
+  route: EmbeddingRoute | null;
   previous: string | null;
   inputs: string[];
   error: string | null;
@@ -128,6 +130,9 @@ export interface VectorStore {
     limit?: number,
   ): Promise<IndexGeneration[]>;
   published(view: string): Promise<IndexGeneration[]>;
+  profileReferences(
+    profile: string,
+  ): Promise<{ input: Uint8Array; vector: Uint8Array }[]>;
   references(id: string): Promise<{ input: Uint8Array; vector: Uint8Array }[]>;
   create(
     context: IndexContext,
@@ -151,9 +156,14 @@ export interface VectorStore {
   summary(id: string): Promise<IndexSummary>;
   compatibility(profile: string): Promise<string | null>;
   suspend(profile: string, reason: string): Promise<void>;
-  defer(profile: string, until: number, now?: number): Promise<void>;
-  clearCooldown(profile: string): Promise<void>;
-  retryAfter(profile: string): Promise<number | null>;
+  defer(
+    profile: string,
+    until: number,
+    now?: number,
+    route?: EmbeddingRoute,
+  ): Promise<void>;
+  clearCooldown(profile: string, route?: EmbeddingRoute): Promise<void>;
+  retryAfter(profile: string, route?: EmbeddingRoute): Promise<number | null>;
   page(
     id: string,
     after?: string | null,
@@ -169,7 +179,7 @@ export interface VectorStore {
     limits?: IndexBatchLimits,
   ): Promise<IndexBatch | null>;
   inputs(batch: string): Promise<Uint8Array[]>;
-  sent(batch: string, operation: string): Promise<void>;
+  sent(batch: string, operation: string, route?: EmbeddingRoute): Promise<void>;
   complete(
     batch: string,
     operation: string,
