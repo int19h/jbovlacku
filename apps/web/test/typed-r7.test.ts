@@ -109,7 +109,7 @@ for (const [spelling, profile] of [
   ["CKUSNI'yBRODA", "extended-v2"],
 ] as const)
   for (const metadata of [true, false])
-    test(`R7 fresh analysis recovers ${profile} after a CLL choice, ${spelling}, metadata ${metadata}`, async ({
+    test(`fresh analysis recovers ${profile} after a CLL choice, ${spelling}, metadata ${metadata}`, async ({
       page,
     }) => {
       await seed(page, spelling, profile, "typed");
@@ -172,7 +172,7 @@ for (const [spelling, profile, automatic] of [
   ["SAI,rZBA", "extended", "saizba"],
 ] as const)
   for (const mode of ["legacy", "revision"] as const)
-    test(`R7 rafsi release persists after relock, reopen and reload: ${profile}, ${mode}`, async ({
+    test(`rafsi release persists after relock, reopen and reload: ${profile}, ${mode}`, async ({
       page,
     }) => {
       await seed(page, spelling, profile, mode);
@@ -215,7 +215,7 @@ for (const [spelling, profile, automatic] of [
       expect((await saved(page)).compound).toEqual(before.compound);
     });
 
-test("R7 an unsupported saved historical reading keeps profile controls available", async ({
+test("an unsupported saved historical reading keeps profile controls available", async ({
   page,
 }) => {
   await seed(page, "sairzba", "extended", "typed");
@@ -284,7 +284,7 @@ async function enterSpelling(page: Page, spelling: string) {
 }
 
 for (const mode of ["legacy", "revision"] as const)
-  test(`R8 profile evidence survives other typed words after ${mode} evidence removal`, async ({
+  test(`profile evidence survives other typed words after ${mode} evidence removal`, async ({
     page,
   }) => {
     await seed(page, "BAU,CLA", "cll", mode);
@@ -352,7 +352,7 @@ for (const mode of ["legacy", "revision"] as const)
 
 for (const spelling of ["bangu'y'ismu", "sairzba"])
   for (const typo of [false, true])
-    test(`R8 empty published rows restore exact signed joins: ${spelling}, typo ${typo}`, async ({
+    test(`empty published rows restore exact signed joins: ${spelling}, typo ${typo}`, async ({
       page,
     }) => {
       await seed(page, spelling, "extended", "revision");

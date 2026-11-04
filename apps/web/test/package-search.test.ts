@@ -269,7 +269,7 @@ test("stored-package search keeps a prefix-shaped compound after ordinary prefix
   expect(hits[1]).toEqual([["sefa'e", "headword-prefix"]]);
 });
 
-test("r3: download, saved cache, and search worker retain the package view once", async ({
+test("download, saved cache, and search worker retain the package view once", async ({
   page,
 }) => {
   await page.goto("/");

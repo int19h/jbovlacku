@@ -1,19 +1,20 @@
 # Development
 
 The prototype runs locally. The [README](../README.md) distinguishes implemented features from the full target specifications.
-The commands below use paths relative to a repository checkout. They do not require the development VM's directory layout.
-The human partner's VM also hosts other projects and services. Keep unrelated resources available throughout the work.
+The commands below use paths relative to a repository checkout or directories selected through environment variables.
+Keep unrelated projects and services available throughout the work.
 
 ## Workspace and temporary files
 
-On this VM, use implementation worktrees under `/build/jbovlacku/worktrees` and task-specific scratch directories under `/build/jbovlacku`.
-The primary checkout is `/home/int19h.linux/git/jbovlacku`. The prototype worktree is `/build/jbovlacku/worktrees/prototype` on branch `codex/prototype`.
+Use a separate implementation worktree for each agent.
+Keep build output and task-specific scratch directories in an ignored directory or outside the checkout.
+An ignored directory such as `.cache` is suitable.
 An isolated worktree is a checkout with its own files.
-Use `CARGO_TARGET_DIR` for external Rust build files. Use `JVC_DATA_DIR` for the standalone service's persistent data.
+Use `CARGO_TARGET_DIR` to select the Rust build directory. Use `JVC_DATA_DIR` for the standalone service's persistent data.
 
 Before work, make sure that the current path and branch match the assigned task.
 Record the exact scratch path before cleanup. Delete only that task directory after you inspect its contents.
-Do not delete `/build`, sibling worktrees, shared caches, or unrelated directories.
+Do not delete parent directories, sibling worktrees, shared caches, or unrelated directories.
 Do not overwrite another agent's changes. Assign file scopes before concurrent work.
 
 ## Tools and build
@@ -25,10 +26,10 @@ Its Peggy grammar and generated parser live in `packages/morphology`.
 The repository limits Rust builds to two parallel jobs. The WebAssembly build script also uses two jobs.
 The generated bindings require `wasm-bindgen-cli` 0.2.105 to match the Rust dependency.
 
-Use compatible Ubuntu packages through `apt` when the task needs a system tool.
+Use packages compatible with the host operating system when the task needs a system tool.
 Use `npx` for compatible npm tools when necessary. Keep project dependency versions pinned.
-Do not install packages for another distribution into this VM. Do not replace shared system libraries for a prototype dependency.
-Use the smallest task-relevant privileged action. Keep existing VM services usable.
+Do not install packages for another operating system or distribution. Do not replace shared system libraries for a prototype dependency.
+Use the smallest task-relevant privileged action. Keep existing services usable.
 
 If the matching binding tool is absent, install it through Cargo:
 
@@ -50,11 +51,15 @@ The repository ignores these reproducible outputs.
 The core build accepts `CARGO_TARGET_DIR` and `JVC_WASM_BINDGEN`.
 The first variable selects Rust build storage. The second names the exact `wasm-bindgen` executable.
 Its version must remain 0.2.105.
-For this VM, use a task-specific target directory:
+Select an ignored directory or a directory outside the checkout for Rust build output.
+The following example selects a temporary directory outside the checkout:
 
 ```sh
-CARGO_TARGET_DIR=/build/jbovlacku/targets/prototype npm run build:core
+export CARGO_TARGET_DIR="$(mktemp -d)"
+npm run build:core
 ```
+
+Keep that variable set for later Cargo commands that reuse the build output.
 
 Use established cryptographic libraries. Do not implement curve arithmetic in application code.
 Keep dependency notices with redistributed files. The [dependency guide](dependencies.md) describes the required notices.
@@ -447,7 +452,7 @@ That restart peaked at 2.15 GiB and stopped normally in 0.217 seconds.
 The reviewed write run sampled 91 manifest reads, 91 searches, and 91 word reads.
 All manifest and search samples succeeded. Their maximum times were 2.47 and 2.79 seconds.
 Three word reads reached their three-second deadline, and twelve health probes reached their one-second deadline.
-The reviewed host shared the VM with acceptance tests during that run.
+The reviewed host also ran acceptance tests during that run.
 
 The repaired write run sampled 32 manifest reads, 32 searches, and 32 word reads across all three actions.
 All 96 reads returned HTTP 200 within three seconds.
@@ -498,7 +503,7 @@ Vite listens on `http://127.0.0.1:5177`. `JVC_WEB_API_TARGET` selects another AP
 `npm run build:web` builds the static assets without rebuilding Rust or the server bundle.
 The Node adapter serves those built assets directly.
 
-Browser signing requires localhost or HTTPS. Plain HTTP through a Tailscale IP address provides reading only.
+Browser signing requires localhost or HTTPS. A plain HTTP address on another host provides reading only.
 Use an authorized HTTPS setup for remote signing tests. Do not disable browser security to make HTTP signing work.
 Key backup exports do not include unpublished drafts or pending outbox records.
 
@@ -1134,7 +1139,7 @@ npm run test:web-unit
 
 Playwright excludes the Node unit directory from discovery. Run `npm run test:web-unit` as well as `npm run test:web`.
 
-On this VM, place browser binaries and test data under a task-specific `/build/jbovlacku` directory.
+Select separate directories for each concurrent run through `PLAYWRIGHT_BROWSERS_PATH` and `JVC_TEST_ROOT`.
 
 The shared format corpus also supports native and Chromium comparison:
 
@@ -1220,26 +1225,27 @@ Run the smoke test after image or storage changes. A successful build alone does
 
 ## Review and human tests
 
-Sol 6.1 with high reasoning effort performs implementation work. Use native harness subagents for assigned implementation and review work.
-The coordinating agent performs the first review and directs fixes until that review passes.
-Opus and Grok then perform independent external reviews. Kimi remains parked unless the human partner changes that assignment.
+Each change gets a first review.
+After that review passes, the change gets at least one independent review before merge.
+
 Each review must name the exact commit or complete working diff under review.
 A later substantive change requires a new review of the affected behavior.
 
 Resolve review findings and rerun the relevant tests before handoff.
-Luna performs thorough testing before the human partner starts local acceptance tests.
-Give Luna the reviewed revision, server commands, fixture locations, and expected outcomes.
+Run thorough tests before local acceptance tests.
+Provide the reviewed revision, server commands, fixture locations, and expected outcomes for local acceptance tests.
 Preserve failures and limits in the handoff. A green unit test result does not replace browser or adapter tests.
 If a required scenario is unavailable, state the missing behavior explicitly.
 
-Provide tested URLs through the VM's Tailscale address. Name the service, port, revision, adapter, and permitted signing mode for each URL.
+Provide tested URLs that the intended test clients can reach.
+Name the service, port, revision, adapter, and permitted signing mode for each URL.
 Make sure that the URL works from the expected test client before handoff.
 Do not expose a local service publicly or change network policy without separate authorization.
 Keep authorized test services available for human testing.
 
 ## Release boundary
 
-Prototype work includes local implementation, tests, reviews, and human testing on this VM.
+Prototype work includes local implementation, tests, reviews, and user acceptance tests.
 It does not authorize production deployment, live dictionary contributions, external account mutation, or a public release.
 Expressly authorized private GitHub issues and pull requests remain development work.
 Do not merge or deploy through an inferred review approval.

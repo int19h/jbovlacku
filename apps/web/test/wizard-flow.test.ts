@@ -502,7 +502,7 @@ test("draft export keeps private source evidence while publication and Revise ke
   );
 });
 
-test("F4 manual entry and Etymology can remove evidence after confirmation", async ({
+test("manual entry and Etymology can remove evidence after confirmation", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -531,7 +531,7 @@ test("F4 manual entry and Etymology can remove evidence after confirmation", asy
   await expect.poll(async () => (await stored(page)).formation).toBeNull();
 });
 
-test("F4 opening the other builder asks before removing evidence", async ({
+test("opening the other builder asks before removing evidence", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -548,7 +548,7 @@ test("F4 opening the other builder asks before removing evidence", async ({
   await expect(page).toHaveURL(/\/new\/type$/);
 });
 
-test("Grok 3 gismu acknowledgments belong to the selected spelling", async ({
+test("gismu acknowledgments belong to the selected spelling", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -562,7 +562,7 @@ test("Grok 3 gismu acknowledgments belong to the selected spelling", async ({
   await expect(page.locator(".action-bar .btn-primary")).toBeDisabled();
 });
 
-test("Grok 3 lujvo acknowledgments belong to the selected spelling", async ({
+test("lujvo acknowledgments belong to the selected spelling", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -600,7 +600,7 @@ test("Grok 3 lujvo acknowledgments belong to the selected spelling", async ({
   await expect(claims.getByRole("checkbox")).not.toBeChecked();
 });
 
-test("Grok 4 an invalid restored lujvo stays visible until a current form is chosen", async ({
+test("an invalid restored lujvo stays visible until a current form is chosen", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -619,7 +619,7 @@ test("Grok 4 an invalid restored lujvo stays visible until a current form is cho
   await expect(page.locator(".action-bar .btn-primary")).toBeEnabled();
 });
 
-test("N3 manual root reviews stay private without a formation method claim", async ({
+test("manual root reviews stay private without a formation method claim", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -691,7 +691,7 @@ test("N3 manual root reviews stay private without a formation method claim", asy
   expect(interpreted.etymology.formation).toBeNull();
 });
 
-test("F7 Grok 7 Publish reviews saved compound conflicts and rejects changed coverage", async ({
+test("Publish reviews saved compound conflicts and rejects changed coverage", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -738,7 +738,7 @@ test("F7 Grok 7 Publish reviews saved compound conflicts and rejects changed cov
   await expect(publish).toBeDisabled();
 });
 
-test("F7 published rafsi claim acknowledgments survive a return to Edit", async ({
+test("published rafsi claim acknowledgments survive a return to Edit", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -751,7 +751,7 @@ test("F7 published rafsi claim acknowledgments survive a return to Edit", async 
   await expect(claim).toBeChecked();
 });
 
-test("F8 an accepted definition opens the word despite a refused endorsement", async ({
+test("an accepted definition opens the word despite a refused endorsement", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -780,7 +780,7 @@ test("F8 an accepted definition opens the word despite a refused endorsement", a
   ).toBeVisible();
 });
 
-test("F10 Places Back and saved draft continuation return to the matching builder", async ({
+test("Places Back and saved draft continuation return to the matching builder", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -795,7 +795,7 @@ test("F10 Places Back and saved draft continuation return to the matching builde
   ).toHaveAttribute("href", "/new/lujvo");
 });
 
-test("F11 both builders label cut rafsi inventories as unknown coverage", async ({
+test("both builders label cut rafsi inventories as unknown coverage", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -812,7 +812,7 @@ test("F11 both builders label cut rafsi inventories as unknown coverage", async 
   ).toContainText("coverage is incomplete for cukta");
 });
 
-test("Grok 8 11 12 help names saved evidence, package conflicts, and server retention limits", async ({
+test("help names saved evidence, package conflicts, and server retention limits", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -836,7 +836,7 @@ for (const [spelling, rule] of [
   ["cukte", "final-vowel"],
   ["sukta", "similar-consonant"],
 ]) {
-  test(`F6 manual ${rule} conflicts do not require source rows`, async ({
+  test(`manual ${rule} conflicts do not require source rows`, async ({
     page,
   }) => {
     await createIdentity(page);
@@ -853,7 +853,7 @@ for (const [spelling, rule] of [
   });
 }
 
-test("F4 an accepted builder switch removes the other builder evidence before Use", async ({
+test("an accepted builder switch removes the other builder evidence before Use", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -875,7 +875,7 @@ test("F4 an accepted builder switch removes the other builder evidence before Us
   expect(draft.evidenceForm).toBe("cukte");
 });
 
-test("F8 an accepted definition opens the word when a second peer is offline", async ({
+test("an accepted definition opens the word when a second peer is offline", async ({
   page,
 }) => {
   await page.goto("/about");
@@ -907,7 +907,7 @@ test("F8 an accepted definition opens the word when a second peer is offline", a
   await expect(page.getByRole("status")).toContainText("unfinished delivery");
 });
 
-test("Grok 3 Publish does not reuse conflicts of a different historical generated form", async ({
+test("Publish does not reuse conflicts of a different historical generated form", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -954,7 +954,7 @@ test("Grok 3 Publish does not reuse conflicts of a different historical generate
   });
 });
 
-test("F7 a new current root acknowledgment appends to historical formation evidence", async ({
+test("a new current root acknowledgment appends to historical formation evidence", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -1047,7 +1047,7 @@ test("Publish refuses a package change during the current review before it signs
 });
 
 for (const spelling of ["cukte", "broda"]) {
-  test(`Grok N2 the gismu card names a v1 root inventory for ${spelling}`, async ({
+  test(`the gismu card names a v1 root inventory for ${spelling}`, async ({
     page,
   }) => {
     await createIdentity(page);

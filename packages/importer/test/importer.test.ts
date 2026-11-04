@@ -830,7 +830,7 @@ test("a known type without selmaho cannot hide a later known classification chan
   );
 });
 
-test("r3 N2 REST publications omit derived, display, and viewer fields while keeping authored evidence and scores", () => {
+test("REST publications omit derived, display, and viewer fields while keeping authored evidence and scores", () => {
   const altered = rows();
   const omitted: Record<string, unknown> = {
     embedding: [0.1, 0.2, 0.3],
@@ -896,7 +896,7 @@ test("r3 N2 REST publications omit derived, display, and viewer fields while kee
   );
 });
 
-test("r3 N2 v2 captures retain old v1 envelopes on reuse and filter only newly signed revisions", () => {
+test("v2 captures retain old v1 envelopes on reuse and filter only newly signed revisions", () => {
   const selectedRows = rows().slice(0, 1);
   const bytes = utf8(JSON.stringify({ definitions: selectedRows }));
   const currentManifest = {
@@ -1001,7 +1001,7 @@ test("r3 N2 v2 captures retain old v1 envelopes on reuse and filter only newly s
   );
 });
 
-test("r3 N2 filtering preserves escaped source object key order", () => {
+test("filtering preserves escaped source object key order", () => {
   const row = JSON.stringify(rows()[0]).slice(0, -1);
   const bytes = utf8(
     `{"definitions":[${row},"$source_number":"source-owned","2":"second","1":"first"}]}`,

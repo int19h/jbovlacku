@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
-test("R2 real English positive patterns complete in the browser worker", async ({
+test("real English positive patterns complete in the browser worker", async ({
   page,
 }) => {
   test.skip(

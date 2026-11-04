@@ -437,7 +437,7 @@ async function expectDestination(page: Page) {
   ).toEqual({ sameHeading: true, navigations: 0 });
 }
 
-test("round 3: a late Search language save preserves the chosen destination", async ({
+test("a late Search language save preserves the chosen destination", async ({
   page,
 }) => {
   await page.goto("/search?q=book&lang=fr");
@@ -456,7 +456,7 @@ test("round 3: a late Search language save preserves the chosen destination", as
   await expectDestination(page);
 });
 
-test("round 3: the empty shell status stays exposed in Chromium accessibility before and after a notice", async ({
+test("the empty shell status stays exposed in Chromium accessibility before and after a notice", async ({
   page,
 }) => {
   await settings(page);
@@ -590,7 +590,7 @@ async function firstSignatureDialog(page: Page) {
   });
 }
 
-test("round 3: a first-signature storage failure is visible inside the modal and allows retry", async ({
+test("a first-signature storage failure is visible inside the modal and allows retry", async ({
   page,
 }) => {
   await settings(page);
@@ -612,7 +612,7 @@ test("round 3: a first-signature storage failure is visible inside the modal and
 });
 
 for (const fail of [false, true]) {
-  test(`round 3: a canceled first-signature dialog ignores late ${fail ? "failure" : "success"}`, async ({
+  test(`a canceled first-signature dialog ignores late ${fail ? "failure" : "success"}`, async ({
     page,
   }) => {
     await settings(page);
@@ -659,7 +659,7 @@ for (const preference of [
   "judgments",
 ] as const) {
   for (const fail of [false, true]) {
-    test(`round 3: the latest ${preference} choice survives an older ${fail ? "failed" : "successful"} save`, async ({
+    test(`the latest ${preference} choice survives an older ${fail ? "failed" : "successful"} save`, async ({
       page,
     }) => {
       await page.route("**/api/v1/manifest", async (route) => {
@@ -742,7 +742,7 @@ for (const preference of [
 }
 
 for (const action of ["select", "reset", "fallback"] as const) {
-  test(`round 3: a late Trust ${action} save keeps the destination page and global view`, async ({
+  test(`a late Trust ${action} save keeps the destination page and global view`, async ({
     page,
   }) => {
     await page.goto("/trust");
@@ -798,7 +798,7 @@ for (const action of ["select", "reset", "fallback"] as const) {
 }
 
 for (const fail of [false, true]) {
-  test(`round 3: a first-signature save cannot resume the abandoned page after ${fail ? "failure" : "success"}`, async ({
+  test(`a first-signature save cannot resume the abandoned page after ${fail ? "failure" : "success"}`, async ({
     page,
   }) => {
     await settings(page);
@@ -822,7 +822,7 @@ for (const fail of [false, true]) {
   });
 }
 
-test("round 3: the latest failed theme choice restores the preceding committed theme", async ({
+test("the latest failed theme choice restores the preceding committed theme", async ({
   page,
 }) => {
   await settings(page);
@@ -839,7 +839,7 @@ test("round 3: the latest failed theme choice restores the preceding committed t
 });
 
 for (const focusOther of [false, true]) {
-  test(`round 3: a first-signature failure keeps focus on ${focusOther ? "another modal control" : "Continue"} and ignores repeated input`, async ({
+  test(`a first-signature failure keeps focus on ${focusOther ? "another modal control" : "Continue"} and ignores repeated input`, async ({
     page,
   }) => {
     await settings(page);

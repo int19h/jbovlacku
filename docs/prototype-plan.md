@@ -5,8 +5,8 @@ The [format specification](format.md) and [frontend specification](frontend.md) 
 
 ## Scope and location
 
-Implementation work uses isolated worktrees under `/build/jbovlacku/worktrees`.
-Temporary inputs and test results use scoped directories under `/build/jbovlacku`.
+Implementation work uses a separate worktree for each agent.
+Temporary inputs, build output, and test results use ignored directories, such as `.cache`, or directories outside the checkout.
 No prototype uses a real contributor key or changes a Lensisku account.
 All test identities and signatures belong to disposable fixtures.
 Public hosting, authenticated cross-posting, and live dictionary contributions need separate authorization.
@@ -157,6 +157,6 @@ Imported source claims remain distinct from CC0 agreement for new contributions.
 
 ## Local tools
 
-The [development guide](development.md) defines local tooling, tests, reviews, and shared VM rules.
+The [development guide](development.md) defines local tooling, tests, reviews, and resource limits.
 Every stage must state its selected dependency versions and runtime requirements.
 A tool installation alone does not prove that its runtime works with the prototype.

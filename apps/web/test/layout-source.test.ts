@@ -20,7 +20,7 @@ async function files(root: string): Promise<string[]> {
   ).flat();
 }
 const root = resolve("apps/web/src");
-test("R6: every web source file preserves default targets and reasoned exceptions", async () => {
+test("every web source file preserves default targets and reasoned exceptions", async () => {
   const errors: string[] = [];
   const styles: string[] = [];
   for (const path of await files(root)) {
@@ -32,7 +32,7 @@ test("R6: every web source file preserves default targets and reasoned exception
   expect(errors).toEqual([]);
 });
 
-test("R6: source guard rejects unsafe future code without an anchor whitelist", async () => {
+test("source guard rejects unsafe future code without an anchor whitelist", async () => {
   for (const [name, source] of Object.entries({
     linkOnly:
       'inlineProse("A stated reason long enough.", link("Source code", "https://x.y"));',
@@ -121,7 +121,7 @@ test("R6: source guard rejects unsafe future code without an anchor whitelist", 
   ).toEqual([]);
 });
 
-test("R6: CSS guard rejects removal and unauthorized target opt-outs", async () => {
+test("CSS guard rejects removal and unauthorized target opt-outs", async () => {
   const source = await readFile(resolve(root, "styles/components.css"), "utf8");
   expect(
     inspectLayoutCss(
@@ -171,7 +171,7 @@ test("R6: CSS guard rejects removal and unauthorized target opt-outs", async () 
     expect(inspectLayoutCss(`${source}\n${rule}`), rule).not.toEqual([]);
 });
 
-test("R7: source prose follows abbreviations and inspects direct competitor lists", () => {
+test("source prose follows abbreviations and inspects direct competitor lists", () => {
   for (const copy of ["Compare cf. ", "See e.g. "])
     expect(
       inspectLayoutSource(
@@ -211,7 +211,7 @@ for (const display of [
   "contents",
   "inline",
 ]) {
-  test(`R7: ${display} cannot bypass minimum sizes in CSS or inline source`, async () => {
+  test(`${display} cannot bypass minimum sizes in CSS or inline source`, async () => {
     const source = await readFile(
       resolve(root, "styles/components.css"),
       "utf8",
@@ -229,7 +229,7 @@ for (const display of [
   });
 }
 
-test("R7: direct style assignment cannot bypass target rules", () => {
+test("direct style assignment cannot bypass target rules", () => {
   for (const source of [
     'element.style = "min-height:0!important";',
     'element["style"] = "min-height:0!important";',

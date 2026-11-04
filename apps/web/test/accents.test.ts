@@ -266,7 +266,7 @@ test("ordinary component entry keeps name accents and handles invalid accented q
   expect(errors).toEqual([]);
 });
 
-test("R2 automatic component entry normalizes accent aliases and reports the plain compound as taken", async ({
+test("automatic component entry normalizes accent aliases and reports the plain compound as taken", async ({
   page,
 }) => {
   await seedName(page, "dzan zei blanu", "lujvo");
@@ -321,7 +321,7 @@ test("R2 automatic component entry normalizes accent aliases and reports the pla
   ).toContainText("dźán zei blanu is defined in the local package");
 });
 
-test("R2 restored accented source keeps its exact-definition selector", async ({
+test("restored accented source keeps its exact-definition selector", async ({
   page,
 }) => {
   const plain = await seedName(page, "djan");
@@ -386,7 +386,7 @@ test("R2 restored accented source keeps its exact-definition selector", async ({
   await expect(choices).toHaveValue(marked.event);
 });
 
-test("R2 rafsi pages group name displays and publish plain claim sources without self-conflicts", async ({
+test("rafsi pages group name displays and publish plain claim sources without self-conflicts", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -458,7 +458,7 @@ test("R2 rafsi pages group name displays and publish plain claim sources without
   expect(record.body.rafsi).toBe("dzaz");
 });
 
-test("R2 experimental name feedback permits unknown names and blocks a wrong recognized type accurately", async ({
+test("experimental name feedback permits unknown names and blocks a wrong recognized type accurately", async ({
   page,
 }) => {
   await page.goto("/new/editor");
@@ -490,7 +490,7 @@ test("R2 experimental name feedback permits unknown names and blocks a wrong rec
   );
 });
 
-test("R2 zbalermorna renders accented names in word and search views", async ({
+test("zbalermorna renders accented names in word and search views", async ({
   page,
 }) => {
   await seedName(page, "dzántan");
@@ -509,7 +509,7 @@ test("R2 zbalermorna renders accented names in word and search views", async ({
   ).toBeVisible();
 });
 
-test("R3 wizard blocks accented rafsi before Publish and preserves the entered spelling", async ({
+test("wizard blocks accented rafsi before Publish and preserves the entered spelling", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -587,7 +587,7 @@ test("R3 wizard blocks accented rafsi before Publish and preserves the entered s
   expect(claim.body.rafsi).toBe("dja");
 });
 
-test("R3 word-form panel shows an accent error once", async ({ page }) => {
+test("word-form panel shows an accent error once", async ({ page }) => {
   await page.goto("/new/editor");
   await page.getByLabel("Type", { exact: true }).selectOption("gismu");
   await page.getByLabel("Headword", { exact: true }).fill("blánu");

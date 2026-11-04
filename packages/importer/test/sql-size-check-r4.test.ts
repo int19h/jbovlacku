@@ -102,7 +102,7 @@ function versionCount(output: string) {
   }
 }
 
-test("r4 N5 the staged count agrees with new, revised, reused, reverted, and unresolved publications", async () => {
+test("the staged count agrees with new, revised, reused, reverted, and unresolved publications", async () => {
   const input = await setup();
   const retained = new Map<string, string>();
   const revised = mutate((fields) => {
@@ -152,7 +152,7 @@ test("r4 N5 the staged count agrees with new, revised, reused, reverted, and unr
 });
 
 for (const conflicting of [false, true]) {
-  test(`r4 N5 ${conflicting ? "conflicting" : "identical"} duplicate rows keep observation growth separate from new publications`, async () => {
+  test(`${conflicting ? "conflicting" : "identical"} duplicate rows keep observation growth separate from new publications`, async () => {
     const input = await setup();
     const duplicate = mutate((fields) => {
       if (fields[3] !== "4") return;
@@ -175,7 +175,7 @@ for (const conflicting of [false, true]) {
   });
 }
 
-test("r4 R3-2 a check refuses retained output before any journal migration or write", async () => {
+test("a check refuses retained output before any journal migration or write", async () => {
   const input = await setup();
   await updateSource(input, fixture);
   await importSqlSnapshot(input);
@@ -205,7 +205,7 @@ for (const [marker, kind] of [
   ["carriers.jsonl", "symlink"],
   ["source-archive", "symlink"],
 ] as const) {
-  test(`r4 R3-2 a check refuses an output containing only the ${marker} ${kind} marker`, async () => {
+  test(`a check refuses an output containing only the ${marker} ${kind} marker`, async () => {
     const input = await setup();
     await updateSource(input, fixture);
     await importSqlSnapshot(input);

@@ -71,7 +71,7 @@ async function holdWorkerReplies(page: Page) {
 }
 for (const target of ["empty", "meaning", "language"] as const)
   for (const error of [false, true])
-    test(`R3 nearby ignores a late ${error ? "error" : "result"} after ${target} changes`, async ({
+    test(`nearby ignores a late ${error ? "error" : "result"} after ${target} changes`, async ({
       page,
     }) => {
       await holdWorkerReplies(page);
@@ -121,7 +121,7 @@ for (const target of ["empty", "meaning", "language"] as const)
         await expect(panel.locator(".hw")).toHaveAttribute("href", /lang=fr/);
     });
 
-test("R3 nearby invalidates pending work during the input debounce", async ({
+test("nearby invalidates pending work during the input debounce", async ({
   page,
 }) => {
   await holdWorkerReplies(page);
@@ -155,7 +155,7 @@ test("R3 nearby invalidates pending work during the input debounce", async ({
   expect(shown).toEqual([]);
 });
 
-test("R3 nearby returns to a saved language after a package miss", async ({
+test("nearby returns to a saved language after a package miss", async ({
   page,
 }) => {
   await seed(page);
@@ -176,7 +176,7 @@ test("R3 nearby returns to a saved language after a package miss", async ({
   await expect(panel.locator(".hw")).toHaveText("klama");
 });
 
-test("R3 nearby recovers after package deletion and replacement", async ({
+test("nearby recovers after package deletion and replacement", async ({
   page,
 }) => {
   await seed(page);
@@ -206,7 +206,7 @@ test("R3 nearby recovers after package deletion and replacement", async ({
   await expect(panel.locator(".hw")).toHaveText("klama");
 });
 
-test("R3 an empty nearby meaning still reads the current package mode", async ({
+test("an empty nearby meaning still reads the current package mode", async ({
   page,
 }) => {
   await seed(page);
@@ -233,7 +233,7 @@ for (const [label, corrupt] of [
   ["entry", { snapshot: "sha256:" + "a".repeat(64), entries: [{}] }],
   ["primitive", "corrupt"],
 ] as const)
-  test(`R3 empty search validates a corrupt package ${label}`, async ({
+  test(`empty search validates a corrupt package ${label}`, async ({
     page,
   }) => {
     await page.goto("/");
@@ -253,7 +253,7 @@ for (const [label, corrupt] of [
     );
   });
 
-test("R3 concurrent rejected package searches keep the validation error", async ({
+test("concurrent rejected package searches keep the validation error", async ({
   page,
 }) => {
   await page.goto("/");
@@ -277,7 +277,7 @@ test("R3 concurrent rejected package searches keep the validation error", async 
     expect(error).toContain("search package is invalid");
 });
 
-test("R3 accepted package searches survive queued cache eviction", async ({
+test("accepted package searches survive queued cache eviction", async ({
   page,
 }) => {
   await page.goto("/");
@@ -302,7 +302,7 @@ test("R3 accepted package searches survive queued cache eviction", async ({
   expect(counts).toEqual([0, 0, 0, 0, 0]);
 });
 
-test("R3 nearby ranks overlapping candidates before selecting its six rows", async ({
+test("nearby ranks overlapping candidates before selecting its six rows", async ({
   page,
 }) => {
   await page.goto("/");
@@ -333,7 +333,7 @@ test("R3 nearby ranks overlapping candidates before selecting its six rows", asy
   await expect(rows.first()).toHaveText("klama");
 });
 
-test("R3 a broad local page keeps its total and show-all cap", async ({
+test("a broad local page keeps its total and show-all cap", async ({
   page,
 }) => {
   await page.goto("/");
@@ -384,7 +384,7 @@ test("R3 a broad local page keeps its total and show-all cap", async ({
   ).toBeDisabled();
 });
 
-test("R3 worker pages compact hits and retains alternate definitions and previews", async ({
+test("worker pages compact hits and retains alternate definitions and previews", async ({
   page,
 }) => {
   await page.goto("/");
@@ -447,7 +447,7 @@ test("R3 worker pages compact hits and retains alternate definitions and preview
 });
 
 for (const language of ["en", "fr"])
-  test(`R3 lujvo part lookup uses the package worker for a ${language} draft`, async ({
+  test(`lujvo part lookup uses the package worker for a ${language} draft`, async ({
     page,
   }) => {
     const workerStarted = page.waitForEvent("worker", {
@@ -485,7 +485,7 @@ for (const language of ["en", "fr"])
     expect(await queryWordCount()).toBe(1);
   });
 
-test("R3 compact previews preserve Unicode within bounded main-thread work", async ({
+test("compact previews preserve Unicode within bounded main-thread work", async ({
   page,
 }) => {
   await page.goto("/");
@@ -543,7 +543,7 @@ test("R3 compact previews preserve Unicode within bounded main-thread work", asy
   expect(observed.maximum).toBeLessThanOrEqual(480);
 });
 
-test("R3 a short local page uses one worker reply", async ({ page }) => {
+test("a short local page uses one worker reply", async ({ page }) => {
   await page.addInitScript(() => {
     const Original = Worker;
     (window as any).packageReplies = 0;
@@ -564,7 +564,7 @@ test("R3 a short local page uses one worker reply", async ({ page }) => {
   expect(await page.evaluate(() => (window as any).packageReplies)).toBe(1);
 });
 
-test("R3 a failed part lookup preserves unchecked manual addition", async ({
+test("a failed part lookup preserves unchecked manual addition", async ({
   page,
 }) => {
   await seed(page);

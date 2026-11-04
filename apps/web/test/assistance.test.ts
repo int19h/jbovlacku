@@ -3508,7 +3508,7 @@ test("Dismiss clears the completed suggestion announcement", async ({
 });
 
 for (const action of ["Suggest a lujvo", "Suggest components"] as const)
-  test(`R7 ${action} Undo restores exact rows and joins after reload and a later author edit`, async ({
+  test(`${action} Undo restores exact rows and joins after reload and a later author edit`, async ({
     page,
   }) => {
     const components = [
@@ -3599,7 +3599,7 @@ for (const action of ["Suggest a lujvo", "Suggest components"] as const)
   });
 
 for (const reverse of [false, true])
-  test(`R8 AI lujvo replacement ignores discarded evidence in either proposal order: ${reverse}`, async ({
+  test(`AI lujvo replacement ignores discarded evidence in either proposal order: ${reverse}`, async ({
     page,
   }) => {
     const components = [
@@ -3663,7 +3663,7 @@ for (const reverse of [false, true])
     expect((await stored(page)).review).toEqual([]);
   });
 
-test("R8 component-only AI preserves the typed headword and later Use asks before replacing it", async ({
+test("component-only AI preserves the typed headword and later Use asks before replacing it", async ({
   page,
 }) => {
   await mockAssistant(page);

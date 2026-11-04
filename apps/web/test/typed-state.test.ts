@@ -335,7 +335,7 @@ async function historicalPackage(page: Page) {
 
 for (const mode of ["legacy", "revision"] as const)
   for (const retry of ["reopen", "reload", "typo"] as const)
-    test(`R9 missing CLL sources retry after cache download and ${retry}, ${mode}`, async ({
+    test(`missing CLL sources retry after cache download and ${retry}, ${mode}`, async ({
       page,
     }) => {
       await historicalDraft(page, mode);
@@ -383,7 +383,7 @@ for (const mode of ["legacy", "revision"] as const)
       expect((await saved(page)).spelling).toBe("BAU,CLA");
     });
 
-test("R9 an authored profile survives repeated cache absence and reload", async ({
+test("an authored profile survives repeated cache absence and reload", async ({
   page,
 }) => {
   await historicalDraft(page, "legacy");
@@ -411,7 +411,7 @@ test("R9 an authored profile survives repeated cache absence and reload", async 
   }
 });
 
-test("R9 a genuine CLL gap keeps sai and zba rows and an authored profile", async ({
+test("a genuine CLL gap keeps sai and zba rows and an authored profile", async ({
   page,
 }) => {
   await seed(page, { kind: "lujvo", word: "sairzba" });

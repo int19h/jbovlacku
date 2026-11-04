@@ -154,7 +154,7 @@ test("zei sources match by plain name and retain entered display in compound evi
   assert.equal(draftToBody(copied).body?.word.spelling, "dján zei blanu");
 });
 
-test("R2 Astra 2: compound restoration retains exact-definition choices in either accent cache order", () => {
+test("compound restoration retains exact-definition choices in either accent cache order", () => {
   for (const entries of [cache().entries, cache().entries.reverse()]) {
     const cached = { ...cache(), entries };
     const draft = newDraft({
@@ -180,7 +180,7 @@ test("R2 Astra 2: compound restoration retains exact-definition choices in eithe
   }
 });
 
-test("R2 Opus F1: implicitly normalized accented and plain zei candidates share one word ID", () => {
+test("implicitly normalized accented and plain zei candidates share one word ID", () => {
   for (const spelling of ["DŹÁN", ".dján.", "dja,ń", "djáhan"]) {
     const build = (spelling: string) =>
       buildLujvoState({
@@ -221,7 +221,7 @@ test("R2 Opus F1: implicitly normalized accented and plain zei candidates share 
   }
 });
 
-test("R2 Opus F5: zbalermorna renders the plain form of every accented name", async () => {
+test("zbalermorna renders the plain form of every accented name", async () => {
   const { zbalermorna } = await import("../../src/lib/zbalermorna.ts");
   for (const [spelling, plain] of [
     ["dján", "djan"],
@@ -233,7 +233,7 @@ test("R2 Opus F5: zbalermorna renders the plain form of every accented name", as
   }
 });
 
-test("R2 Opus F8: an unknown accented name permits the same experimental classification as its plain form", () => {
+test("an unknown accented name permits the same experimental classification as its plain form", () => {
   for (const [kind, spelling] of [
     ["cmevla", "dján smit"],
     ["cmevla", "djan smit"],
@@ -255,7 +255,7 @@ test("R2 Opus F8: an unknown accented name permits the same experimental classif
   }
 });
 
-test("R2 Grok 3: an experimental label cannot permit a nonname classification for an accented name", () => {
+test("an experimental label cannot permit a nonname classification for an accented name", () => {
   for (const kind of ["gismu", "other"] as const) {
     const draft = newDraft({
       kind,
@@ -270,7 +270,7 @@ test("R2 Grok 3: an experimental label cannot permit a nonname classification fo
   }
 });
 
-test("R2 Opus F4: package identity work runs once per package object", async () => {
+test("package identity work runs once per package object", async () => {
   const { createPackageWordIndex } = await import("../../src/data/search.ts");
   let calls = 0;
   const lookup = createPackageWordIndex((word) => {
@@ -344,7 +344,7 @@ test("unknown accented zei compounds keep ordinary experimental classification t
   }
 });
 
-test("R3 Grok: wizard rafsi accents block publication without changing the draft", () => {
+test("wizard rafsi accents block publication without changing the draft", () => {
   for (const rafsi of ["djá", "dja\u0301", "\u0301dja"]) {
     const draft = newDraft({
       kind: "cmevla",
@@ -372,7 +372,7 @@ test("R3 Grok: wizard rafsi accents block publication without changing the draft
   }
 });
 
-test("R3 Opus N1: the word index skips and counts invalid cached entries once", async () => {
+test("the word index skips and counts invalid cached entries once", async () => {
   const { createPackageWordIndex } = await import("../../src/data/search.ts");
   let calls = 0;
   const lookup = createPackageWordIndex((word) => {
@@ -410,7 +410,7 @@ test("R3 Opus N1: the word index skips and counts invalid cached entries once", 
   assert.equal(calls, 7);
 });
 
-test("R3 Opus N3: word feedback shows the accent error once and keeps other diagnostics", () => {
+test("word feedback shows the accent error once and keeps other diagnostics", () => {
   for (const spelling of ["blánu", "\u0301djan"]) {
     const draft = newDraft({ kind: "cmevla", spelling });
     const feedback = wordFormFeedback(draft);

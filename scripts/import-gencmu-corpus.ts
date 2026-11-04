@@ -517,7 +517,7 @@ const fixtureCases = completed.map((row) => {
             ...(previouslyPending && !knownDiphthong
               ? {
                   resolution:
-                    "The human partner authorized all magic words as ordinary cmavo in R3.",
+                    "Every magic word is an ordinary cmavo in this project.",
                 }
               : {}),
             originalExpectation: reference,
