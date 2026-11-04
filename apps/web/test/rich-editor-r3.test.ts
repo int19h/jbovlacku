@@ -391,6 +391,8 @@ test("r3 operand addition and renaming refresh every retained rich-field control
       .getByRole("dialog")
       .getByRole("button", { name: "Cancel", exact: true })
       .click();
+    await expect(page.locator("dialog")).toHaveCount(0);
+    await expect(control).toBeFocused();
   }
   expect(await retained!.evaluate((node) => node.isConnected)).toBe(true);
 });
