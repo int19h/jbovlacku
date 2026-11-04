@@ -35,7 +35,7 @@ before(async () =>
   ),
 );
 
-test("r3 stored paragraphs omit all whitespace-only paragraphs and retain exact nonblank arrays", () => {
+test("stored paragraphs omit all whitespace-only paragraphs and retain exact nonblank arrays", () => {
   const retained: RichText = [
     [" left ", "right", { code: "" }],
     [{ url: "https://example.org/", label: "" }],
@@ -52,7 +52,7 @@ test("r3 stored paragraphs omit all whitespace-only paragraphs and retain exact 
   assert.deepEqual(editorToRich(richToEditor([["\n"]])), []);
 });
 
-test("r3 a saved single blank paragraph has one canonical value before edits and after undo", () => {
+test("a saved single blank paragraph has one canonical value before edits and after undo", () => {
   let state = EditorState.create({
     doc: richToEditor([["\n"]]),
     plugins: [history()],
@@ -71,7 +71,7 @@ test("r3 a saved single blank paragraph has one canonical value before edits and
   assert.deepEqual(editorToRich(state.doc), []);
 });
 
-test("r3 edited empty notes stay absent while untouched draft fields keep their values", () => {
+test("edited empty notes stay absent while untouched draft fields keep their values", () => {
   const blank: RichText = [["\n"], [" \t"]];
   const retained: RichText = [[" first", " second ", { code: "" }]];
   const padded: RichText = [blank[0], retained[0], blank[1]];
@@ -188,7 +188,7 @@ test("r3 edited empty notes stay absent while untouched draft fields keep their 
   );
 });
 
-test("r3 Backspace past an emptied literal deletes the preceding visible grapheme", () => {
+test("Backspace past an emptied literal deletes the preceding visible grapheme", () => {
   let state = EditorState.create({
     doc: richToEditor([["keep ", { code: "ab" }, "y"]]),
   });
@@ -206,7 +206,7 @@ test("r3 Backspace past an emptied literal deletes the preceding visible graphem
   assert.deepEqual(editorToRich(state.doc), [["keep ", { code: "a" }]]);
 });
 
-test("r3 seeded edits choose interior positions, selections, commands, and containers with exact untouched ranges", () => {
+test("seeded edits choose interior positions, selections, commands, and containers with exact untouched ranges", () => {
   let seed = 0x3ed1751;
   const random = (limit: number) => {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;

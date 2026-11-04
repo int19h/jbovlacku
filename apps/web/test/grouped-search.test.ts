@@ -641,7 +641,7 @@ test("measure a warm query with all three full groups outside the search worker"
 });
 
 for (const local of [false, true])
-  test(`r2: ${local ? "local" : "remote"} Back restores meaning results and their context without inference`, async ({
+  test(`${local ? "local" : "remote"} Back restores meaning results and their context without inference`, async ({
     page,
   }) => {
     const state = await meaningService(page, 25);
@@ -677,7 +677,7 @@ for (const local of [false, true])
     ).toBe(original.view);
   });
 
-test("r2: meaning pagination keeps keyboard focus", async ({ page }) => {
+test("meaning pagination keeps keyboard focus", async ({ page }) => {
   await meaningService(page, 25);
   await page.goto("/search?q=book&lang=en");
   const meaning = group(page, "Similar in meaning");
@@ -689,7 +689,7 @@ test("r2: meaning pagination keeps keyboard focus", async ({ page }) => {
   await expect(meaning.locator("article .hw").nth(20)).toBeFocused();
 });
 
-test("r2: definition read retry keeps good rows and does not repeat inference", async ({
+test("definition read retry keeps good rows and does not repeat inference", async ({
   page,
 }) => {
   const state = await meaningService(page, 2);
@@ -712,7 +712,7 @@ test("r2: definition read retry keeps good rows and does not repeat inference", 
   expect(state.calls).toHaveLength(1);
 });
 
-test("r2: meaning consent names dictionary fields and local privacy follows consent with an off control", async ({
+test("meaning consent names dictionary fields and local privacy follows consent with an off control", async ({
   page,
 }) => {
   const state = await meaningService(page);
@@ -763,7 +763,7 @@ test("r2: meaning consent names dictionary fields and local privacy follows cons
   );
 });
 
-test("r2: local empty page and Settings disclose remembered meaning uploads", async ({
+test("local empty page and Settings disclose remembered meaning uploads", async ({
   page,
 }) => {
   const state = await meaningService(page);
@@ -786,7 +786,7 @@ test("r2: local empty page and Settings disclose remembered meaning uploads", as
   expect(state.calls).toHaveLength(1);
 });
 
-test("r2: first lexical failure does not hide the other group", async ({
+test("first lexical failure does not hide the other group", async ({
   page,
 }) => {
   await page.route("**/api/v1/search?**", (route) => {
@@ -813,7 +813,7 @@ test("r2: first lexical failure does not hide the other group", async ({
   );
 });
 
-test("r2: second lexical group shows loading and only one count announcement per action", async ({
+test("second lexical group shows loading and only one count announcement per action", async ({
   page,
 }) => {
   let release!: () => void;
@@ -866,7 +866,7 @@ test("r2: second lexical group shows loading and only one count announcement per
 });
 
 for (const empty of [false, true])
-  test(`r2: lexical expansion restores focus after ${empty ? "an empty page" : "a failure"}`, async ({
+  test(`lexical expansion restores focus after ${empty ? "an empty page" : "a failure"}`, async ({
     page,
   }) => {
     const f = fixture();
@@ -932,7 +932,7 @@ for (const empty of [false, true])
     await expect(definitions.locator(":focus")).toHaveCount(1);
   });
 
-test("r2: pending singular and a different local meaning snapshot stay visible", async ({
+test("pending singular and a different local meaning snapshot stay visible", async ({
   page,
 }) => {
   const state = await meaningService(page);
@@ -951,7 +951,7 @@ test("r2: pending singular and a different local meaning snapshot stay visible",
   expect(state.calls[0].snapshot).not.toBe("sha256:" + "a".repeat(64));
 });
 
-test("r2: a failed word group keeps successful Definitions readable", async ({
+test("a failed word group keeps successful Definitions readable", async ({
   page,
 }) => {
   await page.route("**/api/v1/search?**", (route) => {
@@ -978,7 +978,7 @@ test("r2: a failed word group keeps successful Definitions readable", async ({
 });
 
 for (const local of [true, false])
-  test(`r3: ${local ? "local" : "remote"} complete spelling aliases and retired words control group order`, async ({
+  test(`${local ? "local" : "remote"} complete spelling aliases and retired words control group order`, async ({
     page,
   }) => {
     await page.goto("/search");
@@ -1113,7 +1113,7 @@ for (const local of [true, false])
     }
   });
 
-test("r2: failed meaning expansion focuses its definition retry and an empty result focuses its status", async ({
+test("failed meaning expansion focuses its definition retry and an empty result focuses its status", async ({
   page,
 }) => {
   const state = await meaningService(page, 21);
@@ -1150,7 +1150,7 @@ test("r2: failed meaning expansion focuses its definition retry and an empty res
   );
 });
 
-test("r2: an old package keeps its hits and visibly explains missing ordering evidence", async ({
+test("an old package keeps its hits and visibly explains missing ordering evidence", async ({
   page,
 }) => {
   await localPackage(page);
@@ -1174,7 +1174,7 @@ test("r2: an old package keeps its hits and visibly explains missing ordering ev
   ).toBeVisible();
 });
 
-test("r2: Back retains the meaning context when incomplete lexical history reads a newer snapshot", async ({
+test("Back retains the meaning context when incomplete lexical history reads a newer snapshot", async ({
   page,
 }) => {
   const state = await meaningService(page, 25);
@@ -1219,7 +1219,7 @@ test("r2: Back retains the meaning context when incomplete lexical history reads
   ).toBe("sha256:" + "f".repeat(64));
 });
 
-test("r2: failed consent revocation remains visible and keeps the off control usable", async ({
+test("failed consent revocation remains visible and keeps the off control usable", async ({
   page,
 }) => {
   await meaningService(page);
@@ -1258,7 +1258,7 @@ test("r2: failed consent revocation remains visible and keeps the off control us
   expect(errors).toEqual([]);
 });
 
-test("r2: Back after a reload keeps the saved meaning results without another inference request", async ({
+test("Back after a reload keeps the saved meaning results without another inference request", async ({
   page,
 }) => {
   const state = await meaningService(page, 25);
@@ -1288,7 +1288,7 @@ test("r2: Back after a reload keeps the saved meaning results without another in
   expect(state.calls).toHaveLength(2);
 });
 
-test("r2: cross-document Back restores meaning results without inference", async ({
+test("cross-document Back restores meaning results without inference", async ({
   page,
 }) => {
   const state = await meaningService(page, 25);
@@ -1306,7 +1306,7 @@ test("r2: cross-document Back restores meaning results without inference", async
 });
 
 for (const held of ["semantic", "definition"] as const)
-  test(`r3: held ${held} work leaves lexical counts, actions, and announcements ready`, async ({
+  test(`held ${held} work leaves lexical counts, actions, and announcements ready`, async ({
     page,
   }) => {
     const state = await meaningService(page, 21);
@@ -1393,7 +1393,7 @@ for (const held of ["semantic", "definition"] as const)
     }
   });
 
-test("r3: a held remote meaning request cannot delay retired results or Add it", async ({
+test("a held remote meaning request cannot delay retired results or Add it", async ({
   page,
 }) => {
   await meaningService(page);
@@ -1450,7 +1450,7 @@ test("r3: a held remote meaning request cannot delay retired results or Add it",
   }
 });
 
-test("r3: a chosen view mismatch explains the server evidence without download advice or query upload", async ({
+test("a chosen view mismatch explains the server evidence without download advice or query upload", async ({
   page,
 }) => {
   await localPackage(page);
@@ -1481,7 +1481,7 @@ test("r3: a chosen view mismatch explains the server evidence without download a
   expect(uploads).toEqual([]);
 });
 
-test("r3: turning meaning search off persists separately from consent and other AI choices", async ({
+test("turning meaning search off persists separately from consent and other AI choices", async ({
   page,
 }) => {
   const state = await meaningService(page);
@@ -1534,7 +1534,7 @@ test("r3: turning meaning search off persists separately from consent and other 
   expect(((await preferences()) as any).useMeaningSearch).toBe(true);
 });
 
-test("r3: count announcements follow displayed order without a second visible status line", async ({
+test("count announcements follow displayed order without a second visible status line", async ({
   page,
 }) => {
   await localPackage(page);
@@ -1567,7 +1567,7 @@ test("r3: count announcements follow displayed order without a second visible st
   }
 });
 
-test("r3: meaning settles independently while a lexical expansion is held", async ({
+test("meaning settles independently while a lexical expansion is held", async ({
   page,
 }) => {
   await meaningService(page, 21);
@@ -1624,7 +1624,7 @@ test("r3: meaning settles independently while a lexical expansion is held", asyn
   }
 });
 
-test("r4: the consent box saves the off choice before any meaning request", async ({
+test("the consent box saves the off choice before any meaning request", async ({
   page,
 }) => {
   const state = await meaningService(page);
@@ -1686,7 +1686,7 @@ for (const unavailable of [
   "semantic capability off",
   "no query profile",
 ] as const)
-  test(`r4: the saved off choice has no on control with ${unavailable}`, async ({
+  test(`the saved off choice has no on control with ${unavailable}`, async ({
     page,
   }) => {
     const state = await meaningService(page);
@@ -1755,7 +1755,7 @@ for (const unavailable of [
     ).toBe(false);
   });
 
-test("r4: Back delivers lexical counts and restored meaning counts in the frame sequence", async ({
+test("Back delivers lexical counts and restored meaning counts in the frame sequence", async ({
   page,
 }) => {
   const state = await meaningService(page, 2);
@@ -1806,7 +1806,7 @@ test("r4: Back delivers lexical counts and restored meaning counts in the frame 
   expect(state.calls).toHaveLength(1);
 });
 
-test("r4: local singular and zero counts and remote open totals keep their wording", async ({
+test("local singular and zero counts and remote open totals keep their wording", async ({
   page,
 }) => {
   await localPackage(page);
@@ -1864,7 +1864,7 @@ test("r4: local singular and zero counts and remote open totals keep their wordi
   ).toHaveAccessibleName("1 or more definition results.");
 });
 
-test("r4: a failed consent-box off save keeps consent and retry usable", async ({
+test("a failed consent-box off save keeps consent and retry usable", async ({
   page,
 }) => {
   const state = await meaningService(page);
@@ -1917,7 +1917,7 @@ test("r4: a failed consent-box off save keeps consent and retry usable", async (
   expect(state.calls).toHaveLength(0);
 });
 
-test("r5: Not now cancels a pending Allow without removing stored consent", async ({
+test("Not now cancels a pending Allow without removing stored consent", async ({
   page,
 }) => {
   const state = await meaningService(page);
@@ -2033,7 +2033,7 @@ const meaningWrites = (page: Page) =>
 const meaningDispatches = (page: Page) =>
   page.evaluate(() => (window as any).r5SemanticDispatches);
 
-test("r5: a failed pending Allow cannot replace Not now and a deliberate retry works", async ({
+test("a failed pending Allow cannot replace Not now and a deliberate retry works", async ({
   page,
 }) => {
   const state = await meaningService(page);
@@ -2058,7 +2058,7 @@ test("r5: a failed pending Allow cannot replace Not now and a deliberate retry w
   expect(state.calls).toHaveLength(1);
 });
 
-test("r5: reopening consent while Allow saves keeps one write and needs a new action", async ({
+test("reopening consent while Allow saves keeps one write and needs a new action", async ({
   page,
 }) => {
   const state = await meaningService(page);
@@ -2091,7 +2091,7 @@ test("r5: reopening consent while Allow saves keeps one write and needs a new ac
 
 for (const control of ["consent", "privacy"] as const) {
   for (const first of ["allow", "off"] as const)
-    test(`r5: ${control} off stops pending Allow when ${first} saves first`, async ({
+    test(`${control} off stops pending Allow when ${first} saves first`, async ({
       page,
     }) => {
       const state = await meaningService(page);
@@ -2165,7 +2165,7 @@ for (const control of ["consent", "privacy"] as const) {
       expect(state.calls).toHaveLength(previousCalls);
     });
 
-  test(`r5: failed ${control} off does not resume pending Allow and keeps explicit retry usable`, async ({
+  test(`failed ${control} off does not resume pending Allow and keeps explicit retry usable`, async ({
     page,
   }) => {
     const state = await meaningService(page);
@@ -2224,7 +2224,7 @@ for (const control of ["consent", "privacy"] as const) {
   });
 }
 
-test("r5: pending off blocks Allow and its failure cannot replace Not now", async ({
+test("pending off blocks Allow and its failure cannot replace Not now", async ({
   page,
 }) => {
   const state = await meaningService(page);
@@ -2266,7 +2266,7 @@ test("r5: pending off blocks Allow and its failure cannot replace Not now", asyn
   ).toBeEnabled();
 });
 
-test("r5: pending privacy off blocks an initial request after profile discovery", async ({
+test("pending privacy off blocks an initial request after profile discovery", async ({
   page,
 }) => {
   const state = await meaningService(page);

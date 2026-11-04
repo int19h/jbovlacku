@@ -134,7 +134,7 @@ Plain local cancellation preserves prepared packages. Canceling a running patter
 Invalid patterns and exhausted limits give explicit errors without partial results or a silent remote fallback.
 
 A download keeps its requested language even when the language selector changes before it finishes.
-Signing needs localhost or HTTPS. A plain HTTP Tailscale address supports reading only.
+Signing needs localhost or HTTPS. A plain HTTP address on another host supports reading only.
 
 The importer prepares signed proposals from pinned local Lensisku JSON captures and SQL snapshots. Repeat imports reuse signed records and retain source evidence.
 It converts supported explicit x-place forms and preserves unknown fields as unknown. It does not infer individual votes.

@@ -1645,7 +1645,7 @@ test("a signed view selects its calculation profile, and the bounds view keeps i
   );
 });
 
-test("F4 inventory objects with absent Node storage bytes are unavailable and recover", async () => {
+test("inventory objects with absent Node storage bytes are unavailable and recover", async () => {
   const { service, objects, coordinator, directory } = await instance();
   const entry = event("identity.profile", {
     name: "Storage recovery",

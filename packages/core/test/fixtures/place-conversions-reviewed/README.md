@@ -19,9 +19,10 @@ Build the core bindings before using the existing importer loader.
 From the repository root, select a new local data directory and run:
 
 ```sh
+fixture_data_dir="$(mktemp -d)"
 node --import tsx packages/importer/src/load-cli.ts \
   --proposal packages/core/test/fixtures/place-conversions-reviewed \
-  --data /build/jbovlacku/tests/place-conversion-fixture
+  --data "$fixture_data_dir"
 ```
 
 This admits the 30 native revisions and the separate test view.

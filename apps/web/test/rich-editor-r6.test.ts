@@ -217,7 +217,7 @@ for (const [ending, lineBreak] of [
   ["CRLF", "\r\n"],
 ] as const) {
   for (const [platform, key, direction] of keys) {
-    test(`r6 ${platform} ${key} owns ${ending} paragraph boundaries`, async ({
+    test(`${platform} ${key} owns ${ending} paragraph boundaries`, async ({
       page,
     }) => {
       const field = await mount(page, platform);
@@ -237,7 +237,7 @@ for (const [ending, lineBreak] of [
     });
   }
   for (const inputType of inputs.filter((type) => type !== "deleteByCut")) {
-    test(`r6 no-key ${inputType} owns ${ending} paragraph boundaries`, async ({
+    test(`no-key ${inputType} owns ${ending} paragraph boundaries`, async ({
       page,
     }) => {
       const field = await mount(page);
@@ -255,7 +255,7 @@ for (const [ending, lineBreak] of [
 }
 
 for (const inputType of inputs) {
-  test(`r6 ${inputType} deletes a selected range across nodes and paragraphs`, async ({
+  test(`${inputType} deletes a selected range across nodes and paragraphs`, async ({
     page,
   }) => {
     const field = await mount(page);
@@ -286,7 +286,7 @@ for (const inputType of inputs) {
   });
 }
 
-test("r6 real Shift-Delete copies selected text once and collapsed cut keeps the value", async ({
+test("real Shift-Delete copies selected text once and collapsed cut keeps the value", async ({
   page,
   browserName,
 }) => {
@@ -321,7 +321,7 @@ test("r6 real Shift-Delete copies selected text once and collapsed cut keeps the
   await expect.poll(() => richNodes(field)).toEqual([["ad\nef"], ["outer\r"]]);
 });
 
-test("r6 synthetic clipboard cut copies the selected range", async ({
+test("synthetic clipboard cut copies the selected range", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -345,7 +345,7 @@ test("r6 synthetic clipboard cut copies the selected range", async ({
   await expect.poll(() => richNodes(field)).toEqual([["ad\nef"], ["outer\r"]]);
 });
 
-test("r6 no-key deletion reads the current caret before a word target range", async ({
+test("no-key deletion reads the current caret before a word target range", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -369,7 +369,7 @@ for (const [inputType, start, end, caret] of [
   ["deleteHardLineBackward", [0, 0, 0], [0, 2, 2], [0, 2, 2]],
   ["deleteHardLineForward", [0, 0, 1], [0, 2, 3], [0, 0, 1]],
 ] as const) {
-  test(`r6 ${inputType} owns its requested extent across inline nodes`, async ({
+  test(`${inputType} owns its requested extent across inline nodes`, async ({
     page,
   }) => {
     const field = await mount(page);
@@ -393,7 +393,7 @@ for (const [inputType, start, end, caret] of [
   });
 }
 
-test("r6 word and line deletion without target ranges keeps its full extent", async ({
+test("word and line deletion without target ranges keeps its full extent", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -427,7 +427,7 @@ test("r6 word and line deletion without target ranges keeps its full extent", as
   }
 });
 
-test("r6 no-key character deletion restores an immediate place conversion", async ({
+test("no-key character deletion restores an immediate place conversion", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -438,7 +438,7 @@ test("r6 no-key character deletion restores an immediate place conversion", asyn
   await expect.poll(() => richNodes(field)).toEqual([["___"]]);
 });
 
-test("r6 cancelable deletion with a composition marker still owns the boundary", async ({
+test("cancelable deletion with a composition marker still owns the boundary", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -451,7 +451,7 @@ test("r6 cancelable deletion with a composition marker still owns the boundary",
 });
 
 for (const inputType of inputs) {
-  test(`r6 noncancelable ${inputType} recovers once from native DOM changes`, async ({
+  test(`noncancelable ${inputType} recovers once from native DOM changes`, async ({
     page,
   }) => {
     const field = await mount(page);
@@ -513,7 +513,7 @@ for (const inputType of inputs) {
   });
 }
 
-test("r6 noncancelable deletion can be canceled or replaced without replay", async ({
+test("noncancelable deletion can be canceled or replaced without replay", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -583,7 +583,7 @@ test("r6 noncancelable deletion can be canceled or replaced without replay", asy
   await expect(field.locator("p")).toHaveCount(2);
 });
 
-test("r6 soft line deletion follows visual wrapping inside saved prose", async ({
+test("soft line deletion follows visual wrapping inside saved prose", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -622,7 +622,7 @@ test("r6 soft line deletion follows visual wrapping inside saved prose", async (
 });
 
 for (const [platform, key, direction] of keys) {
-  test(`r6 ${platform} ${key} preserves its extent inside text`, async ({
+  test(`${platform} ${key} preserves its extent inside text`, async ({
     page,
   }) => {
     const field = await mount(page, platform);
@@ -655,7 +655,7 @@ for (const [platform, key, direction] of keys) {
   });
 }
 
-test("r6 no-key character deletion removes CRLF and a grapheme as complete units", async ({
+test("no-key character deletion removes CRLF and a grapheme as complete units", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -676,7 +676,7 @@ test("r6 no-key character deletion removes CRLF and a grapheme as complete units
   }
 });
 
-test("r6 word deletion has a bounded fallback without native selection motion", async ({
+test("word deletion has a bounded fallback without native selection motion", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -701,7 +701,7 @@ for (const inputType of [
   "deleteHardLineBackward",
   "deleteHardLineForward",
 ] as const) {
-  test(`r6 ${inputType} crosses inline newlines and containers without a target range`, async ({
+  test(`${inputType} crosses inline newlines and containers without a target range`, async ({
     page,
   }) => {
     const field = await mount(page);
@@ -725,7 +725,7 @@ for (const inputType of [
   });
 }
 
-test("r6 removing an editor cancels its staged deletion", async ({ page }) => {
+test("removing an editor cancels its staged deletion", async ({ page }) => {
   const field = await mount(page);
   await reset(field, [["ab"], ["cd\r\nef"]]);
   await choose(field, [1, 0, 0]);
@@ -755,7 +755,7 @@ for (const inputType of [
   "deleteUnrecognized",
   "deleteCompositionText",
 ]) {
-  test(`r6 ${inputType} owns selections and explicit targets outside composition`, async ({
+  test(`${inputType} owns selections and explicit targets outside composition`, async ({
     page,
   }) => {
     const field = await mount(page);
@@ -784,7 +784,7 @@ for (const inputType of [
   });
 }
 
-test("r6 deleteEntireSoftLine owns its visual extent and explicit target", async ({
+test("deleteEntireSoftLine owns its visual extent and explicit target", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -809,7 +809,7 @@ test("r6 deleteEntireSoftLine owns its visual extent and explicit target", async
     .toEqual([["\nthird"], ["outside\r"]]);
 });
 
-test("r6 composition deletion needs a mapped range inside one native text node", async ({
+test("composition deletion needs a mapped range inside one native text node", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -878,7 +878,7 @@ test("r6 composition deletion needs a mapped range inside one native text node",
   ).toContainText("try again");
 });
 
-test("r6 canceled native composition deletion cannot repair a later owned CR deletion", async ({
+test("canceled native composition deletion cannot repair a later owned CR deletion", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -919,7 +919,7 @@ test("r6 canceled native composition deletion cannot repair a later owned CR del
   }
 });
 
-test("r6 canceled native marker cannot repair an explicit empty text replacement", async ({
+test("canceled native marker cannot repair an explicit empty text replacement", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -969,7 +969,7 @@ test("r6 canceled native marker cannot repair an explicit empty text replacement
   }
 });
 
-test("r6 partial ranges retain code and both link types", async ({ page }) => {
+test("partial ranges retain code and both link types", async ({ page }) => {
   const field = await mount(page);
   for (const [leftKind, rightKind] of [
     ["code", "word"],
@@ -1023,7 +1023,7 @@ test("r6 partial ranges retain code and both link types", async ({ page }) => {
   }
 });
 
-test("r6 clipboard cut keeps partial code and link nodes", async ({ page }) => {
+test("clipboard cut keeps partial code and link nodes", async ({ page }) => {
   const field = await mount(page);
   await reset(field, [
     [node("code", "prefix"), "middle", node("web", "suffix")],
@@ -1046,7 +1046,7 @@ test("r6 clipboard cut keeps partial code and link nodes", async ({ page }) => {
     .toEqual([[node("code", "pre"), node("web", "fix")], ["outside\r"]]);
 });
 
-test("r6 a superseding delete keeps its different caret and target range", async ({
+test("a superseding delete keeps its different caret and target range", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -1077,7 +1077,7 @@ test("r6 a superseding delete keeps its different caret and target range", async
   await expect.poll(() => richNodes(field)).toEqual([["fir"], ["cd\r\nef"]]);
 });
 
-test("r6 superseding insertText and cut keep their new selections", async ({
+test("superseding insertText and cut keep their new selections", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -1135,7 +1135,7 @@ test("r6 superseding insertText and cut keep their new selections", async ({
   await expect.poll(() => richNodes(field)).toEqual([["ad\nef"]]);
 });
 
-test("r6 deletion direction keeps the correct code or link context for later typing", async ({
+test("deletion direction keeps the correct code or link context for later typing", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -1179,7 +1179,7 @@ test("r6 deletion direction keeps the correct code or link context for later typ
   }
 });
 
-test("r6 history restores the deletion typing context across code and link boundaries", async ({
+test("history restores the deletion typing context across code and link boundaries", async ({
   page,
 }) => {
   const field = await mount(page);
@@ -1223,7 +1223,7 @@ test("r6 history restores the deletion typing context across code and link bound
   }
 });
 
-test("r6 deliberate caret changes replace the retained deletion context", async ({
+test("deliberate caret changes replace the retained deletion context", async ({
   page,
 }) => {
   const field = await mount(page);

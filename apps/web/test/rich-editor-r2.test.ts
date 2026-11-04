@@ -80,7 +80,7 @@ const containers = [
 ];
 for (const kind of containers) {
   for (const text of ["XX", "X\n\nY"]) {
-    test(`r2 paste ${JSON.stringify(text)} inside ${kind.name} keeps one container`, async ({
+    test(`paste ${JSON.stringify(text)} inside ${kind.name} keeps one container`, async ({
       page,
     }) => {
       const field = await mount(page, [[kind.node]]);
@@ -89,7 +89,7 @@ for (const kind of containers) {
       expect(await nodes(field)).toEqual([[kind.updated(`ab${text}cd`)]]);
     });
   }
-  test(`r2 type before leading ${kind.name} with Home and ArrowLeft`, async ({
+  test(`type before leading ${kind.name} with Home and ArrowLeft`, async ({
     page,
   }) => {
     const field = await mount(page, [[kind.node, " tail"]]);
@@ -102,7 +102,7 @@ for (const kind of containers) {
     await field.pressSequentially("start ");
     expect(await nodes(field)).toEqual([["start before ", kind.node, " tail"]]);
   });
-  test(`r2 Backspace removes empty ${kind.name} before preceding prose`, async ({
+  test(`Backspace removes empty ${kind.name} before preceding prose`, async ({
     page,
   }) => {
     const field = await mount(page, [["keep ", kind.updated("ab"), " tail"]]);
@@ -121,7 +121,7 @@ for (const kind of containers) {
     expect(await nodes(field)).toEqual([["keep  tail"]]);
     await expect(field.locator(kind.selector)).toHaveCount(0);
   });
-  test(`r2 forward Delete after code keeps following ${kind.name} graphemes`, async ({
+  test(`forward Delete after code keeps following ${kind.name} graphemes`, async ({
     page,
   }) => {
     const field = await mount(page, [
@@ -138,7 +138,7 @@ for (const kind of containers) {
       [{ code: "prefix" }, kind.updated("z")],
     ]);
   });
-  test(`r2 toolbar replaces a selection from ${kind.name} through following prose`, async ({
+  test(`toolbar replaces a selection from ${kind.name} through following prose`, async ({
     page,
   }) => {
     const field = await mount(page, [[kind.node, " after"]]);
@@ -162,7 +162,7 @@ for (const kind of containers) {
     expect(await nodes(field)).toEqual([[kind.updated("ab"), 1]]);
   });
 }
-test("r2 forward Delete keeps the remainder of a saved literal", async ({
+test("forward Delete keeps the remainder of a saved literal", async ({
   page,
 }) => {
   const field = await mount(page, [[{ code: "prefix" }, "e\u0301👩‍💻z"]]);
@@ -178,7 +178,7 @@ test("r2 forward Delete keeps the remainder of a saved literal", async ({
   await field.press("Delete");
   expect(await nodes(field)).toEqual([["👩‍💻z"]]);
 });
-test("r2 paste without usable plain text preserves a selection", async ({
+test("paste without usable plain text preserves a selection", async ({
   page,
 }) => {
   const field = await mount(page, [["keep this"]]);
@@ -189,7 +189,7 @@ test("r2 paste without usable plain text preserves a selection", async ({
   await paste(field, "");
   expect(await nodes(field)).toEqual([["keep this"]]);
 });
-test("r2 circled paste in a code label stays literal without a conversion dialog", async ({
+test("circled paste in a code label stays literal without a conversion dialog", async ({
   page,
 }) => {
   const field = await mount(page, [[{ code: "abcd" }]]);
@@ -198,7 +198,7 @@ test("r2 circled paste in a code label stays literal without a conversion dialog
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(await nodes(field)).toEqual([[{ code: "ab①\n\n___cd" }]]);
 });
-test("r2 toolbar has one tab stop and the place grid returns keyboard focus", async ({
+test("toolbar has one tab stop and the place grid returns keyboard focus", async ({
   page,
 }) => {
   const field = await mount(page, [["text"]]);
@@ -248,7 +248,7 @@ test("r2 toolbar has one tab stop and the place grid returns keyboard focus", as
   await expect(more).toBeFocused();
 });
 for (const kind of containers.filter((kind) => kind.name !== "code")) {
-  test(`r2 ${kind.name} exposes its target and supports editing`, async ({
+  test(`${kind.name} exposes its target and supports editing`, async ({
     page,
   }) => {
     const field = await mount(page, [[kind.node]]);
@@ -277,7 +277,7 @@ for (const kind of containers.filter((kind) => kind.name !== "code")) {
     ).toBeFocused();
   });
 }
-test("r2 never-focused toolbar insertion appends to existing content", async ({
+test("never-focused toolbar insertion appends to existing content", async ({
   page,
 }) => {
   const field = await mount(page, [["existing"]]);
@@ -286,7 +286,7 @@ test("r2 never-focused toolbar insertion appends to existing content", async ({
     .click();
   expect(await nodes(field)).toEqual([["existing", 2]]);
 });
-test("r2 unavailable operands stay hidden until declared", async ({ page }) => {
+test("unavailable operands stay hidden until declared", async ({ page }) => {
   await mount(page, [["text"]], { operands: true });
   await expect(
     page.getByRole("button", {
@@ -297,7 +297,7 @@ test("r2 unavailable operands stay hidden until declared", async ({ page }) => {
   ).toBeHidden();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
-test("r2 literal mode replaces the place-rule hint", async ({ page }) => {
+test("literal mode replaces the place-rule hint", async ({ page }) => {
   const field = await mount(page, [["literal"]], { literal: true });
   const hint = page.locator(
     `[id="${await field.getAttribute("aria-describedby")}"]`,
@@ -307,7 +307,7 @@ test("r2 literal mode replaces the place-rule hint", async ({ page }) => {
   );
   await expect(hint).not.toContainText("Type ___");
 });
-test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
+test("place-list updates retain blank paragraphs, caret, and undo", async ({
   page,
 }) => {
   // History uses Date.now. Keep its groups independent of host clock changes.
@@ -385,7 +385,7 @@ test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
   await page.keyboard.type("from Tab");
   expect(await nodes(description)).toEqual([["a person"], ["from Tab"]]);
 });
-test("r2 reading pages load no authoring editor code or CSS", async ({
+test("reading pages load no authoring editor code or CSS", async ({
   page,
 }) => {
   const editorRequests: string[] = [];
@@ -410,7 +410,7 @@ test("r2 reading pages load no authoring editor code or CSS", async ({
 });
 
 for (const kind of ["code", "word link", "web link"]) {
-  test(`r2 never-focused ${kind} dialog insertion appends`, async ({
+  test(`never-focused ${kind} dialog insertion appends`, async ({
     page,
   }) => {
     const field = await mount(page, [["existing"]]);
@@ -450,7 +450,7 @@ for (const kind of ["code", "word link", "web link"]) {
   });
 }
 for (const kind of ["word", "identity", "rafsi"] as const) {
-  test(`r2 reading ${kind} loads seeded content without the editor`, async ({
+  test(`reading ${kind} loads seeded content without the editor`, async ({
     page,
   }) => {
     const editorRequests: string[] = [];
@@ -483,7 +483,7 @@ for (const kind of ["word", "identity", "rafsi"] as const) {
   });
 }
 
-test("r2 whitespace-only report explanations stay empty", async ({ page }) => {
+test("whitespace-only report explanations stay empty", async ({ page }) => {
   await page.goto(
     `/identity/${encodeURIComponent(fixture().identities.author)}`,
   );
@@ -511,7 +511,7 @@ test("r2 whitespace-only report explanations stay empty", async ({ page }) => {
   ).toHaveCount(0);
 });
 
-test("r2 whitespace-only biography has an empty preview", async ({ page }) => {
+test("whitespace-only biography has an empty preview", async ({ page }) => {
   await createIdentity(page);
   await page
     .getByRole("link", { name: "Edit public profile", exact: true })

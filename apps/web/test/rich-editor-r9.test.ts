@@ -171,7 +171,7 @@ async function verify(
 
 // This probe uses browser-managed composition without script changes to the DOM.
 for (const fixture of fixtures) {
-  test(`r9 Chromium native parsed pending composition preserves ${fixture.name}`, async ({
+  test(`Chromium native parsed pending composition preserves ${fixture.name}`, async ({
     page,
     browserName,
   }, info) => {
@@ -241,7 +241,7 @@ for (const fixture of fixtures) {
 
 // These injected events and DOM edits test a protocol branch, not a physical IME.
 for (const fixture of fixtures) {
-  test(`r9 synthetic DOM composition preserves ${fixture.name}`, async ({
+  test(`synthetic DOM composition preserves ${fixture.name}`, async ({
     page,
   }, info) => {
     const field = await mount(page, fixture.value);
@@ -289,7 +289,7 @@ for (const fixture of fixtures) {
 
 for (const fixture of fixtures) {
   for (const key of ["X", "Enter", "Shift+Enter"]) {
-    test(`r9 trusted ${key} preserves ${fixture.name}`, async ({
+    test(`trusted ${key} preserves ${fixture.name}`, async ({
       page,
     }, info) => {
       const field = await mount(page, fixture.value);
@@ -378,7 +378,7 @@ for (const fixture of fixtures) {
         ? (["beforeinput"] as const)
         : (["beforeinput", "paired", "input-only", "keymap"] as const);
     for (const mode of modes) {
-      test(`r9 synthetic ${mode} ${type} preserves ${fixture.name}`, async ({
+      test(`synthetic ${mode} ${type} preserves ${fixture.name}`, async ({
         page,
       }, info) => {
         const field = await mount(page, fixture.value);
@@ -397,7 +397,7 @@ for (const fixture of fixtures) {
 
 for (const fixture of fixtures) {
   for (const action of ["paste", "toolbar"]) {
-    test(`r9 ${action} guard preserves ${fixture.name}`, async ({
+    test(`${action} guard preserves ${fixture.name}`, async ({
       page,
     }, info) => {
       const field = await mount(page, fixture.value);
@@ -435,7 +435,7 @@ for (const fixture of fixtures) {
   }
 }
 
-test("r9 Word link accessible name starts with its visible label", async ({
+test("Word link accessible name starts with its visible label", async ({
   page,
 }) => {
   await mount(page, [["text"]]);
@@ -453,7 +453,7 @@ for (const mode of [
   "input-only",
   "keymap",
 ] as const) {
-  test(`r9 ${mode} paragraph Enter preserves a link suffix after prose`, async ({
+  test(`${mode} paragraph Enter preserves a link suffix after prose`, async ({
     page,
   }, info) => {
     const initial: RichText = [["ab", suffix]];
@@ -474,7 +474,7 @@ const chipContainers: { name: string; value: RichText }[] = [
   { name: "web link", value: [[{ url: "https://b.example/", label: "ab" }]] },
 ];
 for (const container of chipContainers) {
-  test(`r9 toolbar chip precedes ${container.name} at label offset zero`, async ({
+  test(`toolbar chip precedes ${container.name} at label offset zero`, async ({
     page,
   }, info) => {
     const field = await mount(page, container.value);
@@ -501,7 +501,7 @@ for (const container of chipContainers) {
   });
 }
 
-test("r9 plain paste splits whitespace blank-line runs into paragraphs", async ({
+test("plain paste splits whitespace blank-line runs into paragraphs", async ({
   page,
 }, info) => {
   const initial: RichText = [["start"]];

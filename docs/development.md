@@ -501,7 +501,7 @@ Vite listens on `http://127.0.0.1:5177`. `JVC_WEB_API_TARGET` selects another AP
 `npm run build:web` builds the static assets without rebuilding Rust or the server bundle.
 The Node adapter serves those built assets directly.
 
-Browser signing requires localhost or HTTPS. Plain HTTP through a Tailscale IP address provides reading only.
+Browser signing requires localhost or HTTPS. A plain HTTP address on another host provides reading only.
 Use an authorized HTTPS setup for remote signing tests. Do not disable browser security to make HTTP signing work.
 Key backup exports do not include unpublished drafts or pending outbox records.
 

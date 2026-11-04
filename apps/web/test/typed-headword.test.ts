@@ -979,7 +979,7 @@ test("returning to unknown morphology clears a completed Other type review", asy
     .toBe(false);
 });
 
-test("R8 repeated gismu evidence visits retain typed identity and later replacement confirmation", async ({
+test("repeated gismu evidence visits retain typed identity and later replacement confirmation", async ({
   page,
 }) => {
   await seedBuilder(page, "gismu");
@@ -1008,7 +1008,7 @@ test("R8 repeated gismu evidence visits retain typed identity and later replacem
   expect((await draft(page)).spelling).toBe("bangu");
 });
 
-test("R8 gismu replacement reviews retained annotations and manual Form Use rebinds changed source evidence", async ({
+test("gismu replacement reviews retained annotations and manual Form Use rebinds changed source evidence", async ({
   page,
 }) => {
   await seedBuilder(page, "gismu");

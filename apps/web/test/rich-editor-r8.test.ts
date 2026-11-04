@@ -229,7 +229,7 @@ async function intent(
 }
 
 for (const dialog of ["Link a word", "Web link", "Insert code", "Edit link"]) {
-  test(`r8 N1 secondary ${dialog} cancellation restores a usable focus target`, async ({
+  test(`secondary ${dialog} cancellation restores a usable focus target`, async ({
     page,
   }, info) => {
     const field = await mount(page, [
@@ -268,7 +268,7 @@ for (const dialog of ["Link a word", "Web link", "Insert code", "Edit link"]) {
   });
 }
 
-test("r8 N1 secondary dialogs restore focus after Cancel and successful insertion", async ({
+test("secondary dialogs restore focus after Cancel and successful insertion", async ({
   page,
 }, info) => {
   const field = await mount(page, [["ab"]]);
@@ -297,7 +297,7 @@ for (const point of [
   "root-zero",
   "pointer-middle",
 ] as const) {
-  test(`r8 F11 external reset keeps deliberate ${point} caret`, async ({
+  test(`external reset keeps deliberate ${point} caret`, async ({
     page,
   }, info) => {
     const field = await mount(page, [["old"]]);
@@ -339,7 +339,7 @@ for (const point of [
   });
 }
 
-test("r8 N2 forward Tab reaches the secondary toolbar after its editor", async ({
+test("forward Tab reaches the secondary toolbar after its editor", async ({
   page,
 }, info) => {
   const field = await mount(page, [["text"]]);
@@ -361,7 +361,7 @@ test("r8 N2 forward Tab reaches the secondary toolbar after its editor", async (
 });
 
 for (const kind of ["word", "web"] as const) {
-  test(`r8 N4 editing an existing multiline ${kind} label keeps its line breaks`, async ({
+  test(`editing an existing multiline ${kind} label keeps its line breaks`, async ({
     page,
   }, info) => {
     const node =
@@ -395,7 +395,7 @@ for (const kind of ["word", "web"] as const) {
   });
 }
 
-test("r8 N5 native execCommand history preserves a loaded complete literal token", async ({
+test("native execCommand history preserves a loaded complete literal token", async ({
   page,
 }, info) => {
   const field = await mount(page, [["__50__"], [untouched]]);
@@ -474,7 +474,7 @@ async function literalPaste(field: Locator, text: string) {
 }
 
 for (const type of ["historyUndo", "historyRedo"] as const) {
-  test(`r8 N5 protocol ${type} restores a complete literal through editor history`, async ({
+  test(`protocol ${type} restores a complete literal through editor history`, async ({
     page,
   }, info) => {
     const initial = type === "historyUndo" ? "__50__" : "x";
@@ -511,7 +511,7 @@ for (const type of ["historyUndo", "historyRedo"] as const) {
 }
 
 for (const type of ["historyUndo", "historyRedo"] as const) {
-  test(`r8 N5 dirty input-only protocol ${type} owns model history once`, async ({
+  test(`dirty input-only protocol ${type} owns model history once`, async ({
     page,
   }, info) => {
     const field = await mount(page, [["__50__"], [untouched]]);
@@ -547,7 +547,7 @@ for (const type of ["historyUndo", "historyRedo"] as const) {
   });
 }
 
-test("r8 N5 protocol replacement owns its code-label range", async ({
+test("protocol replacement owns its code-label range", async ({
   page,
 }, info) => {
   const field = await mount(page, [[{ code: "abcd" }], [untouched]]);
@@ -574,7 +574,7 @@ for (const type of [
   "historyRedo",
   "insertReplacementText",
 ] as const) {
-  test(`r8 N5 noncancelable paired ${type} restores native damage and applies once`, async ({
+  test(`noncancelable paired ${type} restores native damage and applies once`, async ({
     page,
   }, info) => {
     const replacement = type === "insertReplacementText";
@@ -642,7 +642,7 @@ for (const type of [
 }
 
 for (const next of ["historyUndo", "insertReplacementText"] as const) {
-  test(`r8 N5 old delete stage is canceled before ${next}`, async ({
+  test(`old delete stage is canceled before ${next}`, async ({
     page,
   }, info) => {
     const field = await mount(page, [[{ code: "abcd" }], [untouched]]);
@@ -688,7 +688,7 @@ for (const next of ["historyUndo", "insertReplacementText"] as const) {
 }
 
 for (const first of ["historyUndo", "insertReplacementText"] as const) {
-  test(`r8 N5 staged ${first} is canceled by a new insertion`, async ({
+  test(`staged ${first} is canceled by a new insertion`, async ({
     page,
   }, info) => {
     const field = await mount(page, [[{ code: "abcd" }], [untouched]]);
@@ -735,7 +735,7 @@ for (const first of ["historyUndo", "insertReplacementText"] as const) {
   });
 }
 
-test("r8 N6 a successful edit clears an obsolete retry notice", async ({
+test("a successful edit clears an obsolete retry notice", async ({
   page,
 }, info) => {
   const field = await mount(page, [["abcdef"]]);
@@ -776,7 +776,7 @@ test("r8 N6 a successful edit clears an obsolete retry notice", async ({
   await expect(announcer).toBeEmpty();
 });
 
-test("r8 N6 repeated failures update one persistent polite announcer", async ({
+test("repeated failures update one persistent polite announcer", async ({
   page,
 }, info) => {
   const field = await mount(page, [["abcdef"]]);
@@ -862,7 +862,7 @@ for (const change of [
   "end-insertion",
   "changed-content",
 ] as const) {
-  test(`r8 N7 protocol deferred deletion rejects widening after ${change}`, async ({
+  test(`protocol deferred deletion rejects widening after ${change}`, async ({
     page,
   }, info) => {
     const edge = { url: "https://example.org/edge", label: "edge\r\n" };
@@ -930,7 +930,7 @@ for (const change of [
   });
 }
 
-test("r8 N7 protocol dirty cross-container composition preserves all committed text", async ({
+test("protocol dirty cross-container composition preserves all committed text", async ({
   page,
 }, info) => {
   const word = {
@@ -1017,7 +1017,7 @@ test("r8 N7 protocol dirty cross-container composition preserves all committed t
   await expect(field.locator(".rich-web-link")).toHaveText("outside\r\n");
 });
 
-test("r8 N7 protocol ordinary input resumes after a missing compositionend", async ({
+test("protocol ordinary input resumes after a missing compositionend", async ({
   page,
 }, info) => {
   const field = await mount(page, [[{ code: "ab" }], [untouched]]);
@@ -1105,7 +1105,7 @@ test("r8 N7 protocol ordinary input resumes after a missing compositionend", asy
   await expect(announcer).toBeEmpty();
 });
 
-test("r8 N7 Chromium managed pending text survives a noncancelable boundary intent", async ({
+test("Chromium managed pending text survives a noncancelable boundary intent", async ({
   page,
   browserName,
 }, info) => {
@@ -1204,7 +1204,7 @@ test("r8 N7 Chromium managed pending text survives a noncancelable boundary inte
   }
 });
 
-test("r8 N8 L1 More places stays inside a 360 by 360 viewport", async ({
+test("L1 More places stays inside a 360 by 360 viewport", async ({
   page,
 }, info) => {
   await page.setViewportSize({ width: 360, height: 360 });
@@ -1266,7 +1266,7 @@ test("r8 N8 L1 More places stays inside a 360 by 360 viewport", async ({
   }
 });
 
-test("r8 N8 every short-viewport grid row is reachable and Tab dismisses it", async ({
+test("every short-viewport grid row is reachable and Tab dismisses it", async ({
   page,
 }, info) => {
   await page.setViewportSize({ width: 360, height: 360 });
@@ -1297,7 +1297,7 @@ test("r8 N8 every short-viewport grid row is reachable and Tab dismisses it", as
   ).toBe(false);
 });
 
-test("r8 N8 grid cells retain native activation buttons", async ({
+test("grid cells retain native activation buttons", async ({
   page,
 }, info) => {
   const field = await mount(page, [], true);

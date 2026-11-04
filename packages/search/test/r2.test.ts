@@ -17,7 +17,7 @@ const search = (spellings: string[], query: string) =>
     )
     .map((row) => [row.entry.word.spelling, row.match]);
 
-test("R2 canonical single words keep the headword class", () => {
+test("canonical single words keep the headword class", () => {
   for (const [query, spelling] of [
     ["klama.", "klama"],
     ["(klama)", "klama"],
@@ -31,7 +31,7 @@ test("R2 canonical single words keep the headword class", () => {
       query,
     );
 });
-test("R3 canonical aliases do not widen the raw prefix family", () => {
+test("canonical aliases do not widen the raw prefix family", () => {
   assert.deepEqual(search(["pa", "pai", "patfu"], "1"), [["pa", "headword"]]);
   assert.deepEqual(search(["a'a", "a'anmo", "ahafoo"], "aha"), [
     ["a'a", "headword"],
@@ -43,11 +43,11 @@ test("R3 canonical aliases do not widen the raw prefix family", () => {
     ["klamaroi", "headword-prefix"],
   ]);
 });
-test("R2 one recognized word beside a foreign run gets a card", () => {
+test("one recognized word beside a foreign run gets a card", () => {
   for (const query of ["klama mibaoz", "mibaoz klama"])
     assert.deepEqual(search(["klama"], query), [["klama", "component"]], query);
 });
-test("R2 matched query spans keep cards for uncovered words", () => {
+test("matched query spans keep cards for uncovered words", () => {
   const words = [
     "i",
     "je",
@@ -74,20 +74,20 @@ test("R2 matched query spans keep cards for uncovered words", () => {
       query,
     );
 });
-test("R2 subsequences never hide query-word cards", () => {
+test("subsequences never hide query-word cards", () => {
   const hits = search(["i", "bo", "iseri'abo"], "i bo");
   assert.deepEqual(
     hits.filter(([, kind]) => kind === "component").map(([word]) => word),
     ["i", "bo"],
   );
 });
-test("R2 ordinary prefixes precede compounds containing the query", () => {
+test("ordinary prefixes precede compounds containing the query", () => {
   assert.deepEqual(
     search(["iseri'abo", "selbri", "se'a", "se"], "se").map(([, kind]) => kind),
     ["headword", "headword-prefix", "headword-prefix", "sequence-subsequence"],
   );
 });
-test("R2 an exact whole-query gloss precedes a cmavo sequence", () => {
+test("an exact whole-query gloss precedes a cmavo sequence", () => {
   const hits = selectMatches(
     [entry("sono"), entry("broda", "so no")],
     "so no",
@@ -97,13 +97,13 @@ test("R2 an exact whole-query gloss precedes a cmavo sequence", () => {
     ["gloss", "sequence-exact"],
   );
 });
-test("R2 overlong indexed headwords expose incomplete sequence coverage", () => {
+test("overlong indexed headwords expose incomplete sequence coverage", () => {
   assert.equal(
     selectMatches([entry("ba".repeat(200))], "ba ba").segmentation,
     "limited",
   );
 });
-test("R2 morphology skips noncmavo headwords and survives fresh entry clones", () => {
+test("morphology skips noncmavo headwords and survives fresh entry clones", () => {
   const entries = [
     ...Array.from({ length: 1000 }, () => entry("klama")),
     entry("ijebo"),
@@ -117,12 +117,12 @@ test("R2 morphology skips noncmavo headwords and survives fresh entry clones", (
   assert.equal(reloaded.headwordsParsed, 0);
 });
 
-test("R2 canonical aliases preserve literal prefix lookup", () => {
+test("canonical aliases preserve literal prefix lookup", () => {
   assert.equal(search(["haskell"], "has")[0]?.[1], "headword-prefix");
   assert.equal(search([".djan."], ".")[0]?.[1], "headword-prefix");
 });
 
-test("R2 parser counters cover every query in a nearby batch", () => {
+test("parser counters cover every query in a nearby batch", () => {
   const rows = [entry("klama")];
   const metrics = searchMetrics();
   selectMatches(rows, "klama", metrics);
@@ -133,7 +133,7 @@ test("R2 parser counters cover every query in a nearby batch", () => {
   assert.equal(metrics.queryParserWork, first * 2);
 });
 
-test("R2 prefix-shaped compounds keep the weaker component class", () => {
+test("prefix-shaped compounds keep the weaker component class", () => {
   assert.deepEqual(search(["sefa'e", "selbri", "se'a", "se"], "se"), [
     ["se", "headword"],
     ["selbri", "headword-prefix"],

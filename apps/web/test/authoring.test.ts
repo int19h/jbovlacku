@@ -3118,7 +3118,7 @@ for (const structured of [true, false]) {
   });
 }
 
-test("N2 removing an added last place keeps the structure unspecified until an explicit zero choice", async ({
+test("removing an added last place keeps the structure unspecified until an explicit zero choice", async ({
   page,
 }) => {
   await page.goto("/new/meaning");
@@ -3148,7 +3148,7 @@ test("N2 removing an added last place keeps the structure unspecified until an e
   ).toEqual({ mode: "fixed", count: 0 });
 });
 
-test("N5 closed defaults and constraints reopen with current references before the next edit", async ({
+test("closed defaults and constraints reopen with current references before the next edit", async ({
   page,
 }) => {
   await page.goto("/new/meaning");
@@ -3219,7 +3219,7 @@ test("N5 closed defaults and constraints reopen with current references before t
   ).toEqual([[[1, " is inside ", 2, " fully"]]]);
 });
 
-test("F09: a held first publication shows neutral progress until the send fails", async ({
+test("a held first publication shows neutral progress until the send fails", async ({
   page,
 }) => {
   await createIdentity(page);

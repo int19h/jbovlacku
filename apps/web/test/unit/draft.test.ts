@@ -1953,7 +1953,7 @@ test("validation reads the final values, an edit changes only its own control, a
     }),
   ).body!;
   const parentId = "jve1:" + "e".repeat(64);
-  // R30: a code node holding a circled number is not a reference.
+  // a code node holding a circled number is not a reference.
   const code = { ...base, text: [[{ code: "first\n\n①" }]] } as never;
   assert.ok(admissible(code));
   const d1 = draftFromBody(code, parentId, "native");
@@ -1964,7 +1964,7 @@ test("validation reads the final values, an edit changes only its own control, a
     [],
   );
   assert.deepEqual(r1.body!.text, [[{ code: "first\n\n①" }]]);
-  // R31: a gloss edit keeps the place description, and a form note follows the exact etymology.
+  // a gloss edit keeps the place description, and a form note follows the exact etymology.
   const richPlace = {
     ...base,
     text: [[1, " is something."]],
@@ -2014,7 +2014,7 @@ test("validation reads the final values, an edit changes only its own control, a
     { language: "en", text: "something", sense: null },
   ]);
   assert.deepEqual(r2.etymology.text, [[{ code: "e\n\nf" }], ["Added note"]]);
-  // R32: the mode governs references, through the switch and through the flag.
+  // the mode governs references, through the switch and through the flag.
   const d3 = draftFromBody(
     {
       ...(richPlace as object),
@@ -2043,7 +2043,7 @@ test("validation reads the final values, an edit changes only its own control, a
   assert.deepEqual(d3.text, [[1, " is something."]]);
   d3.structured = false;
   assert.deepEqual(draftToBody(d3).body!.text, [["① is something."]]);
-  // R33: an identity remap leaves rich type notes exact, for a place and the repeated places.
+  // an identity remap leaves rich type notes exact, for a place and the repeated places.
   const d4 = newDraft({
     spelling: "broda",
     kind: "gismu",
@@ -2969,7 +2969,7 @@ test("accepted sources keep supplementary note bytes and private stems through p
     assert.equal(mappingKind([[reason]]), null);
 });
 
-test("r2 whitespace-only definition text remains empty for publication", () => {
+test("whitespace-only definition text remains empty for publication", () => {
   const draft = newDraft({
     spelling: "broda",
     kind: "gismu",

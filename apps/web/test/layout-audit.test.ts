@@ -550,7 +550,7 @@ for (const viewport of [
       await artifact(info, `source-table-${viewport.name}`, metrics, page);
     });
 
-    test("R7: first-signature and continuity sentences keep links in the text line", async ({
+    test("first-signature and continuity sentences keep links in the text line", async ({
       page,
     }, info) => {
       await createAuditIdentity(page);
@@ -598,7 +598,7 @@ for (const viewport of [
       await checkTargets(page, info, "person-continuity-sentence", viewport);
     });
 
-    test("R7: Publish root, component, and multiple-claimant sentences keep their inline shape", async ({
+    test("Publish root, component, and multiple-claimant sentences keep their inline shape", async ({
       page,
     }, info) => {
       test.setTimeout(180000);
@@ -738,7 +738,7 @@ for (const viewport of [
       );
     });
 
-    test("R6: new links and controls get large targets without audit coverage", async ({
+    test("new links and controls get large targets without audit coverage", async ({
       page,
     }, info) => {
       await open(page, `/word/${fixture().words.cukta}`);
@@ -830,7 +830,7 @@ for (const viewport of [
       }
     });
 
-    test("R6: rich prose keeps sentence links inline and other links large", async ({
+    test("rich prose keeps sentence links inline and other links large", async ({
       page,
     }, info) => {
       // Exercise the shared renderer with synthetic content in the local Vite app.
@@ -1028,7 +1028,7 @@ for (const viewport of [
       );
     });
 
-    test("R6: larger fields, block regions, compact glyphs, and hidden controls keep their behavior", async ({
+    test("larger fields, block regions, compact glyphs, and hidden controls keep their behavior", async ({
       page,
     }, info) => {
       await open(page, "/new/meaning");
@@ -1090,7 +1090,7 @@ for (const viewport of [
       );
     });
 
-    test("R3: composition links and Edit have touch targets with centered short labels", async ({
+    test("composition links and Edit have touch targets with centered short labels", async ({
       page,
     }, info) => {
       await open(page, `/word/${fixture().words.vlacku}`);
@@ -1153,7 +1153,7 @@ for (const viewport of [
       expect.soft(box.height, "Publish Edit height").toBeGreaterThanOrEqual(44);
     });
 
-    test("R5: rafsi, records, manual forms, and unsigned publication cover standalone links", async ({
+    test("rafsi, records, manual forms, and unsigned publication cover standalone links", async ({
       page,
     }, info) => {
       test.setTimeout(240000);
@@ -1390,7 +1390,7 @@ for (const viewport of [
       await artifact(info, `route-gap-manifest-${viewport.name}`, manifest);
     });
 
-    test("R5: populated profiles, conflicts, and the profile preview cover standalone links", async ({
+    test("populated profiles, conflicts, and the profile preview cover standalone links", async ({
       page,
     }, info) => {
       test.setTimeout(180000);
@@ -1482,7 +1482,7 @@ for (const viewport of [
       await artifact(info, `profile-manifest-${viewport.name}`, manifest);
     });
 
-    test("R5: handover recovery and stored status cover standalone links", async ({
+    test("handover recovery and stored status cover standalone links", async ({
       page,
     }, info) => {
       test.setTimeout(180000);
@@ -1631,7 +1631,7 @@ for (const viewport of [
       await artifact(info, `lifecycle-manifest-${viewport.name}`, manifest);
     });
 
-    test("R5: unavailable browser storage keeps a usable return link", async ({
+    test("unavailable browser storage keeps a usable return link", async ({
       page,
     }, info) => {
       await page.addInitScript(() => {
@@ -1649,7 +1649,7 @@ for (const viewport of [
       await checkTargets(page, info, "storage-unavailable", viewport);
     });
 
-    test("F2 and Grok3: Meaning and Type use the specified column gap", async ({
+    test("Meaning and Type use the specified column gap", async ({
       page,
     }, info) => {
       await open(page, "/new/meaning");
@@ -1680,7 +1680,7 @@ for (const viewport of [
       );
     });
 
-    test("F3: the selected gismu uses the specified builder type scale", async ({
+    test("the selected gismu uses the specified builder type scale", async ({
       page,
     }, info) => {
       await beginDraft(page, "gismu");
@@ -1726,7 +1726,7 @@ for (const viewport of [
       expect.soft(parseFloat(styles.spacing)).toBeCloseTo(-1.1, 2);
     });
 
-    test("F4 F5 and Grok1: one and two alternatives keep hints below Tags and controls inside their groups", async ({
+    test("one and two alternatives keep hints below Tags and controls inside their groups", async ({
       page,
     }, info) => {
       await beginDraft(page);
@@ -1892,7 +1892,7 @@ for (const viewport of [
       }
     });
 
-    test("F1 and Grok2: every visible interactive target meets its measured size rule", async ({
+    test("every visible interactive target meets its measured size rule", async ({
       page,
     }, info) => {
       test.setTimeout(240000);

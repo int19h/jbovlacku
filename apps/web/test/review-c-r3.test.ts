@@ -101,7 +101,7 @@ async function mountComparison(page: any, scenario: string) {
   );
 }
 
-test("F1 comparison sections follow reader order", async ({ page }) => {
+test("comparison sections follow reader order", async ({ page }) => {
   await mountComparison(page, "order");
   await expect(page.locator(".comparison-field > h3")).toHaveText([
     "Definition",
@@ -117,7 +117,7 @@ test("F1 comparison sections follow reader order", async ({ page }) => {
     "Import evidence",
   ]);
 });
-test("F2 every readable comparison string escapes invisible controls", async ({
+test("every readable comparison string escapes invisible controls", async ({
   page,
 }) => {
   expect((await mountComparison(page, "controls")).unchanged).toBe(true);
@@ -152,7 +152,7 @@ test("F2 every readable comparison string escapes invisible controls", async ({
       expect(value).toContain("\\u202e");
   }
 });
-test("F3 nested list edits show only the changed item", async ({ page }) => {
+test("nested list edits show only the changed item", async ({ page }) => {
   await mountComparison(page, "nested");
   const etymology = page.locator('[data-field="Etymology"] .comparison-pair');
   await expect(etymology).toHaveCount(1);
@@ -165,7 +165,7 @@ test("F3 nested list edits show only the changed item", async ({ page }) => {
   await expect(place).not.toContainText("first");
   await expect(place).not.toContainText("last");
 });
-test("F3 a 3000-item comparison limits its initial rendered changes", async ({
+test("a 3000-item comparison limits its initial rendered changes", async ({
   page,
 }) => {
   await mountComparison(page, "bounded");
@@ -178,7 +178,7 @@ test("F3 a 3000-item comparison limits its initial rendered changes", async ({
   await expect(page.locator("main")).toContainText("2900 more changes");
 });
 for (const mode of ["trust", "ignore"] as const)
-  test(`F8 failed private ${mode} removal announces the error and keeps the choice`, async ({
+  test(`failed private ${mode} removal announces the error and keeps the choice`, async ({
     page,
   }) => {
     await page.goto("/");
@@ -261,7 +261,7 @@ for (const mode of ["trust", "ignore"] as const)
     expect(result.saved).toEqual(result.expected);
   });
 
-test("F5 reference spelling advice stays visible while Publish stays enabled", async ({
+test("reference spelling advice stays visible while Publish stays enabled", async ({
   page,
 }) => {
   await createIdentity(page);

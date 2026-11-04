@@ -7,7 +7,7 @@ import {
 } from "../../src/model/draft.ts";
 import { changedItems } from "../../src/model/comparison.ts";
 
-test("N1 only documented backslash escapes change direct input", () => {
+test("only documented backslash escapes change direct input", () => {
   for (const codepoint of [
     ...Array.from({ length: 128 }, (_, i) => i),
     0xa0,
@@ -42,7 +42,7 @@ for (const value of [
   String.raw`\rightarrow \rho \rm Tom \& Jerry C:\readme hello\ world`,
   "slash\\\tand\\\nnext",
 ]) {
-  test(`N1 typed backslashes stay literal: ${JSON.stringify(value)}`, () => {
+  test(`typed backslashes stay literal: ${JSON.stringify(value)}`, () => {
     assert.deepEqual(editorToRichText(value, true), [[value]]);
     assert.deepEqual(
       editorToRichText(`\`${value}\` [[cukta|${value}]]`, true),
@@ -57,7 +57,7 @@ for (const value of [
   });
 }
 
-test("N1 a backslash before a raw blank line keeps the paragraph boundary", () => {
+test("a backslash before a raw blank line keeps the paragraph boundary", () => {
   for (const boundary of ["\n\n", "\n \n", "\r\n\r\n", "\n\u00a0\n"]) {
     const source = `C:\\${boundary}① next`;
     assert.deepEqual(editorToRichText(source, true), [["C:\\"], [1, " next"]]);
@@ -76,7 +76,7 @@ test("N1 a backslash before a raw blank line keeps the paragraph boundary", () =
   }
 });
 
-test("N2 raw trailing whitespace disappears from each paragraph and the field", () => {
+test("raw trailing whitespace disappears from each paragraph and the field", () => {
   for (const tail of [" ", " \n", "\n\n  ", "\n\u00a0\n\t", "\r\n\r\n \t"]) {
     assert.deepEqual(editorToRichText(`Definition.${tail}`, true), [
       ["Definition."],
@@ -88,7 +88,7 @@ test("N2 raw trailing whitespace disappears from each paragraph and the field", 
   ]);
 });
 
-test("N3 distant sparse edits above the cell budget stay separate", () => {
+test("distant sparse edits above the cell budget stay separate", () => {
   for (const size of [250, 3000]) {
     const before = Array.from({ length: size }, (_, i) => `item${i}`);
     const after = [...before];
@@ -109,7 +109,7 @@ test("N3 distant sparse edits above the cell budget stay separate", () => {
   }
 });
 
-test("N4 ordinary single line breaks stay readable", () => {
+test("ordinary single line breaks stay readable", () => {
   const text = "line one\nline two\nline three";
   assert.equal(richTextToEditor([[text]]), text);
   assert.deepEqual(editorToRichText(text, true), [[text]]);

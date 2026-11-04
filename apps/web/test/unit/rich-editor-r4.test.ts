@@ -22,7 +22,7 @@ before(async () =>
 );
 const exact: RichText = [["first\r\n", " adjacent\r"], [" \t"], ["last"]];
 
-test("r4 construction and restored drafts preserve untouched rich fields exactly", () => {
+test("construction and restored drafts preserve untouched rich fields exactly", () => {
   const draft = newDraft({
     spelling: "broda",
     kind: "gismu",
@@ -37,7 +37,7 @@ test("r4 construction and restored drafts preserve untouched rich fields exactly
   assert.deepEqual(body.text, exact);
   assert.deepEqual(body.notes, exact);
 });
-test("r4 literal snapshots restore untouched paragraphs and saved string boundaries", () => {
+test("literal snapshots restore untouched paragraphs and saved string boundaries", () => {
   const original: RichText = [["left\r", " right", 1], [" \t"], ["literal ②"]];
   const draft = newDraft({ spelling: "broda", kind: "gismu", text: original });
   switchMode(draft, false);

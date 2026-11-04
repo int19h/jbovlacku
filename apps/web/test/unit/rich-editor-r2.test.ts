@@ -15,7 +15,7 @@ import { manualFormation } from "../../src/model/builders.ts";
 import { placeSuggestionProblem } from "../../../../packages/core/src/place-assistance.ts";
 import type { RichNode, RichText } from "../../src/model/types.ts";
 
-test("r2 AI guard includes blank numbering before explicit places", () => {
+test("AI guard includes blank numbering before explicit places", () => {
   for (const meaning of [
     "___ gives ___ to ③",
     "___ ___ ③ ___",
@@ -24,22 +24,22 @@ test("r2 AI guard includes blank numbering before explicit places", () => {
     assert.equal(placeSuggestionProblem(meaning, [], null), null, meaning);
   }
 });
-test("r2 AI guard prioritizes current definition places over stale Meaning", () => {
+test("AI guard prioritizes current definition places over stale Meaning", () => {
   assert.equal(placeSuggestionProblem("x ⑳", [[1, " and ", 2]], null), null);
 });
-test("r2 numeric display and copied text retain places above 50", () => {
+test("numeric display and copied text retain places above 50", () => {
   assert.equal(plainText([[51, " ", 65535]]), "51 65535");
   const doc = richToEditor([[51, " ", 65535]]);
   assert.equal(doc.textBetween(0, doc.content.size), "51 65535");
 });
-test("r2 writing new adjacent text merges runs and keeps untouched stored boundaries", () => {
+test("writing new adjacent text merges runs and keeps untouched stored boundaries", () => {
   let state = EditorState.create({ doc: richToEditor([["old", " boundary"]]) });
   state = state.apply(
     state.tr.setSelection(TextSelection.atEnd(state.doc)).insertText(" plus"),
   );
   assert.deepEqual(editorToRich(state.doc), [["old", " boundary plus"]]);
 });
-test("r2 live blank paragraphs stay in the document while stored values omit them", () => {
+test("live blank paragraphs stay in the document while stored values omit them", () => {
   let state = EditorState.create({ doc: richToEditor([["first"]]) });
   state = state.apply(state.tr.setSelection(TextSelection.atEnd(state.doc)));
   assert.equal(
@@ -57,10 +57,10 @@ test("r2 live blank paragraphs stay in the document while stored values omit the
     ["a", "b"],
   ]);
 });
-test("r2 whitespace alone creates no manual formation", () => {
+test("whitespace alone creates no manual formation", () => {
   assert.equal(manualFormation([], [[" \n\t"]]), null);
 });
-test("r2 cross-container toolbar replacement consumes the whole selection", () => {
+test("cross-container toolbar replacement consumes the whole selection", () => {
   for (const node of [
     { code: "abcd" },
     { word: { language: "jbo" as const, spelling: "cukta" }, label: "abcd" },
@@ -77,7 +77,7 @@ test("r2 cross-container toolbar replacement consumes the whole selection", () =
     assert.deepEqual(editorToRich(tr.doc), [[prefix, 1]]);
   }
 });
-test("r2 seeded random edit sequences retain legal values and untouched boundaries", () => {
+test("seeded random edit sequences retain legal values and untouched boundaries", () => {
   let seed = 0x51ed17;
   const random = (limit: number) => {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;

@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import { acceptFirstSignature, corePath, createIdentity } from "./helpers.ts";
 
 for (const short of [false, true]) {
-  test(`R7 editing beside a ${short ? "short" : "labelled"} stored multiline URL keeps its link and destination`, async ({
+  test(`editing beside a ${short ? "short" : "labelled"} stored multiline URL keeps its link and destination`, async ({
     page,
   }) => {
     await page.goto("/");
@@ -73,7 +73,7 @@ for (const short of [false, true]) {
   });
 }
 
-test("R7 the full editor signs separate rafsi rationale paragraphs with literal circled text", async ({
+test("the full editor signs separate rafsi rationale paragraphs with literal circled text", async ({
   page,
 }) => {
   await createIdentity(page);

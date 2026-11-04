@@ -46,7 +46,7 @@ const urls: readonly (readonly [string, string, boolean?])[] = [
   ["\u0000https://example.org/a\n\n①\u001f", "https://example.org/a①"],
 ] as const;
 
-test("R7 a distinct label stays explicit when the cleaned URL equals it", () => {
+test("a distinct label stays explicit when the cleaned URL equals it", () => {
   const source = richTextToEditor([
     [
       {
@@ -60,7 +60,7 @@ test("R7 a distinct label stays explicit when the cleaned URL equals it", () => 
 
 for (const [url, cleaned, canonical = false] of urls) {
   for (const short of [false, true]) {
-    test(`R7 ${short ? "short" : "explicit"} stored URL keeps its destination: ${JSON.stringify(url)}`, () => {
+    test(`${short ? "short" : "explicit"} stored URL keeps its destination: ${JSON.stringify(url)}`, () => {
       const label = short ? url : " first\n\n① | ] \\ last ";
       const original = [[{ url, label }]];
       const snapshot = structuredClone(original);
@@ -111,7 +111,7 @@ for (const [url, cleaned, canonical = false] of urls) {
   }
 }
 
-test("R7 URL spaces, Unicode whitespace, and decomposed path text stay significant", () => {
+test("URL spaces, Unicode whitespace, and decomposed path text stay significant", () => {
   for (const url of [
     "https://example.org/a b?q=c d",
     "https://example.org/a\u00a0b?q=\u2000",
@@ -122,7 +122,7 @@ test("R7 URL spaces, Unicode whitespace, and decomposed path text stay significa
   }
 });
 
-test("R7 a word link spelled https:example.org keeps the original typed syntax", () => {
+test("a word link spelled https:example.org keeps the original typed syntax", () => {
   const rich = [
     [
       {

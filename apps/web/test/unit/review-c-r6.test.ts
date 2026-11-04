@@ -9,7 +9,7 @@ import type { RichNode, RichText } from "../../src/model/types.ts";
 
 for (const content of ["x\n\n① ", "\nfirst\n\n①", " first\n \n\n① "]) {
   for (const kind of ["code", "word", "web"] as const) {
-    test(`R6 editing beside padded ${kind} keeps its node type: ${JSON.stringify(content)}`, () => {
+    test(`editing beside padded ${kind} keeps its node type: ${JSON.stringify(content)}`, () => {
       const normalized = content.replace(/\n\s*\n/gu, "\n");
       const node = (value: string): RichNode =>
         kind === "code"
@@ -45,7 +45,7 @@ for (const [first, last, expectedLast] of [
     ],
   ],
 ] as const) {
-  test(`R6 unmatched delimiters do not capture later paragraphs: ${first}`, () => {
+  test(`unmatched delimiters do not capture later paragraphs: ${first}`, () => {
     for (const boundary of [
       "\n\n",
       "\n \t\n",
@@ -67,7 +67,7 @@ for (const [first, last, expectedLast] of [
   });
 }
 
-test("R6 a backslash cannot carry a span across a blank line", () => {
+test("a backslash cannot carry a span across a blank line", () => {
   for (const [first, last] of [
     ["`left\\", "right`"],
     ["[[https://example.org|left\\", "right]]"],
@@ -81,7 +81,7 @@ test("R6 a backslash cannot carry a span across a blank line", () => {
   }
 });
 
-test("R6 single line breaks and ordinary inline padding stay inside code and links", () => {
+test("single line breaks and ordinary inline padding stay inside code and links", () => {
   const rich: RichText = [
     [
       { code: " left\n① " },

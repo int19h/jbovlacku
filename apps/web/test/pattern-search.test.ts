@@ -544,7 +544,7 @@ const emptyRafsiWord = () => ({
   calculation: null,
 });
 
-test("R2 Opus F3: rafsi package rows group accent displays by word ID in the real worker", async ({
+test("rafsi package rows group accent displays by word ID in the real worker", async ({
   page,
 }) => {
   await page.goto("/");
@@ -817,7 +817,7 @@ test("navigation cancels actual rafsi claim bodies and prevents later claim requ
 });
 
 for (const compact of [false, true])
-  test(`r3: a pattern with a mismatched ${compact ? "compact" : "legacy"} package view shows no ordering advice`, async ({
+  test(`a pattern with a mismatched ${compact ? "compact" : "legacy"} package view shows no ordering advice`, async ({
     page,
   }) => {
     await page.goto("/");

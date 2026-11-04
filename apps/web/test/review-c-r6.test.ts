@@ -3,7 +3,7 @@ import { appendRichText } from "./rich-helpers.ts";
 import { expect, test } from "@playwright/test";
 import { corePath } from "./helpers.ts";
 
-test("R6 an edit beside padded multiline code keeps literal place notation in code", async ({
+test("an edit beside padded multiline code keeps literal place notation in code", async ({
   page,
 }) => {
   await page.goto("/");
@@ -65,7 +65,7 @@ for (const [kind, label] of [
   ["derivation", "Explanation of derivation 1 for place 1"],
   ["rationale", "Rationale for rafsi 1"],
 ] as const) {
-  test(`R6 ${kind} uses a multiline control and keeps line breaks after a nearby edit`, async ({
+  test(`${kind} uses a multiline control and keeps line breaks after a nearby edit`, async ({
     page,
   }) => {
     await page.goto("/");

@@ -399,7 +399,7 @@ test("SQL rejects a second active JSON authority beside the shared ledger", asyn
   );
 });
 
-test("r3 N4 observation lookups use a record-first index on fresh and reopened ledgers", async () => {
+test("observation lookups use a record-first index on fresh and reopened ledgers", async () => {
   const f = await fixture();
   const result = await rest(f);
   const { openLedger } = await import("../src/ledger.ts");
@@ -443,7 +443,7 @@ test("r3 N4 observation lookups use a record-first index on fresh and reopened l
   db.close();
 });
 
-test("r3 N4 REST commits count retained observations in one grouped query", async (context) => {
+test("REST commits count retained observations in one grouped query", async (context) => {
   const f = await fixture();
   await rest(f);
   const result = importCapture({
@@ -477,7 +477,7 @@ test("r3 N4 REST commits count retained observations in one grouped query", asyn
   );
 });
 
-test("r3 N4 default ledger reads stay read only and explicit metadata migration installs the record index", async () => {
+test("default ledger reads stay read only and explicit metadata migration installs the record index", async () => {
   const f = await fixture();
   const original = await rest(f);
   let db = new DatabaseSync(join(f.output, "journal.sqlite"));
@@ -508,7 +508,7 @@ test("r3 N4 default ledger reads stay read only and explicit metadata migration 
   db.close();
 });
 
-test("r3 N2 new REST observations reference the exact archive instead of copying derived viewer values", async () => {
+test("new REST observations reference the exact archive instead of copying derived viewer values", async () => {
   const f = await fixture();
   f.rows[0].embedding = [0.1, 0.2];
   f.rows[0].user_vote = 1;

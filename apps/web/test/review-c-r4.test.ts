@@ -2,7 +2,7 @@ import { richText, typeRichText } from "./rich-helpers.ts";
 import { expect, test } from "@playwright/test";
 import { corePath } from "./helpers.ts";
 
-test("N1 typed TeX and backslashes keep their values in the saved draft", async ({
+test("typed TeX and backslashes keep their values in the saved draft", async ({
   page,
 }) => {
   await page.goto("/");
@@ -68,7 +68,7 @@ test("N1 typed TeX and backslashes keep their values in the saved draft", async 
   ]);
 });
 
-test("N5 keyboard batches focus the first new row through the final batch", async ({
+test("keyboard batches focus the first new row through the final batch", async ({
   page,
 }) => {
   await page.goto("/");
@@ -114,7 +114,7 @@ test("N5 keyboard batches focus the first new row through the final batch", asyn
   ).toBeFocused();
 });
 
-test("N2 and N4 saved prose keeps exact line breaks and whitespace", async ({
+test("saved prose keeps exact line breaks and whitespace", async ({
   page,
 }) => {
   await page.goto("/");
@@ -156,7 +156,7 @@ test("N2 and N4 saved prose keeps exact line breaks and whitespace", async ({
   expect(saved).toEqual([[prose], ["Next."]]);
 });
 
-test("N3 distant edits in a long list render only the two changes", async ({
+test("distant edits in a long list render only the two changes", async ({
   page,
 }) => {
   await page.goto("/");

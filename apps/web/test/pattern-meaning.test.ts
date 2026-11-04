@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { resolve } from "node:path";
 
-test("R2 consented remote nearby meanings preserve literal punctuation", async ({
+test("consented remote nearby meanings preserve literal punctuation", async ({
   page,
 }) => {
   const language = "en-x-r2lit";

@@ -3,7 +3,7 @@ import { appendRichText } from "./rich-helpers.ts";
 import { expect, test } from "@playwright/test";
 import { corePath } from "./helpers.ts";
 
-test("R5 an edit keeps TeX and reserved-looking text literal in prose code and labels", async ({
+test("an edit keeps TeX and reserved-looking text literal in prose code and labels", async ({
   page,
 }) => {
   await page.goto("/");
@@ -48,7 +48,7 @@ test("R5 an edit keeps TeX and reserved-looking text literal in prose code and l
   ]);
 });
 
-test("R5 nearby edits preserve rare stored values", async ({ page }) => {
+test("nearby edits preserve rare stored values", async ({ page }) => {
   await page.goto("/");
   const original = await page.evaluate(async (path) => {
     const core = await import(path);
@@ -96,7 +96,7 @@ test("R5 nearby edits preserve rare stored values", async ({ page }) => {
   });
 });
 
-test("R5 an invalid Unicode character shows a plain definition error", async ({
+test("an invalid Unicode character shows a plain definition error", async ({
   page,
 }) => {
   await page.goto("/");

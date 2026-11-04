@@ -57,7 +57,7 @@ for (const query of [
   "la .alis.",
   "kihe",
 ])
-  test(`r3: browser and server know complete spelling aliases: ${query}`, () => {
+  test(`browser and server know complete spelling aliases: ${query}`, () => {
     const rows = entries();
     const evaluation = {
       publications: Object.fromEntries(
@@ -104,7 +104,7 @@ for (const query of [
   "(klama)",
   "klama ☃",
 ])
-  test(`r3: unknown and other punctuation never establish a known token: ${query}`, () => {
+  test(`unknown and other punctuation never establish a known token: ${query}`, () => {
     const rows = entries();
     const evaluation = {
       publications: Object.fromEntries(
@@ -138,7 +138,7 @@ for (const query of [
       );
     }
   });
-test("r3: package view binds compact statuses, while old v2 and v1 stay readable", () => {
+test("package view binds compact statuses, while old v2 and v1 stay readable", () => {
   const row = {
     ...entries()[0],
     issuer: "ed25519:" + "c".repeat(64),
