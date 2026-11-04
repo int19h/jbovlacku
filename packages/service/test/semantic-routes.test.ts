@@ -50,7 +50,7 @@ const read = async (response: Response): Promise<any> => {
   return response.json();
 };
 
-test("routes advertise compatible partial indexes, retain lexical reads, and validate public inputs including R7 language tags", async () => {
+test("DeepInfra routes advertise compatible partial indexes, retain lexical reads, and validate public inputs including R7 language tags", async () => {
   const base = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(base, { recursive: true });
   const directory = await mkdtemp(join(base, "semantic-routes-"));
@@ -65,7 +65,8 @@ test("routes advertise compatible partial indexes, retain lexical reads, and val
   const scanner = new NodeVectorScanner(
     join(directory, "semantic-vectors.sqlite"),
   );
-  const profile = createQwenProfile("28".repeat(16));
+  const route = "deepinfra/us";
+  const profile = createQwenProfile("28".repeat(16), route);
   const seed = new Uint8Array(32).fill(93);
   const view = createEvent(
     seed,
@@ -131,6 +132,9 @@ test("routes advertise compatible partial indexes, retain lexical reads, and val
   config.fetch = async (_url, init) => {
     sends++;
     const body = JSON.parse(String(init?.body));
+    assert.deepEqual(body.provider.only, [route]);
+    assert.deepEqual(body.provider.order, [route]);
+    assert.equal(body.provider.allow_fallbacks, false);
     await gate;
     return Response.json({
       model: "qwen/qwen3-embedding-8b",
@@ -565,6 +569,7 @@ test("routes advertise compatible partial indexes, retain lexical reads, and val
           JVC_AI_KEY_FILE: key,
           JVC_SEMANTIC_PROFILE: profileId(profile),
           JVC_SEMANTIC_INDEXING: "enabled",
+          JVC_TEST_EMBEDDING_ROUTE: route,
         } as unknown as NodeJS.ProcessEnv,
         stdio: ["ignore", "pipe", "pipe", "ipc"],
       },
