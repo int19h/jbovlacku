@@ -187,8 +187,10 @@ Each automatic retry creates a linked batch and a new shared-budget operation.
 Earlier batches and charges remain intact. A spending refusal stops the job.
 The `--max-batches` bound includes every attempt across the retry rounds.
 SIGINT or SIGTERM cancels a backoff wait and stops further attempts.
-Only 429 failures from the current invocation qualify for automatic retry of the failed batch.
-Other failures and ambiguous batches from earlier invocations require explicit retry selection.
+Adaptive operator runs save definite 429 batches for automatic retry on a later run.
+They also select unsent local refusals: `billing_operator_limit` (cost ceiling), `billing_history_limit` (history), and `embedding_busy` (local slots).
+A later run automatically resumes these saved selections.
+Other unselected earlier failed or ambiguous batches require `retry --batch` or `retry --all`.
 
 The command emits a `backoff` JSON event before each wait, with `delay_ms`, `attempt`, and `batches`.
 Attempt zero waits for a saved cooldown. Positive attempts identify retry rounds.

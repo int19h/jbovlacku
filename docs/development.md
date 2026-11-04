@@ -573,7 +573,11 @@ Adaptive operator runs wait at most 60 seconds at once and repeat waits until th
 They have no invocation-wide total wait cap. Cancellation stops further waits and dispatch.
 Ordinary server and non-adaptive runs keep the 120-second total wait bound.
 The one-hour cap bounds the saved refusal, not the wait inside one command.
-After the deadline expires, fresh work can proceed. Earlier failed batches still require explicit retry selection.
+After the deadline expires, fresh work and saved retry selections can proceed.
+Adaptive operator runs save definite 429 batches for automatic retry on a later run.
+They also select unsent local refusals: `billing_operator_limit` (cost ceiling), `billing_history_limit` (history), and `embedding_busy` (local slots).
+A later run automatically resumes these saved selections.
+Other unselected earlier failed or ambiguous batches require `retry --batch` or `retry --all`.
 
 To override a faulty provider deadline, stop the server that uses the data directory.
 Set `JVC_DATA_DIR` to that directory and `JVC_INDEX_JOB` to an existing generation ID.
