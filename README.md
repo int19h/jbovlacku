@@ -375,11 +375,11 @@ It reserves costs before admission and enforces server and network spending limi
 IPv6 limits also count /48 prefixes. The Node server stores spending ledgers in SQLite.
 The host service also admits bounded embedding batches through the same spending ledger and execution slots.
 Caller cancellation during embedding admission prevents dispatch and removes any unsent reservation.
-Its provider adapter pins `qwen/qwen3-embedding-8b` to each profile's Nebius or DeepInfra route through OpenRouter, with fallback and redirects disabled.
-Operators select a fresh profile's route with `prepare --route nebius` or `prepare --route deepinfra/us`.
-Fresh CLI profiles default to DeepInfra. Existing Nebius profiles keep their route.
-The providers use separate profile IDs and vector spaces, including for queries and compatibility probes.
-A route change requires a fresh profile and a full re-embed.
+Its provider adapter pins `qwen/qwen3-embedding-8b` to an explicitly selected compatible route through OpenRouter, with fallback and redirects disabled.
+Fresh profiles default to Nebius. A declared Nebius/SiliconFlow compatibility set preserves existing Nebius profile IDs and vectors.
+Operator and server requests prefer SiliconFlow. Operators can choose Nebius with `run --route nebius`.
+Compatibility probes follow the request route under the unchanged 0.0005 tolerance.
+DeepInfra remains a separate fresh-profile choice, with measured repeat differences that exceed that tolerance.
 Invalid embedding configuration disables embedding alone and preserves generation.
 Interrupted operations retain unknown-cost charges after restart. Errors after reservation carry their operation IDs.
 Completed operator batches with known costs share hourly ledger rows, while recent diagnostics retain their individual charges.

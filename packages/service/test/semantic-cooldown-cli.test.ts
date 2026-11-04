@@ -253,8 +253,8 @@ globalThis.fetch = async (url, init) => {
     const oldCharge = originalLedger.entries[0];
     assert.equal(oldCharge.id, batch.operation);
     assert.equal(oldCharge.costKnown, false);
-    assert.equal(oldCharge.settledUsd, 0.00032);
-    assert.equal(oldCharge.reservedUsd, 0.00032);
+    assert.equal(oldCharge.settledUsd, 0.00128);
+    assert.equal(oldCharge.reservedUsd, 0.00128);
 
     // Old databases can contain deadlines that exceed the current write cap.
     const huge = Number.MAX_SAFE_INTEGER;

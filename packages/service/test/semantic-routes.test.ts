@@ -50,7 +50,7 @@ const read = async (response: Response): Promise<any> => {
   return response.json();
 };
 
-test("DeepInfra routes advertise compatible partial indexes, retain lexical reads, and validate public inputs including R7 language tags", async () => {
+test("SiliconFlow requests for an existing Nebius profile advertise compatible partial indexes, retain lexical reads, and validate public inputs including R7 language tags", async () => {
   const base = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(base, { recursive: true });
   const directory = await mkdtemp(join(base, "semantic-routes-"));
@@ -65,8 +65,8 @@ test("DeepInfra routes advertise compatible partial indexes, retain lexical read
   const scanner = new NodeVectorScanner(
     join(directory, "semantic-vectors.sqlite"),
   );
-  const route = "deepinfra/us";
-  const profile = createQwenProfile("28".repeat(16), route);
+  const route = "siliconflow/fp8";
+  const profile = createQwenProfile("28".repeat(16), "nebius");
   const seed = new Uint8Array(32).fill(93);
   const view = createEvent(
     seed,
