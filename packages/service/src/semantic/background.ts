@@ -1,6 +1,8 @@
 import { SemanticIndexer, type IndexEmbedder } from "./indexer.ts";
 import type { SemanticSource } from "./source.ts";
-import type { EmbeddingProfile } from "./types.ts";
+import { SemanticError, type EmbeddingProfile } from "./types.ts";
+import type { EmbeddingRoute } from "../inference.ts";
+import { qwenRequestRoute } from "./profile.ts";
 import { MAX_PROFILE_COOLDOWN_MS } from "./vector-store.ts";
 import type {
   BackgroundRecovery,
@@ -22,6 +24,7 @@ export class BackgroundSemanticIndexer {
     private options: {
       store: VectorStore;
       profile: string;
+      route?: EmbeddingRoute;
       view: string;
       assistance: IndexEmbedder;
       source(
@@ -31,6 +34,7 @@ export class BackgroundSemanticIndexer {
       probe(
         generation: IndexGeneration,
         profile: EmbeddingProfile,
+        route: EmbeddingRoute,
       ): Promise<void>;
       needed?(): Promise<boolean>;
       /** Expected bindings let completion prove coverage without the shared search cache. */
@@ -121,6 +125,13 @@ export class BackgroundSemanticIndexer {
         : null;
     const dueInputs = schedule !== null && schedule <= this.now();
     try {
+      const route = qwenRequestRoute(profile, this.options.route);
+      if (!route)
+        throw new SemanticError(
+          409,
+          "semantic_profile",
+          "The indexing adapter does not match the complete profile.",
+        );
       let latestSource: SemanticSource | undefined;
       if (waiting) {
         if (!dueInputs && wait.snapshot) {
@@ -181,12 +192,13 @@ export class BackgroundSemanticIndexer {
         (await store.needsEmbedding(job.id)) &&
         (await store.references(current.id)).length
       )
-        await this.options.probe(current, profile);
+        await this.options.probe(current, profile, route);
       if (this.stop.signal.aborted) return;
       // Background indexing uses at most one of the shared provider slots.
       let failure: unknown;
       let attempt: IndexBatch | undefined;
       const result = await indexer.run(job.id, {
+        route,
         concurrency: 1,
         signal: this.stop.signal,
         automaticRetries: false,
