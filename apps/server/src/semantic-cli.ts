@@ -11,7 +11,12 @@ import { SemanticIndexer } from "../../../packages/service/src/semantic/indexer.
 import {
   createQwenProfile,
   profileId,
+  qwenProfileRoute,
 } from "../../../packages/service/src/semantic/profile.ts";
+import {
+  isEmbeddingRoute,
+  type EmbeddingRoute,
+} from "../../../packages/service/src/inference.ts";
 import { lockDataDirectory } from "../../../packages/importer/src/load-lock.ts";
 import {
   readLoadedView,
@@ -28,7 +33,7 @@ import { NodeEvaluationRuntime } from "./evaluation.ts";
 import { FileCheckpointStore } from "./checkpoint.ts";
 
 const usage =
-  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID | --all] [--after BATCH_ID] [--generations-after GENERATION_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
+  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID | --all] [--after BATCH_ID] [--generations-after GENERATION_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--route nebius|deepinfra/us] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
 const allowed = new Set([
   "data",
   "command",
@@ -41,6 +46,7 @@ const allowed = new Set([
   "after",
   "generations-after",
   "profile",
+  "route",
   "batch-size",
   "batch-bytes",
   "max-cost-usd",
@@ -75,16 +81,17 @@ async function withSemanticService<T>(
     generation: Awaited<ReturnType<SqliteVectorStore["generation"]>> | null,
   ) => Promise<T>,
   selectedProfile?: string,
+  selectedRoute?: EmbeddingRoute,
 ) {
   const profile = job
     ? await vectors.profile(job)
     : selectedProfile
       ? await vectors.storedProfile(selectedProfile)
-      : createQwenProfile();
+      : createQwenProfile(undefined, selectedRoute);
   if (selectedProfile) {
     if (profileId(profile) !== selectedProfile)
       throw new Error("The selected profile does not match the saved job.");
-    if (profileId(profile) !== profileId(createQwenProfile(profile.epoch)))
+    if (qwenProfileRoute(profile) === null)
       throw new Error(
         "The stored profile is incompatible with the current embedding adapter.",
       );
@@ -93,6 +100,8 @@ async function withSemanticService<T>(
         "The stored profile is suspended. Prepare a fresh profile after repairing the provider.",
       );
   }
+  if (selectedRoute && qwenProfileRoute(profile) !== selectedRoute)
+    throw new Error("The selected route does not match the stored profile.");
   const generation = job ? await vectors.generation(job) : null;
   const coordinator = new SqliteCoordinator(
     join(directory, "coordinator.sqlite"),
@@ -147,6 +156,7 @@ async function prepare(
   job: string | undefined,
   pages: number,
   selectedProfile?: string,
+  selectedRoute?: EmbeddingRoute,
 ) {
   return withSemanticService(
     directory,
@@ -174,6 +184,7 @@ async function prepare(
       return prepared;
     },
     selectedProfile,
+    selectedRoute,
   );
 }
 
@@ -242,6 +253,11 @@ async function main() {
   const selectedProfile = args.get("profile");
   if (selectedProfile && command !== "prepare")
     throw new Error("Use --profile only with prepare.");
+  const route = args.get("route");
+  if (route !== undefined && command !== "prepare")
+    throw new Error("Use --route only with prepare.");
+  if (route !== undefined && !isEmbeddingRoute(route))
+    throw new Error("Use nebius or deepinfra/us with --route.");
   for (const flag of ["batch-size", "batch-bytes", "max-cost-usd"])
     if (args.has(flag) && command !== "run")
       throw new Error(`Use --${flag} only with run.`);
@@ -280,6 +296,7 @@ async function main() {
           job,
           positive("pages", Number.MAX_SAFE_INTEGER),
           selectedProfile,
+          route,
         )
       ).id;
     else if (command === "run") {

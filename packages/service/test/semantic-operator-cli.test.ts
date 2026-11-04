@@ -313,8 +313,93 @@ test("operator prepare reuses an existing profile across views and rejects unsaf
     },
   ));
 
-test("the shipped operator run admits eight large batches despite user ceilings and honors its own cost ceiling", async () =>
+test("operator prepare selects a route and preserves stored profile routes", async () =>
   fixture(async ({ directory, vectors, profile, view }) => {
+    const env = { JVC_VIEW: view };
+    const prepared = async (args: string[]) =>
+      (await cli(directory, ["--command", "prepare", ...args], env)).find(
+        (row) => row.event === "prepared",
+      ).generation;
+    const fresh = await prepared([]);
+    const freshProfile = await vectors.profile(fresh.id);
+    assert.equal(freshProfile.provider, "openrouter:nebius");
+    assert.equal(freshProfile.parameters.route, "nebius");
+    const routed = await prepared(["--route", "deepinfra/us"]);
+    const routedProfile = await vectors.profile(routed.id);
+    assert.equal(routedProfile.provider, "openrouter:deepinfra/us");
+    assert.equal(routedProfile.parameters.route, "deepinfra/us");
+    assert.notEqual(routed.profile, fresh.profile);
+    const reused = await prepared(["--profile", routed.profile]);
+    assert.equal(reused.profile, routed.profile);
+    assert.equal(
+      (await vectors.profile(reused.id)).provider,
+      "openrouter:deepinfra/us",
+    );
+    const matching = await prepared([
+      "--profile",
+      routed.profile,
+      "--route",
+      "deepinfra/us",
+    ]);
+    assert.equal(matching.profile, routed.profile);
+    const saved = await prepared(["--job", routed.id]);
+    assert.equal(saved.id, routed.id);
+    assert.equal(saved.profile, routed.profile);
+    const matchingJob = await prepared([
+      "--job",
+      routed.id,
+      "--route",
+      "deepinfra/us",
+    ]);
+    assert.equal(matchingJob.id, routed.id);
+    assert.equal(matchingJob.profile, routed.profile);
+    const legacy = await prepared(["--profile", profileId(profile)]);
+    assert.equal(legacy.profile, profileId(profile));
+    const explicitDefault = await prepared(["--route", "nebius"]);
+    assert.equal(
+      (await vectors.profile(explicitDefault.id)).provider,
+      "openrouter:nebius",
+    );
+    for (const selector of [
+      ["--profile", routed.profile],
+      ["--job", routed.id],
+      ["--job", routed.id, "--profile", routed.profile],
+    ]) {
+      await assert.rejects(
+        prepared([...selector, "--route", "nebius"]),
+        (failure: any) =>
+          failure.stdout.includes(
+            "The selected route does not match the stored profile.",
+          ),
+      );
+    }
+    for (const route of ["unknown", "deepinfra", "DeepInfra/US", ""]) {
+      await assert.rejects(prepared(["--route", route]), (failure: any) =>
+        failure.stdout.includes(
+          route
+            ? "Use nebius or deepinfra/us with --route."
+            : "Use semantic-cli.ts",
+        ),
+      );
+    }
+    await assert.rejects(
+      cli(directory, [
+        "--command",
+        "status",
+        "--job",
+        routed.id,
+        "--route",
+        "deepinfra/us",
+      ]),
+      (failure: any) =>
+        failure.stdout.includes("Use --route only with prepare."),
+    );
+    assert.equal((await vectors.generation(routed.id)).profile, routed.profile);
+  }));
+
+test("the shipped operator run admits eight large batches despite user ceilings and honors its own cost ceiling", async () =>
+  fixture(async ({ directory, vectors, view }) => {
+    const profile = createQwenProfile("29".repeat(16), "deepinfra/us");
     async function generation(prefix: string, count: number) {
       const job = await vectors.create(
         {
@@ -366,7 +451,7 @@ test("the shipped operator run admits eight large batches despite user ceilings 
       `import { appendFileSync } from 'node:fs';
 let active=0; let release; const gate=new Promise(resolve=>{release=resolve;});
 globalThis.fetch=async(url,init)=>{if(String(url)!=='https://openrouter.ai/api/v1/embeddings')throw new Error('Unexpected network request');
-const body=JSON.parse(init.body); active++; appendFileSync(process.env.OPERATOR_TEST_EVIDENCE,JSON.stringify({active,count:body.input.length})+'\\n'); if(active===Number(process.env.OPERATOR_TEST_GATE??8))release(); await gate; active--;
+const body=JSON.parse(init.body); active++; appendFileSync(process.env.OPERATOR_TEST_EVIDENCE,JSON.stringify({active,count:body.input.length,provider:body.provider})+'\\n'); if(active===Number(process.env.OPERATOR_TEST_GATE??8))release(); await gate; active--;
 return Response.json({model:'qwen/qwen3-embedding-8b',data:body.input.map((_,index)=>({index,embedding:Array.from({length:4096},(_,i)=>i?0:1)})),usage:{prompt_tokens:1,total_tokens:1,cost:0.000001}});};`,
     );
     const env = {
@@ -403,6 +488,14 @@ return Response.json({model:'qwen/qwen3-embedding-8b',data:body.input.map((_,ind
     assert.equal(calls.length, 8);
     assert.equal(Math.max(...calls.map((call) => call.active)), 8);
     assert(calls.every((call) => call.count === 32));
+    assert(
+      calls.every(
+        (call) =>
+          JSON.stringify(call.provider.only) ===
+            JSON.stringify(["deepinfra/us"]) &&
+          call.provider.allow_fallbacks === false,
+      ),
+    );
     const ledger = new SqliteAssistanceBudgetStore(
       join(directory, "assistance-spending.sqlite"),
     );
