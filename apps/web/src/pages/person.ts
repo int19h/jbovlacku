@@ -65,6 +65,7 @@ export async function personPage(
       app.session.storageAvailable &&
       (await app.delivery.restorePendingProfileReceipts(identity, {
         signal: context.signal,
+        invalidate: () => forgetProfile(identity),
         pending: () => {
           if (context.live())
             pending.textContent =
@@ -72,8 +73,10 @@ export async function personPage(
         },
       }));
     if (!context.live()) return;
-    if (fresh || restored) forgetProfile(identity);
-    response = await identityProfile(identity, { signal: context.signal });
+    response = await identityProfile(identity, {
+      fresh: fresh || restored,
+      signal: context.signal,
+    });
   } catch (error) {
     if (!context.live()) return;
     pending.remove();

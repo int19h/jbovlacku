@@ -288,6 +288,7 @@ export function mergePeer(
 }
 
 export class DeliveryEngine {
+  private profileCompletions?: Set<string>;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<DeliveryListener>();
   private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
@@ -346,7 +347,11 @@ export class DeliveryEngine {
   /** Checks saved local receipts and waits within one page deadline. */
   async restorePendingProfileReceipts(
     identity: string,
-    options: { signal?: AbortSignal; pending?: () => void } = {},
+    options: {
+      signal?: AbortSignal;
+      pending?: () => void;
+      invalidate?: () => void;
+    } = {},
   ): Promise<boolean> {
     const controller = new AbortController();
     const signal = AbortSignal.any([
@@ -354,7 +359,8 @@ export class DeliveryEngine {
       AbortSignal.timeout(15000),
       ...(options.signal ? [options.signal] : []),
     ]);
-    let pending = false;
+    let current = false;
+    const seen = (this.profileCompletions ??= new Set<string>());
     const keys = new Map<string, { receipt: Receipt; key: string }>();
     const restore = async () => {
       const candidates = (await this.items()).flatMap((item) => {
@@ -408,6 +414,11 @@ export class DeliveryEngine {
             if ((await this.store.get<boolean>("prefs", key)) === true) {
               signal.throwIfAborted();
               forgetMaterializedReceipt(receipt);
+              if (!seen.has(key)) {
+                current = true;
+                options.invalidate?.();
+              }
+              seen.add(key);
               continue;
             }
             signal.throwIfAborted();
@@ -453,18 +464,21 @@ export class DeliveryEngine {
                 throw error;
               // Transient reads retry inside the same deadline without claiming live lag.
               rememberAcceptedReceipt(receipt, target);
-              pending = true;
+              current = true;
               continue;
             }
             if (receiptMaterialized(live, receipt)) {
               await this.store.put("prefs", key, true);
               signal.throwIfAborted();
               rememberAcceptedReceipt(live, target);
+              options.invalidate?.();
+              seen.add(key);
+              current = true;
             } else {
               if (!receiptBindingMatches(live, receipt))
                 throw new MaterializationPendingError();
               rememberAcceptedReceipt(receipt, target);
-              pending = true;
+              current = true;
               if (viewPending(live)) {
                 options.pending?.();
               }
@@ -480,13 +494,16 @@ export class DeliveryEngine {
           completed: async (accepted) => {
             signal.throwIfAborted();
             const saved = keys.get(accepted.id);
-            if (saved && receiptBindingMatches(accepted, saved.receipt))
+            if (saved && receiptBindingMatches(accepted, saved.receipt)) {
               await this.store.put("prefs", saved.key, true);
+              options.invalidate?.();
+              seen.add(saved.key);
+            }
           },
         },
       );
       signal.throwIfAborted();
-      return pending;
+      return current;
     };
     try {
       return await abortable(restore(), signal);

@@ -13,31 +13,55 @@ import type {
 } from "../model/types.ts";
 import { getIdentity } from "../data/api.ts";
 
-const profileCache = new Map<string, Promise<IdentityResponse | null>>();
-/** The effective profile of an identity from this server, cached for the page session. */
-export function identityProfile(
+const profileCache = new Map<string, { response: IdentityResponse }>();
+const profileRequests = new Map<string, Promise<IdentityResponse>>();
+const profileVersions = new Map<string, symbol>();
+/** Reads a profile after any required materialization wait at the call site. */
+export async function identityProfile(
   identity: string,
   options: { fresh?: boolean; signal?: AbortSignal } = {},
-): Promise<IdentityResponse | null> {
-  if (options.fresh) {
-    profileCache.delete(identity);
-    return getIdentity(identity, options).then((response) => {
-      profileCache.set(identity, Promise.resolve(response));
-      setTimeout(() => profileCache.delete(identity), 60000);
-      return response;
-    });
+): Promise<IdentityResponse> {
+  options.signal?.throwIfAborted();
+  if (options.fresh) forgetProfile(identity);
+  const cached = profileCache.get(identity);
+  if (cached) return cached.response;
+  // A page owns its cancellation signal. Do not borrow another reader's request.
+  if (!options.signal) {
+    const existing = profileRequests.get(identity);
+    if (existing) return existing;
   }
-  let pending = profileCache.get(identity);
-  if (!pending) {
-    pending = getIdentity(identity).catch(() => null);
-    profileCache.set(identity, pending);
-    setTimeout(() => profileCache.delete(identity), 60000);
+  let version = profileVersions.get(identity);
+  if (!version) profileVersions.set(identity, (version = Symbol()));
+  // Cache freshness does not start another receipt wait in getIdentity.
+  const pending = getIdentity(identity, { signal: options.signal }).then(
+    (response) => {
+      options.signal?.throwIfAborted();
+      if (profileVersions.get(identity) === version) {
+        const entry = { response };
+        profileCache.set(identity, entry);
+        setTimeout(() => {
+          if (profileCache.get(identity) === entry)
+            profileCache.delete(identity);
+        }, 60000);
+      }
+      return response;
+    },
+  );
+  if (!options.signal) {
+    profileRequests.set(identity, pending);
+    const clear = () => {
+      if (profileRequests.get(identity) === pending)
+        profileRequests.delete(identity);
+    };
+    void pending.then(clear, clear);
   }
   return pending;
 }
-/** Drops the cached profile after this browser signed a new claim. */
+/** Invalidates cached and in-flight profiles from before a known change. */
 export function forgetProfile(identity: string) {
+  profileVersions.set(identity, Symbol());
   profileCache.delete(identity);
+  profileRequests.delete(identity);
 }
 /** The display name of a known, unconflicted profile, or null. */
 export function profileName(response: IdentityResponse | null): string | null {
@@ -64,10 +88,12 @@ export function identityLink(
   anchor.title = fingerprintText(identity);
   anchor.className = "identity-link";
   if (!name && options.resolve !== false)
-    void identityProfile(identity).then((response) => {
-      const known = profileName(response);
-      if (known && anchor.isConnected) label.textContent = known;
-    });
+    void identityProfile(identity)
+      .then((response) => {
+        const known = profileName(response);
+        if (known && anchor.isConnected) label.textContent = known;
+      })
+      .catch(() => {});
   return anchor;
 }
 interface LegacyShape {

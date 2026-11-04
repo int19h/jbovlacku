@@ -9,6 +9,166 @@ import {
   fixture,
 } from "./helpers.ts";
 
+/** Delivers a genuine signed profile while retaining its admission-time lag. */
+async function completedProfile(page: Page) {
+  await page.goto("/");
+  await page.route("**/api/v1/events", async (route) => {
+    const response = await route.fetch();
+    const receipt = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...receipt,
+        snapshot: null,
+        interpretation: "unavailable",
+        reasons: ["index_lag", "evaluation_pending"],
+      },
+    });
+  });
+  const identity = await signRichProfile(page);
+  await page.goto("/outbox");
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().list("outbox"))[0]?.peers.self.state;
+      }),
+    )
+    .toBe("accepted");
+  const path = `/api/v1/identities/${encodeURIComponent(identity)}`;
+  await expect
+    .poll(
+      async () => (await (await page.request.get(path)).json()).profile.state,
+    )
+    .toBe("known");
+  return { identity, path };
+}
+
+for (const target of ["key", "public"] as const) {
+  for (const evidence of ["live", "shared marker"] as const) {
+    test(`a completed ${evidence} replaces an older attribution cache on the ${target} page`, async ({
+      page,
+    }) => {
+      const { identity, path } = await completedProfile(page);
+      let old = true;
+      let reads = 0;
+      await page.route(
+        (url) => url.pathname === path,
+        async (route) => {
+          reads++;
+          const response = await route.fetch();
+          const value = await response.json();
+          if (old) value.profile.claims[0].body.name = "Older Tester";
+          await route.fulfill({ response, json: value });
+        },
+      );
+      await page.evaluate(async (identity) => {
+        const { identityLink } = await import(
+          String("/src/components/attribution.ts")
+        );
+        const link = identityLink(identity);
+        link.id = "cached-profile-link";
+        document.querySelector("main")!.append(link);
+      }, identity);
+      await expect(page.locator("#cached-profile-link")).toHaveText(
+        "Older Tester",
+      );
+      old = false;
+      if (evidence === "shared marker") {
+        await page.evaluate(async (identity) => {
+          const { DeliveryEngine } = await import(
+            String("/src/data/delivery.ts")
+          );
+          const { LocalStore } = await import(String("/src/data/store.ts"));
+          await new DeliveryEngine(
+            new LocalStore(),
+          ).restorePendingProfileReceipts(identity);
+        }, identity);
+      }
+      const url =
+        target === "key"
+          ? "/identity"
+          : `/identity/${encodeURIComponent(identity)}#edit`;
+      await page.evaluate(async (url) => {
+        const { navigate } = await import(String("/src/app/router.ts"));
+        navigate(url);
+      }, url);
+      await expect(page.getByRole("heading", { level: 1 })).toContainText(
+        "Rich Tester",
+      );
+      if (target === "public")
+        await expect(
+          page
+            .getByRole("region", { name: "Edit public profile" })
+            .getByLabel("Name", { exact: true }),
+        ).toHaveValue("Rich Tester");
+      expect(reads).toBe(2);
+      // A later visit may reuse the cache after this document consumed completion.
+      await page.evaluate(async () => {
+        const { navigate } = await import(String("/src/app/router.ts"));
+        navigate("/preferences");
+      });
+      await expect(page).toHaveURL(/\/preferences$/);
+      await page.evaluate(async (url) => {
+        const { navigate } = await import(String("/src/app/router.ts"));
+        navigate(url);
+      }, url);
+      await expect(page.getByRole("heading", { level: 1 })).toContainText(
+        "Rich Tester",
+      );
+      expect(reads).toBe(2);
+    });
+  }
+
+  test(`a failed current identity read offers Refresh on the ${target} page`, async ({
+    page,
+  }) => {
+    const { identity, path } = await completedProfile(page);
+    let failed = true;
+    let reads = 0;
+    await page.route(
+      (url) => url.pathname === path,
+      async (route) => {
+        reads++;
+        if (failed)
+          await route.fulfill({
+            status: 503,
+            json: { code: "unavailable", message: "The profile read failed." },
+          });
+        else await route.continue();
+      },
+    );
+    await page.evaluate(
+      async (url) => {
+        const { navigate } = await import(String("/src/app/router.ts"));
+        navigate(url);
+      },
+      target === "key"
+        ? "/identity"
+        : `/identity/${encodeURIComponent(identity)}#edit`,
+    );
+    const error = page
+      .getByRole("status")
+      .filter({ hasText: "The profile read failed." });
+    await expect(error).toBeVisible();
+    await page.getByRole("button", { name: "Refresh the profile" }).click();
+    await expect(error).toBeFocused();
+    expect(reads).toBe(2);
+    failed = false;
+    await page.getByRole("button", { name: "Refresh the profile" }).click();
+    const heading = page.getByRole("heading", { level: 1 });
+    await expect(heading).toContainText("Rich Tester");
+    if (target === "public")
+      await expect(
+        page
+          .getByRole("region", { name: "Edit public profile" })
+          .getByLabel("Name", { exact: true }),
+      ).toHaveValue("Rich Tester");
+    await expect(heading).toBeFocused();
+    expect(reads).toBe(3);
+  });
+}
+
 for (const target of ["key", "public"] as const) {
   for (const outcome of ["completed", "failed", "already completed"] as const) {
     test(`the ${target} profile waits for its accepted claim after a full reload with a ${outcome} receipt read`, async ({
@@ -181,6 +341,8 @@ for (const target of ["key", "public"] as const) {
             .getByRole("region", { name: "Edit public profile" })
             .getByLabel("Name", { exact: true }),
         ).toHaveValue("Reloaded Tester");
+      if (target === "public" && outcome === "failed")
+        await expect(page.getByRole("heading", { level: 1 })).toBeFocused();
       await expect(
         page.getByText(
           "This server stored your profile. Its view is updating.",
@@ -237,7 +399,7 @@ for (const target of ["key", "public"] as const) {
         await expect(page.getByRole("heading", { level: 1 })).toContainText(
           "Reloaded Tester",
         );
-        expect(identityReads).toBe(0);
+        expect(identityReads).toBe(1);
         expect(
           await page.evaluate(
             () =>

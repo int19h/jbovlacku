@@ -124,7 +124,7 @@ test("profile waits restore only matching accepted local receipts", async (t) =>
   assert.equal(await restore(), false);
 });
 
-test("completed first reads keep the cache path and completion evidence binds the cursor", async (t) => {
+test("new completions refresh the cache and completion evidence binds the cursor", async (t) => {
   const { item, receipt, completed, restore, evidence } = profile(11);
   let reads = 0;
   let notices = 0;
@@ -133,17 +133,22 @@ test("completed first reads keep the cache path and completion evidence binds th
     return Response.json({ ...completed, cursor: receipt.cursor });
   });
   const unchanged = JSON.stringify(item);
-  assert.equal(await restore({ pending: () => notices++ }), false);
+  assert.equal(await restore({ pending: () => notices++ }), true);
   assert.equal(notices, 0);
   assert.equal(reads, 1);
   assert.equal(await restore(), false);
   assert.equal(reads, 1);
   receipt.cursor = "x.2";
-  assert.equal(await restore(), false);
+  assert.equal(await restore(), true);
   assert.equal(reads, 2);
   assert.equal(evidence.size, 2);
   receipt.cursor = "x.1";
   assert.equal(JSON.stringify(item), unchanged);
+  const anotherDocument = profile(11);
+  for (const [key, value] of evidence) anotherDocument.evidence.set(key, value);
+  assert.equal(await anotherDocument.restore(), true);
+  assert.equal(await anotherDocument.restore(), false);
+  assert.equal(reads, 2);
 });
 
 test("an uncertain first read refreshes the profile after polling completes", async (t) => {
@@ -172,7 +177,7 @@ test("profile restoration does not poll another identity's pending receipt", asy
     return Response.json(current.completed);
   });
   try {
-    assert.equal(await current.restore(), false);
+    assert.equal(await current.restore(), true);
     assert.equal(hasPendingMaterialization(), true);
   } finally {
     forgetMaterializedReceipt(other.receipt);
@@ -276,4 +281,23 @@ test("variant checks and receipt polling use one materialization deadline", asyn
   } finally {
     forgetMaterializedReceipt(receipt);
   }
+});
+
+test("completion invalidates an older cache even if the page leaves before its next read", async (t) => {
+  const { completed, restore } = profile(19);
+  t.mock.method(globalThis, "fetch", async () => Response.json(completed));
+  const page = new AbortController();
+  let cached: string | null = "Older profile";
+  await assert.rejects(
+    restore({
+      signal: page.signal,
+      invalidate: () => {
+        cached = null;
+        page.abort();
+      },
+    }),
+    { name: "AbortError" },
+  );
+  assert.equal(cached, null);
+  assert.equal(await restore(), false);
 });

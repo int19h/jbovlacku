@@ -76,6 +76,7 @@ export async function identityPage(
       backup.identity,
       {
         signal: context.signal,
+        invalidate: () => forgetProfile(backup.identity),
         pending: () => {
           if (context.live())
             pending.textContent =
@@ -84,9 +85,11 @@ export async function identityPage(
       },
     );
     if (!context.live()) return;
-    if (fresh) forgetProfile(backup.identity);
     name = profileName(
-      await identityProfile(backup.identity, { signal: context.signal }),
+      await identityProfile(backup.identity, {
+        fresh: fresh || focusResult,
+        signal: context.signal,
+      }),
     );
   } catch (error) {
     profileError = error;

@@ -435,7 +435,12 @@ export async function publishPage(
   const panel = el("div", { class: "card" });
   const identity = app.session.identity;
   let name: string | null = null;
-  if (identity) name = profileName(await identityProfile(identity));
+  if (identity)
+    name = profileName(
+      await identityProfile(identity, { signal: context.signal }).catch(
+        () => null,
+      ),
+    );
   if (!context.live()) return;
   panel.append(
     el("h2", {
