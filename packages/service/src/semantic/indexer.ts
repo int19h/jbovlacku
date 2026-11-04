@@ -12,11 +12,11 @@ export type IndexEmbedder = Pick<AssistanceService, "embed"> &
 
 export interface IndexConcurrencyChange {
   concurrency: number;
-  reason: "embedding_rate_limited" | "embedding_timeout" | "success";
+  reason: "embedding_rate_limited" | "embedding_timeout" | "success" | "resume";
 }
 
 export interface IndexBackoff {
-  /** Zero waits for a saved profile cooldown. One through three name retry rounds. */
+  /** Zero waits for a saved profile cooldown. Positive values name retry waves. */
   attempt: number;
   delayMs: number;
   /** Number of failed batches selected for linked retry after the wait. */
@@ -157,8 +157,10 @@ export class SemanticIndexer {
           "semantic_profile",
           "The indexing adapter does not match the complete profile.",
         );
+      const adaptiveOperator = options.operator && options.adaptive;
       let activeConcurrency = concurrency;
       let successes = 0;
+      let timeoutWaves = 0;
       const changeConcurrency = (
         next: number,
         reason: IndexConcurrencyChange["reason"],
@@ -167,15 +169,26 @@ export class SemanticIndexer {
         activeConcurrency = next;
         options.onConcurrencyChange?.({ concurrency: next, reason });
       };
+      if (
+        adaptiveOperator &&
+        ((await this.store.summary(id)).batches > 0 ||
+          ((await this.store.retryAfter(identity)) ?? 0) > this.clock.now())
+      )
+        changeConcurrency(1, "resume");
       let claims = 0;
       let waited = 0;
       const waitForCooldown = async (attempt: number, batches: number) => {
         while (!options.signal?.aborted) {
           const until = await this.store.retryAfter(identity);
           if (options.signal?.aborted) return false;
-          const delayMs = Math.max(0, (until ?? 0) - this.clock.now());
-          if (!delayMs) return true;
-          if (delayMs > 60000 || waited + delayMs > 120000) return false;
+          const remaining = Math.max(0, (until ?? 0) - this.clock.now());
+          if (!remaining) return true;
+          if (
+            !adaptiveOperator &&
+            (remaining > 60000 || waited + remaining > 120000)
+          )
+            return false;
+          const delayMs = Math.min(60000, remaining);
           options.onBackoff?.({ attempt, delayMs, batches });
           try {
             await this.clock.sleep(delayMs, options.signal);
@@ -204,6 +217,9 @@ export class SemanticIndexer {
         let stopCode: string | undefined;
         const retries: string[] = [];
         let exhausted = false;
+        let completed = 0;
+        let timedOut = false;
+        let reduced = false;
         const worker = async () => {
           if (claims < maximum && !halted && !options.signal?.aborted) {
             // A different generation can receive a rate limit while this job runs.
@@ -271,13 +287,10 @@ export class SemanticIndexer {
                 result.vectors,
                 result.usage,
               );
-              if (
-                options.operator &&
-                options.adaptive &&
-                !halted &&
-                ++successes >= 8
-              ) {
+              completed++;
+              if (adaptiveOperator && !halted && ++successes >= 8) {
                 successes = 0;
+                round = 0;
                 changeConcurrency(
                   Math.min(concurrency, activeConcurrency + 1),
                   "success",
@@ -296,11 +309,13 @@ export class SemanticIndexer {
                   ? failure.retryAfterMs
                   : undefined;
               const rateLimited = code === "embedding_rate_limited";
+              if (code === "embedding_timeout") timedOut = true;
               if (
-                options.operator &&
-                options.adaptive &&
+                adaptiveOperator &&
+                !reduced &&
                 (rateLimited || code === "embedding_timeout")
               ) {
+                reduced = true;
                 successes = 0;
                 changeConcurrency(
                   Math.max(1, Math.floor(activeConcurrency / 2)),
@@ -323,7 +338,11 @@ export class SemanticIndexer {
                   hint >= 0)
               ) {
                 const delayMs = Math.max(
-                  rateLimited ? 1000 * 2 ** round : 0,
+                  rateLimited
+                    ? adaptiveOperator
+                      ? Math.min(60000, 1000 * 2 ** Math.min(round, 6))
+                      : 1000 * 2 ** round
+                    : 0,
                   typeof hint === "number" && Number.isFinite(hint) ? hint : 0,
                 );
                 const now = this.clock.now();
@@ -355,6 +374,16 @@ export class SemanticIndexer {
               )
                 stopCode ??= generation.error;
               await this.store.pause(id, stopCode ?? code);
+              if (
+                options.operator &&
+                operation === null &&
+                [
+                  "billing_operator_limit",
+                  "billing_history_limit",
+                  "embedding_busy",
+                ].includes(code)
+              )
+                await this.store.retry(batch.id);
               return;
             }
           }
@@ -390,12 +419,18 @@ export class SemanticIndexer {
             await this.store.pause(id, workerFailure.code);
           throw workerFailure;
         }
+        if (completed) timeoutWaves = 0;
+        else if (timedOut) timeoutWaves++;
+        if (adaptiveOperator && options.automaticRetries !== false)
+          // Definite refusals remain selected even when cancellation or a local limit stops this run.
+          for (const retry of retries) await this.store.retry(retry);
+        if (adaptiveOperator && timeoutWaves >= 3) break;
         const continueAfterTimeout =
-          options.operator &&
-          options.adaptive &&
-          stopCode === "embedding_timeout";
+          adaptiveOperator && stopCode === "embedding_timeout";
         const retryRateLimited =
-          options.automaticRetries !== false && retries.length > 0 && round < 3;
+          options.automaticRetries !== false &&
+          retries.length > 0 &&
+          (adaptiveOperator || round < 3);
         if (
           (!continueAfterTimeout && (!retryRateLimited || stopCode)) ||
           claims >= maximum ||
@@ -421,10 +456,11 @@ export class SemanticIndexer {
         if (retryRateLimited) {
           // Select only 429 batches, including those that overlap a timeout.
           // Timeout batches keep their ownership until an explicit retry.
-          for (const retry of retries) {
-            if (options.signal?.aborted) break;
-            await this.store.retry(retry);
-          }
+          if (!adaptiveOperator)
+            for (const retry of retries) {
+              if (options.signal?.aborted) break;
+              await this.store.retry(retry);
+            }
           round++;
         }
         if (options.signal?.aborted) break;

@@ -353,3 +353,49 @@ test("operator admission preserves the durable ledger record bound", async () =>
   });
   assert.equal(snapshot.entries.length, 16384);
 });
+
+test("operator request deadlines scale with actual inputs while server deadlines stay fixed", async () => {
+  for (const [count, operator, expected] of [
+    [1, true, 120000],
+    [8, true, 120000],
+    [9, true, 240000],
+    [32, true, 480000],
+    [128, true, 540000],
+    [8, false, 120000],
+  ] as const) {
+    const gate = deferred();
+    let sent = false;
+    const service = new AssistanceService(
+      {
+        provider: provider({
+          timeoutMs: 120000,
+          fetch: async (_url, init) => {
+            sent = true;
+            await gate.promise;
+            return response(JSON.parse(String(init?.body)).input.length);
+          },
+        }),
+        budgetStore: ledger().store,
+        ...(operator ? { operatorIndexing: { concurrency: 1 } } : {}),
+      },
+      "deadline",
+      async () => [],
+    );
+    const before = Date.now();
+    const work = service.embed(inputs(count), { kind: "index" });
+    try {
+      await until(() => sent);
+      const after = Date.now();
+      const operation = (await service.embeddingOperations()).find(
+        (entry) => entry.active,
+      )!;
+      assert(operation);
+      assert(operation.deadline >= before + expected);
+      assert(operation.deadline <= after + expected);
+    } finally {
+      gate.resolve();
+      await work;
+      await service.drainEmbeddingTransports();
+    }
+  }
+});

@@ -1370,8 +1370,11 @@ export class AssistanceService {
         "embedding_configuration",
         "The operator concurrency or cost ceiling is invalid.",
       );
-    const deadline = Date.now() + config.timeoutMs;
     const prepared = prepareEmbedding(inputs, config, !!operator);
+    const timeoutMs = operator
+      ? Math.min(540000, config.timeoutMs * Math.ceil(prepared.count / 8))
+      : config.timeoutMs;
+    const deadline = Date.now() + timeoutMs;
     let resolveLifetime!: () => void;
     const lifetime = new Promise<void>((resolve) => {
       resolveLifetime = resolve;

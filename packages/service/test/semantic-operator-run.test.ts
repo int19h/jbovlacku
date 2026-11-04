@@ -400,14 +400,7 @@ test("timeout continuation retries concurrent 429 batches without losing or repl
 });
 
 test("mixed timeout retries retain automatic retry and wait bounds", async () => {
-  for (const mode of [
-    "rounds",
-    "disabled",
-    "maximum",
-    "long-wait",
-    "total-wait",
-    "cancel",
-  ])
+  for (const mode of ["disabled", "maximum", "cancel"])
     await fixture(8, async (store, id) => {
       let now = 0;
       let limitedInput: string;
@@ -424,8 +417,7 @@ test("mixed timeout retries retain automatic retry and wait bounds", async () =>
             "embedding_rate_limited",
             "Rate limited.",
           );
-          failure.retryAfterMs =
-            mode === "long-wait" ? 60001 : mode === "total-wait" ? 60000 : 0;
+          failure.retryAfterMs = 0;
           throw failure;
         }
       });
@@ -451,24 +443,12 @@ test("mixed timeout retries retain automatic retry and wait bounds", async () =>
       const limited = batches.filter(
         (batch) => batch.error === "embedding_rate_limited",
       );
-      assert.equal(
-        limited.length,
-        mode === "rounds" ? 4 : mode === "total-wait" ? 3 : 1,
-      );
+      assert.equal(limited.length, 1);
       assert.equal(
         limited.filter((batch) => batch.previous !== null).length,
         limited.length - 1,
       );
-      assert.deepEqual(
-        waits,
-        mode === "rounds"
-          ? [1000, 2000, 4000]
-          : mode === "disabled"
-            ? [1000]
-            : mode === "total-wait"
-              ? [60000, 60000]
-              : [],
-      );
+      assert.deepEqual(waits, mode === "disabled" ? [1000] : []);
       assert.equal(
         batches.filter((batch) => batch.error === "embedding_timeout").length,
         1,
@@ -587,7 +567,7 @@ test("adaptive decreases stop at one and failed intents count toward the maximum
     assert.equal(embedder.calls.length, 4);
     assert.deepEqual(
       events.map((event) => event.concurrency),
-      [4, 2, 1],
+      [4],
     );
     assert.equal((await store.summary(id)).dispatch_intents, 4);
   }));
@@ -610,28 +590,29 @@ test("timeouts keep the existing stop behavior without operator adaptation", asy
     });
 });
 
-test("adaptive timeout continuation ends when no fresh inputs remain", () =>
-  fixture(3, async (store, id) => {
+test("persistent timeouts stop after three waves without progress", () =>
+  fixture(200, async (store, id) => {
+    const events: IndexConcurrencyChange[] = [];
     const embedder = provider(async () => {
       throw new AssistanceError(504, "embedding_timeout", "Timed out.");
     });
-    let claims = 0;
-    const claim = store.claim.bind(store);
-    store.claim = (...args) => {
-      claims++;
-      return claim(...args);
-    };
     const result = await new SemanticIndexer(store, embedder).run(id, {
       operator: true,
       adaptive: true,
-      concurrency: 1,
+      concurrency: 8,
       batchSize: 1,
+      onConcurrencyChange: (event) => events.push(event),
     });
-    assert.equal(embedder.calls.length, 3);
-    assert.equal(claims, 4);
+    assert.equal(embedder.calls.length, 14);
+    assert.deepEqual(
+      events.map((event) => event.concurrency),
+      [4, 2, 1],
+    );
     assert.equal(result.generation.state, "paused");
-    assert.equal(result.generation.error, "index_incomplete");
-    assert.equal(result.coverage.failed, 3);
+    assert.equal(result.generation.error, "embedding_timeout");
+    assert.equal(result.coverage.indexed, 0);
+    assert.equal(result.coverage.failed, 14);
+    assert.equal(result.coverage.pending, 186);
     assert.equal(
       (await store.batches(id)).filter((batch) => batch.previous !== null)
         .length,
@@ -751,4 +732,175 @@ test("a local fresh-batch byte refusal leaves the generation resumable", () =>
     assert.equal((await store.summary(id)).dispatch_intents, 0);
     await indexer.run(id, { operator: true, batchBytes: 32768 });
     assert.equal((await store.generation(id)).state, "completed");
+  }));
+
+test("a provider admitting four concurrent requests completes all 2000 inputs", () =>
+  fixture(2000, async (store, id) => {
+    let now = 0;
+    let active = 0;
+    let limited = 0;
+    const completed: string[] = [];
+    const events: IndexConcurrencyChange[] = [];
+    const embedder = provider(async (inputs) => {
+      if (active >= 4) {
+        limited++;
+        const failure = new AssistanceError(
+          429,
+          "embedding_rate_limited",
+          "Rate limited.",
+        );
+        failure.retryAfterMs = 2000;
+        throw failure;
+      }
+      active++;
+      await new Promise((resolve) => setImmediate(resolve));
+      active--;
+      completed.push(...inputs.map(inputHash));
+    });
+    const result = await new SemanticIndexer(store, embedder, {
+      now: () => now,
+      async sleep(delay) {
+        now += delay;
+      },
+    }).run(id, {
+      operator: true,
+      adaptive: true,
+      concurrency: 16,
+      batchSize: 1,
+      onConcurrencyChange: (event) => events.push(event),
+    });
+    assert.equal(result.generation.state, "completed");
+    assert.equal(result.coverage.indexed, 2000);
+    assert.equal(completed.length, 2000);
+    assert.equal(new Set(completed).size, 2000);
+    assert(limited > 3);
+    assert(now > 120000);
+    assert.equal(embedder.calls.length, 2000 + limited);
+    assert.deepEqual(events[0], {
+      concurrency: 8,
+      reason: "embedding_rate_limited",
+    });
+    const batches = [];
+    let after: string | null = null;
+    for (;;) {
+      const page = await store.batches(id, after, 128);
+      if (!page.length) break;
+      batches.push(...page);
+      after = page.at(-1)!.id;
+    }
+    const retried = new Set(batches.map((batch) => batch.previous));
+    assert.equal(
+      batches.filter(
+        (batch) =>
+          batch.error === "embedding_rate_limited" && !retried.has(batch.id),
+      ).length,
+      0,
+    );
+  }));
+
+test("long operator cooldowns use bounded sleeps across repeated 429 waves", () =>
+  fixture(2, async (store, id) => {
+    let now = 0;
+    const waits: number[] = [];
+    const embedder = provider(async (_inputs, call) => {
+      if (call <= 5) {
+        const failure = new AssistanceError(
+          429,
+          "embedding_rate_limited",
+          "Rate limited.",
+        );
+        failure.retryAfterMs = 125000;
+        throw failure;
+      }
+      assert(now >= 625000);
+    });
+    const result = await new SemanticIndexer(store, embedder, {
+      now: () => now,
+      async sleep(delay) {
+        waits.push(delay);
+        now += delay;
+      },
+    }).run(id, {
+      operator: true,
+      adaptive: true,
+      concurrency: 1,
+      batchSize: 1,
+    });
+    assert.equal(result.generation.state, "completed");
+    assert.equal(embedder.calls.length, 7);
+    assert.deepEqual(
+      waits,
+      Array.from({ length: 5 }, () => [60000, 60000, 5000]).flat(),
+    );
+  }));
+
+test("a resumed rate-limited run starts safely and claims saved retries automatically", () =>
+  fixture(20, async (store, id) => {
+    let now = 0;
+    let active = 0;
+    let peak = 0;
+    const events: IndexConcurrencyChange[] = [];
+    const embedder = provider(async (_inputs, call) => {
+      if (call === 1)
+        throw new AssistanceError(
+          429,
+          "embedding_rate_limited",
+          "Rate limited.",
+        );
+      active++;
+      peak = Math.max(peak, active);
+      if (call <= 9) assert.equal(active, 1);
+      await new Promise((resolve) => setImmediate(resolve));
+      active--;
+    });
+    const indexer = new SemanticIndexer(store, embedder, {
+      now: () => now,
+      async sleep(delay) {
+        now += delay;
+      },
+    });
+    await indexer.run(id, {
+      operator: true,
+      adaptive: true,
+      concurrency: 16,
+      batchSize: 1,
+      maxBatches: 1,
+    });
+    const failed = (await store.batches(id))[0];
+    const result = await indexer.run(id, {
+      operator: true,
+      adaptive: true,
+      concurrency: 16,
+      batchSize: 1,
+      onConcurrencyChange: (event) => events.push(event),
+    });
+    assert.equal(result.generation.state, "completed");
+    assert.deepEqual(events[0], { concurrency: 1, reason: "resume" });
+    assert(peak <= 3);
+    assert.equal(embedder.calls.length, 21);
+    assert.equal(
+      (await store.batches(id)).filter((batch) => batch.previous === failed.id)
+        .length,
+      1,
+    );
+  }));
+
+test("successful progress resets the timeout wave stop", () =>
+  fixture(8, async (store, id) => {
+    const completed: string[] = [];
+    const embedder = provider(async (inputs, call) => {
+      if ([1, 2, 4, 5, 7, 8].includes(call))
+        throw new AssistanceError(504, "embedding_timeout", "Timed out.");
+      completed.push(...inputs.map(inputHash));
+    });
+    const result = await new SemanticIndexer(store, embedder).run(id, {
+      operator: true,
+      adaptive: true,
+      concurrency: 1,
+      batchSize: 1,
+    });
+    assert.equal(embedder.calls.length, 8);
+    assert.equal(result.coverage.indexed, 2);
+    assert.equal(result.coverage.failed, 6);
+    assert.equal(new Set(completed).size, 2);
   }));
