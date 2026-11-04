@@ -33,7 +33,7 @@ before(async () =>
 );
 const hash = (n: number, prefix = "sha256:") =>
   prefix + n.toString(16).padStart(64, "0");
-const quote = 0.00032;
+const quote = 0.00128;
 const cost = 0.000001;
 const success = (count = 1, price = cost) =>
   Response.json({
@@ -237,6 +237,7 @@ test("background recovery completes busy then 5xx then timeout then success with
     { concurrency: 1, timeoutMs: 2000 },
   );
   const occupying = f.assistance.embed([utf8("Other query")], {
+    route: "siliconflow/fp8",
     kind: "query",
     network: "local",
   });
@@ -337,7 +338,10 @@ for (const window of ["hourlyBudgetUsd", "dailyBudgetUsd"] as const) {
       1,
       { hourlyBudgetUsd: 1, dailyBudgetUsd: 1, [window]: 0.002 },
     );
-    await f.assistance.embed([utf8("Earlier paid work")], { kind: "index" });
+    await f.assistance.embed([utf8("Earlier paid work")], {
+      route: "siliconflow/fp8",
+      kind: "index",
+    });
     let background = f.host();
     await background.cycle();
     const refused = await f.job();
@@ -443,7 +447,10 @@ for (const mode of ["unsent", "sent"] as const) {
       if (++probes === 1) {
         if (mode === "unsent")
           throw new AssistanceError(429, "embedding_busy", "Busy probe.");
-        await f.assistance.embed([utf8("Probe")], { kind: "probe" });
+        await f.assistance.embed([utf8("Probe")], {
+          route: "siliconflow/fp8",
+          kind: "probe",
+        });
       }
     };
     const background = f.host();

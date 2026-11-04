@@ -37,7 +37,7 @@ before(async () =>
 );
 const hash = (n: number, prefix = "sha256:") =>
   prefix + n.toString(16).padStart(64, "0");
-const quote = 0.00032;
+const quote = 0.00128;
 const success = (count: number, cost = 0.000001) =>
   Response.json({
     model: "qwen/qwen3-embedding-8b",

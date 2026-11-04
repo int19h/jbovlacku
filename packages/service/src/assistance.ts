@@ -16,6 +16,7 @@ import {
   AssistanceError,
   InferenceRunner,
   isObject,
+  isEmbeddingRoute,
   jsonParts,
   foldHints,
   newLog,
@@ -26,6 +27,7 @@ import {
   INFERENCE_GENERATED_FRAME_BYTES,
   abortable,
   type ProviderConfig,
+  type EmbeddingRoute,
   type InferenceLog,
   type Task,
   type TaskCase,
@@ -1299,8 +1301,8 @@ interface Job {
 }
 /** These callers are host services. No public request can select an operator. */
 export type EmbeddingCaller =
-  | { kind: "query"; network: string }
-  | { kind: "index" | "probe" };
+  | { kind: "query"; network: string; route: EmbeddingRoute }
+  | { kind: "index" | "probe"; route: EmbeddingRoute };
 export interface EmbeddingOperation {
   id: string;
   kind: EmbeddingCaller["kind"];
@@ -1360,13 +1362,25 @@ export class AssistanceService {
     beforeSend?: (operation: string) => Promise<void>,
   ): Promise<EmbeddingResult & { operation: string }> {
     callerSignal?.throwIfAborted();
-    const config = this.options.provider;
-    if (!config)
+    const configured = this.options.provider;
+    if (!configured)
       throw new AssistanceError(
         503,
         "feature_disabled",
         "Embedding inference is disabled on this server.",
       );
+    if (!isEmbeddingRoute(caller.route))
+      throw new AssistanceError(
+        503,
+        "embedding_configuration",
+        "The embedding route is invalid.",
+      );
+    const config = configured.embedding
+      ? {
+          ...configured,
+          embedding: { ...configured.embedding, route: caller.route },
+        }
+      : configured;
     if (
       !["query", "index", "probe"].includes(caller.kind) ||
       (caller.kind === "query" &&
@@ -1385,7 +1399,7 @@ export class AssistanceService {
         "An embedding query requires a client network.",
       );
     const operator =
-      caller.kind === "index" ? this.options.operatorIndexing : undefined;
+      caller.kind !== "query" ? this.options.operatorIndexing : undefined;
     if (
       operator &&
       (!Number.isInteger(operator.concurrency) ||

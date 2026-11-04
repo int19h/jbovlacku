@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   providerConfig,
   AssistanceError,
+  isEmbeddingRoute,
   type ProviderConfig,
 } from "../src/inference.ts";
 import {
@@ -78,6 +79,7 @@ test("embedding configuration pins the model and route with a separate input pri
     model: EMBEDDING_MODEL,
     route: "nebius",
     inputPrice: 0.01,
+    inputPrices: { "siliconflow/fp8": 0.04 },
   });
   assert.equal(defaults.inputPrice, 0.1);
   assert.equal(
@@ -125,6 +127,48 @@ test("embedding configuration pins the model and route with a separate input pri
     prepareEmbedding([bytes("a")], configured).estimatedUsd,
     0.00064,
   );
+});
+
+test("embedding routes accept only the three exact provider names", () => {
+  for (const route of ["nebius", "deepinfra/us", "siliconflow/fp8"] as const) {
+    assert.equal(isEmbeddingRoute(route), true);
+    const provider = providerConfig(
+      { JVC_AI_ENABLED: "enabled", JVC_AI_EMBEDDING_PROVIDER_ROUTE: route },
+      async () => "unused",
+    )!;
+    assert.equal(provider.embedding?.route, route);
+    const prepared = prepareEmbedding([bytes("public")], provider);
+    assert.deepEqual(JSON.parse(prepared.body).provider, {
+      order: [route],
+      only: [route],
+      allow_fallbacks: false,
+      max_price: { prompt: route === "siliconflow/fp8" ? 0.04 : 0.01 },
+    });
+    assert.equal(
+      prepared.estimatedUsd,
+      route === "siliconflow/fp8" ? 0.00128 : 0.00032,
+    );
+  }
+  for (const route of [
+    "deepinfra",
+    "deepinfra/eu",
+    "DeepInfra/us",
+    "nebius ",
+    "",
+    null,
+    undefined,
+    {},
+    ["nebius"],
+    1,
+  ]) {
+    assert.equal(isEmbeddingRoute(route), false);
+    const provider = config(fetch);
+    Object.assign(provider.embedding!, { route });
+    assert.throws(
+      () => prepareEmbedding([bytes("public")], provider),
+      (failure: any) => failure.code === "embedding_configuration",
+    );
+  }
 });
 
 test("the provider preserves exact input bytes and forbids redirects and route fallback", async () => {
@@ -633,5 +677,53 @@ test("priced provider errors preserve usage and expose only fixed messages", asy
         return true;
       },
     );
+  }
+});
+
+test("SiliconFlow uses its own default quote while explicit prices cover every route", () => {
+  for (const [price, ceiling, expectedPrice, expectedCap] of [
+    [undefined, undefined, 0.04, 0.04],
+    [undefined, "0.02", 0.04, 0.02],
+    ["0.03", undefined, 0.03, 0.03],
+    ["0.03", "0.02", 0.03, 0.02],
+  ] as const) {
+    const provider = providerConfig(
+      {
+        JVC_AI_ENABLED: "enabled",
+        ...(price === undefined ? {} : { JVC_AI_EMBEDDING_INPUT_PRICE: price }),
+        ...(ceiling === undefined ? {} : { JVC_AI_MAX_PRICE: ceiling }),
+      },
+      async () => "unused",
+    )!;
+    provider.embedding = { ...provider.embedding!, route: "siliconflow/fp8" };
+    const prepared = prepareEmbedding([bytes("public")], provider);
+    assert.equal(prepared.estimatedUsd, (32000 * expectedPrice) / 1000000);
+    assert.equal(
+      JSON.parse(prepared.body).provider.max_price.prompt,
+      expectedCap,
+    );
+    if (price !== undefined) {
+      assert.equal(provider.embedding.inputPrices, undefined);
+      for (const route of ["nebius", "deepinfra/us"] as const) {
+        provider.embedding = { ...provider.embedding, route };
+        const other = prepareEmbedding([bytes("public")], provider);
+        assert.equal(other.estimatedUsd, prepared.estimatedUsd);
+        assert.equal(
+          JSON.parse(other.body).provider.max_price.prompt,
+          expectedCap,
+        );
+      }
+    }
+  }
+  for (const price of [0, -1, NaN, Infinity, Number.MIN_VALUE]) {
+    const provider = config(fetch);
+    provider.embedding = {
+      ...provider.embedding!,
+      route: "siliconflow/fp8",
+      inputPrices: { "siliconflow/fp8": price },
+    };
+    assert.throws(() => prepareEmbedding([bytes("public")], provider), {
+      code: "embedding_configuration",
+    });
   }
 });

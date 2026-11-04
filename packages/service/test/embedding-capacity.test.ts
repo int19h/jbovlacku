@@ -160,7 +160,7 @@ test(
       for (let offset = 0; offset < 59129; offset += 8) {
         const result = await service.embed(
           Array(Math.min(8, 59129 - offset)).fill(bytes),
-          { kind: "index" },
+          { route: "nebius", kind: "index" },
         );
         recent = [...recent.slice(-1), result.operation];
       }
@@ -247,13 +247,16 @@ test("operator summaries preserve errors, unknown charges, and conservative expi
     "capacity",
     async () => [],
   );
-  await service.embed([bytes], { kind: "index" });
+  await service.embed([bytes], { route: "nebius", kind: "index" });
   clock = start + hour / 2;
-  const second = await service.embed([bytes], { kind: "index" });
+  const second = await service.embed([bytes], {
+    route: "nebius",
+    kind: "index",
+  });
   const failures: string[] = [];
   for (let index = 0; index < 2; index++)
     await assert.rejects(
-      service.embed([bytes], { kind: "index" }),
+      service.embed([bytes], { route: "nebius", kind: "index" }),
       (failure: any) => {
         assert.match(failure.operation, /^embedding:index:/);
         failures.push(failure.operation);
@@ -293,22 +296,22 @@ test("operator summaries preserve errors, unknown charges, and conservative expi
     async () => [],
   );
   await assert.rejects(
-    restored.embed([bytes], { kind: "probe" }),
+    restored.embed([bytes], { route: "nebius", kind: "probe" }),
     (failure: any) => failure.code === "billing_limit",
   );
   clock = start + hour + 1001;
   await assert.rejects(
-    restored.embed([bytes], { kind: "probe" }),
+    restored.embed([bytes], { route: "nebius", kind: "probe" }),
     (failure: any) => failure.code === "billing_limit",
   );
   // The summary ages from its newest charge. The daily window still applies afterward.
   clock = start + hour * 1.5 + 1;
   await assert.rejects(
-    restored.embed([bytes], { kind: "probe" }),
+    restored.embed([bytes], { route: "nebius", kind: "probe" }),
     (failure: any) => failure.code === "billing_limit",
   );
   clock = start + hour * 24 + hour / 2 + 1;
-  await restored.embed([bytes], { kind: "probe" });
+  await restored.embed([bytes], { route: "nebius", kind: "probe" });
 });
 
 test("operator batches whose caller stopped waiting keep their individual charge records", async () => {
@@ -344,7 +347,11 @@ test("operator batches whose caller stopped waiting keep their individual charge
     async () => [],
   );
   const caller = new AbortController();
-  const work = service.embed([bytes], { kind: "index" }, caller.signal);
+  const work = service.embed(
+    [bytes],
+    { route: "nebius", kind: "index" },
+    caller.signal,
+  );
   await sent;
   caller.abort();
   let operation: string | undefined;
@@ -354,7 +361,7 @@ test("operator batches whose caller stopped waiting keep their individual charge
   });
   resolve();
   await waitForAssistance(service);
-  await service.embed([bytes], { kind: "probe" });
+  await service.embed([bytes], { route: "nebius", kind: "probe" });
   assert(
     durable
       .snapshot()

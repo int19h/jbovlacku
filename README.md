@@ -375,7 +375,11 @@ It reserves costs before admission and enforces server and network spending limi
 IPv6 limits also count /48 prefixes. The Node server stores spending ledgers in SQLite.
 The host service also admits bounded embedding batches through the same spending ledger and execution slots.
 Caller cancellation during embedding admission prevents dispatch and removes any unsent reservation.
-Its provider adapter pins `qwen/qwen3-embedding-8b` to the Nebius route through OpenRouter, with fallback and redirects disabled.
+Its provider adapter pins `qwen/qwen3-embedding-8b` to an explicitly selected compatible route through OpenRouter, with fallback and redirects disabled.
+Fresh profiles default to Nebius. A declared Nebius/SiliconFlow compatibility set preserves existing Nebius profile IDs and vectors.
+Operator and server requests prefer SiliconFlow. Operators can choose Nebius with `run --route nebius`.
+Compatibility probes follow the request route under the unchanged 0.0005 tolerance.
+DeepInfra remains a separate fresh-profile choice, with measured repeat differences that exceed that tolerance.
 Invalid embedding configuration disables embedding alone and preserves generation.
 Interrupted operations retain unknown-cost charges after restart. Errors after reservation carry their operation IDs.
 Completed operator batches with known costs share hourly ledger rows, while recent diagnostics retain their individual charges.
@@ -392,6 +396,8 @@ Only provider output receives normalization.
 The Node host stores vectors and exact event, envelope, body, input, and extraction bindings in a separate SQLite database.
 Its [operator command](docs/semantic-search.md) prepares eligible definitions in bounded pages and records indexing costs in the shared ledger.
 Operators can reuse a stored compatible profile and its exact-input vectors with `prepare --profile`.
+Before document writes, operator runs probe retained profile references on their selected request route.
+Sent batches retain their route for later analysis.
 Operator runs support up to 32 concurrent requests and 128 inputs per fresh batch, with adaptive concurrency and an optional cost ceiling.
 Ordinary server requests keep their existing slot, input, and spending limits.
 Equal inputs share a vector under the same complete profile. Distinct publications retain their own associations.
@@ -408,12 +414,13 @@ They reduce concurrency once per failure wave and grow it after eight successful
 Three consecutive timeout waves without a completed batch stop fresh work. Timed-out batches still require explicit retry.
 HTTP 429 retries respect `Retry-After` through bounded waits without an invocation-wide retry count or total wait cap.
 They retain each earlier charge.
-The saved profile cooldown survives restart and has a one-hour cap. Operators can clear it without changing batches or charges.
+The saved cooldown for each profile and request route survives restart and has a one-hour cap. Operators can clear it without changing batches or charges.
 Known usage remains available even when a returned model or vector is invalid.
 Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.
 
 The Node host serves meaning searches from compatible published vectors with exact event bindings in the requested snapshot and view.
 New definitions remain pending while unchanged definitions stay searchable. Optional background indexing uses the same host budgets without stopping dictionary reads.
+`JVC_SEMANTIC_ROUTE` selects a compatible route for server queries and background indexing.
 
 Stale event bindings count as pending. Operator status compares every binding field against the retained snapshot.
 Background indexing rebuilds stale associations after an extraction change, even within the same snapshot.

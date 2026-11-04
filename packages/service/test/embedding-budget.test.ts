@@ -121,7 +121,11 @@ function fixture(provider = config(), budgetStore = store()) {
   );
   return { service, budgetStore };
 }
-const query = (network = "192.0.2.1") => ({ kind: "query" as const, network });
+const query = (network = "192.0.2.1") => ({
+  kind: "query" as const,
+  network,
+  route: "nebius" as const,
+});
 const rejectCode = (code: string) => (failure: any) =>
   failure instanceof AssistanceError && failure.code === code;
 const entries = (budget: ReturnType<typeof store>) => {
@@ -147,7 +151,7 @@ test("an operator saves its operation link before dispatch", async () => {
   );
   const result = await service.embed(
     input,
-    { kind: "index" },
+    { route: "nebius", kind: "index" },
     undefined,
     async (operation) => {
       linked = operation;
@@ -169,9 +173,14 @@ test("a failed operator link prevents dispatch and releases the unsent reservati
     budget,
   );
   await assert.rejects(
-    service.embed(input, { kind: "index" }, undefined, async () => {
-      throw new Error("The job store did not save its operation link.");
-    }),
+    service.embed(
+      input,
+      { route: "nebius", kind: "index" },
+      undefined,
+      async () => {
+        throw new Error("The job store did not save its operation link.");
+      },
+    ),
   );
   assert.equal(sends, 0);
   assert.equal(entries(budget).length, 0);
@@ -212,7 +221,7 @@ test("host drain includes an interrupted admission before an execution slot exis
     async () => [],
   );
   const caller = service
-    .embed(input, { kind: "index" })
+    .embed(input, { route: "nebius", kind: "index" })
     .catch((failure) => failure);
   await until(() => saving);
   const failure = await caller;
@@ -243,7 +252,7 @@ test("host drain includes a preparing dispatch hook after its caller times out",
     }),
   );
   const caller = service
-    .embed(input, { kind: "index" }, undefined, async () => {
+    .embed(input, { route: "nebius", kind: "index" }, undefined, async () => {
       preparing = true;
       await gate.promise;
     })
@@ -365,7 +374,7 @@ test("generation, query, and indexing race for the same remaining server allowan
   let refused = 0;
   const work = [
     service.embed(input, query()),
-    service.embed(input, { kind: "index" }),
+    service.embed(input, { route: "nebius", kind: "index" }),
   ].map((pending) =>
     pending.catch((failure) => {
       assert.equal(failure.code, "billing_pending");
@@ -389,7 +398,7 @@ test("reported embedding charges block generation through the same ledger", asyn
   provider.networkHourlyBudgetUsd = provider.hourlyBudgetUsd;
   provider.fetch = async () => Response.json(embedding(0.01));
   const { service } = fixture(provider);
-  await service.embed(input, { kind: "probe" });
+  await service.embed(input, { route: "nebius", kind: "probe" });
   const refused = await generation(service);
   assert.equal(refused.status, 429);
   assert.equal(((await refused.json()) as any).code, "billing_limit");
@@ -430,10 +439,10 @@ test("operator batches obey server ceilings without consuming unrelated network 
       fetch: async () => Response.json(embedding(null)),
     }),
   );
-  await service.embed(input, { kind: "index" });
+  await service.embed(input, { route: "nebius", kind: "index" });
   await service.embed(input, query());
   await assert.rejects(
-    service.embed(input, { kind: "probe" }),
+    service.embed(input, { route: "nebius", kind: "probe" }),
     rejectCode("billing_limit"),
   );
   assert.equal(entries(budgetStore).length, 2);
@@ -569,7 +578,7 @@ test("a transport that ignores abort keeps its shared execution slot until it en
   assert.equal(status.active, false);
   assert.equal(status.reservedUsd, quote);
   await assert.rejects(
-    service.embed(input, { kind: "index" }),
+    service.embed(input, { route: "nebius", kind: "index" }),
     rejectCode("embedding_busy"),
   );
   const refused = await generation(service);
@@ -579,7 +588,7 @@ test("a transport that ignores abort keeps its shared execution slot until it en
   await until(
     async () => !(await service.embeddingOperations())[0].transportPending,
   );
-  await service.embed(input, { kind: "probe" });
+  await service.embed(input, { route: "nebius", kind: "probe" });
   assert.equal(calls, 2);
   assert.equal(
     entries(budgetStore)[0].reservedUsd,
@@ -604,7 +613,7 @@ test("generation occupies the same execution slots as embedding", async () => {
   assert.equal((await generation(service)).status, 202);
   await until(() => calls === 1);
   await assert.rejects(
-    service.embed(input, { kind: "index" }),
+    service.embed(input, { route: "nebius", kind: "index" }),
     rejectCode("embedding_busy"),
   );
   gate.resolve();
@@ -624,7 +633,10 @@ test("restart keeps interrupted embedding reservations and permits supported lat
       },
     }),
   );
-  const inFlight = original.service.embed(input, { kind: "index" });
+  const inFlight = original.service.embed(input, {
+    route: "nebius",
+    kind: "index",
+  });
   await until(() => dispatched);
   const written = original.budgetStore.snapshot()!;
   assert.equal(written.entries[0].active, true);
@@ -645,11 +657,11 @@ test("restart keeps interrupted embedding reservations and permits supported lat
   assert.equal(interrupted.chargedUsd, quote);
   assert.equal(entries(budget)[0].costKnown, false);
   await assert.rejects(
-    service.embed(input, { kind: "index" }),
+    service.embed(input, { route: "nebius", kind: "index" }),
     rejectCode("billing_limit"),
   );
   const recovered = fixture(config(), budget).service;
-  await recovered.embed(input, { kind: "index" });
+  await recovered.embed(input, { route: "nebius", kind: "index" });
   assert.equal(entries(budget).length, 2);
   assert.equal(entries(budget)[0].reservedUsd, quote);
   gate.resolve();
@@ -685,18 +697,18 @@ test("storage failures block paid dispatch and recover through the same service"
     async () => [],
   );
   await assert.rejects(
-    service.embed(input, { kind: "index" }),
+    service.embed(input, { route: "nebius", kind: "index" }),
     rejectCode("billing_unavailable"),
   );
   failLoad = false;
   failSave = true;
   await assert.rejects(
-    service.embed(input, { kind: "index" }),
+    service.embed(input, { route: "nebius", kind: "index" }),
     rejectCode("billing_unavailable"),
   );
   assert.equal(calls, 0);
   failSave = false;
-  await service.embed(input, { kind: "index" });
+  await service.embed(input, { route: "nebius", kind: "index" });
   assert.equal(calls, 1);
 });
 
@@ -727,7 +739,7 @@ test("admission and settlement waits cannot extend the caller deadline or dispat
     "test",
     async () => [],
   );
-  const first = service.embed(input, { kind: "index" });
+  const first = service.embed(input, { route: "nebius", kind: "index" });
   let timedOutOperation: string | undefined;
   const firstRejected = assert.rejects(first, (failure: any) => {
     assert.equal(failure.code, "embedding_timeout");
@@ -828,7 +840,7 @@ for (const blockedSave of ["retry", "reservation"] as const) {
     );
     if (blockedSave === "retry") {
       await assert.rejects(
-        service.embed(input, { kind: "index" }),
+        service.embed(input, { route: "nebius", kind: "index" }),
         (failure: any) => {
           assert.equal(failure.code, "billing_unavailable");
           assert.match(failure.operation, /^embedding:index:/);
@@ -838,7 +850,7 @@ for (const blockedSave of ["retry", "reservation"] as const) {
       assert.deepEqual(entries(durable), []);
     }
     const pending = service
-      .embed(input, { kind: "index" }, caller.signal)
+      .embed(input, { route: "nebius", kind: "index" }, caller.signal)
       .catch((failure) => failure);
     await entered.promise;
     const saved = entries(durable);
@@ -869,8 +881,8 @@ for (const blockedSave of ["retry", "reservation"] as const) {
     const canceledDiagnostics = await service.embeddingOperations();
     const canceledCalls = calls;
     // Later admissions exercise compaction without creating a charge for canceled work.
-    await service.embed(input, { kind: "index" });
-    await service.embed(input, { kind: "index" });
+    await service.embed(input, { route: "nebius", kind: "index" });
+    await service.embed(input, { route: "nebius", kind: "index" });
     const later = entries(durable);
     assert.equal(canceledCalls, 0);
     assert.deepEqual(afterCancellation, []);
@@ -908,6 +920,7 @@ test("unsent failures release their reservation and no disabled capability is in
   assert.equal((await service.embeddingOperations())[0].state, "failed");
   await assert.rejects(
     new AssistanceService({}, "test", async () => []).embed(input, {
+      route: "nebius",
       kind: "probe",
     }),
     rejectCode("feature_disabled"),
@@ -958,7 +971,10 @@ test("a generation admission queued on final settlement receives a finite retry 
     "test",
     async () => [],
   );
-  const embeddingWork = service.embed(input, { kind: "probe" });
+  const embeddingWork = service.embed(input, {
+    route: "nebius",
+    kind: "probe",
+  });
   await until(() => settling);
   const generationWork = generation(service);
   await new Promise(setImmediate);
@@ -1030,7 +1046,7 @@ test("a lower route cap retains nonzero conservative charges when sent usage is 
       },
     }),
   );
-  await service.embed(input, { kind: "index" });
+  await service.embed(input, { route: "nebius", kind: "index" });
   assert.equal(entries(budgetStore)[0].reservedUsd, quote);
   assert.equal(entries(budgetStore)[0].settledUsd, quote);
   assert.equal(entries(budgetStore)[0].costKnown, false);
@@ -1040,7 +1056,7 @@ test("a lower route cap retains nonzero conservative charges when sent usage is 
     }),
   );
   await assert.rejects(
-    invalid.service.embed(input, { kind: "index" }),
+    invalid.service.embed(input, { route: "nebius", kind: "index" }),
     rejectCode("embedding_configuration"),
   );
   assert.equal(invalid.budgetStore.snapshot(), null);
@@ -1108,7 +1124,7 @@ test("rate limits preserve known and unknown charges with retry metadata", async
       }),
     );
     await assert.rejects(
-      service.embed(input, { kind: "index" }),
+      service.embed(input, { route: "nebius", kind: "index" }),
       (failure: unknown) => {
         assert(failure instanceof AssistanceError);
         assert.equal(failure.code, "embedding_rate_limited");
@@ -1204,7 +1220,7 @@ test("invalid embedding settings leave Node generation and browser consent profi
     await waitForAssistance(instance);
     assert.equal(turns, 1);
     await assert.rejects(
-      instance.embed(input, { kind: "probe" }),
+      instance.embed(input, { route: "nebius", kind: "probe" }),
       (failure: any) =>
         failure.code === "embedding_configuration" &&
         failure.message === provider.embeddingDisabledReason,

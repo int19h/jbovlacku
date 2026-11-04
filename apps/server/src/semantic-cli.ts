@@ -7,11 +7,19 @@ import {
 } from "../../../packages/core/src/index.ts";
 import { AssistanceService } from "../../../packages/service/src/assistance.ts";
 import { DictionaryService } from "../../../packages/service/src/service.ts";
+import { probeCompatibility } from "../../../packages/service/src/semantic/probe.ts";
 import { SemanticIndexer } from "../../../packages/service/src/semantic/indexer.ts";
 import {
   createQwenProfile,
   profileId,
+  qwenProfileRoute,
+  qwenRequestRoute,
 } from "../../../packages/service/src/semantic/profile.ts";
+import {
+  DEFAULT_PROFILE_ROUTE,
+  isEmbeddingRoute,
+  type EmbeddingRoute,
+} from "../../../packages/service/src/inference.ts";
 import { lockDataDirectory } from "../../../packages/importer/src/load-lock.ts";
 import {
   readLoadedView,
@@ -28,7 +36,7 @@ import { NodeEvaluationRuntime } from "./evaluation.ts";
 import { FileCheckpointStore } from "./checkpoint.ts";
 
 const usage =
-  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID | --all] [--after BATCH_ID] [--generations-after GENERATION_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
+  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID | --all] [--after BATCH_ID] [--generations-after GENERATION_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--route nebius|siliconflow/fp8|deepinfra/us] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
 const allowed = new Set([
   "data",
   "command",
@@ -41,6 +49,7 @@ const allowed = new Set([
   "after",
   "generations-after",
   "profile",
+  "route",
   "batch-size",
   "batch-bytes",
   "max-cost-usd",
@@ -75,16 +84,17 @@ async function withSemanticService<T>(
     generation: Awaited<ReturnType<SqliteVectorStore["generation"]>> | null,
   ) => Promise<T>,
   selectedProfile?: string,
+  selectedRoute?: EmbeddingRoute,
 ) {
   const profile = job
     ? await vectors.profile(job)
     : selectedProfile
       ? await vectors.storedProfile(selectedProfile)
-      : createQwenProfile();
+      : createQwenProfile(undefined, selectedRoute ?? DEFAULT_PROFILE_ROUTE);
   if (selectedProfile) {
     if (profileId(profile) !== selectedProfile)
       throw new Error("The selected profile does not match the saved job.");
-    if (profileId(profile) !== profileId(createQwenProfile(profile.epoch)))
+    if (qwenProfileRoute(profile) === null)
       throw new Error(
         "The stored profile is incompatible with the current embedding adapter.",
       );
@@ -93,6 +103,8 @@ async function withSemanticService<T>(
         "The stored profile is suspended. Prepare a fresh profile after repairing the provider.",
       );
   }
+  if (selectedRoute && qwenProfileRoute(profile) !== selectedRoute)
+    throw new Error("The selected route does not match the stored profile.");
   const generation = job ? await vectors.generation(job) : null;
   const coordinator = new SqliteCoordinator(
     join(directory, "coordinator.sqlite"),
@@ -147,6 +159,7 @@ async function prepare(
   job: string | undefined,
   pages: number,
   selectedProfile?: string,
+  selectedRoute?: EmbeddingRoute,
 ) {
   return withSemanticService(
     directory,
@@ -174,6 +187,7 @@ async function prepare(
       return prepared;
     },
     selectedProfile,
+    selectedRoute,
   );
 }
 
@@ -242,6 +256,18 @@ async function main() {
   const selectedProfile = args.get("profile");
   if (selectedProfile && command !== "prepare")
     throw new Error("Use --profile only with prepare.");
+  const route = args.get("route");
+  if (
+    route !== undefined &&
+    !["prepare", "run", "status", "clear-cooldown"].includes(command)
+  )
+    throw new Error(
+      "Use --route only with prepare, run, status, or clear-cooldown.",
+    );
+  if (route !== undefined && !isEmbeddingRoute(route))
+    throw new Error(
+      "Use nebius, siliconflow/fp8, or deepinfra/us with --route.",
+    );
   for (const flag of ["batch-size", "batch-bytes", "max-cost-usd"])
     if (args.has(flag) && command !== "run")
       throw new Error(`Use --${flag} only with run.`);
@@ -280,9 +306,16 @@ async function main() {
           job,
           positive("pages", Number.MAX_SAFE_INTEGER),
           selectedProfile,
+          route,
         )
       ).id;
     else if (command === "run") {
+      const profile = await vectors.profile(id!);
+      const requestRoute = qwenRequestRoute(profile, route);
+      if (requestRoute === null)
+        throw new Error(
+          "The selected route is incompatible with the stored profile.",
+        );
       budget = new SqliteAssistanceBudgetStore(
         join(directory, "assistance-spending.sqlite"),
       );
@@ -320,9 +353,24 @@ async function main() {
         async () => [],
       );
       const started = performance.now();
+      const runStore = vectors;
+      const references = await runStore.profileReferences(profileId(profile));
       const result = await new SemanticIndexer(vectors, assistance).run(id!, {
         concurrency,
         operator: true,
+        route,
+        beforeFirstBatch: async () => {
+          if (references.length && (await runStore.needsEmbedding(id!)))
+            await probeCompatibility(
+              runStore,
+              assistance!,
+              profileId(profile),
+              profile,
+              requestRoute!,
+              references,
+              stop.signal,
+            );
+        },
         batchSize,
         batchBytes,
         adaptive: true,
@@ -347,7 +395,7 @@ async function main() {
       });
     } else if (command === "clear-cooldown") {
       const generation = await vectors.generation(id!);
-      await vectors.clearCooldown(generation.profile);
+      await vectors.clearCooldown(generation.profile, route);
     } else if (command === "recover") await vectors.recover(id!);
     else if (command === "retry") {
       const batch = args.get("batch");
@@ -436,7 +484,11 @@ async function main() {
       summary: await vectors.summary(id!),
       compatibility: await vectors.compatibility(generation.profile),
       probe: await vectors.probeEvidence(generation.profile),
-      retry_after: await vectors.retryAfter(generation.profile),
+      request_route: qwenRequestRoute(
+        await vectors.storedProfile(generation.profile),
+        route,
+      ),
+      retry_after: await vectors.retryAfter(generation.profile, route),
       current: await vectors.current(generation.profile, generation.view),
       batches,
       batches_next: batches.length === 64 ? batches.at(-1)!.id : null,

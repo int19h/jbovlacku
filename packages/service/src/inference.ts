@@ -4,7 +4,15 @@ import { promptFiles } from "./prompt-bundle.ts";
 import type { EmbeddingUsage } from "./embedding.ts";
 
 export const EMBEDDING_MODEL = "qwen/qwen3-embedding-8b";
-export const EMBEDDING_ROUTE = "nebius";
+export const DEFAULT_PROFILE_ROUTE: EmbeddingRoute = "nebius";
+export type EmbeddingRoute = "nebius" | "deepinfra/us" | "siliconflow/fp8";
+export function isEmbeddingRoute(value: unknown): value is EmbeddingRoute {
+  return (
+    value === "nebius" ||
+    value === "deepinfra/us" ||
+    value === "siliconflow/fp8"
+  );
+}
 export const EMBEDDING_QUOTE_TOKENS = 32000;
 export function validEmbeddingInputPrice(value: unknown): value is number {
   return (
@@ -17,8 +25,9 @@ export function validEmbeddingInputPrice(value: unknown): value is number {
 }
 export interface EmbeddingConfig {
   model: typeof EMBEDDING_MODEL;
-  route: typeof EMBEDDING_ROUTE;
+  route: EmbeddingRoute;
   inputPrice: number;
+  inputPrices?: Partial<Record<EmbeddingRoute, number>>;
 }
 
 export type Task =
@@ -329,22 +338,26 @@ export function providerConfig(
   let embedding: EmbeddingConfig | undefined;
   let embeddingDisabledReason: string | undefined;
   const embeddingPrice = Number(env.JVC_AI_EMBEDDING_INPUT_PRICE ?? 0.01);
+  const embeddingRoute =
+    env.JVC_AI_EMBEDDING_PROVIDER_ROUTE ?? DEFAULT_PROFILE_ROUTE;
   const invalidEmbeddingField =
     (env.JVC_AI_EMBEDDING_MODEL ?? EMBEDDING_MODEL) !== EMBEDDING_MODEL
       ? "JVC_AI_EMBEDDING_MODEL"
-      : (env.JVC_AI_EMBEDDING_PROVIDER_ROUTE ?? EMBEDDING_ROUTE) !==
-          EMBEDDING_ROUTE
+      : !isEmbeddingRoute(embeddingRoute)
         ? "JVC_AI_EMBEDDING_PROVIDER_ROUTE"
         : !validEmbeddingInputPrice(embeddingPrice)
           ? "JVC_AI_EMBEDDING_INPUT_PRICE"
           : null;
   if (invalidEmbeddingField)
     embeddingDisabledReason = `Embedding inference is disabled because ${invalidEmbeddingField} is invalid.`;
-  else
+  else if (isEmbeddingRoute(embeddingRoute))
     embedding = {
       model: EMBEDDING_MODEL,
-      route: EMBEDDING_ROUTE,
+      route: embeddingRoute,
       inputPrice: embeddingPrice,
+      ...(env.JVC_AI_EMBEDDING_INPUT_PRICE === undefined
+        ? { inputPrices: { "siliconflow/fp8": 0.04 } }
+        : {}),
     };
   const hourlyBudgetUsd = number(
     "JVC_AI_HOURLY_BUDGET_USD",

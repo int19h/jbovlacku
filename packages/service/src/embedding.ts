@@ -3,7 +3,7 @@ import {
   AssistanceError,
   isObject,
   EMBEDDING_MODEL,
-  EMBEDDING_ROUTE,
+  isEmbeddingRoute,
   EMBEDDING_QUOTE_TOKENS,
   validEmbeddingInputPrice,
   type ProviderConfig,
@@ -12,7 +12,7 @@ import { normalizeVector } from "./semantic/vector.ts";
 
 export {
   EMBEDDING_MODEL,
-  EMBEDDING_ROUTE,
+  DEFAULT_PROFILE_ROUTE,
   EMBEDDING_QUOTE_TOKENS,
 } from "./inference.ts";
 export const EMBEDDING_DIMENSIONS = 4096;
@@ -68,11 +68,13 @@ export function prepareEmbedding(
   operator = false,
 ): PreparedEmbedding {
   const embedding = config.embedding;
+  const inputPrice =
+    embedding?.inputPrices?.[embedding.route] ?? embedding?.inputPrice;
   if (
     !embedding ||
     embedding.model !== EMBEDDING_MODEL ||
-    embedding.route !== EMBEDDING_ROUTE ||
-    !validEmbeddingInputPrice(embedding.inputPrice) ||
+    !isEmbeddingRoute(embedding.route) ||
+    !validEmbeddingInputPrice(inputPrice) ||
     !Number.isFinite(config.maxPrice) ||
     config.maxPrice <= 0
   )
@@ -125,7 +127,7 @@ export function prepareEmbedding(
       order: [embedding.route],
       only: [embedding.route],
       allow_fallbacks: false,
-      max_price: { prompt: Math.min(embedding.inputPrice, config.maxPrice) },
+      max_price: { prompt: Math.min(inputPrice, config.maxPrice) },
     },
     usage: { include: true },
   });
@@ -146,7 +148,7 @@ export function prepareEmbedding(
       : {}),
     // A byte count alone does not bound tokens after provider normalization.
     estimatedUsd:
-      (inputs.length * EMBEDDING_QUOTE_TOKENS * embedding.inputPrice) / 1000000,
+      (inputs.length * EMBEDDING_QUOTE_TOKENS * inputPrice) / 1000000,
   };
 }
 

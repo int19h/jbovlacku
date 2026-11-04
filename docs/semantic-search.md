@@ -32,6 +32,40 @@ It uses `loaded-view.json`, with the same `JVC_VIEW` and `JVC_STATE_TRAVERSAL_LI
 It reads at most 128 semantic records per page. Missing projections use the existing private backfill path.
 Preparation reads no provider key and sends no inference request.
 
+Fresh profiles default to `nebius`. Existing stored Nebius profiles keep their bytes, IDs, and vectors.
+For this Qwen profile family, the application declares `nebius` and `siliconflow/fp8` compatible with one vector space.
+A profile with either stored route can use either provider without changing its ID or re-embedding its retained inputs.
+The stored `provider` and `parameters.route` still name the same declared route. Request selection does not rewrite those fields.
+
+The declared set follows measured cosine distances: SiliconFlow repeats stayed within about 0.00015 and matched Nebius within about 0.00014.
+SiliconFlow batches of eight versus 128 inputs differed by about 0.00013. Nebius repeats stayed within about 0.00013.
+An earlier 32-input comparison reached 0.000156 between SiliconFlow and Nebius.
+These measurements fit the unchanged 0.0005 probe tolerance.
+SiliconFlow completed all 24 tested 128-input requests at eight parallel requests, without a 429, in about 13 seconds per wave.
+Nebius admitted about one 128-input batch every two minutes under the measured load.
+
+Operator and server requests prefer `siliconflow/fp8` for the shared family.
+Use `run --route nebius` to choose Nebius for an operator run without changing the stored profile.
+Each request lists its chosen route explicitly in `provider.only` and `provider.order`, with `allow_fallbacks: false`.
+The compatibility probe uses that request route. Probe freshness is tracked separately for each profile and request route.
+The server accepts either compatible provider under the existing `JVC_SEMANTIC_PROFILE`.
+Set `JVC_SEMANTIC_ROUTE=nebius` to select Nebius for server queries and background indexing.
+Without this variable, the shared family uses `siliconflow/fp8`, and DeepInfra profiles keep `deepinfra/us`.
+The Node host refuses unknown or incompatible routes. This variable requires `JVC_SEMANTIC_PROFILE`.
+
+Fresh profiles also accept `prepare --route siliconflow/fp8` or `prepare --route deepinfra/us`:
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command prepare --route deepinfra/us
+```
+
+DeepInfra is a separate vector space and cannot replace the transport of a stored Nebius or SiliconFlow profile.
+Measured comparisons of 32 identical inputs gave distances up to about 0.0052 between DeepInfra and the other providers.
+Eight repeated identical eight-input DeepInfra requests produced three result sets, with distances up to 0.0020.
+Two identical 128-input requests also differed by up to 0.0020. This exceeds 0.0005 and can suspend a DeepInfra profile.
+DeepInfra remains selectable for a separate fresh profile, but it is not the default.
+Changing between the shared family and DeepInfra requires a fresh profile and a full re-embed.
+
 Set `JVC_EMBEDDING_PROFILE` to the `generation.profile` value from an earlier generation.
 Use `prepare --profile PROFILE_ID` to reuse that stored application profile for another snapshot or view:
 
@@ -40,9 +74,12 @@ npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command prepare
 ```
 
 The command refuses an unknown, suspended, or incompatible stored profile before it prepares a generation.
-The model, route, runtime, recipes, parameters, and epoch must match the application adapter.
-Without `--profile`, preparation keeps its existing behavior and creates a random fresh epoch.
+The model, runtime, recipes, parameters, and epoch must match the application adapter.
+The stored route must be `nebius`, `siliconflow/fp8`, or `deepinfra/us`, consistently in `provider` and `parameters.route`.
+Without `--profile` or `--job`, preparation creates a fresh profile with a random epoch.
+Its stored route is `--route`, or `nebius` by default.
 With `--job`, a supplied profile must match the saved job.
+`--profile` and `--job` retain their stored route. A supplied `--route` must match that route or preparation fails.
 
 The `prepared` JSON event includes `reused_inputs`, the count of distinct prepared inputs that already have a stored vector under that profile.
 This count covers staged pages when `--pages` limits preparation.
@@ -51,6 +88,12 @@ Stored profile IDs stay intact, including the server batch limits of eight input
 These fields describe server requests. The profile does not bind the operator request batch size.
 Operator batch sizes do not change the vector space, input recipes, provider routing, or normalization.
 The compatibility probe still checks retained vectors for provider drift.
+Before its first batch, each operator run probes retained profile references on its selected request route.
+A fresh profile with no retained vectors skips this probe.
+Drift and unexpected model names suspend the profile before document dispatch.
+Operator probes use operator spending admission and keep their charges in the shared ledger.
+Each sent batch records its request `route` in status, including failed attempts and linked retries.
+Earlier batches without this evidence report `route: null`. Vector keys remain the profile ID and exact input hash.
 
 The first JSON line names the generation ID in `generation.id`.
 The final line reports its source cursor, preparation state, and coverage.
@@ -91,7 +134,7 @@ Operator request timeouts scale with the actual input count: `JVC_AI_TIMEOUT_MS 
 Server request timeouts keep their configured value.
 
 ```sh
-npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --job "$JVC_INDEX_JOB" --concurrency 32 --batch-size 128 --batch-bytes 524288 --max-cost-usd 5
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --job "$JVC_INDEX_JOB" --concurrency 32 --batch-size 128 --batch-bytes 524288 --max-cost-usd 10
 ```
 
 The adapter permits at most 4 MiB in an encoded operator request and 32 MiB in its response.
@@ -109,6 +152,9 @@ The background indexer splits oversized linked retries to keep its eight-input a
 
 Use optional `--max-cost-usd USD` to set a nonnegative ceiling for this `run` invocation.
 The ceiling counts concurrent reservations, reported charges, and conservative unknown charges from that invocation.
+Default input prices are 0.01 USD per million tokens for Nebius/DeepInfra and 0.04 USD for SiliconFlow.
+`JVC_AI_EMBEDDING_INPUT_PRICE` overrides these defaults for every route. `JVC_AI_MAX_PRICE` still caps the request's price limit.
+At 128 inputs and 32 concurrent SiliconFlow requests, conservative admission can reserve 5.242880 USD before known costs release quotes.
 A known final cost releases the unused part of its reservation.
 Without reported usage that establishes cost, each 429 attempt keeps a full estimated charge against `--max-cost-usd` and the shared ledger.
 Each retry adds another full estimate until its actual usage establishes the cost.
@@ -178,15 +224,20 @@ The command also respects the saved `Retry-After` deadline. The header accepts i
 Each wait lasts at most 60 seconds. Longer cooldowns use repeated waits without an early provider retry.
 Ordinary server and non-adaptive runs keep their three-round and 120-second total wait bounds.
 
-The store saves the cooldown deadline for the complete profile, capped at one hour from each refusal.
+The store saves each cooldown by complete profile and request route, capped at one hour from each refusal.
 The cap limits faulty provider values. A later refusal can extend the deadline by at most another hour.
-Restarts and other generations of that profile respect the saved deadline.
-Status exposes this Unix timestamp in milliseconds as `retry_after`.
+Restarts and other generations respect the deadline only for the same profile and route.
+A Nebius 429 does not block SiliconFlow requests, or the reverse.
+Older profile-only deadlines migrate to the profile's default request route.
+Status exposes this Unix timestamp in milliseconds as `retry_after` and names its `request_route`.
+Use `status --route ROUTE` to inspect another compatible route.
 A deadline in the past needs no further wait.
 If a 429 body times out, its header still sets the cooldown, but the timed-out batch needs an explicit retry.
 
 To override a faulty deadline, stop the server for the directory and use `--command clear-cooldown --job GENERATION_ID`.
-This clears the deadline for every generation of that profile, including longer deadlines saved by older versions.
+This clears the selected route's deadline for every generation of that profile.
+The default is the profile's default request route. Add `--route ROUTE` to clear another compatible route.
+This also clears longer deadlines saved by older versions.
 The command preserves batches, charges, retry selections, and profile suspensions. It sends no provider request.
 See [cooldown recovery](development.md#semantic-index-cooldown-recovery) for the complete command.
 
@@ -508,9 +559,15 @@ Before the first new query computation after restart, the server recomputes up t
 It repeats this probe before a new computation when the last successful probe is at least one hour old.
 Cache hits do not trigger paid probes. They still consult the durable profile suspension state before returning results.
 The probe compares current vectors with retained vectors under a fixed cosine-distance tolerance of 0.0005.
-Independent public reference tests found ordinary same-provider differences up to about 0.0002, including repeated identical batches.
+Earlier Nebius public reference tests found differences up to about 0.0002, including repeated identical batches.
+This figure does not describe DeepInfra, whose measured repeat differences reach 0.0020.
 This tolerance allows that numerical variation. It is not fitted to dictionary search targets and does not adapt after failures.
-The operator status command reports the latest probe's operation, model, input hashes, distances, time, and tolerance.
+An exact-body comparison used eight inputs and the stored October Nebius vectors.
+Both routes returned `Qwen/Qwen3-Embedding-8B`, which the adapter accepts.
+The request pinned `provider.order` and `provider.only`, disabled fallback, set `max_price`, and requested usage.
+The largest cosine distance was 0.0001410 for SiliconFlow and 0.0001142 for Nebius.
+For 506 tokens, SiliconFlow reported $0.0000202, and Nebius reported $0.0000051.
+The operator status command reports the latest probe's operation, request route, model, input hashes, distances, time, and tolerance.
 It stores no query text or provider key.
 Confirmed drift or an unexpected model name suspends the profile, including its cached queries.
 The hosted revision remains unknown. A passing sample cannot prove that every input remains compatible or that the alias never changes.

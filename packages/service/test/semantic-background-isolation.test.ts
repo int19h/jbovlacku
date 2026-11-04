@@ -35,7 +35,7 @@ before(async () =>
 );
 const hash = (n: number, prefix = "sha256:") =>
   prefix + n.toString(16).padStart(64, "0");
-const quote = 0.00032;
+const quote = 0.00128;
 const cost = 0.000001;
 const success = (count = 1, price = cost) =>
   Response.json({
@@ -254,7 +254,10 @@ for (const mode of ["sent", "unknown"] as const) {
         sends++;
         throw new Error("Unknown dispatch outcome");
       }
-      await f.assistance.embed([utf8("Probe")], { kind: "probe" });
+      await f.assistance.embed([utf8("Probe")], {
+        route: "siliconflow/fp8",
+        kind: "probe",
+      });
     };
     const background = f.host();
     await background.cycle();
@@ -691,7 +694,10 @@ test("R7 restart preserves an exhausted probe round and an unrelated input hold"
     done: true,
   });
   f.options.probe = async () => {
-    await f.assistance.embed([utf8("Probe")], { kind: "probe" });
+    await f.assistance.embed([utf8("Probe")], {
+      route: "siliconflow/fp8",
+      kind: "probe",
+    });
   };
   brokenProbe = true;
   await background.cycle();
@@ -1206,7 +1212,10 @@ test("R7 probe attempts and their cooldown survive repeated database and host re
   );
   await seedReference(f);
   f.options.probe = async () => {
-    await f.assistance.embed([utf8("Probe")], { kind: "probe" });
+    await f.assistance.embed([utf8("Probe")], {
+      route: "siliconflow/fp8",
+      kind: "probe",
+    });
   };
   let background = f.host();
   for (let attempt = 1; attempt <= 4; attempt++) {

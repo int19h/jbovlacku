@@ -561,12 +561,17 @@ If a write fails, treat partial output as unusable until inspected.
 
 The Node server accepts `JVC_SEMANTIC_PROFILE` as a complete `sha256:` profile hash.
 It enables meaning search only for a matching complete published generation and a configured embedding provider.
+Set `JVC_SEMANTIC_ROUTE` to `nebius`, `siliconflow/fp8`, or `deepinfra/us` to choose the route for queries and background indexing.
+This variable requires `JVC_SEMANTIC_PROFILE`. The server rejects unknown routes and routes that are incompatible with the stored profile.
+Without this variable, Nebius and SiliconFlow profiles use `siliconflow/fp8`. DeepInfra profiles use `deepinfra/us`.
 The [semantic search guide](semantic-search.md#enable-node-meaning-search) describes the routes, query cache, compatibility probes, and limits.
 
-The Node indexing command saves a rate-limit deadline for each complete embedding profile.
+The Node indexing command saves a rate-limit deadline for each complete embedding profile and request route.
 It caps each saved deadline at one hour from the provider failure, including an invalidly large `Retry-After` value.
 A new refusal can extend the deadline by at most one hour from that refusal.
-Status exposes the saved Unix timestamp in milliseconds as `retry_after`.
+Status exposes the saved Unix timestamp in milliseconds as `retry_after`, with its `request_route`.
+Use `status --route ROUTE` to inspect another compatible provider.
+A 429 on one route does not block another route. Older profile-only deadlines migrate to the default request route.
 Existing stores can retain longer deadlines from older versions until a new refusal replaces them or an operator clears them.
 
 Adaptive operator runs wait at most 60 seconds at once and repeat waits until the saved deadline expires.
@@ -587,8 +592,9 @@ Run this command from the repository root:
 npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command clear-cooldown --job "$JVC_INDEX_JOB"
 ```
 
-The command takes the directory lock and clears the deadline for the named generation's complete profile.
-It affects every generation that shares that profile. Its status output reports `retry_after: null`.
+The command takes the directory lock and clears the deadline for the named generation's profile and default request route.
+Add `--route ROUTE` to clear another compatible provider's deadline.
+It affects every generation that shares that profile and route. Its status output reports `retry_after: null`.
 Repeating the command is harmless.
 It sends no provider request and does not read a provider key.
 It preserves batches, retry selections, spending charges, and profile suspensions.
@@ -685,8 +691,8 @@ The Node server accepts these variables:
 | `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
 | `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
 | `JVC_AI_EMBEDDING_MODEL`           | Embedding model. The adapter permits only `qwen/qwen3-embedding-8b`, which is the default.                                                                           |
-| `JVC_AI_EMBEDDING_PROVIDER_ROUTE`  | Embedding route. The adapter permits only `nebius`, which is the default.                                                                                            |
-| `JVC_AI_EMBEDDING_INPUT_PRICE`     | Embedding input price in USD per million tokens. The default is 0.01.                                                                                                |
+| `JVC_AI_EMBEDDING_PROVIDER_ROUTE`  | Validity check only. If set, accepts `nebius`, `siliconflow/fp8`, or `deepinfra/us`. An invalid value disables embedding. It does not select a request route.        |
+| `JVC_AI_EMBEDDING_INPUT_PRICE`     | Embedding input price in USD per million tokens. Defaults are 0.01 for Nebius/DeepInfra and 0.04 for SiliconFlow. An explicit value overrides those defaults.        |
 | `JVC_AI_HOURLY_BUDGET_USD`         | Server spending limit for the past hour. The default is 32 USD.                                                                                                      |
 | `JVC_AI_DAILY_BUDGET_USD`          | Server spending limit for the past day. The default is 160 USD.                                                                                                      |
 | `JVC_AI_NETWORK_HOURLY_BUDGET_USD` | Hourly allowance for each network. The default is one quarter of the configured server hourly limit.                                                                 |
@@ -883,14 +889,16 @@ The host emits a fixed warning that names the invalid field. Generation profiles
 Each server embedding batch permits one through eight inputs, with at most 4,096 UTF-8 bytes per input and 32 KiB in total.
 Inputs already include the exact profile prefix. The adapter rejects malformed UTF-8 and preserves the remaining bytes.
 Encoded requests permit 64 KiB. Provider responses permit 2 MiB.
-The adapter pins the model and Nebius route, disables fallback and redirects, and makes no automatic retry.
+The adapter pins the model and the selected compatible request route, disables fallback and redirects, and makes no automatic retry.
 The embedding input price must be positive. The route price cap uses the lower of that price and `JVC_AI_MAX_PRICE`.
 It accepts the exact returned model names `qwen/qwen3-embedding-8b` and `Qwen/Qwen3-Embedding-8B`.
 The adapter rejects invalid input indices, dimensions other than 4,096, and nonfinite or zero vectors.
 It produces unit-normalized float32 vectors.
 
 An embedding reservation quotes 32,000 input tokens per input at the configured embedding price.
-At the default price, one input reserves 0.000320 USD. Eight inputs reserve 0.002560 USD.
+At the Nebius/DeepInfra default price, one input reserves 0.000320 USD. Eight inputs reserve 0.002560 USD.
+At the SiliconFlow default price, one input reserves 0.001280 USD. Eight inputs reserve 0.010240 USD.
+The selected route's price also bounds `provider.max_price`, subject to `JVC_AI_MAX_PRICE`.
 This conservative quote covers provider normalization without assuming that original byte counts bound token counts.
 A reported cost replaces that estimate. An unknown sent charge keeps the estimate through the normal spending windows.
 Invalid vectors or a model mismatch never remove a reported charge.
@@ -954,7 +962,24 @@ Older attempts whose inputs now belong to later attempts remain excluded.
 Review ambiguous batches first. Retrying them can repeat paid work whose earlier result remains unknown.
 The [operator guide](semantic-search.md#handle-provider-rate-limits) describes output events and retry bounds.
 
+Fresh `prepare` profiles default to `nebius`, through the single exported `DEFAULT_PROFILE_ROUTE` constant.
+The Qwen family declares `nebius` and `siliconflow/fp8` compatible. Their request selection preserves each stored profile ID and retained vectors.
+Operator runs and server queries prefer SiliconFlow for that family. Use `run --route nebius` for an operator override.
+Each request names one route in `provider.only` and `provider.order`, with fallback disabled.
+Probes use the same route as the request. Their freshness cache is separate for each profile and request route.
+
+SiliconFlow repeats stayed within about 0.00015 cosine distance and matched Nebius within about 0.00014.
+Its batches of eight versus 128 inputs differed by about 0.00013. Nebius repeats stayed within about 0.00013.
+An earlier 32-input comparison reached 0.000156 between SiliconFlow and Nebius.
+SiliconFlow completed 24 of 24 tested 128-input requests at eight parallel requests, without a 429, at about 13 seconds per wave.
+The compatibility tolerance remains 0.0005.
+DeepInfra repeats reached 0.0020 for identical eight-input and 128-input requests. Eight repeated small batches produced three result sets.
+It stays selectable as a separate fresh profile and can fail the unchanged probe tolerance.
+Measured distances between DeepInfra and the other providers reached about 0.0052.
+Changing between those families requires a fresh profile and a full re-embed.
+
 Use `prepare --profile PROFILE_ID` to build another view or snapshot under a stored compatible profile.
+A stored profile or job keeps its route. A conflicting `--route` fails preparation.
 Unchanged exact inputs then reuse vectors under that full profile and input hash.
 Stored profile batch fields retain the server limits of eight inputs and 32 KiB.
 The profile does not bind operator batch size. Larger operator batches do not change the vector space.

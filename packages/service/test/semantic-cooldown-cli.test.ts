@@ -253,18 +253,18 @@ globalThis.fetch = async (url, init) => {
     const oldCharge = originalLedger.entries[0];
     assert.equal(oldCharge.id, batch.operation);
     assert.equal(oldCharge.costKnown, false);
-    assert.equal(oldCharge.settledUsd, 0.00032);
-    assert.equal(oldCharge.reservedUsd, 0.00032);
+    assert.equal(oldCharge.settledUsd, 0.00128);
+    assert.equal(oldCharge.reservedUsd, 0.00128);
 
     // Old databases can contain deadlines that exceed the current write cap.
     const huge = Number.MAX_SAFE_INTEGER;
     const database = new DatabaseSync(path);
     try {
       const insert = database.prepare(
-        "INSERT OR REPLACE INTO semantic_profile_backoff(profile,retry_after) VALUES(?,?)",
+        "INSERT OR REPLACE INTO semantic_profile_backoff(profile,route,retry_after) VALUES(?,?,?)",
       );
-      insert.run(old.profile, huge);
-      insert.run(other.profile, huge - 1);
+      insert.run(old.profile, "siliconflow/fp8", huge);
+      insert.run(other.profile, "siliconflow/fp8", huge - 1);
     } finally {
       database.close();
     }
@@ -328,7 +328,7 @@ globalThis.fetch = async (url, init) => {
     );
     assert.equal(resumed.coverage.indexed, 0);
     const currentLedger = await ledger(budgetPath);
-    assert.equal(currentLedger.entries.length, 3);
+    assert.equal(currentLedger.entries.length, 4);
     assert.deepEqual(
       currentLedger.entries.find((entry) => entry.id === oldCharge.id),
       oldCharge,
@@ -341,6 +341,7 @@ globalThis.fetch = async (url, init) => {
     assert.equal(denied[0].code, "semantic_profile_suspended");
     assert.deepEqual((await readFile(eventsPath, "utf8")).trim().split("\n"), [
       "limited",
+      "success",
       "success",
       "success",
     ]);

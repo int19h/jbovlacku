@@ -1,6 +1,8 @@
 import { SemanticIndexer, type IndexEmbedder } from "./indexer.ts";
 import type { SemanticSource } from "./source.ts";
-import type { EmbeddingProfile } from "./types.ts";
+import { SemanticError, type EmbeddingProfile } from "./types.ts";
+import type { EmbeddingRoute } from "../inference.ts";
+import { qwenRequestRoute } from "./profile.ts";
 import { MAX_PROFILE_COOLDOWN_MS } from "./vector-store.ts";
 import type {
   BackgroundRecovery,
@@ -22,6 +24,7 @@ export class BackgroundSemanticIndexer {
     private options: {
       store: VectorStore;
       profile: string;
+      route?: EmbeddingRoute;
       view: string;
       assistance: IndexEmbedder;
       source(
@@ -31,6 +34,7 @@ export class BackgroundSemanticIndexer {
       probe(
         generation: IndexGeneration,
         profile: EmbeddingProfile,
+        route: EmbeddingRoute,
       ): Promise<void>;
       needed?(): Promise<boolean>;
       /** Expected bindings let completion prove coverage without the shared search cache. */
@@ -60,11 +64,19 @@ export class BackgroundSemanticIndexer {
       (g) => g.profile === identity,
     );
     if (!current) return;
+    const profile = await store.profile(current.id);
+    const requestRoute =
+      qwenRequestRoute(profile, this.options.route) ?? undefined;
+    const applies = (recovery: BackgroundRecovery) =>
+      recovery.reason !== "embedding_rate_limited" ||
+      !recovery.route ||
+      recovery.route === requestRoute;
     const wait = await store.backgroundWait(identity, view);
     const waiting =
-      wait && Math.max(wait.next_attempt, wait.not_before) > this.now();
+      wait &&
+      applies(wait) &&
+      Math.max(wait.next_attempt, wait.not_before) > this.now();
     if (waiting && wait.reason !== "semantic_rebuild_pending") return;
-    const profile = await store.profile(current.id);
     let job = await store.backgroundGeneration(identity, view);
     // An unfinished operator job can contain failed or ambiguous sends. Do not adopt or replay it.
     if (!job && current.state !== "completed") return;
@@ -83,12 +95,15 @@ export class BackgroundSemanticIndexer {
         await store.recoverBackground(job.id);
         job = await store.generation(job.id, true);
       }
-      const recovery = job.background_recovery;
+      const recovery =
+        job.background_recovery && applies(job.background_recovery)
+          ? job.background_recovery
+          : undefined;
       if (
         Math.max(
           recovery?.next_attempt ?? 0,
           recovery?.not_before ?? 0,
-          (await store.retryAfter(identity)) ?? 0,
+          (await store.retryAfter(identity, requestRoute)) ?? 0,
         ) > this.now()
       )
         return;
@@ -121,6 +136,13 @@ export class BackgroundSemanticIndexer {
         : null;
     const dueInputs = schedule !== null && schedule <= this.now();
     try {
+      const route = qwenRequestRoute(profile, this.options.route);
+      if (!route)
+        throw new SemanticError(
+          409,
+          "semantic_profile",
+          "The indexing adapter does not match the complete profile.",
+        );
       let latestSource: SemanticSource | undefined;
       if (waiting) {
         if (!dueInputs && wait.snapshot) {
@@ -172,7 +194,9 @@ export class BackgroundSemanticIndexer {
       if (published !== current.id && published !== job.id) return;
       if (published !== job.id && !(await store.publish(job.id, current.id)))
         return;
-      if (((await store.retryAfter(identity)) ?? 0) > this.now()) {
+      if (
+        ((await store.retryAfter(identity, requestRoute)) ?? 0) > this.now()
+      ) {
         await store.pause(job.id, "embedding_rate_limited");
         await this.defer(await store.generation(job.id, true), undefined);
         return;
@@ -181,12 +205,13 @@ export class BackgroundSemanticIndexer {
         (await store.needsEmbedding(job.id)) &&
         (await store.references(current.id)).length
       )
-        await this.options.probe(current, profile);
+        await this.options.probe(current, profile, route);
       if (this.stop.signal.aborted) return;
       // Background indexing uses at most one of the shared provider slots.
       let failure: unknown;
       let attempt: IndexBatch | undefined;
       const result = await indexer.run(job.id, {
+        route,
         concurrency: 1,
         signal: this.stop.signal,
         automaticRetries: false,
@@ -310,6 +335,9 @@ export class BackgroundSemanticIndexer {
     beforeJob = false,
   ) {
     const { store } = this.options;
+    const route =
+      qwenRequestRoute(await store.profile(job.id), this.options.route) ??
+      undefined;
     const held = batch ? await store.backgroundInputRecovery(batch) : null;
     const saved = beforeJob
       ? await store.backgroundWait(job.profile, job.view)
@@ -353,7 +381,7 @@ export class BackgroundSemanticIndexer {
         : 0;
     const now = this.now();
     const notBefore = Math.max(
-      (await store.retryAfter(job.profile)) ?? 0,
+      (await store.retryAfter(job.profile, route)) ?? 0,
       Number.isFinite(hint) && hint > 0
         ? now +
             (reason.startsWith("billing_")
@@ -376,6 +404,7 @@ export class BackgroundSemanticIndexer {
             1000 * 2 ** Math.max(0, (sent ? sentAttempts : refusals) - 1),
           );
     const recovery: BackgroundRecovery = {
+      route,
       next_attempt: Math.max(now + delay, notBefore),
       not_before: notBefore,
       refusals,

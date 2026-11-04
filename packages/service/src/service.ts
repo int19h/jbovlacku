@@ -179,10 +179,12 @@ export class DictionaryService {
     this.backgroundSemantic = new BackgroundSemanticIndexer({
       store: this.options.semantic.store,
       profile: this.options.semantic.profile,
+      route: this.options.semantic.route,
       view: this.options.selectedView ?? zeroView,
       assistance: this.assistance,
       source: (profile, snapshot) => this.semanticSource(profile, snapshot),
-      probe: (generation, profile) => this.semantic!.probe(generation, profile),
+      probe: (generation, profile, route) =>
+        this.semantic!.probe(generation, profile, route),
       bindings: (snapshot) =>
         this.semanticBindings(snapshot, this.options.selectedView ?? zeroView),
       needed: async () =>

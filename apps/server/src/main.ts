@@ -30,7 +30,9 @@ import {
 import {
   nodeClientNetwork,
   nodeAssistanceIdentityAvailable,
+  isEmbeddingRoute,
 } from "../../../packages/service/src/inference.ts";
+import { qwenRequestRoute } from "../../../packages/service/src/semantic/profile.ts";
 import {
   durableDirectory,
   FileObjectStore,
@@ -95,6 +97,13 @@ async function initializeService() {
       ? nodeAssistance(process.env, assistanceBudget)
       : {};
     const semanticProfile = process.env.JVC_SEMANTIC_PROFILE;
+    const semanticRoute = process.env.JVC_SEMANTIC_ROUTE;
+    if (semanticRoute !== undefined && !isEmbeddingRoute(semanticRoute))
+      throw new Error(
+        "JVC_SEMANTIC_ROUTE must be nebius, siliconflow/fp8, or deepinfra/us.",
+      );
+    if (semanticRoute !== undefined && !semanticProfile)
+      throw new Error("JVC_SEMANTIC_ROUTE requires JVC_SEMANTIC_PROFILE.");
     if (semanticProfile && !/^sha256:[a-f0-9]{64}$/.test(semanticProfile))
       throw new Error(
         "JVC_SEMANTIC_PROFILE must name a complete profile hash.",
@@ -102,6 +111,16 @@ async function initializeService() {
     if (semanticProfile) {
       const path = join(directory, "semantic-vectors.sqlite");
       vectors = new SqliteVectorStore(path);
+      if (
+        semanticRoute !== undefined &&
+        qwenRequestRoute(
+          await vectors.storedProfile(semanticProfile),
+          semanticRoute,
+        ) === null
+      )
+        throw new Error(
+          "JVC_SEMANTIC_ROUTE is incompatible with JVC_SEMANTIC_PROFILE.",
+        );
       scanner = new NodeVectorScanner(path);
     }
     const service = new DictionaryService(objects, coordinator, {
@@ -111,6 +130,7 @@ async function initializeService() {
         vectors && scanner && semanticProfile
           ? {
               profile: semanticProfile,
+              route: semanticRoute,
               store: vectors,
               cache: vectors.queryCache,
               scanner,

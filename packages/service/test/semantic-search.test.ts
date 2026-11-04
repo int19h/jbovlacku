@@ -28,7 +28,10 @@ import { scanPages, type VectorScanner } from "../src/semantic/scan.ts";
 import { AssistanceService } from "../src/assistance.ts";
 import { providerConfig } from "../src/inference.ts";
 import type { IndexDocument } from "../src/semantic/source.ts";
-import type { IndexEmbedder } from "../src/semantic/indexer.ts";
+import {
+  SemanticIndexer,
+  type IndexEmbedder,
+} from "../src/semantic/indexer.ts";
 import type { Snapshot } from "../src/storage.ts";
 
 before(async () =>
@@ -3448,3 +3451,357 @@ for (const cooldown of [false, true])
         await background.close();
       }
     }));
+
+test("document, query, and compatibility requests use each profile's route and separate vectors", () =>
+  fixture(async ({ store, scanner, docs, ctx }) => {
+    const calls: { route: string; inputs: string[] }[] = [];
+    const config = providerConfig(
+      { JVC_AI_ENABLED: "enabled" },
+      async () => "disposable-route-key",
+    )!;
+    const assistance = new AssistanceService(
+      {
+        provider: {
+          ...config,
+          fetch: async (_url, init) => {
+            const body = JSON.parse(String(init?.body));
+            const route = body.provider.only[0];
+            assert.deepEqual(body.provider.order, [route]);
+            assert.deepEqual(body.provider.only, [route]);
+            assert.equal(body.provider.allow_fallbacks, false);
+            calls.push({ route, inputs: body.input });
+            return Response.json({
+              model: "qwen/qwen3-embedding-8b",
+              data: body.input.map((_input: string, index: number) => ({
+                index,
+                embedding: [...unit(route === "deepinfra/us" ? 1 : 0)],
+              })),
+              usage: {
+                prompt_tokens: body.input.length,
+                total_tokens: body.input.length,
+                cost: 0.000001,
+              },
+            });
+          },
+        },
+        operatorIndexing: { concurrency: 1 },
+      },
+      "profile-route",
+      async () => [],
+    );
+    try {
+      for (const route of ["nebius", "deepinfra/us"] as const) {
+        const selected = createQwenProfile("ab".repeat(16), route);
+        const requestRoute = route === "nebius" ? "siliconflow/fp8" : route;
+        const generation = await store.create(
+          {
+            snapshot: ctx.snapshot.snapshot,
+            view: ctx.evaluation.selected_view,
+            profile: profileId(selected),
+            eligible: docs.length,
+          },
+          selected,
+        );
+        await store.stage(generation.id, null, {
+          documents: docs,
+          next: docs.at(-1)!.event,
+          done: true,
+        });
+        const before = calls.length;
+        const indexed = await new SemanticIndexer(store, assistance).run(
+          generation.id,
+          { operator: true, concurrency: 1 },
+        );
+        assert.equal(indexed.coverage.indexed, docs.length);
+        assert.equal(
+          calls.length,
+          before + 1,
+          "A different route must embed its own document vectors",
+        );
+        await store.publish(
+          generation.id,
+          await store.current(generation.profile, generation.view),
+        );
+        const engine = new SemanticSearch(
+          {
+            profile: generation.profile,
+            store,
+            cache: store.queryCache,
+            scanner,
+          },
+          assistance,
+          true,
+        );
+        const descriptions = await engine.profiles(ctx);
+        assert.equal(descriptions[0].query_available, true);
+        assert(
+          descriptions[0].label.endsWith(
+            route === "deepinfra/us" ? "DeepInfra" : "SiliconFlow",
+          ),
+        );
+        const result = await engine.search(
+          ctx,
+          { ...request(), profile: generation.profile },
+          "local",
+        );
+        assert.equal(result.hits.length, 3);
+        assert(calls.at(-1)!.inputs[0].startsWith("Instruct:"));
+        assert.equal(
+          calls.length,
+          before + 3,
+          "A profile miss must probe and embed its own query",
+        );
+        assert.deepEqual(
+          calls.slice(before).map((call) => call.route),
+          [requestRoute, requestRoute, requestRoute],
+        );
+        assert.equal(await store.compatibility(generation.profile), null);
+        assert.equal(
+          (await store.probeEvidence(generation.profile))!.references.every(
+            (entry) => entry.distance === 0,
+          ),
+          true,
+        );
+        await engine.search(
+          ctx,
+          { ...request(), profile: generation.profile },
+          "local",
+        );
+        assert.equal(
+          calls.length,
+          before + 3,
+          "The query cache remains local to that profile",
+        );
+      }
+      assert.equal(config.embedding!.route, "nebius");
+    } finally {
+      await assistance.drainEmbeddingTransports();
+    }
+  }));
+
+test("each compatible request route gets its own probe and a drift in either route suspends the shared profile", async () => {
+  for (const driftRoute of ["nebius", "siliconflow/fp8"] as const)
+    await fixture(async ({ store, scanner, ctx }) => {
+      const routes: string[] = [];
+      let drift = false;
+      const config = providerConfig(
+        { JVC_AI_ENABLED: "enabled" },
+        async () => "disposable-route-key",
+      )!;
+      const assistance = new AssistanceService(
+        {
+          provider: {
+            ...config,
+            fetch: async (_url, init) => {
+              const body = JSON.parse(String(init?.body));
+              routes.push(body.provider.only[0]);
+              assert.deepEqual(body.provider.only, [body.provider.order[0]]);
+              assert.equal(body.provider.allow_fallbacks, false);
+              return Response.json({
+                model: "qwen/qwen3-embedding-8b",
+                data: body.input.map((_input: string, index: number) => ({
+                  index,
+                  embedding: [...unit(drift ? 1 : 0)],
+                })),
+                usage: { prompt_tokens: 1, total_tokens: 1, cost: 0.000001 },
+              });
+            },
+          },
+        },
+        "route-probe",
+        async () => [],
+      );
+      const generation = (
+        await store.published(ctx.evaluation.selected_view)
+      ).find((row) => row.profile === profileId(profile))!;
+      const engine = new SemanticSearch(
+        {
+          profile: generation.profile,
+          store,
+          cache: store.queryCache,
+          scanner,
+        },
+        assistance,
+        true,
+      );
+      const healthyRoute =
+        driftRoute === "nebius" ? "siliconflow/fp8" : "nebius";
+      try {
+        await engine.probe(generation, profile, healthyRoute);
+        drift = true;
+        await assert.rejects(engine.probe(generation, profile, driftRoute), {
+          code: "semantic_model_drift",
+        });
+        assert.deepEqual(routes, [healthyRoute, driftRoute]);
+        const evidence = (await store.probeEvidence(generation.profile))!;
+        assert.equal(evidence.route, driftRoute);
+        assert.equal(evidence.tolerance, 0.0005);
+        assert(
+          evidence.references.every(
+            (entry) => entry.distance > evidence.tolerance,
+          ),
+        );
+        assert.equal(
+          await store.compatibility(generation.profile),
+          "semantic_model_drift",
+        );
+        assert.equal(
+          profileId(await store.profile(generation.id)),
+          generation.profile,
+        );
+      } finally {
+        await assistance.drainEmbeddingTransports();
+      }
+    });
+});
+
+test("query and probe requests follow an explicit compatible route on an existing Nebius profile", () =>
+  fixture(async ({ store, scanner, ctx }) => {
+    const routes: string[] = [];
+    const config = providerConfig(
+      { JVC_AI_ENABLED: "enabled" },
+      async () => "disposable-route-key",
+    )!;
+    const assistance = new AssistanceService(
+      {
+        provider: {
+          ...config,
+          fetch: async (_url, init) => {
+            const body = JSON.parse(String(init?.body));
+            routes.push(body.provider.only[0]);
+            return Response.json({
+              model: "qwen/qwen3-embedding-8b",
+              data: body.input.map((_input: string, index: number) => ({
+                index,
+                embedding: [...unit()],
+              })),
+              usage: { prompt_tokens: 1, total_tokens: 1, cost: 0.000001 },
+            });
+          },
+        },
+      },
+      "query-route",
+      async () => [],
+    );
+    const options = {
+      profile: profileId(profile),
+      store,
+      cache: store.queryCache,
+      scanner,
+      route: "nebius" as "nebius" | "siliconflow/fp8",
+    };
+    const engine = new SemanticSearch(options, assistance, true);
+    try {
+      await engine.search(ctx, request("first query"), "local");
+      options.route = "siliconflow/fp8";
+      await engine.search(ctx, request("first query"), "local");
+      assert.deepEqual(
+        routes,
+        ["nebius", "nebius"],
+        "A compatible route change reuses the retained query vector",
+      );
+      await engine.search(ctx, request("second query"), "local");
+      assert.deepEqual(routes, [
+        "nebius",
+        "nebius",
+        "siliconflow/fp8",
+        "siliconflow/fp8",
+      ]);
+      assert.equal(
+        (await store.published(ctx.evaluation.selected_view)).find(
+          (row) => row.profile === options.profile,
+        )!.profile,
+        profileId(profile),
+      );
+    } finally {
+      await assistance.drainEmbeddingTransports();
+    }
+  }));
+
+for (const limited of ["nebius", "siliconflow/fp8"] as const) {
+  test(`a saved ${limited} rate limit leaves the other route available after restart`, async () =>
+    fixture(async ({ store, scanner, ctx, path }) => {
+      const other = limited === "nebius" ? "siliconflow/fp8" : "nebius";
+      const config = providerConfig(
+        { JVC_AI_ENABLED: "enabled" },
+        async () => "disposable-cooldown-key",
+      )!;
+      const calls: string[] = [];
+      config.fetch = async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        const route = body.provider.only[0];
+        calls.push(route);
+        if (route === limited)
+          return new Response("", {
+            status: 429,
+            headers: { "retry-after": "60" },
+          });
+        return Response.json({
+          model: profile.model,
+          data: body.input.map((_: unknown, index: number) => ({
+            index,
+            embedding: [...unit()],
+          })),
+          usage: { prompt_tokens: 1, total_tokens: 1, cost: 0.000001 },
+        });
+      };
+      const assistance = new AssistanceService(
+        { provider: config },
+        "route-cooldown",
+        async () => [],
+      );
+      const make = (route: "nebius" | "siliconflow/fp8") =>
+        new SemanticSearch(
+          {
+            profile: profileId(profile),
+            route,
+            store,
+            scanner,
+            cache: store.queryCache,
+          },
+          assistance,
+          true,
+        );
+      try {
+        await assert.rejects(
+          make(limited).search(
+            ctx,
+            { ...request(), query: "rate limit route" },
+            "local",
+          ),
+          (error: any) => error.code === "embedding_rate_limited",
+        );
+        assert(
+          (await store.retryAfter(profileId(profile), limited))! > Date.now(),
+        );
+        assert.equal(await store.retryAfter(profileId(profile), other), null);
+        const reopened = new SqliteVectorStore(path);
+        try {
+          assert.equal(
+            await reopened.retryAfter(profileId(profile), limited),
+            await store.retryAfter(profileId(profile), limited),
+          );
+          assert.equal(
+            await reopened.retryAfter(profileId(profile), other),
+            null,
+          );
+        } finally {
+          reopened.close();
+        }
+        await make(other).search(
+          ctx,
+          { ...request(), query: "different provider succeeds" },
+          "local",
+        );
+        assert.deepEqual(calls, [limited, other, other]);
+        await store.clearCooldown(profileId(profile), other);
+        assert(
+          (await store.retryAfter(profileId(profile), limited))! > Date.now(),
+        );
+        await store.clearCooldown(profileId(profile), limited);
+        assert.equal(await store.retryAfter(profileId(profile), limited), null);
+      } finally {
+        await assistance.drainEmbeddingTransports();
+      }
+    }));
+}
