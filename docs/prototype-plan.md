@@ -6,7 +6,7 @@ The [format specification](format.md) and [frontend specification](frontend.md) 
 ## Scope and location
 
 Implementation work uses a separate worktree for each agent.
-Temporary inputs, build output, and test results use task-specific directories outside the checkout.
+Temporary inputs, build output, and test results use ignored directories, such as `.cache`, or directories outside the checkout.
 No prototype uses a real contributor key or changes a Lensisku account.
 All test identities and signatures belong to disposable fixtures.
 Public hosting, authenticated cross-posting, and live dictionary contributions need separate authorization.

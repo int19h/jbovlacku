@@ -244,7 +244,7 @@ function replaceTable(source: string, name: string, replacement: string) {
   );
 }
 
-// This loop omits the absent relation's declared count as well as its rows.
+// The "absent and uncounted" mode omits both the relation's rows and its declared count.
 for (const name of [
   "languages",
   "valsitypes",

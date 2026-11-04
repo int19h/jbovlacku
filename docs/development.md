@@ -7,9 +7,10 @@ Keep unrelated projects and services available throughout the work.
 ## Workspace and temporary files
 
 Use a separate implementation worktree for each agent.
-Keep build output and task-specific scratch directories outside the checkout.
+Keep build output and task-specific scratch directories in an ignored directory or outside the checkout.
+An ignored directory such as `.cache` is suitable.
 An isolated worktree is a checkout with its own files.
-Use `CARGO_TARGET_DIR` for external Rust build files. Use `JVC_DATA_DIR` for the standalone service's persistent data.
+Use `CARGO_TARGET_DIR` to select the Rust build directory. Use `JVC_DATA_DIR` for the standalone service's persistent data.
 
 Before work, make sure that the current path and branch match the assigned task.
 Record the exact scratch path before cleanup. Delete only that task directory after you inspect its contents.
@@ -50,7 +51,8 @@ The repository ignores these reproducible outputs.
 The core build accepts `CARGO_TARGET_DIR` and `JVC_WASM_BINDGEN`.
 The first variable selects Rust build storage. The second names the exact `wasm-bindgen` executable.
 Its version must remain 0.2.105.
-Select a task-specific directory outside the checkout for Rust build output:
+Select an ignored directory or a directory outside the checkout for Rust build output.
+The following example selects a temporary directory outside the checkout:
 
 ```sh
 export CARGO_TARGET_DIR="$(mktemp -d)"
@@ -1124,7 +1126,7 @@ npm run test:web-unit
 
 Playwright excludes the Node unit directory from discovery. Run `npm run test:web-unit` as well as `npm run test:web`.
 
-For concurrent work, select separate directories outside the checkout through `PLAYWRIGHT_BROWSERS_PATH` and `JVC_TEST_ROOT`.
+Select separate directories for each concurrent run through `PLAYWRIGHT_BROWSERS_PATH` and `JVC_TEST_ROOT`.
 
 The shared format corpus also supports native and Chromium comparison:
 
@@ -1209,6 +1211,9 @@ The [dependency guide](dependencies.md) names those files.
 Run the smoke test after image or storage changes. A successful build alone does not prove persistence.
 
 ## Review and human tests
+
+Each change gets a first review.
+After that review passes, the change gets at least one independent review before merge.
 
 Each review must name the exact commit or complete working diff under review.
 A later substantive change requires a new review of the affected behavior.

@@ -7,7 +7,9 @@ The [README](README.md) describes the implemented scope. Do not claim that a tar
 ## Scope and shared files
 
 Read the task authorization before you edit files or operate a service.
-Use a separate worktree for each agent. Keep build output and task-specific scratch files outside the checkout.
+Use a separate worktree for each agent.
+Keep build output and task-specific scratch files in an ignored directory or outside the checkout.
+An ignored directory such as `.cache` is suitable.
 Delete only exact directories that belong to the current task.
 Do not delete unrelated files, sibling worktrees, shared caches, or other projects.
 If another agent owns a file, coordinate before you edit it.
@@ -21,6 +23,9 @@ Keep specifications free of session records, dated review narratives, and supers
 Use repository-relative documentation links. Preserve external source references that define requirements.
 
 ## Tests and review
+
+Each change gets a first review.
+After that review passes, the change gets at least one independent review before merge.
 
 Name the exact revision in every review handoff.
 Resolve review findings and run the relevant tests before handoff.

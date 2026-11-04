@@ -1953,7 +1953,7 @@ test("validation reads the final values, an edit changes only its own control, a
     }),
   ).body!;
   const parentId = "jve1:" + "e".repeat(64);
-  // a code node holding a circled number is not a reference.
+  // A code node holding a circled number is not a reference.
   const code = { ...base, text: [[{ code: "first\n\n①" }]] } as never;
   assert.ok(admissible(code));
   const d1 = draftFromBody(code, parentId, "native");
@@ -1964,7 +1964,7 @@ test("validation reads the final values, an edit changes only its own control, a
     [],
   );
   assert.deepEqual(r1.body!.text, [[{ code: "first\n\n①" }]]);
-  // a gloss edit keeps the place description, and a form note follows the exact etymology.
+  // A gloss edit keeps the place description, and a form note follows the exact etymology.
   const richPlace = {
     ...base,
     text: [[1, " is something."]],
@@ -2014,7 +2014,7 @@ test("validation reads the final values, an edit changes only its own control, a
     { language: "en", text: "something", sense: null },
   ]);
   assert.deepEqual(r2.etymology.text, [[{ code: "e\n\nf" }], ["Added note"]]);
-  // the mode governs references, through the switch and through the flag.
+  // The mode governs references, through the switch and through the flag.
   const d3 = draftFromBody(
     {
       ...(richPlace as object),
@@ -2043,7 +2043,7 @@ test("validation reads the final values, an edit changes only its own control, a
   assert.deepEqual(d3.text, [[1, " is something."]]);
   d3.structured = false;
   assert.deepEqual(draftToBody(d3).body!.text, [["① is something."]]);
-  // an identity remap leaves rich type notes exact, for a place and the repeated places.
+  // An identity remap leaves rich type notes exact, for a place and the repeated places.
   const d4 = newDraft({
     spelling: "broda",
     kind: "gismu",

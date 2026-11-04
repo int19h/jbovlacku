@@ -45,7 +45,8 @@ npm run build:core
 node scripts/test-state-parity.mjs
 ```
 
-For concurrent work, set `CARGO_TARGET_DIR` to a task-specific directory outside the checkout before these commands.
+For concurrent work, set `CARGO_TARGET_DIR` to a separate build directory before these commands.
+Use an ignored directory or a directory outside the checkout.
 Set `JVC_CHROMIUM` if the browser executable is outside Playwright's normal cache.
 
 The pure evaluator performs no peer retrieval. Service code owns retrieval deadlines and transport admission.
