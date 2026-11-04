@@ -394,6 +394,17 @@ export class SqlVectorStore implements VectorStore {
       id,
     );
   }
+  private generationHasPointer(id: string) {
+    return Boolean(
+      this.sql.exec(
+        `SELECT 1 FROM semantic_current WHERE generation=? OR rollback=?
+      UNION SELECT 1 FROM semantic_background WHERE generation=?`,
+        id,
+        id,
+        id,
+      ).length,
+    );
+  }
   async pruneBackgroundGenerations(profile: string, view: string) {
     const rows = this.sql.exec(
       `SELECT g.id FROM semantic_generations g
@@ -407,22 +418,14 @@ export class SqlVectorStore implements VectorStore {
     );
     for (const row of rows) {
       const id = String(row.id);
-      if (this.readers.has(id)) continue;
       // Earlier retirements yield. Recheck pointers before recovering this exact orphan.
-      if (
-        this.sql.exec(
-          `SELECT 1 FROM semantic_current WHERE generation=? OR rollback=?
-        UNION SELECT 1 FROM semantic_background WHERE generation=?`,
-          id,
-          id,
-          id,
-        ).length
-      )
-        continue;
+      if (this.readers.has(id) || this.generationHasPointer(id)) continue;
       const generation = this.generationRow(id);
       if (this.generationOperationPending(generation)) continue;
       try {
         if (generation.state !== "retired") await this.recoverBackground(id);
+        // Recovery yields too. Explicit retirement can clear a restored background pointer.
+        if (this.readers.has(id) || this.generationHasPointer(id)) continue;
         await this.retire(id);
       } catch (failure) {
         // A new reader, transport, or publication defers retirement until a later pass.

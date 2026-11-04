@@ -1619,6 +1619,12 @@ test("background pruning keeps other scopes, operator jobs, pointers, readers, a
     background: true,
     view: hash(2200, "jve1:"),
   });
+  // Leave true orphans in the other scopes, outside their own background pointers.
+  await create({
+    background: true,
+    profile: await f.store.profile(otherProfile.id),
+  });
+  await create({ background: true, view: otherView.view });
   // The second publication keeps the first one as the rollback generation.
   const rollback = await create({ background: true });
   assert.equal(
@@ -1640,7 +1646,13 @@ test("background pruning keeps other scopes, operator jobs, pointers, readers, a
   await f.store.fail(batch.id, "embedding_timeout");
   await f.store.pause(transport.id);
   let pending = true;
-  f.store.registerOperationGuard((value) => value === operation && pending);
+  f.store.registerOperationGuard(
+    (value) => value.startsWith(operation) && pending,
+  );
+  const activeTransport = await create({ background: true });
+  await f.store.start(activeTransport.id);
+  const activeBatch = (await f.store.claim(activeTransport.id))!;
+  await f.store.sent(activeBatch.id, `${operation}-running`);
   const running = await create({ background: true });
   await f.store.start(running.id);
   const live = await create({ background: true });
@@ -1671,6 +1683,7 @@ test("background pruning keeps other scopes, operator jobs, pointers, readers, a
     current,
     reader,
     transport,
+    activeTransport,
     live,
     pointed,
   ]) {
@@ -1689,6 +1702,8 @@ test("background pruning keeps other scopes, operator jobs, pointers, readers, a
     (await f.store.backgroundGeneration(pointed.profile, pointed.view))?.id,
     pointed.id,
   );
+  assert.equal((await f.store.generation(activeTransport.id)).state, "running");
+  assert.equal((await f.store.batches(activeTransport.id))[0].state, "sent");
   assert.equal((await f.store.generation(live.id)).state, "running");
   assert.equal((await f.store.batches(live.id))[0].state, liveBatch.state);
   release();
@@ -1697,5 +1712,34 @@ test("background pruning keeps other scopes, operator jobs, pointers, readers, a
   await f.store.pruneBackgroundGenerations(current.profile, current.view);
   assert.equal((await f.store.generation(reader.id)).state, "retired");
   assert.equal((await f.store.generation(transport.id)).state, "retired");
+  assert.equal((await f.store.generation(activeTransport.id)).state, "retired");
   assert.equal((await f.store.generation(live.id)).state, "retired");
+});
+
+test("background pruning keeps a pointer restored during orphan recovery", async (t) => {
+  const f = await fixture(t, async () => success());
+  const orphan = await f.store.create(f.source.context, f.profile);
+  await f.store.stage(orphan.id, null, {
+    documents: f.docs,
+    next: f.docs[0].event,
+    done: true,
+  });
+  await f.store.setBackgroundGeneration(orphan.id);
+  const next = await f.store.create(
+    { ...f.source.context, snapshot: hash(2300) },
+    f.profile,
+  );
+  await f.store.setBackgroundGeneration(next.id);
+  const recover = f.store.recoverBackground.bind(f.store);
+  t.mock.method(f.store, "recoverBackground", async (id: string) => {
+    await recover(id);
+    if (id === orphan.id) await f.store.setBackgroundGeneration(id);
+  });
+  await f.store.pruneBackgroundGenerations(orphan.profile, orphan.view);
+  assert.equal(
+    (await f.store.backgroundGeneration(orphan.profile, orphan.view))?.id,
+    orphan.id,
+  );
+  assert.equal((await f.store.generation(orphan.id)).state, "paused");
+  assert.equal((await f.store.page(orphan.id)).rows.length, 1);
 });
