@@ -940,7 +940,8 @@ Server requests continue to enforce their ceilings against that ledger.
 
 After a drained wave with provider 429 responses or embedding timeouts, adaptive scheduling halves concurrency once, down to one.
 Eight successful batches raise it by one, up to the requested maximum, and reset the backoff floor.
-Jobs with earlier dispatch intents or active saved cooldowns resume at concurrency one.
+Resumed adaptive runs start at concurrency one only for unresolved ambiguous batches, saved 429 retry selections, or an active cooldown.
+Completed batches alone do not lower the starting concurrency.
 The command preserves saved cooldowns, `Retry-After`, bounded backoff, failed batches, and earlier charges.
 Timeout continuation selects fresh inputs and leaves the ambiguous batch for explicit retry.
 Three consecutive timeout waves without a completed batch pause the run. Any completed batch resets that count.

@@ -110,6 +110,8 @@ The background indexer splits oversized linked retries to keep its eight-input a
 Use optional `--max-cost-usd USD` to set a nonnegative ceiling for this `run` invocation.
 The ceiling counts concurrent reservations, reported charges, and conservative unknown charges from that invocation.
 A known final cost releases the unused part of its reservation.
+Without reported usage that establishes cost, each 429 attempt keeps a full estimated charge against `--max-cost-usd` and the shared ledger.
+Each retry adds another full estimate until its actual usage establishes the cost.
 
 An unsent failure releases its reservation. An unknown sent charge keeps its conservative amount.
 A zero ceiling permits no paid admission, while cached inputs can still complete.
@@ -153,8 +155,9 @@ Operator scheduling halves concurrency once per drained wave with a 429 or embed
 After eight successful batches, it raises concurrency by one, up to the requested maximum, and resets the backoff floor.
 Active requests settle before the lower cap admits further work.
 The command emits a `concurrency` event with `concurrency` and `reason` whenever this cap changes.
-A resumed job with earlier batch intents or an active saved cooldown starts at concurrency one.
-A fresh job starts at its requested concurrency.
+Resumed runs start at concurrency one only for unresolved ambiguous batches, saved 429 retry selections, or an active cooldown.
+Completed batches alone do not lower the starting concurrency.
+Other runs start at their requested concurrency.
 
 An operator timeout can continue fresh inputs at the reduced cap after active workers settle.
 Three consecutive timeout waves without a completed batch pause the run with `embedding_timeout`.

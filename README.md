@@ -402,7 +402,8 @@ It skips older attempts that no longer own their inputs. An ambiguous retry can 
 Saved claim positions avoid scans of completed inputs. Active batches reserve vector capacity before provider admission.
 Over-limit inputs retain their exclusion reasons while the remaining generation can complete.
 
-Adaptive operator runs resume at concurrency one when earlier dispatch intents or saved cooldowns exist.
+Resumed adaptive runs start at concurrency one only for unresolved ambiguous batches, saved 429 retry selections, or an active cooldown.
+Completed batches alone do not lower the starting concurrency.
 They reduce concurrency once per failure wave and grow it after eight successful batches.
 Three consecutive timeout waves without a completed batch stop fresh work. Timed-out batches still require explicit retry.
 HTTP 429 retries respect `Retry-After` through bounded waits without an invocation-wide retry count or total wait cap.

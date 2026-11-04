@@ -904,3 +904,148 @@ test("successful progress resets the timeout wave stop", () =>
     assert.equal(result.coverage.failed, 6);
     assert.equal(new Set(completed).size, 2);
   }));
+
+test("completed batches alone keep the requested resume concurrency", async () => {
+  for (const resolvedTimeout of [false, true])
+    await fixture(40, async (store, id) => {
+      let active = 0;
+      let peak = 0;
+      const events: IndexConcurrencyChange[] = [];
+      const embedder = provider(async (_inputs, call) => {
+        if (resolvedTimeout && call === 1)
+          throw new AssistanceError(504, "embedding_timeout", "Timed out.");
+        peak = Math.max(peak, ++active);
+        await new Promise((resolve) => setImmediate(resolve));
+        active--;
+      });
+      const indexer = new SemanticIndexer(store, embedder);
+      const bounded = {
+        operator: true,
+        adaptive: true,
+        concurrency: 1,
+        batchSize: 1,
+        maxBatches: 1,
+      };
+      await indexer.run(id, bounded);
+      if (resolvedTimeout) {
+        await store.retry((await store.batches(id))[0].id);
+        await indexer.run(id, bounded);
+      }
+      peak = 0;
+      const result = await indexer.run(id, {
+        operator: true,
+        adaptive: true,
+        concurrency: 8,
+        batchSize: 1,
+        onConcurrencyChange: (event) => events.push(event),
+      });
+      assert.equal(result.generation.state, "completed");
+      assert.equal(result.coverage.indexed, 40);
+      assert.equal(peak, 8);
+      assert.equal(
+        events.some((event) => event.reason === "resume"),
+        false,
+      );
+      assert.equal(embedder.calls.length, resolvedTimeout ? 41 : 40);
+    });
+});
+
+test("unresolved ambiguity and an active cooldown still lower resume concurrency", async () => {
+  for (const ambiguous of [false, true])
+    await fixture(24, async (store, id) => {
+      let now = 0;
+      let active = 0;
+      let resumedCalls = 0;
+      let resuming = false;
+      const events: IndexConcurrencyChange[] = [];
+      const embedder = provider(async (_inputs, call) => {
+        if (ambiguous && call === 1)
+          throw new AssistanceError(504, "embedding_timeout", "Timed out.");
+        active++;
+        if (resuming && ++resumedCalls <= 8) assert.equal(active, 1);
+        await new Promise((resolve) => setImmediate(resolve));
+        active--;
+      });
+      const indexer = new SemanticIndexer(store, embedder, {
+        now: () => now,
+        async sleep(delay) {
+          now += delay;
+        },
+      });
+      await indexer.run(id, {
+        operator: true,
+        adaptive: true,
+        concurrency: 1,
+        batchSize: 1,
+        maxBatches: 1,
+      });
+      if (!ambiguous)
+        await store.defer((await store.generation(id)).profile, 5000, 0);
+      resuming = true;
+      const result = await indexer.run(id, {
+        operator: true,
+        adaptive: true,
+        concurrency: 8,
+        batchSize: 1,
+        onConcurrencyChange: (event) => events.push(event),
+      });
+      assert.deepEqual(events[0], { concurrency: 1, reason: "resume" });
+      assert.equal(result.coverage.indexed, ambiguous ? 23 : 24);
+      assert.equal(result.coverage.failed, ambiguous ? 1 : 0);
+      assert.equal(result.coverage.pending, 0);
+      assert.equal(now, ambiguous ? 0 : 5000);
+    });
+});
+
+test("saved unsent 429 retries lower concurrency after their cooldown expires", () =>
+  fixture(24, async (store, id) => {
+    let now = 0;
+    let refuse = true;
+    let active = 0;
+    const events: IndexConcurrencyChange[] = [];
+    const base = provider(async (_inputs, call) => {
+      active++;
+      if (call <= 8) assert.equal(active, 1);
+      await new Promise((resolve) => setImmediate(resolve));
+      active--;
+    });
+    const embedder: IndexEmbedder = {
+      async embed(...args) {
+        if (refuse) {
+          refuse = false;
+          throw new AssistanceError(
+            429,
+            "embedding_rate_limited",
+            "Rate limited.",
+          );
+        }
+        return base.embed(...args);
+      },
+    };
+    const indexer = new SemanticIndexer(store, embedder, {
+      now: () => now,
+      async sleep(delay) {
+        now += delay;
+      },
+    });
+    await indexer.run(id, {
+      operator: true,
+      adaptive: true,
+      concurrency: 8,
+      batchSize: 1,
+      maxBatches: 1,
+    });
+    assert.equal((await store.summary(id)).ambiguous_batches, 0);
+    assert.equal((await store.summary(id)).dispatch_intents, 0);
+    now = 1000;
+    const result = await indexer.run(id, {
+      operator: true,
+      adaptive: true,
+      concurrency: 8,
+      batchSize: 1,
+      onConcurrencyChange: (event) => events.push(event),
+    });
+    assert.deepEqual(events[0], { concurrency: 1, reason: "resume" });
+    assert.equal(result.generation.state, "completed");
+    assert.equal(base.calls.length, 24);
+  }));

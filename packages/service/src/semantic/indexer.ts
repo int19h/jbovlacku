@@ -136,7 +136,10 @@ export class SemanticIndexer {
         "This generation already has a running index job.",
       );
     this.running.add(id);
+    let release: (() => void) | undefined;
     try {
+      // Keep a live pass distinct from an abandoned background job during cleanup.
+      release = await this.store.retainGeneration(id);
       const identity = (await this.store.generation(id)).profile;
       if (await this.store.compatibility(identity))
         throw new SemanticError(
@@ -171,7 +174,7 @@ export class SemanticIndexer {
       };
       if (
         adaptiveOperator &&
-        ((await this.store.summary(id)).batches > 0 ||
+        ((await this.store.hasProviderPressure(id)) ||
           ((await this.store.retryAfter(identity)) ?? 0) > this.clock.now())
       )
         changeConcurrency(1, "resume");
@@ -474,6 +477,7 @@ export class SemanticIndexer {
         coverage: await this.store.coverage(id),
       };
     } finally {
+      release?.();
       this.running.delete(id);
     }
   }
