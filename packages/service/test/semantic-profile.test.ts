@@ -20,6 +20,7 @@ import {
   profileId,
   QUERY_PREFIX,
   queryInput,
+  qwenProfileRoute,
   validateProfile,
 } from "../src/semantic/profile.ts";
 
@@ -311,4 +312,44 @@ test("recipes enforce the profile byte limit including prefixes and reject unsup
   }
   assert.throws(() => validateProfile({ ...profile, normalization: "none" }));
   assert.throws(() => validateProfile({ ...profile, distance: "dot" }));
+});
+
+test("provider routes bind distinct profiles while the legacy Nebius identity stays exact", () => {
+  const epoch = "12".repeat(16);
+  const nebius = createQwenProfile(epoch);
+  assert.equal(
+    profileId(nebius),
+    "sha256:aa259132d4edd75b3b99446bcc60a791116800cd70b4e7bc19d4d66d7fc0ae2c",
+  );
+  assert.deepEqual(createQwenProfile(epoch, "nebius"), nebius);
+  const deepinfra = createQwenProfile(epoch, "deepinfra/us");
+  assert.equal(deepinfra.provider, "openrouter:deepinfra/us");
+  assert.equal(deepinfra.parameters.route, "deepinfra/us");
+  assert.equal(deepinfra.parameters.allow_fallbacks, false);
+  assert.notEqual(profileId(deepinfra), profileId(nebius));
+  assert.deepEqual(parseProfile(canonicalBytes(deepinfra)), deepinfra);
+  assert.equal(qwenProfileRoute(nebius), "nebius");
+  assert.equal(qwenProfileRoute(deepinfra), "deepinfra/us");
+  assert.equal(
+    qwenProfileRoute({ ...deepinfra, provider: nebius.provider }),
+    null,
+  );
+  assert.equal(
+    qwenProfileRoute({
+      ...deepinfra,
+      parameters: { ...deepinfra.parameters, route: "unknown" },
+    }),
+    null,
+  );
+  assert.equal(
+    qwenProfileRoute({
+      ...deepinfra,
+      parameters: { ...deepinfra.parameters, allow_fallbacks: true },
+    }),
+    null,
+  );
+  assert.throws(
+    () => createQwenProfile(epoch, "unknown" as never),
+    /route is invalid/,
+  );
 });

@@ -5,12 +5,7 @@ import {
 import { abortable, AssistanceError } from "../inference.ts";
 import type { AssistanceService } from "../assistance.ts";
 import type { Snapshot } from "../storage.ts";
-import {
-  createQwenProfile,
-  inputHash,
-  profileId,
-  queryInput,
-} from "./profile.ts";
+import { inputHash, qwenProfileRoute, queryInput } from "./profile.ts";
 import { distance, vectorBytes, vectorFromBytes } from "./vector.ts";
 import { SemanticError } from "./types.ts";
 import type { EmbeddingProfile } from "./types.ts";
@@ -158,7 +153,7 @@ export class SemanticSearch {
       generation.state !== "retired" &&
       generation.source_done &&
       coverage.eligible === eligibleEvents(context).length &&
-      profileId(profile) === profileId(createQwenProfile(profile.epoch)) &&
+      qwenProfileRoute(profile) !== null &&
       !(await this.options.store.compatibility(generation.profile))
     );
   }
@@ -191,7 +186,7 @@ export class SemanticSearch {
       return [
         {
           id: generation.profile,
-          label: "Qwen3 Embedding 8B through OpenRouter / Nebius",
+          label: `Qwen3 Embedding 8B through OpenRouter / ${qwenProfileRoute(profile) === "deepinfra/us" ? "DeepInfra" : qwenProfileRoute(profile) === "nebius" ? "Nebius" : profile.provider}`,
           query_available,
           indexed: counts.indexed,
           eligible: counts.eligible,
@@ -227,6 +222,8 @@ export class SemanticSearch {
     generation: IndexGeneration,
     profile: EmbeddingProfile,
   ): Promise<void> {
+    const route = qwenProfileRoute(profile);
+    if (!route) throw unavailable();
     await this.compatible(generation.profile);
     if (Date.now() - (this.checked.get(generation.profile) ?? 0) < 3600000)
       return;
@@ -238,6 +235,9 @@ export class SemanticSearch {
         const result = await this.inference.embed(
           references.map((r) => r.input),
           { kind: "probe" },
+          undefined,
+          undefined,
+          route,
         );
         if (result.vectors.length !== references.length) throw unavailable();
         const comparisons = result.vectors.map((v, i) => ({
@@ -292,6 +292,8 @@ export class SemanticSearch {
     bytes: Uint8Array,
     network: string,
   ): Promise<Float32Array> {
+    const route = qwenProfileRoute(profile);
+    if (!route) throw unavailable();
     const hash = inputHash(bytes);
     const key = `${generation.profile}:${hash}`;
     await this.compatible(generation.profile);
@@ -321,10 +323,13 @@ export class SemanticSearch {
           );
         await this.probe(generation, profile);
         await this.compatible(generation.profile);
-        const result = await this.inference.embed([bytes], {
-          kind: "query",
-          network,
-        });
+        const result = await this.inference.embed(
+          [bytes],
+          { kind: "query", network },
+          undefined,
+          undefined,
+          route,
+        );
         await this.compatible(generation.profile);
         const vector = result.vectors[0];
         if (result.vectors.length !== 1)

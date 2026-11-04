@@ -28,7 +28,10 @@ import { scanPages, type VectorScanner } from "../src/semantic/scan.ts";
 import { AssistanceService } from "../src/assistance.ts";
 import { providerConfig } from "../src/inference.ts";
 import type { IndexDocument } from "../src/semantic/source.ts";
-import type { IndexEmbedder } from "../src/semantic/indexer.ts";
+import {
+  SemanticIndexer,
+  type IndexEmbedder,
+} from "../src/semantic/indexer.ts";
 import type { Snapshot } from "../src/storage.ts";
 
 before(async () =>
@@ -3448,3 +3451,129 @@ for (const cooldown of [false, true])
         await background.close();
       }
     }));
+
+test("document, query, and compatibility requests use each profile's route and separate vectors", () =>
+  fixture(async ({ store, scanner, docs, ctx }) => {
+    const calls: { route: string; inputs: string[] }[] = [];
+    const config = providerConfig(
+      { JVC_AI_ENABLED: "enabled" },
+      async () => "disposable-route-key",
+    )!;
+    const assistance = new AssistanceService(
+      {
+        provider: {
+          ...config,
+          fetch: async (_url, init) => {
+            const body = JSON.parse(String(init?.body));
+            const route = body.provider.only[0];
+            assert.deepEqual(body.provider.order, [route]);
+            assert.deepEqual(body.provider.only, [route]);
+            assert.equal(body.provider.allow_fallbacks, false);
+            calls.push({ route, inputs: body.input });
+            return Response.json({
+              model: "qwen/qwen3-embedding-8b",
+              data: body.input.map((_input: string, index: number) => ({
+                index,
+                embedding: [...unit(route === "deepinfra/us" ? 1 : 0)],
+              })),
+              usage: {
+                prompt_tokens: body.input.length,
+                total_tokens: body.input.length,
+                cost: 0.000001,
+              },
+            });
+          },
+        },
+        operatorIndexing: { concurrency: 1 },
+      },
+      "profile-route",
+      async () => [],
+    );
+    try {
+      for (const route of ["nebius", "deepinfra/us"] as const) {
+        const selected = createQwenProfile("ab".repeat(16), route);
+        const generation = await store.create(
+          {
+            snapshot: ctx.snapshot.snapshot,
+            view: ctx.evaluation.selected_view,
+            profile: profileId(selected),
+            eligible: docs.length,
+          },
+          selected,
+        );
+        await store.stage(generation.id, null, {
+          documents: docs,
+          next: docs.at(-1)!.event,
+          done: true,
+        });
+        const before = calls.length;
+        const indexed = await new SemanticIndexer(store, assistance).run(
+          generation.id,
+          { operator: true, concurrency: 1 },
+        );
+        assert.equal(indexed.coverage.indexed, docs.length);
+        assert.equal(
+          calls.length,
+          before + 1,
+          "A different route must embed its own document vectors",
+        );
+        await store.publish(
+          generation.id,
+          await store.current(generation.profile, generation.view),
+        );
+        const engine = new SemanticSearch(
+          {
+            profile: generation.profile,
+            store,
+            cache: store.queryCache,
+            scanner,
+          },
+          assistance,
+          true,
+        );
+        const descriptions = await engine.profiles(ctx);
+        assert.equal(descriptions[0].query_available, true);
+        assert(
+          descriptions[0].label.endsWith(
+            route === "deepinfra/us" ? "DeepInfra" : "Nebius",
+          ),
+        );
+        const result = await engine.search(
+          ctx,
+          { ...request(), profile: generation.profile },
+          "local",
+        );
+        assert.equal(result.hits.length, 3);
+        assert(calls.at(-1)!.inputs[0].startsWith("Instruct:"));
+        assert.equal(
+          calls.length,
+          before + 3,
+          "A profile miss must probe and embed its own query",
+        );
+        assert.deepEqual(
+          calls.slice(before).map((call) => call.route),
+          [route, route, route],
+        );
+        assert.equal(await store.compatibility(generation.profile), null);
+        assert.equal(
+          (await store.probeEvidence(generation.profile))!.references.every(
+            (entry) => entry.distance === 0,
+          ),
+          true,
+        );
+        await engine.search(
+          ctx,
+          { ...request(), profile: generation.profile },
+          "local",
+        );
+        assert.equal(
+          calls.length,
+          before + 3,
+          "The query cache remains local to that profile",
+        );
+      }
+      assert.equal(config.embedding!.route, "nebius");
+    } finally {
+      await assistance.drainEmbeddingTransports();
+    }
+  }));

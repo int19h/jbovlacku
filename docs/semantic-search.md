@@ -32,6 +32,23 @@ It uses `loaded-view.json`, with the same `JVC_VIEW` and `JVC_STATE_TRAVERSAL_LI
 It reads at most 128 semantic records per page. Missing projections use the existing private backfill path.
 Preparation reads no provider key and sends no inference request.
 
+For a fresh profile, use `prepare --route deepinfra/us` to select DeepInfra through OpenRouter:
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command prepare --route deepinfra/us
+```
+
+The allowed routes are `nebius` and `deepinfra/us`. Without `--route`, a fresh profile uses `nebius`.
+The profile records its route in `provider` and `parameters.route`. The route therefore changes the complete profile ID.
+Document, query, background, and compatibility-probe requests use that profile's route, with `allow_fallbacks: false`.
+The server serves either route through `JVC_SEMANTIC_PROFILE`; no route override is needed.
+Existing Nebius profiles and their IDs stay unchanged.
+
+A measured comparison of 32 identical inputs gave cross-provider cosine similarities from 0.9951 to 0.9977, with distance up to 0.0049.
+The compatibility probe permits a maximum cosine distance of 0.0005.
+The measured cross-provider distance exceeds that tolerance, so Nebius and DeepInfra must use separate profiles and vector spaces.
+Changing the route requires a fresh profile and new vectors, even when input bytes stay unchanged.
+
 Set `JVC_EMBEDDING_PROFILE` to the `generation.profile` value from an earlier generation.
 Use `prepare --profile PROFILE_ID` to reuse that stored application profile for another snapshot or view:
 
@@ -43,6 +60,7 @@ The command refuses an unknown, suspended, or incompatible stored profile before
 The model, route, runtime, recipes, parameters, and epoch must match the application adapter.
 Without `--profile`, preparation keeps its existing behavior and creates a random fresh epoch.
 With `--job`, a supplied profile must match the saved job.
+`--profile` and `--job` retain their stored route. A supplied `--route` must match that route or preparation fails.
 
 The `prepared` JSON event includes `reused_inputs`, the count of distinct prepared inputs that already have a stored vector under that profile.
 This count covers staged pages when `--pages` limits preparation.

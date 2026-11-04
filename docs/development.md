@@ -685,7 +685,7 @@ The Node server accepts these variables:
 | `JVC_AI_INPUT_PRICE`               | Model input price in USD per million tokens. The default is 0.10.                                                                                                    |
 | `JVC_AI_OUTPUT_PRICE`              | Model output price in USD per million tokens. The default is 0.20.                                                                                                   |
 | `JVC_AI_EMBEDDING_MODEL`           | Embedding model. The adapter permits only `qwen/qwen3-embedding-8b`, which is the default.                                                                           |
-| `JVC_AI_EMBEDDING_PROVIDER_ROUTE`  | Embedding route. The adapter permits only `nebius`, which is the default.                                                                                            |
+| `JVC_AI_EMBEDDING_PROVIDER_ROUTE`  | Default route for embedding calls without a profile. Accepts `nebius` (default) or `deepinfra/us`. A profile selects its own route.                                  |
 | `JVC_AI_EMBEDDING_INPUT_PRICE`     | Embedding input price in USD per million tokens. The default is 0.01.                                                                                                |
 | `JVC_AI_HOURLY_BUDGET_USD`         | Server spending limit for the past hour. The default is 32 USD.                                                                                                      |
 | `JVC_AI_DAILY_BUDGET_USD`          | Server spending limit for the past day. The default is 160 USD.                                                                                                      |
@@ -883,7 +883,7 @@ The host emits a fixed warning that names the invalid field. Generation profiles
 Each server embedding batch permits one through eight inputs, with at most 4,096 UTF-8 bytes per input and 32 KiB in total.
 Inputs already include the exact profile prefix. The adapter rejects malformed UTF-8 and preserves the remaining bytes.
 Encoded requests permit 64 KiB. Provider responses permit 2 MiB.
-The adapter pins the model and Nebius route, disables fallback and redirects, and makes no automatic retry.
+The adapter pins the model and the profile's `nebius` or `deepinfra/us` route, disables fallback and redirects, and makes no automatic retry.
 The embedding input price must be positive. The route price cap uses the lower of that price and `JVC_AI_MAX_PRICE`.
 It accepts the exact returned model names `qwen/qwen3-embedding-8b` and `Qwen/Qwen3-Embedding-8B`.
 The adapter rejects invalid input indices, dimensions other than 4,096, and nonfinite or zero vectors.
@@ -954,7 +954,16 @@ Older attempts whose inputs now belong to later attempts remain excluded.
 Review ambiguous batches first. Retrying them can repeat paid work whose earlier result remains unknown.
 The [operator guide](semantic-search.md#handle-provider-rate-limits) describes output events and retry bounds.
 
+Use `prepare --route deepinfra/us` for a fresh DeepInfra profile. The default fresh-profile route stays `nebius`.
+The allowed routes are `nebius` and `deepinfra/us`. Each route changes both profile provider fields and the complete profile ID.
+Document, query, and compatibility-probe requests always use the stored profile route with fallback disabled.
+The server accepts either route under `JVC_SEMANTIC_PROFILE`.
+A measured 32-input comparison gave cross-provider cosine similarities of 0.9951 to 0.9977, with distance up to 0.0049.
+The compatibility probe tolerance is 0.0005, so the providers require separate profiles and vector spaces.
+Existing Nebius profiles keep their exact identity. Changing a route requires a fresh profile and new vectors.
+
 Use `prepare --profile PROFILE_ID` to build another view or snapshot under a stored compatible profile.
+A stored profile or job keeps its route. A conflicting `--route` fails preparation.
 Unchanged exact inputs then reuse vectors under that full profile and input hash.
 Stored profile batch fields retain the server limits of eight inputs and 32 KiB.
 The profile does not bind operator batch size. Larger operator batches do not change the vector space.

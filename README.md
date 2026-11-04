@@ -375,7 +375,9 @@ It reserves costs before admission and enforces server and network spending limi
 IPv6 limits also count /48 prefixes. The Node server stores spending ledgers in SQLite.
 The host service also admits bounded embedding batches through the same spending ledger and execution slots.
 Caller cancellation during embedding admission prevents dispatch and removes any unsent reservation.
-Its provider adapter pins `qwen/qwen3-embedding-8b` to the Nebius route through OpenRouter, with fallback and redirects disabled.
+Its provider adapter pins `qwen/qwen3-embedding-8b` to each profile's Nebius or DeepInfra route through OpenRouter, with fallback and redirects disabled.
+Operators select a fresh profile's route with `prepare --route nebius` or `prepare --route deepinfra/us`.
+Nebius remains the default. The providers use separate profile IDs and vector spaces, including for queries and compatibility probes.
 Invalid embedding configuration disables embedding alone and preserves generation.
 Interrupted operations retain unknown-cost charges after restart. Errors after reservation carry their operation IDs.
 Completed operator batches with known costs share hourly ledger rows, while recent diagnostics retain their individual charges.

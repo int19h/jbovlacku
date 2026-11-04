@@ -4,7 +4,12 @@ import {
   interpretDefinition,
   utf8,
 } from "../../../core/src/index.ts";
-import { EMBEDDING_MODEL, EMBEDDING_ROUTE } from "../inference.ts";
+import {
+  EMBEDDING_MODEL,
+  EMBEDDING_ROUTE,
+  isEmbeddingRoute,
+  type EmbeddingRoute,
+} from "../inference.ts";
 import {
   SemanticError,
   type EmbeddingProfile,
@@ -29,7 +34,14 @@ function freshEpoch(): string {
 /** A new application generation never adopts saved research vectors. */
 export function createQwenProfile(
   epoch: string = freshEpoch(),
+  route: EmbeddingRoute = EMBEDDING_ROUTE,
 ): EmbeddingProfile {
+  if (!isEmbeddingRoute(route))
+    throw new SemanticError(
+      400,
+      "profile",
+      "The embedding provider route is invalid.",
+    );
   if (!/^[a-f0-9]{32}$/.test(epoch))
     throw new SemanticError(400, "profile", "The profile epoch is invalid.");
   return {
@@ -37,7 +49,7 @@ export function createQwenProfile(
     model: EMBEDDING_MODEL,
     revision: null,
     artifacts: [],
-    provider: `openrouter:${EMBEDDING_ROUTE}`,
+    provider: `openrouter:${route}`,
     runtime: { name: "jbovlacku-openrouter-embeddings", version: "1" },
     epoch,
     dimension: 4096,
@@ -59,7 +71,7 @@ export function createQwenProfile(
     parameters: {
       adapter: "openrouter-embeddings-v1",
       endpoint: "https://openrouter.ai/api/v1/embeddings",
-      route: EMBEDDING_ROUTE,
+      route,
       allow_fallbacks: false,
       encoding_format: "float",
       maximum_input_bytes: MAX_INPUT_BYTES,
@@ -68,6 +80,17 @@ export function createQwenProfile(
       local_normalization: "l2-scale-f64-to-f32-v1",
     },
   };
+}
+
+/** Accept only a complete application profile with one supported, consistent route. */
+export function qwenProfileRoute(
+  profile: EmbeddingProfile,
+): EmbeddingRoute | null {
+  const route = profile.parameters.route;
+  return isEmbeddingRoute(route) &&
+    profileId(profile) === profileId(createQwenProfile(profile.epoch, route))
+    ? route
+    : null;
 }
 
 const object = (value: unknown): value is Record<string, unknown> =>

@@ -1,7 +1,7 @@
 import type { AssistanceService } from "../assistance.ts";
 import type { EmbeddingUsage } from "../embedding.ts";
 import { AssistanceError } from "../inference.ts";
-import { createQwenProfile, profileId } from "./profile.ts";
+import { qwenProfileRoute } from "./profile.ts";
 import type { SemanticSource } from "./source.ts";
 import type { EmbeddingProfile } from "./types.ts";
 import { SemanticError } from "./types.ts";
@@ -154,7 +154,8 @@ export class SemanticIndexer {
         };
       const profile = await this.store.profile(id);
       // This adapter computes one exact application profile. A recipe or route change needs a new adapter.
-      if (profileId(profile) !== profileId(createQwenProfile(profile.epoch)))
+      const route = qwenProfileRoute(profile);
+      if (!route)
         throw new SemanticError(
           409,
           "semantic_profile",
@@ -282,6 +283,7 @@ export class SemanticIndexer {
                   await this.store.sent(batch.id, id);
                   operation = id;
                 },
+                route,
               );
               usage = result.usage;
               await this.store.complete(
