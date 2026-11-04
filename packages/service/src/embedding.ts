@@ -68,11 +68,13 @@ export function prepareEmbedding(
   operator = false,
 ): PreparedEmbedding {
   const embedding = config.embedding;
+  const inputPrice =
+    embedding?.inputPrices?.[embedding.route] ?? embedding?.inputPrice;
   if (
     !embedding ||
     embedding.model !== EMBEDDING_MODEL ||
     !isEmbeddingRoute(embedding.route) ||
-    !validEmbeddingInputPrice(embedding.inputPrice) ||
+    !validEmbeddingInputPrice(inputPrice) ||
     !Number.isFinite(config.maxPrice) ||
     config.maxPrice <= 0
   )
@@ -125,7 +127,7 @@ export function prepareEmbedding(
       order: [embedding.route],
       only: [embedding.route],
       allow_fallbacks: false,
-      max_price: { prompt: Math.min(embedding.inputPrice, config.maxPrice) },
+      max_price: { prompt: Math.min(inputPrice, config.maxPrice) },
     },
     usage: { include: true },
   });
@@ -146,7 +148,7 @@ export function prepareEmbedding(
       : {}),
     // A byte count alone does not bound tokens after provider normalization.
     estimatedUsd:
-      (inputs.length * EMBEDDING_QUOTE_TOKENS * embedding.inputPrice) / 1000000,
+      (inputs.length * EMBEDDING_QUOTE_TOKENS * inputPrice) / 1000000,
   };
 }
 

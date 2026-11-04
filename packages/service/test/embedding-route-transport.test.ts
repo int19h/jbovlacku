@@ -50,12 +50,16 @@ test("parallel embedding calls require caller routes and ignore the configured r
         },
         async () => "disposable-route-key",
       )!,
+      concurrency: 3,
       fetch: async (_url: string | URL | Request, init?: RequestInit) => {
         const body = JSON.parse(String(init?.body));
         const route = body.provider.order[0];
         assert.deepEqual(body.provider.only, [route]);
         assert.equal(body.provider.allow_fallbacks, false);
-        assert.equal(body.provider.max_price.prompt, 0.01);
+        assert.equal(
+          body.provider.max_price.prompt,
+          route === "siliconflow/fp8" ? 0.04 : 0.01,
+        );
         seen.push(route);
         if (seen.length <= 3) {
           assert.equal(linked.has(route), true);
@@ -66,6 +70,7 @@ test("parallel embedding calls require caller routes and ignore the configured r
       },
     };
     const originalEmbedding = provider.embedding;
+    Object.freeze(originalEmbedding!.inputPrices);
     Object.freeze(originalEmbedding);
     Object.freeze(provider);
     const service = new AssistanceService(
@@ -165,4 +170,48 @@ test("an explicit route does not enable disabled embedding inference", async () 
     ),
     { code: "embedding_configuration" },
   );
+});
+
+test("omitted caller routes cannot fall back to any valid configured route", async () => {
+  for (const configuredRoute of [
+    "nebius",
+    "deepinfra/us",
+    "siliconflow/fp8",
+  ] as const) {
+    const provider = {
+      ...providerConfig(
+        {
+          JVC_AI_ENABLED: "enabled",
+          JVC_AI_EMBEDDING_PROVIDER_ROUTE: configuredRoute,
+        },
+        async () => {
+          throw new Error("No key read expected.");
+        },
+      )!,
+      fetch: async () => {
+        throw new Error("No dispatch expected.");
+      },
+    };
+    const service = new AssistanceService(
+      { provider },
+      "route-test",
+      async () => [],
+    );
+    await assert.rejects(
+      // @ts-expect-error Every index caller must name its profile route.
+      service.embed(input, { kind: "index" }),
+      { code: "embedding_configuration" },
+    );
+    await assert.rejects(
+      // @ts-expect-error Every probe caller must name its profile route.
+      service.embed(input, { kind: "probe" }),
+      { code: "embedding_configuration" },
+    );
+    await assert.rejects(
+      // @ts-expect-error Every query caller must name its profile route.
+      service.embed(input, { kind: "query", network: "local" }),
+      { code: "embedding_configuration" },
+    );
+    assert.deepEqual(await service.embeddingOperations(), []);
+  }
 });

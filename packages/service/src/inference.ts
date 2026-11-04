@@ -27,6 +27,7 @@ export interface EmbeddingConfig {
   model: typeof EMBEDDING_MODEL;
   route: EmbeddingRoute;
   inputPrice: number;
+  inputPrices?: Partial<Record<EmbeddingRoute, number>>;
 }
 
 export type Task =
@@ -354,6 +355,9 @@ export function providerConfig(
       model: EMBEDDING_MODEL,
       route: embeddingRoute,
       inputPrice: embeddingPrice,
+      ...(env.JVC_AI_EMBEDDING_INPUT_PRICE === undefined
+        ? { inputPrices: { "siliconflow/fp8": 0.04 } }
+        : {}),
     };
   const hourlyBudgetUsd = number(
     "JVC_AI_HOURLY_BUDGET_USD",
