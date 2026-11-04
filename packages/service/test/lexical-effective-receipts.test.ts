@@ -1079,7 +1079,7 @@ test("known-word package evidence follows status-only changes, retirement filter
   assert.equal(localSearch(v1 as any, "klama").allLojban, false);
 });
 
-test("r3: package evidence stores one view per manifest and keeps v1 and signed bytes unchanged", async () => {
+test("package evidence stores one view per manifest and keeps v1 and signed bytes unchanged", async () => {
   const f = await fixture();
   const definition = signedDefinition();
   await f.admit(f.view, definition);
@@ -1142,7 +1142,7 @@ test("r3: package evidence stores one view per manifest and keeps v1 and signed 
   );
 });
 
-test("r3: checkpoint restore upgrades old per-entry view metadata and preserves compatible new packages", async () => {
+test("checkpoint restore upgrades old per-entry view metadata and preserves compatible new packages", async () => {
   let saved: ServiceCheckpoint | undefined;
   const f = await fixture({
     coreVersion: "r3-metadata",

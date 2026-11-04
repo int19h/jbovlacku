@@ -195,7 +195,7 @@ async function currentDraft(page: Page) {
   });
 }
 
-test("r7 input F1 native paragraph keeps a code container and untouched CR text", async ({
+test("input native paragraph keeps a code container and untouched CR text", async ({
   page,
 }, info) => {
   const field = await mount(page, [[{ code: "ab" }, "outside\r\n"]]);
@@ -216,7 +216,7 @@ test("r7 input F1 native paragraph keeps a code container and untouched CR text"
     .toEqual([[{ code: "ab" }, "outside\r\n"]]);
 });
 
-test("r7 recovery F3 F4 unchanged no-op and orphan inputs keep the live paragraph", async ({
+test("recovery unchanged no-op and orphan inputs keep the live paragraph", async ({
   page,
 }, info) => {
   const field = await mount(page, [["ab"]]);
@@ -258,7 +258,7 @@ test("r7 recovery F3 F4 unchanged no-op and orphan inputs keep the live paragrap
 });
 
 for (const dialog of [false, true]) {
-  test(`r7 paste F5 captures the same-task native range${dialog ? " through the choice dialog" : ""}`, async ({
+  test(`paste captures the same-task native range${dialog ? " through the choice dialog" : ""}`, async ({
     page,
   }, info) => {
     const field = await mount(page, [["abcd"]]);
@@ -291,7 +291,7 @@ for (const dialog of [false, true]) {
   });
 }
 
-test("r7 ranges F7 rejects two disjoint cancelable targets as one operation", async ({
+test("ranges rejects two disjoint cancelable targets as one operation", async ({
   page,
 }, info) => {
   const field = await mount(page, [["abcdef"]]);
@@ -335,7 +335,7 @@ test("r7 ranges F7 rejects two disjoint cancelable targets as one operation", as
   ).toBeVisible();
 });
 
-test("r7 integration T3 deletion saves actual draft nodes and visible content after reload", async ({
+test("integration T3 deletion saves actual draft nodes and visible content after reload", async ({
   page,
 }, info) => {
   const field = await seed(page);
@@ -359,7 +359,7 @@ test("r7 integration T3 deletion saves actual draft nodes and visible content af
   expect((await currentDraft(page)).text).toEqual([[1, " gives "]]);
 });
 
-test("r7 ranges F7 dirty noncancelable disjoint input restores the complete model", async ({
+test("ranges dirty noncancelable disjoint input restores the complete model", async ({
   page,
 }, info) => {
   const field = await mount(page, [["abcdef"]]);
@@ -405,7 +405,7 @@ test("r7 ranges F7 dirty noncancelable disjoint input restores the complete mode
   expect(await richNodes(field)).toEqual([["abcdef"]]);
 });
 
-test("r7 lujvo M1 human definition edits invalidate persisted numbering approval", async ({
+test("lujvo M1 human definition edits invalidate persisted numbering approval", async ({
   page,
 }, info) => {
   const field = await seed(page, true);
@@ -428,7 +428,7 @@ test("r7 lujvo M1 human definition edits invalidate persisted numbering approval
   expect((await currentDraft(page)).numberingApproved).toBe(false);
 });
 
-test("r7 lujvo L1 declared operands can be inserted on the builder route", async ({
+test("lujvo L1 declared operands can be inserted on the builder route", async ({
   page,
 }, info) => {
   const field = await seed(page, true);
@@ -460,7 +460,7 @@ test("r7 lujvo L1 declared operands can be inserted on the builder route", async
   });
 });
 
-test("r7 contract F11 reference renumbering starts history without reviving the old reference", async ({
+test("contract reference renumbering starts history without reviving the old reference", async ({
   page,
 }, info) => {
   await seed(page, false, false, true);
@@ -527,7 +527,7 @@ test("r7 contract F11 reference renumbering starts history without reviving the 
   });
 });
 
-test("r7 gate F2 actual Shift-Delete copies before removing the selected range", async ({
+test("gate actual Shift-Delete copies before removing the selected range", async ({
   page,
   browserName,
 }, info) => {
@@ -590,7 +590,7 @@ test("r7 gate F2 actual Shift-Delete copies before removing the selected range",
 });
 
 for (const backwards of [false, true]) {
-  test(`r7 gate F8 real cut then type records ${backwards ? "backward" : "forward"} selection context`, async ({
+  test(`gate real cut then type records ${backwards ? "backward" : "forward"} selection context`, async ({
     page,
   }, info) => {
     const field = await mount(page, [[{ code: "ab" }, "cd"]]);
@@ -625,7 +625,7 @@ for (const backwards of [false, true]) {
   });
 }
 
-test("r7 gate F10 trusted internal drag keeps text when the drop is canceled", async ({
+test("gate trusted internal drag keeps text when the drop is canceled", async ({
   page,
 }, info) => {
   const original: RichText = [["alpha beta gamma delta omega"]];
@@ -675,7 +675,7 @@ test("r7 gate F10 trusted internal drag keeps text when the drop is canceled", a
   await expect(field).toHaveText("alpha beta gamma delta omega");
 });
 
-test("r7 gate S1 stored places 51 and 65535 survive nearby edits and draft reload", async ({
+test("gate S1 stored places 51 and 65535 survive nearby edits and draft reload", async ({
   page,
 }, info) => {
   const field = await seed(page, false, true);
@@ -721,7 +721,7 @@ test("r7 gate S1 stored places 51 and 65535 survive nearby edits and draft reloa
   ]);
 });
 
-test("r7 literal S3 ordinary mode editing keeps invalid numeric notation as text", async ({
+test("literal S3 ordinary mode editing keeps invalid numeric notation as text", async ({
   page,
 }, info) => {
   const field = await seed(page);
@@ -756,7 +756,7 @@ test("r7 literal S3 ordinary mode editing keeps invalid numeric notation as text
   ]);
 });
 
-test("r7 gate T8 literal line-ending and glyph requirements have independent vectors", async ({
+test("gate T8 literal line-ending and glyph requirements have independent vectors", async ({
   page,
 }, info) => {
   const original: RichText = [
@@ -800,7 +800,7 @@ for (const action of [
   "boundary-duplicate",
   "dirty-multiple-range",
 ] as const) {
-  test(`r7 composition F6 actual Chromium pending text ${action}`, async ({
+  test(`composition actual Chromium pending text ${action}`, async ({
     page,
     browserName,
   }, info) => {
@@ -1055,7 +1055,7 @@ for (const [token, expected] of [
   ["____", [[1, "_"]]],
   ["__50___", [[50, "_"]]],
 ] as const) {
-  test(`r7 token S2 actual Chromium commit ${token} keeps incremental order`, async ({
+  test(`token S2 actual Chromium commit ${token} keeps incremental order`, async ({
     page,
     browserName,
   }, info) => {
@@ -1093,7 +1093,7 @@ for (const [token, expected] of [
   });
 }
 
-test("r7 composition F6 Firefox protocol fixture includes pending DOM text", async ({
+test("composition Firefox protocol fixture includes pending DOM text", async ({
   page,
   browserName,
 }, info) => {
@@ -1180,7 +1180,7 @@ test("r7 composition F6 Firefox protocol fixture includes pending DOM text", asy
   ).toContainText("try again");
 });
 
-test("r7 biography L2 a name-only signed profile edit preserves stored whitespace", async ({
+test("biography L2 a name-only signed profile edit preserves stored whitespace", async ({
   page,
 }, info) => {
   await page.goto("/");
@@ -1270,7 +1270,7 @@ test("r7 biography L2 a name-only signed profile edit preserves stored whitespac
   ).toEqual([[" \t"]]);
 });
 
-test("r7 composition F6 settled deletion persists the exact draft and survives reload", async ({
+test("composition settled deletion persists the exact draft and survives reload", async ({
   page,
   browserName,
 }, info) => {
@@ -1357,7 +1357,7 @@ test("r7 composition F6 settled deletion persists the exact draft and survives r
 });
 
 for (const colorScheme of ["light", "dark"] as const) {
-  test(`r7 design compact toolbar, reserved focus space and six-column grid in ${colorScheme}`, async ({
+  test(`design compact toolbar, reserved focus space and six-column grid in ${colorScheme}`, async ({
     page,
   }) => {
     await page.setViewportSize({ width: 360, height: 900 });
@@ -1536,7 +1536,7 @@ for (const colorScheme of ["light", "dark"] as const) {
   });
 }
 
-test("r7 dialog multiline label keeps its exact stored value on target edits", async ({
+test("dialog multiline label keeps its exact stored value on target edits", async ({
   page,
 }) => {
   const field = await mount(page, [

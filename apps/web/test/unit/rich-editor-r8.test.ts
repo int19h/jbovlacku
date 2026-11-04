@@ -22,7 +22,7 @@ function pending() {
   return { state, range: snapshotRichRange(doc, from, to) };
 }
 
-test("r8 deferred range keeps an insertion at its start outside deletion", () => {
+test("deferred range keeps an insertion at its start outside deletion", () => {
   const { state, range } = pending();
   const tr = state.tr.insertText("X", range.from);
   const mapped = mapRichRange(range, tr);
@@ -41,7 +41,7 @@ test("r8 deferred range keeps an insertion at its start outside deletion", () =>
   ]);
 });
 
-test("r8 deferred range keeps an insertion at its end outside deletion", () => {
+test("deferred range keeps an insertion at its end outside deletion", () => {
   const { state, range } = pending();
   const tr = state.tr.insertText("Y", range.to);
   const mapped = mapRichRange(range, tr);
@@ -50,7 +50,7 @@ test("r8 deferred range keeps an insertion at its end outside deletion", () => {
   assert.ok(mapped.slice.eq(range.slice));
 });
 
-test("r8 deferred range rejects changed content with unchanged container types", () => {
+test("deferred range rejects changed content with unchanged container types", () => {
   const { state, range } = pending();
   assert.equal(
     mapRichRange(range, state.tr.insertText("Z", range.from, range.from + 1)),
@@ -66,7 +66,7 @@ test("r8 deferred range rejects changed content with unchanged container types",
   );
 });
 
-test("r8 deferred range rejects a different document and preserves equal parser replacements", () => {
+test("deferred range rejects a different document and preserves equal parser replacements", () => {
   const { state, range } = pending();
   const equal = state.tr.replaceWith(
     0,
@@ -81,7 +81,7 @@ test("r8 deferred range rejects a different document and preserves equal parser 
   assert.equal(mapRichRange(range, other.tr), null);
 });
 
-test("r8 known cross-container commit is one lossless owned replacement", () => {
+test("known cross-container commit is one lossless owned replacement", () => {
   const word = {
     word: { language: "jbo" as const, spelling: "cukta" },
     label: "cd",

@@ -94,7 +94,7 @@ async function movedDescription(page: Page) {
   return field;
 }
 
-test("r3 pointer focus keeps the clicked caret in an unfocused editor", async ({
+test("pointer focus keeps the clicked caret in an unfocused editor", async ({
   page,
 }) => {
   const field = await mount(page, [["hello world"]]);
@@ -113,7 +113,7 @@ test("r3 pointer focus keeps the clicked caret in an unfocused editor", async ({
   expect(await richNodes(moved)).toEqual([["hello Xworld"]]);
 });
 
-test("r3 a native selection chosen before focus stays at its requested offset", async ({
+test("a native selection chosen before focus stays at its requested offset", async ({
   page,
 }) => {
   const field = await mount(page, [["hello world"]]);
@@ -161,7 +161,7 @@ test("r3 a native selection chosen before focus stays at its requested offset", 
   }
 });
 
-test("r3 live blank paragraphs stay editable while getters, saved drafts, and publication omit them", async ({
+test("live blank paragraphs stay editable while getters, saved drafts, and publication omit them", async ({
   page,
 }) => {
   await seed(page);
@@ -208,7 +208,7 @@ test("r3 live blank paragraphs stay editable while getters, saved drafts, and pu
     });
 });
 
-test("r3 editing a saved blank makes its undo use the canonical stored value", async ({
+test("editing a saved blank makes its undo use the canonical stored value", async ({
   page,
 }) => {
   const field = await mount(page, [["\n"]]);
@@ -220,7 +220,7 @@ test("r3 editing a saved blank makes its undo use the canonical stored value", a
   await expect(field.locator("p")).toHaveCount(1);
 });
 
-test("r3 each Backspace past an emptied literal changes visible text", async ({
+test("each Backspace past an emptied literal changes visible text", async ({
   page,
 }) => {
   const field = await mount(page, [["keep ", { code: "ab" }, "y"]]);
@@ -231,7 +231,7 @@ test("r3 each Backspace past an emptied literal changes visible text", async ({
   expect(await richNodes(field)).toEqual([["keep ", { code: "a" }]]);
 });
 
-test("r3 outside typing preserves raw CR and CRLF while explicit newline edits and undo still work", async ({
+test("outside typing preserves raw CR and CRLF while explicit newline edits and undo still work", async ({
   page,
 }) => {
   const exact: RichText = [
@@ -336,7 +336,7 @@ test("r3 outside typing preserves raw CR and CRLF while explicit newline edits a
   expect(await richNodes(field)).toEqual(afterCode);
 });
 
-test("r3 toolbar instructions remain available to screen readers and empty operand controls stay hidden", async ({
+test("toolbar instructions remain available to screen readers and empty operand controls stay hidden", async ({
   page,
 }) => {
   const field = await mount(page, [["text"]]);
@@ -356,7 +356,7 @@ test("r3 toolbar instructions remain available to screen readers and empty opera
   ).toBeHidden();
 });
 
-test("r3 operand addition and renaming refresh every retained rich-field control", async ({
+test("operand addition and renaming refresh every retained rich-field control", async ({
   page,
 }) => {
   await seed(page);
@@ -397,7 +397,7 @@ test("r3 operand addition and renaming refresh every retained rich-field control
   expect(await retained!.evaluate((node) => node.isConnected)).toBe(true);
 });
 
-test("r3 removing the last operand refreshes every retained rich-field control", async ({
+test("removing the last operand refreshes every retained rich-field control", async ({
   page,
 }) => {
   await seed(page, true);
@@ -417,7 +417,7 @@ test("r3 removing the last operand refreshes every retained rich-field control",
 });
 
 for (const target of ["authoring", "profile", "rafsi"] as const) {
-  test(`r3 a failed ${target} editor load shows a heading and a working Reload action`, async ({
+  test(`a failed ${target} editor load shows a heading and a working Reload action`, async ({
     page,
   }) => {
     const errors: string[] = [];
@@ -471,7 +471,7 @@ for (const target of ["authoring", "profile", "rafsi"] as const) {
   });
 }
 
-test("r3 a failed report-editor load gives an accessible error and recovery", async ({
+test("a failed report-editor load gives an accessible error and recovery", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -496,7 +496,7 @@ test("r3 a failed report-editor load gives an accessible error and recovery", as
   ).toBeVisible();
 });
 
-test("r3 repeated report activation during loading opens one dialog", async ({
+test("repeated report activation during loading opens one dialog", async ({
   page,
 }) => {
   await page.goto(

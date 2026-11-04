@@ -350,7 +350,7 @@ globalThis.fetch = async (url, init) => {
   }
 });
 
-test("R7 the CLI retires a suspended completed background job after exact unpublication", async () => {
+test("the CLI retires a suspended completed background job after exact unpublication", async () => {
   const base = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(base, { recursive: true });
   const directory = await mkdtemp(join(base, "semantic-retirement-cli-"));

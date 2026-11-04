@@ -1,6 +1,6 @@
 {
   "source": "https://lensisku.lojban.org",
-  "url": "file:///home/int19h.linux/lojban/archive/dumps-2026-09-13/lensisku-public-data.sanitized-v3.sql",
+  "url": "file:lensisku-public-data.sanitized-v3.sql",
   "account_origin": "https://lensisku.lojban.org",
   "retrieved_at": "2026-09-13T00:00:00+00:00",
   "sha256": "sha256:a6fa2a9ab39c724d4a4061fff1030b5149de0130c622afe41ea1c391fc03ad61",
@@ -20,6 +20,7 @@
     "natlangwords": 4
   },
   "notes": [
-    "This fixture is a derived sample. It is not a separate source snapshot. The operator export date is normalized to midnight UTC."
+    "This fixture is a derived sample. It is not a separate source snapshot. The operator export date is normalized to midnight UTC.",
+    "The recorded file: URL retains only the original file name. It does not record the original location."
   ]
 }

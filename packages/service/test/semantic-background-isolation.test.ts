@@ -238,7 +238,7 @@ async function seedReference(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 for (const mode of ["sent", "unknown"] as const) {
-  test(`R4-1 ${mode} probe failures stop after four attempts per recovery round`, async (t) => {
+  test(`${mode} probe failures stop after four attempts per recovery round`, async (t) => {
     let sends = 0;
     const f = await fixture(
       t,
@@ -284,7 +284,7 @@ for (const mode of ["sent", "unknown"] as const) {
   });
 }
 
-test("R4-2 isolates poison, carries its hold across snapshots and restart, and retries without a new snapshot", async (t) => {
+test("isolates poison, carries its hold across snapshots and restart, and retries without a new snapshot", async (t) => {
   const docs = documents(16);
   const poison = new TextDecoder().decode(
     [...docs].sort((a, b) => a.input_hash!.localeCompare(b.input_hash!))[0]
@@ -389,7 +389,7 @@ test("R4-2 isolates poison, carries its hold across snapshots and restart, and r
   );
 });
 
-test("R4-3 oversized requests split before a paid send", async (t) => {
+test("oversized requests split before a paid send", async (t) => {
   const sizes: number[] = [];
   const f = await fixture(
     t,
@@ -423,7 +423,7 @@ for (const reason of [
   "semantic_capacity",
   "snapshot_expired",
 ]) {
-  test(`R4-3 ${reason} waits one hour and logs only a state change across restart`, async (t) => {
+  test(`${reason} waits one hour and logs only a state change across restart`, async (t) => {
     let attempts = 0;
     const f = await fixture(t, async () => success());
     if (reason === "billing_request_too_large") f.config.maxCostUsd = quote / 2;
@@ -464,7 +464,7 @@ for (const reason of [
   });
 }
 
-test("R4-2 split children wait for their parent's timed-out transport across a newer snapshot", async (t) => {
+test("split children wait for their parent's timed-out transport across a newer snapshot", async (t) => {
   const gate = deferred();
   t.after(() => gate.resolve());
   let calls = 0;
@@ -531,7 +531,7 @@ test("R4-2 split children wait for their parent's timed-out transport across a n
   assert(Math.abs((await charge(f.budget)) - (32 * quote + 9 * cost)) < 1e-12);
 });
 
-test("R4-2 a fresh failing batch starts its own send count after an exhausted batch splits", async (t) => {
+test("a fresh failing batch starts its own send count after an exhausted batch splits", async (t) => {
   let sends = 0;
   const f = await fixture(
     t,
@@ -555,7 +555,7 @@ test("R4-2 a fresh failing batch starts its own send count after an exhausted ba
   assert.equal((await f.job()).background_recovery?.exhausted, false);
 });
 
-test("R4-2 a parked input removed by the latest snapshot never retries", async (t) => {
+test("a parked input removed by the latest snapshot never retries", async (t) => {
   let sends = 0;
   const f = await fixture(t, async () =>
     ++sends <= 4 ? new Response("Unknown", { status: 503 }) : success(),
@@ -583,7 +583,7 @@ test("R4-2 a parked input removed by the latest snapshot never retries", async (
   assert.equal((await f.job()).background_inputs, undefined);
 });
 
-test("R4-3 an expired unpublished source moves to a fresh snapshot without a one-hour delay", async (t) => {
+test("an expired unpublished source moves to a fresh snapshot without a one-hour delay", async (t) => {
   let sends = 0;
   const f = await fixture(t, async () => {
     sends++;
@@ -629,7 +629,7 @@ test("R4-3 an expired unpublished source moves to a fresh snapshot without a one
   assert.equal((await f.store.generation(old.id)).state, "retired");
 });
 
-test("R4-3 full storage before job creation keeps its cooldown and log state", async (t) => {
+test("full storage before job creation keeps its cooldown and log state", async (t) => {
   let attempts = 0;
   const f = await fixture(t, async () => success());
   t.mock.method(f.store, "create", async () => {
@@ -659,7 +659,7 @@ test("R4-3 full storage before job creation keeps its cooldown and log state", a
   assert.equal(await charge(f.budget), 0);
 });
 
-test("R7 restart preserves an exhausted probe round and an unrelated input hold", async (t) => {
+test("restart preserves an exhausted probe round and an unrelated input hold", async (t) => {
   const poison = new TextDecoder().decode(documents(2)[1].input!);
   let probeSends = 0;
   let brokenProbe = false;
@@ -712,7 +712,7 @@ test("R7 restart preserves an exhausted probe round and an unrelated input hold"
   assert.equal((await f.job()).background_recovery?.sent_attempts, 4);
 });
 
-test("R4-2 status finds one hold through indexed lookups among 59001 associations", async (t) => {
+test("status finds one hold through indexed lookups among 59001 associations", async (t) => {
   const f = await fixture(
     t,
     async () => new Response("Unknown", { status: 503 }),
@@ -779,7 +779,7 @@ test("R4-2 status finds one hold through indexed lookups among 59001 association
   );
 });
 
-test("R4-3 invalid embedding configuration waits one hour without charges or repeated logs", async (t) => {
+test("invalid embedding configuration waits one hour without charges or repeated logs", async (t) => {
   let sends = 0;
   const f = await fixture(t, async () => {
     sends++;
@@ -805,7 +805,7 @@ test("R4-3 invalid embedding configuration waits one hour without charges or rep
   assert.equal(f.reports.length, 1);
 });
 
-test("R4-2 each claim loads at most 128 due holds through the deadline index", async (t) => {
+test("each claim loads at most 128 due holds through the deadline index", async (t) => {
   const f = await fixture(
     t,
     async () => new Response("Unknown", { status: 503 }),
@@ -876,7 +876,7 @@ test("R4-2 each claim loads at most 128 due holds through the deadline index", a
   );
 });
 
-test("R4-2 a marked retry excludes an input parked by another view", async (t) => {
+test("a marked retry excludes an input parked by another view", async (t) => {
   let fixed = false;
   const sends: string[][] = [];
   const f = await fixture(
@@ -962,7 +962,7 @@ test("R4-2 a marked retry excludes an input parked by another view", async (t) =
   });
 });
 
-test("R4-3 capacity refusal during expired-source replacement waits and then recovers", async (t) => {
+test("capacity refusal during expired-source replacement waits and then recovers", async (t) => {
   let sends = 0;
   let attempts = 0;
   let full = true;
@@ -1053,7 +1053,7 @@ test("R4-3 capacity refusal during expired-source replacement waits and then rec
   assert.equal((await f.store.generation(old.id)).state, "retired");
 });
 
-test("R7 basic generation and public profile reads do no hold scans with 59125 parked inputs", async (t) => {
+test("basic generation and public profile reads do no hold scans with 59125 parked inputs", async (t) => {
   const f = await fixture(t, async () => success());
   await f.host().cycle();
   const job = await f.job();
@@ -1149,7 +1149,7 @@ test("R7 basic generation and public profile reads do no hold scans with 59125 p
   );
 });
 
-test("R7 a due hold waits for its old transport without source, resume, probe, or finish work", async (t) => {
+test("a due hold waits for its old transport without source, resume, probe, or finish work", async (t) => {
   const f = await fixture(
     t,
     async () => new Response("Unknown", { status: 503 }),
@@ -1200,7 +1200,7 @@ test("R7 a due hold waits for its old transport without source, resume, probe, o
   );
 });
 
-test("R7 probe attempts and their cooldown survive repeated database and host restarts", async (t) => {
+test("probe attempts and their cooldown survive repeated database and host restarts", async (t) => {
   let sends = 0;
   const f = await fixture(
     t,
@@ -1249,7 +1249,7 @@ test("R7 probe attempts and their cooldown survive repeated database and host re
   assert(Math.abs((await charge(f.budget)) - 5 * quote) < 1e-12);
 });
 
-test("R7 retirement keeps reader and old-host transport guards until exact background work is idle", async (t) => {
+test("retirement keeps reader and old-host transport guards until exact background work is idle", async (t) => {
   const f = await fixture(
     t,
     async () => new Response("Unknown", { status: 503 }),
@@ -1310,7 +1310,7 @@ test("R7 retirement keeps reader and old-host transport guards until exact backg
   assert.equal((await f.store.generation(job.id)).state, "retired");
 });
 
-test("R7 completed schedules skip the fresh association search", async (t) => {
+test("completed schedules skip the fresh association search", async (t) => {
   const f = await fixture(t, async () => success());
   await f.host().cycle();
   const job = await f.job();

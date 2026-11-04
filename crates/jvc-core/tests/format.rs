@@ -1110,7 +1110,7 @@ fn lexical_kind_uses_fuhivla_without_a_legacy_alias() {
 }
 
 #[test]
-fn r2_grok_1_comma_zei_accepts_accented_names_like_plain_names() {
+fn comma_zei_accepts_accented_names_like_plain_names() {
     for spelling in [
         "dján zei, blanu",
         "dján zei,blanu",
@@ -1128,7 +1128,7 @@ fn r2_grok_1_comma_zei_accepts_accented_names_like_plain_names() {
 }
 
 #[test]
-fn r2_grok_1_comma_zei_does_not_admit_an_accented_root() {
+fn comma_zei_does_not_admit_an_accented_root() {
     for spelling in ["djan zei, blánu", "djan zei,blánu"] {
         let body = json!({"word":{"language":"jbo","spelling":spelling},"language":"en","text":[["Synthetic."]],"classification":{"kind":"lujvo"},"license":{"expression":"CC0-1.0"}});
         let h = header(
@@ -1141,7 +1141,7 @@ fn r2_grok_1_comma_zei_does_not_admit_an_accented_root() {
 }
 
 #[test]
-fn r2_opus_f7_rafsi_claims_require_plain_word_and_rafsi_spellings() {
+fn rafsi_claims_require_plain_word_and_rafsi_spellings() {
     for (spelling, rafsi, valid) in [
         ("djan", "dja", true),
         ("dján", "dja", false),
@@ -1175,17 +1175,17 @@ fn assert_non_nfc_rafsi_claim_error(spelling: &str, rafsi: &str) {
 }
 
 #[test]
-fn r3_opus_n2_non_nfc_word_without_acute_reports_spelling_error() {
+fn non_nfc_word_without_acute_reports_spelling_error() {
     assert_non_nfc_rafsi_claim_error("e\u{308}", "dja");
 }
 
 #[test]
-fn r3_opus_n2_non_nfc_rafsi_without_acute_reports_spelling_error() {
+fn non_nfc_rafsi_without_acute_reports_spelling_error() {
     assert_non_nfc_rafsi_claim_error("djan", "e\u{308}");
 }
 
 #[test]
-fn r2_opus_f2_specification_states_the_prelaunch_accent_break() {
+fn specification_states_the_prelaunch_accent_break() {
     let spec = include_str!("../../../docs/format.md");
     assert!(spec.contains(
         "Former accented word IDs and the signed records that use them are not preserved."

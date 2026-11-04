@@ -27,7 +27,7 @@ for (const text of [
   String.raw`\rightarrow \rho \rm Tom \& Jerry hello\ world`,
 ]) {
   for (const field of ["prose", "code", "label"] as const) {
-    test(`R5 ${field} keeps typed TeX and ordinary braces: ${text}`, () => {
+    test(`${field} keeps typed TeX and ordinary braces: ${text}`, () => {
       const node =
         field === "prose"
           ? text
@@ -46,7 +46,7 @@ for (const text of [
   }
 }
 
-test("R5 edited fields normalize line endings, string fragments, and paragraph whitespace", () => {
+test("edited fields normalize line endings, string fragments, and paragraph whitespace", () => {
   const original: RichText = [
     ["first\r\n\r\nsecond ", "adjacent \t"],
     [" \u00a0\t"],
@@ -59,7 +59,7 @@ test("R5 edited fields normalize line endings, string fragments, and paragraph w
   assert.doesNotMatch(source, /\{(?:cr|lf|join|char [\da-f]{4})\}|\\\n/u);
 });
 
-test("R5 an untouched field keeps rare stored values when another field changes", () => {
+test("an untouched field keeps rare stored values when another field changes", () => {
   const notes: RichText = [["note\r", " adjacent "], [" \t"]];
   const draft = newDraft({
     spelling: "broda",
@@ -78,14 +78,14 @@ test("R5 an untouched field keeps rare stored values when another field changes"
   assert.deepEqual(result.body!.notes, notes);
 });
 
-test("R5 merging string fragments never creates a place or operand reference", () => {
+test("merging string fragments never creates a place or operand reference", () => {
   const original: RichText = [["{pla", "ce 1} and {operand ", "bridi}"]];
   assert.deepEqual(editorToRichText(richTextToEditor(original), true), [
     ["{place 1} and {operand bridi}"],
   ]);
 });
 
-test("R5 stored multiline code keeps its type and ordinary inline padding", () => {
+test("stored multiline code keeps its type and ordinary inline padding", () => {
   const code = { code: "first\n\n① `quoted` \\ end" };
   const source = richTextToEditor([[code]]);
   assert.deepEqual(editorToRichText(source, true), [
@@ -114,7 +114,7 @@ test("R5 stored multiline code keeps its type and ordinary inline padding", () =
   );
 });
 
-test("R5 complete multiline labels keep padding and literal notation", () => {
+test("complete multiline labels keep padding and literal notation", () => {
   const label = " first\n\n① | ] \\ last ";
   const rich: RichText = [
     [
@@ -144,7 +144,7 @@ for (const node of [
   { code: "bad\udfff" },
   { url: "https://example.org/", label: "bad\ud800" },
 ] satisfies RichNode[]) {
-  test(`R5 invalid Unicode in ${typeof node === "string" ? "text" : "code" in node ? "code" : "a label"} gives a plain field error`, () => {
+  test(`invalid Unicode in ${typeof node === "string" ? "text" : "code" in node ? "code" : "a label"} gives a plain field error`, () => {
     const result = draftToBody(
       newDraft({
         spelling: "broda",
@@ -160,7 +160,7 @@ for (const node of [
   });
 }
 
-test("R5 valid surrogate pairs remain publishable and invalid plain fields get a plain error", () => {
+test("valid surrogate pairs remain publishable and invalid plain fields get a plain error", () => {
   const draft = newDraft({
     spelling: "broda",
     kind: "gismu",

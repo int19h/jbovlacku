@@ -162,7 +162,7 @@ test("browser and server agree on every headword and rafsi pattern and preserve 
         body?: unknown;
       }[] = [];
       const readRemote = async (q: string) => {
-        // Resource refusal is possible on the shared VM. Keep three attempts,
+        // Resource refusal is possible on shared hosts. Keep three attempts,
         // with no retry for syntax errors, server failures, or malformed data.
         for (let attempt = 1; attempt <= 3; attempt++) {
           const response = await fetch(
@@ -544,7 +544,7 @@ const emptyRafsiWord = () => ({
   calculation: null,
 });
 
-test("R2 Opus F3: rafsi package rows group accent displays by word ID in the real worker", async ({
+test("rafsi package rows group accent displays by word ID in the real worker", async ({
   page,
 }) => {
   await page.goto("/");
@@ -817,7 +817,7 @@ test("navigation cancels actual rafsi claim bodies and prevents later claim requ
 });
 
 for (const compact of [false, true])
-  test(`r3: a pattern with a mismatched ${compact ? "compact" : "legacy"} package view shows no ordering advice`, async ({
+  test(`a pattern with a mismatched ${compact ? "compact" : "legacy"} package view shows no ordering advice`, async ({
     page,
   }) => {
     await page.goto("/");

@@ -78,7 +78,7 @@ for (const [text, expected] of [
   ["____", [[1, "_"]]],
   ["__50___", [[50, "_"]]],
 ] as const) {
-  test(`r7 S2 one committed ${text} follows incremental completion order`, () => {
+  test(`S2 one committed ${text} follows incremental completion order`, () => {
     const editor = commit(text);
     assert.deepEqual(editor.value(), expected);
     assert.equal(editor.undo(), true);
@@ -86,32 +86,32 @@ for (const [text, expected] of [
   });
 }
 
-test("r7 S2 committed tokens reserve existing places without reading code as tokens", () => {
+test("S2 committed tokens reserve existing places without reading code as tokens", () => {
   const editor = commit("____", [[1, " ", { code: "__50__" }, " "]]);
   assert.deepEqual(editor.value(), [[1, " ", { code: "__50__" }, " ", 2, "_"]]);
 });
 
 for (const token of ["__50__", "___"]) {
-  test(`r7 S2 unrelated committed text does not convert the saved literal ${token}`, () => {
+  test(`S2 unrelated committed text does not convert the saved literal ${token}`, () => {
     const editor = commit("x", [[token]]);
     assert.deepEqual(editor.value(), [[token + "x"]]);
   });
   for (const wholeContainer of [false, true]) {
-    test(`r7 S2 normalization keeps old literal ${token} beside unrelated x through ${wholeContainer ? "whole-container replacement" : "insertion"}`, () => {
+    test(`S2 normalization keeps old literal ${token} beside unrelated x through ${wholeContainer ? "whole-container replacement" : "insertion"}`, () => {
       const editor = commit("x", [["a\r\nb\rc" + token]], true, wholeContainer);
       assert.deepEqual(editor.value(), [["a\nb\nc" + token + "x"]]);
     });
   }
 }
 
-test("r7 S2 normalization maps a newly completed saved prefix and its whole-commit undo", () => {
+test("S2 normalization maps a newly completed saved prefix and its whole-commit undo", () => {
   const editor = commit("_", [["a\r\nb\rc__50_"]], true);
   assert.deepEqual(editor.value(), [["a\nb\nc", 50]]);
   assert.equal(editor.undo(), true);
   assert.deepEqual(editor.value(), [["a\nb\nc__50__"]]);
 });
 
-test("r7 S2 normalization keeps overlong committed conversion order and whole-commit undo", () => {
+test("S2 normalization keeps overlong committed conversion order and whole-commit undo", () => {
   const editor = commit("__50___", [["a\r\nb\rc "]], true, true);
   assert.deepEqual(editor.value(), [["a\nb\nc ", 50, "_"]]);
   assert.equal(editor.undo(), true);
@@ -119,7 +119,7 @@ test("r7 S2 normalization keeps overlong committed conversion order and whole-co
 });
 
 for (const literal of ["{place 0}", "{place 99999}", "{place 65536}"]) {
-  test(`r7 S3 literal mode keeps out-of-range ${literal} as text`, () => {
+  test(`S3 literal mode keeps out-of-range ${literal} as text`, () => {
     const draft = newDraft({ structured: false, text: [[literal]] });
     switchMode(draft, true);
     assert.deepEqual(draft.text, [[literal]]);
@@ -132,14 +132,14 @@ for (const [literal, expected] of [
   ["{place 51}", 51],
   ["{place 65535}", 65535],
 ] as const) {
-  test(`r7 S3 valid literal notation ${literal} keeps its existing meaning`, () => {
+  test(`S3 valid literal notation ${literal} keeps its existing meaning`, () => {
     const draft = newDraft({ structured: false, text: [[literal]] });
     switchMode(draft, true);
     assert.deepEqual(draft.text, [[expected]]);
   });
 }
 
-test("r7 M1 accepted definition text invalidates numbering approval and blocks publication", () => {
+test("M1 accepted definition text invalidates numbering approval and blocks publication", () => {
   const draft = newDraft({
     spelling: "ckusni",
     kind: "lujvo",

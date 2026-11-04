@@ -42,7 +42,7 @@ function referenceDraft(spelling: string, field: "link" | "derivation") {
   });
 }
 for (const field of ["link", "derivation"] as const) {
-  test(`F5 suspicious ${field} spelling gives advice without blocking`, () => {
+  test(`suspicious ${field} spelling gives advice without blocking`, () => {
     const result = draftToBody(referenceDraft("cukta?", field));
     assert.equal(
       result.problems.some((p) => p.blocking),
@@ -56,7 +56,7 @@ for (const field of ["link", "derivation"] as const) {
     const uppercase = draftToBody(referenceDraft("CUKTA", field));
     assert.deepEqual(uppercase.problems, []);
   });
-  test(`Grok invalid ${field} spelling gives a plain sentence`, () => {
+  test(`invalid ${field} spelling gives a plain sentence`, () => {
     const result = draftToBody(
       referenceDraft(field === "link" ? "lo\0" : "é".repeat(129), field),
     );
@@ -66,7 +66,7 @@ for (const field of ["link", "derivation"] as const) {
     assert.match(problem.message, /invalid|valid|spelling/i);
   });
 }
-test("F7 unmatched backticks stay within their raw paragraph", () => {
+test("unmatched backticks stay within their raw paragraph", () => {
   const source = "Use the ` key.\n\n① is the agent.\n\nThen ` again.";
   assert.deepEqual(editorToRichText(source, true), [
     ["Use the ` key."],
@@ -78,7 +78,7 @@ test("F7 unmatched backticks stay within their raw paragraph", () => {
     /② is the agent/,
   );
 });
-test("F3 alignment bounds comparisons for 3000 changed items", () => {
+test("alignment bounds comparisons for 3000 changed items", () => {
   let reads = 0;
   const items = (prefix: string) =>
     Array.from({ length: 3000 }, (_, i) => ({
@@ -92,7 +92,7 @@ test("F3 alignment bounds comparisons for 3000 changed items", () => {
   assert.ok(reads < 100_000, `Read ${reads} values`);
 });
 
-test("F7 Unicode blank lines bound code and link tokens", () => {
+test("Unicode blank lines bound code and link tokens", () => {
   for (const [opening, closing] of [
     ["Use the ` key.", "Then ` again."],
     ["Use [[cukta|text.", "Then again."],
@@ -125,7 +125,7 @@ const editorWhitespace = [
   "\u3000",
   "\ufeff",
 ];
-test("F7 tokenizer and remapping share every supported blank-line boundary", () => {
+test("tokenizer and remapping share every supported blank-line boundary", () => {
   const boundaries = [
     "\r\n\r\n",
     "\r\r",

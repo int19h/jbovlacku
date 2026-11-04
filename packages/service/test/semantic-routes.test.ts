@@ -50,7 +50,7 @@ const read = async (response: Response): Promise<any> => {
   return response.json();
 };
 
-test("SiliconFlow requests for an existing Nebius profile advertise compatible partial indexes, retain lexical reads, and validate public inputs including R7 language tags", async () => {
+test("SiliconFlow requests for an existing Nebius profile advertise compatible partial indexes, retain lexical reads, and validate public inputs including language tags", async () => {
   const base = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(base, { recursive: true });
   const directory = await mkdtemp(join(base, "semantic-routes-"));

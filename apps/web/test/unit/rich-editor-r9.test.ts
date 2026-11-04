@@ -11,7 +11,7 @@ import {
 import { richTextToText } from "../../src/model/richtext.ts";
 import type { RichNode } from "../../src/model/types.ts";
 
-test("r9 plain projection keeps explicit tokens above place 50", () => {
+test("plain projection keeps explicit tokens above place 50", () => {
   assert.equal(
     richTextToText([[50, " ", 51, " ", 65535]]),
     "㊿ {place 51} {place 65535}",
@@ -19,7 +19,7 @@ test("r9 plain projection keeps explicit tokens above place 50", () => {
 });
 
 for (const blank of ["\n\n\n", "\n \n", "\n\t\n", "\n \n\t\n"]) {
-  test(`r9 paste treats whitespace blank-line runs as one paragraph break ${JSON.stringify(blank)}`, () => {
+  test(`paste treats whitespace blank-line runs as one paragraph break ${JSON.stringify(blank)}`, () => {
     for (const convert of [false, true]) {
       assert.deepEqual(pastedRichText(`a${blank}b`, convert), [["a"], ["b"]]);
       assert.deepEqual(pastedRichText(`a\r\n${blank.slice(1)}b`, convert), [
@@ -37,7 +37,7 @@ const containers: [string, RichNode][] = [
   ["web link", { url: "https://b.example/", label: "ab" }],
 ];
 for (const [name, node] of containers) {
-  test(`r9 chip at offset zero goes before ${name}`, () => {
+  test(`chip at offset zero goes before ${name}`, () => {
     const doc = richToEditor([[node]]);
     const state = EditorState.create({
       doc,

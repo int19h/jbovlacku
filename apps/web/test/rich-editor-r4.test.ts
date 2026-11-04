@@ -64,7 +64,7 @@ async function choose(field: Locator, offset: number, end = offset) {
 }
 for (const kind of kinds) {
   for (const inserted of ["X", "漢"]) {
-    test(`r4 ${kind} ${inserted === "X" ? "typing" : "non-ASCII input"} normalizes only its edited node`, async ({
+    test(`${kind} ${inserted === "X" ? "typing" : "non-ASCII input"} normalizes only its edited node`, async ({
       page,
     }) => {
       const value: RichText = [
@@ -96,7 +96,7 @@ for (const kind of kinds) {
         .toEqual([[...neighbor, node(kind, changed)], value[1]]);
     });
   }
-  test(`r4 ${kind} native composition normalizes only its edited node`, async ({
+  test(`${kind} native composition normalizes only its edited node`, async ({
     page,
     browserName,
   }) => {
@@ -231,7 +231,7 @@ for (const kind of kinds) {
       .poll(() => richNodes(field))
       .toEqual([[...neighbor, node(kind, original.replace(/\r\n?/gu, "\n"))]]);
   });
-  test(`r4 ${kind} paste deletion and newline edits normalize only their node`, async ({
+  test(`${kind} paste deletion and newline edits normalize only their node`, async ({
     page,
   }) => {
     const value: RichText = [[...neighbor, node(kind, original)]];
@@ -288,7 +288,7 @@ for (const kind of kinds) {
   });
 }
 
-test("r4 an untouched field keeps blank paragraphs on save and publication", async ({
+test("an untouched field keeps blank paragraphs on save and publication", async ({
   page,
 }) => {
   await page.goto("/");
@@ -346,7 +346,7 @@ test("r4 an untouched field keeps blank paragraphs on save and publication", asy
   expect(published).toEqual(exact);
 });
 
-test("r4 saving switching resuming and replacing drafts preserve untouched fields", async ({
+test("saving switching resuming and replacing drafts preserve untouched fields", async ({
   page,
 }) => {
   await page.goto("/");
@@ -389,7 +389,7 @@ test("r4 saving switching resuming and replacing drafts preserve untouched field
 });
 
 for (const kind of ["word", "web"] as const) {
-  test(`r4 ${kind} target-only changes preserve the exact label`, async ({
+  test(`${kind} target-only changes preserve the exact label`, async ({
     page,
   }) => {
     const field = await mount(page, [[...neighbor, node(kind, original)]]);

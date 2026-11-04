@@ -1170,7 +1170,7 @@ for (const [name, meaning, text, count] of [
   ["blank numbering", "___ gives ___ to ③", [], 3],
   ["stale Meaning", "x ⑳", [[1, " and ", 2]], 2],
 ] as const) {
-  test(`r2 service accepts ${name} and reaches the mocked provider`, async () => {
+  test(`service accepts ${name} and reaches the mocked provider`, async () => {
     let calls = 0;
     const answers = [
       {

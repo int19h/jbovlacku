@@ -267,6 +267,9 @@ test("repeat import reuses exact signed envelopes and rebuilds interrupted outpu
   assert.equal(archive.path, input.sourcePath);
   assert.equal(archive.bytes, fixture.length);
   assert.equal(archive.snapshot, fixtureManifest.sha256);
+  const manifestBytes = await readFile(input.manifestPath);
+  assert.equal(archive.manifest.sha256, contentHash(manifestBytes));
+  assert.deepEqual(await readFile(archive.manifest.archived), manifestBytes);
 });
 
 test("source changes create parented revisions and source reversions reuse original envelopes", async () => {
@@ -730,7 +733,7 @@ for (const [table, affected] of [
   ["valsi", 74481],
   ["valsitypes", 4],
 ] as const) {
-  test(`r2 F2 known owner of malformed ${table} remains unresolved and keeps its selection`, async () => {
+  test(`known owner of malformed ${table} remains unresolved and keeps its selection`, async () => {
     const clean = withSyntheticRelatedRows(fixture);
     const input = await setup(clean);
     const first = await importSqlSnapshot(input);
@@ -756,7 +759,7 @@ for (const [table, affected] of [
     );
     assert.ok(fresh.report.added < 4);
   });
-  test(`r2 F2 unknown owner of malformed ${table} preserves unrelated lookup references`, async () => {
+  test(`unknown owner of malformed ${table} preserves unrelated lookup references`, async () => {
     const clean = withSyntheticRelatedRows(fixture);
     const input = await setup(clean);
     const first = await importSqlSnapshot(input);
@@ -776,7 +779,7 @@ for (const [table, affected] of [
   });
 }
 
-test("r2 F3 malformed definition identity is present and never classified as omitted", async () => {
+test("malformed definition identity is present and never classified as omitted", async () => {
   const input = await setup();
   await importSqlSnapshot(input);
   const bad = mutate(fixture, (fields) => {
@@ -792,7 +795,7 @@ test("r2 F3 malformed definition identity is present and never classified as omi
   assert.ok(!result.report.omitted.includes(4));
 });
 
-test("r2 F5 malformed manifest shape fails before creating any output", async () => {
+test("malformed manifest shape fails before creating any output", async () => {
   for (const [field, value] of [
     ["notes", undefined],
     ["notes", [123]],
@@ -815,7 +818,7 @@ test("r2 F5 malformed manifest shape fails before creating any output", async ()
   }
 });
 
-test("r2 F6 exact A B A reversion has its own observation and preserves every batch", async () => {
+test("exact A B A reversion has its own observation and preserves every batch", async () => {
   const input = await setup();
   const first = await importSqlSnapshot(input);
   await updateSource(
@@ -847,7 +850,7 @@ test("r2 F6 exact A B A reversion has its own observation and preserves every ba
   }
 });
 
-test("r2 F8 latest publication in the returning context becomes the revision parent", async () => {
+test("latest publication in the returning context becomes the revision parent", async () => {
   const input = await setup();
   await importSqlSnapshot(input);
   const first = (await carriers(input.output)).find(
@@ -878,7 +881,7 @@ test("r2 F8 latest publication in the returning context becomes the revision par
   ]);
 });
 
-test("r2 Grok language edits change the definition language and gloss-only language evidence", async () => {
+test("language edits change the definition language and gloss-only language evidence", async () => {
   const input = await setup();
   await importSqlSnapshot(input);
   const changed = tableMutation(fixture, "languages", (fields) =>
@@ -931,7 +934,7 @@ test("r2 Grok language edits change the definition language and gloss-only langu
   assert.equal(glossResult.report.revised, 3);
 });
 
-test("r2 Grok SQL lock tells the operator to settle the prior import", async () => {
+test("SQL lock tells the operator to settle the prior import", async () => {
   const input = await setup();
   await mkdir(join(input.output, ".import-lock"), { recursive: true });
   await assert.rejects(
@@ -940,7 +943,7 @@ test("r2 Grok SQL lock tells the operator to settle the prior import", async () 
   );
 });
 
-test("r2 Grok numeric-only old language baselines migrate from signed tags without republishing", async () => {
+test("numeric-only old language baselines migrate from signed tags without republishing", async () => {
   const input = await setup();
   const first = await importSqlSnapshot(input);
   const db = new DatabaseSync(join(input.output, "journal.sqlite"));
@@ -992,7 +995,7 @@ test("r2 Grok numeric-only old language baselines migrate from signed tags witho
   assert.equal((await importSqlSnapshot(input)).report.revised, 2);
 });
 
-test("r2 Grok historical candidates with equal lexical digests retain the right gloss languages", async () => {
+test("historical candidates with equal lexical digests retain the right gloss languages", async () => {
   const source = tableMutation(fixture, "natlangwords", (fields) =>
     fields[0] === "41609" ? [fields[0], "2", ...fields.slice(2)] : fields,
   );
@@ -1018,7 +1021,7 @@ test("r2 Grok historical candidates with equal lexical digests retain the right 
   assert.equal(restored.report.reverted, 3);
 });
 
-test("r2 F8 a source reversion determines the latest observed parent across contexts", async () => {
+test("a source reversion determines the latest observed parent across contexts", async () => {
   const input = await setup();
   await importSqlSnapshot(input);
   const first = (await carriers(input.output)).find(
@@ -1054,7 +1057,7 @@ test("r2 F8 a source reversion determines the latest observed parent across cont
   assert.deepEqual(final.envelope.header.action.parents, [first.envelope.id]);
 });
 
-test("r2 malformed definition fragments without readable IDs leave complete rows usable", async () => {
+test("malformed definition fragments without readable IDs leave complete rows usable", async () => {
   const bad = tableMutation(fixture, "definitions", (fields, position) =>
     position === 0 ? ["unreadable", "fragment"] : fields,
   );
@@ -1068,7 +1071,7 @@ test("r2 malformed definition fragments without readable IDs leave complete rows
   );
 });
 
-test("r2 invalid source spellings remain unresolved without aborting other definitions", async () => {
+test("invalid source spellings remain unresolved without aborting other definitions", async () => {
   const bad = tableMutation(fixture, "valsi", (fields) =>
     fields[0] === "4"
       ? [fields[0], " bad spelling", ...fields.slice(2)]
@@ -1080,7 +1083,7 @@ test("r2 invalid source spellings remain unresolved without aborting other defin
   assert.ok(result.report.unresolved.some((issue) => issue.record === 4));
 });
 
-test("r2 F3 a split definition tail cannot impersonate a complete record ID", async () => {
+test("a split definition tail cannot impersonate a complete record ID", async () => {
   const prefix = [
     "318",
     "731",
@@ -1156,7 +1159,7 @@ for (const [table, prefixColumn] of [
   ["example", 1],
   ["natlangwordbestplaces", 0],
 ] as const) {
-  test(`r2 F3 an invalid numeric prefix in ${table} cannot establish its following owner`, async () => {
+  test(`an invalid numeric prefix in ${table} cannot establish its following owner`, async () => {
     const clean = withSyntheticRelatedRows(fixture);
     const broken = tableMutation(clean, table, (fields, position) => {
       if (position === 0) fields[prefixColumn] = "continuation fragment";
@@ -1188,7 +1191,7 @@ function splitHistoryNotes(bytes: Buffer, pieces = 2): Buffer {
   });
 }
 
-test("r3 N1 a raw CRLF inside history notes leaves only its owner unresolved", async () => {
+test("a raw CRLF inside history notes leaves only its owner unresolved", async () => {
   const input = await setup(splitHistoryNotes(fixture));
   const result = await importSqlSnapshot(input);
   assert.equal(
@@ -1215,7 +1218,7 @@ test("r3 N1 a raw CRLF inside history notes leaves only its owner unresolved", a
   );
 });
 
-test("r3 N1 a split history row preserves the owner selection while other records reuse", async () => {
+test("a split history row preserves the owner selection while other records reuse", async () => {
   const input = await setup();
   const clean = await importSqlSnapshot(input);
   await updateSource(input, splitHistoryNotes(fixture));
@@ -1230,7 +1233,7 @@ test("r3 N1 a split history row preserves the owner selection while other record
   assert.ok(result.report.unresolved.every((issue) => issue.record === 74481));
 });
 
-test("r3 N1 several raw line breaks in one history field keep one malformed owner", async () => {
+test("several raw line breaks in one history field keep one malformed owner", async () => {
   const input = await setup(splitHistoryNotes(fixture, 4));
   const result = await importSqlSnapshot(input);
   assert.equal(result.report.added, 3);
@@ -1247,7 +1250,7 @@ for (const table of [
   "valsi",
   "natlangwords",
 ] as const) {
-  test(`r3 N1 an unreadable ${table} lookup key does not freeze unrelated definitions`, async () => {
+  test(`an unreadable ${table} lookup key does not freeze unrelated definitions`, async () => {
     const broken = tableMutation(fixture, table, (fields, position) =>
       position === 0 ? ["unreadable lookup"] : fields,
     );
@@ -1267,7 +1270,7 @@ for (const table of [
   });
 }
 
-test("r3 N1 short COPY fragments stay separate from complete rows and later tables", async () => {
+test("short COPY fragments stay separate from complete rows and later tables", async () => {
   const source = Buffer.from(
     "COPY public.first (id, owner, text, end) FROM stdin;\r\n1\t4\thead\r\ntail\tend\r\n2\t5\tvalid\tend\r\n3\t6\tshort\r\n\\.\r\nCOPY public.second (id, text) FROM stdin;\r\n9\tvalid\r\n\\.\r\n",
   );
@@ -1291,7 +1294,7 @@ test("r3 N1 short COPY fragments stay separate from complete rows and later tabl
   assert.deepEqual(counts, { first: 4, second: 1 });
 });
 
-test("r3 N3 check-existing restages a copied journal and preserves every carrier byte", async () => {
+test("check-existing restages a copied journal and preserves every carrier byte", async () => {
   const input = await setup();
   await importSqlSnapshot(input);
   const expected = await readFile(join(input.output, "carriers.jsonl"));
@@ -1321,7 +1324,7 @@ test("r3 N3 check-existing restages a copied journal and preserves every carrier
   assert.equal(result.size_measurement.loaded_copy_measured, false);
 });
 
-test("r3 N3 check-existing refuses a missing journal before output writes", async () => {
+test("check-existing refuses a missing journal before output writes", async () => {
   const input = await setup();
   await assert.rejects(
     importSqlSnapshot({ ...input, checkExisting: true }),
@@ -1330,7 +1333,7 @@ test("r3 N3 check-existing refuses a missing journal before output writes", asyn
   await assert.rejects(access(input.output), { code: "ENOENT" });
 });
 
-test("r3 N3 check-existing refuses new definitions and rolls back all ledger changes", async () => {
+test("check-existing refuses new definitions and rolls back all ledger changes", async () => {
   const input = await setup();
   await importSqlSnapshot(input);
   const previous = await readFile(join(input.output, "carriers.jsonl"));
@@ -1367,7 +1370,7 @@ test("r3 N3 check-existing refuses new definitions and rolls back all ledger cha
   }
 });
 
-test("r3 N3 check-existing refuses a new roots view", async () => {
+test("check-existing refuses a new roots view", async () => {
   const input = await setup();
   await importSqlSnapshot(input);
   const output = join(input.directory, "check");

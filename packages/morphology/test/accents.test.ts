@@ -167,7 +167,7 @@ test("text segmentation ignores acute name stress and keeps original source offs
   );
 });
 
-test("R2 Opus F1: implicit zei candidates normalize every spelling alias and keep only acute display marks", () => {
+test("implicit zei candidates normalize every spelling alias and keep only acute display marks", () => {
   const build = (name: string, spelling?: string) =>
     buildLujvo({
       profile: "extended-v4",
@@ -197,7 +197,7 @@ test("R2 Opus F1: implicit zei candidates normalize every spelling alias and kee
   }
 });
 
-test("R2 Astra 1: a plain lock and fixed zei spelling cannot admit an invalid marked source", () => {
+test("a plain lock and fixed zei spelling cannot admit an invalid marked source", () => {
   for (const spelling of ["blánu", "\u0301blanu"]) {
     assert.throws(
       () =>
@@ -226,7 +226,7 @@ test("R2 Astra 1: a plain lock and fixed zei spelling cannot admit an invalid ma
   assert.equal(positive.candidates.length, 1);
 });
 
-test("R2 Opus F6: accented runs without a word parse remain literal foreign text", () => {
+test("accented runs without a word parse remain literal foreign text", () => {
   for (const source of ["mi .cáfeee.", "mi .café漢."]) {
     const result = segmentText(source);
     assert.ok(result.foreign.length, source);
@@ -240,7 +240,7 @@ test("R2 Opus F6: accented runs without a word parse remain literal foreign text
     );
 });
 
-test("R2 Opus F8: unknown plain headwords keep their original diagnostics without a false accent error", () => {
+test("unknown plain headwords keep their original diagnostics without a false accent error", () => {
   for (const profile of ["cll", "extended-v4"] as const) {
     for (const spelling of [".dján.", "dján smit"]) {
       const marked = analyzeWord(profile, spelling);

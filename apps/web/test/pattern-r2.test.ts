@@ -37,7 +37,7 @@ const emptyWord = {
   calculation: null,
 };
 
-test("R2 plain and queued pattern aborts preserve the shared worker and prepared package", async ({
+test("plain and queued pattern aborts preserve the shared worker and prepared package", async ({
   page,
 }) => {
   await installSearchWorkerGate(page);
@@ -121,7 +121,7 @@ test("R2 plain and queued pattern aborts preserve the shared worker and prepared
     secondWarm: true,
   });
 });
-test("R2 nearby meanings use literal search", async ({ page }) => {
+test("nearby meanings use literal search", async ({ page }) => {
   await page.goto("/");
   const results = await page.evaluate(
     async (pkg) => {
@@ -142,7 +142,7 @@ test("R2 nearby meanings use literal search", async ({ page }) => {
   );
   expect(results).toEqual([1, 1]);
 });
-test("R2 patterns use normalized dictionary order and remove combining acute literals", async ({
+test("patterns use normalized dictionary order and remove combining acute literals", async ({
   page,
 }) => {
   await page.goto("/");
@@ -166,7 +166,7 @@ test("R2 patterns use normalized dictionary order and remove combining acute lit
   expect(result.acute).toEqual(["djan"]);
   expect(result.unicode).toBe(3);
 });
-test("R2 question punctuation shows an ordinary-search note", async ({
+test("question punctuation shows an ordinary-search note", async ({
   page,
 }) => {
   await page.goto("/");
@@ -194,7 +194,7 @@ test("R2 question punctuation shows an ordinary-search note", async ({
     await expect(page.locator("article.hit")).toHaveCount(1);
   }
 });
-test("R2 rafsi conflict groups normalize aliases while assignments retain raw spellings", async ({
+test("rafsi conflict groups normalize aliases while assignments retain raw spellings", async ({
   page,
 }) => {
   await page.goto("/");
@@ -251,7 +251,7 @@ test("R2 rafsi conflict groups normalize aliases while assignments retain raw sp
       ),
   ).toEqual(["ba'i for r2rafsa", "BAHI for r2rafsb", "bahi for r2rafsc"]);
 });
-test("R2 truncated rafsi conflict counts disclose their lower bound", async ({
+test("truncated rafsi conflict counts disclose their lower bound", async ({
   page,
 }) => {
   await page.goto("/");
@@ -286,7 +286,7 @@ test("R2 truncated rafsi conflict counts disclose their lower bound", async ({
     page.getByText(/This page shows at most 1,000 matching pairs/),
   ).toBeVisible();
 });
-test("R2 literal proposed slash and wildcard rafsi reach the claim preview", async ({
+test("literal proposed slash and wildcard rafsi reach the claim preview", async ({
   page,
 }) => {
   await page.goto("/");
@@ -318,7 +318,7 @@ test("R2 literal proposed slash and wildcard rafsi reach the claim preview", asy
   }
 });
 
-test("R2 late canceled package replies preserve newer warm cache keys", async ({
+test("late canceled package replies preserve newer warm cache keys", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -373,7 +373,7 @@ test("R2 late canceled package replies preserve newer warm cache keys", async ({
   });
 });
 
-test("R3 combining acute repetitions keep their scope in the real search worker", async ({
+test("combining acute repetitions keep their scope in the real search worker", async ({
   page,
 }) => {
   await page.goto("/");

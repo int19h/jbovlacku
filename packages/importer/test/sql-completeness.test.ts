@@ -189,7 +189,7 @@ for (const [name, relation, expected] of [
   ["absent", "", 1],
   ["short", mappings(1), 2],
 ] as const) {
-  test(`IM-01 ${name} SQL relation keeps the selected publication and known baseline`, async () => {
+  test(`${name} SQL relation keeps the selected publication and known baseline`, async () => {
     const directory = await setup();
     const first = await run(
       directory,
@@ -218,7 +218,7 @@ for (const [name, relation, expected] of [
   });
 }
 
-test("IM-01 a complete empty SQL relation permits a real gloss removal", async () => {
+test("a complete empty SQL relation permits a real gloss removal", async () => {
   const directory = await setup();
   const first = await run(directory, "complete", mappings(1), 1);
   const second = await run(directory, "empty", mappings(0), 0);
@@ -244,7 +244,7 @@ function replaceTable(source: string, name: string, replacement: string) {
   );
 }
 
-// Opus's undeclared-probe.mts also omitted the absent relation's count.
+// The "absent and uncounted" mode omits both the relation's rows and its declared count.
 for (const name of [
   "languages",
   "valsitypes",
@@ -258,7 +258,7 @@ for (const name of [
   "natlangwordbestplaces",
 ]) {
   for (const mode of ["uncounted", "absent", "absent and uncounted"]) {
-    test(`IM-01 ${mode} ${name} reports its coverage and preserves prior publications`, async () => {
+    test(`${mode} ${name} reports its coverage and preserves prior publications`, async () => {
       const directory = await setup();
       const first = await run(directory, "complete", mappings(1), 1);
       const options = {
@@ -337,7 +337,7 @@ const twoOwners = replaceTable(
 const ownerMappings = (rows: (string | number | null)[][]) =>
   table("keywordmapping", ["natlangwordid", "definitionid", "place"], rows);
 
-test("IM-01 the Opus v3like probe accepts the pinned partial archive manifest", async () => {
+test("a version-3-like probe accepts the pinned partial archive manifest", async () => {
   const directory = await setup();
   const options = {
     source:
@@ -377,7 +377,7 @@ test("IM-01 the Opus v3like probe accepts the pinned partial archive manifest", 
   assert.deepEqual(repeated.entry.versions, first.entry.versions);
 });
 
-test("IM-01 the Opus mask2 probe cannot turn missing mappings into known empty glosses", async () => {
+test("the mask2 probe cannot turn missing mappings into known empty glosses", async () => {
   const directory = await setup();
   const counts = { definitions: 2 };
   const first = await run(directory, "complete", "", 2, {
@@ -424,7 +424,7 @@ test("IM-01 the Opus mask2 probe cannot turn missing mappings into known empty g
   assert.deepEqual(fresh.entries, {});
 });
 
-test("IM-01 a full-width malformed mapping with a captured owner keeps the per-owner path", async () => {
+test("a full-width malformed mapping with a captured owner keeps the per-owner path", async () => {
   const result = await run(await setup(), "unrelated-malformed", "", 2, {
     source:
       twoOwners +
@@ -462,7 +462,7 @@ for (const damaged of [
     [0, 0],
   ],
 ])
-  test(`IM-01 the mask3 probe preserves all glosses with damaged mappings ${JSON.stringify(damaged)}`, async () => {
+  test(`the mask3 probe preserves all glosses with damaged mappings ${JSON.stringify(damaged)}`, async () => {
     const directory = await setup();
     const source = replaceTable(
       twoOwners,
@@ -520,7 +520,7 @@ for (const damaged of [
     assert.deepEqual(fresh.entries, {});
   });
 
-test("IM-01 the Opus split-row probe cannot hide another owner's missing keyword row", async () => {
+test("the split-row probe cannot hide another owner's missing keyword row", async () => {
   const directory = await setup();
   const counts = { definitions: 2 };
   const first = await run(directory, "complete", "", 2, {
@@ -566,7 +566,7 @@ test("IM-01 the Opus split-row probe cannot hide another owner's missing keyword
   assert.equal(fresh.result.report.added, 0);
 });
 
-test("IM-01 a split mapping cannot establish its owner even with matching logical counts", async () => {
+test("a split mapping cannot establish its owner even with matching logical counts", async () => {
   const source =
     twoOwners +
     ownerMappings([
@@ -590,7 +590,7 @@ test("IM-01 a split mapping cannot establish its owner even with matching logica
     );
 });
 
-test("IM-01 surplus logical records remain reportable without freezing valid owners", async () => {
+test("surplus logical records remain reportable without freezing valid owners", async () => {
   const result = await run(await setup(), "surplus", "", 1, {
     source:
       twoOwners +
@@ -610,7 +610,7 @@ test("IM-01 surplus logical records remain reportable without freezing valid own
   );
 });
 
-test("IM-01 an empty mapping table accepts a present uncounted lookup table", async () => {
+test("an empty mapping table accepts a present uncounted lookup table", async () => {
   const result = await run(await setup(), "uncounted-lookup", mappings(0), 0, {
     counts: { natlangwords: undefined },
   });
@@ -625,7 +625,7 @@ test("IM-01 an empty mapping table accepts a present uncounted lookup table", as
   );
 });
 
-test("IM-01 split history cannot mask missing history while another owner changes text", async () => {
+test("split history cannot mask missing history while another owner changes text", async () => {
   const directory = await setup();
   const counts = { definitions: 2, definition_versions: 2 };
   const history = (rows: (string | number | null)[][]) =>
@@ -679,7 +679,7 @@ test("IM-01 split history cannot mask missing history while another owner change
   );
 });
 
-test("IM-01 declared counts for unread tables keep physical units", async () => {
+test("declared counts for unread tables keep physical units", async () => {
   const result = await run(await setup(), "unread", "", 1, {
     source:
       common +
@@ -698,7 +698,7 @@ test("IM-01 declared counts for unread tables keep physical units", async () => 
 });
 
 for (const damage of ["grouped", "ungrouped", "surplus"] as const)
-  test(`IM-01 dense captured owner IDs cannot hide a lost ${damage === "ungrouped" ? "place keyword" : "gloss"} (${damage})`, async () => {
+  test(`dense captured owner IDs cannot hide a lost ${damage === "ungrouped" ? "place keyword" : "gloss"} (${damage})`, async () => {
     const directory = await setup();
     const grouped = damage === "grouped";
     const place = damage === "ungrouped";

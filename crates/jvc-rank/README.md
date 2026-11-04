@@ -123,7 +123,7 @@ Native peak memory is process RSS from `/usr/bin/time`.
 WebAssembly memory is the module's allocated linear-memory size after the run, including its stack and allocator reserve.
 These memory figures measure different allocations and cannot be compared as equal concepts.
 WebAssembly times exclude module loading and use a fresh Node instance for each graph.
-The raw artifact records one serial run per scenario on the ARM64 development VM.
+The raw artifact records one serial run per scenario on the ARM64 development machine.
 
 | Scenario          |    Budget | Completed work | Strict pairs / 496 | Exact ties / 496 | Native ms | WebAssembly ms | Native RSS KiB | WebAssembly bytes |
 | ----------------- | --------: | -------------: | -----------------: | ---------------: | --------: | -------------: | -------------: | ----------------: |

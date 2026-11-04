@@ -65,7 +65,7 @@ for (const [ending, lineBreak] of [
 ] as const) {
   for (const key of ["Backspace", "Delete"] as const) {
     for (const kind of kinds) {
-      test(`r5 ${key} joins saved ${ending} prose after ${kind}`, async ({
+      test(`${key} joins saved ${ending} prose after ${kind}`, async ({
         page,
       }) => {
         const prefix: RichNode[] = [
@@ -102,7 +102,7 @@ for (const [ending, lineBreak] of [
       });
     }
     for (const kind of kinds.filter((kind) => kind !== "prose")) {
-      test(`r5 ${key} joins saved ${ending} prose directly after ${kind}`, async ({
+      test(`${key} joins saved ${ending} prose directly after ${kind}`, async ({
         page,
       }) => {
         const raw = `cd${lineBreak}ef`;
@@ -130,7 +130,7 @@ for (const [ending, lineBreak] of [
           .poll(() => richNodes(field), { timeout: 2000 })
           .toEqual([[...left, ...right], outside]);
       });
-      test(`r5 ${key} joins at saved ${ending} ${kind} boundary`, async ({
+      test(`${key} joins at saved ${ending} ${kind} boundary`, async ({
         page,
       }) => {
         const raw = `cd${lineBreak}ef`;
@@ -165,7 +165,7 @@ for (const [ending, lineBreak] of [
 
 for (const kind of kinds) {
   for (const key of ["Backspace", "Delete"] as const) {
-    test(`r5 ${key} handles the document edge inside ${kind}`, async ({
+    test(`${key} handles the document edge inside ${kind}`, async ({
       page,
     }) => {
       const raw = "ab\r\ncd";

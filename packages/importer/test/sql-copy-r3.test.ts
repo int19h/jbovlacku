@@ -80,7 +80,7 @@ function historyBreaksInTwoFields(): Buffer {
   return Buffer.from(lines.join("\r\n"));
 }
 
-test("r4 R3-1 history breaks in two fields retain all three fragment locations and the head owner", async () => {
+test("history breaks in two fields retain all three fragment locations and the head owner", async () => {
   const bytes = historyBreaksInTwoFields();
   const physical = bytes.toString().split("\r\n");
   const header = physical.findIndex((line) =>
@@ -114,7 +114,7 @@ test("r4 R3-1 history breaks in two fields retain all three fragment locations a
   assert.match(rows[1].error!, /spans 3 physical rows/);
 });
 
-test("r4 R3-1 history breaks in two fields leave only their owner unresolved", async () => {
+test("history breaks in two fields leave only their owner unresolved", async () => {
   const bytes = historyBreaksInTwoFields();
   const input = await source(bytes);
   const manifestPath = join(input.directory, "manifest.json");
@@ -156,7 +156,7 @@ test("r4 R3-1 history breaks in two fields leave only their owner unresolved", a
   );
 });
 
-test("r3 N1 separate short history rows retain both structurally valid owner prefixes", async () => {
+test("separate short history rows retain both structurally valid owner prefixes", async () => {
   const input = await source(independentHistoryRows());
   const rows = [];
   for await (const row of readCopyRows(
@@ -174,7 +174,7 @@ test("r3 N1 separate short history rows retain both structurally valid owner pre
   );
 });
 
-test("r3 N1 independent malformed history owners both stay unpublished", async () => {
+test("independent malformed history owners both stay unpublished", async () => {
   const bytes = independentHistoryRows();
   const input = await source(bytes);
   const manifestPath = join(input.directory, "manifest.json");
@@ -214,7 +214,7 @@ test("r3 N1 independent malformed history owners both stay unpublished", async (
   );
 });
 
-test("r3 N1 history note continuations still retain one malformed head owner", async () => {
+test("history note continuations still retain one malformed head owner", async () => {
   const lines = fixture.toString().split("\r\n");
   const header = lines.findIndex((line) =>
     line.startsWith("COPY public.definition_versions "),
@@ -235,7 +235,7 @@ test("r3 N1 history note continuations still retain one malformed head owner", a
   assert.ok(rows[1].error);
 });
 
-test("r3 N1 the real definition fragment shape still associates the 19-field head and 9-field tail", async () => {
+test("the real definition fragment shape still associates the 19-field head and 9-field tail", async () => {
   const head = ["318", "731", "62020", "62020", ...new Array(15).fill("text")];
   const tail = [
     "French continuation",
@@ -270,7 +270,7 @@ test("r3 N1 the real definition fragment shape still associates the 19-field hea
   assert.ok(rows[0].error);
 });
 
-test("r4 R3-1 every continuation keeps a separate history owner boundary", async () => {
+test("every continuation keeps a separate history owner boundary", async () => {
   const columns = [
     "id",
     "definitionid",
@@ -310,7 +310,7 @@ test("r4 R3-1 every continuation keeps a separate history owner boundary", async
   assert.ok(rows.every((row) => row.error && row.fragments === undefined));
 });
 
-test("r4 R3-1 fragment grouping respects the 64-row limit including its final fragment", async () => {
+test("fragment grouping respects the 64-row limit including its final fragment", async () => {
   for (const count of [64, 65]) {
     const fragments = [
       "1\thead",
@@ -335,7 +335,7 @@ test("r4 R3-1 fragment grouping respects the 64-row limit including its final fr
   }
 });
 
-test("r4 R3-1 fragment grouping respects the 32 MiB limit including its final fragment", async () => {
+test("fragment grouping respects the 32 MiB limit including its final fragment", async () => {
   for (const extra of [0, 1]) {
     const head = `1\t${"x".repeat(16 * 1024 * 1024)}`;
     const tail = `${"y".repeat(16 * 1024 * 1024 - 1 + extra)}\t`;
@@ -354,7 +354,7 @@ test("r4 R3-1 fragment grouping respects the 32 MiB limit including its final fr
   }
 });
 
-test("r4 R3-1 fragments that exceed the table width stay separate", async () => {
+test("fragments that exceed the table width stay separate", async () => {
   const input = await source(
     Buffer.from(
       "COPY public.test (id, first, second, third) FROM stdin;\r\n1\thead\r\nnext\tmiddle\r\ntail\tend\textra\r\n\\.\r\n",
