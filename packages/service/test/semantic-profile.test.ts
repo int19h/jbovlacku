@@ -21,6 +21,8 @@ import {
   QUERY_PREFIX,
   queryInput,
   qwenProfileRoute,
+  qwenRequestRoute,
+  QWEN_SHARED_ROUTES,
   validateProfile,
 } from "../src/semantic/profile.ts";
 
@@ -351,5 +353,34 @@ test("provider routes bind distinct profiles while the legacy Nebius identity st
   assert.throws(
     () => createQwenProfile(epoch, "unknown" as never),
     /route is invalid/,
+  );
+});
+
+test("the declared Nebius SiliconFlow family changes transport without rewriting profile identity", () => {
+  assert.deepEqual([...QWEN_SHARED_ROUTES].sort(), [
+    "nebius",
+    "siliconflow/fp8",
+  ]);
+  for (const stored of ["nebius", "siliconflow/fp8"] as const) {
+    const profile = createQwenProfile("12".repeat(16), stored);
+    const before = canonicalBytes(profile);
+    const identity = profileId(profile);
+    assert.equal(qwenRequestRoute(profile), "siliconflow/fp8");
+    assert.equal(qwenRequestRoute(profile, "nebius"), "nebius");
+    assert.equal(
+      qwenRequestRoute(profile, "siliconflow/fp8"),
+      "siliconflow/fp8",
+    );
+    assert.equal(qwenRequestRoute(profile, "deepinfra/us"), null);
+    assert.deepEqual(canonicalBytes(profile), before);
+    assert.equal(profileId(profile), identity);
+  }
+  const deepinfra = createQwenProfile("12".repeat(16), "deepinfra/us");
+  assert.equal(qwenRequestRoute(deepinfra), "deepinfra/us");
+  assert.equal(qwenRequestRoute(deepinfra, "nebius"), null);
+  assert.equal(qwenRequestRoute(deepinfra, "siliconflow/fp8"), null);
+  assert.notEqual(
+    profileId(deepinfra),
+    profileId(createQwenProfile("12".repeat(16))),
   );
 });

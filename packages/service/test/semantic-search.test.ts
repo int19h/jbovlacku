@@ -3492,6 +3492,7 @@ test("document, query, and compatibility requests use each profile's route and s
     try {
       for (const route of ["nebius", "deepinfra/us"] as const) {
         const selected = createQwenProfile("ab".repeat(16), route);
+        const requestRoute = route === "nebius" ? "siliconflow/fp8" : route;
         const generation = await store.create(
           {
             snapshot: ctx.snapshot.snapshot,
@@ -3535,7 +3536,7 @@ test("document, query, and compatibility requests use each profile's route and s
         assert.equal(descriptions[0].query_available, true);
         assert(
           descriptions[0].label.endsWith(
-            route === "deepinfra/us" ? "DeepInfra" : "Nebius",
+            route === "deepinfra/us" ? "DeepInfra" : "SiliconFlow",
           ),
         );
         const result = await engine.search(
@@ -3552,7 +3553,7 @@ test("document, query, and compatibility requests use each profile's route and s
         );
         assert.deepEqual(
           calls.slice(before).map((call) => call.route),
-          [route, route, route],
+          [requestRoute, requestRoute, requestRoute],
         );
         assert.equal(await store.compatibility(generation.profile), null);
         assert.equal(
@@ -3573,6 +3574,145 @@ test("document, query, and compatibility requests use each profile's route and s
         );
       }
       assert.equal(config.embedding!.route, "nebius");
+    } finally {
+      await assistance.drainEmbeddingTransports();
+    }
+  }));
+
+test("each compatible request route gets its own probe and a drift in either route suspends the shared profile", async () => {
+  for (const driftRoute of ["nebius", "siliconflow/fp8"] as const)
+    await fixture(async ({ store, scanner, ctx }) => {
+      const routes: string[] = [];
+      let drift = false;
+      const config = providerConfig(
+        { JVC_AI_ENABLED: "enabled" },
+        async () => "disposable-route-key",
+      )!;
+      const assistance = new AssistanceService(
+        {
+          provider: {
+            ...config,
+            fetch: async (_url, init) => {
+              const body = JSON.parse(String(init?.body));
+              routes.push(body.provider.only[0]);
+              assert.deepEqual(body.provider.only, [body.provider.order[0]]);
+              assert.equal(body.provider.allow_fallbacks, false);
+              return Response.json({
+                model: "qwen/qwen3-embedding-8b",
+                data: body.input.map((_input: string, index: number) => ({
+                  index,
+                  embedding: [...unit(drift ? 1 : 0)],
+                })),
+                usage: { prompt_tokens: 1, total_tokens: 1, cost: 0.000001 },
+              });
+            },
+          },
+        },
+        "route-probe",
+        async () => [],
+      );
+      const generation = (
+        await store.published(ctx.evaluation.selected_view)
+      ).find((row) => row.profile === profileId(profile))!;
+      const engine = new SemanticSearch(
+        {
+          profile: generation.profile,
+          store,
+          cache: store.queryCache,
+          scanner,
+        },
+        assistance,
+        true,
+      );
+      const healthyRoute =
+        driftRoute === "nebius" ? "siliconflow/fp8" : "nebius";
+      try {
+        await engine.probe(generation, profile, healthyRoute);
+        drift = true;
+        await assert.rejects(engine.probe(generation, profile, driftRoute), {
+          code: "semantic_model_drift",
+        });
+        assert.deepEqual(routes, [healthyRoute, driftRoute]);
+        const evidence = (await store.probeEvidence(generation.profile))!;
+        assert.equal(evidence.route, driftRoute);
+        assert.equal(evidence.tolerance, 0.0005);
+        assert(
+          evidence.references.every(
+            (entry) => entry.distance > evidence.tolerance,
+          ),
+        );
+        assert.equal(
+          await store.compatibility(generation.profile),
+          "semantic_model_drift",
+        );
+        assert.equal(
+          profileId(await store.profile(generation.id)),
+          generation.profile,
+        );
+      } finally {
+        await assistance.drainEmbeddingTransports();
+      }
+    });
+});
+
+test("query and probe requests follow an explicit compatible route on an existing Nebius profile", () =>
+  fixture(async ({ store, scanner, ctx }) => {
+    const routes: string[] = [];
+    const config = providerConfig(
+      { JVC_AI_ENABLED: "enabled" },
+      async () => "disposable-route-key",
+    )!;
+    const assistance = new AssistanceService(
+      {
+        provider: {
+          ...config,
+          fetch: async (_url, init) => {
+            const body = JSON.parse(String(init?.body));
+            routes.push(body.provider.only[0]);
+            return Response.json({
+              model: "qwen/qwen3-embedding-8b",
+              data: body.input.map((_input: string, index: number) => ({
+                index,
+                embedding: [...unit()],
+              })),
+              usage: { prompt_tokens: 1, total_tokens: 1, cost: 0.000001 },
+            });
+          },
+        },
+      },
+      "query-route",
+      async () => [],
+    );
+    const options = {
+      profile: profileId(profile),
+      store,
+      cache: store.queryCache,
+      scanner,
+      route: "nebius" as "nebius" | "siliconflow/fp8",
+    };
+    const engine = new SemanticSearch(options, assistance, true);
+    try {
+      await engine.search(ctx, request("first query"), "local");
+      options.route = "siliconflow/fp8";
+      await engine.search(ctx, request("first query"), "local");
+      assert.deepEqual(
+        routes,
+        ["nebius", "nebius"],
+        "A compatible route change reuses the retained query vector",
+      );
+      await engine.search(ctx, request("second query"), "local");
+      assert.deepEqual(routes, [
+        "nebius",
+        "nebius",
+        "siliconflow/fp8",
+        "siliconflow/fp8",
+      ]);
+      assert.equal(
+        (await store.published(ctx.evaluation.selected_view)).find(
+          (row) => row.profile === options.profile,
+        )!.profile,
+        profileId(profile),
+      );
     } finally {
       await assistance.drainEmbeddingTransports();
     }

@@ -2,10 +2,14 @@ import {
   semanticProjectionVersion,
   type Evaluation,
 } from "../../../core/src/index.ts";
-import { abortable, AssistanceError } from "../inference.ts";
+import {
+  abortable,
+  AssistanceError,
+  type EmbeddingRoute,
+} from "../inference.ts";
 import type { AssistanceService } from "../assistance.ts";
 import type { Snapshot } from "../storage.ts";
-import { inputHash, qwenProfileRoute, queryInput } from "./profile.ts";
+import { inputHash, qwenRequestRoute, queryInput } from "./profile.ts";
 import { distance, vectorBytes, vectorFromBytes } from "./vector.ts";
 import { SemanticError } from "./types.ts";
 import type { EmbeddingProfile } from "./types.ts";
@@ -17,7 +21,7 @@ import type {
 import type { QueryCache } from "./query-cache.ts";
 import type { VectorScanner } from "./scan.ts";
 
-/** Independent public reference runs include ordinary differences near 0.0002. This fixed tolerance is not fitted to search targets. */
+/** Earlier Nebius reference tests found differences near 0.0002. This fixed tolerance is not fitted to search targets. */
 export const PROBE_MAX_DISTANCE = 0.0005;
 
 export interface SemanticOptions {
@@ -25,6 +29,7 @@ export interface SemanticOptions {
   store: VectorStore;
   cache: QueryCache;
   scanner: VectorScanner;
+  route?: EmbeddingRoute;
 }
 export interface SearchContext {
   snapshot: Snapshot;
@@ -153,7 +158,7 @@ export class SemanticSearch {
       generation.state !== "retired" &&
       generation.source_done &&
       coverage.eligible === eligibleEvents(context).length &&
-      qwenProfileRoute(profile) !== null &&
+      qwenRequestRoute(profile, this.options.route) !== null &&
       !(await this.options.store.compatibility(generation.profile))
     );
   }
@@ -166,6 +171,15 @@ export class SemanticSearch {
     const release = await this.options.store.retainGeneration(generation.id);
     try {
       const profile = await this.options.store.profile(generation.id);
+      const route = qwenRequestRoute(profile, this.options.route);
+      const providerLabel =
+        route === "siliconflow/fp8"
+          ? "SiliconFlow"
+          : route === "nebius"
+            ? "Nebius"
+            : route === "deepinfra/us"
+              ? "DeepInfra"
+              : profile.provider;
       const bound = await this.coverage(context, generation);
       const all = bound.all;
       const counts =
@@ -186,7 +200,7 @@ export class SemanticSearch {
       return [
         {
           id: generation.profile,
-          label: `Qwen3 Embedding 8B through OpenRouter / ${qwenProfileRoute(profile) === "deepinfra/us" ? "DeepInfra" : qwenProfileRoute(profile) === "nebius" ? "Nebius" : profile.provider}`,
+          label: `Qwen3 Embedding 8B through OpenRouter / ${providerLabel}`,
           query_available,
           indexed: counts.indexed,
           eligible: counts.eligible,
@@ -221,23 +235,24 @@ export class SemanticSearch {
   async probe(
     generation: IndexGeneration,
     profile: EmbeddingProfile,
+    requestedRoute?: EmbeddingRoute,
   ): Promise<void> {
-    const route = qwenProfileRoute(profile);
+    const route = qwenRequestRoute(
+      profile,
+      requestedRoute ?? this.options.route,
+    );
     if (!route) throw unavailable();
     await this.compatible(generation.profile);
-    if (Date.now() - (this.checked.get(generation.profile) ?? 0) < 3600000)
-      return;
-    let work = this.probeWork.get(generation.profile);
+    const key = `${generation.profile}:${route}`;
+    if (Date.now() - (this.checked.get(key) ?? 0) < 3600000) return;
+    let work = this.probeWork.get(key);
     if (!work) {
       work = (async () => {
         const references = await this.options.store.references(generation.id);
         if (!references.length) throw unavailable();
         const result = await this.inference.embed(
           references.map((r) => r.input),
-          { kind: "probe" },
-          undefined,
-          undefined,
-          route,
+          { kind: "probe", route },
         );
         if (result.vectors.length !== references.length) throw unavailable();
         const comparisons = result.vectors.map((v, i) => ({
@@ -249,6 +264,7 @@ export class SemanticSearch {
         }));
         await this.options.store.recordProbe(generation.profile, {
           operation: result.operation,
+          route,
           checked_at: Date.now(),
           tolerance: PROBE_MAX_DISTANCE,
           model: result.model,
@@ -269,7 +285,7 @@ export class SemanticSearch {
             "The provider vectors changed beyond the compatibility tolerance. This profile is suspended.",
           );
         }
-        this.checked.set(generation.profile, Date.now());
+        this.checked.set(key, Date.now());
       })()
         .catch(async (failure) => {
           if (
@@ -280,9 +296,9 @@ export class SemanticSearch {
           throw failure;
         })
         .finally(() => {
-          this.probeWork.delete(generation.profile);
+          this.probeWork.delete(key);
         });
-      this.probeWork.set(generation.profile, work);
+      this.probeWork.set(key, work);
     }
     return work;
   }
@@ -292,7 +308,7 @@ export class SemanticSearch {
     bytes: Uint8Array,
     network: string,
   ): Promise<Float32Array> {
-    const route = qwenProfileRoute(profile);
+    const route = qwenRequestRoute(profile, this.options.route);
     if (!route) throw unavailable();
     const hash = inputHash(bytes);
     const key = `${generation.profile}:${hash}`;
@@ -321,15 +337,13 @@ export class SemanticSearch {
             "embedding_rate_limited",
             "The embedding provider is cooling down. Try again later.",
           );
-        await this.probe(generation, profile);
+        await this.probe(generation, profile, route);
         await this.compatible(generation.profile);
-        const result = await this.inference.embed(
-          [bytes],
-          { kind: "query", network },
-          undefined,
-          undefined,
+        const result = await this.inference.embed([bytes], {
+          kind: "query",
+          network,
           route,
-        );
+        });
         await this.compatible(generation.profile);
         const vector = result.vectors[0];
         if (result.vectors.length !== 1)

@@ -6,7 +6,7 @@ import {
 } from "../../../core/src/index.ts";
 import {
   EMBEDDING_MODEL,
-  EMBEDDING_ROUTE,
+  DEFAULT_PROFILE_ROUTE,
   isEmbeddingRoute,
   type EmbeddingRoute,
 } from "../inference.ts";
@@ -34,7 +34,7 @@ function freshEpoch(): string {
 /** A new application generation never adopts saved research vectors. */
 export function createQwenProfile(
   epoch: string = freshEpoch(),
-  route: EmbeddingRoute = EMBEDDING_ROUTE,
+  route: EmbeddingRoute = DEFAULT_PROFILE_ROUTE,
 ): EmbeddingProfile {
   if (!isEmbeddingRoute(route))
     throw new SemanticError(
@@ -90,6 +90,29 @@ export function qwenProfileRoute(
   return isEmbeddingRoute(route) &&
     profileId(profile) === profileId(createQwenProfile(profile.epoch, route))
     ? route
+    : null;
+}
+
+/**
+ * SiliconFlow repeats within about 0.00015 and matches Nebius within about 0.00014.
+ * Its 8-input versus 128-input batches differ by at most about 0.00013.
+ * Nebius repeats within about 0.00013. These measurements fit the fixed 0.0005 probe tolerance.
+ * DeepInfra repeats can differ by 0.0020, so it stays outside this declared vector space.
+ * Order names the preferred request route without changing any stored profile bytes.
+ */
+export const QWEN_SHARED_ROUTES = ["siliconflow/fp8", "nebius"] as const;
+export function qwenRequestRoute(
+  profile: EmbeddingProfile,
+  requested?: EmbeddingRoute,
+): EmbeddingRoute | null {
+  const stored = qwenProfileRoute(profile);
+  if (!stored) return null;
+  const shared = (route: EmbeddingRoute) =>
+    QWEN_SHARED_ROUTES.some((allowed) => allowed === route);
+  const selected =
+    requested ?? (shared(stored) ? QWEN_SHARED_ROUTES[0] : stored);
+  return selected === stored || (shared(stored) && shared(selected))
+    ? selected
     : null;
 }
 

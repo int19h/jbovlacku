@@ -1,3 +1,4 @@
+import type { EmbeddingRoute } from "../inference.ts";
 import type { EmbeddingUsage } from "../embedding.ts";
 import type { EmbeddingProfile } from "./types.ts";
 import type { DocumentPage, IndexContext, IndexDocument } from "./source.ts";
@@ -67,6 +68,7 @@ export type ExpectedAssociation = Pick<
 >;
 export interface ProbeEvidence {
   operation: string;
+  route?: EmbeddingRoute;
   checked_at: number;
   tolerance: number;
   model: string;

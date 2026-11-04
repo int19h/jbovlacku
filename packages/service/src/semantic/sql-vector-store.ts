@@ -10,6 +10,7 @@ import { vectorBytes, vectorFromBytes } from "./vector.ts";
 import { languageTag } from "../language.ts";
 import type { DocumentPage, IndexContext } from "./source.ts";
 import type { EmbeddingUsage } from "../embedding.ts";
+import { isEmbeddingRoute } from "../inference.ts";
 import { MAX_PROFILE_COOLDOWN_MS } from "./vector-store.ts";
 import type {
   BackgroundRecovery,
@@ -466,6 +467,7 @@ export class SqlVectorStore implements VectorStore {
     if (
       !hash(profile) ||
       !evidence.operation.startsWith("embedding:probe:") ||
+      (evidence.route !== undefined && !isEmbeddingRoute(evidence.route)) ||
       !Number.isSafeInteger(evidence.checked_at) ||
       !Number.isFinite(evidence.tolerance) ||
       evidence.tolerance <= 0 ||

@@ -1,7 +1,7 @@
 import type { AssistanceService } from "../assistance.ts";
 import type { EmbeddingUsage } from "../embedding.ts";
-import { AssistanceError } from "../inference.ts";
-import { qwenProfileRoute } from "./profile.ts";
+import { AssistanceError, type EmbeddingRoute } from "../inference.ts";
+import { qwenRequestRoute } from "./profile.ts";
 import type { SemanticSource } from "./source.ts";
 import type { EmbeddingProfile } from "./types.ts";
 import { SemanticError } from "./types.ts";
@@ -92,6 +92,7 @@ export class SemanticIndexer {
     options: {
       concurrency?: number;
       operator?: boolean;
+      route?: EmbeddingRoute;
       batchSize?: number;
       batchBytes?: number;
       adaptive?: boolean;
@@ -154,7 +155,7 @@ export class SemanticIndexer {
         };
       const profile = await this.store.profile(id);
       // This adapter computes one exact application profile. A recipe or route change needs a new adapter.
-      const route = qwenProfileRoute(profile);
+      const route = qwenRequestRoute(profile, options.route);
       if (!route)
         throw new SemanticError(
           409,
@@ -277,13 +278,12 @@ export class SemanticIndexer {
               // Do not detach provider settlement when an operator pauses or exits.
               const result = await this.assistance.embed(
                 inputs,
-                { kind: "index" },
+                { kind: "index", route },
                 undefined,
                 async (id) => {
                   await this.store.sent(batch.id, id);
                   operation = id;
                 },
-                route,
               );
               usage = result.usage;
               await this.store.complete(
