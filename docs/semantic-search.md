@@ -32,6 +32,26 @@ It uses `loaded-view.json`, with the same `JVC_VIEW` and `JVC_STATE_TRAVERSAL_LI
 It reads at most 128 semantic records per page. Missing projections use the existing private backfill path.
 Preparation reads no provider key and sends no inference request.
 
+Set `JVC_EMBEDDING_PROFILE` to the `generation.profile` value from an earlier generation.
+Use `prepare --profile PROFILE_ID` to reuse that stored application profile for another snapshot or view:
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command prepare --profile "$JVC_EMBEDDING_PROFILE"
+```
+
+The command refuses an unknown, suspended, or incompatible stored profile before it prepares a generation.
+The model, route, runtime, recipes, parameters, and epoch must match the application adapter.
+Without `--profile`, preparation keeps its existing behavior and creates a random fresh epoch.
+With `--job`, a supplied profile must match the saved job.
+
+The `prepared` JSON event includes `reused_inputs`, the count of distinct prepared inputs that already have a stored vector under that profile.
+This count covers staged pages when `--pages` limits preparation.
+Unchanged exact inputs reuse their vectors. Changed input bytes remain pending and need new vectors.
+Stored profile IDs stay intact, including the server batch limits of eight inputs and 32 KiB.
+These fields describe server requests. The profile does not bind the operator request batch size.
+Operator batch sizes do not change the vector space, input recipes, provider routing, or normalization.
+The compatibility probe still checks retained vectors for provider drift.
+
 The first JSON line names the generation ID in `generation.id`.
 The final line reports its source cursor, preparation state, and coverage.
 Save that ID as `JVC_INDEX_JOB` for the remaining commands:
@@ -48,8 +68,11 @@ An expired source snapshot requires a new generation. The command never substitu
 ## Embed bounded batches
 
 Use the existing [AI configuration](development.md#optional-ai-assistance), including `JVC_AI_ENABLED=enabled` and the server-held `JVC_AI_KEY_FILE`.
-The job uses the same spending database and server ceilings as generation and embedding queries.
-It uses operator spending identity and consumes no client network allowance.
+The job uses the same spending database and operator spending identity.
+Its execution slots and admission policy are independent of the server's ordinary request limits.
+The CLI ignores server hourly, daily, network, and per-request spending ceilings for index batches.
+It consumes no client network allowance.
+The server's query, probe, background-indexing, and generation limits keep their existing behavior.
 The provider process reads the configured key. Command output contains no key or definition text.
 
 Start with one bounded batch:
@@ -58,10 +81,48 @@ Start with one bounded batch:
 npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --job "$JVC_INDEX_JOB" --max-batches 1 --concurrency 1
 ```
 
-A batch contains at most eight distinct inputs, with the existing byte and provider limits.
 After the bounded pass, repeat `run` without `--max-batches` to index the remaining inputs.
-The default concurrency equals the configured shared provider slots, normally two.
-Use `--concurrency N` to select fewer slots. The maximum is four and cannot exceed the provider configuration.
+Operator runs default to eight concurrent requests and 32 distinct inputs per batch.
+Use `--concurrency N` for one through 32 requests and `--batch-size N` for one through 128 inputs.
+Use `--batch-bytes N` to bound total input bytes in a fresh batch, up to 524,288 bytes.
+Its default is `min(batch-size * 4096, 524288)`.
+Each input keeps the profile's 4,096-byte limit.
+Operator request timeouts scale with the actual input count: `JVC_AI_TIMEOUT_MS * ceil(inputs / 8)`, capped at 540,000 milliseconds.
+Server request timeouts keep their configured value.
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --job "$JVC_INDEX_JOB" --concurrency 32 --batch-size 128 --batch-bytes 524288 --max-cost-usd 5
+```
+
+The adapter permits at most 4 MiB in an encoded operator request and 32 MiB in its response.
+These are local bounds, alongside the 128-input and 512-KiB input caps.
+The [OpenRouter embeddings API](https://openrouter.ai/docs/api/api-reference/embeddings/create-embeddings) and [Nebius schema](https://docs.tokenfactory.nebius.com/api-reference/inference/create-embeddings) accept arrays of strings.
+Those references do not publish a numeric batch-count or body-byte ceiling for this pinned route.
+Provider refusals still pause work and preserve its records.
+Choose smaller limits for new batches when the provider refuses a request size.
+
+Fresh claims stop before the byte boundary and keep later inputs available for the next claim.
+A single input above the selected batch-byte limit causes a local refusal before dispatch.
+An explicitly selected retry keeps its original batch and operation link, even when a new batch flag is smaller.
+Operator retries stay within the operator adapter limits.
+The background indexer splits oversized linked retries to keep its eight-input and 32-KiB server limits.
+
+Use optional `--max-cost-usd USD` to set a nonnegative ceiling for this `run` invocation.
+The ceiling counts concurrent reservations, reported charges, and conservative unknown charges from that invocation.
+A known final cost releases the unused part of its reservation.
+Without reported usage that establishes cost, each 429 attempt keeps a full estimated charge against `--max-cost-usd` and the shared ledger.
+Each retry adds another full estimate until its actual usage establishes the cost.
+
+An unsent failure releases its reservation. An unknown sent charge keeps its conservative amount.
+A zero ceiling permits no paid admission, while cached inputs can still complete.
+Unsent cost-ceiling, spending-history, and local slot refusals retain retry selection without another paid request.
+After the refusal clears, another `run` resumes those inputs without a manual retry command.
+A new invocation starts a new ceiling allowance.
+
+The ceiling uses configured price quotes for admission. Provider charges remain subject to the returned usage.
+The ledger keeps costs and unknown reservations, including earlier failed attempts.
+Completed known costs retain the existing hourly compaction and history bounds.
+Bulk charges remain in the shared ledger. Server requests still enforce their existing ceilings against that ledger.
 
 Completed inputs never enter another paid batch in that generation.
 Fresh claims resume from a saved input position and use an index for selected retries.
@@ -80,6 +141,10 @@ A normal bounded pass remains paused when eligible definitions still lack vector
 Its `index_incomplete` reason describes that partial coverage. It does not erase progress.
 Status lists at most 64 batches and exposes a cursor when more diagnostic rows remain.
 Use `status --job GENERATION_ID --after BATCH_ID` to read the next diagnostic page.
+Status also lists at most 64 generations for that job's profile and view, including retired generations.
+The `generations_next` field holds the cursor for the next page, or null when the page is shorter.
+Use `status --job GENERATION_ID --generations-after LAST_GENERATION_ID` to read the next generation page.
+The generation cursor is separate from the batch cursor.
 Its summary counts completed inputs, retained dispatch intents, reported tokens and cost, and batches with missing usage.
 Dispatch intents include interrupted sends whose actual delivery remains uncertain.
 Reported totals exclude unknown values. The shared spending ledger keeps those unknown charges separately.
@@ -89,11 +154,29 @@ Its reported cost remains part of the index summary and the shared spending ledg
 ## Handle provider rate limits
 
 An HTTP 429 response stops new claims and lets active workers settle.
-The command permits at most three automatic retry rounds per run.
-It waits at least one, two, then four seconds after each refusal, or longer for the saved `Retry-After` deadline.
-The header accepts integer seconds or an HTTP date.
-Each wait is limited to 60 seconds. All waits in one run are limited to 120 seconds in total.
-If the required delay exceeds either bound, the job remains paused without an early retry.
+A wave contains the requests active when claims stop.
+Operator scheduling halves concurrency once per drained wave with a 429 or embedding timeout, with a minimum of one.
+After eight successful batches, it raises concurrency by one, up to the requested maximum, and resets the backoff floor.
+Active requests settle before the lower cap admits further work.
+The command emits a `concurrency` event with `concurrency` and `reason` whenever this cap changes.
+Resumed runs start at concurrency one only for unresolved ambiguous batches, saved 429 retry selections, or an active cooldown.
+Completed batches alone do not lower the starting concurrency.
+Other runs start at their requested concurrency.
+
+An operator timeout can continue fresh inputs at the reduced cap after active workers settle.
+Three consecutive timeout waves without a completed batch pause the run with `embedding_timeout`.
+Any completed batch resets that count.
+The command keeps timed-out batches and their conservative charges for explicit retry selection.
+It does not automatically resend those batches.
+Concurrent definite 429 batches retain linked automatic retries, including when the run stops after that wave.
+An unresolved transport keeps its execution slot. A local slot refusal can still pause the run.
+
+Adaptive operator runs continue 429 retry waves until completion, cancellation, another failure, or the `--max-batches` bound.
+They have no invocation-wide retry count or total wait cap.
+The backoff floor doubles from one second to two, four, and then up to 60 seconds.
+The command also respects the saved `Retry-After` deadline. The header accepts integer seconds or an HTTP date.
+Each wait lasts at most 60 seconds. Longer cooldowns use repeated waits without an early provider retry.
+Ordinary server and non-adaptive runs keep their three-round and 120-second total wait bounds.
 
 The store saves the cooldown deadline for the complete profile, capped at one hour from each refusal.
 The cap limits faulty provider values. A later refusal can extend the deadline by at most another hour.
@@ -111,11 +194,13 @@ Each automatic retry creates a linked batch and a new shared-budget operation.
 Earlier batches and charges remain intact. A spending refusal stops the job.
 The `--max-batches` bound includes every attempt across the retry rounds.
 SIGINT or SIGTERM cancels a backoff wait and stops further attempts.
-Only 429 failures from the current invocation qualify for automatic retry.
-Other failures and ambiguous batches from earlier invocations require explicit retry selection.
+Adaptive operator runs save definite 429 batches for automatic retry on a later run.
+They also select unsent local refusals: `billing_operator_limit` (cost ceiling), `billing_history_limit` (history), and `embedding_busy` (local slots).
+A later run automatically resumes these saved selections.
+Other unselected earlier failed or ambiguous batches require `retry --batch` or `retry --all`.
 
 The command emits a `backoff` JSON event before each wait, with `delay_ms`, `attempt`, and `batches`.
-Attempt zero waits for a saved cooldown. Attempts one through three identify retry rounds.
+Attempt zero waits for a saved cooldown. Positive attempts identify retry rounds.
 If a retry's inputs already have vectors from another generation, the worker continues to fresh work without another provider call.
 
 ## Recover interrupted work
@@ -140,7 +225,21 @@ npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command retry -
 npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --job "$JVC_INDEX_JOB"
 ```
 
-Retry creates a new operation and preserves its predecessor batch and earlier charge.
+To select every eligible failed or ambiguous batch in this job, use `--all` instead of `--batch`:
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command retry --job "$JVC_INDEX_JOB" --all
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --job "$JVC_INDEX_JOB"
+```
+
+Inspect ambiguous batches before selecting them, including with `--all`.
+The provider can still process and charge an earlier timed-out or interrupted request.
+A retry can repeat that paid work. It does not cancel or refund the earlier request.
+Bulk selection walks every diagnostic page and skips older attempts whose inputs now belong to a later attempt.
+Its `retry` event reports `selected` and `skipped` batch counts. It selects no batch from another job.
+Use exactly one of `--all` and `--batch ID`. Selection alone sends no provider request.
+
+A subsequent run creates a new operation and preserves its predecessor batch and earlier charge.
 It requires a paused generation. It cannot replay an older attempt after a newer attempt owns those inputs.
 Other provider or storage failures pause the job. Manual dictionary reads and admission use their existing independent paths.
 An unexpected returned model or a conflicting vector suspends the complete profile in durable storage.
@@ -152,6 +251,8 @@ If retained vectors leave too little capacity, unpublish the old current generat
 
 Preparation must finish before publication. Publication can expose partial vector coverage under that exact snapshot and view.
 The pointer update uses one transaction and retains the previous generation for rollback.
+Operator publication also clears the background job pointer and saved wait for that profile and view.
+An older unfinished background job cannot replace this publication. The next background cycle starts from the latest snapshot.
 A failed preparation or pointer update leaves the preceding current generation available.
 
 ```sh
@@ -256,7 +357,9 @@ It yields between transactions. New readers and publication cannot select that g
 Each transaction removes only inputs and vectors without a remaining association. It updates storage counts in the same transaction.
 
 An interrupted retirement keeps its cleanup marker. A later background prune or explicit retirement continues that cleanup.
-Operator-created generations remain under explicit operator control. The existing capacity limits still apply.
+Background cleanup also retires unfinished background jobs after their background, current, and rollback pointers end.
+It first recovers idle interrupted jobs. Active readers, live index jobs, and unsettled provider transports defer cleanup.
+Cleanup never retires operator-created generations. They remain under explicit operator control. The existing capacity limits still apply.
 
 To remove a completed background generation, stop the server that holds its data directory lock.
 Set `JVC_DATA_DIR` to that directory and `JVC_INDEX_JOB` to the exact generation ID.

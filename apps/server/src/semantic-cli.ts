@@ -8,7 +8,10 @@ import {
 import { AssistanceService } from "../../../packages/service/src/assistance.ts";
 import { DictionaryService } from "../../../packages/service/src/service.ts";
 import { SemanticIndexer } from "../../../packages/service/src/semantic/indexer.ts";
-import { createQwenProfile } from "../../../packages/service/src/semantic/profile.ts";
+import {
+  createQwenProfile,
+  profileId,
+} from "../../../packages/service/src/semantic/profile.ts";
 import { lockDataDirectory } from "../../../packages/importer/src/load-lock.ts";
 import {
   readLoadedView,
@@ -25,31 +28,36 @@ import { NodeEvaluationRuntime } from "./evaluation.ts";
 import { FileCheckpointStore } from "./checkpoint.ts";
 
 const usage =
-  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID] [--after BATCH_ID] [--max-batches N] [--concurrency N] [--pages N]. Stop the server for this directory first.";
+  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID | --all] [--after BATCH_ID] [--generations-after GENERATION_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
 const allowed = new Set([
   "data",
   "command",
   "job",
   "batch",
+  "all",
   "max-batches",
   "concurrency",
   "pages",
   "after",
+  "generations-after",
+  "profile",
+  "batch-size",
+  "batch-bytes",
+  "max-cost-usd",
 ]);
 function argumentsForCommand() {
   const args = process.argv.slice(2);
   const values = new Map<string, string>();
-  for (let i = 0; i < args.length; i += 2) {
+  for (let i = 0; i < args.length; i += 1) {
     const key = args[i].replace(/^--/, "");
-    if (
-      !args[i].startsWith("--") ||
-      !allowed.has(key) ||
-      values.has(key) ||
-      !args[i + 1] ||
-      args[i + 1].startsWith("--")
-    )
+    if (!args[i].startsWith("--") || !allowed.has(key) || values.has(key))
       throw new Error(usage);
-    values.set(key, args[i + 1]);
+    if (key === "all") {
+      values.set(key, "true");
+      continue;
+    }
+    if (!args[i + 1] || args[i + 1].startsWith("--")) throw new Error(usage);
+    values.set(key, args[++i]);
   }
   if (!values.has("data") || !values.has("command")) throw new Error(usage);
   return values;
@@ -66,7 +74,26 @@ async function withSemanticService<T>(
     profile: Awaited<ReturnType<SqliteVectorStore["profile"]>>,
     generation: Awaited<ReturnType<SqliteVectorStore["generation"]>> | null,
   ) => Promise<T>,
+  selectedProfile?: string,
 ) {
+  const profile = job
+    ? await vectors.profile(job)
+    : selectedProfile
+      ? await vectors.storedProfile(selectedProfile)
+      : createQwenProfile();
+  if (selectedProfile) {
+    if (profileId(profile) !== selectedProfile)
+      throw new Error("The selected profile does not match the saved job.");
+    if (profileId(profile) !== profileId(createQwenProfile(profile.epoch)))
+      throw new Error(
+        "The stored profile is incompatible with the current embedding adapter.",
+      );
+    if (await vectors.compatibility(selectedProfile))
+      throw new Error(
+        "The stored profile is suspended. Prepare a fresh profile after repairing the provider.",
+      );
+  }
+  const generation = job ? await vectors.generation(job) : null;
   const coordinator = new SqliteCoordinator(
     join(directory, "coordinator.sqlite"),
   );
@@ -79,8 +106,6 @@ async function withSemanticService<T>(
   );
   const runtime = new NodeEvaluationRuntime(core);
   const loaded = await readLoadedView(directory);
-  const profile = job ? await vectors.profile(job) : createQwenProfile();
-  const generation = job ? await vectors.generation(job) : null;
   const traversal = stateTraversalLimit(
     process.env.JVC_STATE_TRAVERSAL_LIMIT ?? loaded?.state_traversal_limit,
   );
@@ -121,6 +146,7 @@ async function prepare(
   vectors: SqliteVectorStore,
   job: string | undefined,
   pages: number,
+  selectedProfile?: string,
 ) {
   return withSemanticService(
     directory,
@@ -140,8 +166,14 @@ async function prepare(
         },
       });
       const prepared = await indexer.prepare(created.id, source, pages);
+      output({
+        event: "prepared",
+        generation: prepared,
+        reused_inputs: await vectors.reusableInputs(created.id),
+      });
       return prepared;
     },
+    selectedProfile,
   );
 }
 
@@ -201,6 +233,18 @@ async function main() {
     throw new Error(usage);
   const job = args.get("job");
   if (command !== "prepare" && !job) throw new Error(usage);
+  if (args.has("all") && command !== "retry")
+    throw new Error("Use --all only with retry.");
+  if (command === "retry" && args.has("all") === args.has("batch"))
+    throw new Error("Use either --batch ID or --all with retry.");
+  if (args.has("generations-after") && command !== "status")
+    throw new Error("Use --generations-after only with status.");
+  const selectedProfile = args.get("profile");
+  if (selectedProfile && command !== "prepare")
+    throw new Error("Use --profile only with prepare.");
+  for (const flag of ["batch-size", "batch-bytes", "max-cost-usd"])
+    if (args.has(flag) && command !== "run")
+      throw new Error(`Use --${flag} only with run.`);
   const positive = (name: string, fallback: number) => {
     const value = args.get(name);
     if (value !== undefined && !/^[1-9][0-9]*$/.test(value))
@@ -235,6 +279,7 @@ async function main() {
           vectors,
           job,
           positive("pages", Number.MAX_SAFE_INTEGER),
+          selectedProfile,
         )
       ).id;
     else if (command === "run") {
@@ -246,22 +291,43 @@ async function main() {
         throw new Error(
           "The application profile requires the configured OpenRouter endpoint.",
         );
+      const concurrency = positive("concurrency", 8);
+      const batchSize = positive("batch-size", 32);
+      const batchBytes = positive(
+        "batch-bytes",
+        Math.min(batchSize * 4096, 524288),
+      );
+      const maximumCost = args.get("max-cost-usd");
+      const maxCostUsd =
+        maximumCost === undefined ? undefined : Number(maximumCost);
+      if (
+        concurrency > 32 ||
+        batchSize > 128 ||
+        batchBytes > 524288 ||
+        (maxCostUsd !== undefined &&
+          (!/^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(maximumCost!) ||
+            !Number.isFinite(maxCostUsd) ||
+            maxCostUsd < 0 ||
+            maximumCost!.trim() === ""))
+      )
+        throw new Error(
+          "Use at most 32 workers, 128 inputs, 524288 input bytes, and a nonnegative cost ceiling.",
+        );
+      options.operatorIndexing = { concurrency, maxCostUsd };
       assistance = new AssistanceService(
         options,
         "semantic-index-operator",
         async () => [],
       );
-      const concurrency = positive(
-        "concurrency",
-        options.provider?.concurrency ?? 2,
-      );
-      if (!options.provider || concurrency > options.provider.concurrency)
-        throw new Error(
-          "Enable the provider and keep index concurrency within its shared execution slots.",
-        );
       const started = performance.now();
       const result = await new SemanticIndexer(vectors, assistance).run(id!, {
         concurrency,
+        operator: true,
+        batchSize,
+        batchBytes,
+        adaptive: true,
+        onConcurrencyChange: (event) =>
+          output({ event: "concurrency", job: id, ...event }),
         maxBatches: positive("max-batches", Number.MAX_SAFE_INTEGER),
         signal: stop.signal,
         onBackoff: ({ attempt, delayMs, batches }) =>
@@ -285,22 +351,48 @@ async function main() {
     } else if (command === "recover") await vectors.recover(id!);
     else if (command === "retry") {
       const batch = args.get("batch");
-      if (!batch) throw new Error(usage);
-      const owned = (await vectors.batches(id!)).some(
-        (value) => value.id === batch,
-      );
-      // A batch can fall outside the first diagnostics page. Walk the bounded pages.
-      let found = owned;
+      const all = args.has("all");
+      if (all && (await vectors.generation(id!)).state !== "paused")
+        throw new Error(
+          "Pause the generation before selecting batches for retry.",
+        );
+      let found = false;
+      let selected = 0;
+      let skipped = 0;
       let after: string | null = null;
-      while (!found) {
+      // Retry selection does not change batch IDs or their diagnostics page order.
+      for (;;) {
         const page = await vectors.batches(id!, after);
         if (!page.length) break;
-        found = page.some((value) => value.id === batch);
+        for (const value of page) {
+          if (all) {
+            if (!["failed", "ambiguous"].includes(value.state)) continue;
+            try {
+              await vectors.retry(value.id);
+              selected++;
+            } catch (failure) {
+              // Keep the store's ownership check as the authority for replay safety.
+              if (
+                failure instanceof Error &&
+                "code" in failure &&
+                failure.code === "semantic_retry" &&
+                failure.message === "A later attempt already owns these inputs."
+              )
+                skipped++;
+              else throw failure;
+            }
+          } else if (value.id === batch) {
+            await vectors.retry(value.id);
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
         after = page.at(-1)!.id;
       }
-      if (!found)
+      if (!all && !found)
         throw new Error("The batch does not belong to this generation.");
-      await vectors.retry(batch);
+      if (all) output({ event: "retry", job: id, selected, skipped });
     } else if (command === "publish") {
       const generation = await vectors.generation(id!);
       const old = await vectors.current(generation.profile, generation.view);
@@ -326,8 +418,16 @@ async function main() {
     } else if (command === "retire") await vectors.retire(id!);
     const generation = await vectors.generation(id!, true);
     const batches = await vectors.batches(id!, args.get("after") ?? null);
+    const generations = await vectors.generations(
+      generation.profile,
+      generation.view,
+      args.get("generations-after") ?? null,
+    );
     output({
       event: "status",
+      generations,
+      generations_next:
+        generations.length === 64 ? generations.at(-1)!.id : null,
       generation,
       coverage:
         generation.state === "retired"

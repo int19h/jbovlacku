@@ -118,6 +118,8 @@ export interface AssistanceOptions {
   terminalReadMs?: number;
   requestBodyTimeoutMs?: number;
   budgetStore?: AssistanceBudgetStore;
+  /** Host-only bulk indexing. HTTP callers cannot choose this policy. */
+  operatorIndexing?: { concurrency: number; maxCostUsd?: number };
 }
 export interface LegacyAssistanceBudgetEntry {
   id: string;
@@ -1334,6 +1336,7 @@ export class AssistanceService {
     }
   >();
   private budgetEntries = new Map<string, AssistanceBudgetEntry>();
+  private operatorCharges = new Map<string, number>();
   private networkHashKey = "";
   private budgetLoaded = false;
   private budgetUnavailable = false;
@@ -1381,8 +1384,26 @@ export class AssistanceService {
         "embedding_network",
         "An embedding query requires a client network.",
       );
-    const deadline = Date.now() + config.timeoutMs;
-    const prepared = prepareEmbedding(inputs, config);
+    const operator =
+      caller.kind === "index" ? this.options.operatorIndexing : undefined;
+    if (
+      operator &&
+      (!Number.isInteger(operator.concurrency) ||
+        operator.concurrency < 1 ||
+        operator.concurrency > 32 ||
+        (operator.maxCostUsd !== undefined &&
+          (!Number.isFinite(operator.maxCostUsd) || operator.maxCostUsd < 0)))
+    )
+      throw new AssistanceError(
+        400,
+        "embedding_configuration",
+        "The operator concurrency or cost ceiling is invalid.",
+      );
+    const prepared = prepareEmbedding(inputs, config, !!operator);
+    const timeoutMs = operator
+      ? Math.min(540000, config.timeoutMs * Math.ceil(prepared.count / 8))
+      : config.timeoutMs;
+    const deadline = Date.now() + timeoutMs;
     let resolveLifetime!: () => void;
     const lifetime = new Promise<void>((resolve) => {
       resolveLifetime = resolve;
@@ -1412,7 +1433,7 @@ export class AssistanceService {
       callerSignal?.throwIfAborted();
       signal.throwIfAborted();
       if (this.budgetUnavailable) await this.saveBudget();
-      if (this.running >= config.concurrency)
+      if (this.running >= (operator?.concurrency ?? config.concurrency))
         throw new AssistanceError(
           429,
           "embedding_busy",
@@ -1423,11 +1444,38 @@ export class AssistanceService {
           ? this.networkUnits(caller.network)
           : ["operator"],
       );
-      const limit = this.spendingLimit(
-        prepared.estimatedUsd,
-        config,
-        caller.kind === "query" ? hashes : [],
-      );
+      if (operator) {
+        for (const [id, entry] of this.budgetEntries)
+          if (!entry.active && entry.at + 86400000 <= Date.now())
+            this.budgetEntries.delete(id);
+        this.compactOperatorCosts();
+        if (this.budgetEntries.size >= 16384)
+          throw new AssistanceError(
+            429,
+            "billing_history_limit",
+            "The spending ledger is full. Retain its charges and wait for older entries to expire.",
+          );
+        const total = [...this.operatorCharges.values()].reduce(
+          (sum, value) => sum + value,
+          0,
+        );
+        if (
+          operator.maxCostUsd !== undefined &&
+          total + prepared.estimatedUsd > operator.maxCostUsd
+        )
+          throw new AssistanceError(
+            429,
+            "billing_operator_limit",
+            "This run reached its operator cost ceiling. Raise --max-cost-usd to admit another batch.",
+          );
+      }
+      const limit = operator
+        ? null
+        : this.spendingLimit(
+            prepared.estimatedUsd,
+            config,
+            caller.kind === "query" ? hashes : [],
+          );
       if (limit) {
         const failure = (await limit.json()) as {
           code: string;
@@ -1447,6 +1495,7 @@ export class AssistanceService {
       callerSignal?.throwIfAborted();
       const id = `embedding:${caller.kind}:${crypto.randomUUID()}`;
       operationId = id;
+      if (operator) this.operatorCharges.set(id, prepared.estimatedUsd);
       this.budgetEntries.set(id, {
         id,
         at: Date.now(),
@@ -1461,12 +1510,14 @@ export class AssistanceService {
         await this.saveBudget();
         if (signal.aborted || callerSignal?.aborted) {
           this.budgetEntries.delete(id);
+          this.operatorCharges.delete(id);
           await this.saveBudget();
           signal.throwIfAborted();
           callerSignal?.throwIfAborted();
         }
       } catch (failure) {
         this.budgetEntries.delete(id);
+        this.operatorCharges.delete(id);
         throw failure;
       }
       const operation: EmbeddingOperation = {
@@ -1685,6 +1736,11 @@ export class AssistanceService {
           if (!entry) return;
           entry.active = false;
           if (!sent || (recorded && entry.costKnown)) entry.reservedUsd = 0;
+          if (this.operatorCharges.has(operation.id))
+            this.operatorCharges.set(
+              operation.id,
+              Math.max(entry.reservedUsd, entry.settledUsd),
+            );
           this.embeddingSettled.set(operation.id, {
             reservedUsd: entry.reservedUsd,
             chargedUsd: entry.settledUsd,
@@ -2030,6 +2086,11 @@ export class AssistanceService {
         const entry = this.budgetEntries.get(id);
         if (!entry) return;
         entry.settledUsd += reported ?? estimate;
+        if (this.operatorCharges.has(id))
+          this.operatorCharges.set(
+            id,
+            Math.max(entry.reservedUsd, entry.settledUsd),
+          );
         if (reported === null) entry.costKnown = false;
         // Keep all charges for a full window after the latest paid answer.
         entry.at = Math.max(entry.at, Date.now());

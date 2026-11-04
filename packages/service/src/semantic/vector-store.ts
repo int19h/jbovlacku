@@ -4,6 +4,11 @@ import type { DocumentPage, IndexContext, IndexDocument } from "./source.ts";
 
 export const MAX_PROFILE_COOLDOWN_MS = 60 * 60 * 1000;
 
+export interface IndexBatchLimits {
+  batchSize: number;
+  batchBytes: number;
+}
+
 export interface BackgroundRecovery {
   next_attempt: number;
   not_before: number;
@@ -114,6 +119,12 @@ export interface VectorStore {
     id: string,
     expected: ExpectedAssociation[],
   ): Promise<{ all: IndexCoverage; languages: Record<string, IndexCoverage> }>;
+  generations(
+    profile: string,
+    view: string,
+    after?: string | null,
+    limit?: number,
+  ): Promise<IndexGeneration[]>;
   published(view: string): Promise<IndexGeneration[]>;
   references(id: string): Promise<{ input: Uint8Array; vector: Uint8Array }[]>;
   create(
@@ -125,6 +136,8 @@ export interface VectorStore {
     includeBackgroundInputs?: boolean,
   ): Promise<IndexGeneration>;
   profile(id: string): Promise<EmbeddingProfile>;
+  storedProfile(identity: string): Promise<EmbeddingProfile>;
+  reusableInputs(id: string): Promise<number>;
   stage(id: string, after: string | null, page: DocumentPage): Promise<void>;
   coverage(
     id: string,
@@ -151,6 +164,7 @@ export interface VectorStore {
   claim(
     id: string,
     background?: { now: number; pending(operation: string): boolean },
+    limits?: IndexBatchLimits,
   ): Promise<IndexBatch | null>;
   inputs(batch: string): Promise<Uint8Array[]>;
   sent(batch: string, operation: string): Promise<void>;
@@ -161,6 +175,7 @@ export interface VectorStore {
     usage: EmbeddingUsage,
   ): Promise<void>;
   fail(batch: string, error: string, usage?: EmbeddingUsage): Promise<void>;
+  hasProviderPressure(id: string): Promise<boolean>;
   batches(
     id: string,
     after?: string | null,

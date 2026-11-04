@@ -9,6 +9,7 @@ import {
   utf8,
 } from "../../core/src/index.ts";
 import { SqliteVectorStore } from "../../../apps/server/src/semantic.ts";
+import type { VectorLimits } from "../src/semantic/sql-vector-store.ts";
 import { SqliteAssistanceBudgetStore } from "../../../apps/server/src/assistance.ts";
 import { AssistanceService } from "../src/assistance.ts";
 import {
@@ -80,13 +81,14 @@ async function fixture(
   fetcher: typeof fetch,
   count = 1,
   overrides: Partial<ProviderConfig> = {},
+  limits?: VectorLimits,
 ) {
   const root = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(root, { recursive: true });
   const directory = await mkdtemp(join(root, "background-recovery-"));
   let now = Date.UTC(2026, 9, 27, 12);
   t.mock.method(Date, "now", () => now);
-  let store = new SqliteVectorStore(join(directory, "vectors.sqlite"));
+  let store = new SqliteVectorStore(join(directory, "vectors.sqlite"), limits);
   let budget = new SqliteAssistanceBudgetStore(
     join(directory, "budget.sqlite"),
   );
@@ -179,7 +181,7 @@ async function fixture(
       await assistance.drainEmbeddingTransports();
       store.close();
       budget.close();
-      store = new SqliteVectorStore(join(directory, "vectors.sqlite"));
+      store = new SqliteVectorStore(join(directory, "vectors.sqlite"), limits);
       budget = new SqliteAssistanceBudgetStore(
         join(directory, "budget.sqlite"),
       );
@@ -1337,4 +1339,407 @@ test("R7 completed schedules skip the fresh association search", async (t) => {
     0,
     "R7 an idle completed pass must not scan fresh associations every cycle",
   );
+});
+
+test("operator publication supersedes an unfinished background job with the same profile", async (t) => {
+  let sends = 0;
+  const f = await fixture(
+    t,
+    async () => {
+      sends++;
+      return new Response("Unknown", { status: 503 });
+    },
+    1,
+    {},
+    { associations: 1, vectors: 10, bytes: 1000000 },
+  );
+  let background = f.host();
+  await background.cycle();
+  const old = await f.job();
+  assert.notEqual(old.state, "completed");
+  await background.close();
+  const operator = await f.store.create(
+    { ...f.source.context, snapshot: hash(2000), eligible: 0 },
+    f.profile,
+  );
+  await f.store.stage(operator.id, null, {
+    documents: [],
+    next: null,
+    done: true,
+  });
+  await f.store.start(operator.id);
+  await f.store.finish(operator.id);
+  assert.equal(await f.store.publish(operator.id, old.id), true);
+  assert.equal(await f.store.backgroundGeneration(old.profile, old.view), null);
+  // An old host can read the new pointer before it tries to publish its obsolete job.
+  assert.equal(await f.store.publish(old.id, operator.id), false);
+  assert.equal(await f.store.current(old.profile, old.view), operator.id);
+  await f.reopen();
+  f.options.source = async () => ({
+    context: { ...f.source.context, snapshot: operator.snapshot, eligible: 0 },
+    page: async () => ({ documents: [], next: f.docs[0].event, done: true }),
+  });
+  background = f.host();
+  await background.cycle();
+  assert.equal(await f.store.current(old.profile, old.view), operator.id);
+  assert.equal(
+    sends,
+    1,
+    "Restart must not replay the obsolete background batch",
+  );
+  // More publications move the old job outside both publication pointers.
+  let current = operator.id;
+  for (let i = 0; i < 2; i++) {
+    const next = await f.store.create(
+      { ...f.source.context, snapshot: hash(2001 + i), eligible: 0 },
+      f.profile,
+    );
+    await f.store.stage(next.id, null, {
+      documents: [],
+      next: null,
+      done: true,
+    });
+    await f.store.start(next.id);
+    await f.store.finish(next.id);
+    assert.equal(await f.store.publish(next.id, current), true);
+    current = next.id;
+  }
+  const capacityCheck = await f.store.create(
+    { ...f.source.context, snapshot: hash(2010) },
+    f.profile,
+  );
+  const page = { documents: f.docs, next: f.docs[0].event, done: true };
+  await assert.rejects(f.store.stage(capacityCheck.id, null, page), /capacity/);
+  f.options.source = async () => ({
+    context: { ...f.source.context, snapshot: hash(2020), eligible: 0 },
+    page: async () => ({ documents: [], next: f.docs[0].event, done: true }),
+  });
+  await background.cycle();
+  assert.equal((await f.store.generation(old.id)).state, "retired");
+  await f.store.stage(capacityCheck.id, null, page);
+  assert.equal((await f.store.page(capacityCheck.id)).rows.length, 1);
+  assert.equal(sends, 1);
+});
+
+test("background retries split oversized operator batches through the nonoperator service", async (t) => {
+  const sends: string[][] = [];
+  const f = await fixture(
+    t,
+    async (_url, init) => {
+      const inputs = JSON.parse(String(init?.body)).input as string[];
+      sends.push(inputs);
+      return success(inputs.length);
+    },
+    20,
+  );
+  const job = await f.store.create(f.source.context, f.profile);
+  await f.store.setBackgroundGeneration(job.id);
+  await f.store.stage(job.id, null, {
+    documents: f.docs,
+    next: f.docs.at(-1)!.event,
+    done: true,
+  });
+  await f.store.start(job.id);
+  const operator = (await f.store.claim(job.id, undefined, {
+    batchSize: 12,
+    batchBytes: 524288,
+  }))!;
+  assert.equal(operator.inputs.length, 12);
+  await f.store.sent(operator.id, "embedding:index:oversized-operator");
+  await f.store.fail(operator.id, "embedding_timeout");
+  await f.store.pause(job.id, "embedding_timeout");
+  await f.store.retry(operator.id);
+  await f.store.start(job.id);
+  // Simulate a crash after the first bounded child claim, before dispatch.
+  const child = (await f.store.claim(job.id, {
+    now: Date.now(),
+    pending: () => false,
+  }))!;
+  assert.equal(child.inputs.length, 8);
+  assert.equal(child.previous, operator.id);
+  await f.reopen();
+  const background = f.host();
+  await background.cycle();
+  assert.equal((await f.job()).state, "completed");
+  assert.deepEqual(await f.store.coverage(job.id), {
+    eligible: 20,
+    indexed: 20,
+    failed: 0,
+    pending: 0,
+  });
+  assert.equal(sends.flat().length, 20);
+  assert.equal(
+    new Set(sends.flat()).size,
+    20,
+    "Each input must reach the mock provider once",
+  );
+  assert(sends.every((inputs) => inputs.length <= 8));
+  assert.equal(
+    f.reports.length,
+    0,
+    "The server must not refuse an oversized request",
+  );
+  const batches = await f.store.batches(job.id);
+  assert(
+    batches.some(
+      (batch) => batch.previous === operator.id && batch.inputs.length === 4,
+    ),
+  );
+  assert(batches.some((batch) => batch.previous === child.id));
+});
+
+test("background retry children keep the byte limit and retain the remainder across reopen", async (t) => {
+  const f = await fixture(t, async () => success(), 4);
+  const job = await f.store.create(f.source.context, f.profile);
+  await f.store.setBackgroundGeneration(job.id);
+  await f.store.stage(job.id, null, {
+    documents: f.docs,
+    next: f.docs.at(-1)!.event,
+    done: true,
+  });
+  await f.store.start(job.id);
+  const original = (await f.store.claim(job.id))!;
+  await f.store.fail(original.id, "embedding_busy");
+  await f.store.pause(job.id, "embedding_busy");
+  await f.store.retry(original.id);
+  await f.store.start(job.id);
+  const limits = { batchSize: 8, batchBytes: f.docs[0].input!.byteLength };
+  const first = (await f.store.claim(
+    job.id,
+    { now: Date.now(), pending: () => false },
+    limits,
+  ))!;
+  assert.equal(first.inputs.length, 1);
+  await f.reopen();
+  await f.store.recoverBackground(job.id);
+  await f.store.start(job.id);
+  const remaining: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const next = (await f.store.claim(
+      job.id,
+      { now: Date.now(), pending: () => false },
+      limits,
+    ))!;
+    assert.equal(next.previous, original.id);
+    assert.equal(next.inputs.length, 1);
+    const bytes = await f.store.inputs(next.id);
+    assert(
+      bytes.reduce((sum, input) => sum + input.byteLength, 0) <=
+        limits.batchBytes,
+    );
+    remaining.push(...next.inputs);
+  }
+  assert.equal(new Set([...first.inputs, ...remaining]).size, 4);
+  assert.equal(
+    await f.store.claim(
+      job.id,
+      { now: Date.now(), pending: () => false },
+      limits,
+    ),
+    null,
+  );
+  await assert.rejects(f.store.retry(original.id), /Pause the generation/);
+  await f.store.pause(job.id);
+  await assert.rejects(
+    f.store.retry(original.id),
+    /later attempt already owns/,
+  );
+});
+
+test("operator publication during background preparation wins the publication race", async (t) => {
+  let sends = 0;
+  const f = await fixture(t, async () => {
+    sends++;
+    return success();
+  });
+  const operator = await f.store.create(
+    { ...f.source.context, snapshot: hash(2100), eligible: 0 },
+    f.profile,
+  );
+  await f.store.stage(operator.id, null, {
+    documents: [],
+    next: null,
+    done: true,
+  });
+  await f.store.start(operator.id);
+  await f.store.finish(operator.id);
+  const page = f.source.page;
+  f.source.page = async () => {
+    const current = await f.store.current(operator.profile, operator.view);
+    assert.equal(await f.store.publish(operator.id, current), true);
+    return page();
+  };
+  await f.host().cycle();
+  assert.equal(
+    await f.store.current(operator.profile, operator.view),
+    operator.id,
+  );
+  assert.equal(
+    await f.store.backgroundGeneration(operator.profile, operator.view),
+    null,
+  );
+  assert.equal(sends, 0);
+});
+
+test("background pruning keeps other scopes, operator jobs, pointers, readers, and transports", async (t) => {
+  const f = await fixture(t, async () => success());
+  let snapshot = 2100;
+  async function create(
+    options: {
+      background?: boolean;
+      view?: string;
+      profile?: typeof f.profile;
+    } = {},
+  ) {
+    const profile = options.profile ?? f.profile;
+    const generation = await f.store.create(
+      {
+        ...f.source.context,
+        snapshot: hash(snapshot++),
+        view: options.view ?? f.source.context.view,
+        profile: profileId(profile),
+      },
+      profile,
+    );
+    await f.store.stage(generation.id, null, {
+      documents: f.docs,
+      next: f.docs[0].event,
+      done: true,
+    });
+    if (options.background)
+      await f.store.setBackgroundGeneration(generation.id);
+    return generation;
+  }
+  const operator = await create();
+  const otherProfile = await create({
+    background: true,
+    profile: createQwenProfile("55".repeat(16)),
+  });
+  const otherView = await create({
+    background: true,
+    view: hash(2200, "jve1:"),
+  });
+  // Leave true orphans in the other scopes, outside their own background pointers.
+  await create({
+    background: true,
+    profile: await f.store.profile(otherProfile.id),
+  });
+  await create({ background: true, view: otherView.view });
+  // The second publication keeps the first one as the rollback generation.
+  const rollback = await create({ background: true });
+  assert.equal(
+    await f.store.publish(
+      rollback.id,
+      await f.store.current(rollback.profile, rollback.view),
+    ),
+    true,
+  );
+  const current = await create({ background: true });
+  assert.equal(await f.store.publish(current.id, rollback.id), true);
+  const reader = await create({ background: true });
+  const release = await f.store.retainGeneration(reader.id);
+  const transport = await create({ background: true });
+  await f.store.start(transport.id);
+  const batch = (await f.store.claim(transport.id))!;
+  const operation = "embedding:index:orphan-transport";
+  await f.store.sent(batch.id, operation);
+  await f.store.fail(batch.id, "embedding_timeout");
+  await f.store.pause(transport.id);
+  let pending = true;
+  f.store.registerOperationGuard(
+    (value) => value.startsWith(operation) && pending,
+  );
+  const activeTransport = await create({ background: true });
+  await f.store.start(activeTransport.id);
+  const activeBatch = (await f.store.claim(activeTransport.id))!;
+  await f.store.sent(activeBatch.id, `${operation}-running`);
+  const running = await create({ background: true });
+  await f.store.start(running.id);
+  const live = await create({ background: true });
+  await f.store.start(live.id);
+  const liveBatch = (await f.store.claim(live.id))!;
+  const releaseLive = await f.store.retainGeneration(live.id);
+  const interrupted = [];
+  for (const state of ["prepared", "sent"]) {
+    const generation = await create({ background: true });
+    await f.store.start(generation.id);
+    const attempt = (await f.store.claim(generation.id))!;
+    if (state === "sent")
+      await f.store.sent(attempt.id, `embedding:index:idle-${state}`);
+    interrupted.push(generation);
+  }
+  const pointed = await create({ background: true });
+  const orphan = await create({ background: true });
+  await f.store.setBackgroundGeneration(pointed.id);
+  await f.store.pruneBackgroundGenerations(current.profile, current.view);
+  assert.equal((await f.store.generation(orphan.id)).state, "retired");
+  for (const generation of [running, ...interrupted])
+    assert.equal((await f.store.generation(generation.id)).state, "retired");
+  for (const generation of [
+    operator,
+    otherProfile,
+    otherView,
+    rollback,
+    current,
+    reader,
+    transport,
+    activeTransport,
+    live,
+    pointed,
+  ]) {
+    assert.notEqual(
+      (await f.store.generation(generation.id)).state,
+      "retired",
+      generation.id,
+    );
+    assert.equal((await f.store.page(generation.id)).rows.length, 1);
+  }
+  assert.equal(
+    await f.store.current(current.profile, current.view),
+    current.id,
+  );
+  assert.equal(
+    (await f.store.backgroundGeneration(pointed.profile, pointed.view))?.id,
+    pointed.id,
+  );
+  assert.equal((await f.store.generation(activeTransport.id)).state, "running");
+  assert.equal((await f.store.batches(activeTransport.id))[0].state, "sent");
+  assert.equal((await f.store.generation(live.id)).state, "running");
+  assert.equal((await f.store.batches(live.id))[0].state, liveBatch.state);
+  release();
+  releaseLive();
+  pending = false;
+  await f.store.pruneBackgroundGenerations(current.profile, current.view);
+  assert.equal((await f.store.generation(reader.id)).state, "retired");
+  assert.equal((await f.store.generation(transport.id)).state, "retired");
+  assert.equal((await f.store.generation(activeTransport.id)).state, "retired");
+  assert.equal((await f.store.generation(live.id)).state, "retired");
+});
+
+test("background pruning keeps a pointer restored during orphan recovery", async (t) => {
+  const f = await fixture(t, async () => success());
+  const orphan = await f.store.create(f.source.context, f.profile);
+  await f.store.stage(orphan.id, null, {
+    documents: f.docs,
+    next: f.docs[0].event,
+    done: true,
+  });
+  await f.store.setBackgroundGeneration(orphan.id);
+  const next = await f.store.create(
+    { ...f.source.context, snapshot: hash(2300) },
+    f.profile,
+  );
+  await f.store.setBackgroundGeneration(next.id);
+  const recover = f.store.recoverBackground.bind(f.store);
+  t.mock.method(f.store, "recoverBackground", async (id: string) => {
+    await recover(id);
+    if (id === orphan.id) await f.store.setBackgroundGeneration(id);
+  });
+  await f.store.pruneBackgroundGenerations(orphan.profile, orphan.view);
+  assert.equal(
+    (await f.store.backgroundGeneration(orphan.profile, orphan.view))?.id,
+    orphan.id,
+  );
+  assert.equal((await f.store.generation(orphan.id)).state, "paused");
+  assert.equal((await f.store.page(orphan.id)).rows.length, 1);
 });

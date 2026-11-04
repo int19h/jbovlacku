@@ -390,14 +390,24 @@ They reject invalid dimensions, nonfinite values, incorrect byte lengths, and ve
 Only provider output receives normalization.
 
 The Node host stores vectors and exact event, envelope, body, input, and extraction bindings in a separate SQLite database.
-Its [operator command](docs/semantic-search.md) prepares eligible definitions in bounded pages and resumes fresh indexing through the shared embedding budget.
+Its [operator command](docs/semantic-search.md) prepares eligible definitions in bounded pages and records indexing costs in the shared ledger.
+Operators can reuse a stored compatible profile and its exact-input vectors with `prepare --profile`.
+Operator runs support up to 32 concurrent requests and 128 inputs per fresh batch, with adaptive concurrency and an optional cost ceiling.
+Ordinary server requests keep their existing slot, input, and spending limits.
 Equal inputs share a vector under the same complete profile. Distinct publications retain their own associations.
 
 The job saves each operation link before dispatch. Interrupted sent batches need an explicit linked retry and keep their earlier charges.
+The `retry --all` command selects eligible failed or ambiguous batches across all pages for one paused job.
+It skips older attempts that no longer own their inputs. An ambiguous retry can repeat paid work.
 Saved claim positions avoid scans of completed inputs. Active batches reserve vector capacity before provider admission.
 Over-limit inputs retain their exclusion reasons while the remaining generation can complete.
 
-HTTP 429 responses use bounded backoff that respects `Retry-After` and retains each earlier charge.
+Resumed adaptive runs start at concurrency one only for unresolved ambiguous batches, saved 429 retry selections, or an active cooldown.
+Completed batches alone do not lower the starting concurrency.
+They reduce concurrency once per failure wave and grow it after eight successful batches.
+Three consecutive timeout waves without a completed batch stop fresh work. Timed-out batches still require explicit retry.
+HTTP 429 retries respect `Retry-After` through bounded waits without an invocation-wide retry count or total wait cap.
+They retain each earlier charge.
 The saved profile cooldown survives restart and has a one-hour cap. Operators can clear it without changing batches or charges.
 Known usage remains available even when a returned model or vector is invalid.
 Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.
@@ -432,6 +442,8 @@ Cold coverage yields between bounded metadata pages. Concurrent requests share c
 Ordinary generation and public profile reads do not scan parked inputs. Operator diagnostics yield between pages of at most 128 holds.
 
 Generation retirement yields between bounded deletion transactions and resumes interrupted cleanup.
+Cleanup reclaims unfinished idle background jobs after their current, rollback, and background pointers end.
+Operator status lists generations for the same profile and view through separate diagnostic pages.
 Operators can unpublish and retire an idle background generation, including a suspended profile, without retaining its background pointer.
 
 Each client network can hold at most one scan worker. Empty or absent networks share that same limit.

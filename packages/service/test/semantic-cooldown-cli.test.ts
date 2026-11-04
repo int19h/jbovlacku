@@ -313,14 +313,22 @@ globalThis.fetch = async (url, init) => {
     assert.equal(completed.batches[0].previous, null);
     assert.notEqual(completed.batches[0].operation, batch.operation);
 
-    // A resumed job still needs an explicit retry for its old ambiguous batch.
-    const resumed = await status("run", old.id);
-    assert.equal(resumed.generation.state, "paused");
-    assert.equal(resumed.generation.error, "index_incomplete");
-    assert.deepEqual(resumed.batches, [batch]);
+    // A definite 429 remains selected for automatic retry on the next run.
+    const resumed = await status("run", old.id, "success");
+    assert.equal(resumed.generation.state, "completed");
+    assert.equal(resumed.generation.error, null);
+    assert.equal(resumed.batches.length, 2);
+    assert.deepEqual(
+      resumed.batches.find((value) => value.id === batch.id),
+      batch,
+    );
+    assert.equal(
+      resumed.batches.find((value) => value.previous === batch.id)?.state,
+      "completed",
+    );
     assert.equal(resumed.coverage.indexed, 0);
     const currentLedger = await ledger(budgetPath);
-    assert.equal(currentLedger.entries.length, 2);
+    assert.equal(currentLedger.entries.length, 3);
     assert.deepEqual(
       currentLedger.entries.find((entry) => entry.id === oldCharge.id),
       oldCharge,
@@ -333,6 +341,7 @@ globalThis.fetch = async (url, init) => {
     assert.equal(denied[0].code, "semantic_profile_suspended");
     assert.deepEqual((await readFile(eventsPath, "utf8")).trim().split("\n"), [
       "limited",
+      "success",
       "success",
     ]);
   } finally {
