@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { corePath, fixture } from "./helpers.ts";
 
 test.afterEach(async ({ page }) => {
+  // Remove handlers before page closure without waiting for held requests.
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 

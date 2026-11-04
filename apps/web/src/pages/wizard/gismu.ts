@@ -1,3 +1,5 @@
+import { richField } from "../../components/rich-field.ts";
+import { richValue } from "../../model/rich-values.ts";
 import { detectWord, selectGismuSpelling } from "../../model/typed-headword.ts";
 import {
   assistanceAction,
@@ -671,7 +673,10 @@ export async function gismuPage(
           () => {
             notesEditing.add(sourceKey);
             renderRows();
-            detailRows.get(sourceKey)?.row.querySelector("textarea")?.focus();
+            detailRows
+              .get(sourceKey)
+              ?.row.querySelector<HTMLElement>('[role="textbox"]')
+              ?.focus();
           },
           {
             class: "btn btn-quiet",
@@ -725,14 +730,18 @@ export async function gismuPage(
       const showNotes =
         sourceNotes(row).length > 0 || notesEditing.has(sourceKey);
       if (showNotes) {
-        const notes = field(`Source notes for ${row.name || row.language}`, {
-          multiline: true,
-          rows: 4,
-          value: richTextToText(sourceNotes(row)),
-          hint: "Review all source notes. Edit the text or drop the notes before publication.",
-        });
+        const notes = richField(
+          `Source notes for ${row.name || row.language}`,
+          {
+            local: false,
+            multiline: true,
+            rows: 4,
+            value: sourceNotes(row),
+            hint: "Review all source notes. Edit the text or drop the notes before publication.",
+          },
+        );
         notes.input.addEventListener("input", () => {
-          editSourceNotes(row, textToRichText(notes.input.value, false));
+          editSourceNotes(row, notes.input.value);
           row.sense = "";
           row.note = "";
           row.notesStale = false;
@@ -1187,10 +1196,11 @@ export async function gismuPage(
         list2,
       );
     }
-    const reason = field("Why this form", {
+    const reason = richField("Why this form", {
+      local: false,
       multiline: true,
       rows: 2,
-      value: state.reason,
+      value: richValue(state.reason),
       hint: "Optional. Pronunciation, a preferred rafsi, or another reason. Saved as the selection reason.",
     });
     reason.input.addEventListener("input", () => {

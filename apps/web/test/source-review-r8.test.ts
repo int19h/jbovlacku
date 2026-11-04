@@ -1,3 +1,4 @@
+import { typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import { acceptFirstSignature, corePath, createIdentity } from "./helpers.ts";
 
@@ -176,9 +177,10 @@ for (const earlierAi of [false, true])
     await page
       .getByLabel("Native word for English", { exact: true })
       .fill("volume");
-    await page
-      .getByLabel("Source notes for English", { exact: true })
-      .fill("Current author note");
+    await typeRichText(
+      page.getByLabel("Source notes for English", { exact: true }),
+      "Current author note",
+    );
     await suggest(page);
     const panel = page.getByRole("region", {
       name: "Suggest source for English suggestion",

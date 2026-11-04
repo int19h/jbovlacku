@@ -2,6 +2,11 @@
 import type { Draft } from "./draft.ts";
 import { compactJson } from "../../../../packages/service/src/json.ts";
 import {
+  canonicalRich,
+  canonicalRichFields,
+  editedRich,
+} from "./rich-values.ts";
+import {
   choiceForHint,
   coreProblems,
   draftToBody,
@@ -386,10 +391,17 @@ export function applyProposals(draft: Draft, result: Suggestion) {
         draft.selmaho = value as string[];
         break;
       case "/text":
-        draft.text = value as RichText;
+        draft.text = editedRich(value as RichText, draft.text);
+        draft.numberingApproved = false;
         break;
       case "/frame":
-        applyFrame(draft, value as Frame | null);
+        applyFrame(
+          draft,
+          canonicalRichFields(
+            { frame: value as Frame | null },
+            { frame: draftToBody(draft).body?.frame ?? null },
+          ).frame,
+        );
         break;
       case "/glosses":
         draft.glosses = (value as Gloss[]).map((g) => ({
@@ -696,7 +708,13 @@ function replaceSourceAiNotes(
     index: aiStart + index,
     paragraph: structuredClone(paragraph),
   }));
-  return retained;
+  editSourceNotes(row, canonicalRich(row.notes));
+  const aiIndexes = new Set(row.aiNoteGroup?.map((entry) => entry.index));
+  return new Set(
+    row
+      .notes!.map((_, index) => index)
+      .filter((index) => !aiIndexes.has(index)),
+  );
 }
 export function applySource(
   draft: Draft,
@@ -713,6 +731,7 @@ export function applySource(
   if (!old) throw new Error("This source row no longer exists.");
   const source = sourceProposal(result);
   const row = normalizeSourceRow(structuredClone(old));
+  source.notes = editedRich(source.notes, sourceNotes(row));
   const before = formationSource(row);
   const previous = {
     word_ipa: row.word_ipa,
@@ -1062,7 +1081,7 @@ export function applyMapping(draft: Draft, index: number, derivation: Mapping) {
     word: derivation.word.spelling,
     definition: derivation.definition,
     place: derivation.place,
-    explanation: structuredClone(derivation.explanation),
+    explanation: editedRich(structuredClone(derivation.explanation)),
   });
   checkAssistanceDraft(candidate, baseline);
   draft.places = candidate.places;

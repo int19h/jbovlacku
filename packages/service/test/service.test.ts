@@ -1044,7 +1044,7 @@ test("search text preserves place markers and readable rich nodes without metada
       [21, " remains declared."],
       [{ metadata: "hidden metadata" }],
     ]),
-    "① runs on ⑳. lo ka ce'u cadzu visible word visible source [operand bridi]\n[place 21] remains declared.\n",
+    "① runs on ⑳. lo ka ce'u cadzu visible word visible source [operand bridi]\n㉑ remains declared.\n",
   );
 });
 

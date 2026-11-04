@@ -8,6 +8,71 @@ import { tmpdir } from "node:os";
 
 const exec = promisify(execFile);
 const root = resolve(import.meta.dirname, "../../..");
+
+function assertBrowserDiscovery(stdout: string, stderr = "") {
+  const output = stripVTControlCharacters(stdout).replace(
+    /^  \[[^\]\r\n]+\] › /gmu,
+    "  ",
+  );
+  const lines = output.trim().split(/\r?\n/u);
+  assert.equal(lines[0], "Listing tests:");
+  assert.match(lines.at(-1)!, /^Total: \d+ tests in \d+ files$/u);
+  assert.ok(
+    lines
+      .slice(1, -1)
+      .every((line) => /^  .*\.test\.ts:\d+:\d+ › /u.test(line)),
+    "Discovery must print only browser case locations, without Node unit output.",
+  );
+  assert.match(output, /(?:^|\n)  (?:.*[\\/])?search\.test\.ts:\d+:\d+ › /u);
+  assert.match(
+    output,
+    /(?:^|\n)  (?:.*[\\/])?materialization-retry\.test\.ts:\d+:\d+ › /u,
+  );
+  assert.doesNotMatch(output, /(?:^  |[\\/])unit[\\/]/mu);
+  assert.doesNotMatch(
+    stripVTControlCharacters(stdout + stderr),
+    /(?:^|\n)\s*(?:[✔✖]|TAP version \d+|# Subtest:|(?:ok|not ok) \d+ -)/u,
+  );
+}
+
+test("discovery checks accept project markers and reject Node unit listings", () => {
+  const listing = (prefix: string, path: string, extra = "") =>
+    `Listing tests:\n  ${prefix}${path}search.test.ts:1:1 › search\n  ${prefix}${path}materialization-retry.test.ts:2:1 › retry\n${extra}Total: 2 tests in 2 files\n`;
+  for (const prefix of ["", "[chromium] › ", "[firefox-editor] › "]) {
+    for (const path of ["", "apps/web/test/", "apps\\web\\test\\"]) {
+      assertBrowserDiscovery(listing(prefix, path));
+    }
+    for (const path of [
+      "unit/",
+      "unit\\",
+      "apps/web/test/unit/",
+      "apps\\web\\test\\unit\\",
+    ]) {
+      assert.throws(() =>
+        assertBrowserDiscovery(
+          listing(prefix, "", `  ${prefix}${path}hidden.test.ts:3:1 › unit\n`),
+        ),
+      );
+    }
+  }
+  const valid = listing("[chromium] › ", "");
+  for (const text of [
+    "TAP version 13",
+    "# Subtest: unit",
+    "ok 1 - unit",
+    "not ok 1 - unit",
+    "✔ unit",
+    "✖ unit",
+  ]) {
+    assert.throws(() => assertBrowserDiscovery(valid, `\n${text}\n`));
+  }
+  for (const file of ["search.test.ts", "materialization-retry.test.ts"]) {
+    assert.throws(() =>
+      assertBrowserDiscovery(valid.replace(file, "unrelated.test.ts")),
+    );
+  }
+});
+
 test("Playwright runs isolate data and workers reuse only their run directory", async () => {
   const parent = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(parent, { recursive: true });
@@ -67,26 +132,7 @@ test("Playwright discovery excludes Node unit execution and keeps browser cases"
       ],
       { cwd: root, env, timeout: 30000, maxBuffer: 4 * 1024 * 1024 },
     );
-    const output = stripVTControlCharacters(stdout);
-    const lines = output.trim().split(/\r?\n/u);
-    assert.equal(lines[0], "Listing tests:");
-    assert.match(lines.at(-1)!, /^Total: \d+ tests in \d+ files$/u);
-    assert.ok(
-      lines
-        .slice(1, -1)
-        .every((line) => /^  .*\.test\.ts:\d+:\d+ › /u.test(line)),
-      "Discovery must print only browser case locations, without Node unit output.",
-    );
-    assert.match(output, /(?:^|\n)  (?:.*[\\/])?search\.test\.ts:\d+:\d+ › /u);
-    assert.match(
-      output,
-      /(?:^|\n)  (?:.*[\\/])?materialization-retry\.test\.ts:\d+:\d+ › /u,
-    );
-    assert.doesNotMatch(output, /(?:^|[\\/])unit[\\/]/mu);
-    assert.doesNotMatch(
-      stripVTControlCharacters(stdout + stderr),
-      /(?:^|\n)\s*(?:[✔✖]|TAP version \d+|# Subtest:|(?:ok|not ok) \d+ -)/u,
-    );
+    assertBrowserDiscovery(stdout, stderr);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

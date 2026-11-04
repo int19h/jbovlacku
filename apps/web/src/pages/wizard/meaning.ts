@@ -1,3 +1,4 @@
+import { CIRCLED, circledPlace } from "../../model/place-glyphs.ts";
 import { searchPackage } from "../../data/package-search.ts";
 import { kindLabel } from "../../model/types.ts";
 import { nearbyQuery as meaningQueries } from "../../../../../packages/service/src/nearby.ts";
@@ -207,7 +208,7 @@ export async function meaningPage(
       text("Plain words are fine. Use "),
       el("span", { class: "blank", text: "___" }),
       text(
-        " for each thing the word talks about. Each semicolon restarts numbering at 1. You can also use ① through ⑳ or {place N}. Only a backslash before a circled character is an escape. It keeps that character literal. Every other backslash stays as typed. You approve numbering in the Places step.",
+        " for each thing the word talks about. Each semicolon restarts numbering at 1. You can also use ① through ㊿ or {place N}. Only a backslash before a circled character is an escape. It keeps that character literal. Every other backslash stays as typed. You approve numbering in the Places step.",
       ),
     ),
   );
@@ -600,11 +601,10 @@ export async function meaningPage(
         text(kindLabel(hit.preview?.word_kind ?? ""), "meta"),
       );
       const preview = el("span", { style: "flex-basis:100%" });
-      for (const part of (hit.preview?.plain_text ?? "").split(/([①-⑳])/u)) {
+      for (const part of (hit.preview?.plain_text ?? "").split(CIRCLED)) {
         if (!part) continue;
-        const code = part.codePointAt(0)! - 0x245f;
-        if (part.length === 1 && code >= 1 && code <= 20)
-          preview.append(placeMarker(code, null));
+        const code = circledPlace(part);
+        if (code !== null) preview.append(placeMarker(code, null));
         else preview.append(el("bdi", { text: part }));
       }
       item.append(preview);

@@ -1,3 +1,4 @@
+import { richText, expectRichText, typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import { fixture } from "./helpers.ts";
 
@@ -54,7 +55,7 @@ async function revisionWithSavedDraft(page: Page) {
     original,
     current: rows.find((row) => row.key === "current").draft,
     savedKey: rows.find((row) => row.key.startsWith("saved:")).key as string,
-    editorText: await editor.inputValue(),
+    editorText: await richText(editor),
   };
 }
 
@@ -111,14 +112,15 @@ for (const action of ["Back", "Add a word"] as const) {
         await expect(page).toHaveURL(
           action === "Back" ? /\/new\/editor$/ : /\/new\/meaning$/,
         );
-        await expect(
-          page.getByRole("textbox", {
-            name: action === "Back" ? "Definition text" : "Meaning",
-            exact: true,
-          }),
-        ).toHaveValue(
-          action === "Back" ? before.editorText : before.current.meaning,
-        );
+        if (action === "Back")
+          await expectRichText(
+            page.getByRole("textbox", { name: "Definition text", exact: true }),
+            before.editorText,
+          );
+        else
+          await expect(
+            page.getByRole("textbox", { name: "Meaning", exact: true }),
+          ).toHaveValue(before.current.meaning);
         await page.evaluate(() => {
           const replace = history.replaceState.bind(history);
           (window as any).__staleUrlWrites = [];
@@ -146,7 +148,9 @@ for (const action of ["Back", "Add a word"] as const) {
         name: action === "Back" ? "Definition text" : "Meaning",
         exact: true,
       });
-      await editor.fill("An edit after leaving the restore.");
+      if (action === "Back")
+        await typeRichText(editor, "An edit after leaving the restore.");
+      else await editor.fill("An edit after leaving the restore.");
       await expect(page.locator("main").getByRole("status").last()).toHaveText(
         "Saved in this browser",
       );
@@ -167,7 +171,10 @@ for (const action of ["Back", "Add a word"] as const) {
           : "An edit after leaving the restore.",
       );
       await page.reload();
-      await expect(editor).toHaveValue("An edit after leaving the restore.");
+      if (action === "Back")
+        await expectRichText(editor, "An edit after leaving the restore.");
+      else
+        await expect(editor).toHaveValue("An edit after leaving the restore.");
       expect(
         (await draftRows(page)).find((row) => row.key === before.savedKey)
           .draft,
@@ -245,9 +252,10 @@ test("Back during a pending save supersedes a draft resume under CPU throttling"
       return original.apply(this, args);
     };
   });
-  await page
-    .getByRole("textbox", { name: "Definition text", exact: true })
-    .fill("An edit during the pending save.");
+  await typeRichText(
+    page.getByRole("textbox", { name: "Definition text", exact: true }),
+    "An edit during the pending save.",
+  );
   await page.waitForFunction(
     () => typeof (window as any).__releaseSave === "function",
   );
@@ -361,7 +369,7 @@ for (const action of ["Add a word", "Search"] as const) {
       name: "Definition text",
       exact: true,
     });
-    await editor.fill("The edit kept after two refused navigations.");
+    await typeRichText(editor, "The edit kept after two refused navigations.");
     await page.waitForFunction(
       () => typeof (window as any).__releaseSave === "function",
     );
@@ -379,7 +387,8 @@ for (const action of ["Add a word", "Search"] as const) {
     await page.evaluate(() => (window as any).__releaseSave());
     await page.waitForFunction(() => (window as any).__settledFlushes >= 3);
     await expect(page).toHaveURL(/\/new\/editor$/);
-    await expect(editor).toHaveValue(
+    await expectRichText(
+      editor,
       "The edit kept after two refused navigations.",
     );
     await expect(page.locator("main").getByRole("status").last()).toContainText(
@@ -399,7 +408,8 @@ for (const action of ["Add a word", "Search"] as const) {
     );
     await page.reload();
     await expect(page).toHaveURL(/\/new\/editor$/);
-    await expect(editor).toHaveValue(
+    await expectRichText(
+      editor,
       "The edit kept after two refused navigations.",
     );
     expect(

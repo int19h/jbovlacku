@@ -1,3 +1,4 @@
+import { typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { createIdentity, acceptFirstSignature, PASSPHRASE } from "./helpers.ts";
@@ -72,9 +73,10 @@ for (const spelling of imported)
     await expect(
       result.getByLabel(`Form ${spelling}`, { exact: true }),
     ).toBeVisible();
-    await page
-      .getByLabel("Current definition", { exact: true })
-      .fill("A synthetic zei definition.");
+    await typeRichText(
+      page.getByLabel("Current definition", { exact: true }),
+      "A synthetic zei definition.",
+    );
     await page
       .getByRole("button", { name: `Use ${spelling}`, exact: true })
       .click();
@@ -169,9 +171,10 @@ test("zei exact definition links survive publication, revision, and reload", asy
     .toBe(definition);
   await page.reload();
   await expect(choices).toHaveValue(definition!);
-  await page
-    .getByLabel("Current definition", { exact: true })
-    .fill("A synthetic signed zei definition.");
+  await typeRichText(
+    page.getByLabel("Current definition", { exact: true }),
+    "A synthetic signed zei definition.",
+  );
   await page
     .getByRole("button", { name: `Use ${spelling}`, exact: true })
     .click();
