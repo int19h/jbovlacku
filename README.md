@@ -357,10 +357,16 @@ Ordinary server requests keep their existing slot, input, and spending limits.
 Equal inputs share a vector under the same complete profile. Distinct publications retain their own associations.
 
 The job saves each operation link before dispatch. Interrupted sent batches need an explicit linked retry and keep their earlier charges.
+The `retry --all` command selects eligible failed or ambiguous batches across all pages for one paused job.
+It skips older attempts that no longer own their inputs. An ambiguous retry can repeat paid work.
 Saved claim positions avoid scans of completed inputs. Active batches reserve vector capacity before provider admission.
 Over-limit inputs retain their exclusion reasons while the remaining generation can complete.
 
-HTTP 429 responses use bounded backoff that respects `Retry-After` and retains each earlier charge.
+Adaptive operator runs resume at concurrency one when earlier dispatch intents or saved cooldowns exist.
+They reduce concurrency once per failure wave and grow it after eight successful batches.
+Three consecutive timeout waves without a completed batch stop fresh work. Timed-out batches still require explicit retry.
+HTTP 429 retries respect `Retry-After` through bounded waits without an invocation-wide retry count or total wait cap.
+They retain each earlier charge.
 The saved profile cooldown survives restart and has a one-hour cap. Operators can clear it without changing batches or charges.
 Known usage remains available even when a returned model or vector is invalid.
 Mocked tests cover partial progress, restart, failures, retirement, atomic publication, rollback, and explicit removal of current pointers.

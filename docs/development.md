@@ -569,8 +569,9 @@ A new refusal can extend the deadline by at most one hour from that refusal.
 Status exposes the saved Unix timestamp in milliseconds as `retry_after`.
 Existing stores can retain longer deadlines from older versions until a new refusal replaces them or an operator clears them.
 
-The command waits at most 60 seconds at once and 120 seconds per invocation.
-If the saved deadline exceeds those wait bounds, the job stays paused.
+Adaptive operator runs wait at most 60 seconds at once and repeat waits until the saved deadline expires.
+They have no invocation-wide total wait cap. Cancellation stops further waits and dispatch.
+Ordinary server and non-adaptive runs keep the 120-second total wait bound.
 The one-hour cap bounds the saved refusal, not the wait inside one command.
 After the deadline expires, fresh work can proceed. Earlier failed batches still require explicit retry selection.
 
@@ -913,7 +914,9 @@ The indexing command owns job pause, resume, and explicit retry links.
 ### Operator indexing policy
 
 The stopped-directory `semantic-cli.ts run` command selects a separate host-only admission policy for index requests.
-It uses the existing key file, provider route, timeout, prices, and durable spending ledger.
+It uses the existing key file, provider route, prices, and durable spending ledger.
+Operator request timeouts equal `JVC_AI_TIMEOUT_MS * ceil(inputs / 8)`, capped at 540,000 milliseconds.
+The count uses the actual request inputs. Server request timeouts keep their configured value.
 It bypasses `JVC_AI_CONCURRENCY`, server and network hourly/daily ceilings, and `JVC_AI_MAX_COST_USD` for its index batches.
 These settings still apply to ordinary server requests and background work.
 No HTTP field selects the operator policy.
@@ -931,15 +934,25 @@ Unknown sent charges remain conservative, and unsent failures release their rese
 Operator costs still enter the shared ledger and its existing compaction and retention rules.
 Server requests continue to enforce their ceilings against that ledger.
 
-After provider 429 responses or embedding timeouts, adaptive scheduling halves the current concurrency, down to one.
-Eight successful batches raise it by one, up to the requested maximum.
+After a drained wave with provider 429 responses or embedding timeouts, adaptive scheduling halves concurrency once, down to one.
+Eight successful batches raise it by one, up to the requested maximum, and reset the backoff floor.
+Jobs with earlier dispatch intents or active saved cooldowns resume at concurrency one.
 The command preserves saved cooldowns, `Retry-After`, bounded backoff, failed batches, and earlier charges.
 Timeout continuation selects fresh inputs and leaves the ambiguous batch for explicit retry.
-Concurrent 429 batches retain automatic retries within the existing retry and wait bounds.
+Three consecutive timeout waves without a completed batch pause the run. Any completed batch resets that count.
+Adaptive operator 429 retries continue without an invocation-wide retry count or total wait cap.
+Each wait lasts at most 60 seconds. Longer saved cooldowns use repeated waits without an early retry.
+Collected definite 429 batches retain durable retry selection when the run stops.
+Cancellation and `--max-batches` still stop new dispatch.
+Use `retry --all` to select eligible failed or ambiguous batches across all diagnostic pages for one paused job.
+Older attempts whose inputs now belong to later attempts remain excluded.
+Review ambiguous batches first. Retrying them can repeat paid work whose earlier result remains unknown.
 The [operator guide](semantic-search.md#handle-provider-rate-limits) describes output events and retry bounds.
 
 Use `prepare --profile PROFILE_ID` to build another view or snapshot under a stored compatible profile.
 Unchanged exact inputs then reuse vectors under that full profile and input hash.
+Stored profile batch fields retain the server limits of eight inputs and 32 KiB.
+The profile does not bind operator batch size. Larger operator batches do not change the vector space.
 Changed inputs stay pending. Suspended or incompatible profiles are refused.
 Without the flag, preparation still creates a fresh random epoch.
 Its `prepared` event reports the distinct prepared inputs with reusable vectors as `reused_inputs`.

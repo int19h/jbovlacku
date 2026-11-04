@@ -47,8 +47,10 @@ With `--job`, a supplied profile must match the saved job.
 The `prepared` JSON event includes `reused_inputs`, the count of distinct prepared inputs that already have a stored vector under that profile.
 This count covers staged pages when `--pages` limits preparation.
 Unchanged exact inputs reuse their vectors. Changed input bytes remain pending and need new vectors.
-Stored profile IDs and their legacy request-limit metadata stay intact.
-Operator transport limits do not alter the input recipes, provider routing, or vector normalization.
+Stored profile IDs stay intact, including the server batch limits of eight inputs and 32 KiB.
+These fields describe server requests. The profile does not bind the operator request batch size.
+Operator batch sizes do not change the vector space, input recipes, provider routing, or normalization.
+The compatibility probe still checks retained vectors for provider drift.
 
 The first JSON line names the generation ID in `generation.id`.
 The final line reports its source cursor, preparation state, and coverage.
@@ -85,6 +87,8 @@ Use `--concurrency N` for one through 32 requests and `--batch-size N` for one t
 Use `--batch-bytes N` to bound total input bytes in a fresh batch, up to 524,288 bytes.
 Its default is `min(batch-size * 4096, 524288)`.
 Each input keeps the profile's 4,096-byte limit.
+Operator request timeouts scale with the actual input count: `JVC_AI_TIMEOUT_MS * ceil(inputs / 8)`, capped at 540,000 milliseconds.
+Server request timeouts keep their configured value.
 
 ```sh
 npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --job "$JVC_INDEX_JOB" --concurrency 32 --batch-size 128 --batch-bytes 524288 --max-cost-usd 5
@@ -100,7 +104,8 @@ Choose smaller limits for new batches when the provider refuses a request size.
 Fresh claims stop before the byte boundary and keep later inputs available for the next claim.
 A single input above the selected batch-byte limit causes a local refusal before dispatch.
 An explicitly selected retry keeps its original batch and operation link, even when a new batch flag is smaller.
-It still stays within the adapter's absolute limits.
+Operator retries stay within the operator adapter limits.
+The background indexer splits oversized linked retries to keep its eight-input and 32-KiB server limits.
 
 Use optional `--max-cost-usd USD` to set a nonnegative ceiling for this `run` invocation.
 The ceiling counts concurrent reservations, reported charges, and conservative unknown charges from that invocation.
@@ -108,6 +113,8 @@ A known final cost releases the unused part of its reservation.
 
 An unsent failure releases its reservation. An unknown sent charge keeps its conservative amount.
 A zero ceiling permits no paid admission, while cached inputs can still complete.
+Unsent cost-ceiling, spending-history, and local slot refusals retain retry selection without another paid request.
+After the refusal clears, another `run` resumes those inputs without a manual retry command.
 A new invocation starts a new ceiling allowance.
 
 The ceiling uses configured price quotes for admission. Provider charges remain subject to the returned usage.
@@ -141,22 +148,27 @@ Its reported cost remains part of the index summary and the shared spending ledg
 ## Handle provider rate limits
 
 An HTTP 429 response stops new claims and lets active workers settle.
-Operator scheduling halves its current concurrency after each 429 or embedding timeout, with a minimum of one.
-After eight successful batches, it raises concurrency by one, up to the requested maximum.
+Operator scheduling halves concurrency once per drained wave with a 429 or embedding timeout, with a minimum of one.
+After eight successful batches, it raises concurrency by one, up to the requested maximum, and resets the backoff floor.
 Active requests settle before the lower cap admits further work.
 The command emits a `concurrency` event with `concurrency` and `reason` whenever this cap changes.
-A new invocation starts at its requested concurrency.
+A resumed job with earlier dispatch intents or an active saved cooldown starts at concurrency one.
+A fresh job starts at its requested concurrency.
 
 An operator timeout can continue fresh inputs at the reduced cap after active workers settle.
-It keeps the timed-out batch and its conservative charge for explicit retry selection.
-It does not automatically resend that batch.
-Concurrent 429 batches keep their linked automatic retries within the same retry and wait bounds.
+Three consecutive timeout waves without a completed batch pause the run with `embedding_timeout`.
+Any completed batch resets that count.
+The command keeps timed-out batches and their conservative charges for explicit retry selection.
+It does not automatically resend those batches.
+Concurrent definite 429 batches retain linked automatic retries, including when the run stops after that wave.
 An unresolved transport keeps its execution slot. A local slot refusal can still pause the run.
-The command permits at most three automatic retry rounds per run.
-It waits at least one, two, then four seconds after each refusal, or longer for the saved `Retry-After` deadline.
-The header accepts integer seconds or an HTTP date.
-Each wait is limited to 60 seconds. All waits in one run are limited to 120 seconds in total.
-If the required delay exceeds either bound, the job remains paused without an early retry.
+
+Adaptive operator runs continue 429 retry waves until completion, cancellation, another failure, or the `--max-batches` bound.
+They have no invocation-wide retry count or total wait cap.
+The backoff floor doubles from one second to two, four, and then up to 60 seconds.
+The command also respects the saved `Retry-After` deadline. The header accepts integer seconds or an HTTP date.
+Each wait lasts at most 60 seconds. Longer cooldowns use repeated waits without an early provider retry.
+Ordinary server and non-adaptive runs keep their three-round and 120-second total wait bounds.
 
 The store saves the cooldown deadline for the complete profile, capped at one hour from each refusal.
 The cap limits faulty provider values. A later refusal can extend the deadline by at most another hour.
@@ -178,7 +190,7 @@ Only 429 failures from the current invocation qualify for automatic retry of the
 Other failures and ambiguous batches from earlier invocations require explicit retry selection.
 
 The command emits a `backoff` JSON event before each wait, with `delay_ms`, `attempt`, and `batches`.
-Attempt zero waits for a saved cooldown. Attempts one through three identify retry rounds.
+Attempt zero waits for a saved cooldown. Positive attempts identify retry rounds.
 If a retry's inputs already have vectors from another generation, the worker continues to fresh work without another provider call.
 
 ## Recover interrupted work
@@ -203,7 +215,21 @@ npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command retry -
 npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --job "$JVC_INDEX_JOB"
 ```
 
-Retry creates a new operation and preserves its predecessor batch and earlier charge.
+To select every eligible failed or ambiguous batch in this job, use `--all` instead of `--batch`:
+
+```sh
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command retry --job "$JVC_INDEX_JOB" --all
+npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command run --job "$JVC_INDEX_JOB"
+```
+
+Inspect ambiguous batches before selecting them, including with `--all`.
+The provider can still process and charge an earlier timed-out or interrupted request.
+A retry can repeat that paid work. It does not cancel or refund the earlier request.
+Bulk selection walks every diagnostic page and skips older attempts whose inputs now belong to a later attempt.
+Its `retry` event reports `selected` and `skipped` batch counts. It selects no batch from another job.
+Use exactly one of `--all` and `--batch ID`. Selection alone sends no provider request.
+
+A subsequent run creates a new operation and preserves its predecessor batch and earlier charge.
 It requires a paused generation. It cannot replay an older attempt after a newer attempt owns those inputs.
 Other provider or storage failures pause the job. Manual dictionary reads and admission use their existing independent paths.
 An unexpected returned model or a conflicting vector suspends the complete profile in durable storage.
@@ -215,6 +241,8 @@ If retained vectors leave too little capacity, unpublish the old current generat
 
 Preparation must finish before publication. Publication can expose partial vector coverage under that exact snapshot and view.
 The pointer update uses one transaction and retains the previous generation for rollback.
+Operator publication also clears the background job pointer and saved wait for that profile and view.
+An older unfinished background job cannot replace this publication. The next background cycle starts from the latest snapshot.
 A failed preparation or pointer update leaves the preceding current generation available.
 
 ```sh

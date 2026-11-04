@@ -28,12 +28,13 @@ import { NodeEvaluationRuntime } from "./evaluation.ts";
 import { FileCheckpointStore } from "./checkpoint.ts";
 
 const usage =
-  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID] [--after BATCH_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
+  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID | --all] [--after BATCH_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
 const allowed = new Set([
   "data",
   "command",
   "job",
   "batch",
+  "all",
   "max-batches",
   "concurrency",
   "pages",
@@ -46,17 +47,16 @@ const allowed = new Set([
 function argumentsForCommand() {
   const args = process.argv.slice(2);
   const values = new Map<string, string>();
-  for (let i = 0; i < args.length; i += 2) {
+  for (let i = 0; i < args.length; i += 1) {
     const key = args[i].replace(/^--/, "");
-    if (
-      !args[i].startsWith("--") ||
-      !allowed.has(key) ||
-      values.has(key) ||
-      !args[i + 1] ||
-      args[i + 1].startsWith("--")
-    )
+    if (!args[i].startsWith("--") || !allowed.has(key) || values.has(key))
       throw new Error(usage);
-    values.set(key, args[i + 1]);
+    if (key === "all") {
+      values.set(key, "true");
+      continue;
+    }
+    if (!args[i + 1] || args[i + 1].startsWith("--")) throw new Error(usage);
+    values.set(key, args[++i]);
   }
   if (!values.has("data") || !values.has("command")) throw new Error(usage);
   return values;
@@ -232,6 +232,10 @@ async function main() {
     throw new Error(usage);
   const job = args.get("job");
   if (command !== "prepare" && !job) throw new Error(usage);
+  if (args.has("all") && command !== "retry")
+    throw new Error("Use --all only with retry.");
+  if (command === "retry" && args.has("all") === args.has("batch"))
+    throw new Error("Use either --batch ID or --all with retry.");
   const selectedProfile = args.get("profile");
   if (selectedProfile && command !== "prepare")
     throw new Error("Use --profile only with prepare.");
@@ -344,22 +348,48 @@ async function main() {
     } else if (command === "recover") await vectors.recover(id!);
     else if (command === "retry") {
       const batch = args.get("batch");
-      if (!batch) throw new Error(usage);
-      const owned = (await vectors.batches(id!)).some(
-        (value) => value.id === batch,
-      );
-      // A batch can fall outside the first diagnostics page. Walk the bounded pages.
-      let found = owned;
+      const all = args.has("all");
+      if (all && (await vectors.generation(id!)).state !== "paused")
+        throw new Error(
+          "Pause the generation before selecting batches for retry.",
+        );
+      let found = false;
+      let selected = 0;
+      let skipped = 0;
       let after: string | null = null;
-      while (!found) {
+      // Retry selection does not change batch IDs or their diagnostics page order.
+      for (;;) {
         const page = await vectors.batches(id!, after);
         if (!page.length) break;
-        found = page.some((value) => value.id === batch);
+        for (const value of page) {
+          if (all) {
+            if (!["failed", "ambiguous"].includes(value.state)) continue;
+            try {
+              await vectors.retry(value.id);
+              selected++;
+            } catch (failure) {
+              // Keep the store's ownership check as the authority for replay safety.
+              if (
+                failure instanceof Error &&
+                "code" in failure &&
+                failure.code === "semantic_retry" &&
+                failure.message === "A later attempt already owns these inputs."
+              )
+                skipped++;
+              else throw failure;
+            }
+          } else if (value.id === batch) {
+            await vectors.retry(value.id);
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
         after = page.at(-1)!.id;
       }
-      if (!found)
+      if (!all && !found)
         throw new Error("The batch does not belong to this generation.");
-      await vectors.retry(batch);
+      if (all) output({ event: "retry", job: id, selected, skipped });
     } else if (command === "publish") {
       const generation = await vectors.generation(id!);
       const old = await vectors.current(generation.profile, generation.view);

@@ -366,7 +366,7 @@ test("the shipped operator run admits eight large batches despite user ceilings 
       `import { appendFileSync } from 'node:fs';
 let active=0; let release; const gate=new Promise(resolve=>{release=resolve;});
 globalThis.fetch=async(url,init)=>{if(String(url)!=='https://openrouter.ai/api/v1/embeddings')throw new Error('Unexpected network request');
-const body=JSON.parse(init.body); active++; appendFileSync(process.env.OPERATOR_TEST_EVIDENCE,JSON.stringify({active,count:body.input.length})+'\\n'); if(active===8)release(); await gate; active--;
+const body=JSON.parse(init.body); active++; appendFileSync(process.env.OPERATOR_TEST_EVIDENCE,JSON.stringify({active,count:body.input.length})+'\\n'); if(active===Number(process.env.OPERATOR_TEST_GATE??8))release(); await gate; active--;
 return Response.json({model:'qwen/qwen3-embedding-8b',data:body.input.map((_,index)=>({index,embedding:Array.from({length:4096},(_,i)=>i?0:1)})),usage:{prompt_tokens:1,total_tokens:1,cost:0.000001}});};`,
     );
     const env = {
@@ -432,5 +432,211 @@ return Response.json({model:'qwen/qwen3-embedding-8b',data:body.input.map((_,ind
     assert.equal(
       (await readFile(evidence, "utf8")).trim().split("\n").length,
       8,
+    );
+    const resumed = await cli(
+      directory,
+      ["--command", "run", "--job", limited.id, "--max-cost-usd", "10"],
+      { ...env, OPERATOR_TEST_GATE: "1" },
+      preload,
+    );
+    assert.equal(
+      resumed.find((row) => row.event === "run").generation.state,
+      "completed",
+    );
+    assert.equal(
+      resumed.find((row) => row.event === "run").coverage.indexed,
+      32,
+    );
+    const resumedCalls = (await readFile(evidence, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(resumedCalls.length, 9);
+    assert.equal(resumedCalls.at(-1).count, 32);
+  }));
+
+test("bulk retry walks all pages and keeps the store ownership checks", async () =>
+  fixture(async ({ directory, vectors, profile, view }) => {
+    const job = await vectors.create(
+      { snapshot: hash(9993), view, profile: profileId(profile), eligible: 72 },
+      profile,
+    );
+    const documents = Array.from({ length: 72 }, (_, i) => {
+      const input = utf8(`Retry input ${i}`);
+      return {
+        event: hash(i + 50000, "jve1:"),
+        envelope: hash(i + 60000),
+        body: hash(i + 70000),
+        word: hash(i + 80000, "jvw1:"),
+        language: "en",
+        extraction_version: semanticProjectionVersion(),
+        input,
+        input_hash: inputHash(input),
+        error: null,
+      };
+    });
+    await vectors.stage(job.id, null, {
+      documents,
+      next: documents.at(-1)!.event,
+      done: true,
+    });
+    await vectors.start(job.id);
+    const failed = [];
+    for (let i = 0; i < 70; i++) {
+      const batch = (await vectors.claim(job.id, undefined, {
+        batchSize: 1,
+        batchBytes: 4096,
+      }))!;
+      if (i % 2) await vectors.sent(batch.id, `embedding:index:retry-${i}`);
+      await vectors.fail(batch.id, "fixture_failure");
+      failed.push(batch);
+    }
+    // Leave two active intents. Bulk selection must leave these alone.
+    const prepared = (await vectors.claim(job.id, undefined, {
+      batchSize: 1,
+      batchBytes: 4096,
+    }))!;
+    const sent = (await vectors.claim(job.id, undefined, {
+      batchSize: 1,
+      batchBytes: 4096,
+    }))!;
+    await vectors.sent(sent.id, "embedding:index:still-sent");
+    await vectors.pause(job.id);
+    await vectors.retry(failed[0].id);
+    await vectors.start(job.id);
+    const replacement = (await vectors.claim(job.id))!;
+    assert.equal(replacement.previous, failed[0].id);
+    await vectors.fail(replacement.id, "fixture_failure");
+    await vectors.pause(job.id);
+
+    const other = await vectors.create(
+      { snapshot: hash(9994), view, profile: profileId(profile), eligible: 1 },
+      profile,
+    );
+    await vectors.stage(other.id, null, {
+      documents: [documents[0]],
+      next: documents[0].event,
+      done: true,
+    });
+    await vectors.start(other.id);
+    const otherBatch = (await vectors.claim(other.id))!;
+    await vectors.fail(otherBatch.id, "fixture_failure");
+    await vectors.pause(other.id);
+
+    const output = await cli(directory, [
+      "--command",
+      "retry",
+      "--job",
+      job.id,
+      "--all",
+    ]);
+    assert.deepEqual(
+      output.find((row) => row.event === "retry"),
+      {
+        event: "retry",
+        job: job.id,
+        selected: 70,
+        skipped: 1,
+      },
+    );
+    const secondPage = await vectors.batches(
+      job.id,
+      output.at(-1).batches_next,
+    );
+    assert(secondPage.length > 0);
+    const late = secondPage.find(
+      (batch) =>
+        ["failed", "ambiguous"].includes(batch.state) &&
+        batch.id !== failed[0].id,
+    )!;
+    assert(late);
+    await cli(directory, [
+      "--command",
+      "retry",
+      "--job",
+      job.id,
+      "--batch",
+      late.id,
+    ]);
+    await assert.rejects(
+      cli(directory, [
+        "--command",
+        "retry",
+        "--job",
+        job.id,
+        "--batch",
+        failed[0].id,
+      ]),
+      (failure: any) =>
+        failure.stdout.includes("A later attempt already owns these inputs."),
+    );
+    const repeated = await cli(directory, [
+      "--command",
+      "retry",
+      "--job",
+      job.id,
+      "--all",
+    ]);
+    assert.equal(repeated.find((row) => row.event === "retry").selected, 70);
+    await vectors.start(job.id);
+    const selected = [];
+    for (;;) {
+      const batch = await vectors.claim(job.id);
+      if (!batch) break;
+      selected.push(batch.previous);
+      await vectors.fail(batch.id, "fixture_failure");
+    }
+    assert.equal(selected.length, 70);
+    assert.equal(new Set(selected).size, 70);
+    assert(!selected.includes(failed[0].id));
+    assert(!selected.includes(prepared.id));
+    assert(!selected.includes(sent.id));
+    await vectors.start(other.id);
+    assert.equal(await vectors.claim(other.id), null);
+  }));
+
+test("bulk retry rejects missing, conflicting, and misplaced selectors", async () =>
+  fixture(async ({ directory, vectors, profile, view }) => {
+    const job = await vectors.create(
+      { snapshot: hash(9995), view, profile: profileId(profile), eligible: 0 },
+      profile,
+    );
+    for (const selectors of [[], ["--all", "--batch", "unused"]]) {
+      await assert.rejects(
+        cli(directory, ["--command", "retry", "--job", job.id, ...selectors]),
+        (failure: any) =>
+          failure.stdout.includes("Use either --batch ID or --all with retry."),
+      );
+    }
+    await assert.rejects(
+      cli(directory, ["--command", "status", "--job", job.id, "--all"]),
+      (failure: any) => failure.stdout.includes("Use --all only with retry."),
+    );
+    await vectors.stage(job.id, null, {
+      documents: [],
+      next: null,
+      done: true,
+    });
+    await vectors.start(job.id);
+    await assert.rejects(
+      cli(directory, ["--command", "retry", "--job", job.id, "--all"]),
+      (failure: any) => failure.stdout.includes("Pause the generation"),
+    );
+    await vectors.pause(job.id);
+    const output = await cli(directory, [
+      "--command",
+      "retry",
+      "--job",
+      job.id,
+      "--all",
+    ]);
+    assert.deepEqual(
+      output.find((row) => row.event === "retry"),
+      {
+        event: "retry",
+        job: job.id,
+        selected: 0,
+        skipped: 0,
+      },
     );
   }));
