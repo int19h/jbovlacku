@@ -11,6 +11,12 @@ import {
 } from "../../../../packages/core/src/browser.ts";
 import {
   getReceipt,
+  forgetMaterializedReceipt,
+  MaterializationPendingError,
+  receiptBindingMatches,
+  receiptMaterialized,
+  viewPending,
+  waitForMaterialization,
   localPeer,
   objectBytes,
   postEvent,
@@ -30,6 +36,21 @@ import type { Envelope, Receipt, Transport } from "../model/types.ts";
 const REFUSAL_STATUSES = [400, 403, 404, 405, 409, 413, 422, 451];
 const BASE_DELAY = 15000;
 const MAX_DELAY = 30 * 60 * 1000;
+
+/** Stop the page wait even when a storage operation stalls. */
+async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  let aborted = () => {};
+  const stopped = new Promise<never>((_, reject) => {
+    aborted = () => reject(signal.reason);
+    signal.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) aborted();
+  });
+  try {
+    return await Promise.race([work, stopped]);
+  } finally {
+    signal.removeEventListener("abort", aborted);
+  }
+}
 
 export function freshPeer(): PeerDelivery {
   return {
@@ -322,36 +343,159 @@ export class DeliveryEngine {
         a.order - b.order,
     );
   }
-  /** Restores this profile's confirmed local index waits after a reload. */
-  async restorePendingProfileReceipts(identity: string): Promise<boolean> {
+  /** Checks saved local receipts and waits within one page deadline. */
+  async restorePendingProfileReceipts(
+    identity: string,
+    options: { signal?: AbortSignal; pending?: () => void } = {},
+  ): Promise<boolean> {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([
+      controller.signal,
+      AbortSignal.timeout(15000),
+      ...(options.signal ? [options.signal] : []),
+    ]);
     let pending = false;
-    for (const item of await this.items()) {
-      const { envelope } = JSON.parse(item.transport) as Transport;
-      if (
-        envelope.header.issuer !== identity ||
-        envelope.header.action.kind !== "identity.profile"
-      )
-        continue;
-      for (const [id, peer] of Object.entries(item.peers)) {
-        const target = savedPeer(item, id);
+    const keys = new Map<string, { receipt: Receipt; key: string }>();
+    const restore = async () => {
+      const candidates = (await this.items()).flatMap((item) => {
+        const { envelope } = JSON.parse(item.transport) as Transport;
         if (
-          !target ||
-          !localPeer(target) ||
-          peer.state !== "accepted" ||
-          !peer.receipt
+          envelope.header.issuer !== identity ||
+          envelope.header.action.kind !== "identity.profile"
         )
-          continue;
-        const receipt = peer.receipt;
-        const classified = await classifyReceipt(item, receipt, (event) =>
-          objectBytes(`/events/${encodeURIComponent(event)}`, 20480, {
-            peer: target,
-          }),
-        );
-        if (classified.state === "accepted")
-          pending = rememberAcceptedReceipt(receipt, target) || pending;
-      }
+          return [];
+        return Object.entries(item.peers).flatMap(([id, peer]) => {
+          const target = savedPeer(item, id);
+          return target &&
+            localPeer(target) &&
+            peer.state === "accepted" &&
+            peer.receipt &&
+            viewPending(peer.receipt)
+            ? [{ item, target, receipt: peer.receipt }]
+            : [];
+        });
+      });
+      signal.throwIfAborted();
+      // Four workers keep restoration bounded even after many profile edits.
+      let next = 0;
+      await Promise.all(
+        Array.from({ length: Math.min(4, candidates.length) }, async () => {
+          for (;;) {
+            signal.throwIfAborted();
+            const candidate = candidates[next++];
+            if (!candidate) return;
+            const { item, target, receipt } = candidate;
+            const key =
+              "profile-materialized:" +
+              contentHash(
+                utf8(
+                  JSON.stringify([
+                    new URL(target.base, location.origin).href.replace(
+                      /\/$/,
+                      "",
+                    ),
+                    receipt.id,
+                    receipt.envelope_hash,
+                    receipt.body_hash ?? null,
+                    receipt.body_status,
+                    receipt.cursor,
+                    storedEnvelopeHash(item.transport),
+                    (JSON.parse(item.transport) as Transport).envelope.header
+                      .content?.hash ?? null,
+                  ]),
+                ),
+              );
+            if ((await this.store.get<boolean>("prefs", key)) === true) {
+              signal.throwIfAborted();
+              forgetMaterializedReceipt(receipt);
+              continue;
+            }
+            signal.throwIfAborted();
+            let variantError: unknown;
+            const classified = await classifyReceipt(
+              item,
+              receipt,
+              async (event) => {
+                try {
+                  return await objectBytes(
+                    `/events/${encodeURIComponent(event)}`,
+                    20480,
+                    { peer: target, signal },
+                  );
+                } catch (error) {
+                  variantError = error;
+                  throw error;
+                }
+              },
+            );
+            signal.throwIfAborted();
+            // A failed read is unresolved evidence, never proof of a mismatch.
+            if (variantError) throw variantError;
+            if (classified.state !== "accepted") continue;
+            keys.set(receipt.id, { receipt, key });
+            let live: Receipt;
+            try {
+              live = await getReceipt(item.id, {
+                peer: target,
+                signal,
+                cache: "no-store",
+              });
+            } catch (error) {
+              signal.throwIfAborted();
+              if (
+                !(
+                  error instanceof TransportError ||
+                  (error instanceof RequestError &&
+                    error.status >= 500 &&
+                    error.status < 600)
+                )
+              )
+                throw error;
+              // Transient reads retry inside the same deadline without claiming live lag.
+              rememberAcceptedReceipt(receipt, target);
+              pending = true;
+              continue;
+            }
+            if (receiptMaterialized(live, receipt)) {
+              await this.store.put("prefs", key, true);
+              signal.throwIfAborted();
+              rememberAcceptedReceipt(live, target);
+            } else {
+              if (!receiptBindingMatches(live, receipt))
+                throw new MaterializationPendingError();
+              rememberAcceptedReceipt(receipt, target);
+              pending = true;
+              if (viewPending(live)) {
+                options.pending?.();
+              }
+            }
+          }
+        }),
+      );
+      await waitForMaterialization(
+        { signal },
+        {
+          signal,
+          receipts: new Set([...keys.values()].map(({ receipt }) => receipt)),
+          completed: async (accepted) => {
+            signal.throwIfAborted();
+            const saved = keys.get(accepted.id);
+            if (saved && receiptBindingMatches(accepted, saved.receipt))
+              await this.store.put("prefs", saved.key, true);
+          },
+        },
+      );
+      signal.throwIfAborted();
+      return pending;
+    };
+    try {
+      return await abortable(restore(), signal);
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
+      throw new MaterializationPendingError();
+    } finally {
+      controller.abort();
     }
-    return pending;
   }
   async active(): Promise<OutboxItem[]> {
     return (await this.items()).filter(isActive);

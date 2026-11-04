@@ -10,7 +10,7 @@ import {
 } from "./helpers.ts";
 
 for (const target of ["key", "public"] as const) {
-  for (const outcome of ["completed", "failed"] as const) {
+  for (const outcome of ["completed", "failed", "already completed"] as const) {
     test(`the ${target} profile waits for its accepted claim after a full reload with a ${outcome} receipt read`, async ({
       page,
     }) => {
@@ -18,6 +18,12 @@ for (const target of ["key", "public"] as const) {
       const profilePath = `/api/v1/identities/${encodeURIComponent(identity)}`;
       const previous = await (await page.request.get(profilePath)).json();
       let released = false;
+      let receiptReads = 0;
+      let totalReceiptReads = 0;
+      let savedPending: Record<string, unknown>;
+      page.on("framenavigated", (frame) => {
+        if (frame === page.mainFrame()) receiptReads = 0;
+      });
       let failReceipt = outcome === "failed";
       let releaseReceipts!: () => void;
       const ready = new Promise<void>((resolve) => {
@@ -36,17 +42,25 @@ for (const target of ["key", "public"] as const) {
       await page.route("**/api/v1/events", async (route) => {
         const response = await route.fetch();
         const receipt = await response.json();
-        await route.fulfill({
-          response,
-          json: {
-            ...receipt,
-            snapshot: null,
-            interpretation: "unavailable",
-            reasons: ["index_lag", "evaluation_pending"],
-          },
-        });
+        savedPending = {
+          ...receipt,
+          snapshot: null,
+          interpretation: "unavailable",
+          reasons: ["index_lag", "evaluation_pending"],
+        };
+        await route.fulfill({ response, json: savedPending });
       });
       await page.route("**/api/v1/receipts/*", async (route) => {
+        receiptReads++;
+        totalReceiptReads++;
+        if (
+          outcome !== "already completed" &&
+          !released &&
+          receiptReads === 1
+        ) {
+          await route.fulfill({ json: savedPending });
+          return;
+        }
         await ready;
         if (failReceipt)
           await route.fulfill({
@@ -70,23 +84,73 @@ for (const target of ["key", "public"] as const) {
           .getByRole("button", { name: "Sign and publish the profile" })
           .click();
         await acceptFirstSignature(page);
-        await expect(page.getByRole("status").last()).toContainText(
-          "The profile is signed and published.",
-        );
-        await page.goto(
-          target === "key"
-            ? "/identity"
-            : `/identity/${encodeURIComponent(identity)}#edit`,
-        );
         await expect(
-          page.getByText(
-            "This server stored your profile. Its view is updating.",
-          ),
-        ).toBeVisible();
-        await expect(page.getByRole("heading", { level: 1 })).toHaveCount(0);
-        await expect(
-          page.getByRole("region", { name: "Edit public profile" }),
-        ).toHaveCount(0);
+          page
+            .getByRole("status")
+            .filter({ hasText: "The profile is signed and published." }),
+        ).toHaveText("The profile is signed and published.");
+        const admissionBefore = await page.evaluate(async () => {
+          const { LocalStore } = await import(String("/src/data/store.ts"));
+          return JSON.stringify(await new LocalStore().list("outbox"));
+        });
+        if (outcome === "already completed") {
+          await expect
+            .poll(async () => {
+              const receipt = await (
+                await page.request.get(
+                  `/api/v1/receipts/${encodeURIComponent(String(savedPending.id))}`,
+                )
+              ).json();
+              return (
+                receipt.snapshot !== null &&
+                !receipt.reasons.includes("index_lag") &&
+                !receipt.reasons.includes("evaluation_pending")
+              );
+            })
+            .toBe(true);
+        }
+        await page.addInitScript(() => {
+          (
+            window as unknown as { pendingProfileSeen: boolean }
+          ).pendingProfileSeen = false;
+          new MutationObserver((records) => {
+            for (const record of records) {
+              for (const node of [record.target, ...record.addedNodes]) {
+                if (
+                  node.textContent?.includes(
+                    "This server stored your profile. Its view is updating.",
+                  )
+                )
+                  (
+                    window as unknown as { pendingProfileSeen: boolean }
+                  ).pendingProfileSeen = true;
+              }
+            }
+          }).observe(document, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+          });
+        });
+        // The public page is already open at #edit. Force a new document.
+        if (target === "public") await page.reload();
+        else await page.goto("/identity");
+        if (outcome !== "already completed") {
+          await expect(
+            page.getByRole("status").filter({
+              hasText: "This server stored your profile. Its view is updating.",
+            }),
+          ).toBeVisible();
+          await expect(page.getByRole("heading", { level: 1 })).toHaveCount(0);
+          await expect(
+            page.getByRole("region", { name: "Edit public profile" }),
+          ).toHaveCount(0);
+        }
+        // Keep this comparison for all outcomes after the wait below.
+        await page.evaluate(
+          (value) => sessionStorage.setItem("profile-admission-before", value),
+          admissionBefore,
+        );
       } finally {
         releaseReceipts();
       }
@@ -99,8 +163,14 @@ for (const target of ["key", "public"] as const) {
         await expect(
           page.getByRole("region", { name: "Edit public profile" }),
         ).toHaveCount(0);
+        const failure = page
+          .getByRole("status")
+          .filter({ hasText: "Its view is still updating." });
+        await page.getByRole("button", { name: "Refresh the profile" }).click();
+        await expect(failure).toBeFocused();
         failReceipt = false;
         await page.getByRole("button", { name: "Refresh the profile" }).click();
+        await expect(page.getByRole("heading", { level: 1 })).toBeFocused();
       }
       await expect(page.getByRole("heading", { level: 1 })).toContainText(
         "Reloaded Tester",
@@ -116,8 +186,254 @@ for (const target of ["key", "public"] as const) {
           "This server stored your profile. Its view is updating.",
         ),
       ).toHaveCount(0);
+      if (outcome === "already completed")
+        expect(
+          await page.evaluate(
+            () =>
+              (window as unknown as { pendingProfileSeen: boolean })
+                .pendingProfileSeen,
+          ),
+        ).toBe(false);
+      expect(
+        await page.evaluate(async () => {
+          const { LocalStore } = await import(String("/src/data/store.ts"));
+          return JSON.stringify(await new LocalStore().list("outbox"));
+        }),
+      ).toBe(
+        await page.evaluate(() =>
+          sessionStorage.getItem("profile-admission-before"),
+        ),
+      );
+      if (outcome === "already completed") {
+        await page.evaluate(async () => {
+          const { LocalStore } = await import(String("/src/data/store.ts"));
+          const store = new LocalStore();
+          for (const key of await store.keys("prefs")) {
+            if (key.startsWith("profile-materialized:"))
+              await store.delete("prefs", key);
+          }
+        });
+        let identityReads = 0;
+        await page.route(
+          (url) => url.pathname === profilePath,
+          async (route) => {
+            identityReads++;
+            await route.continue();
+          },
+        );
+        const readsBeforeCheck = totalReceiptReads;
+        await page.evaluate(
+          async (path) => {
+            const { navigate } = await import(String("/src/app/router.ts"));
+            navigate(path);
+          },
+          target === "key"
+            ? "/identity"
+            : `/identity/${encodeURIComponent(identity)}`,
+        );
+        await expect
+          .poll(() => totalReceiptReads)
+          .toBeGreaterThan(readsBeforeCheck);
+        await expect(page.getByRole("heading", { level: 1 })).toContainText(
+          "Reloaded Tester",
+        );
+        expect(identityReads).toBe(0);
+        expect(
+          await page.evaluate(
+            () =>
+              (window as unknown as { pendingProfileSeen: boolean })
+                .pendingProfileSeen,
+          ),
+        ).toBe(false);
+      }
+      const readsBeforeReload = receiptReads;
+      failReceipt = true;
+      await page.reload();
+      await expect(page.getByRole("heading", { level: 1 })).toContainText(
+        "Reloaded Tester",
+      );
+      expect(receiptReads).toBe(0);
+      expect(readsBeforeReload).toBeGreaterThan(0);
+      expect(
+        await page.evaluate(
+          () =>
+            (window as unknown as { pendingProfileSeen: boolean })
+              .pendingProfileSeen,
+        ),
+      ).toBe(false);
     });
   }
+}
+
+for (const outcome of ["leave", "deadline"] as const) {
+  test(`delayed profile variants share the receipt deadline and stop on ${outcome}`, async ({
+    page,
+  }) => {
+    await createIdentity(page);
+    const saved = await page.evaluate(async (corePath) => {
+      const core = await import(corePath);
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { outboxItem } = await import(String("/src/data/lifecycle.ts"));
+      const { storedEnvelopeHash } = await import(
+        String("/src/data/delivery.ts")
+      );
+      const store = new LocalStore();
+      const records = [];
+      for (let i = 1; i <= 4; i++) {
+        const event = core.createEvent(
+          new Uint8Array(32).fill(41),
+          [],
+          String(i).repeat(32),
+          { kind: "identity.profile" },
+          { name: "Delayed profile", bio: [], links: [] },
+        );
+        const item = outboxItem(event, "variant-profile", i, {
+          self: {
+            origin: location.origin,
+            base: "/api/v1",
+            label: "this server",
+          },
+        });
+        const receipt = {
+          id: item.id,
+          admission: "accepted",
+          interpretation: "unavailable",
+          body_status: "present",
+          body_hash: event.envelope.header.content.hash,
+          envelope_hash: storedEnvelopeHash(item.transport),
+          cursor: `test.${i}`,
+          snapshot: null,
+          view: "jve1:" + "a".repeat(64),
+          reasons: ["index_lag", "evaluation_pending"],
+        };
+        // Force the classifier to authenticate the valid server envelope.
+        const transport = JSON.parse(item.transport);
+        transport.envelope.signature = "0".repeat(128);
+        item.transport = JSON.stringify(transport);
+        item.peers.self = { ...item.peers.self, state: "accepted", receipt };
+        await store.put("outbox", item.id, item);
+        records.push({ envelope: event.envelope, receipt });
+      }
+      return { identity: records[0].envelope.header.issuer, records };
+    }, corePath);
+    await page.addInitScript(() => {
+      (window as unknown as { variantAborts: number }).variantAborts = 0;
+      const fetch = window.fetch.bind(window);
+      window.fetch = (input, options) => {
+        if (String(input).includes("/api/v1/events/")) {
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              (window as unknown as { variantAborts: number }).variantAborts++;
+            },
+            { once: true },
+          );
+        }
+        return fetch(input, options);
+      };
+    });
+    let releaseVariants!: () => void;
+    const variants = new Promise<void>(
+      (resolve) => (releaseVariants = resolve),
+    );
+    let releaseReceipts!: () => void;
+    const receipts = new Promise<void>(
+      (resolve) => (releaseReceipts = resolve),
+    );
+    let variantReads = 0;
+    let profileReads = 0;
+    let receiptReads = 0;
+    await page.route("**/api/v1/events/*", async (route) => {
+      variantReads++;
+      const id = decodeURIComponent(
+        new URL(route.request().url()).pathname.split("/").pop()!,
+      );
+      await variants;
+      await route.fulfill({
+        json: saved.records.find((record) => record.receipt.id === id)!
+          .envelope,
+      });
+    });
+    await page.route("**/api/v1/receipts/*", async (route) => {
+      const id = decodeURIComponent(
+        new URL(route.request().url()).pathname.split("/").pop()!,
+      );
+      receiptReads++;
+      if (receiptReads <= saved.records.length)
+        await route.fulfill({
+          json: saved.records.find((record) => record.receipt.id === id)!
+            .receipt,
+        });
+      else {
+        await receipts;
+        await route.abort();
+      }
+    });
+    await page.route(
+      (url) =>
+        url.pathname ===
+        `/api/v1/identities/${encodeURIComponent(saved.identity)}`,
+      async (route) => {
+        profileReads++;
+        await route.continue();
+      },
+    );
+    try {
+      const began = Date.now();
+      await page.goto(`/identity/${encodeURIComponent(saved.identity)}`);
+      await expect.poll(() => variantReads).toBe(4);
+      await expect(
+        page
+          .getByRole("status")
+          .filter({ hasText: "Checking the profile on this server." }),
+      ).toBeVisible();
+      await expect(page.locator("main h1")).toHaveCount(0);
+      expect(profileReads).toBe(0);
+      if (outcome === "leave") {
+        await page.evaluate(async () => {
+          const { navigate } = await import(String("/src/app/router.ts"));
+          navigate("/preferences");
+        });
+        await expect(page).toHaveURL(/\/preferences$/);
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () =>
+                (window as unknown as { variantAborts: number }).variantAborts,
+            ),
+          )
+          .toBe(4);
+        releaseVariants();
+        await page.unrouteAll({ behavior: "wait" });
+        expect(receiptReads).toBe(0);
+        expect(profileReads).toBe(0);
+        await expect(page.locator("main")).not.toContainText(
+          "Its view is still updating.",
+        );
+      } else {
+        // Spend part of the real deadline on variant authentication.
+        await new Promise((resolve) => setTimeout(resolve, 8000));
+        releaseVariants();
+        await expect(
+          page.getByRole("status").filter({ hasText: "Its view is updating." }),
+        ).toBeVisible();
+        await expect(
+          page
+            .getByRole("status")
+            .filter({ hasText: "Its view is still updating." }),
+        ).toBeVisible({ timeout: 12000 });
+        expect(Date.now() - began).toBeLessThan(20000);
+        expect(profileReads).toBe(0);
+        await expect(
+          page.getByRole("button", { name: "Refresh the profile" }),
+        ).toBeVisible();
+      }
+    } finally {
+      releaseVariants();
+      releaseReceipts();
+      await page.unrouteAll({ behavior: "wait" });
+    }
+  });
 }
 
 test("the profile Name field keeps focus when held activity finishes the page render", async ({
@@ -286,23 +602,27 @@ test("the public profile editor checks every limit, previews the signed claim, a
     "This is a public signed claim with retained history.",
   );
   let releaseReceipts!: () => void;
+  let savedPending: Record<string, unknown>;
+  let receiptReads = 0;
   const receiptsReady = new Promise<void>((resolve) => {
     releaseReceipts = resolve;
   });
   await page.route("**/api/v1/events", async (route) => {
     const response = await route.fetch();
     const receipt = await response.json();
-    await route.fulfill({
-      response,
-      json: {
-        ...receipt,
-        snapshot: null,
-        interpretation: "unavailable",
-        reasons: ["index_lag", "evaluation_pending"],
-      },
-    });
+    savedPending = {
+      ...receipt,
+      snapshot: null,
+      interpretation: "unavailable",
+      reasons: ["index_lag", "evaluation_pending"],
+    };
+    await route.fulfill({ response, json: savedPending });
   });
   await page.route("**/api/v1/receipts/*", async (route) => {
+    if (++receiptReads === 1) {
+      await route.fulfill({ json: savedPending });
+      return;
+    }
     await receiptsReady;
     await route.continue();
   });
@@ -311,9 +631,11 @@ test("the public profile editor checks every limit, previews the signed claim, a
       .getByRole("button", { name: "Sign and publish the profile" })
       .click();
     await acceptFirstSignature(page);
-    await expect(page.getByRole("status").last()).toContainText(
-      "The profile is signed and published.",
-    );
+    await expect(
+      page
+        .getByRole("status")
+        .filter({ hasText: "The profile is signed and published." }),
+    ).toHaveText("The profile is signed and published.");
     await expect(
       page.getByText("This server stored your profile. Its view is updating."),
     ).toBeVisible();

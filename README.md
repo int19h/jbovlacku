@@ -604,7 +604,10 @@ Word responses can report unavailable scores while a replacement restores in the
 
 After publication, the browser shows a pending notice until the accepted records reach the evaluated word view.
 After a profile publication, the profile page waits for that evaluated view before it requests the new claim.
-The key page and public profile restore this wait from confirmed local receipts after a reload.
+The key page and public profile check live receipts after a reload before they show a pending notice.
+A matching completed receipt keeps the normal profile cache. Separate local completion evidence prevents repeated receipt reads and preserves the admission receipt.
+Receipt checks, equivalent-envelope reads, and polling share one fifteen-second limit and stop when the reader leaves.
+Profile status changes use polite announcements. Refresh moves focus to the new heading or the failure notice.
 Personal recomputation also waits for locally accepted records before it downloads the next snapshot.
 These waits stop after fifteen seconds and preserve accepted delivery evidence for another refresh.
 A full-dictionary evaluation can outlast that wait. A refresh reuses the accepted record without another signature.

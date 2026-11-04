@@ -318,7 +318,7 @@ export async function getReceipt(id: string, options: RequestOptions = {}) {
 }
 // This page session tracks only records whose local delivery it confirmed.
 const acceptedAwaitingView = new Map<string, Receipt>();
-const viewPending = (receipt: Receipt) =>
+export const viewPending = (receipt: Receipt) =>
   receipt.reasons.some((reason) =>
     ["index_lag", "evaluation_pending"].includes(reason),
   );
@@ -356,49 +356,98 @@ export class MaterializationPendingError extends Error {
     );
   }
 }
+/** Exact representation and admission position confirmed by both receipts. */
+export function receiptBindingMatches(receipt: Receipt, accepted: Receipt) {
+  return (
+    receipt.id === accepted.id &&
+    receipt.admission !== "refused" &&
+    receipt.envelope_hash === accepted.envelope_hash &&
+    receipt.body_hash === accepted.body_hash &&
+    receipt.body_status === accepted.body_status &&
+    receipt.cursor === accepted.cursor
+  );
+}
+/** Clear only the exact admission binding with saved completion evidence. */
+export function forgetMaterializedReceipt(accepted: Receipt) {
+  const pending = acceptedAwaitingView.get(accepted.id);
+  if (pending && receiptBindingMatches(accepted, pending))
+    acceptedAwaitingView.delete(accepted.id);
+}
+export function receiptMaterialized(receipt: Receipt, accepted: Receipt) {
+  return (
+    receiptBindingMatches(receipt, accepted) &&
+    receipt.snapshot !== null &&
+    !viewPending(receipt)
+  );
+}
 /** Wait for local accepted records, without changing their delivery state. */
-async function waitForMaterialization(options: RequestOptions) {
-  if (!localPeer(options.peer) || !hasPendingMaterialization()) return;
-  const timeout = AbortSignal.timeout(15000);
-  const signal = options.signal
-    ? AbortSignal.any([options.signal, timeout])
-    : timeout;
+export async function waitForMaterialization(
+  options: RequestOptions,
+  wait: {
+    completed?: (accepted: Receipt) => Promise<void>;
+    receipts?: ReadonlySet<Receipt>;
+    signal?: AbortSignal;
+  } = {},
+) {
+  const selected = () =>
+    [...acceptedAwaitingView].filter(
+      ([, receipt]) =>
+        !wait.receipts ||
+        [...wait.receipts].some((accepted) =>
+          receiptBindingMatches(receipt, accepted),
+        ),
+    );
+  if (!localPeer(options.peer) || !selected().length) return;
+  const signal =
+    wait.signal ??
+    AbortSignal.any([
+      AbortSignal.timeout(15000),
+      ...(options.signal ? [options.signal] : []),
+    ]);
   try {
-    while (hasPendingMaterialization()) {
+    while (selected().length) {
       signal.throwIfAborted();
-      for (const [id, accepted] of [...acceptedAwaitingView]) {
-        let receipt: Receipt;
-        try {
-          receipt = await getReceipt(id, {
-            ...options,
-            signal,
-            cache: "no-store",
-          });
-        } catch (error) {
-          signal.throwIfAborted();
-          if (
-            error instanceof TransportError ||
-            (error instanceof RequestError &&
-              error.status >= 500 &&
-              error.status < 600)
-          )
-            continue;
-          throw error;
-        }
-        if (
-          receipt.id === id &&
-          receipt.admission !== "refused" &&
-          receipt.envelope_hash === accepted.envelope_hash &&
-          receipt.body_hash === accepted.body_hash &&
-          receipt.body_status === accepted.body_status &&
-          receipt.cursor === accepted.cursor &&
-          receipt.snapshot !== null &&
-          !viewPending(receipt) &&
-          acceptedAwaitingView.get(id) === accepted
-        )
-          acceptedAwaitingView.delete(id);
-      }
-      if (!hasPendingMaterialization()) return;
+      // At most four receipt reads share this round's deadline.
+      const batch = selected();
+      let next = 0;
+      await Promise.all(
+        Array.from({ length: Math.min(4, batch.length) }, async () => {
+          for (;;) {
+            signal.throwIfAborted();
+            const entry = batch[next++];
+            if (!entry) return;
+            const [id, accepted] = entry;
+            let receipt: Receipt;
+            try {
+              receipt = await getReceipt(id, {
+                ...options,
+                signal,
+                cache: "no-store",
+              });
+            } catch (error) {
+              signal.throwIfAborted();
+              if (
+                error instanceof TransportError ||
+                (error instanceof RequestError &&
+                  error.status >= 500 &&
+                  error.status < 600)
+              )
+                continue;
+              throw error;
+            }
+            if (
+              receiptMaterialized(receipt, accepted) &&
+              acceptedAwaitingView.get(id) === accepted
+            ) {
+              await wait.completed?.(accepted);
+              signal.throwIfAborted();
+              if (acceptedAwaitingView.get(id) === accepted)
+                acceptedAwaitingView.delete(id);
+            }
+          }
+        }),
+      );
+      if (!selected().length) return;
       await new Promise<void>((resolve, reject) => {
         const aborted = () => {
           clearTimeout(timer);

@@ -23,12 +23,17 @@ import {
 import type { App } from "../app/context.ts";
 import { renderExisting } from "./handover.ts";
 import type { HandoverRecord } from "../data/lifecycle.ts";
-import { identityProfile, profileName } from "../components/attribution.ts";
+import {
+  identityProfile,
+  profileName,
+  forgetProfile,
+} from "../components/attribution.ts";
 
 export async function identityPage(
   route: Route,
   context: RenderContext,
   app: App,
+  focusResult = false,
 ) {
   const { main } = context;
   const { session } = app;
@@ -60,24 +65,28 @@ export async function identityPage(
   // The display name is the server's effective profile claim for this key.
   let name: string | null = null;
   let profileError: unknown;
-  let pending: HTMLElement | null = null;
+  const pending = el("p", {
+    class: "notice",
+    role: "status",
+    text: "Checking the profile on this server.",
+  });
+  main.append(pending);
   try {
     const fresh = await app.delivery.restorePendingProfileReceipts(
       backup.identity,
+      {
+        signal: context.signal,
+        pending: () => {
+          if (context.live())
+            pending.textContent =
+              "This server stored your profile. Its view is updating.";
+        },
+      },
     );
     if (!context.live()) return;
-    if (fresh) {
-      pending = p(
-        "This server stored your profile. Its view is updating.",
-        "notice",
-      );
-      main.append(pending);
-    }
+    if (fresh) forgetProfile(backup.identity);
     name = profileName(
-      await identityProfile(backup.identity, {
-        fresh,
-        signal: context.signal,
-      }),
+      await identityProfile(backup.identity, { signal: context.signal }),
     );
   } catch (error) {
     profileError = error;
@@ -104,11 +113,33 @@ export async function identityPage(
       text: fingerprintText(backup.identity),
     }),
   );
-  if (profileError)
+  let failure: HTMLElement | undefined;
+  if (profileError) {
+    failure = el("p", {
+      class: "notice",
+      role: "status",
+      tabindex: "-1",
+      text: describe(profileError),
+    });
     main.append(
-      p(describe(profileError), "notice"),
-      button("Refresh the profile", rerender, { class: "btn" }),
+      failure,
+      button(
+        "Refresh the profile",
+        () => {
+          unsubscribePage();
+          if (!context.live()) return;
+          main.replaceChildren();
+          void identityPage(route, context, app, true);
+        },
+        { class: "btn" },
+      ),
     );
+  }
+  if (focusResult) {
+    const target = failure ?? head.querySelector<HTMLElement>("h1")!;
+    target.tabIndex = -1;
+    context.focus(target);
+  }
   if (session.pending) {
     const resume = el("div", { class: "notice", style: "margin-top:16px" });
     resume.append(
