@@ -16,16 +16,21 @@ The disposable signer has no authority outside this fixture. The private signing
 ## Load a disposable copy
 
 Build the core bindings before using the existing importer loader.
-From the repository root, select a new local data directory and run:
+From the repository root, create and print a new local data directory:
 
 ```sh
-fixture_data_dir="$(mktemp -d)"
+fixture_data_dir="${fixture_data_dir:-$(mktemp -d)}"
+printf 'Data directory: %s\n' "$fixture_data_dir"
 node --import tsx packages/importer/src/load-cli.ts \
   --proposal packages/core/test/fixtures/place-conversions-reviewed \
   --data "$fixture_data_dir"
 ```
 
 This admits the 30 native revisions and the separate test view.
+
+For a repeat load, keep `fixture_data_dir` set to the same directory.
+In a new shell, set it to the printed path before running the snippet again.
+
 A repeat load reuses those exact records. It creates no new signatures.
 The test view selects no imports. On an empty database, source-parent links remain unresolved while the native definitions stay readable.
 

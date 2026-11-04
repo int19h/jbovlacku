@@ -22,7 +22,8 @@ The default 1,000,000-word work budget runs out at roughly 4,500 events in a fla
 Histories with more edges can reach the limit sooner. Exhaustion makes the entire evaluation unavailable, including unrelated accounts and native results.
 
 The crate passes native and standalone wasm32-unknown-unknown build checks.
-Rustfmt and Clippy are required components of the pinned 1.99 toolchain.
+CI installs Rustfmt and Clippy on the pinned 1.99.0 toolchain.
+The toolchain file selects the minimal profile, which does not include these components.
 
 The generated parity corpus contains 353 inputs from all 97 test names. It includes every handover case and the large history tests.
 Native expected outputs equal the Chromium WebAssembly outputs for all 353 inputs. The parity runner finishes in 12.810 seconds on the development machine.

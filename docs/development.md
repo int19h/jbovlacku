@@ -1214,6 +1214,7 @@ Each review must name the exact commit or complete working diff under review.
 A later substantive change requires a new review of the affected behavior.
 
 Resolve review findings and rerun the relevant tests before handoff.
+Run thorough tests before local acceptance tests.
 Provide the reviewed revision, server commands, fixture locations, and expected outcomes for local acceptance tests.
 Preserve failures and limits in the handoff. A green unit test result does not replace browser or adapter tests.
 If a required scenario is unavailable, state the missing behavior explicitly.

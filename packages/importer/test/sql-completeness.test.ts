@@ -244,7 +244,7 @@ function replaceTable(source: string, name: string, replacement: string) {
   );
 }
 
-// The undeclared-probe.mts run also omitted the absent relation's count.
+// This loop omits the absent relation's declared count as well as its rows.
 for (const name of [
   "languages",
   "valsitypes",

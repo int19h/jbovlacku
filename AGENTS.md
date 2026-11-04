@@ -24,7 +24,9 @@ Use repository-relative documentation links. Preserve external source references
 
 Name the exact revision in every review handoff.
 Resolve review findings and run the relevant tests before handoff.
-Bound test parallelism to the available resources and keep unrelated work usable.
+Run thorough tests before local acceptance tests.
+Limit parallel tests to the resources of the host.
+Keep unrelated work usable.
 
 Provide tested URLs for authorized local services. State their access and signing requirements.
 Do not interpret review approval as permission to merge, deploy, or release.

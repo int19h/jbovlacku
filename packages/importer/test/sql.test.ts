@@ -267,6 +267,9 @@ test("repeat import reuses exact signed envelopes and rebuilds interrupted outpu
   assert.equal(archive.path, input.sourcePath);
   assert.equal(archive.bytes, fixture.length);
   assert.equal(archive.snapshot, fixtureManifest.sha256);
+  const manifestBytes = await readFile(input.manifestPath);
+  assert.equal(archive.manifest.sha256, contentHash(manifestBytes));
+  assert.deepEqual(await readFile(archive.manifest.archived), manifestBytes);
 });
 
 test("source changes create parented revisions and source reversions reuse original envelopes", async () => {
