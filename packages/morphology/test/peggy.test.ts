@@ -168,8 +168,8 @@ test("word fixtures retain source revisions, file digests, case IDs, and explici
   );
 });
 
-for (const item of evidence.cases) {
-  test(`gencmu word case ${item.id}: ${item.input}`, () => {
+for (const [caseIndex, item] of evidence.cases.entries()) {
+  test(`gencmu word case ${caseIndex + 1}`, () => {
     const analysis = analyzeWord("extended-v4", item.input);
     assert.equal(analysis.kind, item.expected.kind, JSON.stringify(analysis));
     assert.deepEqual(

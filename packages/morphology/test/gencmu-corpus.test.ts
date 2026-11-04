@@ -154,8 +154,8 @@ test("the pinned corpus retains every experimental case and its oracle source", 
   }
 });
 
-for (const row of fixture.cases) {
-  test(`experimental corpus: ${row.id}`, () => {
+for (const [caseIndex, row] of fixture.cases.entries()) {
+  test(`experimental corpus case ${caseIndex + 1}`, () => {
     const override = acuteOverrides.cases.find((entry) => entry.id === row.id);
     if (override) {
       assert.throws(
