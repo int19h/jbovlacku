@@ -97,15 +97,22 @@ test("operator embedding exceeds server slots and budgets while recording charge
     async () => [],
   );
   const jobs = Array.from({ length: 8 }, () =>
-    service.embed(inputs(16), { kind: "index" }),
+    service.embed(inputs(16), { route: "nebius", kind: "index" }),
   );
   try {
     await until(() => active === 8);
-    await assert.rejects(service.embed(inputs(), { kind: "index" }), {
-      code: "embedding_busy",
-    });
     await assert.rejects(
-      service.embed(inputs(), { kind: "query", network: "local" }),
+      service.embed(inputs(), { route: "nebius", kind: "index" }),
+      {
+        code: "embedding_busy",
+      },
+    );
+    await assert.rejects(
+      service.embed(inputs(), {
+        route: "nebius",
+        kind: "query",
+        network: "local",
+      }),
       { code: "embedding_busy" },
     );
   } finally {
@@ -124,11 +131,19 @@ test("operator embedding exceeds server slots and budgets while recording charge
     ) < 1e-12,
   );
   await assert.rejects(
-    service.embed(inputs(), { kind: "query", network: "local" }),
+    service.embed(inputs(), {
+      route: "nebius",
+      kind: "query",
+      network: "local",
+    }),
     { code: "billing_request_too_large" },
   );
   await assert.rejects(
-    service.embed(inputs(16), { kind: "query", network: "local" }),
+    service.embed(inputs(16), {
+      route: "nebius",
+      kind: "query",
+      network: "local",
+    }),
     { code: "embedding_input" },
   );
 });
@@ -151,18 +166,28 @@ test("server indexing keeps its original input, slot, and spending limits", asyn
     "server-test",
     async () => [],
   );
-  await assert.rejects(service.embed(inputs(9), { kind: "index" }), {
-    code: "embedding_input",
-  });
+  await assert.rejects(
+    service.embed(inputs(9), { route: "nebius", kind: "index" }),
+    {
+      code: "embedding_input",
+    },
+  );
   const jobs = [
-    service.embed(inputs(), { kind: "index" }),
-    service.embed(inputs(), { kind: "query", network: "local" }),
+    service.embed(inputs(), { route: "nebius", kind: "index" }),
+    service.embed(inputs(), {
+      route: "nebius",
+      kind: "query",
+      network: "local",
+    }),
   ];
   try {
     await until(() => active === 2);
-    await assert.rejects(service.embed(inputs(), { kind: "index" }), {
-      code: "embedding_busy",
-    });
+    await assert.rejects(
+      service.embed(inputs(), { route: "nebius", kind: "index" }),
+      {
+        code: "embedding_busy",
+      },
+    );
   } finally {
     gate.resolve();
     await Promise.all(jobs);
@@ -179,11 +204,18 @@ test("server indexing keeps its original input, slot, and spending limits", asyn
     "limited",
     async () => [],
   );
-  await assert.rejects(limited.embed(inputs(), { kind: "index" }), {
-    code: "billing_request_too_large",
-  });
   await assert.rejects(
-    limited.embed(inputs(), { kind: "query", network: "local" }),
+    limited.embed(inputs(), { route: "nebius", kind: "index" }),
+    {
+      code: "billing_request_too_large",
+    },
+  );
+  await assert.rejects(
+    limited.embed(inputs(), {
+      route: "nebius",
+      kind: "query",
+      network: "local",
+    }),
     { code: "billing_request_too_large" },
   );
 });
@@ -208,19 +240,22 @@ test("an operator run ceiling includes concurrent reservations and releases unus
     async () => [],
   );
   const jobs = [
-    service.embed(inputs(), { kind: "index" }),
-    service.embed(inputs(), { kind: "index" }),
+    service.embed(inputs(), { route: "nebius", kind: "index" }),
+    service.embed(inputs(), { route: "nebius", kind: "index" }),
   ];
   try {
     await until(() => active === 2);
-    await assert.rejects(service.embed(inputs(), { kind: "index" }), {
-      code: "billing_operator_limit",
-    });
+    await assert.rejects(
+      service.embed(inputs(), { route: "nebius", kind: "index" }),
+      {
+        code: "billing_operator_limit",
+      },
+    );
   } finally {
     gate.resolve();
     await Promise.all(jobs);
   }
-  await service.embed(inputs(), { kind: "index" });
+  await service.embed(inputs(), { route: "nebius", kind: "index" });
   await service.drainEmbeddingTransports();
   assert.equal(active, 3);
   assert(
@@ -242,11 +277,16 @@ test("unsent operator failures release the run ceiling but unknown sent charges 
     async () => [],
   );
   await assert.rejects(
-    service.embed(inputs(), { kind: "index" }, undefined, async () => {
-      throw new Error("The intent was not saved.");
-    }),
+    service.embed(
+      inputs(),
+      { route: "nebius", kind: "index" },
+      undefined,
+      async () => {
+        throw new Error("The intent was not saved.");
+      },
+    ),
   );
-  await service.embed(inputs(), { kind: "index" });
+  await service.embed(inputs(), { route: "nebius", kind: "index" });
   await service.drainEmbeddingTransports();
   const gate = deferred();
   const budget = ledger();
@@ -266,12 +306,18 @@ test("unsent operator failures release the run ceiling but unknown sent charges 
     async () => [],
   );
   try {
-    await assert.rejects(timeout.embed(inputs(), { kind: "index" }), {
-      code: "embedding_timeout",
-    });
-    await assert.rejects(timeout.embed(inputs(), { kind: "index" }), {
-      code: "billing_operator_limit",
-    });
+    await assert.rejects(
+      timeout.embed(inputs(), { route: "nebius", kind: "index" }),
+      {
+        code: "embedding_timeout",
+      },
+    );
+    await assert.rejects(
+      timeout.embed(inputs(), { route: "nebius", kind: "index" }),
+      {
+        code: "billing_operator_limit",
+      },
+    );
   } finally {
     gate.resolve();
     await timeout.drainEmbeddingTransports();
@@ -348,9 +394,12 @@ test("operator admission preserves the durable ledger record bound", async () =>
     "full-ledger",
     async () => [],
   );
-  await assert.rejects(service.embed(inputs(), { kind: "index" }), {
-    code: "billing_history_limit",
-  });
+  await assert.rejects(
+    service.embed(inputs(), { route: "nebius", kind: "index" }),
+    {
+      code: "billing_history_limit",
+    },
+  );
   assert.equal(snapshot.entries.length, 16384);
 });
 
@@ -382,7 +431,10 @@ test("operator request deadlines scale with actual inputs while server deadlines
       async () => [],
     );
     const before = Date.now();
-    const work = service.embed(inputs(count), { kind: "index" });
+    const work = service.embed(inputs(count), {
+      route: "nebius",
+      kind: "index",
+    });
     try {
       await until(() => sent);
       const after = Date.now();

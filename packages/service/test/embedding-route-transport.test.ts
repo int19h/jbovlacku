@@ -30,8 +30,12 @@ const response = () =>
     usage: { prompt_tokens: 4, total_tokens: 4, cost: 0.000001 },
   });
 
-test("parallel embedding calls keep their explicit routes and preserve the configured default", async () => {
-  for (const defaultRoute of ["nebius", "deepinfra/us"] as const) {
+test("parallel embedding calls require caller routes and ignore the configured route", async () => {
+  for (const configuredRoute of [
+    "nebius",
+    "deepinfra/us",
+    "siliconflow/fp8",
+  ] as const) {
     const seen: string[] = [];
     const linked = new Set<string>();
     let bothSent!: () => void;
@@ -42,7 +46,7 @@ test("parallel embedding calls keep their explicit routes and preserve the confi
       ...providerConfig(
         {
           JVC_AI_ENABLED: "enabled",
-          JVC_AI_EMBEDDING_PROVIDER_ROUTE: defaultRoute,
+          JVC_AI_EMBEDDING_PROVIDER_ROUTE: configuredRoute,
         },
         async () => "disposable-route-key",
       )!,
@@ -53,9 +57,9 @@ test("parallel embedding calls keep their explicit routes and preserve the confi
         assert.equal(body.provider.allow_fallbacks, false);
         assert.equal(body.provider.max_price.prompt, 0.01);
         seen.push(route);
-        if (seen.length <= 2) {
+        if (seen.length <= 3) {
           assert.equal(linked.has(route), true);
-          if (seen.length === 2) bothSent();
+          if (seen.length === 3) bothSent();
           await gate;
         }
         return response();
@@ -69,30 +73,29 @@ test("parallel embedding calls keep their explicit routes and preserve the confi
       "route-test",
       async () => [],
     );
-    const routes = ["nebius", "deepinfra/us"] as const;
+    const routes = ["nebius", "deepinfra/us", "siliconflow/fp8"] as const;
     await Promise.all(
       routes.map((route) =>
         service.embed(
           input,
-          { kind: "index" },
+          { route, kind: "index" },
           undefined,
           async (operation) => {
             assert.match(operation, /^embedding:index:/);
             linked.add(route);
           },
-          route,
         ),
       ),
     );
     assert.deepEqual(seen.slice().sort(), [...routes].sort());
     assert.equal(provider.embedding, originalEmbedding);
-    assert.equal(provider.embedding!.route, defaultRoute);
-    await service.embed(input, { kind: "probe" });
-    assert.equal(seen[2], defaultRoute);
+    assert.equal(provider.embedding!.route, configuredRoute);
+    await service.embed(input, { route: "nebius", kind: "probe" });
+    assert.equal(seen[3], "nebius");
   }
 });
 
-test("invalid explicit routes fail before links, key reads, or dispatch", async () => {
+test("missing and invalid caller routes fail before links, key reads, or dispatch", async () => {
   let keys = 0;
   let sends = 0;
   let links = 0;
@@ -112,6 +115,7 @@ test("invalid explicit routes fail before links, key reads, or dispatch", async 
     async () => [],
   );
   for (const route of [
+    undefined,
     "deepinfra",
     "deepinfra/eu",
     "unknown",
@@ -123,18 +127,17 @@ test("invalid explicit routes fail before links, key reads, or dispatch", async 
     await assert.rejects(
       service.embed(
         input,
-        { kind: "index" },
+        { route: route as EmbeddingRoute, kind: "index" },
         undefined,
         async () => {
           links++;
         },
-        route as EmbeddingRoute,
       ),
       { code: "embedding_configuration" },
     );
   }
   assert.deepEqual({ keys, sends, links }, { keys: 0, sends: 0, links: 0 });
-  await service.embed(input, { kind: "probe" });
+  await service.embed(input, { route: "nebius", kind: "probe" });
   assert.deepEqual({ keys, sends, links }, { keys: 1, sends: 1, links: 0 });
 });
 
@@ -156,10 +159,9 @@ test("an explicit route does not enable disabled embedding inference", async () 
   await assert.rejects(
     service.embed(
       input,
-      { kind: "probe" },
+      { route: "deepinfra/us", kind: "probe" },
       undefined,
       undefined,
-      "deepinfra/us",
     ),
     { code: "embedding_configuration" },
   );

@@ -1301,8 +1301,8 @@ interface Job {
 }
 /** These callers are host services. No public request can select an operator. */
 export type EmbeddingCaller =
-  | { kind: "query"; network: string }
-  | { kind: "index" | "probe" };
+  | { kind: "query"; network: string; route: EmbeddingRoute }
+  | { kind: "index" | "probe"; route: EmbeddingRoute };
 export interface EmbeddingOperation {
   id: string;
   kind: EmbeddingCaller["kind"];
@@ -1360,7 +1360,6 @@ export class AssistanceService {
     caller: EmbeddingCaller,
     callerSignal?: AbortSignal,
     beforeSend?: (operation: string) => Promise<void>,
-    route?: EmbeddingRoute,
   ): Promise<EmbeddingResult & { operation: string }> {
     callerSignal?.throwIfAborted();
     const configured = this.options.provider;
@@ -1370,16 +1369,18 @@ export class AssistanceService {
         "feature_disabled",
         "Embedding inference is disabled on this server.",
       );
-    if (route !== undefined && !isEmbeddingRoute(route))
+    if (!isEmbeddingRoute(caller.route))
       throw new AssistanceError(
         503,
         "embedding_configuration",
         "The embedding route is invalid.",
       );
-    const config =
-      route !== undefined && configured.embedding
-        ? { ...configured, embedding: { ...configured.embedding, route } }
-        : configured;
+    const config = configured.embedding
+      ? {
+          ...configured,
+          embedding: { ...configured.embedding, route: caller.route },
+        }
+      : configured;
     if (
       !["query", "index", "probe"].includes(caller.kind) ||
       (caller.kind === "query" &&

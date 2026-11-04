@@ -12,7 +12,7 @@ import { normalizeVector } from "./semantic/vector.ts";
 
 export {
   EMBEDDING_MODEL,
-  EMBEDDING_ROUTE,
+  DEFAULT_PROFILE_ROUTE,
   EMBEDDING_QUOTE_TOKENS,
 } from "./inference.ts";
 export const EMBEDDING_DIMENSIONS = 4096;
