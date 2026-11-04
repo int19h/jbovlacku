@@ -53,23 +53,28 @@ export async function personPage(
   }
   const isSelf = app.session.identity === identity;
   context.title(shortIdentity(identity));
-  const pending = el("p", {
-    class: "notice",
-    role: "status",
-    text: "Checking the profile on this server.",
-  });
-  main.append(pending);
+  let pending: HTMLElement | undefined;
+  let unconfirmable = false;
+  const showPending = (value: string) => {
+    if (!context.live()) return;
+    if (!pending) {
+      pending = el("p", { class: "notice", role: "status" });
+      main.append(pending);
+    }
+    pending.textContent = value;
+  };
   let response: IdentityResponse | null;
   try {
     const restored =
-      app.session.storageAvailable &&
+      (await app.session.isLocalKey(identity)) &&
       (await app.delivery.restorePendingProfileReceipts(identity, {
         signal: context.signal,
         invalidate: () => forgetProfile(identity),
-        pending: () => {
-          if (context.live())
-            pending.textContent =
-              "This server stored your profile. Its view is updating.";
+        checking: () => showPending("Checking the profile on this server."),
+        pending: () =>
+          showPending("This server stored your profile. Its view is updating."),
+        unconfirmable: () => {
+          unconfirmable = true;
         },
       }));
     if (!context.live()) return;
@@ -79,7 +84,7 @@ export async function personPage(
     });
   } catch (error) {
     if (!context.live()) return;
-    pending.remove();
+    pending?.remove();
     const failure = el("p", {
       class: "notice",
       role: "status",
@@ -117,6 +122,22 @@ export async function personPage(
       text: fingerprintText(identity),
     }),
   );
+  if (unconfirmable)
+    main.append(
+      el("p", {
+        class: "notice",
+        role: "status",
+        text: "A saved profile edit cannot be confirmed here.",
+      }),
+      button(
+        "Refresh the profile",
+        () => {
+          main.replaceChildren();
+          void personPage(route, context, app, true, true);
+        },
+        { class: "btn" },
+      ),
+    );
   if (focusResult) {
     const heading = main.querySelector<HTMLElement>("h1")!;
     heading.tabIndex = -1;

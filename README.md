@@ -609,7 +609,10 @@ A newly observed completion refreshes older cached profiles. Later visits reuse 
 Separate local completion evidence prevents repeated receipt reads and preserves the admission receipt.
 Current profile reads use page cancellation, cache only successful responses, and offer Refresh after a read failure.
 Receipt checks, equivalent-envelope reads, and polling share one fifteen-second limit and stop when the reader leaves.
-Profile status changes use polite announcements. Refresh moves focus to the new heading or the failure notice.
+Profile notices carry the status role. Refresh moves focus to the new heading or the failure notice.
+The key page keeps all local controls available while its profile loads in the background.
+Definitive receipt failures use separate unconfirmable evidence and permit normal profile reads.
+Public profiles skip restoration for identities that are not current or retired local keys.
 Personal recomputation also waits for locally accepted records before it downloads the next snapshot.
 These waits stop after fifteen seconds and preserve accepted delivery evidence for another refresh.
 A full-dictionary evaluation can outlast that wait. A refresh reuses the accepted record without another signature.

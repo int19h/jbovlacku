@@ -11,6 +11,7 @@ import {
 } from "../../../../packages/core/src/browser.ts";
 import {
   getReceipt,
+  transientReceiptFailure,
   forgetMaterializedReceipt,
   MaterializationPendingError,
   receiptBindingMatches,
@@ -289,6 +290,7 @@ export function mergePeer(
 
 export class DeliveryEngine {
   private profileCompletions?: Set<string>;
+  private profileUnconfirmable?: Set<string>;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<DeliveryListener>();
   private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
@@ -344,13 +346,15 @@ export class DeliveryEngine {
         a.order - b.order,
     );
   }
-  /** Checks saved local receipts and waits within one page deadline. */
+  /** True means that the next profile read needs current server data. */
   async restorePendingProfileReceipts(
     identity: string,
     options: {
       signal?: AbortSignal;
+      checking?: () => void;
       pending?: () => void;
       invalidate?: () => void;
+      unconfirmable?: () => void;
     } = {},
   ): Promise<boolean> {
     const controller = new AbortController();
@@ -361,28 +365,92 @@ export class DeliveryEngine {
     ]);
     let current = false;
     const seen = (this.profileCompletions ??= new Set<string>());
+    const skipped = (this.profileUnconfirmable ??= new Set<string>());
     const keys = new Map<string, { receipt: Receipt; key: string }>();
+    const observe = (key: string, receipt: Receipt, unconfirmable: boolean) => {
+      forgetMaterializedReceipt(receipt);
+      if (!seen.has(key)) {
+        current = true;
+        options.invalidate?.();
+      }
+      seen.add(key);
+      if (unconfirmable) {
+        skipped.add(key);
+        options.unconfirmable?.();
+      }
+    };
+    const finish = async (
+      receipt: Receipt,
+      key: string,
+      unconfirmable = false,
+    ) => {
+      signal.throwIfAborted();
+      try {
+        await this.store.put(
+          "prefs",
+          key,
+          unconfirmable ? "unconfirmable" : true,
+        );
+      } catch {
+        signal.throwIfAborted();
+        // Local marker failure cannot turn completed evidence into index lag.
+        unconfirmable = true;
+        try {
+          await this.store.put("prefs", key, "unconfirmable");
+        } catch {
+          /* Skip in this session if storage cannot retain the marker. */
+        }
+      }
+      signal.throwIfAborted();
+      options.invalidate?.();
+      current = true;
+      seen.add(key);
+      observe(key, receipt, unconfirmable);
+    };
     const restore = async () => {
-      const candidates = (await this.items()).flatMap((item) => {
-        const { envelope } = JSON.parse(item.transport) as Transport;
-        if (
-          envelope.header.issuer !== identity ||
-          envelope.header.action.kind !== "identity.profile"
-        )
+      let items: OutboxItem[];
+      try {
+        items = await this.items();
+      } catch {
+        signal.throwIfAborted();
+        options.unconfirmable?.();
+        return false;
+      }
+      const candidates = items.flatMap((item) => {
+        // Filter saved issuer and action before decoding potentially large bodies.
+        if (!item || item.identity !== identity) return [];
+        if (typeof item.transport !== "string") {
+          options.unconfirmable?.();
           return [];
-        return Object.entries(item.peers).flatMap(([id, peer]) => {
-          const target = savedPeer(item, id);
-          return target &&
-            localPeer(target) &&
-            peer.state === "accepted" &&
-            peer.receipt &&
-            viewPending(peer.receipt)
-            ? [{ item, target, receipt: peer.receipt }]
-            : [];
-        });
+        }
+        if (!item.transport.includes('"identity.profile"')) return [];
+        try {
+          const transport = JSON.parse(item.transport) as Transport;
+          if (!transport || !Object.hasOwn(transport, "body"))
+            throw new Error("The stored profile has no body field.");
+          const { envelope } = transport;
+          if (
+            envelope.header.issuer !== identity ||
+            envelope.header.action.kind !== "identity.profile"
+          )
+            return [];
+          return Object.entries(item.peers).flatMap(([id, peer]) => {
+            const target = savedPeer(item, id);
+            return target &&
+              localPeer(target) &&
+              peer.state === "accepted" &&
+              peer.receipt &&
+              viewPending(peer.receipt)
+              ? [{ item, target, receipt: peer.receipt }]
+              : [];
+          });
+        } catch {
+          options.unconfirmable?.();
+          return [];
+        }
       });
       signal.throwIfAborted();
-      // Four workers keep restoration bounded even after many profile edits.
+      if (candidates.length) options.checking?.();
       let next = 0;
       await Promise.all(
         Array.from({ length: Math.min(4, candidates.length) }, async () => {
@@ -391,58 +459,81 @@ export class DeliveryEngine {
             const candidate = candidates[next++];
             if (!candidate) return;
             const { item, target, receipt } = candidate;
-            const key =
-              "profile-materialized:" +
-              contentHash(
-                utf8(
-                  JSON.stringify([
-                    new URL(target.base, location.origin).href.replace(
-                      /\/$/,
-                      "",
-                    ),
-                    receipt.id,
-                    receipt.envelope_hash,
-                    receipt.body_hash ?? null,
-                    receipt.body_status,
-                    receipt.cursor,
-                    storedEnvelopeHash(item.transport),
-                    (JSON.parse(item.transport) as Transport).envelope.header
-                      .content?.hash ?? null,
-                  ]),
-                ),
-              );
-            if ((await this.store.get<boolean>("prefs", key)) === true) {
+            let key: string;
+            try {
+              key =
+                "profile-materialized:" +
+                contentHash(
+                  utf8(
+                    JSON.stringify([
+                      new URL(target.base, location.origin).href.replace(
+                        /\/$/,
+                        "",
+                      ),
+                      receipt.id,
+                      receipt.envelope_hash,
+                      receipt.body_hash ?? null,
+                      receipt.body_status,
+                      receipt.cursor,
+                      storedEnvelopeHash(item.transport),
+                      (JSON.parse(item.transport) as Transport).envelope.header
+                        .content?.hash ?? null,
+                    ]),
+                  ),
+                );
+            } catch {
+              options.unconfirmable?.();
+              continue;
+            }
+            if (skipped.has(key)) {
+              observe(key, receipt, true);
+              continue;
+            }
+            let marker: unknown;
+            try {
+              marker = await this.store.get<unknown>("prefs", key);
+            } catch {
               signal.throwIfAborted();
-              forgetMaterializedReceipt(receipt);
-              if (!seen.has(key)) {
-                current = true;
-                options.invalidate?.();
-              }
-              seen.add(key);
+              await finish(receipt, key, true);
               continue;
             }
             signal.throwIfAborted();
-            let variantError: unknown;
-            const classified = await classifyReceipt(
-              item,
-              receipt,
-              async (event) => {
-                try {
-                  return await objectBytes(
-                    `/events/${encodeURIComponent(event)}`,
-                    20480,
-                    { peer: target, signal },
-                  );
-                } catch (error) {
-                  variantError = error;
-                  throw error;
-                }
-              },
-            );
+            if (marker === true || marker === "unconfirmable") {
+              observe(key, receipt, marker === "unconfirmable");
+              continue;
+            }
+            let classified: Classified;
+            for (;;) {
+              let variantError: unknown;
+              classified = await classifyReceipt(
+                item,
+                receipt,
+                async (event) => {
+                  try {
+                    return await objectBytes(
+                      `/events/${encodeURIComponent(event)}`,
+                      20480,
+                      { peer: target, signal },
+                    );
+                  } catch (error) {
+                    variantError = error;
+                    throw error;
+                  }
+                },
+              );
+              signal.throwIfAborted();
+              if (!variantError) break;
+              if (!transientReceiptFailure(variantError)) break;
+              await abortable(
+                new Promise<void>((resolve) => setTimeout(resolve, 200)),
+                signal,
+              );
+            }
             signal.throwIfAborted();
-            // A failed read is unresolved evidence, never proof of a mismatch.
-            if (variantError) throw variantError;
-            if (classified.state !== "accepted") continue;
+            if (classified.state !== "accepted") {
+              await finish(receipt, key, true);
+              continue;
+            }
             keys.set(receipt.id, { receipt, key });
             let live: Receipt;
             try {
@@ -453,53 +544,40 @@ export class DeliveryEngine {
               });
             } catch (error) {
               signal.throwIfAborted();
-              if (
-                !(
-                  error instanceof TransportError ||
-                  (error instanceof RequestError &&
-                    error.status >= 500 &&
-                    error.status < 600)
-                )
-              )
-                throw error;
-              // Transient reads retry inside the same deadline without claiming live lag.
+              if (!transientReceiptFailure(error)) {
+                await finish(receipt, key, true);
+                continue;
+              }
               rememberAcceptedReceipt(receipt, target);
               current = true;
               continue;
             }
-            if (receiptMaterialized(live, receipt)) {
-              await this.store.put("prefs", key, true);
-              signal.throwIfAborted();
-              rememberAcceptedReceipt(live, target);
-              options.invalidate?.();
-              seen.add(key);
-              current = true;
-            } else {
-              if (!receiptBindingMatches(live, receipt))
-                throw new MaterializationPendingError();
+            if (receiptMaterialized(live, receipt)) await finish(receipt, key);
+            else if (
+              !receiptBindingMatches(live, receipt) ||
+              !viewPending(live)
+            )
+              await finish(receipt, key, true);
+            else {
               rememberAcceptedReceipt(receipt, target);
               current = true;
-              if (viewPending(live)) {
-                options.pending?.();
-              }
+              options.pending?.();
             }
           }
         }),
       );
+      const terminal = async (accepted: Receipt, unconfirmable = false) => {
+        const saved = keys.get(accepted.id);
+        if (saved && receiptBindingMatches(accepted, saved.receipt))
+          await finish(accepted, saved.key, unconfirmable);
+      };
       await waitForMaterialization(
         { signal },
         {
           signal,
           receipts: new Set([...keys.values()].map(({ receipt }) => receipt)),
-          completed: async (accepted) => {
-            signal.throwIfAborted();
-            const saved = keys.get(accepted.id);
-            if (saved && receiptBindingMatches(accepted, saved.receipt)) {
-              await this.store.put("prefs", saved.key, true);
-              options.invalidate?.();
-              seen.add(saved.key);
-            }
-          },
+          completed: (accepted) => terminal(accepted),
+          unconfirmable: (accepted) => terminal(accepted, true),
         },
       );
       signal.throwIfAborted();
@@ -509,7 +587,10 @@ export class DeliveryEngine {
       return await abortable(restore(), signal);
     } catch (error) {
       if (options.signal?.aborted) throw error;
-      throw new MaterializationPendingError();
+      if (signal.aborted || transientReceiptFailure(error))
+        throw new MaterializationPendingError();
+      options.unconfirmable?.();
+      return current;
     } finally {
       controller.abort();
     }

@@ -104,7 +104,7 @@ test("profile waits restore only matching accepted local receipts", async (t) =>
   item.recipients!.self.origin = origin;
   const body = receipt.body_hash;
   receipt.body_hash = "sha256:" + "0".repeat(64);
-  assert.equal(await restore(), false);
+  assert.equal(await restore(), true);
   receipt.body_hash = body;
   item.peers.self.state = "unknown";
   assert.equal(await restore(), false);
@@ -116,7 +116,7 @@ test("profile waits restore only matching accepted local receipts", async (t) =>
   assert.equal(await restore({ pending: () => announced++ }), true);
   assert.equal(announced, 1);
   assert.equal(hasPendingMaterialization(), false);
-  assert.equal(fixture.evidence.size, 1);
+  assert.equal(fixture.evidence.size, 2);
   assert.equal(JSON.stringify(item), unchanged);
   t.mock.method(globalThis, "fetch", async () => {
     throw new Error("No later receipt read is allowed.");
@@ -187,7 +187,15 @@ test("profile restoration does not poll another identity's pending receipt", asy
 test("a failed equivalent-variant read cannot expose an older profile", async (t) => {
   const { receipt, restore } = profile(15);
   receipt.envelope_hash = "sha256:" + "b".repeat(64);
+  const deadline = new AbortController();
+  const original = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(AbortSignal, "timeout", (ms: number) =>
+    ms === 15000 ? deadline.signal : original(ms),
+  );
   t.mock.method(globalThis, "fetch", async () => {
+    setImmediate(() =>
+      deadline.abort(new DOMException("Timed out.", "TimeoutError")),
+    );
     throw new TypeError("offline");
   });
   await assert.rejects(restore(), /Its view is still updating/);
@@ -300,4 +308,103 @@ test("completion invalidates an older cache even if the page leaves before its n
   );
   assert.equal(cached, null);
   assert.equal(await restore(), false);
+});
+
+for (const outcome of [
+  "404",
+  "refused",
+  "withheld",
+  "mismatch",
+  "not pending",
+] as const) {
+  for (const phase of ["first read", "poll"] as const) {
+    test(`${outcome} during ${phase} stops waiting across visits`, async (t) => {
+      const { restore, receipt, completed, evidence, item } = profile(30);
+      let reads = 0;
+      let warnings = 0;
+      const before = JSON.stringify(item);
+      t.mock.method(globalThis, "fetch", async () => {
+        reads++;
+        if (phase === "poll" && reads === 1) return Response.json(receipt);
+        if (outcome === "404")
+          return Response.json({ code: "missing" }, { status: 404 });
+        const changed =
+          outcome === "refused"
+            ? { admission: "refused" }
+            : outcome === "withheld"
+              ? { body_status: "withheld", body_hash: null }
+              : outcome === "mismatch"
+                ? { cursor: "other.1" }
+                : { snapshot: null, reasons: ["evaluation_unavailable"] };
+        return Response.json({ ...completed, ...changed });
+      });
+      assert.equal(await restore({ unconfirmable: () => warnings++ }), true);
+      assert.equal(hasPendingMaterialization(), false);
+      const beforeVisit = reads;
+      assert.equal(await restore(), false);
+      assert.equal(reads, beforeVisit);
+      assert.equal(warnings, 1);
+      assert.equal([...evidence.values()][0], "unconfirmable");
+      assert.equal(JSON.stringify(item), before);
+    });
+  }
+}
+
+test("failed marker writes do not hide a completed profile", async (t) => {
+  const { restore, engine, completed } = profile(31);
+  let reads = 0;
+  (engine as any).store.put = async () => {
+    throw new Error("Storage is full.");
+  };
+  t.mock.method(globalThis, "fetch", async () => {
+    reads++;
+    return Response.json(completed);
+  });
+  assert.equal(await restore(), true);
+  assert.equal(await restore(), false);
+  assert.equal(reads, 1);
+  assert.equal(hasPendingMaterialization(), false);
+});
+
+test("malformed profile records and failed outbox reads do not block the profile", async () => {
+  const { restore, item, engine } = profile(32);
+  item.transport = '{"action":"identity.profile"';
+  let warnings = 0;
+  assert.equal(await restore({ unconfirmable: () => warnings++ }), false);
+  engine.items = async () => {
+    throw new Error("The outbox is unreadable.");
+  };
+  assert.equal(await restore({ unconfirmable: () => warnings++ }), false);
+  assert.equal(warnings, 2);
+});
+
+test("non-profile records are filtered before transport parsing", async () => {
+  const { restore, item } = profile(33);
+  item.transport = "not a profile transport";
+  assert.equal(await restore(), false);
+});
+
+test("a stored profile without its transport body is skipped", async () => {
+  const { item, restore } = profile(34);
+  const transport = JSON.parse(item.transport);
+  delete transport.body;
+  item.transport = JSON.stringify(transport);
+  let warnings = 0;
+  assert.equal(await restore({ unconfirmable: () => warnings++ }), false);
+  assert.equal(warnings, 1);
+});
+
+test("a marker failure after polling also permits the profile", async (t) => {
+  const { restore, engine, receipt, completed } = profile(35);
+  (engine as any).store.put = async () => {
+    throw new Error("Storage is full.");
+  };
+  let reads = 0;
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json(++reads === 1 ? receipt : completed),
+  );
+  assert.equal(await restore(), true);
+  assert.equal(await restore(), false);
+  assert.equal(reads, 2);
+  assert.equal(hasPendingMaterialization(), false);
 });

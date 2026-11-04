@@ -1377,6 +1377,16 @@ A bounded result exposes its interval and unresolved comparisons.
 If a layer contains more than five candidates, show its size and a shared banner. Do not number them as ranked winners. The ordinary card can use “Order unresolved” without presenting mathematical notation first.
 
 An identity page shows its name claim, fingerprint, known successor state, and its dictionary actions.
+After a reload, local current and retired keys can restore pending profile receipts.
+Restoration, equivalent-envelope reads, and polling share a 15-second limit and stop on navigation.
+The key page shows its short identity, fingerprint, and all local controls before this background work finishes.
+The public page waits before it opens the profile editor.
+Show Checking only when local profile candidates exist, then distinguish a pending view from an unconfirmable receipt.
+A definitive mismatch, refusal, 4xx response, corrupt record, or marker-write failure does not block the normal profile read.
+Keep the admission row unchanged and retain separate completion or unconfirmable evidence where storage permits.
+Pending and failure notices carry the status role. Refresh reads the profile again without another signature.
+After Refresh, focus the connected heading on success or the error notice on failure.
+
 “Edit public profile” opens name, biography, and HTTPS link fields for the current identity.
 Its preview states that this is a public signed claim with retained history.
 The full fingerprint appears on the local and public identity pages.

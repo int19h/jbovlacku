@@ -380,11 +380,19 @@ export function receiptMaterialized(receipt: Receipt, accepted: Receipt) {
     !viewPending(receipt)
   );
 }
+/** Network failures and server errors can still resolve within the deadline. */
+export function transientReceiptFailure(error: unknown) {
+  return (
+    error instanceof TransportError ||
+    (error instanceof RequestError && error.status >= 500 && error.status < 600)
+  );
+}
 /** Wait for local accepted records, without changing their delivery state. */
 export async function waitForMaterialization(
   options: RequestOptions,
   wait: {
     completed?: (accepted: Receipt) => Promise<void>;
+    unconfirmable?: (accepted: Receipt) => Promise<void>;
     receipts?: ReadonlySet<Receipt>;
     signal?: AbortSignal;
   } = {},
@@ -426,13 +434,12 @@ export async function waitForMaterialization(
               });
             } catch (error) {
               signal.throwIfAborted();
-              if (
-                error instanceof TransportError ||
-                (error instanceof RequestError &&
-                  error.status >= 500 &&
-                  error.status < 600)
-              )
+              if (transientReceiptFailure(error)) continue;
+              if (wait.unconfirmable) {
+                await wait.unconfirmable(accepted);
+                forgetMaterializedReceipt(accepted);
                 continue;
+              }
               throw error;
             }
             if (
@@ -443,6 +450,13 @@ export async function waitForMaterialization(
               signal.throwIfAborted();
               if (acceptedAwaitingView.get(id) === accepted)
                 acceptedAwaitingView.delete(id);
+            } else if (
+              wait.unconfirmable &&
+              (!receiptBindingMatches(receipt, accepted) ||
+                !viewPending(receipt))
+            ) {
+              await wait.unconfirmable(accepted);
+              forgetMaterializedReceipt(accepted);
             }
           }
         }),
