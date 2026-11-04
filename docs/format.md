@@ -544,12 +544,8 @@ Nested examples and foreign predicates use code or literal text. Version 1 does 
 Text, notes, frame constraints, place descriptions, place constraints, default conditions, default explanations, tail descriptions, type notes, and operand descriptions permit those nodes.
 Etymology descriptions, formation notes, and derivation explanations prohibit them. Notes can use explicit nodes for the current frame. A quoted foreign `x_2` remains literal text.
 
-The editor converts unescaped ① through ⑳ to integer place nodes only in its structured mode.
-This convention comes from other dictionaries. It is not Lensisku source notation.
-An explicit insert control handles higher numbers. The editor provides a literal-character escape and a plain-text paste choice.
-
 The wire representation contains no escape convention beyond JSON. Clients never run compatibility normalization on definition text.
-NFKC changes circled numerals, so it cannot preserve this editor notation.
+NFKC changes circled numerals, so it cannot preserve literal Unicode content.
 
 ### Place frames
 

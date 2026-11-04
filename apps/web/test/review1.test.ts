@@ -1,3 +1,4 @@
+import { typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
@@ -130,9 +131,13 @@ test("a wrong body hash on a record with a body stays unknown until the real rec
     .click();
   await page.getByRole("button", { name: "Report abuse" }).click();
   const dialog = page.getByRole("dialog", { name: "Report identity abuse" });
-  await dialog
-    .getByLabel("Explanation")
-    .fill("Synthetic body for the hash test.");
+  await expect(
+    dialog.getByLabel("Explanation", { exact: true }),
+  ).toHaveAttribute("contenteditable", "true");
+  await typeRichText(
+    dialog.getByLabel("Explanation", { exact: true }),
+    "Synthetic body for the hash test.",
+  );
   await dialog
     .getByRole("button", { name: "Preview the public report" })
     .click();

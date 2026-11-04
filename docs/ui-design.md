@@ -347,7 +347,25 @@ The bottom actions are Back and “Use <form>.”
 ## Places screen, step 4
 
 The top shows headword, type, definition language, and “AI Fill in places and glosses.”
-The definition uses an actual accessible rich-text editor, with Place insertion, Link a word, and typed circled-number guidance.
+The definition uses an actual accessible rich-text editor, with Place insertion, Word link, and typed circled-number guidance.
+Places and operands use inline chips. Code and both link types use separate inline nodes.
+The toolbar inserts places 1 to 3 directly. More places opens a six-column grid with places 4 to 50.
+Each grid cell contains a native button. Declared places have an accent outline and the accessible name “Place N, declared”.
+The grid fits the viewport height and scrolls internally. Arrow keys keep the focused row visible, including at 360 by 360 CSS pixels.
+Escape closes the grid and returns focus to More places. Activating a place inserts it once and closes the grid.
+The main definition toolbar stays visible above its editor. Other toolbars follow their editor in display and keyboard order.
+They appear while their field group has focus and keep their space reserved.
+Closing a dialog returns focus to its visible invoker or the editor.
+Place buttons use bold 15px digits inside drawn chip faces. Other actions use compact buttons, with Operand hidden until an operand exists.
+The full typed-place hint appears once under the definition. Toolbar keyboard instructions remain screen-reader-only.
+Editor place chips use 1.45em circles with wider badges for two digits and retain normal editor line height.
+Selected chips use a 2px focus-token outline with a 1px offset.
+New link labels use single-line inputs. Selected line breaks become spaces, as the dialog explains.
+Existing multiline labels use multiline editing. Target-only edits preserve their exact stored labels.
+Word link opens the “Link a word” dialog. Its accessible name starts with “Word link”.
+The toolbar also offers code insertion.
+Typed `___` and `__N__` convert on the final underscore. Backspace restores the typed characters.
+Literal mode and text-only paste follow the frontend specification.
 Glosses appear as removable chips with an add field. Every removal target meets the 44px rule.
 Place rows show Description, Gloss, Kind of thing, and From, followed by “Add a place.”
 Repeated field labels include the place number in their accessible names.

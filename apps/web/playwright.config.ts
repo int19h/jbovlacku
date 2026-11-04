@@ -27,6 +27,23 @@ export default defineConfig({
   expect: { timeout: 10000 },
   workers: 1,
   reporter: "list",
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    {
+      name: "firefox-editor",
+      testMatch: /rich-editor(?:-r\d+)?\.test\.ts/,
+      // Only this case requires Chromium's debugging protocol.
+      grepInvert:
+        /Chromium IME composition converts once and Backspace restores the token/,
+      use: { browserName: "firefox" },
+    },
+    {
+      name: "firefox-authoring",
+      testMatch: /authoring\.test\.ts/,
+      grep: /a first-time contributor writes a short literal definition|the full editor preserves every structured field/,
+      use: { browserName: "firefox" },
+    },
+  ],
   outputDir: resolve(testRoot, "results"),
   use: {
     baseURL: `http://127.0.0.1:${webPort}`,

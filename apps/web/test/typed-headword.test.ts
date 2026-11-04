@@ -1,3 +1,4 @@
+import { typeRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
   createIdentity,
@@ -66,9 +67,10 @@ test("typed gismu shows linked closeness warnings beside confirmation and again 
   await page.getByRole("button", { name: "Continue to places" }).click();
   await expect(page).toHaveURL(/\/new\/places$/);
   await expect.poll(async () => (await draft(page)).kind).toBe("gismu");
-  await page
-    .getByLabel("Definition text", { exact: true })
-    .fill((await draft(page)).meaning);
+  await typeRichText(
+    page.getByLabel("Definition text", { exact: true }),
+    (await draft(page)).meaning,
+  );
   await page
     .getByRole("list", { name: "Steps" })
     .getByRole("link", { name: /^Publish\b/ })
@@ -124,9 +126,10 @@ for (const spelling of [
     await expect(
       result.getByLabel(`Form ${spelling}`, { exact: true }),
     ).toBeVisible();
-    await page
-      .getByLabel("Current definition", { exact: true })
-      .fill("A synthetic test definition.");
+    await typeRichText(
+      page.getByLabel("Current definition", { exact: true }),
+      "A synthetic test definition.",
+    );
     await page
       .getByRole("button", {
         name: "Continue without compound metadata",
@@ -350,9 +353,10 @@ for (const spelling of ["sairzba", "bangu'y'ismu", "SAI,rZBA"])
       page,
       spelling === "bangu'y'ismu" ? ["bangu", "ismu"] : ["sanmi", "zbasu"],
     );
-    await page
-      .getByLabel("Current definition", { exact: true })
-      .fill("A synthetic publication definition.");
+    await typeRichText(
+      page.getByLabel("Current definition", { exact: true }),
+      "A synthetic publication definition.",
+    );
     await page
       .getByRole("button", { name: `Use ${spelling}`, exact: true })
       .click();
@@ -442,9 +446,10 @@ test("later spelling edits update detection and flag retained evidence without r
   await typed(page, "ckusni");
   await page.getByRole("button", { name: "Link the lujvo parts" }).click();
   await linkSources(page, ["cukta", "sinxa"]);
-  await page
-    .getByLabel("Current definition", { exact: true })
-    .fill("A synthetic retained definition.");
+  await typeRichText(
+    page.getByLabel("Current definition", { exact: true }),
+    "A synthetic retained definition.",
+  );
   await page.getByRole("button", { name: "Use ckusni", exact: true }).click();
   await expect(page).toHaveURL(/\/new\/places$/);
   await expect
@@ -1062,9 +1067,10 @@ test("fu'ivla publication signs fuhivla and keeps the visible spelling", async (
   await page.getByRole("button", { name: "Continue to places" }).click();
   await expect.poll(async () => (await draft(page)).kind).toBe("fuhivla");
   await expectKindSpelling(page);
-  await page
-    .getByLabel("Definition text", { exact: true })
-    .fill("A synthetic borrowing definition.");
+  await typeRichText(
+    page.getByLabel("Definition text", { exact: true }),
+    "A synthetic borrowing definition.",
+  );
   await page.getByRole("button", { name: "Review", exact: true }).click();
   await expectKindSpelling(page);
   await page

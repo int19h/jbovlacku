@@ -36,6 +36,7 @@ import {
   placeholderCount,
   referenceFields,
   remapPlaces,
+  remapRich,
   rewriteReferences,
   retiredTagMeaning,
   replaceRetiredHintTag,
@@ -99,6 +100,47 @@ function admissible(body: unknown, parents: string[] = []) {
   return prepared.action_valid && prepared.body_status === "present";
 }
 
+test("identity place mappings keep adjacent strings and node boundaries exact", () => {
+  const value = [["a", "b", 1, { code: "" }, { code: "next" }]];
+  assert.equal(
+    remapRich(value, (index) => index),
+    value,
+  );
+  assert.deepEqual(
+    remapRich(value, (index) => (index === 2 ? 3 : index)),
+    value,
+  );
+});
+
+test("an irrelevant reference rewrite preserves an untouched rich field exactly", () => {
+  const value = [["a", "b", 1]];
+  const draft = newDraft({
+    text: value,
+    notes: [[2]],
+    frameMode: "context",
+    places: [newPlace(1), newPlace(2)],
+  });
+  rewriteReferences(draft, (index) => (index === 2 ? 3 : index));
+  assert.equal(draft.text, value);
+  assert.deepEqual(draft.text, [["a", "b", 1]]);
+  assert.deepEqual(draft.notes, [[3]]);
+});
+
+test("an irrelevant rewrite keeps the exact literal-mode structured backup", () => {
+  const value = [["a", "b", 1]];
+  const draft = newDraft({
+    text: value,
+    notes: [[2]],
+    frameMode: "context",
+    places: [newPlace(1), newPlace(2)],
+  });
+  switchMode(draft, false);
+  rewriteReferences(draft, (index) => (index === 2 ? 3 : index));
+  switchMode(draft, true);
+  assert.deepEqual(draft.text, value);
+  assert.deepEqual(draft.notes, [[3]]);
+});
+
 test("structured text keeps declared place order and literal mode keeps circled characters", () => {
   const structured = editorToRichText(
     "③ runs before ① and [[cukta|the book]] {place 21}",
@@ -119,9 +161,9 @@ test("structured text keeps declared place order and literal mode keeps circled 
   assert.deepEqual(literal, [["③ runs before ①"]]);
   assert.equal(
     richTextToEditor(structured),
-    "③ runs before ① and [[cukta|the book]] {place 21}",
+    "③ runs before ① and [[cukta|the book]] ㉑",
   );
-  assert.equal(literalize("see {place 21} and ①"), "see \\{place 21} and \\①");
+  assert.equal(literalize("see {place 21} and ①"), "see \\㉑ and \\①");
   // Every node kind has a text form, and literal characters stay literal.
   const every = [
     [
@@ -439,11 +481,11 @@ test("each run before a circled numeral consumes only its final escape backslash
   }
 });
 
-test("numbering uses explicit tokens above twenty and retains empty parts", () => {
+test("numbering uses circled places through fifty and retains empty parts", () => {
   const meaning = `${Array(21).fill("___").join(" ")};___;;`;
   const proposal = numberPlaceholders(meaning);
   assert.equal(proposal.count, 21);
-  assert.equal(proposal.parts[0].text.endsWith("⑳ {place 21}"), true);
+  assert.equal(proposal.parts[0].text.endsWith("⑳ ㉑"), true);
   assert.deepEqual(proposal.parts.slice(1), [
     { text: "①", places: [1] },
     { text: "", places: [] },
@@ -1184,7 +1226,11 @@ test("signed evidence alone decides whether cached draft source rows publish", (
         });
         const restored = normalizeDraft(JSON.parse(JSON.stringify(draft)));
         assert.deepEqual(restored.formation!.sources, [
-          { ...privateRow, word_ipa: privateRow.word_ipa ?? null },
+          {
+            ...privateRow,
+            notes: privateRow.notes,
+            word_ipa: privateRow.word_ipa ?? null,
+          },
         ]);
         const before = structuredClone(restored);
         const built = draftToBody(restored);
@@ -2158,54 +2204,54 @@ test("a revision of an imported parent that already carries the rights reference
   assert.deepEqual(body!.sources[2], LENSISKU_RIGHTS_REFERENCE);
 });
 
-test("a place above 20 keeps one literal form through removal and mode changes", () => {
+test("a place above 50 keeps one literal form through removal and mode changes", () => {
   const draft = newDraft({
     spelling: "broda",
     kind: "gismu",
-    text: "{place 21} and ① with `{place 21}` and [[cukta|{place 21}]]",
+    text: "{place 51} and ① with `{place 51}` and [[cukta|{place 51}]]",
     frameMode: "context",
-    places: [newPlace(1), newPlace(21)],
+    places: [newPlace(1), newPlace(51)],
     numberingApproved: true,
   });
   assert.deepEqual(draft.text, [
     [
-      21,
+      51,
       " and ",
       1,
       " with ",
-      { code: "{place 21}" },
+      { code: "{place 51}" },
       " and ",
-      { word: { language: "jbo", spelling: "cukta" }, label: "{place 21}" },
+      { word: { language: "jbo", spelling: "cukta" }, label: "{place 51}" },
     ],
   ]);
   // Literal mode: the reference becomes the explicit notation as text, and the editor escapes it.
   switchMode(draft, false);
   assert.deepEqual(draft.text, [
     [
-      "{place 21} and ① with ",
-      { code: "{place 21}" },
+      "{place 51} and ① with ",
+      { code: "{place 51}" },
       " and ",
-      { word: { language: "jbo", spelling: "cukta" }, label: "{place 21}" },
+      { word: { language: "jbo", spelling: "cukta" }, label: "{place 51}" },
     ],
   ]);
   assert.equal(
     editorText(draft.text, false),
-    "{place 21} and ① with {place 21} and {place 21}",
+    "{place 51} and ① with {place 51} and {place 51}",
   );
   // Structured mode reads the notation back as a reference.
   switchMode(draft, true);
-  assert.deepEqual(draft.text[0][0], 21);
+  assert.deepEqual(draft.text[0][0], 51);
   assert.equal(
     editorText(draft.text, true),
-    "{place 21} and ① with `{place 21}` and [[cukta|{place 21}]]",
+    "{place 51} and ① with `{place 51}` and [[cukta|{place 51}]]",
   );
-  // Removal of place 21 makes its reference literal in the same form.
+  // Removal of place 51 makes its reference literal in the same form.
   draft.places.splice(1, 1);
-  rewriteReferences(draft, (n) => (n === 21 ? "literal" : n));
-  assert.deepEqual(draft.text[0].slice(0, 3), ["{place 21} and ", 1, " with "]);
+  rewriteReferences(draft, (n) => (n === 51 ? "literal" : n));
+  assert.deepEqual(draft.text[0].slice(0, 3), ["{place 51} and ", 1, " with "]);
   assert.equal(
     editorText(draft.text, true),
-    "\\{place 21} and ① with `{place 21}` and [[cukta|{place 21}]]",
+    "\\{place 51} and ① with `{place 51}` and [[cukta|{place 51}]]",
   );
   assert.deepEqual(
     editorToRichText(editorText(draft.text, true), true),
@@ -2446,7 +2492,10 @@ test("literal edits keep backslashes before place notation when references retur
     switchMode(draft, true);
     assert.deepEqual(draft.text, expected);
     switchMode(draft, false);
-    assert.equal(editorText(draft.text, false), literal);
+    assert.equal(
+      editorText(draft.text, false),
+      literal.replace("{place 21}", "㉑"),
+    );
   }
 });
 
@@ -2918,4 +2967,21 @@ test("accepted sources keep supplementary note bytes and private stems through p
     "none: A reason.",
   ])
     assert.equal(mappingKind([[reason]]), null);
+});
+
+test("r2 whitespace-only definition text remains empty for publication", () => {
+  const draft = newDraft({
+    spelling: "broda",
+    kind: "gismu",
+    language: "en",
+    text: [[" \n\t"]],
+  });
+  assert.ok(
+    draftToBody(draft).problems.some(
+      (problem) =>
+        problem.field === "text" &&
+        problem.message === "Write the definition." &&
+        problem.blocking,
+    ),
+  );
 });

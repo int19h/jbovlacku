@@ -23,6 +23,7 @@ import { identityLink } from "../components/attribution.ts";
 import { viewScores } from "../components/localview.ts";
 import { judgmentControl, scoreDetails } from "../components/judgment.ts";
 import { renderRichText } from "../model/richtext.ts";
+import { editorLoadError } from "../components/editor-load-error.ts";
 import {
   comparePatternSpelling,
   patternKey,
@@ -387,7 +388,16 @@ export async function claimPage(
     required: true,
     hint: "NFC spelling, at most 64 bytes. Syntax analysis is an attributed tool result, not an admission rule.",
   });
-  const rationale = field("Rationale", {
+  const editor = await import("../components/rich-field.ts").catch((error) => {
+    if (context.live()) main.append(editorLoadError(error));
+    return null;
+  });
+  if (!editor) return;
+  const { richField } = editor;
+  if (!context.live()) return;
+  const rationale = richField("Rationale", {
+    value: [],
+    local: false,
     multiline: true,
     rows: 3,
     hint: "Optional. Why this assignment.",
@@ -505,9 +515,7 @@ export async function claimPage(
                     spelling: stripAcuteAccents(spelling),
                   },
                   rafsi: value,
-                  rationale: rationale.input.value.trim()
-                    ? [[rationale.input.value.trim()]]
-                    : [],
+                  rationale: rationale.input.value,
                   sources: [],
                   legacy: null,
                 };

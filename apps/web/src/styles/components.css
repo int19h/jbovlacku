@@ -1197,3 +1197,172 @@ label:is(.check, .opt, .chip):has(> input:only-of-type)
   min-width: 0 !important;
   min-height: 0 !important;
 }
+.rich-toolbar {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.rich-field > .rich-toolbar {
+  visibility: hidden;
+  margin-top: 6px;
+  margin-bottom: 0;
+}
+.rich-field-main > .rich-toolbar {
+  margin-top: 0;
+  margin-bottom: 6px;
+}
+.rich-field:focus-within > .rich-toolbar,
+.rich-field-main > .rich-toolbar {
+  visibility: visible;
+}
+.rich-toolbar .btn,
+.rich-toolbar select {
+  min-width: 44px;
+  min-height: 44px;
+}
+.rich-toolbar .btn {
+  padding-inline: 8px;
+}
+.rich-toolbar .rich-action {
+  font-size: 13px;
+}
+.rich-place-grid {
+  grid-template-columns: repeat(6, 44px);
+  gap: 4px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--ink3);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.rich-place-grid:popover-open {
+  display: grid;
+}
+.rich-place-grid-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(6, 44px);
+  gap: 4px;
+}
+.rich-place-cell {
+  min-width: 44px;
+  min-height: 44px;
+}
+.rich-place-grid .btn,
+.rich-place-button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 4px;
+}
+.rich-place-face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 1.45em;
+  height: 1.45em;
+  padding-inline: 0.12em;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.rich-place-declared {
+  border: 2px solid var(--accent);
+}
+.rich-editor {
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.rich-editor p {
+  min-height: 1.5em;
+  margin: 0 0 0.5em;
+}
+.rich-editor p:last-child {
+  margin-bottom: 0;
+}
+.rich-editor .rich-literal {
+  white-space: pre-wrap;
+}
+.rich-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 1.45em;
+  height: 1.45em;
+  padding: 0 0.12em;
+  border: 1.5px solid var(--accent);
+  border-radius: 1em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  text-align: center;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  vertical-align: 0.12em;
+}
+.rich-chip-number {
+  font-size: 0.7em;
+}
+.rich-chip:not(.operand) {
+  /* Keep the prose line box while the circle uses its full drawn height. */
+  margin-block: -0.225em;
+  vertical-align: middle;
+}
+.rich-chip-wide {
+  min-width: 1.8em;
+}
+.rich-chip.ProseMirror-selectednode {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+.rich-chip.operand {
+  height: auto;
+  padding: 0.15em 0.25em;
+  font-size: 0.85em;
+  border-radius: 4px;
+}
+.rich-word-link,
+.rich-web-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+.rich-word-link:empty::after,
+.rich-web-link:empty::after {
+  content: "empty link";
+  font-style: italic;
+}
+.rich-code:empty::after {
+  content: "empty code";
+  font-style: italic;
+}
+.rich-dialog {
+  width: min(34rem, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  border: 1px solid var(--ink3);
+  border-radius: 12px;
+  padding: 20px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.rich-dialog::backdrop {
+  background: #0008;
+}
