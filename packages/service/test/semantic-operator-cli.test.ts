@@ -481,7 +481,7 @@ test("bulk retry walks all pages and keeps the store ownership checks", async ()
       done: true,
     });
     await vectors.start(job.id);
-    const failed = [];
+    const failed: Awaited<ReturnType<SqliteVectorStore["batches"]>> = [];
     for (let i = 0; i < 70; i++) {
       const batch = (await vectors.claim(job.id, undefined, {
         batchSize: 1,

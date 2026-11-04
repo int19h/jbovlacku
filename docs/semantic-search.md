@@ -148,11 +148,12 @@ Its reported cost remains part of the index summary and the shared spending ledg
 ## Handle provider rate limits
 
 An HTTP 429 response stops new claims and lets active workers settle.
+A wave contains the requests active when claims stop.
 Operator scheduling halves concurrency once per drained wave with a 429 or embedding timeout, with a minimum of one.
 After eight successful batches, it raises concurrency by one, up to the requested maximum, and resets the backoff floor.
 Active requests settle before the lower cap admits further work.
 The command emits a `concurrency` event with `concurrency` and `reason` whenever this cap changes.
-A resumed job with earlier dispatch intents or an active saved cooldown starts at concurrency one.
+A resumed job with earlier batch intents or an active saved cooldown starts at concurrency one.
 A fresh job starts at its requested concurrency.
 
 An operator timeout can continue fresh inputs at the reduced cap after active workers settle.
