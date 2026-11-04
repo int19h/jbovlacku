@@ -1053,6 +1053,7 @@ export class SqlVectorStore implements VectorStore {
       if (generation.state !== "running") return null;
       let inputs: string[] = [];
       let previous: string | null = null;
+      let retryRemainder = false;
       for (;;) {
         const retry = this.sql.exec(
           "SELECT id FROM semantic_batches WHERE generation=? AND retry=1 ORDER BY id LIMIT 1",
@@ -1062,6 +1063,11 @@ export class SqlVectorStore implements VectorStore {
         previous = String(retry.id);
         inputs = this.batch(previous).inputs.filter(
           (input) =>
+            this.sql.exec(
+              "SELECT batch FROM semantic_batch_inputs WHERE generation=? AND input=?",
+              id,
+              input,
+            )[0]?.batch === previous &&
             !this.sql.exec(
               "SELECT 1 FROM semantic_vectors WHERE profile=? AND input=?",
               generation.profile,
@@ -1074,7 +1080,39 @@ export class SqlVectorStore implements VectorStore {
                 input,
               ).length),
         );
-        if (inputs.length) break;
+        if (inputs.length) {
+          if (background) {
+            // Keep the remainder owned and selected until every bounded child is claimed.
+            let bytes = 0;
+            const bounded: string[] = [];
+            for (const input of inputs) {
+              const size = Number(
+                this.sql.exec(
+                  "SELECT length(bytes) AS size FROM semantic_inputs WHERE profile=? AND input=?",
+                  generation.profile,
+                  input,
+                )[0].size,
+              );
+              if (
+                bounded.length >= limits.batchSize ||
+                bytes + size > limits.batchBytes
+              ) {
+                if (!bounded.length)
+                  throw new SemanticError(
+                    400,
+                    "semantic_limit",
+                    "An input exceeds the indexing batch byte limit.",
+                  );
+                break;
+              }
+              bounded.push(input);
+              bytes += size;
+            }
+            retryRemainder = bounded.length < inputs.length;
+            inputs = bounded;
+          }
+          break;
+        }
         // Another generation can finish every input while this retry waits.
         this.sql.exec(
           "UPDATE semantic_batches SET retry=0 WHERE id=?",
@@ -1082,7 +1120,7 @@ export class SqlVectorStore implements VectorStore {
         );
         previous = null;
       }
-      // Keep linked retry inputs together. New limits apply only to fresh claims.
+      // Operator retries keep their groups. Background retries also obey the caller limits.
       if (previous === null) {
         const cursor = String(
           this.sql.exec(
@@ -1169,7 +1207,7 @@ export class SqlVectorStore implements VectorStore {
           inputs.at(-1)!,
           id,
         );
-      else
+      else if (!retryRemainder)
         this.sql.exec(
           "UPDATE semantic_batches SET retry=0 WHERE id=?",
           previous,
@@ -1401,6 +1439,33 @@ export class SqlVectorStore implements VectorStore {
       )[0];
       if ((old?.generation ?? null) !== expected) return false;
       if (old?.generation === id) return true;
+      const background =
+        this.sql.exec(
+          "SELECT 1 FROM semantic_background_owned WHERE generation=?",
+          id,
+        ).length > 0;
+      if (
+        background &&
+        this.sql.exec(
+          "SELECT generation FROM semantic_background WHERE profile=? AND view=?",
+          generation.profile,
+          generation.view,
+        )[0]?.generation !== id
+      )
+        return false;
+      if (!background) {
+        // A new operator publication supersedes unfinished background work for this view.
+        this.sql.exec(
+          "DELETE FROM semantic_background WHERE profile=? AND view=?",
+          generation.profile,
+          generation.view,
+        );
+        this.sql.exec(
+          "DELETE FROM semantic_background_waits WHERE profile=? AND view=?",
+          generation.profile,
+          generation.view,
+        );
+      }
       this.sql.exec(
         "INSERT INTO semantic_current VALUES(?,?,?,?) ON CONFLICT(profile,view) DO UPDATE SET generation=excluded.generation,rollback=excluded.rollback",
         generation.profile,

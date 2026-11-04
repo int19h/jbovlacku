@@ -1338,3 +1338,205 @@ test("R7 completed schedules skip the fresh association search", async (t) => {
     "R7 an idle completed pass must not scan fresh associations every cycle",
   );
 });
+
+test("operator publication supersedes an unfinished background job with the same profile", async (t) => {
+  let sends = 0;
+  const f = await fixture(t, async () => {
+    sends++;
+    return new Response("Unknown", { status: 503 });
+  });
+  let background = f.host();
+  await background.cycle();
+  const old = await f.job();
+  assert.notEqual(old.state, "completed");
+  await background.close();
+  const operator = await f.store.create(
+    { ...f.source.context, snapshot: hash(2000), eligible: 0 },
+    f.profile,
+  );
+  await f.store.stage(operator.id, null, {
+    documents: [],
+    next: null,
+    done: true,
+  });
+  await f.store.start(operator.id);
+  await f.store.finish(operator.id);
+  assert.equal(await f.store.publish(operator.id, old.id), true);
+  assert.equal(await f.store.backgroundGeneration(old.profile, old.view), null);
+  // An old host can read the new pointer before it tries to publish its obsolete job.
+  assert.equal(await f.store.publish(old.id, operator.id), false);
+  assert.equal(await f.store.current(old.profile, old.view), operator.id);
+  await f.reopen();
+  f.options.source = async () => ({
+    context: { ...f.source.context, snapshot: operator.snapshot, eligible: 0 },
+    page: async () => ({ documents: [], next: f.docs[0].event, done: true }),
+  });
+  background = f.host();
+  await background.cycle();
+  assert.equal(await f.store.current(old.profile, old.view), operator.id);
+  assert.equal(
+    sends,
+    1,
+    "Restart must not replay the obsolete background batch",
+  );
+});
+
+test("background retries split oversized operator batches through the nonoperator service", async (t) => {
+  const sends: string[][] = [];
+  const f = await fixture(
+    t,
+    async (_url, init) => {
+      const inputs = JSON.parse(String(init?.body)).input as string[];
+      sends.push(inputs);
+      return success(inputs.length);
+    },
+    20,
+  );
+  const job = await f.store.create(f.source.context, f.profile);
+  await f.store.setBackgroundGeneration(job.id);
+  await f.store.stage(job.id, null, {
+    documents: f.docs,
+    next: f.docs.at(-1)!.event,
+    done: true,
+  });
+  await f.store.start(job.id);
+  const operator = (await f.store.claim(job.id, undefined, {
+    batchSize: 12,
+    batchBytes: 524288,
+  }))!;
+  assert.equal(operator.inputs.length, 12);
+  await f.store.sent(operator.id, "embedding:index:oversized-operator");
+  await f.store.fail(operator.id, "embedding_timeout");
+  await f.store.pause(job.id, "embedding_timeout");
+  await f.store.retry(operator.id);
+  await f.store.start(job.id);
+  // Simulate a crash after the first bounded child claim, before dispatch.
+  const child = (await f.store.claim(job.id, {
+    now: Date.now(),
+    pending: () => false,
+  }))!;
+  assert.equal(child.inputs.length, 8);
+  assert.equal(child.previous, operator.id);
+  await f.reopen();
+  const background = f.host();
+  await background.cycle();
+  assert.equal((await f.job()).state, "completed");
+  assert.deepEqual(await f.store.coverage(job.id), {
+    eligible: 20,
+    indexed: 20,
+    failed: 0,
+    pending: 0,
+  });
+  assert.equal(sends.flat().length, 20);
+  assert.equal(
+    new Set(sends.flat()).size,
+    20,
+    "Each input must reach the mock provider once",
+  );
+  assert(sends.every((inputs) => inputs.length <= 8));
+  assert.equal(
+    f.reports.length,
+    0,
+    "The server must not refuse an oversized request",
+  );
+  const batches = await f.store.batches(job.id);
+  assert(
+    batches.some(
+      (batch) => batch.previous === operator.id && batch.inputs.length === 4,
+    ),
+  );
+  assert(batches.some((batch) => batch.previous === child.id));
+});
+
+test("background retry children keep the byte limit and retain the remainder across reopen", async (t) => {
+  const f = await fixture(t, async () => success(), 4);
+  const job = await f.store.create(f.source.context, f.profile);
+  await f.store.setBackgroundGeneration(job.id);
+  await f.store.stage(job.id, null, {
+    documents: f.docs,
+    next: f.docs.at(-1)!.event,
+    done: true,
+  });
+  await f.store.start(job.id);
+  const original = (await f.store.claim(job.id))!;
+  await f.store.fail(original.id, "embedding_busy");
+  await f.store.pause(job.id, "embedding_busy");
+  await f.store.retry(original.id);
+  await f.store.start(job.id);
+  const limits = { batchSize: 8, batchBytes: f.docs[0].input!.byteLength };
+  const first = (await f.store.claim(
+    job.id,
+    { now: Date.now(), pending: () => false },
+    limits,
+  ))!;
+  assert.equal(first.inputs.length, 1);
+  await f.reopen();
+  await f.store.recoverBackground(job.id);
+  await f.store.start(job.id);
+  const remaining: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const next = (await f.store.claim(
+      job.id,
+      { now: Date.now(), pending: () => false },
+      limits,
+    ))!;
+    assert.equal(next.previous, original.id);
+    assert.equal(next.inputs.length, 1);
+    const bytes = await f.store.inputs(next.id);
+    assert(
+      bytes.reduce((sum, input) => sum + input.byteLength, 0) <=
+        limits.batchBytes,
+    );
+    remaining.push(...next.inputs);
+  }
+  assert.equal(new Set([...first.inputs, ...remaining]).size, 4);
+  assert.equal(
+    await f.store.claim(
+      job.id,
+      { now: Date.now(), pending: () => false },
+      limits,
+    ),
+    null,
+  );
+  await assert.rejects(f.store.retry(original.id), /Pause the generation/);
+  await f.store.pause(job.id);
+  await assert.rejects(
+    f.store.retry(original.id),
+    /later attempt already owns/,
+  );
+});
+
+test("operator publication during background preparation wins the publication race", async (t) => {
+  let sends = 0;
+  const f = await fixture(t, async () => {
+    sends++;
+    return success();
+  });
+  const operator = await f.store.create(
+    { ...f.source.context, snapshot: hash(2100), eligible: 0 },
+    f.profile,
+  );
+  await f.store.stage(operator.id, null, {
+    documents: [],
+    next: null,
+    done: true,
+  });
+  await f.store.start(operator.id);
+  await f.store.finish(operator.id);
+  const page = f.source.page;
+  f.source.page = async () => {
+    const current = await f.store.current(operator.profile, operator.view);
+    assert.equal(await f.store.publish(operator.id, current), true);
+    return page();
+  };
+  await f.host().cycle();
+  assert.equal(
+    await f.store.current(operator.profile, operator.view),
+    operator.id,
+  );
+  assert.equal(
+    await f.store.backgroundGeneration(operator.profile, operator.view),
+    null,
+  );
+  assert.equal(sends, 0);
+});

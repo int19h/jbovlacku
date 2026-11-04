@@ -168,7 +168,9 @@ export class BackgroundSemanticIndexer {
       }
       if (this.stop.signal.aborted) return;
       const published = await store.current(identity, view);
-      if (published !== job.id && !(await store.publish(job.id, published)))
+      // A publication made during this cycle takes precedence over this host's source.
+      if (published !== current.id && published !== job.id) return;
+      if (published !== job.id && !(await store.publish(job.id, current.id)))
         return;
       if (((await store.retryAfter(identity)) ?? 0) > this.now()) {
         await store.pause(job.id, "embedding_rate_limited");
