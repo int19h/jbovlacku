@@ -340,11 +340,11 @@ test("configured public origin allows same-origin writes and rejects untrusted o
   const { objects, coordinator, options } = await instance();
   const service = new DictionaryService(objects, coordinator, {
     ...options,
-    publicOrigin: "https://vm.example.ts.net",
+    publicOrigin: "https://dictionary.example",
   });
   const entry = event();
   const allowed = request("/events", entry);
-  allowed.headers.set("origin", "https://vm.example.ts.net");
+  allowed.headers.set("origin", "https://dictionary.example");
   assert.equal((await service.fetch(allowed)).status, 201);
   const denied = request("/events", entry);
   denied.headers.set("origin", "https://attacker.example");
