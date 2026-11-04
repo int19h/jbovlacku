@@ -9,6 +9,7 @@ import {
   utf8,
 } from "../../core/src/index.ts";
 import { SqliteVectorStore } from "../../../apps/server/src/semantic.ts";
+import type { VectorLimits } from "../src/semantic/sql-vector-store.ts";
 import { SqliteAssistanceBudgetStore } from "../../../apps/server/src/assistance.ts";
 import { AssistanceService } from "../src/assistance.ts";
 import {
@@ -80,13 +81,14 @@ async function fixture(
   fetcher: typeof fetch,
   count = 1,
   overrides: Partial<ProviderConfig> = {},
+  limits?: VectorLimits,
 ) {
   const root = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(root, { recursive: true });
   const directory = await mkdtemp(join(root, "background-recovery-"));
   let now = Date.UTC(2026, 9, 27, 12);
   t.mock.method(Date, "now", () => now);
-  let store = new SqliteVectorStore(join(directory, "vectors.sqlite"));
+  let store = new SqliteVectorStore(join(directory, "vectors.sqlite"), limits);
   let budget = new SqliteAssistanceBudgetStore(
     join(directory, "budget.sqlite"),
   );
@@ -179,7 +181,7 @@ async function fixture(
       await assistance.drainEmbeddingTransports();
       store.close();
       budget.close();
-      store = new SqliteVectorStore(join(directory, "vectors.sqlite"));
+      store = new SqliteVectorStore(join(directory, "vectors.sqlite"), limits);
       budget = new SqliteAssistanceBudgetStore(
         join(directory, "budget.sqlite"),
       );
@@ -1341,10 +1343,16 @@ test("R7 completed schedules skip the fresh association search", async (t) => {
 
 test("operator publication supersedes an unfinished background job with the same profile", async (t) => {
   let sends = 0;
-  const f = await fixture(t, async () => {
-    sends++;
-    return new Response("Unknown", { status: 503 });
-  });
+  const f = await fixture(
+    t,
+    async () => {
+      sends++;
+      return new Response("Unknown", { status: 503 });
+    },
+    1,
+    {},
+    { associations: 1, vectors: 10, bytes: 1000000 },
+  );
   let background = f.host();
   await background.cycle();
   const old = await f.job();
@@ -1379,6 +1387,38 @@ test("operator publication supersedes an unfinished background job with the same
     1,
     "Restart must not replay the obsolete background batch",
   );
+  // More publications move the old job outside both publication pointers.
+  let current = operator.id;
+  for (let i = 0; i < 2; i++) {
+    const next = await f.store.create(
+      { ...f.source.context, snapshot: hash(2001 + i), eligible: 0 },
+      f.profile,
+    );
+    await f.store.stage(next.id, null, {
+      documents: [],
+      next: null,
+      done: true,
+    });
+    await f.store.start(next.id);
+    await f.store.finish(next.id);
+    assert.equal(await f.store.publish(next.id, current), true);
+    current = next.id;
+  }
+  const capacityCheck = await f.store.create(
+    { ...f.source.context, snapshot: hash(2010) },
+    f.profile,
+  );
+  const page = { documents: f.docs, next: f.docs[0].event, done: true };
+  await assert.rejects(f.store.stage(capacityCheck.id, null, page), /capacity/);
+  f.options.source = async () => ({
+    context: { ...f.source.context, snapshot: hash(2020), eligible: 0 },
+    page: async () => ({ documents: [], next: f.docs[0].event, done: true }),
+  });
+  await background.cycle();
+  assert.equal((await f.store.generation(old.id)).state, "retired");
+  await f.store.stage(capacityCheck.id, null, page);
+  assert.equal((await f.store.page(capacityCheck.id)).rows.length, 1);
+  assert.equal(sends, 1);
 });
 
 test("background retries split oversized operator batches through the nonoperator service", async (t) => {
@@ -1539,4 +1579,123 @@ test("operator publication during background preparation wins the publication ra
     null,
   );
   assert.equal(sends, 0);
+});
+
+test("background pruning keeps other scopes, operator jobs, pointers, readers, and transports", async (t) => {
+  const f = await fixture(t, async () => success());
+  let snapshot = 2100;
+  async function create(
+    options: {
+      background?: boolean;
+      view?: string;
+      profile?: typeof f.profile;
+    } = {},
+  ) {
+    const profile = options.profile ?? f.profile;
+    const generation = await f.store.create(
+      {
+        ...f.source.context,
+        snapshot: hash(snapshot++),
+        view: options.view ?? f.source.context.view,
+        profile: profileId(profile),
+      },
+      profile,
+    );
+    await f.store.stage(generation.id, null, {
+      documents: f.docs,
+      next: f.docs[0].event,
+      done: true,
+    });
+    if (options.background)
+      await f.store.setBackgroundGeneration(generation.id);
+    return generation;
+  }
+  const operator = await create();
+  const otherProfile = await create({
+    background: true,
+    profile: createQwenProfile("55".repeat(16)),
+  });
+  const otherView = await create({
+    background: true,
+    view: hash(2200, "jve1:"),
+  });
+  // The second publication keeps the first one as the rollback generation.
+  const rollback = await create({ background: true });
+  assert.equal(
+    await f.store.publish(
+      rollback.id,
+      await f.store.current(rollback.profile, rollback.view),
+    ),
+    true,
+  );
+  const current = await create({ background: true });
+  assert.equal(await f.store.publish(current.id, rollback.id), true);
+  const reader = await create({ background: true });
+  const release = await f.store.retainGeneration(reader.id);
+  const transport = await create({ background: true });
+  await f.store.start(transport.id);
+  const batch = (await f.store.claim(transport.id))!;
+  const operation = "embedding:index:orphan-transport";
+  await f.store.sent(batch.id, operation);
+  await f.store.fail(batch.id, "embedding_timeout");
+  await f.store.pause(transport.id);
+  let pending = true;
+  f.store.registerOperationGuard((value) => value === operation && pending);
+  const running = await create({ background: true });
+  await f.store.start(running.id);
+  const live = await create({ background: true });
+  await f.store.start(live.id);
+  const liveBatch = (await f.store.claim(live.id))!;
+  const releaseLive = await f.store.retainGeneration(live.id);
+  const interrupted = [];
+  for (const state of ["prepared", "sent"]) {
+    const generation = await create({ background: true });
+    await f.store.start(generation.id);
+    const attempt = (await f.store.claim(generation.id))!;
+    if (state === "sent")
+      await f.store.sent(attempt.id, `embedding:index:idle-${state}`);
+    interrupted.push(generation);
+  }
+  const pointed = await create({ background: true });
+  const orphan = await create({ background: true });
+  await f.store.setBackgroundGeneration(pointed.id);
+  await f.store.pruneBackgroundGenerations(current.profile, current.view);
+  assert.equal((await f.store.generation(orphan.id)).state, "retired");
+  for (const generation of [running, ...interrupted])
+    assert.equal((await f.store.generation(generation.id)).state, "retired");
+  for (const generation of [
+    operator,
+    otherProfile,
+    otherView,
+    rollback,
+    current,
+    reader,
+    transport,
+    live,
+    pointed,
+  ]) {
+    assert.notEqual(
+      (await f.store.generation(generation.id)).state,
+      "retired",
+      generation.id,
+    );
+    assert.equal((await f.store.page(generation.id)).rows.length, 1);
+  }
+  assert.equal(
+    await f.store.current(current.profile, current.view),
+    current.id,
+  );
+  assert.equal(
+    (await f.store.backgroundGeneration(pointed.profile, pointed.view))?.id,
+    pointed.id,
+  );
+  assert.equal((await f.store.generation(live.id)).state, "running");
+  assert.equal((await f.store.batches(live.id))[0].state, liveBatch.state);
+  release();
+  releaseLive();
+  pending = false;
+  await f.store.pruneBackgroundGenerations(current.profile, current.view);
+  assert.equal((await f.store.generation(reader.id)).state, "retired");
+  assert.equal((await f.store.generation(transport.id)).state, "retired");
+  assert.equal((await f.store.generation(live.id)).state, "retired");
 });

@@ -640,3 +640,162 @@ test("bulk retry rejects missing, conflicting, and misplaced selectors", async (
       },
     );
   }));
+
+test("status lists every saved generation in its job scope with a separate cursor", async () =>
+  fixture(async ({ directory, vectors, profile, view }) => {
+    const context = {
+      snapshot: hash(10001),
+      view,
+      profile: profileId(profile),
+      eligible: 0,
+    };
+    const anchor = await vectors.create({ ...context, eligible: 2 }, profile);
+    const documents = Array.from({ length: 2 }, (_, i) => {
+      const input = utf8(`Generation status input ${i}`);
+      return {
+        event: hash(i + 11000, "jve1:"),
+        envelope: hash(i + 12000),
+        body: hash(i + 13000),
+        word: hash(i + 14000, "jvw1:"),
+        language: "en",
+        extraction_version: semanticProjectionVersion(),
+        input,
+        input_hash: inputHash(input),
+        error: null,
+      };
+    });
+    await vectors.stage(anchor.id, null, {
+      documents,
+      next: documents.at(-1)!.event,
+      done: true,
+    });
+    await vectors.start(anchor.id);
+    for (let i = 0; i < 2; i++) {
+      const batch = (await vectors.claim(anchor.id, undefined, {
+        batchSize: 1,
+        batchBytes: 4096,
+      }))!;
+      await vectors.fail(batch.id, "fixture_failure");
+    }
+    await vectors.pause(anchor.id);
+    const ids = [
+      anchor.id,
+      ...(await vectors.generations(context.profile, view))
+        .filter((row) => row.id !== anchor.id)
+        .map((row) => row.id),
+    ];
+    let retired = "";
+    let orphan = "";
+    for (let i = 0; i < 64; i++) {
+      const generation = await vectors.create(
+        { ...context, snapshot: hash(15000 + i) },
+        profile,
+      );
+      ids.push(generation.id);
+      if (i < 2) await vectors.setBackgroundGeneration(generation.id);
+      if (i === 0) orphan = generation.id;
+      if (i >= 2) {
+        await vectors.retire(generation.id);
+        if (i === 2) retired = generation.id;
+      }
+    }
+    const otherView = await vectors.create(
+      { ...context, view: hash(16000, "jve1:") },
+      profile,
+    );
+    const different = createQwenProfile("25".repeat(16));
+    const otherProfile = await vectors.create(
+      { ...context, profile: profileId(different) },
+      different,
+    );
+    const expected = ids.sort();
+    const first = (
+      await cli(directory, ["--command", "status", "--job", anchor.id])
+    ).at(-1);
+    assert.equal(first.generations.length, 64);
+    assert.deepEqual(
+      first.generations.map((row: any) => row.id),
+      expected.slice(0, 64),
+    );
+    assert.equal(first.generations_next, expected[63]);
+    const second = (
+      await cli(directory, [
+        "--command",
+        "status",
+        "--job",
+        anchor.id,
+        "--generations-after",
+        first.generations_next,
+      ])
+    ).at(-1);
+    assert.deepEqual(
+      second.generations.map((row: any) => row.id),
+      expected.slice(64),
+    );
+    assert.equal(second.generations_next, null);
+    const rows = [...first.generations, ...second.generations];
+    assert.equal(rows.find((row: any) => row.id === retired).state, "retired");
+    assert(rows.some((row: any) => row.id === orphan));
+    assert(
+      !rows.some((row: any) =>
+        [otherView.id, otherProfile.id].includes(row.id),
+      ),
+    );
+    assert.deepEqual(
+      second.batches,
+      first.batches,
+      "The generation cursor must not change the batch page",
+    );
+    const batchPage = (
+      await cli(directory, [
+        "--command",
+        "status",
+        "--job",
+        anchor.id,
+        "--after",
+        first.batches[0].id,
+      ])
+    ).at(-1);
+    assert.deepEqual(batchPage.generations, first.generations);
+    assert.deepEqual(
+      batchPage.batches.map((row: any) => row.id),
+      [first.batches[1].id],
+    );
+    const small = await vectors.generations(context.profile, view, null, 3);
+    assert.deepEqual(
+      small.map((row) => row.id),
+      expected.slice(0, 3),
+    );
+    assert.deepEqual(
+      (
+        await vectors.generations(context.profile, view, small.at(-1)!.id, 3)
+      ).map((row) => row.id),
+      expected.slice(3, 6),
+    );
+    assert.deepEqual(
+      await vectors.generations(context.profile, view, expected.at(-1)!),
+      [],
+    );
+    for (const limit of [0, 65, 1.5])
+      await assert.rejects(
+        vectors.generations(context.profile, view, null, limit),
+        /one through 64 rows/,
+      );
+    await assert.rejects(
+      cli(directory, [
+        "--command",
+        "prepare",
+        "--generations-after",
+        anchor.id,
+      ]),
+      (failure: any) =>
+        failure.stdout.includes("Use --generations-after only with status."),
+    );
+    for (const args of [
+      ["--generations-after"],
+      ["--generations-after", anchor.id, "--generations-after", anchor.id],
+    ])
+      await assert.rejects(
+        cli(directory, ["--command", "status", "--job", anchor.id, ...args]),
+      );
+  }));

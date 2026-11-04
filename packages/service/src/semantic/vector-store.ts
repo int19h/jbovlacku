@@ -119,6 +119,12 @@ export interface VectorStore {
     id: string,
     expected: ExpectedAssociation[],
   ): Promise<{ all: IndexCoverage; languages: Record<string, IndexCoverage> }>;
+  generations(
+    profile: string,
+    view: string,
+    after?: string | null,
+    limit?: number,
+  ): Promise<IndexGeneration[]>;
   published(view: string): Promise<IndexGeneration[]>;
   references(id: string): Promise<{ input: Uint8Array; vector: Uint8Array }[]>;
   create(
@@ -169,6 +175,7 @@ export interface VectorStore {
     usage: EmbeddingUsage,
   ): Promise<void>;
   fail(batch: string, error: string, usage?: EmbeddingUsage): Promise<void>;
+  hasProviderPressure(id: string): Promise<boolean>;
   batches(
     id: string,
     after?: string | null,

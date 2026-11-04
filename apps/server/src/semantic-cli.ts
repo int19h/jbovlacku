@@ -28,7 +28,7 @@ import { NodeEvaluationRuntime } from "./evaluation.ts";
 import { FileCheckpointStore } from "./checkpoint.ts";
 
 const usage =
-  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID | --all] [--after BATCH_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
+  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID | --all] [--after BATCH_ID] [--generations-after GENERATION_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
 const allowed = new Set([
   "data",
   "command",
@@ -39,6 +39,7 @@ const allowed = new Set([
   "concurrency",
   "pages",
   "after",
+  "generations-after",
   "profile",
   "batch-size",
   "batch-bytes",
@@ -236,6 +237,8 @@ async function main() {
     throw new Error("Use --all only with retry.");
   if (command === "retry" && args.has("all") === args.has("batch"))
     throw new Error("Use either --batch ID or --all with retry.");
+  if (args.has("generations-after") && command !== "status")
+    throw new Error("Use --generations-after only with status.");
   const selectedProfile = args.get("profile");
   if (selectedProfile && command !== "prepare")
     throw new Error("Use --profile only with prepare.");
@@ -415,8 +418,16 @@ async function main() {
     } else if (command === "retire") await vectors.retire(id!);
     const generation = await vectors.generation(id!, true);
     const batches = await vectors.batches(id!, args.get("after") ?? null);
+    const generations = await vectors.generations(
+      generation.profile,
+      generation.view,
+      args.get("generations-after") ?? null,
+    );
     output({
       event: "status",
+      generations,
+      generations_next:
+        generations.length === 64 ? generations.at(-1)!.id : null,
       generation,
       coverage:
         generation.state === "retired"

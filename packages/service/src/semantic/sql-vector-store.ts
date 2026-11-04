@@ -57,6 +57,23 @@ export class SqlVectorStore implements VectorStore {
   private operationPending(operation: string) {
     return [...this.operationGuards].some((pending) => pending(operation));
   }
+  private generationOperationPending(generation: IndexGeneration) {
+    return this.sql
+      .exec(
+        `SELECT operation FROM semantic_batches WHERE generation=? AND operation IS NOT NULL
+      UNION SELECT json_extract(value,'$.operation') FROM semantic_background_recovery WHERE generation=?
+      UNION SELECT b.operation FROM semantic_background_inputs h
+      JOIN semantic_batches b ON b.id=h.previous
+      WHERE h.profile=? AND EXISTS(SELECT 1 FROM semantic_associations a WHERE a.generation=? AND a.input=h.input)`,
+        generation.id,
+        generation.id,
+        generation.profile,
+        generation.id,
+      )
+      .some(
+        (row) => row.operation && this.operationPending(String(row.operation)),
+      );
+  }
   private retirements = new Map<string, Promise<void>>();
   async retainGeneration(id: string): Promise<() => void> {
     this.active(id);
@@ -82,6 +99,7 @@ export class SqlVectorStore implements VectorStore {
       "CREATE TABLE IF NOT EXISTS semantic_probe_evidence(profile TEXT PRIMARY KEY,value TEXT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS semantic_profile_backoff(profile TEXT PRIMARY KEY, retry_after INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS semantic_generations(id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, view TEXT NOT NULL, profile TEXT NOT NULL, eligible INTEGER NOT NULL, state TEXT NOT NULL, cursor TEXT, source_done INTEGER NOT NULL DEFAULT 0, error TEXT)",
+      "CREATE INDEX IF NOT EXISTS semantic_generation_scope ON semantic_generations(profile,view,id)",
       "CREATE TABLE IF NOT EXISTS semantic_associations(generation TEXT NOT NULL, event TEXT NOT NULL, envelope TEXT NOT NULL, body TEXT NOT NULL, extraction_version INTEGER NOT NULL, word TEXT NOT NULL, language TEXT NOT NULL, input TEXT, error TEXT, PRIMARY KEY(generation,event))",
       "CREATE INDEX IF NOT EXISTS semantic_association_inputs ON semantic_associations(generation,input)",
       "CREATE INDEX IF NOT EXISTS semantic_association_input_lookup ON semantic_associations(input,generation)",
@@ -380,15 +398,58 @@ export class SqlVectorStore implements VectorStore {
     const rows = this.sql.exec(
       `SELECT g.id FROM semantic_generations g
       JOIN semantic_background_owned o ON o.generation=g.id
-      WHERE g.profile=? AND g.view=? AND (g.state='completed'
+      WHERE g.profile=? AND g.view=? AND (g.state!='retired'
       OR EXISTS(SELECT 1 FROM semantic_retirements r WHERE r.generation=g.id))
       AND NOT EXISTS(SELECT 1 FROM semantic_current c WHERE c.generation=g.id OR c.rollback=g.id)
       AND NOT EXISTS(SELECT 1 FROM semantic_background b WHERE b.generation=g.id)`,
       profile,
       view,
     );
-    for (const row of rows)
-      if (!this.readers.has(String(row.id))) await this.retire(String(row.id));
+    for (const row of rows) {
+      const id = String(row.id);
+      if (this.readers.has(id)) continue;
+      // Earlier retirements yield. Recheck pointers before recovering this exact orphan.
+      if (
+        this.sql.exec(
+          `SELECT 1 FROM semantic_current WHERE generation=? OR rollback=?
+        UNION SELECT 1 FROM semantic_background WHERE generation=?`,
+          id,
+          id,
+          id,
+        ).length
+      )
+        continue;
+      const generation = this.generationRow(id);
+      if (this.generationOperationPending(generation)) continue;
+      try {
+        if (generation.state !== "retired") await this.recoverBackground(id);
+        await this.retire(id);
+      } catch (failure) {
+        // A new reader, transport, or publication defers retirement until a later pass.
+        if (
+          !(failure instanceof SemanticError) ||
+          failure.code !== "semantic_retirement"
+        )
+          throw failure;
+      }
+    }
+  }
+  async generations(
+    profile: string,
+    view: string,
+    after: string | null = null,
+    limit = 64,
+  ): Promise<IndexGeneration[]> {
+    boundedPage(limit, 64);
+    return this.sql
+      .exec(
+        "SELECT id FROM semantic_generations WHERE profile=? AND view=? AND id>? ORDER BY id LIMIT ?",
+        profile,
+        view,
+        after ?? "",
+        limit,
+      )
+      .map((row) => this.generationRow(String(row.id)));
   }
   async published(view: string): Promise<IndexGeneration[]> {
     return this.sql
@@ -1349,6 +1410,21 @@ export class SqlVectorStore implements VectorStore {
       );
     });
   }
+  async hasProviderPressure(id: string): Promise<boolean> {
+    const generation = this.generationRow(id);
+    return Boolean(
+      this.sql.exec(
+        `SELECT 1 FROM semantic_batches b
+      JOIN semantic_batch_inputs i ON i.batch=b.id AND i.generation=b.generation
+      LEFT JOIN semantic_vectors v ON v.profile=? AND v.input=i.input
+      WHERE b.generation=? AND v.input IS NULL
+      AND (b.state='ambiguous' OR (b.retry=1 AND b.error='embedding_rate_limited'))
+      LIMIT 1`,
+        generation.profile,
+        id,
+      ).length,
+    );
+  }
   async batches(id: string, after: string | null = null, limit = 64) {
     this.generationRow(id);
     boundedPage(limit);
@@ -1558,23 +1634,7 @@ export class SqlVectorStore implements VectorStore {
           "semantic_retirement",
           "Pause the job and remove its current or rollback reference before retirement.",
         );
-      const operations = this.sql.exec(
-        `SELECT operation FROM semantic_batches WHERE generation=? AND operation IS NOT NULL
-        UNION SELECT json_extract(value,'$.operation') FROM semantic_background_recovery WHERE generation=?
-        UNION SELECT b.operation FROM semantic_background_inputs h
-        JOIN semantic_batches b ON b.id=h.previous
-        WHERE h.profile=? AND EXISTS(SELECT 1 FROM semantic_associations a WHERE a.generation=? AND a.input=h.input)`,
-        id,
-        id,
-        generation.profile,
-        id,
-      );
-      if (
-        operations.some(
-          (row) =>
-            row.operation && this.operationPending(String(row.operation)),
-        )
-      )
+      if (this.generationOperationPending(generation))
         fail(
           "semantic_retirement",
           "An active provider transport still uses this generation.",
