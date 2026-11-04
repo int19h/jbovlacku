@@ -1105,6 +1105,19 @@ Use `npm run test:web -- --project chromium` for Chromium alone.
 Use `npm run test:web -- --project firefox-editor --project firefox-authoring` for Firefox alone.
 The native composition case uses Chromium's debugging protocol. Firefox keeps the portable composition cases.
 
+GitHub Actions runs the Chromium and Firefox suites in parallel jobs in [the test workflow](../.github/workflows/test.yml).
+The `native-wasm-and-browser` job keeps the native tests, format comparisons, and TypeScript checks.
+It also runs service, importer, adapter, browser model, and Chromium tests.
+The `firefox-editing-and-authoring` job runs the `firefox-editor` and `firefox-authoring` projects with their existing test selection.
+It installs Firefox only and builds the shared WebAssembly and browser assets. It does not repeat the native checks or standalone server build.
+The `standalone-image` job continues to build and test the container separately.
+
+The native job has a 90-minute timeout. The Firefox job has a 30-minute timeout. The container job keeps its 60-minute timeout.
+[Run 41769806084](https://github.com/int19h/jbovlacku/actions/runs/41769806084) took 64 minutes 50 seconds before Firefox and 10 minutes 6 seconds for Firefox tests.
+[Run 41797520848](https://github.com/int19h/jbovlacku/actions/runs/41797520848) took 64 minutes 8 seconds before Firefox and 9 minutes 37 seconds for Firefox tests.
+Firefox setup and builds also need about four minutes, based on those runs' setup and WebAssembly build steps.
+These budgets leave time for variation in runner speed and package downloads.
+
 The browser tests start their own API and Vite processes. Ports `8797` and `5177` must be free.
 `JVC_TEST_API_PORT` and `JVC_WEB_PORT` select other ports. `JVC_TEST_ROOT` selects the parent directory of the run data. Each run creates a separate `browser-run-*` directory. Workers reuse that directory through `JVC_PLAYWRIGHT_RUN_ROOT`. Runs retain their fixtures and results.
 The browser runner keeps the Vite cache in that run directory.

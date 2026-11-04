@@ -39,10 +39,8 @@ Do not invent a software license. It remains a prelaunch choice.
 Follow the [contribution rights](docs/format.md#remaining-body-fields) for new definitions and imported source content.
 Keep third-party notices with redistributed artifacts. Use the [dependency guide](docs/dependencies.md) for notice locations.
 
-## VM access and Herdr
+## VM access and agent sessions
 
-Follow the human partner's exact VM access and Herdr instructions supplied to this session.
+Follow the human partner's exact VM access and agent-session instructions supplied to this session.
 This file does not replace or restate those instructions.
-If work uses Herdr Collab, follow the host's MCP instructions and read the `herdr-collab` skill.
-Do not infer a Herdr Collab project from the checkout path.
-Use native harness subagents for assigned implementation and review work.
+Run assigned implementation and review sessions as those instructions describe.
