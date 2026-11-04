@@ -322,13 +322,27 @@ test("operator prepare selects a route and preserves stored profile routes", asy
       ).generation;
     const fresh = await prepared([]);
     const freshProfile = await vectors.profile(fresh.id);
-    assert.equal(freshProfile.provider, "openrouter:deepinfra/us");
-    assert.equal(freshProfile.parameters.route, "deepinfra/us");
+    assert.equal(freshProfile.provider, "openrouter:nebius");
+    assert.equal(freshProfile.parameters.route, "nebius");
     const routed = await prepared(["--route", "deepinfra/us"]);
     const routedProfile = await vectors.profile(routed.id);
     assert.equal(routedProfile.provider, "openrouter:deepinfra/us");
     assert.equal(routedProfile.parameters.route, "deepinfra/us");
     assert.notEqual(routed.profile, fresh.profile);
+    const silicon = await prepared(["--route", "siliconflow/fp8"]);
+    const siliconProfile = await vectors.profile(silicon.id);
+    assert.equal(siliconProfile.provider, "openrouter:siliconflow/fp8");
+    assert.equal(siliconProfile.parameters.route, "siliconflow/fp8");
+    const siliconSaved = await prepared(["--profile", silicon.profile]);
+    assert.equal(siliconSaved.profile, silicon.profile);
+    assert.deepEqual(await vectors.profile(siliconSaved.id), siliconProfile);
+    await assert.rejects(
+      prepared(["--profile", silicon.profile, "--route", "nebius"]),
+      (failure: any) =>
+        failure.stdout.includes(
+          "The selected route does not match the stored profile.",
+        ),
+    );
     const reused = await prepared(["--profile", routed.profile]);
     assert.equal(reused.profile, routed.profile);
     assert.equal(
@@ -379,17 +393,11 @@ test("operator prepare selects a route and preserves stored profile routes", asy
           ),
       );
     }
-    for (const route of [
-      "unknown",
-      "deepinfra",
-      "DeepInfra/US",
-      "siliconflow/fp8",
-      "",
-    ]) {
+    for (const route of ["unknown", "deepinfra", "DeepInfra/US", ""]) {
       await assert.rejects(prepared(["--route", route]), (failure: any) =>
         failure.stdout.includes(
           route
-            ? "Use nebius or deepinfra/us with --route."
+            ? "Use nebius, siliconflow/fp8, or deepinfra/us with --route."
             : "Use semantic-cli.ts",
         ),
       );
@@ -404,9 +412,107 @@ test("operator prepare selects a route and preserves stored profile routes", asy
         "deepinfra/us",
       ]),
       (failure: any) =>
-        failure.stdout.includes("Use --route only with prepare."),
+        failure.stdout.includes("Use --route only with prepare or run."),
     );
     assert.equal((await vectors.generation(routed.id)).profile, routed.profile);
+  }));
+
+test("operator run selects a compatible transport without changing stored profiles", async () =>
+  fixture(async ({ directory, vectors }) => {
+    const key = join(directory, "route-key.txt");
+    const evidence = join(directory, "route-calls.jsonl");
+    const preload = join(directory, "route-provider.mjs");
+    await writeFile(key, "disposable-route-key", { mode: 0o600 });
+    await writeFile(
+      preload,
+      `import { appendFileSync } from 'node:fs';
+globalThis.fetch=async(url,init)=>{if(String(url)!=='https://openrouter.ai/api/v1/embeddings')throw new Error('Unexpected network request');
+const body=JSON.parse(init.body); appendFileSync(process.env.OPERATOR_TEST_EVIDENCE,JSON.stringify(body.provider)+'\\n');
+return Response.json({model:'qwen/qwen3-embedding-8b',data:body.input.map((_,index)=>({index,embedding:Array.from({length:4096},(_,i)=>i?0:1)})),usage:{prompt_tokens:1,total_tokens:1,cost:0.000001}});};`,
+    );
+    const env = {
+      JVC_AI_ENABLED: "enabled",
+      JVC_AI_KEY_FILE: key,
+      OPERATOR_TEST_EVIDENCE: evidence,
+    };
+    const profiles = ["nebius", "siliconflow/fp8", "deepinfra/us"] as const;
+    let sequence = 0;
+    const calls = async () =>
+      (await readFile(evidence, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    for (const storedRoute of profiles) {
+      for (const requested of [undefined, ...profiles]) {
+        const i = ++sequence;
+        const profile = createQwenProfile(
+          i.toString(16).padStart(32, "0"),
+          storedRoute,
+        );
+        const selected = profileId(profile);
+        const job = await vectors.create(
+          {
+            snapshot: hash(90000 + i),
+            view: hash(91000, "jve1:"),
+            profile: selected,
+            eligible: 1,
+          },
+          profile,
+        );
+        const input = utf8(`Operator route input ${i}`);
+        const document = {
+          event: hash(92000 + i, "jve1:"),
+          envelope: hash(93000 + i),
+          body: hash(94000 + i),
+          word: hash(95000 + i, "jvw1:"),
+          language: "en",
+          extraction_version: semanticProjectionVersion(),
+          input,
+          input_hash: inputHash(input),
+          error: null,
+        };
+        await vectors.stage(job.id, null, {
+          documents: [document],
+          next: document.event,
+          done: true,
+        });
+        const args = ["--command", "run", "--job", job.id];
+        if (requested) args.push("--route", requested);
+        const compatible =
+          requested === undefined ||
+          (storedRoute === "deepinfra/us") === (requested === "deepinfra/us");
+        const before = await calls().catch(() => []);
+        if (compatible) {
+          const output = await cli(directory, args, env, preload);
+          assert.equal(
+            output.find((row) => row.event === "run").generation.state,
+            "completed",
+          );
+          const after = await calls();
+          assert.equal(after.length, before.length + 1);
+          const route =
+            requested ??
+            (storedRoute === "deepinfra/us" ? storedRoute : "siliconflow/fp8");
+          assert.deepEqual(after.at(-1).only, [route]);
+          assert.deepEqual(after.at(-1).order, [route]);
+          assert.equal(after.at(-1).allow_fallbacks, false);
+        } else {
+          const generation = await vectors.generation(job.id);
+          await assert.rejects(
+            cli(directory, args, env, preload),
+            (failure: any) =>
+              failure.stdout.includes(
+                "The selected route is incompatible with the stored profile.",
+              ),
+          );
+          assert.deepEqual(await vectors.generation(job.id), generation);
+          assert.deepEqual(await vectors.batches(job.id), []);
+          assert.deepEqual(await calls().catch(() => []), before);
+        }
+        assert.equal((await vectors.generation(job.id)).profile, selected);
+        assert.deepEqual(await vectors.profile(job.id), profile);
+      }
+    }
   }));
 
 test("the shipped operator run admits eight large batches despite user ceilings and honors its own cost ceiling", async () =>

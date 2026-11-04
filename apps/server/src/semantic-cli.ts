@@ -12,8 +12,10 @@ import {
   createQwenProfile,
   profileId,
   qwenProfileRoute,
+  qwenRequestRoute,
 } from "../../../packages/service/src/semantic/profile.ts";
 import {
+  DEFAULT_PROFILE_ROUTE,
   isEmbeddingRoute,
   type EmbeddingRoute,
 } from "../../../packages/service/src/inference.ts";
@@ -33,7 +35,7 @@ import { NodeEvaluationRuntime } from "./evaluation.ts";
 import { FileCheckpointStore } from "./checkpoint.ts";
 
 const usage =
-  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID | --all] [--after BATCH_ID] [--generations-after GENERATION_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--route nebius|deepinfra/us] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
+  "Use semantic-cli.ts --data DIRECTORY --command prepare|run|status|recover|retry|clear-cooldown|publish|unpublish|rollback|retire [--job ID] [--batch ID | --all] [--after BATCH_ID] [--generations-after GENERATION_ID] [--max-batches N] [--concurrency N] [--pages N] [--profile PROFILE_ID] [--route nebius|siliconflow/fp8|deepinfra/us] [--batch-size N] [--batch-bytes N] [--max-cost-usd USD]. Stop the server for this directory first.";
 const allowed = new Set([
   "data",
   "command",
@@ -87,7 +89,7 @@ async function withSemanticService<T>(
     ? await vectors.profile(job)
     : selectedProfile
       ? await vectors.storedProfile(selectedProfile)
-      : createQwenProfile(undefined, selectedRoute ?? "deepinfra/us");
+      : createQwenProfile(undefined, selectedRoute ?? DEFAULT_PROFILE_ROUTE);
   if (selectedProfile) {
     if (profileId(profile) !== selectedProfile)
       throw new Error("The selected profile does not match the saved job.");
@@ -254,10 +256,12 @@ async function main() {
   if (selectedProfile && command !== "prepare")
     throw new Error("Use --profile only with prepare.");
   const route = args.get("route");
-  if (route !== undefined && command !== "prepare")
-    throw new Error("Use --route only with prepare.");
+  if (route !== undefined && !["prepare", "run"].includes(command))
+    throw new Error("Use --route only with prepare or run.");
   if (route !== undefined && !isEmbeddingRoute(route))
-    throw new Error("Use nebius or deepinfra/us with --route.");
+    throw new Error(
+      "Use nebius, siliconflow/fp8, or deepinfra/us with --route.",
+    );
   for (const flag of ["batch-size", "batch-bytes", "max-cost-usd"])
     if (args.has(flag) && command !== "run")
       throw new Error(`Use --${flag} only with run.`);
@@ -300,6 +304,11 @@ async function main() {
         )
       ).id;
     else if (command === "run") {
+      const profile = await vectors.profile(id!);
+      if (qwenRequestRoute(profile, route) === null)
+        throw new Error(
+          "The selected route is incompatible with the stored profile.",
+        );
       budget = new SqliteAssistanceBudgetStore(
         join(directory, "assistance-spending.sqlite"),
       );
@@ -340,6 +349,7 @@ async function main() {
       const result = await new SemanticIndexer(vectors, assistance).run(id!, {
         concurrency,
         operator: true,
+        route,
         batchSize,
         batchBytes,
         adaptive: true,
