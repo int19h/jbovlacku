@@ -561,12 +561,17 @@ If a write fails, treat partial output as unusable until inspected.
 
 The Node server accepts `JVC_SEMANTIC_PROFILE` as a complete `sha256:` profile hash.
 It enables meaning search only for a matching complete published generation and a configured embedding provider.
+Set `JVC_SEMANTIC_ROUTE` to `nebius`, `siliconflow/fp8`, or `deepinfra/us` to choose the route for queries and background indexing.
+This variable requires `JVC_SEMANTIC_PROFILE`. The server rejects unknown routes and routes that are incompatible with the stored profile.
+Without this variable, Nebius and SiliconFlow profiles use `siliconflow/fp8`. DeepInfra profiles use `deepinfra/us`.
 The [semantic search guide](semantic-search.md#enable-node-meaning-search) describes the routes, query cache, compatibility probes, and limits.
 
-The Node indexing command saves a rate-limit deadline for each complete embedding profile.
+The Node indexing command saves a rate-limit deadline for each complete embedding profile and request route.
 It caps each saved deadline at one hour from the provider failure, including an invalidly large `Retry-After` value.
 A new refusal can extend the deadline by at most one hour from that refusal.
-Status exposes the saved Unix timestamp in milliseconds as `retry_after`.
+Status exposes the saved Unix timestamp in milliseconds as `retry_after`, with its `request_route`.
+Use `status --route ROUTE` to inspect another compatible provider.
+A 429 on one route does not block another route. Older profile-only deadlines migrate to the default request route.
 Existing stores can retain longer deadlines from older versions until a new refusal replaces them or an operator clears them.
 
 Adaptive operator runs wait at most 60 seconds at once and repeat waits until the saved deadline expires.
@@ -587,8 +592,9 @@ Run this command from the repository root:
 npx tsx apps/server/src/semantic-cli.ts --data "$JVC_DATA_DIR" --command clear-cooldown --job "$JVC_INDEX_JOB"
 ```
 
-The command takes the directory lock and clears the deadline for the named generation's complete profile.
-It affects every generation that shares that profile. Its status output reports `retry_after: null`.
+The command takes the directory lock and clears the deadline for the named generation's profile and default request route.
+Add `--route ROUTE` to clear another compatible provider's deadline.
+It affects every generation that shares that profile and route. Its status output reports `retry_after: null`.
 Repeating the command is harmless.
 It sends no provider request and does not read a provider key.
 It preserves batches, retry selections, spending charges, and profile suspensions.
