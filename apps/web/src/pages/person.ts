@@ -52,13 +52,27 @@ export async function personPage(
   }
   const isSelf = app.session.identity === identity;
   context.title(shortIdentity(identity));
-  const pending =
+  let pending =
     fresh && hasPendingMaterialization()
       ? p("This server stored your profile. Its view is updating.", "notice")
       : null;
   if (pending) main.append(pending);
   let response: IdentityResponse | null;
   try {
+    const restored =
+      app.session.storageAvailable &&
+      (await app.delivery.restorePendingProfileReceipts(identity));
+    if (!context.live()) return;
+    if (restored) {
+      fresh = true;
+      if (!pending) {
+        pending = p(
+          "This server stored your profile. Its view is updating.",
+          "notice",
+        );
+        main.append(pending);
+      }
+    }
     response = await identityProfile(identity, {
       fresh,
       signal: context.signal,

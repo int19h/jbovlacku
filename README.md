@@ -604,6 +604,7 @@ Word responses can report unavailable scores while a replacement restores in the
 
 After publication, the browser shows a pending notice until the accepted records reach the evaluated word view.
 After a profile publication, the profile page waits for that evaluated view before it requests the new claim.
+The key page and public profile restore this wait from confirmed local receipts after a reload.
 Personal recomputation also waits for locally accepted records before it downloads the next snapshot.
 These waits stop after fifteen seconds and preserve accepted delivery evidence for another refresh.
 A full-dictionary evaluation can outlast that wait. A refresh reuses the accepted record without another signature.

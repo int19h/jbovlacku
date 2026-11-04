@@ -58,8 +58,32 @@ export async function identityPage(
   const backup = session.backup;
   const head = el("div", { class: "word-head" });
   // The display name is the server's effective profile claim for this key.
-  const name = profileName(await identityProfile(backup.identity));
+  let name: string | null = null;
+  let profileError: unknown;
+  let pending: HTMLElement | null = null;
+  try {
+    const fresh = await app.delivery.restorePendingProfileReceipts(
+      backup.identity,
+    );
+    if (!context.live()) return;
+    if (fresh) {
+      pending = p(
+        "This server stored your profile. Its view is updating.",
+        "notice",
+      );
+      main.append(pending);
+    }
+    name = profileName(
+      await identityProfile(backup.identity, {
+        fresh,
+        signal: context.signal,
+      }),
+    );
+  } catch (error) {
+    profileError = error;
+  }
   if (!context.live()) return;
+  pending?.remove();
   head.append(
     el(
       "h1",
@@ -80,6 +104,11 @@ export async function identityPage(
       text: fingerprintText(backup.identity),
     }),
   );
+  if (profileError)
+    main.append(
+      p(describe(profileError), "notice"),
+      button("Refresh the profile", rerender, { class: "btn" }),
+    );
   if (session.pending) {
     const resume = el("div", { class: "notice", style: "margin-top:16px" });
     resume.append(

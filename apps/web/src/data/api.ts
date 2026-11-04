@@ -322,16 +322,18 @@ const viewPending = (receipt: Receipt) =>
   receipt.reasons.some((reason) =>
     ["index_lag", "evaluation_pending"].includes(reason),
   );
-const localPeer = (peer: Peer = selfPeer) =>
+export const localPeer = (peer: Peer = selfPeer) =>
   peer.id === selfPeer.id &&
   new URL(peer.base, location.origin).href.replace(/\/$/, "") ===
     new URL(selfPeer.base, location.origin).href.replace(/\/$/, "");
 
 /** Call only after delivery confirms the signed envelope and required body. */
 export function rememberAcceptedReceipt(receipt: Receipt, peer: Peer) {
-  if (!localPeer(peer)) return;
-  if (viewPending(receipt)) acceptedAwaitingView.set(receipt.id, receipt);
-  else {
+  if (!localPeer(peer)) return false;
+  if (viewPending(receipt)) {
+    acceptedAwaitingView.set(receipt.id, receipt);
+    return true;
+  } else {
     const pending = acceptedAwaitingView.get(receipt.id);
     if (
       receipt.snapshot !== null &&
@@ -342,6 +344,7 @@ export function rememberAcceptedReceipt(receipt: Receipt, peer: Peer) {
     )
       acceptedAwaitingView.delete(receipt.id);
   }
+  return false;
 }
 export function hasPendingMaterialization() {
   return acceptedAwaitingView.size > 0;

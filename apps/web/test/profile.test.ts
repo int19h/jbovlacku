@@ -9,6 +9,117 @@ import {
   fixture,
 } from "./helpers.ts";
 
+for (const target of ["key", "public"] as const) {
+  for (const outcome of ["completed", "failed"] as const) {
+    test(`the ${target} profile waits for its accepted claim after a full reload with a ${outcome} receipt read`, async ({
+      page,
+    }) => {
+      const identity = (await createIdentity(page)).identity as string;
+      const profilePath = `/api/v1/identities/${encodeURIComponent(identity)}`;
+      const previous = await (await page.request.get(profilePath)).json();
+      let released = false;
+      let failReceipt = outcome === "failed";
+      let releaseReceipts!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        releaseReceipts = () => {
+          released = true;
+          resolve();
+        };
+      });
+      await page.route(
+        (url) => url.pathname === profilePath,
+        async (route) => {
+          if (released) await route.continue();
+          else await route.fulfill({ json: previous });
+        },
+      );
+      await page.route("**/api/v1/events", async (route) => {
+        const response = await route.fetch();
+        const receipt = await response.json();
+        await route.fulfill({
+          response,
+          json: {
+            ...receipt,
+            snapshot: null,
+            interpretation: "unavailable",
+            reasons: ["index_lag", "evaluation_pending"],
+          },
+        });
+      });
+      await page.route("**/api/v1/receipts/*", async (route) => {
+        await ready;
+        if (failReceipt)
+          await route.fulfill({
+            status: 404,
+            json: { code: "missing", message: "The receipt is unavailable." },
+          });
+        else await route.continue();
+      });
+      try {
+        await page.getByRole("link", { name: "Edit public profile" }).click();
+        const editor = page.getByRole("region", {
+          name: "Edit public profile",
+        });
+        await editor
+          .getByLabel("Name", { exact: true })
+          .fill("Reloaded Tester");
+        await editor
+          .getByRole("button", { name: "Preview the signed claim" })
+          .click();
+        await page
+          .getByRole("button", { name: "Sign and publish the profile" })
+          .click();
+        await acceptFirstSignature(page);
+        await expect(page.getByRole("status").last()).toContainText(
+          "The profile is signed and published.",
+        );
+        await page.goto(
+          target === "key"
+            ? "/identity"
+            : `/identity/${encodeURIComponent(identity)}#edit`,
+        );
+        await expect(
+          page.getByText(
+            "This server stored your profile. Its view is updating.",
+          ),
+        ).toBeVisible();
+        await expect(page.getByRole("heading", { level: 1 })).toHaveCount(0);
+        await expect(
+          page.getByRole("region", { name: "Edit public profile" }),
+        ).toHaveCount(0);
+      } finally {
+        releaseReceipts();
+      }
+      if (outcome === "failed") {
+        await expect(
+          page.getByText(
+            "This server stored your records. Its view is still updating. Refresh this page to check again.",
+          ),
+        ).toBeVisible();
+        await expect(
+          page.getByRole("region", { name: "Edit public profile" }),
+        ).toHaveCount(0);
+        failReceipt = false;
+        await page.getByRole("button", { name: "Refresh the profile" }).click();
+      }
+      await expect(page.getByRole("heading", { level: 1 })).toContainText(
+        "Reloaded Tester",
+      );
+      if (target === "public")
+        await expect(
+          page
+            .getByRole("region", { name: "Edit public profile" })
+            .getByLabel("Name", { exact: true }),
+        ).toHaveValue("Reloaded Tester");
+      await expect(
+        page.getByText(
+          "This server stored your profile. Its view is updating.",
+        ),
+      ).toHaveCount(0);
+    });
+  }
+}
+
 test("the profile Name field keeps focus when held activity finishes the page render", async ({
   page,
 }) => {

@@ -11,6 +11,7 @@ import {
 } from "../../../../packages/core/src/browser.ts";
 import {
   getReceipt,
+  localPeer,
   objectBytes,
   postEvent,
   rememberAcceptedReceipt,
@@ -320,6 +321,37 @@ export class DeliveryEngine {
         a.group.localeCompare(b.group) ||
         a.order - b.order,
     );
+  }
+  /** Restores this profile's confirmed local index waits after a reload. */
+  async restorePendingProfileReceipts(identity: string): Promise<boolean> {
+    let pending = false;
+    for (const item of await this.items()) {
+      const { envelope } = JSON.parse(item.transport) as Transport;
+      if (
+        envelope.header.issuer !== identity ||
+        envelope.header.action.kind !== "identity.profile"
+      )
+        continue;
+      for (const [id, peer] of Object.entries(item.peers)) {
+        const target = savedPeer(item, id);
+        if (
+          !target ||
+          !localPeer(target) ||
+          peer.state !== "accepted" ||
+          !peer.receipt
+        )
+          continue;
+        const receipt = peer.receipt;
+        const classified = await classifyReceipt(item, receipt, (event) =>
+          objectBytes(`/events/${encodeURIComponent(event)}`, 20480, {
+            peer: target,
+          }),
+        );
+        if (classified.state === "accepted")
+          pending = rememberAcceptedReceipt(receipt, target) || pending;
+      }
+    }
+    return pending;
   }
   async active(): Promise<OutboxItem[]> {
     return (await this.items()).filter(isActive);
