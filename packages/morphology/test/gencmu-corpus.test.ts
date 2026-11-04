@@ -125,6 +125,12 @@ test("the pinned corpus retains every experimental case and its oracle source", 
     if (row.referenceSource.startsWith("recorded"))
       assert.ok(Array.isArray(row.recordedWords), row.id);
     assert.equal(row.unresolved, null, row.id);
+    if (row.replacements?.resolution)
+      assert.equal(
+        row.replacements.resolution,
+        "Every magic word is an ordinary cmavo in this project.",
+        row.id,
+      );
     if (row.replacements) {
       assert.ok(row.replacements.reason, row.id);
       assert.ok(row.replacements.tokens.length > 0, row.id);
