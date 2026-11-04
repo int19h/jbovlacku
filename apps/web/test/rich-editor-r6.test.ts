@@ -47,7 +47,7 @@ function node(kind: Kind, text: string): RichNode {
 }
 
 async function mount(page: Page, platform = "PC") {
-  // These tests exercise platform bindings on the VM, not macOS devices.
+  // These tests select platform bindings through navigator.platform.
   await page.addInitScript((platform) => {
     Object.defineProperty(navigator, "platform", {
       get: () => (platform === "PC" ? "Linux x86_64" : "MacIntel"),

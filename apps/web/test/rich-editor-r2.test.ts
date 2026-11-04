@@ -310,7 +310,7 @@ test("r2 literal mode replaces the place-rule hint", async ({ page }) => {
 test("r2 place-list updates retain blank paragraphs, caret, and undo", async ({
   page,
 }) => {
-  // History uses Date.now. Keep its groups independent of VM clock changes.
+  // History uses Date.now. Keep its groups independent of host clock changes.
   let historyTime = Date.now();
   await page.clock.setFixedTime(historyTime);
   const nextHistoryGroup = async () => {

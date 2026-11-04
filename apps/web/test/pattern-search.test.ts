@@ -162,7 +162,7 @@ test("browser and server agree on every headword and rafsi pattern and preserve 
         body?: unknown;
       }[] = [];
       const readRemote = async (q: string) => {
-        // Resource refusal is possible on the shared VM. Keep three attempts,
+        // Resource refusal is possible on shared hosts. Keep three attempts,
         // with no retry for syntax errors, server failures, or malformed data.
         for (let attempt = 1; attempt <= 3; attempt++) {
           const response = await fetch(

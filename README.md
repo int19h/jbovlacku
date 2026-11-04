@@ -655,7 +655,7 @@ The documentation defines the product, its records, and the development process:
 - [AI prompts](prompts/README.md): Public prompts, answer rules, and the correction loop for the optional AI actions.
 - [Prototype plan](docs/prototype-plan.md): Required implementation stages and demonstrations.
 - [Handover cases](docs/handover-cases.md): Required account-control outcomes.
-- [Development guide](docs/development.md): Local builds, tests, shared VM work, and review requirements.
+- [Development guide](docs/development.md): Local builds, tests, resource limits, and review requirements.
 - [Dependency guide](docs/dependencies.md): Resolved dependencies and distribution notices.
 - [Agent instructions](AGENTS.md): Rules for agents that work in this repository.
 
