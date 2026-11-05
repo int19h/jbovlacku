@@ -533,3 +533,31 @@ test("rebuilding an unconfirmable marker does not repeat its notice", async (t) 
   assert.equal(await restore(options), true);
   assert.equal(warnings, 1);
 });
+
+test("a 404 with failed marker writes can repeat its notice in a new engine", async (t) => {
+  const engines = [profile(41), profile(41)];
+  assert.equal(engines[0].item.id, engines[1].item.id);
+  let reads = 0;
+  let notices = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    reads++;
+    return Response.json({ code: "missing" }, { status: 404 });
+  });
+  for (const [index, fixture] of engines.entries()) {
+    let writes = 0;
+    const unchanged = JSON.stringify(fixture.item);
+    (fixture.engine as any).store.put = async () => {
+      writes++;
+      throw new Error("Storage is full.");
+    };
+    const options = { unconfirmable: () => notices++ };
+    assert.equal(await fixture.restore(options), true);
+    assert.equal(await fixture.restore(options), false);
+    assert.equal(writes, 2);
+    assert.equal(reads, index + 1);
+    assert.equal(notices, index + 1);
+    assert.equal(fixture.evidence.size, 0);
+    assert.equal(JSON.stringify(fixture.item), unchanged);
+    assert.equal(hasPendingMaterialization(), false);
+  }
+});

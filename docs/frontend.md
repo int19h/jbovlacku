@@ -1385,8 +1385,10 @@ Show Checking only when local profile candidates exist, then distinguish a pendi
 HTTP 408 and 429 receipt responses remain transient, like network and server failures.
 A definitive mismatch, refusal, other 4xx response, corrupt record, or marker-write failure does not block the normal profile read.
 Keep the admission row unchanged and retain separate completion or unconfirmable evidence where storage permits.
-Show the unconfirmable notice only when this browser first records that outcome for the binding.
-Later visits and reloads do not repeat it. This notice offers no Refresh action.
+Show the unconfirmable notice only when this browser first records that outcome for the binding in the current session.
+When completion or unconfirmable evidence is stored, later visits and reloads do not repeat the notice.
+If that evidence cannot be stored, a later page load can read the receipt again and show the notice again.
+This notice offers no Refresh action.
 A local marker failure alone does not raise an unconfirmable notice. Keep completion evidence truthful when a write needs a retry.
 Skip an unreadable marker for this session without writing evidence.
 Pending and failure notices carry the status role. Refresh after a read failure reads the profile again without another signature.
