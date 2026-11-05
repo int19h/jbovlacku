@@ -7,7 +7,7 @@ import { onDisconnect } from "../../lib/lifetime.ts";
 import { wordFormStatus } from "../../components/word-form-feedback.ts";
 import { isZeiCompound } from "../../model/builders.ts";
 import { kindLabel } from "../../model/types.ts";
-import { changeTypedWord } from "../../model/typed-headword.ts";
+import { changeTypedWord, detectWord } from "../../model/typed-headword.ts";
 import { placeCountNote } from "../../components/place-count-note.ts";
 import { hintLabel, mappingKind } from "../../model/assistance.ts";
 import {
@@ -17,8 +17,9 @@ import {
 } from "../../components/assistance.ts";
 /**
  * Step 4 and the full editor. The definition, glosses, places, and the named
- * disclosures edit one draft. The full editor opens every section and also
+ * disclosures edit one draft. The full editor opens authoring sections and
  * permits the headword, type, operands, labels, and classification.
+ * Developer details stay closed until the author opens them.
  */
 import {
   el,
@@ -49,6 +50,7 @@ import {
   editorText,
   editorToRichText,
   fieldsReferencing,
+  referenceFields,
   literalLoss,
   literalize,
   newPlace,
@@ -74,6 +76,7 @@ import { loadDefinition } from "../../data/api.ts";
 import {
   countNodes,
   placeMarker,
+  referencedPlaces,
   renderRichText,
 } from "../../model/richtext.ts";
 import type { RichText } from "../../model/types.ts";
@@ -497,6 +500,26 @@ export async function placesPage(
     }
   }
   const saver = new DraftSaver(app, draft);
+  if (
+    !draft.definitionInitialized &&
+    !countNodes(draft.text) &&
+    draft.meaning.trim()
+  ) {
+    const proposal = numberPlaceholders(draft.meaning);
+    draft.text = editorToRichText(proposal.text, true);
+    if (!draft.structured) draft.text = remapRich(draft.text, () => "literal");
+    if (proposal.count && !draft.places.length && !draft.fixedZeroApproved) {
+      draft.places = Array.from(
+        { length: Math.min(256, proposal.count) },
+        (_, i) => newPlace(i + 1),
+      );
+      if (draft.frameMode === "none") draft.frameMode = "fixed";
+      draft.fixedZeroApproved = false;
+    }
+    draft.definitionInitialized = true;
+    draft.numberingApproved = false;
+    saver.touch();
+  }
   main.append(stepBar(draft, 4));
   if (draft.revisionNotice) {
     const changes = draft.revisionNotice;
@@ -586,6 +609,7 @@ export async function placesPage(
     spelling.input.addEventListener("input", () => {
       changeTypedWord(draft, spelling.input.value);
       h1.textContent = draft.spelling || "Full editor";
+      preselectKind();
       formStatus.refresh();
       saver.touch();
       refreshPreview();
@@ -601,6 +625,24 @@ export async function placesPage(
       value: draft.kind ?? "",
       wrapperClass: "",
     });
+    const preselectKind = () => {
+      const detected = draft.spelling.trim()
+        ? detectWord(draft.spelling).kind
+        : "unknown";
+      if (
+        detected !== "unknown" &&
+        (draft.kind === null || draft.kind === draft.autoDetectedKind)
+      ) {
+        if (confirmKindChange(draft, detected)) {
+          draft.autoDetectedKind = detected;
+          kind.input.value = detected;
+          kindTag.textContent = `${kindLabel(detected)} · ${draft.language}`;
+          saver.touch();
+        }
+      }
+    };
+    preselectKind();
+    formStatus.refresh();
     kind.input.addEventListener("change", () => {
       const next = (kind.input.value || null) as LexicalKind | null;
       if (!confirmKindChange(draft, next)) {
@@ -757,10 +799,7 @@ export async function placesPage(
   defSection.append(
     editor.wrapper,
     structured,
-    p(
-      "Literal mode keeps circled characters and underscores as text. Both modes produce the same rich text schema.",
-      "meta",
-    ),
+    p("Literal mode keeps circled characters and underscores as text.", "meta"),
   );
   const preview = el("div", {
     class: "sunk",
@@ -814,50 +853,12 @@ export async function placesPage(
   });
   editor.input.addEventListener("input", () => {
     draft.text = editor.input.value;
+    draft.definitionInitialized = true;
     draft.numberingApproved = false;
     saver.touch();
     refreshPreview();
     refreshNumbering();
   });
-  // Placeholders from the meaning.
-  if (!countNodes(draft.text) && draft.meaning.trim()) {
-    const proposal = numberPlaceholders(draft.meaning);
-    const suggest = el("div", { class: "notice", style: "margin-top:8px" });
-    suggest.append(
-      text(
-        proposal.count
-          ? `Your meaning has ${proposal.count} place${proposal.count === 1 ? "" : "s"}. `
-          : "Start from your meaning. ",
-      ),
-      button(
-        proposal.count
-          ? "Use the meaning with numbered places"
-          : "Use the meaning as the definition",
-        () => {
-          draft.text = editorToRichText(proposal.text, true);
-          if (!draft.structured)
-            draft.text = remapRich(draft.text, () => "literal");
-          editor.input.value = draft.text;
-          if (proposal.count && !draft.places.length) {
-            draft.places = Array.from(
-              { length: Math.min(256, proposal.count) },
-              (_, i) => newPlace(i + 1),
-            );
-            if (draft.frameMode === "none") draft.frameMode = "fixed";
-            draft.fixedZeroApproved = false;
-          }
-          saver.touch();
-          refreshPreview();
-          renderPlaces();
-          suggest.remove();
-        },
-        { class: "btn" },
-      ),
-      text(" You approve the numbering below before publishing."),
-    );
-    if (proposal.count) suggest.append(numberingParts(proposal.parts));
-    defSection.append(suggest);
-  }
   // Glosses. Each gloss keeps its own language and sense.
   const glossRow = glossChips(
     draft.glosses,
@@ -949,7 +950,10 @@ export async function placesPage(
   );
   const list = el("ol", { class: "place-list" });
   const tailBox = el("div");
-  const numbering = el("div");
+  const numbering = el("div", {
+    role: "region",
+    "aria-label": "Place numbering",
+  });
   const placeAdvice = el("div");
   placesSection.append(placeAdvice, list, tailBox, numbering);
   const refreshPlaceAdvice = () => {
@@ -1247,13 +1251,26 @@ export async function placesPage(
     li.append(marker, grid, tools);
     return li;
   };
+  let approvedOnPage = false;
+  let approvalMessage: HTMLParagraphElement | null = null;
   const refreshNumbering = () => {
+    approvalMessage = null;
     numbering.replaceChildren();
     const { problems } = draftToBody(draft);
     const needs = problems.some((pr) => pr.field === "numbering");
     if (!needs) {
-      if (draft.numberingApproved && draft.places.length)
-        numbering.append(p("Place numbering approved.", "meta"));
+      if (
+        draft.numberingApproved &&
+        (approvedOnPage ||
+          draft.places.length ||
+          referenceFields(draft).some(
+            (field) => referencedPlaces(field.get()).size > 0,
+          ))
+      ) {
+        approvalMessage = p("Place numbering approved.", "meta");
+        approvalMessage.tabIndex = -1;
+        numbering.append(approvalMessage);
+      }
       return;
     }
     const parts = definitionParts(draft.text);
@@ -1269,10 +1286,13 @@ export async function placesPage(
         button(
           "Approve the numbering",
           () => {
+            const hadFocus = numbering.contains(document.activeElement);
             draft.numberingApproved = true;
+            approvedOnPage = true;
             saver.touch();
             refreshNumbering();
             refreshPreview();
+            if (hadFocus) approvalMessage?.focus();
           },
           { class: "btn" },
         ),
@@ -1615,13 +1635,14 @@ export async function placesPage(
       draft,
       retainedRichField,
     );
-    box.append(
-      frameConstraints,
-      p(
-        "A missing default does not mean zo'e or an empty value. Version 1 does not execute conditions.",
-        "meta",
-      ),
-    );
+    box.append(frameConstraints);
+    if (!full)
+      box.append(
+        p(
+          "A missing default does not mean zo'e or an empty value. Version 1 does not execute conditions.",
+          "meta",
+        ),
+      );
     return box;
   };
   const defaultsDetails = open("Defaults and constraints", renderDefaultsBody);
@@ -2148,38 +2169,45 @@ export async function placesPage(
       render();
       return box;
     });
-    const fixedFields = open("Fixed fields", () => [
-      p(
-        "License: CC0-1.0, https://creativecommons.org/publicdomain/zero/1.0/, attribution empty. The signed issuer identifies the contributor.",
-        "small",
-      ),
-      p(
-        "Origin: native. Legacy: null. The editor cannot fabricate import origin or another author's source evidence.",
-        "small",
-      ),
-      p(
-        `Word ID and event ID are derived at signing. Frame: ${draft.frameMode === "none" ? "null" : describeArity(draft.frameMode === "fixed" ? { mode: "fixed", count: draft.places.length } : draft.frameMode === "variadic" ? { mode: "variadic", minimum: draft.variadicMinimum } : { mode: "context" })}.`,
-        "small",
-      ),
-    ]);
-    const inspector = open("JSON inspector", () => {
-      const { body } = draftToBody(draft);
-      return el("pre", { class: "json", text: JSON.stringify(body, null, 2) });
-    });
-    const refreshInspection = () => {
-      const pre = inspector.querySelector("pre");
-      if (pre)
-        pre.textContent = JSON.stringify(draftToBody(draft).body, null, 2);
-      const frame = fixedFields.querySelector(".body p:last-child");
-      if (frame)
+    const developer = disclosure("Developer details", () => {
+      const fixedFields = el(
+        "section",
+        {},
+        el("h2", { class: "section", text: "Fixed fields" }),
+        p(
+          "License: CC0-1.0, https://creativecommons.org/publicdomain/zero/1.0/, attribution empty. The signed issuer identifies the contributor.",
+          "small",
+        ),
+        p(
+          "Origin: native. Legacy: null. The editor cannot fabricate import origin or another author's source evidence.",
+          "small",
+        ),
+      );
+      const frame = p("", "small");
+      const inspector = el("pre", { class: "json" });
+      const refreshInspection = () => {
+        inspector.textContent = JSON.stringify(
+          draftToBody(draft).body,
+          null,
+          2,
+        );
         frame.textContent = `Word ID and event ID are derived at signing. Frame: ${draft.frameMode === "none" ? "null" : describeArity(draft.frameMode === "fixed" ? { mode: "fixed", count: draft.places.length } : draft.frameMode === "variadic" ? { mode: "variadic", minimum: draft.variadicMinimum } : { mode: "context" })}.`;
-    };
-    main.addEventListener("input", refreshInspection);
-    main.addEventListener("change", refreshInspection);
-    main.addEventListener("keydown", refreshInspection);
-    main.addEventListener("click", refreshInspection);
-    inspector.addEventListener("toggle", refreshInspection);
-    fixedFields.addEventListener("toggle", refreshInspection);
+      };
+      fixedFields.append(frame);
+      for (const event of ["input", "change", "keydown", "click"])
+        main.addEventListener(event, refreshInspection);
+      refreshInspection();
+      return [
+        p(
+          "A missing default does not mean zo'e or an empty value. Version 1 does not execute conditions.",
+          "meta",
+        ),
+        fixedFields,
+        el("h2", { class: "section", text: "JSON inspector" }),
+        inspector,
+      ];
+    });
+    sections.append(developer);
   }
   main.append(sections);
   for (const details of sections.querySelectorAll<HTMLDetailsElement>(

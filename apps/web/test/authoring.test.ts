@@ -45,9 +45,9 @@ test("a first-time contributor writes a short literal definition and publishes i
   await page.getByLabel("Spelling").fill("brodu");
   await page.getByRole("button", { name: "Use brodu" }).click();
   await expect(page.getByRole("heading", { name: "brodu" })).toBeVisible();
-  await page
-    .getByRole("button", { name: "Use the meaning as the definition" })
-    .click();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text", exact: true }),
+  ).not.toBeEmpty();
   await page.getByLabel("Read circled numbers as place references").uncheck();
   await page.getByRole("button", { name: "Review" }).click();
   await expect(page.getByRole("heading", { name: "Publish as" })).toBeVisible();
@@ -158,9 +158,9 @@ test("structured places keep declared order when prose mentions place 3 first, a
   await page.getByRole("link", { name: "Type the spelling yourself" }).click();
   await page.getByLabel("Spelling").fill("brodyckusni");
   await page.getByRole("button", { name: "Use brodyckusni" }).click();
-  await page
-    .getByRole("button", { name: "Use the meaning with numbered places" })
-    .click();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text", exact: true }),
+  ).not.toBeEmpty();
   await expect(page.getByLabel("Number of places")).toHaveValue("fixed");
   // Reorder the prose so place 3 appears first. The declared order stays 1, 2, 3.
   const editor = page.getByRole("textbox", { name: "Definition text" });
@@ -638,9 +638,9 @@ test("the wizard fits a 360 pixel screen and keeps every control reachable", asy
     ).toBe(true);
   }
   await page.goto("/new/places");
-  await page
-    .getByRole("button", { name: "Use the meaning with numbered places" })
-    .click();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text", exact: true }),
+  ).not.toBeEmpty();
   await typeRichText(
     page.getByLabel("Description for place 1", { exact: true }),
     "narrow",
@@ -2825,8 +2825,9 @@ test("the full editor edits complete defaults, tail hints, examples, and live in
   await page.getByRole("link", { name: "Skip to the full editor" }).click();
   await page.getByLabel("Headword").fill("broda");
   await page.getByLabel("Type", { exact: true }).selectOption("gismu");
+  await page.getByText("Developer details", { exact: true }).click();
   const inspector = page.locator("details", {
-    has: page.locator("summary", { hasText: /^JSON inspector$/ }),
+    has: page.locator("summary", { hasText: /^Developer details$/ }),
   });
   const json = async () =>
     JSON.parse(await inspector.locator("pre").innerText());
@@ -2966,6 +2967,7 @@ test("editing constraints keeps each multi-paragraph value and reference rewrite
     page.getByLabel("Constraint 1 between places", { exact: true }),
     "first ②\n\nthen ① edited",
   );
+  await page.getByText("Developer details", { exact: true }).click();
   const json = JSON.parse(await page.locator("pre.json").innerText());
   expect(json.frame.constraints).toEqual([
     [
@@ -3003,6 +3005,7 @@ test("nonlocal editor fields keep typed place notation literal and convert saved
   await page
     .getByRole("button", { name: "Convert references to literal text" })
     .click();
+  await page.getByText("Developer details", { exact: true }).click();
   await expect(page.getByText(/The etymology cannot refer/)).toHaveCount(0);
   const converted = JSON.parse(await page.locator("pre.json").innerText());
   expect(converted.text).toEqual([[1, " gives ", 2]]);
@@ -3073,6 +3076,7 @@ test("selmaho stays independent of word type and removed formation evidence", as
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByLabel("Type", { exact: true }).selectOption("compound");
   await expect(page.getByLabel("selma'o", { exact: true })).toHaveValue("BY");
+  await page.getByText("Developer details", { exact: true }).click();
   await expect
     .poll(
       async () =>
@@ -3096,13 +3100,16 @@ for (const structured of [true, false]) {
     await page.getByRole("link", { name: "Skip to the full editor" }).click();
     await page.getByLabel("Headword").fill("broda");
     await page.getByLabel("Type", { exact: true }).selectOption("gismu");
-    if (!structured)
+    if (!structured) {
+      page.once("dialog", (dialog) => void dialog.accept());
       await page
         .getByLabel("Read circled numbers as place references")
         .uncheck();
-    await page
-      .getByRole("button", { name: "Use the meaning with numbered places" })
-      .click();
+    }
+    await expect(
+      page.getByRole("textbox", { name: "Definition text", exact: true }),
+    ).not.toBeEmpty();
+    await page.getByText("Developer details", { exact: true }).click();
     const json = JSON.parse(await page.locator("pre.json").innerText());
     const middle = " is C:\\temp `x` [[cukta]] ";
     expect(json.text).toEqual(
@@ -3139,6 +3146,7 @@ test("removing an added last place keeps the structure unspecified until an expl
     .getByRole("button", { name: "Remove place 1", exact: true })
     .click();
   await expect(page.getByLabel("Number of places")).toHaveValue("none");
+  await page.getByText("Developer details", { exact: true }).click();
   expect(
     JSON.parse(await page.locator("pre.json").innerText()).frame,
   ).toBeNull();
@@ -3214,6 +3222,7 @@ test("closed defaults and constraints reopen with current references before the 
     page.getByLabel("Constraint 1 between places", { exact: true }),
     "① is inside ② fully",
   );
+  await page.getByText("Developer details", { exact: true }).click();
   expect(
     JSON.parse(await page.locator("pre.json").innerText()).frame.constraints,
   ).toEqual([[[1, " is inside ", 2, " fully"]]]);

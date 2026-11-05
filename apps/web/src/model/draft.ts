@@ -226,6 +226,8 @@ export interface Draft {
   step: 1 | 2 | 3 | 4 | 5;
   /** Original meaning from step 1, kept apart from the editable prose. */
   meaning: string;
+  /** Prevent automatic filling after the author edits or clears the definition. */
+  definitionInitialized?: boolean;
   language: string;
   spelling: string;
   /** The exact spelling last entered by the author. */

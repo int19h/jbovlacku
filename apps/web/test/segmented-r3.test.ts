@@ -92,9 +92,7 @@ for (const target of ["empty", "meaning", "language"] as const)
         .poll(() => page.evaluate(() => (window as any).heldReplies.length))
         .toBe(1);
       if (target === "language")
-        await page
-          .getByRole("textbox", { name: "Other language tag", exact: true })
-          .fill("fr");
+        await page.getByLabel("Language", { exact: true }).selectOption("fr");
       else
         await page
           .getByRole("textbox", { name: "Meaning", exact: true })
@@ -169,10 +167,12 @@ test("nearby returns to a saved language after a package miss", async ({
     name: "Other language tag",
     exact: true,
   });
+  await page.getByLabel("Language", { exact: true }).selectOption("other");
   await language.fill("de");
   await expect(panel).toContainText("Download a search package");
   await expect(panel.locator(".hw")).toHaveCount(0);
-  await language.fill("");
+  await page.getByLabel("Language", { exact: true }).selectOption("en");
+  await expect(language).toBeHidden();
   await expect(panel.locator(".hw")).toHaveText("klama");
 });
 
@@ -217,14 +217,16 @@ test("an empty nearby meaning still reads the current package mode", async ({
   });
   await expect(panel.locator(".hw")).toHaveText("klama");
   await page.getByRole("textbox", { name: "Meaning", exact: true }).fill("");
+  await page.getByLabel("Language", { exact: true }).selectOption("other");
   await page
     .getByRole("textbox", { name: "Other language tag", exact: true })
     .fill("de");
   await expect(panel).toContainText("no local package");
   await expect(panel.locator(".hw")).toHaveCount(0);
-  await page
-    .getByRole("textbox", { name: "Other language tag", exact: true })
-    .fill("");
+  await page.getByLabel("Language", { exact: true }).selectOption("en");
+  await expect(
+    page.getByLabel("Other language tag", { exact: true }),
+  ).toBeHidden();
   await expect(panel).toContainText("from the downloaded package");
 });
 

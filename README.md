@@ -172,7 +172,7 @@ Node startup restores the loaded view and its explicit state work budget. The se
 Full-capture runs remain separate development evidence, not part of the committed fixture tests.
 The [importer guide](packages/importer/README.md) describes its input, journal, signing command, and limits.
 
-The guided wizard has five steps: Meaning, Type, Form, Places, and Publish. The full editor opens every field section and permits manual headword and type entry.
+The guided wizard has five steps: Meaning, Type, Form, Places, and Publish. The full editor opens every authoring section and permits manual headword and type entry.
 Manual authoring works without AI. Publish signs the definition, a separate author blessing, selected rafsi claims, and their pair blessings as one locally persisted group.
 Meaning placeholders restart at 1 after each semicolon. Explicit circled numbers and `{place N}` reserve their numbers within each part.
 Blanks take the free numbers in order. The count is the highest place number, and the Places step previews each part before approval.
@@ -214,6 +214,12 @@ Paste reads only plain text. Clipboard content without plain text leaves the sel
 Copy retains readable place glyphs and operand names. Removing a place keeps the referent of every other reference. The shared core checks the finished body before Publish is enabled, and every blocking problem names its field.
 
 AI frame generation supports up to 16 consecutive places. Manual frames support explicit gaps and more than 16 places. The guard counts blanks with explicit Meaning numbers and prefers current definition places. Numbers above 16 or with gaps require manual declarations before separate gloss and type suggestions.
+
+The authoring wizard fills untouched definitions from Meaning and asks for place-numbering approval.
+It preserves edited definitions and deliberate clears recorded by the current editor. Older empty drafts without that record can refill.
+Meaning keeps escape help behind a disclosure and shows custom language entry only for Other.
+The full editor preselects detected forms and preserves explicit type choices.
+Its closed Developer details disclosure contains fixed fields, the default explanation, and the live JSON inspector.
 
 Reading pages load no ProseMirror code or CSS. Authoring pages load the editor on demand.
 Whitespace-only text stays empty for required definitions, report explanations, biographies, and manual formation reasons.

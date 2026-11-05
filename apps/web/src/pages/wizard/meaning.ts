@@ -10,7 +10,16 @@ import {
   typedWord,
 } from "../../model/typed-headword.ts";
 /** Step 1: meaning, language, optional word, and nearby definitions from the local package. */
-import { el, p, text, link, button, field, describe } from "../../lib/dom.ts";
+import {
+  el,
+  p,
+  text,
+  link,
+  button,
+  field,
+  describe,
+  disclosure,
+} from "../../lib/dom.ts";
 import { languageName, plural } from "../../lib/format.ts";
 import {
   navigate,
@@ -208,7 +217,15 @@ export async function meaningPage(
       text("Plain words are fine. Use "),
       el("span", { class: "blank", text: "___" }),
       text(
-        " for each thing the word talks about. Each semicolon restarts numbering at 1. You can also use ① through ㊿ or {place N}. Only a backslash before a circled character is an escape. It keeps that character literal. Every other backslash stays as typed. You approve numbering in the Places step.",
+        " for each thing the word talks about. Each semicolon restarts numbering at 1. You can also use ① through ㊿ or {place N}. You approve numbering in the Places step.",
+      ),
+    ),
+  );
+  left.append(
+    disclosure("Help with literal circled characters", () =>
+      p(
+        "Only a backslash before a circled character is an escape. It keeps that character literal. Every other backslash stays as typed.",
+        "small",
       ),
     ),
   );
@@ -222,7 +239,6 @@ export async function meaningPage(
   left.append(meaning.wrapper);
   const languages = new Set<string>([
     "en",
-    draft.language,
     app.session.preferences.definitionLanguage,
   ]);
   for (const key of await app.store.keys("packages").catch(() => []))
@@ -231,16 +247,18 @@ export async function meaningPage(
   const language = field("Language", {
     options: [...languages]
       .sort()
-      .map((tag) => ({ value: tag, label: languageName(tag) })),
-    value: draft.language,
+      .map((tag) => ({ value: tag, label: languageName(tag) }))
+      .concat({ value: "other", label: "Other" }),
+    value: languages.has(draft.language) ? draft.language : "other",
     wrapperClass: "",
   });
   const custom = field("Other language tag", {
     value: languages.has(draft.language) ? "" : draft.language,
     placeholder: "for example fr",
     wrapperClass: "",
-    hint: "Lowercase BCP 47 tag. It overrides the select.",
+    hint: "Use a lowercase BCP 47 language tag, for example fr.",
   });
+  custom.wrapper.hidden = language.input.value !== "other";
   const word = field("Lojban word", {
     value: draft.spelling,
     placeholder: "if you have one",
@@ -273,7 +291,12 @@ export async function meaningPage(
     scheduleNearby();
   });
   const syncLanguage = () => {
-    const tag = custom.input.value.trim() || language.input.value;
+    const other = language.input.value === "other";
+    if (!other && custom.wrapper.contains(document.activeElement))
+      language.input.focus();
+    custom.wrapper.hidden = !other;
+    const tag = other ? custom.input.value.trim() : language.input.value;
+    if (other && !tag) return;
     if (tag !== draft.language) {
       if (draft.glosses.length || countNodes(draft.text))
         draft.review = [...new Set([...draft.review, "language"])];

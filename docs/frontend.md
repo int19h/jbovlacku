@@ -660,13 +660,20 @@ Receipt retries resend the exact stored record. They never add or remove fields 
 
 A reader can draft before generating an identity. Only publication requires the signing key.
 The step bar reads Meaning, Type, Form, Places, Publish.
-“Skip to the full editor” opens step 4 with every field section open.
-That editor also permits manual headword and type entry. Skipping a builder never skips publication validation.
+“Skip to the full editor” opens step 4 with every authoring section open.
+One closed “Developer details” disclosure sits at the bottom.
+It contains the missing-default explanation, Fixed fields, and the read-only JSON inspector.
+That editor also permits manual headword and type entry.
+It preselects a recognized form when the type is empty or follows automatic detection.
+An explicit type choice stays selected after spelling changes. Skipping a builder never skips publication validation.
 Each step saves the draft in this browser and exposes its save state.
 
 ### Step 1: meaning and nearby definitions
 
 The first step asks for a freeform definition and its language. A headword is optional at this point.
+“Other language tag” appears only when the language select reads “Other”.
+The select keeps focus when the field appears. Hidden custom text never overrides a selected language.
+While Other has no custom text, the saved language and its review state stay unchanged.
 The optional “Lojban word” field keeps a spelling that the author already chose.
 The app normalizes the spelling to NFC and uses the format's plain spelling for word identity.
 It analyses that plain form locally with `analyzeWord`. Analysis lowercases input, while the draft keeps the entered display spelling.
@@ -689,6 +696,7 @@ The app preserves this original meaning draft separately from the current editab
 Each `;` restarts placeholder numbering at 1. The place count is the highest number used in any part.
 Unescaped circled numerals `①` through `㊿` and `{place N}` name explicit place numbers.
 Within each part, blanks take the free numbers in order, including when explicit numbers appear after the blanks.
+A closed help disclosure explains the escape rule in Meaning.
 Only a backslash before a circled numeral is an escape in Meaning. It keeps that numeral literal.
 Every other backslash stays as typed, including doubled backslashes and backslashes before brackets, braces, or backticks.
 A backslash before `{place N}` stays literal and does not escape that place reference.
@@ -1020,7 +1028,17 @@ The full editor also exposes grammatical operands, classification, labels, and e
 Fixed license values, derived identifiers, and generated provenance remain read-only.
 Showing every field does not permit changing import origin or claiming another author's evidence.
 The app offers numbered place insertion, descriptions, glosses, expected values, defaults, constraints, examples, notes, and etymology.
-The wizard can suggest placeholder mappings, but the author approves numbering before publication.
+
+On entry to Places or the full editor, the app fills an untouched, empty definition when Meaning contains text.
+It proposes place declarations and asks only for numbering approval before publication.
+An explicit zero-place choice keeps its empty frame and approval flag during this fill.
+
+After approval, focus moves from the removed button to the approval paragraph, including when no places are declared.
+
+The app never replaces existing definition text.
+It preserves deliberate clears recorded by the current editor.
+An older empty draft without that record can refill because the app cannot distinguish a deliberate clear from untouched text.
+
 Repeated references can name the same place. Textual order does not determine final place order.
 
 Each rich field uses an accessible editor over the stored node tree. Places and operands are inline chips. Code, word links, and web links are separate inline nodes.

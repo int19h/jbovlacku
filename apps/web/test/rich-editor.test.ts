@@ -21,6 +21,8 @@ async function seed(page: Page, fields = false) {
       kind: "gismu",
       meaning: "A private test meaning.",
       text: [],
+      // These editor cases start with a deliberately cleared definition.
+      definitionInitialized: true,
       frameMode: "context",
       places: [newPlace(1), newPlace(4)],
       step: 4,
