@@ -461,6 +461,8 @@ impl<'a> Ranker<'a> {
                             next_cost = next_cost
                                 .checked_add(self.graph.rows[edge.to].len() as u64)
                                 .ok_or_else(|| resource("stage cost"))?;
+                            self.peak_prefixes =
+                                self.peak_prefixes.max(self.prefixes.len() + next.len() + 1);
                         }
                         next.entry(key).or_default().add(onward)
                     })?;

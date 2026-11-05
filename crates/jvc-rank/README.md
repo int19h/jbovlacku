@@ -207,6 +207,7 @@ Estimate operations aggregate a prefix, visit an edge, finish a row, add an acto
 Counters describe coarse operations, not individual machine instructions.
 Graph validation, allocation, and endpoint readout also have graph-size bounds.
 A `Failure` retains these counters and the latest upper progress.
+Peak prefix counts also include a temporary stage that later fails.
 It never returns an incomplete upper estimate.
 
 `advance_with_operation_limit` and `estimates_with_operation_limit` cap operations within one synchronous call.

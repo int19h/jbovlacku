@@ -446,6 +446,33 @@ pub fn resource_vectors() -> BTreeMap<String, Vec<u64>> {
     close(resumed.weights[2].lower, &rational(3, 2));
     assert!(resumed.progress.work.edge_attempts > resumed.progress.completed_work);
     output(&mut result, "fresh-stage-after-refusal", &resumed);
+    let branching = graph(3, &[(0, 1, 0.5), (0, 2, 0.5)], vec![1.0, 0.0, 0.0], &[]);
+    let mut r = a::Ranker::new(
+        &branching,
+        3.0,
+        0.5,
+        Limits {
+            max_prefixes: 2,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    let failed = r.advance(1000).unwrap_err();
+    assert_eq!(
+        failed.cause,
+        a::PreparationError::Graph(jvc_rank::RankError::ResourceLimit("prefix states"))
+    );
+    assert_eq!(failed.progress.completed_work, 0);
+    assert_eq!(failed.progress.work.edge_attempts, 2);
+    assert_eq!(failed.progress.peak_prefixes, 2);
+    result.insert(
+        "failed-stage-retains-actual-prefix-peak".into(),
+        vec![
+            failed.progress.peak_prefixes as u64,
+            failed.progress.work.edge_attempts,
+        ],
+    );
+
     for (name, limits) in [
         (
             "prefix",
