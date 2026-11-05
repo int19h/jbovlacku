@@ -150,11 +150,13 @@ impl<'a> DecisionContext<'a> {
             flush_margin: p.work.flushed_terms as f64 * FLUSH_UNIT,
         }
     }
-    fn same(&self, other: &Self) -> bool {
+    fn same_graph(&self, other: &Self) -> bool {
         std::ptr::eq(self.graph, other.graph)
-            && std::ptr::eq(self.ranking, other.ranking)
             && self.h.to_bits() == other.h.to_bits()
             && self.alpha.to_bits() == other.alpha.to_bits()
+    }
+    fn same(&self, other: &Self) -> bool {
+        self.same_graph(other) && std::ptr::eq(self.ranking, other.ranking)
     }
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -181,13 +183,19 @@ fn margin(mass: f64, contexts: &[&DecisionContext<'_>]) -> Result<Margin> {
     if !mass.is_finite() || mass < 0.0 {
         return Err(PreparationError::NumericUnavailable);
     }
-    let mut unique: Vec<&DecisionContext<'_>> = Vec::new();
+    let mut unique: Vec<(&DecisionContext<'_>, GraphMargin)> = Vec::new();
     for &c in contexts {
-        if !unique.iter().any(|u| u.same(c)) {
-            unique.push(c);
+        let details = c.details();
+        if let Some((_, retained)) = unique.iter_mut().find(|(u, _)| u.same_graph(c)) {
+            retained.depth = retained.depth.max(details.depth);
+            retained.factor = relative_factor(retained.depth);
+            retained.flushed_terms = retained.flushed_terms.max(details.flushed_terms);
+            retained.flush_margin = retained.flushed_terms as f64 * FLUSH_UNIT;
+        } else {
+            unique.push((c, details));
         }
     }
-    let mut graphs: Vec<_> = unique.into_iter().map(|c| c.details()).collect();
+    let mut graphs: Vec<_> = unique.into_iter().map(|(_, details)| details).collect();
     graphs.sort_by_key(|g| (g.depth, g.flushed_terms));
     let depth = graphs.iter().map(|g| g.depth).max().unwrap_or(0);
     let factor = relative_factor(depth);

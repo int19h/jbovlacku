@@ -353,6 +353,18 @@ pub fn comparison_vectors() -> BTreeMap<String, Vec<u64>> {
         "decision-counted-flush-allowance-withholds-tiny-lead".into(),
         comparison(&counted),
     );
+    let snapshot = fr.clone();
+    let snapshot_context = d::DecisionContext::new(&fg, &fp, &snapshot, &limits).unwrap();
+    let empty_snapshot = candidate("empty-snapshot", vec![Verdict::Absent; 3]);
+    let one = d::score(&fc, &empty_snapshot, &limits).unwrap();
+    let two = d::score(&snapshot_context, &empty_snapshot, &limits).unwrap();
+    let snapshot_margin = d::separate_difference(&one, &two).unwrap();
+    assert_eq!(snapshot_margin.margin.graphs.len(), 1);
+    assert_eq!(snapshot_margin.margin.absolute, d::FLUSH_UNIT);
+    out.insert(
+        "decision-shared-graph-different-snapshots-count-flush-once".into(),
+        comparison(&snapshot_margin),
+    );
     let fg2 = fg.clone();
     let fr2 = fr.clone();
     let fc2 = d::DecisionContext::new(&fg2, &fp, &fr2, &limits).unwrap();
@@ -411,6 +423,15 @@ pub fn comparison_vectors() -> BTreeMap<String, Vec<u64>> {
     assert_eq!(m.depth, n - 1);
     assert!(m.factor > 1e-12);
     out.insert("decision-depth-dependent-factor".into(), margin(&m));
+    let mixed = d::separate_difference(&s, &s1).unwrap();
+    assert_eq!(mixed.margin.depth, n - 1);
+    assert_eq!(mixed.margin.factor, d::relative_factor(n - 1));
+    assert_eq!(mixed.margin.absolute, d::FLUSH_UNIT);
+    assert_eq!(mixed.margin.graphs.len(), 2);
+    out.insert(
+        "decision-separate-graphs-use-maximum-depth".into(),
+        comparison(&mixed),
+    );
     out
 }
 pub fn potential_vectors() -> BTreeMap<String, Vec<u64>> {

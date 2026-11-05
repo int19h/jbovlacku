@@ -251,7 +251,8 @@ It supplies no host session, owned task, or application capability.
 `difference` cancels identical actor verdicts before it computes the remaining comparison mass.
 Context references share cancellation only when they reference the same graph, ranking, and parameters.
 `separate_difference` uses both scores' upper support and opposition masses without actor cancellation.
-It counts the flushing allowance once per distinct contributing context graph.
+It counts the flushing allowance once per distinct graph and parameter set, even when estimates come from different completed snapshots.
+For a shared graph, details retain the largest observed depth and flush count across those snapshots.
 
 Margins use `factor(d) * M + F`, with compensated addition.
 `factor(d)` is `max(1e-12, (2*d + 140) * 2^-52)`.
