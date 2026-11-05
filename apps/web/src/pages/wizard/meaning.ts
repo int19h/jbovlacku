@@ -296,6 +296,7 @@ export async function meaningPage(
       language.input.focus();
     custom.wrapper.hidden = !other;
     const tag = other ? custom.input.value.trim() : language.input.value;
+    if (other && !tag) return;
     if (tag !== draft.language) {
       if (draft.glosses.length || countNodes(draft.text))
         draft.review = [...new Set([...draft.review, "language"])];

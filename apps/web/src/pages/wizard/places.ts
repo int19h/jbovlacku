@@ -506,7 +506,7 @@ export async function placesPage(
     const proposal = numberPlaceholders(draft.meaning);
     draft.text = editorToRichText(proposal.text, true);
     if (!draft.structured) draft.text = remapRich(draft.text, () => "literal");
-    if (proposal.count && !draft.places.length) {
+    if (proposal.count && !draft.places.length && !draft.fixedZeroApproved) {
       draft.places = Array.from(
         { length: Math.min(256, proposal.count) },
         (_, i) => newPlace(i + 1),
@@ -951,7 +951,6 @@ export async function placesPage(
   const numbering = el("div", {
     role: "region",
     "aria-label": "Place numbering",
-    tabindex: "-1",
   });
   const placeAdvice = el("div");
   placesSection.append(placeAdvice, list, tailBox, numbering);
@@ -1250,13 +1249,18 @@ export async function placesPage(
     li.append(marker, grid, tools);
     return li;
   };
+  let approvalMessage: HTMLParagraphElement | null = null;
   const refreshNumbering = () => {
+    approvalMessage = null;
     numbering.replaceChildren();
     const { problems } = draftToBody(draft);
     const needs = problems.some((pr) => pr.field === "numbering");
     if (!needs) {
-      if (draft.numberingApproved && draft.places.length)
-        numbering.append(p("Place numbering approved.", "meta"));
+      if (draft.numberingApproved) {
+        approvalMessage = p("Place numbering approved.", "meta");
+        approvalMessage.tabIndex = -1;
+        numbering.append(approvalMessage);
+      }
       return;
     }
     const parts = definitionParts(draft.text);
@@ -1277,7 +1281,7 @@ export async function placesPage(
             saver.touch();
             refreshNumbering();
             refreshPreview();
-            if (hadFocus) numbering.focus();
+            if (hadFocus) approvalMessage?.focus();
           },
           { class: "btn" },
         ),
@@ -2169,10 +2173,7 @@ export async function placesPage(
         ),
       );
       const frame = p("", "small");
-      const inspector = el("pre", {
-        class: "json",
-        "aria-label": "JSON inspector",
-      });
+      const inspector = el("pre", { class: "json" });
       const refreshInspection = () => {
         inspector.textContent = JSON.stringify(
           draftToBody(draft).body,
