@@ -1,4 +1,4 @@
-//! Row preparation and synchronous non-certified influence estimates.
+//! Row preparation and non-certified numerical tasks.
 //! Ranking decisions and host execution remain separate.
 use crate::{Limits, RankError, Rational};
 use num_traits::{One, ToPrimitive, Zero};
@@ -10,8 +10,9 @@ pub const ROW_SUM_CEILING: f64 = f64::from_bits(0x3ff0_0000_0000_002d);
 
 mod propagation;
 pub use propagation::{
-    rank, Edge, Estimate, EstimateProgress, Failure, Graph, Parameters, Progress, Ranker, Ranking,
-    Work,
+    rank, AllocationAccount, AllocationCharge, Edge, Estimate, EstimateProgress, Failure, Graph,
+    OwnedProgress, OwnedRanking, OwnedTask, Parameters, PendingProgress, Progress, Ranker, Ranking,
+    SliceUsage, TaskPhase, Work,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
