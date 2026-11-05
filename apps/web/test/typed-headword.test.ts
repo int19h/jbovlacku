@@ -271,6 +271,7 @@ test("remote duplicate consent belongs to one word and language and ignores an o
     panel.getByRole("button", { name: "Check this word on the server" }),
   ).toBeVisible();
   await expect(panel).not.toContainText("Already exists");
+  await page.getByLabel("Language", { exact: true }).selectOption("other");
   await page.getByLabel("Other language tag", { exact: true }).fill("fr");
   await expect(
     panel.getByRole("button", { name: "Check this word on the server" }),

@@ -105,7 +105,7 @@ jobs:
       - name: Build browser application
         run: npm run build:web
       - name: Test Firefox editing and authoring
-        run: npm run test:web -- --project firefox-editor --project firefox-authoring
+        run: npm run test:web -- --project firefox-editor --project firefox-authoring --project firefox-wizard
 
   standalone-image:
     runs-on: ubuntu-24.04

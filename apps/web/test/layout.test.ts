@@ -89,9 +89,13 @@ for (const viewport of [
         "column-gap",
         "40px",
       );
-      const language = (await page
-        .getByLabel("Language", { exact: true })
-        .boundingBox())!;
+      const languageSelect = page.getByLabel("Language", { exact: true });
+      const custom = page.getByLabel("Other language tag");
+      await expect(custom).toBeHidden();
+      await languageSelect.selectOption("other");
+      await expect(custom).toBeVisible();
+      await custom.fill("fr");
+      const language = (await languageSelect.boundingBox())!;
       const customLanguage = (await page
         .getByLabel("Other language tag")
         .boundingBox())!;
@@ -102,6 +106,8 @@ for (const viewport of [
           language.y + language.height,
         );
       }
+      await languageSelect.selectOption("en");
+      await expect(custom).toBeHidden();
       await page
         .getByLabel("Meaning", { exact: true })
         .fill("___ gives ___ to ___.");
