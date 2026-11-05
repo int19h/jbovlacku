@@ -83,13 +83,14 @@ export function fingerprintText(identity: string): string {
 
 /** Ordinary page text uses the human spelling of lexical kinds. */
 export async function expectKindSpelling(page: Page) {
-  // The full editor opens its raw JSON inspector by default.
-  const inspector = page.getByText("JSON inspector", { exact: true });
+  const details = page.locator("details").filter({
+    has: page.locator("summary", { hasText: /^Developer details$/ }),
+  });
   if (
-    (await inspector.isVisible()) &&
-    (await inspector.evaluate((node) => node.closest("details")?.open))
+    (await details.count()) &&
+    (await details.evaluate((node) => (node as HTMLDetailsElement).open))
   )
-    await inspector.click();
+    await details.locator("summary").click();
   await expect(page.locator("main")).toContainText("fu'ivla");
   expect(await page.locator("body").innerText()).not.toMatch(
     /\b(?:fuhivla|fuivla)\b/,

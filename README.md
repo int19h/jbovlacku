@@ -215,6 +215,11 @@ Copy retains readable place glyphs and operand names. Removing a place keeps the
 
 AI frame generation supports up to 16 consecutive places. Manual frames support explicit gaps and more than 16 places. The guard counts blanks with explicit Meaning numbers and prefers current definition places. Numbers above 16 or with gaps require manual declarations before separate gloss and type suggestions.
 
+The authoring wizard fills untouched definitions from Meaning and asks for place-numbering approval.
+It preserves edited and deliberately cleared definitions. Meaning keeps escape help behind a disclosure and shows custom language entry only for Other.
+The full editor preselects detected forms and preserves explicit type choices.
+Its closed Developer details disclosure contains fixed fields, the default explanation, and the live JSON inspector.
+
 Reading pages load no ProseMirror code or CSS. Authoring pages load the editor on demand.
 Whitespace-only text stays empty for required definitions, report explanations, biographies, and manual formation reasons.
 

@@ -80,9 +80,9 @@ test("semicolon parts restart blank numbering before approval and preserve the s
   await expect(
     parts(page).getByRole("listitem").nth(1).locator("p.meta"),
   ).toHaveText("Part 2: places 1, 2");
-  await page
-    .getByRole("button", { name: "Use the meaning with numbered places" })
-    .click();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text", exact: true }),
+  ).not.toBeEmpty();
   await expectRichText(
     page.getByLabel("Definition text", { exact: true }),
     "① seemingly has property ②; ① seems to have property ② but actually doesn't",
@@ -155,9 +155,9 @@ test("explicit numbers reserve places per part and escaped numbers stay literal"
   await expect(
     parts(page).getByRole("listitem").nth(1).locator("p.meta"),
   ).toHaveText("Part 2: places 1, 4");
-  await page
-    .getByRole("button", { name: "Use the meaning with numbered places" })
-    .click();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text", exact: true }),
+  ).not.toBeEmpty();
   await expectRichText(
     page.getByLabel("Definition text", { exact: true }),
     "② sees ① with ③; ③ stays literal beside ① and ④",
@@ -187,9 +187,9 @@ test("places through fifty use circled literal glyphs", async ({ page }) => {
     page.getByText("21 placeholders found.", { exact: false }),
   ).toBeVisible();
   await page.getByRole("link", { name: /^Places\b/ }).click();
-  await page
-    .getByRole("button", { name: "Use the meaning with numbered places" })
-    .click();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text", exact: true }),
+  ).not.toBeEmpty();
   await expectRichText(
     page.getByLabel("Definition text", { exact: true }),
     /⑳ with ㉑$/u,
@@ -418,9 +418,9 @@ test("an excessive explicit number keeps the editor within the frame limit", asy
   await page.goto("/");
   await seed(page, { meaning: "{place 65535} is explicit" });
   await page.goto("/new/places");
-  await page
-    .getByRole("button", { name: "Use the meaning with numbered places" })
-    .click();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text", exact: true }),
+  ).not.toBeEmpty();
   await expect(page.locator(".place-row")).toHaveCount(256);
   await expect(
     page.getByRole("region", { name: "Rendered definition" }),
@@ -440,15 +440,21 @@ test("Meaning preserves every noncircled backslash when the author uses its text
   await page.goto("/new/meaning");
   await expect(
     page.getByText("Every other backslash stays as typed.", { exact: false }),
+  ).not.toBeVisible();
+  await page
+    .getByText("Help with literal circled characters", { exact: true })
+    .press("Enter");
+  await expect(
+    page.getByText("Every other backslash stays as typed.", { exact: false }),
   ).toBeVisible();
   await page.getByRole("link", { name: /^Places\b/ }).click();
   await expect(parts(page).locator("p.meta")).toHaveText([
     "Part 1: places 1",
     "Part 2: places 1, 4",
   ]);
-  await page
-    .getByRole("button", { name: "Use the meaning with numbered places" })
-    .click();
+  await expect(
+    page.getByRole("textbox", { name: "Definition text", exact: true }),
+  ).not.toBeEmpty();
   await expect(page.getByText("Saved in this browser")).toBeVisible();
   const saved = await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));

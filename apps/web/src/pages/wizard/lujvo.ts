@@ -292,6 +292,7 @@ export async function lujvoPage(
   });
   definitionField.input.addEventListener("input", () => {
     draft.text = definitionField.input.value;
+    draft.definitionInitialized = true;
     draft.numberingApproved = false;
     saver.touch();
   });

@@ -258,9 +258,13 @@ The author can continue despite every match. The bottom action area shows “Sav
 
 Underscores remain draft placeholders until the author approves their numbering.
 The original meaning remains separate from later editable definition prose.
+Places and the full editor fill an untouched definition automatically and ask only for numbering approval.
+Existing prose and deliberately cleared definitions stay unchanged.
 Each semicolon restarts blank numbering at 1. The displayed count is the highest place number in any part.
 Unescaped circled numerals and `{place N}` reserve explicit numbers within each part. Blanks take the free numbers in order.
 
+A closed help disclosure contains the escape explanation.
+“Other language tag” appears only for “Other”, with focus kept on the language select.
 Only a backslash before a circled character acts as an escape in Meaning. All other backslashes stay as typed.
 The count reports places rather than occurrences.
 
@@ -370,7 +374,10 @@ Glosses appear as removable chips with an add field. Every removal target meets 
 Place rows show Description, Gloss, Kind of thing, and From, followed by “Add a place.”
 Repeated field labels include the place number in their accessible names.
 Before numbering approval, show each semicolon-separated part with its numbered preview and the places that it uses.
-Keep this breakdown beside the numbering action, including after the author uses the proposed definition.
+Keep this breakdown beside the numbering action after the app fills the definition.
+The full editor preselects a detected type and preserves explicit type choices.
+One closed “Developer details” disclosure sits at the bottom.
+It contains the missing-default explanation, Fixed fields, and the JSON inspector.
 
 The Places step and the full editor show a note above three declared places, for every word type.
 Count each declared numbered place and count a repeating tail once. Null frames and constructed-predicate operands do not count.
