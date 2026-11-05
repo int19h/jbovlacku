@@ -20,3 +20,8 @@ fn work_limits_and_incomplete_upper_refusal() {
 fn propagated_flushing_and_long_chains() {
     assert!(!support::flushing_vectors().is_empty());
 }
+
+#[test]
+fn retries_and_growing_budgets_match_fresh_stages() {
+    assert_eq!(support::retry_and_budget_vectors().len(), 14);
+}

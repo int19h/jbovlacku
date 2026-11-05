@@ -283,6 +283,26 @@ pub fn sum_vectors() -> BTreeMap<String, Vec<u64>> {
 }
 pub fn semantic_vectors() -> BTreeMap<String, Vec<u64>> {
     let mut result = BTreeMap::new();
+    for (name, g) in [
+        ("empty-graph", graph(0, &[], vec![], &[])),
+        (
+            "all-zero-roots",
+            graph(2, &[(0, 1, 1.0)], vec![0.0, 0.0], &[]),
+        ),
+    ] {
+        let ranking = a::rank(&g, &a::Parameters::default(), Limits::default()).unwrap();
+        assert!(ranking.numerically_approximate);
+        assert!(ranking.progress.exploration_complete);
+        assert_eq!(ranking.progress.complete_stages, 0);
+        assert_eq!(ranking.progress.work.matrix_edge_visits, 0);
+        assert_eq!(ranking.progress.work.flushed_terms, 0);
+        assert!(ranking
+            .weights
+            .iter()
+            .all(|w| w.lower == 0.0 && w.upper == 0.0));
+        output(&mut result, name, &ranking);
+    }
+
     let g = graph(
         4,
         &[(0, 1, 0.5), (1, 2, 1.0), (2, 0, 1.0), (3, 2, 1.0)],
@@ -421,6 +441,145 @@ pub fn semantic_vectors() -> BTreeMap<String, Vec<u64>> {
         )
     );
     result
+}
+
+pub fn retry_and_budget_vectors() -> BTreeMap<String, Vec<u64>> {
+    let mut out = BTreeMap::new();
+    let g = graph(
+        3,
+        &[(0, 1, 0.5), (0, 2, 0.5)],
+        vec![1.0, 0.0, 0.0],
+        &[(0, 1)],
+    );
+    let limits = Limits {
+        max_refusal_tests: 1,
+        ..Limits::default()
+    };
+    let mut r = a::Ranker::new(&g, 1.0, 0.5, limits.clone()).unwrap();
+    let failure = r.advance_with_operation_limit(2, 1).unwrap_err();
+    assert_eq!(failure.progress.work.refusal_tests, 1);
+    assert_eq!(failure.progress.completed_work, 0);
+    assert_eq!(r.progress().work.refusal_tests, 0);
+    r.advance(2).unwrap();
+    let resumed = r.estimates().unwrap();
+    let fresh = a::rank(
+        &g,
+        &a::Parameters {
+            h: 1.0,
+            alpha: 0.5,
+            work: 2,
+        },
+        limits,
+    )
+    .unwrap();
+    assert_eq!(resumed.weights, fresh.weights);
+    assert_eq!(resumed.progress.work.refusal_tests, 1);
+    assert_eq!(
+        resumed.progress.work.refusal_tests,
+        fresh.progress.work.refusal_tests
+    );
+    assert_eq!(
+        resumed.progress.completed_work,
+        fresh.progress.completed_work
+    );
+    output(&mut out, "refusal-retry-commits-one-pass", &resumed);
+
+    let g = graph(2, &[(0, 1, 1.0)], vec![f64::MIN_POSITIVE, 0.0], &[]);
+    let mut r = a::Ranker::new(&g, 1.0, 0.5, Limits::default()).unwrap();
+    for _ in 0..2 {
+        let failure = r.advance_with_operation_limit(1, 1).unwrap_err();
+        assert_eq!(failure.progress.work.flushed_terms, 1);
+        assert_eq!(r.progress().work.flushed_terms, 1);
+        assert_eq!(failure.progress.completed_work, 0);
+    }
+    r.advance(1).unwrap();
+    let resumed = r.estimates().unwrap();
+    let fresh = a::rank(
+        &g,
+        &a::Parameters {
+            h: 1.0,
+            alpha: 0.5,
+            work: 1,
+        },
+        Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(resumed.weights, fresh.weights);
+    assert_eq!(resumed.progress.work.flushed_terms, 1);
+    assert_eq!(
+        resumed.progress.work.flushed_terms,
+        fresh.progress.work.flushed_terms
+    );
+    output(&mut out, "flush-retry-counts-drop-once", &resumed);
+
+    let ordinary = graph(
+        4,
+        &[
+            (0, 1, 0.5),
+            (0, 2, 0.5),
+            (1, 2, 0.5),
+            (1, 3, 0.5),
+            (2, 0, 0.5),
+            (2, 3, 0.5),
+            (3, 1, 1.0),
+        ],
+        vec![0.25; 4],
+        &[(0, 3)],
+    );
+    let tiny = graph(
+        3,
+        &[(0, 1, 0.5), (0, 2, 0.5)],
+        vec![f64::MIN_POSITIVE, 0.0, 0.0],
+        &[],
+    );
+    for (name, g, no_flushes) in [("ordinary", ordinary, true), ("tiny", tiny, false)] {
+        let mut r = a::Ranker::new(&g, 1.0, 0.5, Limits::default()).unwrap();
+        let mut saw_extra_upper_flush = false;
+        for budget in [1, 2, 4, 10, 100, 1000] {
+            r.advance(budget).unwrap();
+            let resumed = r.estimates().unwrap();
+            let fresh = a::rank(
+                &g,
+                &a::Parameters {
+                    h: 1.0,
+                    alpha: 0.5,
+                    work: budget,
+                },
+                Limits::default(),
+            )
+            .unwrap();
+            assert_eq!(resumed.weights, fresh.weights);
+            assert_eq!(resumed.progress.depth, fresh.progress.depth);
+            assert_eq!(
+                resumed.progress.next_stage_work,
+                fresh.progress.next_stage_work
+            );
+            assert_eq!(
+                resumed.progress.completed_work,
+                fresh.progress.completed_work
+            );
+            if no_flushes {
+                // No upper call drops a term, so cumulative flush counts must agree.
+                assert_eq!(
+                    resumed.progress.work.flushed_terms,
+                    fresh.progress.work.flushed_terms
+                );
+                assert_eq!(resumed.progress.work.flushed_terms, 0);
+            } else {
+                // Each separate upper call can drop new terms. Earlier upper calls
+                // stay counted, so a reused ranker need not match a fresh count.
+                saw_extra_upper_flush |=
+                    resumed.progress.work.flushed_terms > fresh.progress.work.flushed_terms;
+            }
+            output(
+                &mut out,
+                &format!("growing-budget-{name}-{budget}"),
+                &resumed,
+            );
+        }
+        assert_eq!(saw_extra_upper_flush, !no_flushes);
+    }
+    out
 }
 
 pub fn resource_vectors() -> BTreeMap<String, Vec<u64>> {
@@ -758,6 +917,7 @@ pub fn all_vectors() -> BTreeMap<String, Vec<u64>> {
     out.extend(sum_vectors());
     out.extend(semantic_vectors());
     out.extend(resource_vectors());
+    out.extend(retry_and_budget_vectors());
     out.extend(flushing_vectors());
     out
 }

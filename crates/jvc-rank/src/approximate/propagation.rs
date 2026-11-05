@@ -233,7 +233,7 @@ fn tick(work: &mut Work, before: u64, limit: u64, phase: Phase) -> Result<()> {
 }
 
 /// Test the exact product's exponent before hardware rounding can hide underflow.
-fn multiply(a: f64, b: f64, work: &mut Work) -> Result<f64> {
+fn multiply(a: f64, b: f64, flushed_terms: &mut u64) -> Result<f64> {
     if a == 0.0 || b == 0.0 {
         return Ok(0.0);
     }
@@ -252,7 +252,7 @@ fn multiply(a: f64, b: f64, work: &mut Work) -> Result<f64> {
     let product = ma * mb;
     let exponent = (127 - product.leading_zeros()) as i32 + ea + eb;
     if exponent < -1022 {
-        increment(&mut work.flushed_terms, "flushed terms")?;
+        increment(flushed_terms, "flushed terms")?;
         return Ok(0.0);
     }
     let result = a * b;
@@ -278,6 +278,7 @@ pub struct Ranker<'a> {
     stage_cost: u64,
     peak_prefixes: usize,
     work: Work,
+    discarded_stage_flushes: u64,
     upper: Option<EstimateProgress>,
 }
 impl<'a> Ranker<'a> {
@@ -333,12 +334,13 @@ impl<'a> Ranker<'a> {
             stage_cost: 0,
             peak_prefixes: 0,
             work: Work::default(),
+            discarded_stage_flushes: 0,
             upper: None,
         };
         let initialize = |this: &mut Self| -> Result<()> {
             for (actor, &q) in graph.q.iter().enumerate() {
                 tick(&mut this.work, 0, u64::MAX, Phase::Initialization)?;
-                let mass = multiply(h, q, &mut this.work)?;
+                let mass = multiply(h, q, &mut this.work.flushed_terms)?;
                 if mass == 0.0 {
                     continue;
                 }
@@ -401,10 +403,13 @@ impl<'a> Ranker<'a> {
         {
             return Err(self.failure(parameter("invalid work budget or operation limit")));
         }
-        let result = self.advance_inner(total_budget, max_operations);
-        result.map_err(|cause| self.failure(cause))
+        self.advance_inner(total_budget, max_operations)
     }
-    fn advance_inner(&mut self, total_budget: u64, max_operations: u64) -> Result<()> {
+    fn advance_inner(
+        &mut self,
+        total_budget: u64,
+        max_operations: u64,
+    ) -> std::result::Result<(), Failure> {
         let before = self.work.numerical_operations;
         while !self.prefixes.is_empty() && self.stage_cost <= total_budget - self.completed_work {
             let cost = self.stage_cost;
@@ -413,62 +418,85 @@ impl<'a> Ranker<'a> {
             let mut visited_entries = self.prefixes.keys().map(|p| p.visited.len()).sum::<usize>();
             let mut next_cost = 0u64;
             let mut depth = self.depth;
-            for (prefix, mass) in &self.prefixes {
-                for edge in &self.graph.rows[prefix.endpoint] {
-                    tick(&mut self.work, before, max_operations, Phase::Route)?;
-                    increment(&mut self.work.edge_attempts, "edge attempts")?;
-                    if prefix.visited.binary_search(&edge.to).is_ok() {
-                        continue;
+            let mut refusal_tests = self.work.refusal_tests;
+            let mut stage_flushes = 0;
+            let result = (|| -> Result<()> {
+                for (prefix, mass) in &self.prefixes {
+                    for edge in &self.graph.rows[prefix.endpoint] {
+                        tick(&mut self.work, before, max_operations, Phase::Route)?;
+                        increment(&mut self.work.edge_attempts, "edge attempts")?;
+                        if prefix.visited.binary_search(&edge.to).is_ok() {
+                            continue;
+                        }
+                        crate::refused(
+                            &prefix.visited,
+                            &self.graph.refusals[edge.to],
+                            &mut refusal_tests,
+                            self.limits.max_refusal_tests,
+                        )
+                        .map_err(PreparationError::Graph)
+                        .and_then(|refused| {
+                            if refused {
+                                return Ok(());
+                            }
+                            let credit = multiply(mass.finish()?, edge.share, &mut stage_flushes)?;
+                            if credit == 0.0 {
+                                return Ok(());
+                            }
+                            lower[edge.to].add(credit)?;
+                            depth = depth.max(prefix.visited.len());
+                            let onward = multiply(credit, self.alpha, &mut stage_flushes)?;
+                            if onward == 0.0 {
+                                return Ok(());
+                            }
+                            let mut visited = prefix.visited.clone();
+                            let at = visited.binary_search(&edge.to).unwrap_err();
+                            visited.insert(at, edge.to);
+                            let key = Prefix {
+                                visited,
+                                endpoint: edge.to,
+                            };
+                            if !next.contains_key(&key) {
+                                if self.prefixes.len() + next.len() >= self.limits.max_prefixes {
+                                    return Err(resource("prefix states"));
+                                }
+                                visited_entries = visited_entries
+                                    .checked_add(key.visited.len())
+                                    .ok_or_else(|| resource("visited actor entries"))?;
+                                if visited_entries > self.limits.max_visited_actor_entries {
+                                    return Err(resource("visited actor entries"));
+                                }
+                                next_cost = next_cost
+                                    .checked_add(self.graph.rows[edge.to].len() as u64)
+                                    .ok_or_else(|| resource("stage cost"))?;
+                                self.peak_prefixes =
+                                    self.peak_prefixes.max(self.prefixes.len() + next.len() + 1);
+                            }
+                            next.entry(key).or_default().add(onward)
+                        })?;
                     }
-                    crate::refused(
-                        &prefix.visited,
-                        &self.graph.refusals[edge.to],
-                        &mut self.work.refusal_tests,
-                        self.limits.max_refusal_tests,
-                    )
-                    .map_err(PreparationError::Graph)
-                    .and_then(|refused| {
-                        if refused {
-                            return Ok(());
-                        }
-                        let credit = multiply(mass.finish()?, edge.share, &mut self.work)?;
-                        if credit == 0.0 {
-                            return Ok(());
-                        }
-                        lower[edge.to].add(credit)?;
-                        depth = depth.max(prefix.visited.len());
-                        let onward = multiply(credit, self.alpha, &mut self.work)?;
-                        if onward == 0.0 {
-                            return Ok(());
-                        }
-                        let mut visited = prefix.visited.clone();
-                        let at = visited.binary_search(&edge.to).unwrap_err();
-                        visited.insert(at, edge.to);
-                        let key = Prefix {
-                            visited,
-                            endpoint: edge.to,
-                        };
-                        if !next.contains_key(&key) {
-                            if self.prefixes.len() + next.len() >= self.limits.max_prefixes {
-                                return Err(resource("prefix states"));
-                            }
-                            visited_entries = visited_entries
-                                .checked_add(key.visited.len())
-                                .ok_or_else(|| resource("visited actor entries"))?;
-                            if visited_entries > self.limits.max_visited_actor_entries {
-                                return Err(resource("visited actor entries"));
-                            }
-                            next_cost = next_cost
-                                .checked_add(self.graph.rows[edge.to].len() as u64)
-                                .ok_or_else(|| resource("stage cost"))?;
-                            self.peak_prefixes =
-                                self.peak_prefixes.max(self.prefixes.len() + next.len() + 1);
-                        }
-                        next.entry(key).or_default().add(onward)
-                    })?;
+                    tick(&mut self.work, before, max_operations, Phase::Route)?;
                 }
-                tick(&mut self.work, before, max_operations, Phase::Route)?;
+                Ok(())
+            })();
+            // Failed attempts traverse the same deterministic stage. Keep its largest
+            // observed drop count, but never charge those drops twice on recomputation.
+            let prior_flushes = self.work.flushed_terms - self.discarded_stage_flushes;
+            let attempt_flushes = prior_flushes
+                .checked_add(stage_flushes)
+                .ok_or_else(|| self.failure(resource("flushed terms")))?;
+            self.work.flushed_terms = prior_flushes
+                .checked_add(self.discarded_stage_flushes.max(stage_flushes))
+                .ok_or_else(|| self.failure(resource("flushed terms")))?;
+            if let Err(cause) = result {
+                self.discarded_stage_flushes = self.discarded_stage_flushes.max(stage_flushes);
+                let mut failure = self.failure(cause);
+                failure.progress.work.refusal_tests = refusal_tests;
+                failure.progress.work.flushed_terms = attempt_flushes;
+                return Err(failure);
             }
+            self.discarded_stage_flushes = 0;
+            self.work.refusal_tests = refusal_tests;
             self.peak_prefixes = self.peak_prefixes.max(self.prefixes.len() + next.len());
             self.lower = lower;
             self.prefixes = next;
@@ -478,7 +506,7 @@ impl<'a> Ranker<'a> {
             self.completed_work = self
                 .completed_work
                 .checked_add(cost)
-                .ok_or_else(|| resource("completed work"))?;
+                .ok_or_else(|| self.failure(resource("completed work")))?;
             self.stages += 1;
             self.upper = None;
         }
@@ -538,11 +566,15 @@ impl<'a> Ranker<'a> {
                         }
                         matrix_visits += 1;
                         increment(&mut self.work.matrix_edge_visits, "matrix edge visits")?;
-                        let credit = multiply(vector[from].finish()?, edge.share, &mut self.work)?;
+                        let credit = multiply(
+                            vector[from].finish()?,
+                            edge.share,
+                            &mut self.work.flushed_terms,
+                        )?;
                         let credit = multiply(
                             credit,
                             if k == 0 { 1.0 } else { self.alpha },
-                            &mut self.work,
+                            &mut self.work.flushed_terms,
                         )?;
                         output[edge.to].add(credit)?;
                     }
@@ -564,7 +596,7 @@ impl<'a> Ranker<'a> {
             let mut tail = initial.finish()?;
             for _ in 0..65 {
                 tick(&mut self.work, before, max_operations, Phase::Estimate)?;
-                tail = multiply(tail, self.alpha, &mut self.work)?;
+                tail = multiply(tail, self.alpha, &mut self.work.flushed_terms)?;
             }
             tick(&mut self.work, before, max_operations, Phase::Estimate)?;
             tail /= 1.0 - self.alpha;
