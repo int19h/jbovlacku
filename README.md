@@ -236,6 +236,8 @@ Word pages and language packages retain effective deprecated definitions.
 Remote search includes them through its retired-results filter and shows each publication's status.
 Reads pinned to an earlier retained snapshot use that snapshot's state. Word pages and remote searches also use their requested view.
 Core definition rankings exclude definitions without effective receipts.
+Exact context resolution scans publications once and looks up judgments only for matching targets.
+It indexes private replacements and weights by resolved actor pairs without changing eligibility or ranking rules.
 Rafsi eligibility uses effective publication evidence and preserves missing-data uncertainty.
 Resolved cutoffs and transfers keep their publication exclusions when another cutoff is pending.
 Otherwise, pending compromise cutoffs suspend definition and rafsi receipts. Suspended publications do not prove an inactive rafsi assignment.

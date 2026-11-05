@@ -177,6 +177,41 @@ fn retained_rules<'a>(rules: &[&'a TrustRule]) -> Vec<&'a TrustRule> {
         })
         .collect()
 }
+// Borrow target IDs for one context. Publication state does not filter membership.
+fn context_target_ids<'a>(
+    publications: impl Iterator<Item = &'a Publication>,
+    context: &Context,
+) -> BTreeSet<&'a str> {
+    let mut targets = BTreeSet::new();
+    for publication in publications {
+        if publication.word == context.word
+            && if context.kind == "definition" {
+                publication.kind == "definition.publish" && publication.language == context.language
+            } else {
+                publication.kind == "rafsi.publish"
+            }
+        {
+            targets.insert(publication.id.as_str());
+            if let Some(assignment) = &publication.assignment {
+                targets.insert(assignment.as_str());
+            }
+        }
+    }
+    targets
+}
+fn judgments_for_targets<'a>(
+    targets: impl Iterator<Item = &'a str>,
+    judgments: &BTreeMap<String, BTreeMap<String, Judgment>>,
+) -> BTreeMap<String, BTreeMap<String, Judgment>> {
+    targets
+        .filter_map(|target| {
+            judgments
+                .get(target)
+                .map(|values| (target.to_owned(), values.clone()))
+        })
+        .collect()
+}
+
 /// Construct the positive graph for one exact comparison context.
 /// Blocked destinations lose their original shares after row normalization.
 pub fn evaluate_context(evaluation: &Evaluation, context: &Context) -> ContextGraph {
@@ -209,22 +244,8 @@ fn evaluate_context_with_limit(
         };
     }
     let mut actors = BTreeSet::new();
-    let judgments: BTreeMap<_, _> = evaluation
-        .judgments
-        .iter()
-        .filter(|(target, _)| {
-            evaluation.publications.values().any(|p| {
-                (p.id == **target || p.assignment.as_ref() == Some(*target))
-                    && p.word == context.word
-                    && if context.kind == "definition" {
-                        p.kind == "definition.publish" && p.language == context.language
-                    } else {
-                        p.kind == "rafsi.publish"
-                    }
-            })
-        })
-        .map(|(target, values)| (target.clone(), values.clone()))
-        .collect();
+    let targets = context_target_ids(evaluation.publications.values(), context);
+    let judgments = judgments_for_targets(targets.into_iter(), &evaluation.judgments);
     for values in judgments.values() {
         actors.extend(values.keys().cloned());
     }
@@ -254,6 +275,8 @@ fn evaluate_context_with_limit(
         }
     }
     let mut trust = evaluation.trust.clone();
+    let mut private_weights_by_pair: BTreeMap<(String, String), Vec<(Value, Rational)>> =
+        BTreeMap::new();
     if let Some(overlay) = &evaluation.overlay {
         if overlay["version"] == 2 {
             if let Some(key) = overlay["public_shun_issuer"].as_str() {
@@ -296,13 +319,29 @@ fn evaluate_context_with_limit(
         for rule in overlay["trust"].as_array().into_iter().flatten() {
             let issuer = resolve(rule["issuer"].as_str().unwrap());
             let subject = resolve(rule["subject"].as_str().unwrap());
+            if rule["value"] == "heed" {
+                private_weights_by_pair
+                    .entry((issuer.clone(), subject.clone()))
+                    .or_default()
+                    .push((
+                        rule["scope"].clone(),
+                        rational(&rule["weight"]).unwrap_or_else(Rational::one),
+                    ));
+            }
             let entry = private
                 .entry((issuer, subject, rule["scope"].to_string()))
                 .or_insert_with(|| (rule["scope"].clone(), BTreeSet::new()));
             entry.1.insert(rule["value"].as_str().unwrap().into());
         }
+        // Remove replaced public registers once before adding private registers.
+        trust.retain(|rule| {
+            !private.contains_key(&(
+                rule.actor.clone(),
+                rule.subject.clone(),
+                rule.scope.to_string(),
+            ))
+        });
         for ((issuer, subject, _), (scope, values)) in private {
-            trust.retain(|r| r.actor != issuer || r.subject != subject || r.scope != scope);
             if values.len() != 1 || !values.contains("clear") {
                 trust.push(TrustRule {
                     actor: issuer,
@@ -364,14 +403,10 @@ fn evaluate_context_with_limit(
             continue;
         }
         let mut private_weights = BTreeSet::new();
-        if let Some(overlay) = &evaluation.overlay {
-            for r in overlay["trust"].as_array().into_iter().flatten() {
-                if r["issuer"].as_str().is_some_and(|a| resolve(a) == issuer)
-                    && r["subject"].as_str().is_some_and(|a| resolve(a) == subject)
-                    && retained.iter().any(|rule| rule.scope == r["scope"])
-                    && r["value"] == "heed"
-                {
-                    private_weights.insert(rational(&r["weight"]).unwrap_or_else(Rational::one));
+        if let Some(entries) = private_weights_by_pair.get(&(issuer.clone(), subject.clone())) {
+            for (scope, weight) in entries {
+                if retained.iter().any(|rule| &rule.scope == scope) {
+                    private_weights.insert(weight.clone());
                 }
             }
         }
@@ -677,3 +712,8 @@ mod tests {
         assert_eq!(MAX_CONTEXT_REFUSALS, 100_000);
     }
 }
+
+#[cfg(test)]
+mod index_tests;
+#[cfg(test)]
+mod reference;
