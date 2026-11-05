@@ -3,6 +3,13 @@ use super::{validate_row, PreparationError, Sum};
 use crate::{Limits, RankError};
 use std::collections::BTreeMap;
 
+#[path = "owned.rs"]
+mod owned;
+pub use owned::{
+    AllocationAccount, AllocationCharge, OwnedProgress, OwnedRanking, OwnedTask, PendingProgress,
+    SliceUsage, TaskPhase,
+};
+
 type Result<T> = std::result::Result<T, PreparationError>;
 fn resource(name: &'static str) -> PreparationError {
     PreparationError::Graph(RankError::ResourceLimit(name))
