@@ -1164,7 +1164,7 @@ Resolve this public source before private trust replacement. Private heeds, clea
 While the public source stands, a private heed cannot restore influence through that actor in the personal calculation.
 A public clear or a narrower public heed can remove that source in the relevant context.
 An explicit private block remains separate and survives a public clear.
-Add both block sources before final graph filtering under either signed public calculation profile.
+Add both block sources before final graph filtering under every signed public calculation profile.
 
 Only records in the named authenticated snapshot affect these public blocks.
 Undelivered or unindexed public actions remain pending until a later snapshot includes them and the client recalculates.
@@ -1182,6 +1182,7 @@ Version 1 and site reviewer response shapes remain unchanged.
 Build each positive outgoing row before applying view exclusions and local blocks. Divide it equally among its resolved heeds.
 Private weights can replace equal weights. Let s be their positive sum.
 If s exceeds one, divide each weight by s. Otherwise retain the weights without scaling them upward.
+The float profile instead uses the [rational-first procedure](#approximate-shun-calculation).
 
 This permits a private row to leave part of its allowance unused. Default weight one gives equal shares across ordinary heeds.
 Then zero blocked destinations without redistributing their shares. Self edges are absent.
@@ -1390,7 +1391,9 @@ In the other branch, use `p_i = r_i / s`.
 The branch uses rounded `s` and does not claim exact classification at a rational sum of one.
 
 Inputs include converted weights, ratios, shares, `q`, `H`, `alpha`, and `T`.
-A subnormal input or a positive input that converts to zero gives `numeric_unavailable` for that graph.
+The input guard tests the converted binary64 value.
+A subnormal conversion or a positive input that converts to zero gives `numeric_unavailable` for that graph.
+An exact input below the smallest normal value is accepted if conversion rounds it up to that normal value.
 Subnormal numbers lie below binary64's normal positive range.
 Zero remains allowed only where the parameter permits mathematical zero.
 Reject nonfinite arithmetic and invalid or reversed estimates.

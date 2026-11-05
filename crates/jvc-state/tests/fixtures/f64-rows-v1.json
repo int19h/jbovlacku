@@ -43,7 +43,12 @@
     "nonpositive": {
       "error": "row weights must be positive"
     },
+    "normal-boundary-round-up": "0010000000000000",
     "normal-input": "3fb999999999999a",
+    "normalize-edge-limit": {
+      "edges": 100001,
+      "error": "ranking resource limit: edges"
+    },
     "normalize-input-row-above-ceiling": {
       "actor-0000": "3fdfffffffffffa4",
       "actor-0001": "3fe000000000002e"
@@ -212,6 +217,9 @@
     },
     "rational-limit": {
       "error": "ranking resource limit: fraction bits"
+    },
+    "rounded-up-normal-raw": {
+      "actor-0000": "0010000000000000"
     },
     "row-above-ceiling": {
       "accepted": false,
@@ -503,6 +511,10 @@
     },
     "underflow-input": {
       "error": "numeric_unavailable"
+    },
+    "validate-edge-limit": {
+      "edges": 100001,
+      "error": "ranking resource limit: edges"
     },
     "zero-allowed": "0000000000000000",
     "zero-forbidden": {

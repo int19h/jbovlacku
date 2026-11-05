@@ -32,6 +32,22 @@ fn prepared(weights: &[Rational], blocked: &[usize]) -> Value {
     }
 }
 
+fn float_graph_bits(graph: &jvc_state::ContextGraph<f64>) -> Value {
+    let mut value = serde_json::to_value(graph).unwrap();
+    value["roots"] = json!(graph.roots.iter().copied().map(bits).collect::<Vec<_>>());
+    value["rows"] = json!(
+        graph
+            .rows
+            .iter()
+            .map(|row| row
+                .iter()
+                .map(|edge| json!({"to":edge.to,"share":bits(edge.share)}))
+                .collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
+    value
+}
+
 pub fn vectors() -> Value {
     let mut cases = BTreeMap::new();
     for (name, weights, blocked) in [
@@ -68,6 +84,11 @@ pub fn vectors() -> Value {
         ("subnormal-raw", vec![power(-1023), power(-1024)], vec![]),
         ("zero-raw", vec![power(-2000), power(-2001)], vec![]),
         ("minimum-normal-raw", vec![power(-1022)], vec![]),
+        (
+            "rounded-up-normal-raw",
+            vec![power(-1022) - power(-1075)],
+            vec![],
+        ),
         ("nonpositive", vec![rational(0, 1)], vec![]),
         ("negative", vec![rational(-1, 1)], vec![]),
         ("rational-limit", vec![power(16384)], vec![]),
@@ -100,25 +121,6 @@ pub fn vectors() -> Value {
         if name == "blocked" {
             assert_eq!(result["actor-0001"], bits(1.0 / 3.0));
         }
-        let reversed: BTreeMap<_, _> = weights
-            .iter()
-            .enumerate()
-            .rev()
-            .map(|(i, w)| (format!("actor-{i:04}"), w.clone()))
-            .collect();
-        let blocked_set = blocked.iter().map(|i| format!("actor-{i:04}")).collect();
-        let again = approximate::normalize_row(&reversed, &blocked_set);
-        assert_eq!(
-            again
-                .as_ref()
-                .map(|row| json!(
-                    row.iter()
-                        .map(|(k, v)| (k.clone(), bits(*v)))
-                        .collect::<BTreeMap<_, _>>()
-                ))
-                .unwrap_or_else(|e| json!({"error":e.to_string()})),
-            result
-        );
         cases.insert(name.to_owned(), result);
     }
     for (name, value, allow_zero) in [
@@ -126,16 +128,52 @@ pub fn vectors() -> Value {
         ("zero-forbidden", rational(0, 1), false),
         ("normal-input", rational(1, 10), false),
         ("negative-normal-input", rational(-1, 2), false),
+        (
+            "normal-boundary-round-up",
+            power(-1022) - power(-1075),
+            false,
+        ),
         ("subnormal-input", power(-1074), true),
         ("underflow-input", power(-2000), true),
         ("overflow-input", power(2000), true),
     ] {
+        if name == "normal-boundary-round-up" {
+            assert_eq!(
+                approximate::input(&value, allow_zero).unwrap().to_bits(),
+                f64::MIN_POSITIVE.to_bits()
+            );
+        }
         cases.insert(
             name.into(),
             match approximate::input(&value, allow_zero) {
                 Ok(v) => json!(bits(v)),
                 Err(e) => json!({"error":e.to_string()}),
             },
+        );
+    }
+    let too_many_edges = jvc_rank::Limits::default().max_edges + 1;
+    let weights = (0..too_many_edges)
+        .map(|i| (format!("actor-{i:06}"), rational(1, 1)))
+        .collect();
+    for (name, result) in [
+        (
+            "normalize-edge-limit",
+            approximate::normalize_row(&weights, &BTreeSet::new()).map(|_| ()),
+        ),
+        (
+            "validate-edge-limit",
+            approximate::validate_row(std::iter::repeat_n(1.0, too_many_edges)),
+        ),
+    ] {
+        assert_eq!(
+            result,
+            Err(approximate::PreparationError::Graph(
+                jvc_rank::RankError::ResourceLimit("edges")
+            ))
+        );
+        cases.insert(
+            name.into(),
+            json!({"edges":too_many_edges,"error":result.unwrap_err().to_string()}),
         );
     }
     let p = (BigInt::one() << 16300usize) - 1;
@@ -338,6 +376,28 @@ pub fn vectors() -> Value {
             assert!(!evaluation.reasons.contains("invalid_overlay"));
             let graph = prepare_approximate_context(&evaluation, &context);
             assert!(graph.available);
+            for rotate in [false, true] {
+                let mut permuted = input.clone();
+                if rotate {
+                    permuted.events.rotate_left(2);
+                } else {
+                    permuted.events.reverse();
+                }
+                assert_ne!(
+                    permuted
+                        .events
+                        .iter()
+                        .map(|event| event.id())
+                        .collect::<Vec<_>>(),
+                    input
+                        .events
+                        .iter()
+                        .map(|event| event.id())
+                        .collect::<Vec<_>>()
+                );
+                let reordered = prepare_approximate_context(&evaluate(&permuted), &context);
+                assert_eq!(float_graph_bits(&reordered), float_graph_bits(&graph));
+            }
             let weights = BTreeMap::from([
                 (key(2), a.clone()),
                 (key(3), b.clone()),

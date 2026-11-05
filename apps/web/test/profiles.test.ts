@@ -73,6 +73,26 @@ async function serverWeights(page: Page, wordId: string, view: string) {
   );
 }
 
+test("the float profile describes shun routes without enabling scores", async ({
+  page,
+}) => {
+  await page.goto("/trust");
+  const profiles = await page.evaluate(async () => {
+    const { describeProfile, SHUN_PROFILE, FLOAT_PROFILE } = await import(
+      String("/src/model/profiles.ts")
+    );
+    return {
+      exact: describeProfile(SHUN_PROFILE),
+      float: describeProfile(FLOAT_PROFILE),
+    };
+  });
+  expect(profiles.float.name).toBe("simple-routes-shun-f64-v1");
+  expect(profiles.float.known).toBe(false);
+  expect(profiles.float.shunRule).toBe(profiles.exact.shunRule);
+  expect(profiles.float.shunRule).toContain("a route is refused");
+  expect(profiles.float.upperCaveat).toBe("");
+});
+
 test("choosing a signed view changes the calculation profile, and the page shows the real result of each view", async ({
   page,
 }) => {

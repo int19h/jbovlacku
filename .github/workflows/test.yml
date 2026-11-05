@@ -53,6 +53,8 @@ jobs:
         run: python3 crates/jvc-core/tests/run-browser-parity.py
       - name: Compare native and browser causal state and ranking
         run: node scripts/test-state-parity.mjs
+      - name: Compare native and WebAssembly float row bits
+        run: node scripts/test-f64-row-parity.mjs
       - name: Check TypeScript
         run: npm run typecheck
       - name: Test TypeScript morphology

@@ -6,8 +6,10 @@
  */
 export const BOUNDS_PROFILE = "simple-routes-bounds-v1";
 export const SHUN_PROFILE = "simple-routes-shun-v1";
+export const FLOAT_PROFILE = "simple-routes-shun-f64-v1";
 export interface ProfileDescription {
   name: string;
+  /** Whether this client supports scores from this profile. */
   known: boolean;
   /** How public shuns act on routes under this profile. */
   shunRule: string;
@@ -32,6 +34,13 @@ export function describeProfile(name: string): ProfileDescription {
         "A public shun removes the issuer's own trust edge, and a route is refused where any earlier actor on that route effectively shuns the next person. Independent routes and that person's own starting allocation stay. A refused share is not passed on.",
       upperCaveat:
         "An unfinished upper endpoint can include routes that effective shuns forbid. It is a bound, not received support.",
+    };
+  if (name === FLOAT_PROFILE)
+    return {
+      name,
+      known: false,
+      shunRule: describeProfile(SHUN_PROFILE).shunRule,
+      upperCaveat: "",
     };
   return {
     name,

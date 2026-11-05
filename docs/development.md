@@ -1163,6 +1163,7 @@ export JVC_SHUN_PARITY_DIR="$(mktemp -d "$PWD/.cache/shun-parity.XXXXXX")"
 cargo test -p jvc-state -p jvc-runtime --locked --jobs 2 -- --test-threads=2
 npm run build:core
 node scripts/test-state-parity.mjs
+node scripts/test-f64-row-parity.mjs
 ```
 
 The runner initializes the browser WebAssembly module before it compares complete native state and ranking results.

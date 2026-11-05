@@ -19,6 +19,7 @@ pub struct PositiveEdge<T = Rational> {
 pub struct ContextGraph<T = Rational> {
     pub calculation: String,
     pub actors: Vec<String>,
+    /// An unavailable float graph can leave all roots unset.
     pub roots: Vec<T>,
     pub rows: Vec<Vec<PositiveEdge<T>>>,
     /// Each target lists the resolved actors who effectively shun it.
@@ -219,6 +220,8 @@ pub fn evaluate_context(evaluation: &Evaluation, context: &Context) -> ContextGr
 }
 
 /// Prepare float rows only. This operation does not rank the context.
+/// When `available` is false, `roots` can be empty despite nonempty `actors`.
+/// Consumers must require `available` before they use roots or rows for ranking.
 pub fn prepare_approximate_context(
     evaluation: &Evaluation,
     context: &Context,
@@ -707,6 +710,61 @@ pub(crate) fn valid_overlay(v: &Value, base: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn dispatch_evaluation(calculation: &str) -> Evaluation {
+        let mut evaluation = evaluate(&EvaluationInput {
+            events: Vec::new(),
+            bodies: BTreeMap::new(),
+            selected_view: String::new(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+            limits: Limits::default(),
+        });
+        evaluation.available = true;
+        evaluation.reasons.clear();
+        evaluation.policy = Some(json!({"calculation":calculation,"roots":[],"excluded":[]}));
+        evaluation.trust = vec![TrustRule {
+            actor: "a".into(),
+            subject: "b".into(),
+            scope: json!({"kind":"*","word":"*","language":"*"}),
+            values: BTreeSet::from(["heed".into()]),
+        }];
+        evaluation
+    }
+
+    fn dispatch_context() -> Context {
+        Context {
+            kind: "definition".into(),
+            word: "word".into(),
+            language: Some("en".into()),
+        }
+    }
+
+    #[test]
+    fn exact_rows_reject_the_float_profile_at_the_state_boundary() {
+        let evaluation = dispatch_evaluation(jvc_rank::approximate::ALGORITHM);
+        let context = dispatch_context();
+        assert!(prepare_approximate_context(&evaluation, &context).available);
+        let graph = evaluate_context(&evaluation, &context);
+        assert!(!graph.available);
+        assert!(graph.reasons.contains("unsupported_calculation"));
+        assert!(!graph.actors.is_empty());
+        assert!(graph.rows.iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn float_rows_reject_both_exact_profiles_at_the_state_boundary() {
+        for profile in ["simple-routes-bounds-v1", "simple-routes-shun-v1"] {
+            let evaluation = dispatch_evaluation(profile);
+            let context = dispatch_context();
+            assert!(evaluate_context(&evaluation, &context).available);
+            let graph = prepare_approximate_context(&evaluation, &context);
+            assert!(!graph.available);
+            assert!(graph.reasons.contains("unsupported_calculation"));
+            assert!(!graph.actors.is_empty());
+            assert!(graph.rows.iter().all(Vec::is_empty));
+        }
+    }
 
     #[test]
     fn float_preparation_preserves_failure_classes() {
