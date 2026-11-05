@@ -50,6 +50,7 @@ import {
   editorText,
   editorToRichText,
   fieldsReferencing,
+  referenceFields,
   literalLoss,
   literalize,
   newPlace,
@@ -75,6 +76,7 @@ import { loadDefinition } from "../../data/api.ts";
 import {
   countNodes,
   placeMarker,
+  referencedPlaces,
   renderRichText,
 } from "../../model/richtext.ts";
 import type { RichText } from "../../model/types.ts";
@@ -1249,6 +1251,7 @@ export async function placesPage(
     li.append(marker, grid, tools);
     return li;
   };
+  let approvedOnPage = false;
   let approvalMessage: HTMLParagraphElement | null = null;
   const refreshNumbering = () => {
     approvalMessage = null;
@@ -1256,7 +1259,14 @@ export async function placesPage(
     const { problems } = draftToBody(draft);
     const needs = problems.some((pr) => pr.field === "numbering");
     if (!needs) {
-      if (draft.numberingApproved) {
+      if (
+        draft.numberingApproved &&
+        (approvedOnPage ||
+          draft.places.length ||
+          referenceFields(draft).some(
+            (field) => referencedPlaces(field.get()).size > 0,
+          ))
+      ) {
         approvalMessage = p("Place numbering approved.", "meta");
         approvalMessage.tabIndex = -1;
         numbering.append(approvalMessage);
@@ -1278,6 +1288,7 @@ export async function placesPage(
           () => {
             const hadFocus = numbering.contains(document.activeElement);
             draft.numberingApproved = true;
+            approvedOnPage = true;
             saver.touch();
             refreshNumbering();
             refreshPreview();

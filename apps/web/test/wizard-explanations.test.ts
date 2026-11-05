@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { expectRichText, typeRichText } from "./rich-helpers.ts";
+import { fixture } from "./helpers.ts";
 
 test("wizard explanations keep Meaning help and other languages behind keyboard controls", async ({
   page,
@@ -386,3 +387,72 @@ test("wizard explanations focus approval feedback without declared places", asyn
   ).toHaveCount(0);
   await expect(page.getByLabel("Number of places")).toHaveValue("context");
 });
+
+test("wizard explanations omit approval feedback for a placeless cmavo revision", async ({
+  page,
+}) => {
+  const parent = fixture().definitions.lo;
+  await page.goto(`/new/editor?revise=${encodeURIComponent(parent)}`);
+  await expect(page.getByLabel("Type", { exact: true })).toHaveValue("cmavo");
+  await expect(
+    page.getByLabel("Number of places", { exact: true }),
+  ).toHaveValue("none");
+  await expect(
+    page.getByRole("link", { name: parent, exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".place-row")).toHaveCount(0);
+  await expect(
+    page.getByText("Place numbering approved.", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Approve the numbering", exact: true }),
+  ).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const draft = await new LocalStore().get("drafts", "current");
+        return draft.numberingApproved;
+      }),
+    )
+    .toBe(true);
+  await page.reload();
+  await expect(page.getByLabel("Type", { exact: true })).toHaveValue("cmavo");
+  await expect(
+    page.getByText("Place numbering approved.", { exact: true }),
+  ).toHaveCount(0);
+});
+
+for (const field of ["text", "notes"]) {
+  test(`wizard explanations retain saved approval feedback for references in ${field}`, async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async (field) => {
+      const { newDraft } = await import(String("/src/model/draft.ts"));
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      await new LocalStore().put(
+        "drafts",
+        "current",
+        newDraft({
+          spelling: "broda",
+          kind: "gismu",
+          text: [["A relation."]],
+          [field]: [[1, " depends on context."]],
+          frameMode: "context",
+          places: [],
+          numberingApproved: true,
+          step: 4,
+        }),
+      );
+    }, field);
+    await page.goto("/new/editor");
+    await expect(page.locator(".place-row")).toHaveCount(0);
+    await expect(
+      page.getByText("Place numbering approved.", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Approve the numbering", exact: true }),
+    ).toHaveCount(0);
+  });
+}
