@@ -1,4 +1,4 @@
-# Exact ranking and approximate propagation
+# Exact ranking and approximate decisions
 
 This crate implements section 8 of the [format specification](../../docs/format.md) with exact fractions.
 Its calculation profiles are `simple-routes-bounds-v1` and `simple-routes-shun-v1`.
@@ -8,7 +8,7 @@ The library builds for native Rust and `wasm32-unknown-unknown`.
 The `approximate` module prepares rows for `simple-routes-shun-f64-v1` under `jvc-f64-rows-v1`.
 It compares and divides rational weights before float conversion, uses compensated sums, and rejects unavailable numerical inputs.
 It also supplies synchronous complete route stages and the 65 relaxed estimates with their scalar tail.
-It does not implement float ranking decisions or jobs.
+The `approximate::decisions` module supplies non-certified decisions and layers. It does not implement jobs.
 `jvc-state::prepare_approximate_context` shares semantic resolution with the exact path and uses this row helper.
 The [format specification](../../docs/format.md#approximate-shun-calculation) defines its non-certified contract.
 
@@ -193,7 +193,7 @@ It rejects negative-zero root weights.
 `approximate::Ranker::advance` commits complete route stages only.
 `estimates` returns actor endpoints only after the full upper calculation succeeds.
 These estimates remain non-certified even when exploration completes.
-The API supplies no score comparisons, margins, or layers.
+The separate `decisions` module consumes completed estimates for comparisons, margins, and layers.
 
 Positive propagated products below `f64::MIN_POSITIVE` become zero, and their prefixes or terms disappear.
 `flushed_terms` counts those drops, including products that round up to the smallest normal value.
@@ -239,3 +239,53 @@ node scripts/test-f64-kernel-parity.mjs
 The script uses the same `CARGO_TARGET_DIR` as other Rust commands.
 It compares actor endpoint bits and all progress counters across both builds.
 The test oracle enumerates rational paths independently and calculates the same 65 relaxed terms for partial stages.
+
+## Approximate decisions and layers
+
+`approximate::decisions::DecisionContext` binds a resolved graph and parameters to a completed ranking.
+The caller must supply estimates from that graph and those parameters.
+The constructor refuses incomplete upper estimates and invalid numerical data.
+It supplies no host session, owned task, or application capability.
+
+`score` adds support and opposition with Neumaier sums and keeps signed net differences, including subnormal differences.
+`difference` cancels identical actor verdicts before it computes the remaining comparison mass.
+Context references share cancellation only when they reference the same graph, ranking, and parameters.
+`separate_difference` uses both scores' upper support and opposition masses without actor cancellation.
+It counts the flushing allowance once per distinct contributing context graph.
+
+Margins use `factor(d) * M + F`, with compensated addition.
+`factor(d)` is `max(1e-12, (2*d + 140) * 2^-52)`.
+Each graph supplies `flushed_terms * 2^-1018` to `F`.
+Cross-graph comparisons use the maximum depth and the sum of their distinct graph allowances.
+Zero mass establishes no lead, and the formula adds no unit mass floor.
+
+Public margin details retain depth, factor, mass, each graph's count and allowance, combined `F`, and the final margin.
+`DECISION_CONTRACT` identifies this formula as `jvc-f64-decisions-v1` for later result and cache bindings.
+These values remain engineering estimates, not certified bounds.
+
+Actual-positive support requires a lower net estimate above its margin.
+Eligible-competitor potential remains possible unless structure proves no positive support or the upper net is below the negative margin.
+Unresolved-pair potential uses retained judgments without assuming eligibility gates pass.
+Missing estimates or history give unavailable decisions.
+Threshold decisions convert the rational input and use the inclusive lower-net test.
+The returned decision records contain their margins so later rendering need not recalculate them.
+
+Structural zero uses roots, positive edges, alpha, simple routes, shuns, and retained judgment signs.
+Its bounded search never uses computed influence values or flush counts.
+A flushed zero therefore remains possible support.
+A search resource failure returns an error and supplies no zero evidence.
+
+`automatic_selection` requires eligibility, actual positive support, threshold acceptance, and leads over all possible eligible competitors.
+Unavailable eligible potential and possible or unavailable unresolved potential block selection.
+The result discloses that uniqueness depends on the known identified same-spelling inventory.
+The caller must restrict its inputs to that inventory. Unknown spellings remain a separate coverage limit.
+
+`nondominated_layers` keeps active targets before deprecated targets and discloses unavailable entries as incomplete.
+The layer builder collapses comparison cycles before it computes successive layers, then orders IDs stably inside each layer.
+`layers_from_comparisons` accepts a complete bounded set of validated pair decisions from different contexts.
+`order_unjudged` changes only known unjudged structural-zero slots in complete layers.
+A zero-influence reviewer still occupies its position, and missing reviewer information grants no preference.
+
+The existing native/Wasm kernel script also executes the decision vectors.
+They cover margin crossings, tiny residues, counted allowances, structural potential, selection gates, cycles, and presentation permutations.
+The exact module remains the fraction-based reference and stays unchanged.
