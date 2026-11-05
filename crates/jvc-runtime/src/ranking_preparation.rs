@@ -146,6 +146,13 @@ pub struct RankingPreparationSummary {
     pub contexts: Vec<PreparationContext>,
     pub usage: PreparationUsage,
 }
+#[derive(Serialize)]
+struct PreparationMetadata<'a> {
+    descriptor_binding: &'a str,
+    usage: &'a PreparationUsage,
+    prepared: Option<&'a RankingPreparationSummary>,
+    retained_graphs: usize,
+}
 pub(crate) struct PreparedContext {
     pub(crate) graph: Option<Arc<a::Graph>>,
     pub(crate) judgments: BTreeMap<String, BTreeMap<String, jvc_state::Judgment>>,
@@ -653,7 +660,15 @@ impl SessionPreparation {
             contexts: summaries,
             usage: self.usage.clone(),
         };
-        encoded(&summary, self.policy.limits.metadata_bytes)?;
+        encoded(
+            &Some(PreparationMetadata {
+                descriptor_binding: &self.descriptor.binding,
+                usage: &self.usage,
+                prepared: Some(&summary),
+                retained_graphs: prepared.iter().filter(|c| c.graph.is_some()).count(),
+            }),
+            self.policy.limits.metadata_bytes,
+        )?;
         self.prepared = Some(PreparedRanking {
             contexts: prepared,
             summary: summary.clone(),
@@ -728,7 +743,14 @@ impl EvaluationSession {
     }
     pub fn ranking_preparation(&self) -> std::result::Result<String, JsValue> {
         let p = self.preparation.borrow();
-        let metadata=p.as_ref().map(|p|json!({"descriptor_binding":p.descriptor.binding,"usage":p.usage,"prepared":p.prepared.as_ref().map(|p|&p.summary),"retained_graphs":p.prepared.as_ref().map_or(0,|p|p.contexts.iter().filter(|c|c.graph.is_some()).count())}));
+        let metadata = p.as_ref().map(|p| PreparationMetadata {
+            descriptor_binding: &p.descriptor.binding,
+            usage: &p.usage,
+            prepared: p.prepared.as_ref().map(|p| &p.summary),
+            retained_graphs: p.prepared.as_ref().map_or(0, |p| {
+                p.contexts.iter().filter(|c| c.graph.is_some()).count()
+            }),
+        });
         let max = p.as_ref().map_or(1024, |p| p.policy.limits.metadata_bytes);
         encoded(&metadata, max)
             .map(|bytes| String::from_utf8(bytes).unwrap())
