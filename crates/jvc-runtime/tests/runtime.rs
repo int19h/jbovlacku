@@ -1489,3 +1489,6 @@ fn signed_invalid_definition_action_keeps_an_inert_decodable_record() {
     let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
     builder.add_host_verified_record(&compact).unwrap();
 }
+
+#[path = "support/resolver_cases.rs"]
+mod resolver_cases;

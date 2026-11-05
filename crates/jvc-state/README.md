@@ -19,6 +19,9 @@ The account authority flag disables imported status powers. A certified account 
 Missing parent views disable account guard decisions. Native rankings remain available when the selected view body is available.
 
 `evaluate_context` constructs the positive graph for one word and language. It resolves scopes and continuity before row normalization.
+The resolver scans publications once and looks up judgments only for matching targets.
+It indexes private register replacements and heed weights by resolved actor pairs.
+Publication membership stays separate from eligibility and status.
 Exclusions and local blocks remove shares after normalization. They do not increase surviving shares.
 `publication_status` and `account_control` expose the frontend status and certificate fields directly.
 
@@ -39,3 +42,22 @@ It cannot detect an omitted branch when no supplied event or reference exposes t
 The handover test suite executes H01 through H48 with signed records. Each case uses four delivery orders, duplicate delivery, and serialized reconstruction.
 The suite also covers account evidence, native cutoffs, scope conflicts, private overlays, import selection conflicts, rafsi gates, and resource limits.
 These tests sample delivery orders. They do not enumerate every permutation of a large event set.
+
+## Context lookup measurements
+
+The synthetic context probe measures one exact resolver call after fixture construction.
+It varies publication and judgment counts without reading a live dictionary or running state evaluation.
+The output includes the resolved graph digest, elapsed resolver time, and matching judgment count.
+
+From the repository root, build and run the probe with the assigned Rust target directory:
+
+```sh
+cargo build -p jvc-state --release --locked --jobs 2 --example context_lookup
+/usr/bin/time -v "$CARGO_TARGET_DIR/release/examples/context_lookup" 60000 5000
+```
+
+The two arguments select publications and judged targets.
+The fixture places at most one judged target in the requested context.
+Process CPU and peak memory include fixture construction.
+The resolver timer excludes it.
+These synthetic results do not establish HTTP latency or live dictionary capacity.
