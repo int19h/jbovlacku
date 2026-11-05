@@ -352,7 +352,9 @@ Cold evaluation and checkpoint restore fill the envelope cache from these privat
 The first admission after a restart needs no retained envelope reads.
 
 An extraction format or body-validation change requires another projection of existing data.
-Compact extraction version 7 and semantic extraction version 4 apply the current acute-accent word identity and body rules.
+Compact extraction version 8 and semantic extraction version 5 also admit the signed float calculation profile.
+They retain the current acute-accent word identity and body rules.
+Evaluation checkpoint version 2 rejects state derived under the earlier profile schema.
 Earlier derived rows require backfill before reuse. Original signed records remain unchanged.
 Missing or older compact records trigger a parse-only backfill from private original bytes.
 Backfill does not repeat signature checks, body hashing, or canonical JSON checks.
@@ -1161,6 +1163,7 @@ export JVC_SHUN_PARITY_DIR="$(mktemp -d "$PWD/.cache/shun-parity.XXXXXX")"
 cargo test -p jvc-state -p jvc-runtime --locked --jobs 2 -- --test-threads=2
 npm run build:core
 node scripts/test-state-parity.mjs
+node scripts/test-f64-row-parity.mjs
 ```
 
 The runner initializes the browser WebAssembly module before it compares complete native state and ranking results.

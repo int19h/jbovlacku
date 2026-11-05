@@ -262,7 +262,7 @@ fn forks_and_host_checkpoints_keep_parent_results_unchanged() {
         EvaluatedState::restore_host_checkpoint(b"damaged", "snapshot/core/view/limits").is_err()
     );
     let mut wrong_version = saved;
-    wrong_version["version"] = json!("future");
+    wrong_version["version"] = json!("jvc-evaluation-checkpoint-v1");
     assert!(
         EvaluatedState::restore_host_checkpoint(
             &serde_json::to_vec(&wrong_version).unwrap(),

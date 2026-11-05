@@ -1673,3 +1673,33 @@ test("inventory objects with absent Node storage bytes are unavailable and recov
   assert.equal(missing.status, 404);
   assert.equal(((await missing.json()) as any).code, "missing");
 });
+
+test("signed float views admit without enabling ranking jobs", async () => {
+  const { service } = await instance();
+  const rows = JSON.parse(
+    await readFile(
+      new URL(
+        "../../../crates/jvc-runtime/tests/fixtures/host-record-inputs-v8.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const row = rows.find(
+    (row: { name: string }) => row.name === "f64-contract-0",
+  );
+  const admitted = await service.fetch(
+    request("/events", {
+      envelope: JSON.parse(row.envelope),
+      body: JSON.parse(row.body),
+    }),
+  );
+  assert.equal(admitted.status, 201);
+  assert.equal((await admitted.json()).body_status, "present");
+  const capabilities = await (
+    await service.fetch(request("/capabilities"))
+  ).json();
+  assert.equal(capabilities.features.ranking_jobs, undefined);
+  assert.equal((await service.fetch(request("/ranking-jobs"))).status, 404);
+  assert.equal((await service.fetch(request("/ranking-jobs", {}))).status, 405);
+});

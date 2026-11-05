@@ -842,7 +842,7 @@ fn required_semantic<'de, D: serde::Deserializer<'de>>(
 // Versioned golden files in tests/fixtures are immutable. A projection change needs a new version.
 // Versions 3 and 4 were used by intermediate commits of PR #35 and never released.
 // Do not reuse them.
-pub const HOST_RECORD_VERSION: u32 = 7;
+pub const HOST_RECORD_VERSION: u32 = 8;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostRecord {
@@ -920,7 +920,7 @@ fn decode_host_record(bytes: &[u8]) -> Result<HostRecord> {
     Ok(record)
 }
 
-pub const SEMANTIC_PROJECTION_VERSION: u32 = 4;
+pub const SEMANTIC_PROJECTION_VERSION: u32 = 5;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostSemanticRecord {
