@@ -34,6 +34,43 @@ async function settle(page: Page) {
   );
 }
 
+async function expectDialogStyle(dialog: Locator) {
+  const style = await dialog.evaluate((node) => {
+    const css = getComputedStyle(node);
+    const probe = document.createElement("div");
+    probe.style.background = "var(--surface)";
+    probe.style.border = "1px solid var(--line2)";
+    probe.style.boxShadow = "0 20px 60px rgba(0, 0, 0, 0.18)";
+    probe.style.color = "#0008";
+    document.body.append(probe);
+    const expected = getComputedStyle(probe);
+    const result = {
+      background: css.backgroundColor,
+      surface: expected.backgroundColor,
+      border: css.borderColor,
+      line: expected.borderColor,
+      radius: css.borderRadius,
+      shadow: css.boxShadow,
+      expectedShadow: expected.boxShadow,
+      expectedBackdrop: expected.color,
+      backdrop: getComputedStyle(node, "::backdrop").backgroundColor,
+      left: node.getBoundingClientRect().left,
+      right: node.getBoundingClientRect().right,
+      scrollWidth: document.documentElement.scrollWidth,
+    };
+    probe.remove();
+    return result;
+  });
+  expect(style.background).toBe(style.surface);
+  expect(style.border).toBe(style.line);
+  expect(style.radius).toBe("16px");
+  expect(style.shadow).toBe(style.expectedShadow);
+  expect(style.backdrop).toBe(style.expectedBackdrop);
+  expect(style.left).toBeGreaterThanOrEqual(0);
+  expect(style.right).toBeLessThanOrEqual(360);
+  expect(style.scrollWidth).toBeLessThanOrEqual(360);
+}
+
 async function mount(page: Page, value: RichText) {
   await page.goto("/");
   await page.evaluate(async (value) => {
@@ -576,37 +613,7 @@ for (const theme of ["light", "dark"]) {
         exact: true,
       });
       await expect(dialog).toBeVisible();
-      const style = await dialog.evaluate((node) => {
-        const css = getComputedStyle(node);
-        const probe = document.createElement("div");
-        probe.style.background = "var(--surface)";
-        probe.style.border = "1px solid var(--line2)";
-        document.body.append(probe);
-        const expected = getComputedStyle(probe);
-        const result = {
-          background: css.backgroundColor,
-          surface: expected.backgroundColor,
-          border: css.borderColor,
-          line: expected.borderColor,
-          radius: css.borderRadius,
-          shadow: css.boxShadow,
-          backdrop: getComputedStyle(node, "::backdrop").backgroundColor,
-          left: node.getBoundingClientRect().left,
-          right: node.getBoundingClientRect().right,
-          scrollWidth: document.documentElement.scrollWidth,
-        };
-        probe.remove();
-        return result;
-      });
-      expect(style.background).toBe(style.surface);
-      expect(style.border).toBe(style.line);
-      expect(style.radius).toBe("16px");
-      expect(style.shadow).toContain("0px 20px 60px 0px");
-      expect(style.shadow).toContain("0.18");
-      expect(style.backdrop).toMatch(/^rgba\(0, 0, 0, 0\.[1-9]/u);
-      expect(style.left).toBeGreaterThanOrEqual(0);
-      expect(style.right).toBeLessThanOrEqual(360);
-      expect(style.scrollWidth).toBeLessThanOrEqual(360);
+      await expectDialogStyle(dialog);
       await expect(dialog.locator(".actions button")).toHaveText([
         "Cancel",
         "Insert",
@@ -629,4 +636,74 @@ for (const theme of ["light", "dark"]) {
       ).toBeFocused();
     });
   }
+}
+
+for (const theme of ["light", "dark"]) {
+  test(`circled-number paste dialog keeps Cancel beside its primary action at 360px in ${theme}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 360, height: 640 });
+    const initial: RichText = [["text"]];
+    const field = await mount(page, initial);
+    await page.evaluate(
+      (theme) => (document.documentElement.dataset.theme = theme),
+      theme,
+    );
+    await field.focus();
+    await field.evaluate((field) => {
+      const data = new DataTransfer();
+      data.setData("text/plain", "①");
+      const event = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: data,
+      });
+      if (event.clipboardData !== data)
+        Object.defineProperty(event, "clipboardData", { value: data });
+      if (event.clipboardData?.getData("text/plain") !== "①")
+        throw new Error("The paste fixture must expose its circled number.");
+      field.dispatchEvent(event);
+    });
+    const dialog = page.getByRole("dialog", {
+      name: "Paste circled numbers",
+      exact: true,
+    });
+    await expect(dialog).toBeVisible();
+    await expectDialogStyle(dialog);
+    await expect(dialog.locator(".actions button")).toHaveText([
+      "Convert circled numbers",
+      "Cancel",
+      "Keep literal text",
+    ]);
+    const primary = dialog.getByRole("button", {
+      name: "Keep literal text",
+      exact: true,
+    });
+    await expect(primary).toHaveClass(/btn-primary/u);
+    await expect(primary).toBeFocused();
+    const cancel = dialog.getByRole("button", { name: "Cancel", exact: true });
+    const actions = await dialog
+      .locator(":scope > .actions")
+      .evaluate((node) => getComputedStyle(node).justifyContent);
+    expect(actions).toBe("flex-end");
+    const cancelBox = (await cancel.boundingBox())!;
+    const primaryBox = (await primary.boundingBox())!;
+    const box = (await dialog.boundingBox())!;
+    expect(cancelBox.y).toBe(primaryBox.y);
+    expect(cancelBox.x + cancelBox.width).toBeLessThanOrEqual(primaryBox.x);
+    expect(primaryBox.x + primaryBox.width).toBeCloseTo(
+      box.x + box.width - 21,
+      0,
+    );
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(360);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(360);
+    await cancel.click();
+    await expect(dialog).toHaveCount(0);
+    expect(await field.evaluate((node) => (node as any).value)).toEqual(
+      initial,
+    );
+  });
 }

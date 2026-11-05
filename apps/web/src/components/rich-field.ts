@@ -2045,7 +2045,7 @@ export function richField(label: string, options: RichFieldOptions) {
         dialog?.close();
         paste(text, false);
       },
-      { class: "btn btn-primary" },
+      { class: "btn btn-primary", autofocus: true },
     );
     const convert = button(
       "Convert circled numbers",
@@ -2064,9 +2064,13 @@ export function richField(label: string, options: RichFieldOptions) {
       el(
         "div",
         { class: "actions" },
-        literal,
         convert,
-        button("Cancel", () => node.close(), { class: "btn" }),
+        el(
+          "div",
+          { class: "actions", style: "flex-wrap:nowrap" },
+          button("Cancel", () => node.close(), { class: "btn" }),
+          literal,
+        ),
       ),
     );
     dialog = node;
