@@ -1,6 +1,7 @@
 //! Non-certified decisions from complete estimates. No host execution lives here.
 use super::{input, Estimate, Graph, Parameters, PreparationError, Ranking, Sum};
 use crate::{Candidate, Eligibility, Limits, RankError, Rational, Verdict};
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 type Result<T> = std::result::Result<T, PreparationError>;
@@ -57,6 +58,34 @@ fn effective(c: &Candidate, i: usize) -> Verdict {
     }
 }
 
+fn bits(value: f64) -> u64 {
+    if value == 0.0 {
+        0
+    } else {
+        value.to_bits()
+    }
+}
+fn graph_order(a: &Graph, b: &Graph) -> Ordering {
+    a.actors
+        .cmp(&b.actors)
+        .then_with(|| {
+            a.q.iter()
+                .map(|&v| bits(v))
+                .cmp(b.q.iter().map(|&v| bits(v)))
+        })
+        .then_with(|| {
+            a.rows
+                .iter()
+                .enumerate()
+                .flat_map(|(from, row)| row.iter().map(move |e| (from, e.to, bits(e.share))))
+                .cmp(
+                    b.rows.iter().enumerate().flat_map(|(from, row)| {
+                        row.iter().map(move |e| (from, e.to, bits(e.share)))
+                    }),
+                )
+        })
+        .then_with(|| a.refusals.cmp(&b.refusals))
+}
 /// The caller binds these complete estimates to this resolved graph and parameters.
 #[derive(Debug)]
 pub struct DecisionContext<'a> {
@@ -150,13 +179,45 @@ impl<'a> DecisionContext<'a> {
             flush_margin: p.work.flushed_terms as f64 * FLUSH_UNIT,
         }
     }
+    fn graph_order(&self, other: &Self) -> Ordering {
+        graph_order(self.graph, other.graph)
+            .then_with(|| bits(self.h).cmp(&bits(other.h)))
+            .then_with(|| bits(self.alpha).cmp(&bits(other.alpha)))
+    }
+    fn snapshot_order(&self, other: &Self) -> Ordering {
+        self.graph_order(other)
+            .then_with(|| {
+                self.ranking
+                    .weights
+                    .iter()
+                    .map(|w| (bits(w.lower), bits(w.upper)))
+                    .cmp(
+                        other
+                            .ranking
+                            .weights
+                            .iter()
+                            .map(|w| (bits(w.lower), bits(w.upper))),
+                    )
+            })
+            .then_with(|| {
+                self.ranking
+                    .progress
+                    .depth
+                    .cmp(&other.ranking.progress.depth)
+            })
+            .then_with(|| {
+                self.ranking
+                    .progress
+                    .work
+                    .flushed_terms
+                    .cmp(&other.ranking.progress.work.flushed_terms)
+            })
+    }
     fn same_graph(&self, other: &Self) -> bool {
-        std::ptr::eq(self.graph, other.graph)
-            && self.h.to_bits() == other.h.to_bits()
-            && self.alpha.to_bits() == other.alpha.to_bits()
+        self.graph_order(other) == Ordering::Equal
     }
     fn same(&self, other: &Self) -> bool {
-        self.same_graph(other) && std::ptr::eq(self.ranking, other.ranking)
+        self.snapshot_order(other) == Ordering::Equal
     }
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -302,6 +363,7 @@ pub struct Score<'a> {
     pub net: Estimate,
     structural_known_zero: bool,
     direct_reviewers: usize,
+    deprecated: bool,
     context: &'a DecisionContext<'a>,
 }
 impl Score<'_> {
@@ -324,9 +386,10 @@ fn valid_score(s: &Score<'_>) -> Result<()> {
 fn raw_score<'a>(
     context: &'a DecisionContext<'a>,
     verdicts: &[Verdict],
+    retained: &[Verdict],
     limits: &Limits,
 ) -> Result<Score<'a>> {
-    if verdicts.len() != context.ranking.weights.len() {
+    if verdicts.len() != context.ranking.weights.len() || retained.len() != verdicts.len() {
         return Err(invalid("candidate dimensions differ"));
     }
     if verdicts.len() > limits.max_candidate_actor_terms {
@@ -357,8 +420,9 @@ fn raw_score<'a>(
         support,
         opposition,
         net: net(support, opposition)?,
-        structural_known_zero: structural_zero(context, verdicts, limits)?,
-        direct_reviewers: verdicts.iter().filter(|&&v| v != Verdict::Absent).count(),
+        structural_known_zero: structural_zero(context, retained, limits)?,
+        direct_reviewers: retained.iter().filter(|&&v| v != Verdict::Absent).count(),
+        deprecated: false,
         context,
     })
 }
@@ -367,22 +431,17 @@ pub fn score<'a>(
     candidate: &Candidate,
     limits: &Limits,
 ) -> Result<Score<'a>> {
-    dimensions(candidate, context, limits)?;
     if candidate.eligibility == Eligibility::Unavailable {
         return Err(PreparationError::Graph(RankError::UnavailableCandidate(
             candidate.id.clone(),
         )));
     }
+    dimensions(candidate, context, limits)?;
     let verdicts: Vec<_> = (0..candidate.verdicts.len())
         .map(|i| effective(candidate, i))
         .collect();
-    let mut result = raw_score(context, &verdicts, limits)?;
-    // A zero-influence reviewer is still a direct reviewer.
-    result.direct_reviewers = candidate
-        .verdicts
-        .iter()
-        .filter(|&&v| v != Verdict::Absent)
-        .count();
+    let mut result = raw_score(context, &verdicts, &candidate.verdicts, limits)?;
+    result.deprecated = candidate.deprecated;
     Ok(result)
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -404,11 +463,15 @@ pub fn difference(
     context: &DecisionContext<'_>,
     limits: &Limits,
 ) -> Result<Comparison> {
+    for candidate in [a, b] {
+        if candidate.eligibility == Eligibility::Unavailable {
+            return Err(PreparationError::Graph(RankError::UnavailableCandidate(
+                candidate.id.clone(),
+            )));
+        }
+    }
     dimensions(a, context, limits)?;
     dimensions(b, context, limits)?;
-    if a.eligibility == Eligibility::Unavailable || b.eligibility == Eligibility::Unavailable {
-        return Err(invalid("unavailable comparison candidate"));
-    }
     let mut pl = Sum::default();
     let mut pu = Sum::default();
     let mut nl = Sum::default();
@@ -443,35 +506,61 @@ pub fn difference(
         margin: margin(mass.finish()?, &[context])?,
     })
 }
+fn score_order(a: &Score<'_>, b: &Score<'_>) -> Ordering {
+    a.context.snapshot_order(b.context).then_with(|| {
+        [
+            a.support.lower,
+            a.support.upper,
+            a.opposition.lower,
+            a.opposition.upper,
+        ]
+        .into_iter()
+        .zip([
+            b.support.lower,
+            b.support.upper,
+            b.opposition.lower,
+            b.opposition.upper,
+        ])
+        .map(|(a, b)| a.total_cmp(&b))
+        .find(|o| *o != Ordering::Equal)
+        .unwrap_or(Ordering::Equal)
+    })
+}
 pub fn separate_difference(a: &Score<'_>, b: &Score<'_>) -> Result<Comparison> {
-    interval(a.support, true)?;
-    interval(a.opposition, true)?;
-    interval(b.support, true)?;
-    interval(b.opposition, true)?;
-    if a.net != net(a.support, a.opposition)? || b.net != net(b.support, b.opposition)? {
-        return Err(invalid("inconsistent score"));
-    }
+    valid_score(a)?;
+    valid_score(b)?;
+    let reversed = score_order(a, b) == Ordering::Greater;
+    let (first, second) = if reversed { (b, a) } else { (a, b) };
     let support = Estimate {
-        lower: sum([a.support.lower, b.opposition.lower])?,
-        upper: sum([a.support.upper, b.opposition.upper])?,
+        lower: sum([first.support.lower, second.opposition.lower])?,
+        upper: sum([first.support.upper, second.opposition.upper])?,
     };
     let opposition = Estimate {
-        lower: sum([a.opposition.lower, b.support.lower])?,
-        upper: sum([a.opposition.upper, b.support.upper])?,
+        lower: sum([first.opposition.lower, second.support.lower])?,
+        upper: sum([first.opposition.upper, second.support.upper])?,
     };
+    let mut difference = net(support, opposition)?;
+    if reversed {
+        let negate = |v: f64| if v == 0.0 { 0.0 } else { -v };
+        difference = Estimate {
+            lower: negate(difference.upper),
+            upper: negate(difference.lower),
+        };
+    }
     Ok(Comparison {
-        difference: net(support, opposition)?,
+        difference,
         margin: margin(
             sum([
-                a.support.upper,
-                a.opposition.upper,
-                b.support.upper,
-                b.opposition.upper,
+                first.support.upper,
+                first.opposition.upper,
+                second.support.upper,
+                second.opposition.upper,
             ])?,
-            &[a.context, b.context],
+            &[first.context, second.context],
         )?,
     })
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActualSupport {
     Positive,
@@ -537,7 +626,7 @@ pub fn unresolved_pair_potential(
     limits: &Limits,
 ) -> Result<Decision<Potential>> {
     match (context, verdicts) {
-        (Some(c), Some(v)) => eligible_competitor_potential(Some(&raw_score(c, v, limits)?)),
+        (Some(c), Some(v)) => eligible_competitor_potential(Some(&raw_score(c, v, v, limits)?)),
         _ => eligible_competitor_potential(None),
     }
 }
@@ -652,7 +741,9 @@ pub fn nondominated_layers(entries: &[LayerCandidate<'_>], limits: &Limits) -> R
                 scores.push(score(c, e.candidate, limits)?);
                 active.push(*e);
             }
-            _ => (),
+            (Eligibility::Ineligible, _) => {
+                return Err(invalid("candidate is not eligible for ranking layers"))
+            }
         }
     }
     let mut comparisons = Vec::new();
@@ -849,6 +940,7 @@ pub struct Presentation {
     pub id: String,
     direct_reviewers: Option<usize>,
     structural_known_zero: bool,
+    deprecated: bool,
     pub kind: StartingKind,
 }
 impl Presentation {
@@ -857,6 +949,7 @@ impl Presentation {
             id,
             direct_reviewers: score.map(|s| s.direct_reviewers),
             structural_known_zero: score.is_some_and(|s| s.structural_known_zero),
+            deprecated: score.is_some_and(|s| s.deprecated),
             kind,
         }
     }
@@ -864,7 +957,7 @@ impl Presentation {
 /// Reorder only known unjudged structural-zero slots inside each complete layer.
 pub fn order_unjudged(layers: &mut Layers, presentation: &[Presentation]) -> Result<()> {
     if layers.incomplete {
-        return Err(resource("incomplete layers"));
+        return Err(invalid("incomplete layers"));
     }
     let mut data = std::collections::BTreeMap::new();
     for item in presentation {
@@ -879,7 +972,9 @@ pub fn order_unjudged(layers: &mut Layers, presentation: &[Presentation]) -> Res
             .enumerate()
             .filter_map(|(i, id)| {
                 data.get(id)
-                    .filter(|p| p.direct_reviewers == Some(0) && p.structural_known_zero)
+                    .filter(|p| {
+                        !p.deprecated && p.direct_reviewers == Some(0) && p.structural_known_zero
+                    })
                     .map(|_| i)
             })
             .collect();
