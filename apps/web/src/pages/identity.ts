@@ -23,12 +23,17 @@ import {
 import type { App } from "../app/context.ts";
 import { renderExisting } from "./handover.ts";
 import type { HandoverRecord } from "../data/lifecycle.ts";
-import { identityProfile, profileName } from "../components/attribution.ts";
+import {
+  identityProfile,
+  profileName,
+  forgetProfile,
+} from "../components/attribution.ts";
 
 export async function identityPage(
   route: Route,
   context: RenderContext,
   app: App,
+  focusResult = false,
 ) {
   const { main } = context;
   const { session } = app;
@@ -45,8 +50,10 @@ export async function identityPage(
     return;
   }
   let unsubscribePage = () => {};
+  let cancelProfile = () => {};
   const rerender = () => {
     unsubscribePage();
+    cancelProfile();
     if (!context.live()) return;
     main.replaceChildren();
     void identityPage(route, context, app);
@@ -57,21 +64,21 @@ export async function identityPage(
   }
   const backup = session.backup;
   const head = el("div", { class: "word-head" });
-  // The display name is the server's effective profile claim for this key.
-  const name = profileName(await identityProfile(backup.identity));
-  if (!context.live()) return;
+  const nameNode = el("bdi", { text: shortIdentity(backup.identity) });
+  const heading = el(
+    "h1",
+    { style: "font-size:32px;letter-spacing:-0.02em;font-weight:680" },
+    nameNode,
+  );
   head.append(
-    el(
-      "h1",
-      { style: "font-size:32px;letter-spacing:-0.02em;font-weight:680" },
-      el("bdi", { text: name ?? shortIdentity(backup.identity) }),
-    ),
+    heading,
     link("public page", routes.identity(backup.identity), { class: "small" }),
     link("Edit public profile", `${routes.identity(backup.identity)}#edit`, {
       class: "btn btn-quiet",
       style: "margin-left:auto;font-size:14px",
     }),
   );
+  const profileNotice = el("div");
   main.append(
     head,
     el("p", {
@@ -79,7 +86,76 @@ export async function identityPage(
       style: "margin-top:4px",
       text: fingerprintText(backup.identity),
     }),
+    profileNotice,
   );
+  let generation = 0;
+  const loadProfile = async (force = false, focus = false) => {
+    cancelProfile();
+    const controller = new AbortController();
+    cancelProfile = () => controller.abort();
+    const signal = AbortSignal.any([context.signal, controller.signal]);
+    const mine = ++generation;
+    const live = () =>
+      context.live() &&
+      !signal.aborted &&
+      mine === generation &&
+      head.isConnected;
+    profileNotice.replaceChildren();
+    let message: HTMLElement | undefined;
+    let unconfirmable = false;
+    const show = (value: string, refresh = false) => {
+      if (!live()) return;
+      if (!message) {
+        message = el("p", { class: "notice", role: "status", tabindex: "-1" });
+        profileNotice.append(message);
+      }
+      message.textContent = value;
+      profileNotice.querySelector("button")?.remove();
+      if (refresh)
+        profileNotice.append(
+          button(
+            "Refresh the profile",
+            () => {
+              void loadProfile(true, true);
+            },
+            { class: "btn" },
+          ),
+        );
+    };
+    try {
+      const fresh = await app.delivery.restorePendingProfileReceipts(
+        backup.identity,
+        {
+          signal,
+          invalidate: () => forgetProfile(backup.identity),
+          checking: () => show("Checking the profile on this server."),
+          pending: () =>
+            show("This server stored your profile. Its view is updating."),
+          unconfirmable: () => {
+            unconfirmable = true;
+          },
+        },
+      );
+      if (!live()) return;
+      const response = await identityProfile(backup.identity, {
+        fresh: force || fresh,
+        signal,
+      });
+      if (!live()) return;
+      nameNode.textContent =
+        profileName(response) ?? shortIdentity(backup.identity);
+      if (unconfirmable) show("A saved profile edit cannot be confirmed here.");
+      else profileNotice.replaceChildren();
+      if (focus) {
+        heading.tabIndex = -1;
+        context.focus(heading);
+      }
+    } catch (error) {
+      if (!live()) return;
+      show(describe(error), true);
+      if (focus && message) context.focus(message);
+    }
+  };
   if (session.pending) {
     const resume = el("div", { class: "notice", style: "margin-top:16px" });
     resume.append(
@@ -397,6 +473,8 @@ export async function identityPage(
         "meta",
       ),
     );
+  // Profile lookup does not delay any local key control.
+  void loadProfile(false, focusResult);
 }
 function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
   const { session } = app;

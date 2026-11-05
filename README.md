@@ -604,6 +604,19 @@ Word responses can report unavailable scores while a replacement restores in the
 
 After publication, the browser shows a pending notice until the accepted records reach the evaluated word view.
 After a profile publication, the profile page waits for that evaluated view before it requests the new claim.
+The key page and public profile check live receipts after a reload before they show a pending notice.
+A newly observed completion refreshes older cached profiles. Later visits reuse the cache after this page session observes the completion.
+Stored local completion evidence prevents repeated receipt reads and preserves the admission receipt.
+Current profile reads use page cancellation, cache only successful responses, and offer Refresh after a read failure.
+Receipt checks, equivalent-envelope reads, and polling share one fifteen-second limit and stop when the reader leaves.
+Profile notices carry the status role. Refresh moves focus to the new heading or the failure notice.
+The key page keeps all local controls available while its profile loads in the background.
+Definitive receipt failures use separate unconfirmable evidence and permit normal profile reads.
+Their notice appears once per session when the browser records the outcome and offers no Refresh action.
+Stored completion or unconfirmable evidence keeps later loads quiet.
+If the evidence cannot be stored, a later page load can read the receipt again and show the notice again.
+HTTP 408 and 429 responses remain transient. Local marker failures do not relabel completed edits.
+Public profiles skip restoration for identities that are not current or retired local keys.
 Personal recomputation also waits for locally accepted records before it downloads the next snapshot.
 These waits stop after fifteen seconds and preserve accepted delivery evidence for another refresh.
 A full-dictionary evaluation can outlast that wait. A refresh reuses the accepted record without another signature.

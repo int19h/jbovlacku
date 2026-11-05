@@ -11,6 +11,14 @@ import {
 } from "../../../../packages/core/src/browser.ts";
 import {
   getReceipt,
+  transientReceiptFailure,
+  forgetMaterializedReceipt,
+  MaterializationPendingError,
+  receiptBindingMatches,
+  receiptMaterialized,
+  viewPending,
+  waitForMaterialization,
+  localPeer,
   objectBytes,
   postEvent,
   rememberAcceptedReceipt,
@@ -29,6 +37,21 @@ import type { Envelope, Receipt, Transport } from "../model/types.ts";
 const REFUSAL_STATUSES = [400, 403, 404, 405, 409, 413, 422, 451];
 const BASE_DELAY = 15000;
 const MAX_DELAY = 30 * 60 * 1000;
+
+/** Stop the page wait even when a storage operation stalls. */
+async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  let aborted = () => {};
+  const stopped = new Promise<never>((_, reject) => {
+    aborted = () => reject(signal.reason);
+    signal.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) aborted();
+  });
+  try {
+    return await Promise.race([work, stopped]);
+  } finally {
+    signal.removeEventListener("abort", aborted);
+  }
+}
 
 export function freshPeer(): PeerDelivery {
   return {
@@ -266,6 +289,9 @@ export function mergePeer(
 }
 
 export class DeliveryEngine {
+  private profileCompletions?: Set<string>;
+  private profileSkipped?: Set<string>;
+  private profileWarnings?: Set<string>;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<DeliveryListener>();
   private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
@@ -320,6 +346,251 @@ export class DeliveryEngine {
         a.group.localeCompare(b.group) ||
         a.order - b.order,
     );
+  }
+  /** True means that the next profile read needs current server data. */
+  async restorePendingProfileReceipts(
+    identity: string,
+    options: {
+      signal?: AbortSignal;
+      checking?: () => void;
+      pending?: () => void;
+      invalidate?: () => void;
+      unconfirmable?: () => void;
+    } = {},
+  ): Promise<boolean> {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([
+      controller.signal,
+      AbortSignal.timeout(15000),
+      ...(options.signal ? [options.signal] : []),
+    ]);
+    let current = false;
+    const seen = (this.profileCompletions ??= new Set<string>());
+    const skipped = (this.profileSkipped ??= new Set<string>());
+    const warned = (this.profileWarnings ??= new Set<string>());
+    const keys = new Map<string, { receipt: Receipt; key: string }>();
+    const observe = (key: string, receipt: Receipt, newlyChecked = false) => {
+      forgetMaterializedReceipt(receipt);
+      if (newlyChecked || !seen.has(key)) {
+        current = true;
+        options.invalidate?.();
+      }
+      seen.add(key);
+    };
+    const finish = async (
+      receipt: Receipt,
+      key: string,
+      unconfirmable = false,
+    ) => {
+      signal.throwIfAborted();
+      try {
+        await this.store.put(
+          "prefs",
+          key,
+          unconfirmable ? "unconfirmable" : true,
+        );
+      } catch {
+        signal.throwIfAborted();
+        // Retry the same evidence. A failed write does not change the outcome.
+        skipped.add(key);
+        try {
+          await this.store.put(
+            "prefs",
+            key,
+            unconfirmable ? "unconfirmable" : true,
+          );
+        } catch {
+          /* Skip in this session if storage cannot retain the marker. */
+        }
+      }
+      signal.throwIfAborted();
+      observe(key, receipt, true);
+      if (unconfirmable && !warned.has(key)) {
+        warned.add(key);
+        options.unconfirmable?.();
+      }
+    };
+    const restore = async () => {
+      let items: OutboxItem[];
+      try {
+        items = await this.items();
+      } catch {
+        signal.throwIfAborted();
+        return false;
+      }
+      const candidates = items.flatMap((item) => {
+        // Filter saved issuer and action before decoding potentially large bodies.
+        if (!item || item.identity !== identity) return [];
+        if (typeof item.transport !== "string") return [];
+        if (!item.transport.includes('"identity.profile"')) return [];
+        try {
+          const transport = JSON.parse(item.transport) as Transport;
+          if (!transport || !Object.hasOwn(transport, "body"))
+            throw new Error("The stored profile has no body field.");
+          const { envelope } = transport;
+          if (
+            envelope.header.issuer !== identity ||
+            envelope.header.action.kind !== "identity.profile"
+          )
+            return [];
+          return Object.entries(item.peers).flatMap(([id, peer]) => {
+            const target = savedPeer(item, id);
+            return target &&
+              localPeer(target) &&
+              peer.state === "accepted" &&
+              peer.receipt &&
+              viewPending(peer.receipt)
+              ? [{ item, target, receipt: peer.receipt }]
+              : [];
+          });
+        } catch {
+          return [];
+        }
+      });
+      signal.throwIfAborted();
+      if (candidates.length) options.checking?.();
+      let next = 0;
+      await Promise.all(
+        Array.from({ length: Math.min(4, candidates.length) }, async () => {
+          for (;;) {
+            signal.throwIfAborted();
+            const candidate = candidates[next++];
+            if (!candidate) return;
+            const { item, target, receipt } = candidate;
+            let key: string;
+            try {
+              key =
+                "profile-materialized:" +
+                contentHash(
+                  utf8(
+                    JSON.stringify([
+                      new URL(target.base, location.origin).href.replace(
+                        /\/$/,
+                        "",
+                      ),
+                      receipt.id,
+                      receipt.envelope_hash,
+                      receipt.body_hash ?? null,
+                      receipt.body_status,
+                      receipt.cursor,
+                      storedEnvelopeHash(item.transport),
+                      (JSON.parse(item.transport) as Transport).envelope.header
+                        .content?.hash ?? null,
+                    ]),
+                  ),
+                );
+            } catch {
+              continue;
+            }
+            if (skipped.has(key)) {
+              observe(key, receipt);
+              continue;
+            }
+            let marker: unknown;
+            try {
+              marker = await this.store.get<unknown>("prefs", key);
+            } catch {
+              signal.throwIfAborted();
+              skipped.add(key);
+              observe(key, receipt);
+              continue;
+            }
+            signal.throwIfAborted();
+            if (marker === true || marker === "unconfirmable") {
+              observe(key, receipt);
+              continue;
+            }
+            let classified: Classified;
+            for (;;) {
+              let variantError: unknown;
+              classified = await classifyReceipt(
+                item,
+                receipt,
+                async (event) => {
+                  try {
+                    return await objectBytes(
+                      `/events/${encodeURIComponent(event)}`,
+                      20480,
+                      { peer: target, signal },
+                    );
+                  } catch (error) {
+                    variantError = error;
+                    throw error;
+                  }
+                },
+              );
+              signal.throwIfAborted();
+              if (!variantError) break;
+              if (!transientReceiptFailure(variantError)) break;
+              await abortable(
+                new Promise<void>((resolve) => setTimeout(resolve, 200)),
+                signal,
+              );
+            }
+            signal.throwIfAborted();
+            if (classified.state !== "accepted") {
+              await finish(receipt, key, true);
+              continue;
+            }
+            keys.set(receipt.id, { receipt, key });
+            let live: Receipt;
+            try {
+              live = await getReceipt(item.id, {
+                peer: target,
+                signal,
+                cache: "no-store",
+              });
+            } catch (error) {
+              signal.throwIfAborted();
+              if (!transientReceiptFailure(error)) {
+                await finish(receipt, key, true);
+                continue;
+              }
+              rememberAcceptedReceipt(receipt, target);
+              current = true;
+              continue;
+            }
+            if (receiptMaterialized(live, receipt)) await finish(receipt, key);
+            else if (
+              !receiptBindingMatches(live, receipt) ||
+              !viewPending(live)
+            )
+              await finish(receipt, key, true);
+            else {
+              rememberAcceptedReceipt(receipt, target);
+              current = true;
+              options.pending?.();
+            }
+          }
+        }),
+      );
+      const terminal = async (accepted: Receipt, unconfirmable = false) => {
+        const saved = keys.get(accepted.id);
+        if (saved && receiptBindingMatches(accepted, saved.receipt))
+          await finish(accepted, saved.key, unconfirmable);
+      };
+      await waitForMaterialization(
+        { signal },
+        {
+          signal,
+          receipts: new Set([...keys.values()].map(({ receipt }) => receipt)),
+          completed: (accepted) => terminal(accepted),
+          unconfirmable: (accepted) => terminal(accepted, true),
+        },
+      );
+      signal.throwIfAborted();
+      return current;
+    };
+    try {
+      return await abortable(restore(), signal);
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
+      if (signal.aborted || transientReceiptFailure(error))
+        throw new MaterializationPendingError();
+      return current;
+    } finally {
+      controller.abort();
+    }
   }
   async active(): Promise<OutboxItem[]> {
     return (await this.items()).filter(isActive);

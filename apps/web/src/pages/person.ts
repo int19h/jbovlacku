@@ -14,7 +14,7 @@ import {
   inlineProse,
 } from "../lib/dom.ts";
 import { fingerprintText, plural, shortIdentity } from "../lib/format.ts";
-import { getActivity, hasPendingMaterialization } from "../data/api.ts";
+import { getActivity } from "../data/api.ts";
 import {
   identityProfile,
   profileName,
@@ -38,6 +38,7 @@ export async function personPage(
   context: RenderContext,
   app: App,
   fresh = false,
+  focusResult = false,
 ) {
   const { main } = context;
   main.className = "";
@@ -52,32 +53,57 @@ export async function personPage(
   }
   const isSelf = app.session.identity === identity;
   context.title(shortIdentity(identity));
-  const pending =
-    fresh && hasPendingMaterialization()
-      ? p("This server stored your profile. Its view is updating.", "notice")
-      : null;
-  if (pending) main.append(pending);
+  let pending: HTMLElement | undefined;
+  let unconfirmable = false;
+  const showPending = (value: string) => {
+    if (!context.live()) return;
+    if (!pending) {
+      pending = el("p", { class: "notice", role: "status" });
+      main.append(pending);
+    }
+    pending.textContent = value;
+  };
   let response: IdentityResponse | null;
   try {
+    const restored =
+      (await app.session.isLocalKey(identity)) &&
+      (await app.delivery.restorePendingProfileReceipts(identity, {
+        signal: context.signal,
+        invalidate: () => forgetProfile(identity),
+        checking: () => showPending("Checking the profile on this server."),
+        pending: () =>
+          showPending("This server stored your profile. Its view is updating."),
+        unconfirmable: () => {
+          unconfirmable = true;
+        },
+      }));
+    if (!context.live()) return;
     response = await identityProfile(identity, {
-      fresh,
+      fresh: fresh || restored,
       signal: context.signal,
     });
   } catch (error) {
     if (!context.live()) return;
     pending?.remove();
+    const failure = el("p", {
+      class: "notice",
+      role: "status",
+      tabindex: "-1",
+      text: describe(error),
+    });
     main.append(
       el("h1", { class: "page", text: shortIdentity(identity) }),
-      p(describe(error), "notice"),
+      failure,
       button(
         "Refresh the profile",
         () => {
           main.replaceChildren();
-          void personPage(route, context, app, true);
+          void personPage(route, context, app, true, true);
         },
         { class: "btn" },
       ),
     );
+    if (focusResult) context.focus(failure);
     return;
   }
   if (!context.live()) return;
@@ -96,6 +122,19 @@ export async function personPage(
       text: fingerprintText(identity),
     }),
   );
+  if (unconfirmable)
+    main.append(
+      el("p", {
+        class: "notice",
+        role: "status",
+        text: "A saved profile edit cannot be confirmed here.",
+      }),
+    );
+  if (focusResult) {
+    const heading = main.querySelector<HTMLElement>("h1")!;
+    heading.tabIndex = -1;
+    context.focus(heading);
+  }
   if (!response)
     main.append(
       p(
@@ -269,7 +308,12 @@ export async function personPage(
       main.append(editor);
       // The key page links here with #edit. Focus the connected first field.
       const firstField = editor.querySelector<HTMLInputElement>("input");
-      if (location.hash === "#edit" && firstField && context.focus(firstField))
+      if (
+        !focusResult &&
+        location.hash === "#edit" &&
+        firstField &&
+        context.focus(firstField)
+      )
         editor.scrollIntoView();
     } catch (error) {
       if (!context.live()) return;
