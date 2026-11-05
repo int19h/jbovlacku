@@ -1,4 +1,4 @@
-# Exact ranking and float row preparation
+# Exact ranking and approximate propagation
 
 This crate implements section 8 of the [format specification](../../docs/format.md) with exact fractions.
 Its calculation profiles are `simple-routes-bounds-v1` and `simple-routes-shun-v1`.
@@ -7,7 +7,8 @@ The library builds for native Rust and `wasm32-unknown-unknown`.
 
 The `approximate` module prepares rows for `simple-routes-shun-f64-v1` under `jvc-f64-rows-v1`.
 It compares and divides rational weights before float conversion, uses compensated sums, and rejects unavailable numerical inputs.
-It does not implement float propagation, decisions, or jobs.
+It also supplies synchronous complete route stages and the 65 relaxed estimates with their scalar tail.
+It does not implement float ranking decisions or jobs.
 `jvc-state::prepare_approximate_context` shares semantic resolution with the exact path and uses this row helper.
 The [format specification](../../docs/format.md#approximate-shun-calculation) defines its non-certified contract.
 
@@ -184,3 +185,42 @@ node scripts/test-f64-row-parity.mjs
 
 The script uses `CARGO_TARGET_DIR` and `WASM_BINDGEN`.
 It compares exact float bits and unavailable outcomes with `crates/jvc-state/tests/fixtures/f64-rows-v1.json`.
+
+## Approximate propagation
+
+`approximate::Graph::new` canonicalizes actor, edge, and refusal order and enforces normal input values.
+`approximate::Ranker::advance` commits complete route stages only.
+`estimates` returns actor endpoints only after the full upper calculation succeeds.
+These estimates remain non-certified even when exploration completes.
+The API supplies no score comparisons, margins, or layers.
+
+Positive propagated products below `f64::MIN_POSITIVE` become zero, and their prefixes or terms disappear.
+`flushed_terms` counts those drops, including products that round up to the smallest normal value.
+Input values still reject subnormals. Accumulator corrections and signed differences keep them.
+The tail carries its mass through the 65 alpha factors before division, so a tiny standalone coefficient cannot erase normal mass.
+
+`Progress::work` records initialization, route, and estimate operations, edge attempts, refusal tests, matrix visits, and flushed terms.
+Initialization counts one outward-mass calculation per actor.
+One route operation visits an edge or finishes a prefix.
+Estimate operations aggregate a prefix, visit an edge, finish a row, add an actor term, or advance the scalar tail.
+`completed_work` counts only committed expansion attempts, including repeated or refused edges.
+Counters describe coarse operations, not individual machine instructions.
+Graph validation, allocation, and endpoint readout also have graph-size bounds.
+A `Failure` retains these counters and the latest upper progress.
+It never returns an incomplete upper estimate.
+
+`advance_with_operation_limit` and `estimates_with_operation_limit` cap operations within one synchronous call.
+A stopped route call discards its incomplete stage. A stopped upper call discards its temporary vectors.
+A later call starts fresh work from the last complete route stage and keeps the actual cumulative counters.
+These functions are not resumable tasks or host cancellation APIs.
+A resource error does not establish the requested budget's result, even if a retained earlier stage can still be estimated.
+
+Run the native and Wasm oracle and regression suite from the repository root:
+
+```sh
+node scripts/test-f64-kernel-parity.mjs
+```
+
+The script uses the same `CARGO_TARGET_DIR` as other Rust commands.
+It compares actor endpoint bits and all progress counters across both builds.
+The test oracle enumerates rational paths independently and calculates the same 65 relaxed terms for partial stages.

@@ -12,3 +12,7 @@ num-traits = "0.2"
 name = "feasibility_wasm"
 path = "examples/feasibility_wasm.rs"
 crate-type = ["cdylib"]
+
+[[example]]
+name = "f64_kernel_wasm"
+crate-type = ["cdylib"]

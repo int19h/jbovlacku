@@ -240,8 +240,9 @@ Reads pinned to an earlier retained snapshot use that snapshot's state. Word pag
 
 <a id="f64-step-2a-limit"></a>
 
-The signed `simple-routes-shun-f64-v1` profile has schema admission and rational-first row preparation only.
-Its propagation, decisions, jobs, and app capability remain unavailable. Exact ranking never substitutes float arithmetic.
+The signed `simple-routes-shun-f64-v1` profile has schema admission, rational-first row preparation, and a synchronous Rust propagation kernel.
+The kernel returns approximate actor estimates and work counters, including tiny propagated terms that it flushes to zero.
+Ranking decisions, jobs, and app capability remain unavailable. Exact ranking never substitutes float arithmetic.
 Until step 6, word pages under this profile show the generic ranking-unavailable message without the profile name.
 The Trust page describes its shun route rule, but float scores remain unavailable.
 
@@ -496,7 +497,7 @@ The [development guide](docs/development.md#optional-ai-assistance) gives the co
 The status editor, transfer editor, wizard meaning search, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID.
 A signed view names `simple-routes-bounds-v1`, `simple-routes-shun-v1`, or `simple-routes-shun-f64-v1` as its calculation profile.
-The float profile supports only admission and row preparation, as described in the [step 2a limit](#f64-step-2a-limit).
+The float profile supports admission, row preparation, and a synchronous Rust kernel, as described in its [current limits](#f64-step-2a-limit).
 The pages name the profile of each supported result and its route rule. An unknown profile leaves scores unavailable.
 Site calculation metadata uses the digest of canonical JSON null for its absent overlay. An explicit empty overlay keeps its own digest.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
