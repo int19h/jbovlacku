@@ -482,9 +482,6 @@ impl<'a> Ranker<'a> {
             // Failed attempts traverse the same deterministic stage. Keep its largest
             // observed drop count, but never charge those drops twice on recomputation.
             let prior_flushes = self.work.flushed_terms - self.discarded_stage_flushes;
-            let attempt_flushes = prior_flushes
-                .checked_add(stage_flushes)
-                .ok_or_else(|| self.failure(resource("flushed terms")))?;
             self.work.flushed_terms = prior_flushes
                 .checked_add(self.discarded_stage_flushes.max(stage_flushes))
                 .ok_or_else(|| self.failure(resource("flushed terms")))?;
@@ -492,7 +489,6 @@ impl<'a> Ranker<'a> {
                 self.discarded_stage_flushes = self.discarded_stage_flushes.max(stage_flushes);
                 let mut failure = self.failure(cause);
                 failure.progress.work.refusal_tests = refusal_tests;
-                failure.progress.work.flushed_terms = attempt_flushes;
                 return Err(failure);
             }
             self.discarded_stage_flushes = 0;

@@ -512,6 +512,61 @@ pub fn retry_and_budget_vectors() -> BTreeMap<String, Vec<u64>> {
     );
     output(&mut out, "flush-retry-counts-drop-once", &resumed);
 
+    let g = graph(
+        3,
+        &[(0, 1, 0.5), (0, 2, 0.5)],
+        vec![f64::MIN_POSITIVE, 0.0, 0.0],
+        &[],
+    );
+    let mut r = a::Ranker::new(&g, 1.0, 0.5, Limits::default()).unwrap();
+    let mut observed = Vec::new();
+    for (limit, expected) in [(1, 1), (2, 2), (1, 2)] {
+        let failure = r.advance_with_operation_limit(2, limit).unwrap_err();
+        assert_eq!(
+            failure.cause,
+            a::PreparationError::Graph(jvc_rank::RankError::ResourceLimit("numerical operations"))
+        );
+        assert_eq!(failure.progress.completed_work, 0);
+        assert_eq!(failure.progress.work.flushed_terms, expected);
+        assert_eq!(r.progress().work.flushed_terms, expected);
+        observed.extend([
+            failure.progress.work.flushed_terms,
+            r.progress().work.flushed_terms,
+        ]);
+    }
+    r.advance(2).unwrap();
+    let resumed = r.estimates().unwrap();
+    let fresh = a::rank(
+        &g,
+        &a::Parameters {
+            h: 1.0,
+            alpha: 0.5,
+            work: 2,
+        },
+        Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(resumed.weights, fresh.weights);
+    assert_eq!(resumed.progress.depth, fresh.progress.depth);
+    assert_eq!(
+        resumed.progress.next_stage_work,
+        fresh.progress.next_stage_work
+    );
+    assert_eq!(
+        resumed.progress.completed_work,
+        fresh.progress.completed_work
+    );
+    assert_eq!(resumed.progress.work.flushed_terms, 2);
+    assert_eq!(
+        resumed.progress.work.flushed_terms,
+        fresh.progress.work.flushed_terms
+    );
+    observed.extend(encode(&resumed));
+    out.insert(
+        "unequal-flush-retries-retain-largest-progress".into(),
+        observed,
+    );
+
     let ordinary = graph(
         4,
         &[

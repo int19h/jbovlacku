@@ -214,9 +214,13 @@ It never returns an incomplete upper estimate.
 A stopped route call discards its incomplete stage. A stopped upper call discards its temporary vectors.
 A later call starts fresh work from the last complete route stage.
 Refusal tests count committed stages only. A failure reports the current attempt's searches without spending the retained ceiling.
+
 Flushed drops from a discarded stage stay counted, but retries of that stage do not count the same drops again.
-A failure reports the drops in its own attempt. Other performed-work counters remain cumulative.
+A failure reports the same retained `flushed_terms` as `progress()`.
+For the discarded stage, this includes the largest unique count observed across its attempts.
+A shorter retry never lowers that count. Other performed-work counters remain cumulative.
 Separate upper calculations count their own drops, so repeated estimates can exceed a fresh rank's flush count.
+
 These functions are not resumable tasks or host cancellation APIs.
 A resource error does not establish the requested budget's result, even if a retained earlier stage can still be estimated.
 

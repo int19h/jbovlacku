@@ -23,5 +23,5 @@ fn propagated_flushing_and_long_chains() {
 
 #[test]
 fn retries_and_growing_budgets_match_fresh_stages() {
-    assert_eq!(support::retry_and_budget_vectors().len(), 14);
+    assert_eq!(support::retry_and_budget_vectors().len(), 15);
 }
