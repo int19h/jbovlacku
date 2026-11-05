@@ -1,7 +1,7 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v1";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v2";
 const APPENDS_BEFORE_REBASE: usize = 64;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -385,7 +385,7 @@ impl EvaluatedState {
         }
         serde_json::to_vec(&Saved {
             version: if results_only {
-                "jvc-evaluation-results-v1"
+                "jvc-evaluation-results-v2"
             } else {
                 CHECKPOINT_VERSION
             },
@@ -431,7 +431,7 @@ impl EvaluatedState {
         let saved: Saved = serde_json::from_slice(bytes)
             .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
         let expected_version = if records.is_some() {
-            "jvc-evaluation-results-v1"
+            "jvc-evaluation-results-v2"
         } else {
             CHECKPOINT_VERSION
         };

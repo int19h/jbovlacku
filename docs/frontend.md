@@ -1811,8 +1811,11 @@ These summaries remain server assertions until reconstructed from the signed rec
 
 ### Response objects and pagination
 
-Version 1 of this API exposes only the exact reference calculation profile. It returns unavailable scores if it cannot compute that profile.
-Future derived profiles need an explicit API capability and distinct result metadata. They cannot enter the reference algorithm field below.
+The response objects below describe the two exact reference calculation profiles.
+The non-certified `simple-routes-shun-f64-v1` profile needs an explicit API capability and distinct tagged result metadata.
+Schema admission and row preparation alone do not provide that capability.
+Without supported calculation capability, return unavailable scores and never substitute a different profile.
+Float results cannot enter the exact algorithm field below.
 AssistanceProfile contains exactly id, label, provider, model, operations, and disclosure.
 
 Its ID is an opaque configuration name. Operations lists the supported assist operations from section 16. Other values are display strings.

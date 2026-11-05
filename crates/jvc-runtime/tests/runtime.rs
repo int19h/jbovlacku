@@ -18,6 +18,22 @@ use jvc_core::{
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+#[test]
+fn signed_float_profile_is_valid_but_exact_ranking_stays_unsupported() {
+    let mut fixture = Fixture::new();
+    fixture.definition("en");
+    fixture.view(jvc_rank::approximate::ALGORITHM, &[1], 1000);
+    let evaluation = jvc_runtime::evaluate_bytes(&fixture.bytes()).unwrap();
+    assert_eq!(evaluation["available"], true);
+    assert_eq!(
+        evaluation["policy"]["calculation"],
+        jvc_rank::approximate::ALGORITHM
+    );
+    let error = jvc_runtime::rank_word_bytes(&fixture.bytes(), &fixture.word).unwrap_err();
+    assert_eq!(error.code, "unsupported_calculation");
+    assert!(jvc_rank::Profile::from_name(jvc_rank::approximate::ALGORITHM).is_none());
+}
+
 fn key(seed: u8) -> String {
     identity_from_seed(&[seed; 32])
 }

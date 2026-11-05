@@ -1,9 +1,15 @@
-# Exact ranking prototype
+# Exact ranking and float row preparation
 
 This crate implements section 8 of the [format specification](../../docs/format.md) with exact fractions.
 Its calculation profiles are `simple-routes-bounds-v1` and `simple-routes-shun-v1`.
 `BigRational` stores a fraction with integers that can grow beyond machine integer sizes.
 The library builds for native Rust and `wasm32-unknown-unknown`.
+
+The `approximate` module prepares rows for `simple-routes-shun-f64-v1` under `jvc-f64-rows-v1`.
+It compares and divides rational weights before float conversion, uses compensated sums, and rejects unavailable numerical inputs.
+It does not implement float propagation, decisions, or jobs.
+`jvc-state::prepare_approximate_context` shares semantic resolution with the exact path and uses this row helper.
+The [format specification](../../docs/format.md#approximate-shun-calculation) defines its non-certified contract.
 
 The caller supplies a resolved graph.
 An actor represents one identity continuity group.
@@ -169,3 +175,12 @@ The script requires Node and `/usr/bin/time`.
 It uses `CARGO_TARGET_DIR` or the repository's `target` directory.
 It requires an explicit output path and refuses to replace an existing file.
 It runs each scenario separately and makes sure that the native and WebAssembly digests match.
+
+Run the frozen row vectors in native Rust and WebAssembly from the repository root:
+
+```sh
+node scripts/test-f64-row-parity.mjs
+```
+
+The script uses `CARGO_TARGET_DIR` and `WASM_BINDGEN`.
+It compares exact float bits and unavailable outcomes with `crates/jvc-state/tests/fixtures/f64-rows-v1.json`.

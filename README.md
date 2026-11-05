@@ -237,6 +237,10 @@ Remote lexical search, word pages, and downloaded language packages exclude defi
 Word pages and language packages retain effective deprecated definitions.
 Remote search includes them through its retired-results filter and shows each publication's status.
 Reads pinned to an earlier retained snapshot use that snapshot's state. Word pages and remote searches also use their requested view.
+
+The signed `simple-routes-shun-f64-v1` profile has schema admission and rational-first row preparation only.
+Its propagation, decisions, jobs, and app capability remain unavailable. Exact ranking never substitutes float arithmetic.
+
 Core definition rankings exclude definitions without effective receipts.
 Exact context resolution scans publications once and looks up judgments only for matching targets.
 It indexes private replacements and weights by resolved actor pairs without changing eligibility or ranking rules.

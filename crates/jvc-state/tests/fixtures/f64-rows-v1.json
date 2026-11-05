@@ -1,0 +1,376 @@
+{
+  "cases": {
+    "all-blocked": {},
+    "below-one": {
+      "actor-0000": "3fb999999999999a",
+      "actor-0001": "3fc999999999999a",
+      "actor-0002": "3fd3333333333333"
+    },
+    "blocked": {
+      "actor-0001": "3fd5555555555555"
+    },
+    "empty": {},
+    "equal": {
+      "actor-0000": "3fe0000000000000",
+      "actor-0001": "3fe0000000000000"
+    },
+    "exact-one": {
+      "actor-0000": "3fd5555555555555",
+      "actor-0001": "3fe5555555555555"
+    },
+    "huge-normal-ratios": {
+      "actor-0000": "3ff0000000000000",
+      "actor-0001": "39b0000000000000"
+    },
+    "huge-tiny-ratio": {
+      "error": "numeric_unavailable"
+    },
+    "just-below-one": {
+      "actor-0000": "3fe0000000000000",
+      "actor-0001": "3fdfffffffffffff"
+    },
+    "minimum-normal-raw": {
+      "actor-0000": "0010000000000000"
+    },
+    "negative": {
+      "error": "row weights must be positive"
+    },
+    "negative-normal-input": "bfe0000000000000",
+    "no-exact-denominator-sum": {
+      "actor-0000": "3fe0000000000000",
+      "actor-0001": "3fe0000000000000"
+    },
+    "nonpositive": {
+      "error": "row weights must be positive"
+    },
+    "normal-input": "3fb999999999999a",
+    "overflow-input": {
+      "error": "numeric_unavailable"
+    },
+    "private-denominators": {
+      "actor-0000": "3fd30ab2a1078a7d",
+      "actor-0001": "3fc96398d6b4b8a7",
+      "actor-0002": "3fbe778434d8dd96",
+      "actor-0003": "3fb5c3154a51c2d8",
+      "actor-0004": "3fabb278300af7fc",
+      "actor-0005": "3fa76fa0c630aa73",
+      "actor-0006": "3fa1ebf36a617349",
+      "actor-0007": "3fa0090236c2fb5c",
+      "actor-0008": "3f9a7e302df43b1e",
+      "actor-0009": "3f9502fa12ca8729",
+      "actor-0010": "3f93a7f2329c6ded",
+      "actor-0011": "3f9077f46f97d1b9",
+      "actor-0012": "3f8db948c9696e09",
+      "actor-0013": "3f8c575d371d1591",
+      "actor-0014": "3f89ede2e62af30d",
+      "actor-0015": "3f86fe6d7056639c"
+    },
+    "rational-limit": {
+      "error": "ranking resource limit: fraction bits"
+    },
+    "row-above-ceiling": {
+      "accepted": false,
+      "sum_bits": "3ff000000000002e"
+    },
+    "row-at-ceiling": {
+      "accepted": true,
+      "sum_bits": "3ff000000000002d"
+    },
+    "row-below-ceiling": {
+      "accepted": true,
+      "sum_bits": "3ff000000000002c"
+    },
+    "row-infinity": false,
+    "row-nan": false,
+    "row-negative": false,
+    "row-subnormal": false,
+    "row-zero": false,
+    "state-helper-below-block-false": {
+      "actors": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1"
+      ],
+      "blocked": [
+        3
+      ],
+      "private_blocked": [],
+      "public_shun_blocked": [
+        3
+      ],
+      "refusals": [
+        [],
+        [],
+        [],
+        [
+          0
+        ]
+      ],
+      "roots": [
+        "0000000000000000",
+        "3ff0000000000000",
+        "0000000000000000",
+        "0000000000000000"
+      ],
+      "rows": [
+        [],
+        [
+          {
+            "bits": "3fb999999999999a",
+            "to": 0
+          },
+          {
+            "bits": "3fd0000000000000",
+            "to": 2
+          }
+        ],
+        [],
+        []
+      ]
+    },
+    "state-helper-below-block-true": {
+      "actors": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1"
+      ],
+      "blocked": [
+        2,
+        3
+      ],
+      "private_blocked": [
+        2
+      ],
+      "public_shun_blocked": [
+        3
+      ],
+      "refusals": [
+        [],
+        [],
+        [],
+        [
+          0
+        ]
+      ],
+      "roots": [
+        "0000000000000000",
+        "3ff0000000000000",
+        "0000000000000000",
+        "0000000000000000"
+      ],
+      "rows": [
+        [],
+        [
+          {
+            "bits": "3fb999999999999a",
+            "to": 0
+          }
+        ],
+        [],
+        []
+      ]
+    },
+    "state-helper-one-block-false": {
+      "actors": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1"
+      ],
+      "blocked": [
+        3
+      ],
+      "private_blocked": [],
+      "public_shun_blocked": [
+        3
+      ],
+      "refusals": [
+        [],
+        [],
+        [],
+        [
+          0
+        ]
+      ],
+      "roots": [
+        "0000000000000000",
+        "3ff0000000000000",
+        "0000000000000000",
+        "0000000000000000"
+      ],
+      "rows": [
+        [],
+        [
+          {
+            "bits": "3fd5555555555555",
+            "to": 0
+          },
+          {
+            "bits": "3fd5555555555555",
+            "to": 2
+          }
+        ],
+        [],
+        []
+      ]
+    },
+    "state-helper-one-block-true": {
+      "actors": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1"
+      ],
+      "blocked": [
+        2,
+        3
+      ],
+      "private_blocked": [
+        2
+      ],
+      "public_shun_blocked": [
+        3
+      ],
+      "refusals": [
+        [],
+        [],
+        [],
+        [
+          0
+        ]
+      ],
+      "roots": [
+        "0000000000000000",
+        "3ff0000000000000",
+        "0000000000000000",
+        "0000000000000000"
+      ],
+      "rows": [
+        [],
+        [
+          {
+            "bits": "3fd5555555555555",
+            "to": 0
+          }
+        ],
+        [],
+        []
+      ]
+    },
+    "state-helper-scaled-block-false": {
+      "actors": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1"
+      ],
+      "blocked": [
+        3
+      ],
+      "private_blocked": [],
+      "public_shun_blocked": [
+        3
+      ],
+      "refusals": [
+        [],
+        [],
+        [],
+        [
+          0
+        ]
+      ],
+      "roots": [
+        "0000000000000000",
+        "3ff0000000000000",
+        "0000000000000000",
+        "0000000000000000"
+      ],
+      "rows": [
+        [],
+        [
+          {
+            "bits": "3fca5a5a5a5a5a5a",
+            "to": 0
+          },
+          {
+            "bits": "3fe3c3c3c3c3c3c4",
+            "to": 2
+          }
+        ],
+        [],
+        []
+      ]
+    },
+    "state-helper-scaled-block-true": {
+      "actors": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1"
+      ],
+      "blocked": [
+        2,
+        3
+      ],
+      "private_blocked": [
+        2
+      ],
+      "public_shun_blocked": [
+        3
+      ],
+      "refusals": [
+        [],
+        [],
+        [],
+        [
+          0
+        ]
+      ],
+      "roots": [
+        "0000000000000000",
+        "3ff0000000000000",
+        "0000000000000000",
+        "0000000000000000"
+      ],
+      "rows": [
+        [],
+        [
+          {
+            "bits": "3fca5a5a5a5a5a5a",
+            "to": 0
+          }
+        ],
+        [],
+        []
+      ]
+    },
+    "subnormal-correction-allowed": true,
+    "subnormal-input": {
+      "error": "numeric_unavailable"
+    },
+    "subnormal-ratio": {
+      "error": "numeric_unavailable"
+    },
+    "subnormal-raw": {
+      "error": "numeric_unavailable"
+    },
+    "underflow-input": {
+      "error": "numeric_unavailable"
+    },
+    "zero-allowed": "0000000000000000",
+    "zero-forbidden": {
+      "error": "numeric_unavailable"
+    },
+    "zero-ratio": {
+      "error": "numeric_unavailable"
+    },
+    "zero-raw": {
+      "error": "numeric_unavailable"
+    }
+  },
+  "ceiling_bits": "3ff000000000002d",
+  "contract": "jvc-f64-rows-v1",
+  "profile": "simple-routes-shun-f64-v1"
+}

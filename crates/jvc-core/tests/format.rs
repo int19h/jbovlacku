@@ -1030,6 +1030,10 @@ fn current_repository_contract_binding_matches_sources_and_fixtures() {
             "tests/fixtures/definition.json",
             include_bytes!("fixtures/definition.json").as_slice(),
         ),
+        (
+            "crates/jvc-state/tests/fixtures/f64-rows-v1.json",
+            include_bytes!("../../jvc-state/tests/fixtures/f64-rows-v1.json").as_slice(),
+        ),
     ] {
         assert_eq!(
             binding["sha256"][name],
@@ -1083,10 +1087,14 @@ fn noncanonical_identity_r_vectors_satisfy_the_decoded_point_equation() {
 }
 
 #[test]
-fn view_schema_accepts_both_explicit_route_profiles_and_rejects_unknown_names() {
+fn view_schema_accepts_explicit_profiles_and_rejects_unknown_names() {
     let mut body = json!({"name":"fixture","description":[],"roots":[],"rafsi_threshold":{"numerator":1,"denominator":1},"H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},"excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,"import_sets":[],"account_witnesses":[],"account_authority":false,"notes":[]});
     let mut header = header(json!({"kind":"view.publish","parents":[]}), None);
-    for profile in ["simple-routes-bounds-v1", "simple-routes-shun-v1"] {
+    for profile in [
+        "simple-routes-bounds-v1",
+        "simple-routes-shun-v1",
+        "simple-routes-shun-f64-v1",
+    ] {
         body["calculation"] = json!(profile);
         header.content = Some(body_descriptor(&canonical_value(&body).unwrap()).unwrap());
         validate_body(&header, &body).unwrap();

@@ -11,16 +11,16 @@ pub struct Context {
     pub language: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PositiveEdge {
+pub struct PositiveEdge<T = Rational> {
     pub to: usize,
-    pub share: Rational,
+    pub share: T,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ContextGraph {
+pub struct ContextGraph<T = Rational> {
     pub calculation: String,
     pub actors: Vec<String>,
-    pub roots: Vec<Rational>,
-    pub rows: Vec<Vec<PositiveEdge>>,
+    pub roots: Vec<T>,
+    pub rows: Vec<Vec<PositiveEdge<T>>>,
     /// Each target lists the resolved actors who effectively shun it.
     /// The old profile uses an empty relation.
     pub refusals: Vec<Vec<usize>>,
@@ -217,11 +217,77 @@ fn judgments_for_targets<'a>(
 pub fn evaluate_context(evaluation: &Evaluation, context: &Context) -> ContextGraph {
     evaluate_context_with_limit(evaluation, context, MAX_CONTEXT_REFUSALS)
 }
+
+/// Prepare float rows only. This operation does not rank the context.
+pub fn prepare_approximate_context(
+    evaluation: &Evaluation,
+    context: &Context,
+) -> ContextGraph<f64> {
+    resolve_context::<FloatRows>(evaluation, context, MAX_CONTEXT_REFUSALS)
+}
+
+trait RowArithmetic {
+    type Value: Clone;
+    fn root(value: &Rational) -> Result<Self::Value, &'static str>;
+    fn row(
+        weights: &BTreeMap<String, Rational>,
+        blocked: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, Self::Value>, &'static str>;
+    fn supports(calculation: &str) -> bool;
+}
+struct ExactRows;
+impl RowArithmetic for ExactRows {
+    type Value = Rational;
+    fn root(value: &Rational) -> Result<Rational, &'static str> {
+        Ok(value.clone())
+    }
+    fn row(
+        weights: &BTreeMap<String, Rational>,
+        blocked: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, Rational>, &'static str> {
+        let sum = weights.values().fold(Rational::zero(), |a, b| a + b);
+        let divisor = std::cmp::max(sum, Rational::one());
+        Ok(weights
+            .iter()
+            .filter(|(id, _)| !blocked.contains(*id))
+            .map(|(id, weight)| (id.clone(), weight / &divisor))
+            .collect())
+    }
+    fn supports(calculation: &str) -> bool {
+        calculation != jvc_rank::approximate::ALGORITHM
+    }
+}
+struct FloatRows;
+impl RowArithmetic for FloatRows {
+    type Value = f64;
+    fn root(value: &Rational) -> Result<f64, &'static str> {
+        jvc_rank::approximate::input(value, true).map_err(|_| "numeric_unavailable")
+    }
+    fn row(
+        weights: &BTreeMap<String, Rational>,
+        blocked: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, f64>, &'static str> {
+        jvc_rank::approximate::normalize_row(weights, blocked).map_err(|error| match error {
+            jvc_rank::approximate::PreparationError::NumericUnavailable => "numeric_unavailable",
+            _ => "resource_unavailable",
+        })
+    }
+    fn supports(calculation: &str) -> bool {
+        calculation == jvc_rank::approximate::ALGORITHM
+    }
+}
 fn evaluate_context_with_limit(
     evaluation: &Evaluation,
     context: &Context,
     max_refusals: usize,
 ) -> ContextGraph {
+    resolve_context::<ExactRows>(evaluation, context, max_refusals)
+}
+fn resolve_context<A: RowArithmetic>(
+    evaluation: &Evaluation,
+    context: &Context,
+    max_refusals: usize,
+) -> ContextGraph<A::Value> {
     let calculation = evaluation
         .policy
         .as_ref()
@@ -374,7 +440,8 @@ fn evaluate_context_with_limit(
         .map(|(i, a)| (a.clone(), i))
         .collect();
     let mut rows = vec![Vec::new(); actors.len()];
-    let route_refusals = calculation == "simple-routes-shun-v1";
+    let route_refusals =
+        calculation == "simple-routes-shun-v1" || calculation == jvc_rank::approximate::ALGORITHM;
     let mut refusals = if route_refusals {
         vec![Vec::new(); actors.len()]
     } else {
@@ -383,6 +450,10 @@ fn evaluate_context_with_limit(
     let mut refusal_count = 0;
     let mut reasons = evaluation.reasons.clone();
     let mut available = evaluation.available && evaluation.policy.is_some();
+    if !A::supports(&calculation) {
+        available = false;
+        reasons.insert("unsupported_calculation".into());
+    }
     let mut weights: BTreeMap<String, BTreeMap<String, Rational>> = BTreeMap::new();
     for ((issuer, subject), rules) in pairs {
         let retained = retained_rules(&rules);
@@ -420,28 +491,40 @@ fn evaluate_context_with_limit(
         weights.entry(issuer).or_default().insert(subject, weight);
     }
     for (issuer, destinations) in weights {
-        let sum = destinations.values().fold(Rational::zero(), |a, b| a + b);
-        let divisor = std::cmp::max(sum, Rational::one());
         if blocked.contains(&issuer) {
             continue;
         }
-        for (subject, weight) in destinations {
-            if !blocked.contains(&subject) {
-                rows[indices[&issuer]].push(PositiveEdge {
-                    to: indices[&subject],
-                    share: weight / &divisor,
-                });
+        if !A::supports(&calculation) {
+            continue;
+        }
+        match A::row(&destinations, &blocked) {
+            Ok(shares) => {
+                for (subject, share) in shares {
+                    rows[indices[&issuer]].push(PositiveEdge {
+                        to: indices[&subject],
+                        share,
+                    });
+                }
+            }
+            Err(reason) => {
+                available = false;
+                reasons.insert(reason.into());
             }
         }
     }
     let roots = actors
         .iter()
         .map(|a| {
-            if blocked.contains(a) {
+            let root = if blocked.contains(a) {
                 Rational::zero()
             } else {
                 root_weights.get(a).cloned().unwrap_or_else(Rational::zero)
-            }
+            };
+            A::root(&root).unwrap_or_else(|reason| {
+                available = false;
+                reasons.insert(reason.into());
+                A::root(&Rational::zero()).expect("zero is a valid root")
+            })
         })
         .collect();
     let blocked = blocked

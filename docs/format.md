@@ -1052,7 +1052,7 @@ A `view.publish` body contains these fields:
 | `H` | Rational outward multiplier. Reference value `3/1`. |
 | `alpha` | Rational onward fraction. Reference value `1/2`. |
 | `excluded` | Sorted objects containing `identity` and `evidence`, an array of event IDs. |
-| `calculation` | `simple-routes-bounds-v1` or `simple-routes-shun-v1`. |
+| `calculation` | `simple-routes-bounds-v1`, `simple-routes-shun-v1`, or `simple-routes-shun-f64-v1`. |
 | `work` | Positive integer expansion budget. Reference value 1,000,000. |
 | `import_sets` | Sorted objects containing `source`, `importer`, and `selection`. |
 | `account_witnesses` | Sorted identity keys trusted for external-account observations, without duplicates. |
@@ -1132,10 +1132,10 @@ If every retained value is `heed`, an edge exists. Any shun or conflict blocks t
 
 Incomparable scopes can therefore conflict. A narrow clear falls back to a broader heed, but a narrow shun blocks it.
 
-A public shun prevents its issuer's direct edge in both supported profiles.
+A public shun prevents its issuer's direct edge in all three profiles.
 The `simple-routes-bounds-v1` profile applies no further route refusal.
 It stores no route-refusal relation and ignores that data when grouping calculations or comparing candidates.
-The `simple-routes-shun-v1` profile also prevents entry to a target that any earlier actor on that route effectively shuns.
+The `simple-routes-shun-v1` and `simple-routes-shun-f64-v1` profiles also prevent entry to a target that any earlier actor on that route effectively shuns.
 Resolve scope specificity and identity continuity before constructing these refusals.
 Any retained value set that contains `shun` creates a refusal, including a conflict that contains `shun`.
 A conflict without `shun`, a clear alone, and missing trust create no refusal.
@@ -1201,7 +1201,7 @@ H * q_r * alpha^(k-1) * p[r,v1] * ... * p[v(k-1),vk]
 ```
 
 An actor's weight equals its own `q` plus all permitted simple-route contributions that end there.
-Under `simple-routes-shun-v1`, each entry must also pass every earlier actor's effective shuns.
+Under either shun profile, each entry must also pass every earlier actor's effective shuns.
 Under `simple-routes-bounds-v1`, every simple route in the positive graph remains permitted.
 An actor retains every received contribution for its judgments and forwards the alpha fraction onward.
 Its own outward pool is `H*q`, independent of its own judgment allowance.
@@ -1272,19 +1272,26 @@ The largest useful complete stage depends on the graph. A high-degree graph can 
 
 This profile avoids a separate unbounded pass over all prefix-neighbor pairs for an exact frontier.
 
-The reference intervals use exact rational arithmetic. A result bearing this profile name must equal those intervals.
-An implementation with outward rounding must identify a derived calculation profile and enclose the reference intervals.
-It cannot claim an ordering that the reference bounds do not establish. More complete exact stages use a larger declared budget.
-Implementations that prove tighter bounds through another method also need a distinct profile name.
+The reference intervals for `simple-routes-bounds-v1` and `simple-routes-shun-v1` use exact rational arithmetic.
+A result bearing either exact profile name must equal its reference intervals.
+A derived certified profile with outward rounding must enclose its reference intervals and identify its own calculation profile.
+It cannot claim an ordering that the reference bounds do not establish.
+More complete exact stages use a larger declared budget.
+Methods that prove tighter bounds also need a distinct profile name.
 
-Derived arithmetic profiles must preserve the route rule of the profile they name as their reference.
-The two supported profiles have different route rules. A new signed view selects a different rule.
+Derived profiles preserve their reference route rule.
+The two exact profiles have different route rules.
+`simple-routes-shun-f64-v1` shares the shun route rule and uses non-certified arithmetic.
+Its estimates, comparisons, and availability follow the approximate subsection below.
+A new signed view selects any change of route rule or arithmetic.
 Do not rewrite an existing view publication or reinterpret its selected profile.
 
 The expansion budget does not bound graph construction, memory, rational sizes, or matrix work.
-A server can return a resource-limit error. It cannot label uncertified partial numbers as final scores.
+A server can return a resource-limit error.
+An unfinished calculation cannot supply a final exact or certified score.
+The float profile requires a completed upper-estimate phase before it supplies an explicitly approximate score.
 
-For `simple-routes-shun-v1`, the reference implementation stores at most 100,000 effective refusal pairs in sorted lists indexed by target.
+For either shun profile, the reference implementation stores at most 100,000 effective refusal pairs in sorted lists indexed by target.
 For each permitted non-repeat attempt, it searches for a common actor between the visited set and the target's refusal list.
 It iterates the shorter list and searches the other sorted list.
 Each searched element counts as one refusal test. An empty target list requires no tests.
@@ -1317,13 +1324,14 @@ An active layer contains only active candidates. A nondominated candidate has no
 Deprecated candidates, including deprecated-base virtuals, follow in retired layers after every active candidate.
 Their `[0,0]` score values remain on score objects but take no part in dominance or active sublist positions.
 
-Stored native definitions, imports, and virtual definitions compete under those same certified comparison rules.
+Stored native definitions, imports, and virtual definitions use the comparison rules of their selected profile.
 Within a layer, start with full target ID order for stable presentation.
 The starting-order rule below refines only known unjudged zero-score candidates. Label the result as presentation order, not a quality distinction.
 The client offers more computation and exposes the intervals.
 
 For each active layer, select only active candidates with a known count of zero effective direct reviewers.
-Further restrict that sublist to candidates with an exact net interval `[0,0]`.
+For exact profiles, further restrict that sublist to candidates with an exact net interval `[0,0]`.
+For the float profile, require structural known zero as defined below. Computed or flushed zero does not suffice.
 Every other candidate retains its occupied position, including candidates with nonzero reviewer counts or unresolved score or reviewer information.
 Sort that sublist by the following categories, then by full target ID. Write it back into only its original positions:
 
@@ -1342,7 +1350,7 @@ Apply the rule to each completed layer as a whole. A pairwise native-versus-impo
 
 A resumable calculation retains its complete-stage prefixes and lower totals. It never resumes by treating upper-bound contributions as exact credit. It never silently substitutes a hop limit or random estimate.
 Graph comparison, cached weights, and retained prefixes must use the same profile.
-Under `simple-routes-shun-v1`, they must also use the same effective refusal relation.
+Under either shun profile, they must also use the same effective refusal relation.
 Under `simple-routes-bounds-v1`, ignored refusal data must not divide otherwise identical weighted graphs.
 Identical visited sets and endpoints still merge because they imply identical accumulated refusals within that graph.
 
@@ -1350,8 +1358,139 @@ An effective reviewer with zero influence remains a direct reviewer. It does not
 Declared incoming heeds show potential sources. They do not prove that a route delivered a measured amount.
 A list of shunners alone does not prove that those actors occurred on a route that supplied a reviewer.
 
+### Approximate shun calculation
+
+`simple-routes-shun-f64-v1` is a distinct non-certified calculation profile.
+It preserves simple routes, own and outward allowances, continuity, scoped trust, eligibility, and the shun refusal rule.
+Signed parameters and private weights retain their rational encodings.
+Only unsigned calculation results use binary64 numbers.
+Binary64 is IEEE 754 double-precision arithmetic.
+Use round-to-nearest, ties-to-even, and stable actor, edge, refusal, and prefix order.
+Use Neumaier compensated addition throughout numerical accumulation.
+Neumaier addition retains corrections alongside the running sum.
+
+#### Input conversion and row preparation
+
+Resolve continuity, duplicate destinations, scope conflicts, clears, and private replacement before normalization.
+Normalize retained positive weights before removing blocked destinations. Removed shares never redistribute.
+Let `w_i` be those rational weights. An empty row stays empty.
+Find `m = max(w_i)` through exact rational comparison.
+Compute each `r_i = w_i / m` as an exact rational division before conversion.
+Each ratio lies in `(0, 1]`. Convert it separately to normal binary64.
+Never sum unlike rational denominators for float row normalization.
+
+Compute `s = compensated_sum(r_i)` from the converted ratios.
+If `m > 1`, use `p_i = r_i / s` without converting the raw maximum.
+Otherwise, compare `m * s` with one exactly.
+Interpret the finite binary64 `s` as its exact rational value for that comparison.
+This multiplication does not sum raw weights. Charge its arithmetic and temporary storage to preparation.
+If `m * s <= 1`, keep `p_i = to_f64(w_i)` unchanged.
+This is the no-scaling branch. Do not compute an approximate reciprocal of `m`.
+In the other branch, use `p_i = r_i / s`.
+The branch uses rounded `s` and does not claim exact classification at a rational sum of one.
+
+Inputs include converted weights, ratios, shares, `q`, `H`, `alpha`, and `T`.
+A subnormal input or a positive input that converts to zero gives `numeric_unavailable` for that graph.
+Subnormal numbers lie below binary64's normal positive range.
+Zero remains allowed only where the parameter permits mathematical zero.
+Reject nonfinite arithmetic and invalid or reversed estimates.
+A raw weight outside binary64 range need not fail when its scaled ratio remains normal.
+Weights `2^1100` and `2^1000` can normalize. Weights `2^2000` and `1` fail because their small ratio cannot remain normal.
+The no-scaling branch also rejects a raw weight that cannot become normal binary64.
+
+Accept a materialized row only when its compensated total is at most binary64 `1.0 + 1e-14`.
+The ceiling has bits `0x3ff000000000002d`. Round the compensated total once before comparison.
+Accept equality and reject the next representable total above the ceiling as an invalid graph.
+The normalization helper tests its full unblocked output and its surviving row after blocking.
+Do not clamp accepted shares or renormalize them after blocking.
+The tolerance means that the tail expression remains approximate and does not inherit the exact row-sum proof.
+
+#### Propagation, availability, and numerical error
+
+Commit complete route stages only. Pending stages do not alter retained lower estimates.
+Use the reference 65 relaxed vectors and scalar tail as approximate estimates, without a certified enclosure claim.
+A completed exploration remains numerically approximate. It never emits `exact: true`.
+A budget-limited exploration can supply a range only after its upper-estimate phase finishes.
+A graph stopped during that phase supplies progress but no score, comparison, or automatic assignment.
+Keep availability, exploration completion, and historical completeness separate.
+Missing evidence never becomes a zero score. Retain performed work and all applicable failure causes.
+A missing definition score makes definition layers incomplete. A missing rafsi score alone does not.
+
+Propagated masses include prefix masses, route products, and relaxed-vector entries.
+Flush an exact positive propagated value below `f64::MIN_POSITIVE` to zero and drop its prefix or term.
+Increment `flushed_terms` once per drop, including work in a later discarded pending stage.
+Detect this boundary through operand exponents and significands, even when the product rounds up to the smallest normal value.
+Apply the same rule to initial `H*q` mass and propagated tail contributions.
+Do not count descendants that a dropped prefix never creates or structural zeros.
+Progress and terminal results report per-graph counts and their word total without charging in-call reuse twice.
+Accumulator corrections and signed differences are exempt from the subnormal guard.
+Computed margins use ordinary binary64 arithmetic and can round to zero.
+Flushing must not make an unrelated ordinary target unavailable.
+
+Let `d` be the deepest committed route prefix used by the completed estimate, including its retained frontier.
+Count root depth as zero and exclude uncommitted stages. The constant below includes the 65 relaxed steps.
+Use the maximum contributing graph depth for each comparison.
+
+```text
+factor(d) = max(1e-12, (2*d + 140) * 2^-52)
+flush_margin(g) = flushed_terms(g) * 2^-1018
+margin(d, M, F) = compensated_sum(factor(d) * M, F)
+```
+
+For one graph, use `F = flush_margin(g)` in every margin.
+For separate graphs, sum the terms once per distinct contributing graph.
+The absolute term covers counted drops and adds no unconditional floor. Never replace `M` with `max(M, 1)`.
+`2^-1018` is sixteen times `f64::MIN_POSITIVE`, above the factor of ten from `alpha <= 9/10`.
+This depth factor and flushing allowance form an engineering error model, not a certified error bound.
+Serialize depth, the relative factor, each graph's absolute term, and any combined cross-graph term.
+
+#### Comparisons and rafsi decisions
+
+Cancel identical actor verdicts before comparing targets on the same graph.
+Then use `M = compensated_sum(abs(c_i) * U_i)` for remaining verdict differences `c_i` and completed actor upper estimates `U_i`.
+A strict lead requires the lower difference to exceed `margin(d, M, F)`.
+Separate graphs use both candidates' upper support and opposition masses without actor cancellation.
+A zero mass establishes no lead. Keep unresolved alternatives together and collapse strict-comparison cycles before constructing layers.
+Do not use fuzzy equality as a sorting comparator.
+
+For actual positive support, set `M_P = compensated_sum(support.upper, opposition.upper)`.
+Require `net.lower > margin(d, M_P, F)`. Otherwise positive support is not established.
+For threshold `T`, include `abs(T)` in that mass and accept `net.lower - T >= -margin(d, M_T, F)`.
+Store decisions in results. Rendering never recalculates them from rounded decimals.
+The inclusive tolerance can accept a tiny threshold miss or withhold a tiny real lead.
+
+Eligible-competitor potential uses its upper net estimate and `M_P`, not its actual-positive flag.
+It is nonpositive only for structural known zero or `net.upper < -margin(d, M_P, F)`.
+Otherwise potential remains possible. A missing upper estimate makes it unavailable.
+Unresolved-pair potential applies the same rule to retained pair judgments without assuming its claim or word gate passes.
+Missing history or an unfinished upper phase makes that potential unavailable.
+
+Structural known zero comes only from graph structure and retained judgment signs.
+No root, permitted route, or judgment can give the target positive support.
+Never infer it from computed values. A flushed zero is never structural known zero.
+A zero-weight reviewer remains a reviewer.
+
+Automatic selection requires eligibility, actual positive support, and threshold acceptance.
+The candidate must lead over each eligible competitor with possible potential.
+Unavailable eligible potential blocks selection.
+Possible or unavailable unresolved same-spelling potential also blocks selection without making that pair eligible.
+A nonpositive competitor does not block selection.
+Unidentified claims remain a disclosed coverage limit. Uniqueness stays conditional on known identified inventory.
+Use these rules in place of the certified comparison and rafsi tests for this float profile.
+Keep all status partitions and eligibility gates.
+
+#### Derived bindings
+
+The row preparation contract is `jvc-f64-rows-v1`.
+Bind derived results to the profile, core artifact, format contract, signed parameters, and complete resolved graph.
+Include canonical actor order, root and share bits, refusal relation, snapshot, view, overlay, mode, and requested context.
+Fractional result numbers never enter signed-record canonical JSON.
+An interpretation or schema change invalidates older derived caches, compact records, and checkpoints through their versioned bindings.
+It does not migrate or rewrite signed records.
+
 ### Rafsi decisions and future edits
 
+The following certified tests apply to the two exact profiles. The float profile uses the approximate tests above.
 An eligible rafsi pair has positive support only when its net lower bound exceeds zero.
 Each actor has one judgment register per pair, regardless of the number of publishers or duplicate claims.
 Concurrent opposite judgments on that pair conflict. A causally later judgment changes the actor's opinion for the pair.

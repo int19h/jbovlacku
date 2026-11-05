@@ -1013,7 +1013,11 @@ fn view(b: &Value, r: &mut Rich) -> Result<()> {
     }
     oneof(
         &b["calculation"],
-        &["simple-routes-bounds-v1", "simple-routes-shun-v1"],
+        &[
+            "simple-routes-bounds-v1",
+            "simple-routes-shun-v1",
+            "simple-routes-shun-f64-v1",
+        ],
     )?;
     integer(&b["work"], 1, 10_000_000)?;
     ids(&b["account_witnesses"], "ed25519:", 64)?;

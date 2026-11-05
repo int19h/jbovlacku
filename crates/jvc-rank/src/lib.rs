@@ -7,6 +7,8 @@ use num_traits::{One, Zero};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+pub mod approximate;
+
 pub type Rational = num_rational::BigRational;
 pub const ALGORITHM: &str = "simple-routes-bounds-v1";
 pub const SHUN_ALGORITHM: &str = "simple-routes-shun-v1";

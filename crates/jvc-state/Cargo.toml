@@ -12,8 +12,12 @@ serde_json.workspace = true
 num-bigint = { version = "=0.4.6", features = ["serde"] }
 num-rational = { version = "=0.4.2", features = ["serde"] }
 num-traits = "=0.2.19"
+jvc-rank = { path = "../jvc-rank" }
 
 [dev-dependencies]
-jvc-rank = { path = "../jvc-rank" }
 sha2 = "=0.10.9"
 hex = "=0.4.3"
+
+[[example]]
+name = "f64_rows_wasm"
+crate-type = ["cdylib"]

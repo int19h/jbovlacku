@@ -11,7 +11,9 @@ pub use api::{
 pub use incremental::{CHECKPOINT_VERSION, EvaluatedState, JudgmentChanges, UpdateStatistics};
 
 use jvc_core::{BodyAvailability, VerifiedEnvelope, inspect_body, validate_action};
-pub use policy::{Context, ContextGraph, PositiveEdge, evaluate_context};
+pub use policy::{
+    Context, ContextGraph, PositiveEdge, evaluate_context, prepare_approximate_context,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
