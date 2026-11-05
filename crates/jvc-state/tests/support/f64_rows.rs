@@ -152,6 +152,73 @@ pub fn vectors() -> Value {
     let wide_result = prepared(&wide, &[]);
     assert!(wide_result.get("error").is_none());
     cases.insert("no-exact-denominator-sum".into(), wide_result);
+    // Sum the returned binary64 shares as exact rationals for the total oracle.
+    for (name, weights, no_scaling, expected_total_bits) in [
+        (
+            "normalize-scaling-below-one",
+            vec![rational(2, 1); 49],
+            false,
+            0x3fef_ffff_ffff_ffff,
+        ),
+        (
+            "normalize-no-scaling-below-one",
+            vec![rational(1, 49); 49],
+            true,
+            0x3fef_ffff_ffff_ffff,
+        ),
+        (
+            "normalize-scaling-above-one",
+            [vec![rational(3, 1)], vec![rational(1, 1); 11]].concat(),
+            false,
+            0x3ff0_0000_0000_0001,
+        ),
+        (
+            "normalize-no-scaling-above-one",
+            vec![
+                rational(562_949_953_421_312, 1_326_305_306_668_695),
+                rational(1_327_009_995_014_397, 3_536_814_151_116_520),
+                rational(354_302_140_155_979, 1_768_407_075_558_260),
+            ],
+            true,
+            0x3ff0_0000_0000_0001,
+        ),
+    ] {
+        let maximum = weights.iter().max().unwrap();
+        let ratio_total = weights.iter().fold(rational(0, 1), |sum, weight| {
+            sum + Rational::from_float(approximate::input(&(weight / maximum), false).unwrap())
+                .unwrap()
+        });
+        let rounded_ratio_total = approximate::input(&ratio_total, false).unwrap();
+        let branch_product = maximum * Rational::from_float(rounded_ratio_total).unwrap();
+        assert_eq!(
+            maximum <= &Rational::one() && branch_product <= Rational::one(),
+            no_scaling
+        );
+        if no_scaling {
+            assert_eq!(branch_product, Rational::one());
+        }
+        let row = prepared(&weights, &[]);
+        assert!(row.get("error").is_none());
+        let mut exact_total = rational(0, 1);
+        for (i, weight) in weights.iter().enumerate() {
+            let share = f64::from_bits(
+                u64::from_str_radix(row[format!("actor-{i:04}")].as_str().unwrap(), 16).unwrap(),
+            );
+            exact_total += Rational::from_float(share).unwrap();
+            if no_scaling {
+                assert_eq!(
+                    share.to_bits(),
+                    approximate::input(weight, false).unwrap().to_bits()
+                );
+            }
+        }
+        let rounded_total = approximate::input(&exact_total, false).unwrap();
+        assert_eq!(rounded_total.to_bits(), expected_total_bits);
+        cases.insert(
+            name.into(),
+            json!({"shares":row,"sum_bits":bits(rounded_total)}),
+        );
+    }
     let ceiling = approximate::ROW_SUM_CEILING;
     for (name, value, accepted) in [
         (
