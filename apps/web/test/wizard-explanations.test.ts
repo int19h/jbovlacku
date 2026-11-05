@@ -178,3 +178,30 @@ test("wizard explanations preserve a definition cleared in the lujvo builder", a
     page.getByRole("button", { name: /Use the meaning/ }),
   ).toHaveCount(0);
 });
+
+test("wizard explanations refresh initial type feedback for a saved automatic choice", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "vlaste",
+        kind: "gismu",
+        autoDetectedKind: "gismu",
+        text: [["A word list."]],
+        step: 4,
+      }),
+    );
+  });
+  await page.goto("/new/editor");
+  await expect(page.getByLabel("Type", { exact: true })).toHaveValue("lujvo");
+  const status = page.getByRole("status", { name: "Word form", exact: true });
+  await expect(status).toHaveText("Detected form: lujvo.");
+  await expect(status).not.toContainText("does not match");
+  await expect(status).not.toHaveClass(/\bnotice\b/);
+});

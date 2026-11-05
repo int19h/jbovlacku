@@ -1105,15 +1105,16 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" npx playwright install chromiu
 PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" JVC_TEST_ROOT="$PWD/.cache/browser-tests" npm run test:web
 ```
 
-The default run tests the full app in Chromium. Firefox runs the rich-editor tests and two authoring smoke cases.
+The default run tests the full app in Chromium.
+Firefox runs the rich-editor, wizard explanation, and place-numbering tests, plus two authoring smoke cases.
 Use `npm run test:web -- --project chromium` for Chromium alone.
-Use `npm run test:web -- --project firefox-editor --project firefox-authoring` for Firefox alone.
+Use `npm run test:web -- --project firefox-editor --project firefox-authoring --project firefox-wizard` for Firefox alone.
 The native composition case uses Chromium's debugging protocol. Firefox keeps the portable composition cases.
 
 GitHub Actions runs the Chromium and Firefox suites in parallel jobs in [the test workflow](../.github/workflows/test.yml).
 The `native-wasm-and-browser` job keeps the native tests, format comparisons, and TypeScript checks.
 It also runs service, importer, adapter, browser model, and Chromium tests.
-The `firefox-editing-and-authoring` job runs the `firefox-editor` and `firefox-authoring` projects with their existing test selection.
+The `firefox-editing-and-authoring` job runs the `firefox-editor`, `firefox-authoring`, and `firefox-wizard` projects with their existing test selection.
 It installs Firefox only and builds the shared WebAssembly and browser assets. It does not repeat the native checks or standalone server build.
 The `standalone-image` job continues to build and test the container separately.
 

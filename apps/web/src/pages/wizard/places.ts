@@ -640,6 +640,7 @@ export async function placesPage(
       }
     };
     preselectKind();
+    formStatus.refresh();
     kind.input.addEventListener("change", () => {
       const next = (kind.input.value || null) as LexicalKind | null;
       if (!confirmKindChange(draft, next)) {
