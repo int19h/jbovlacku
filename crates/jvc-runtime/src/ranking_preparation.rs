@@ -186,9 +186,14 @@ impl std::io::Write for Capped {
         if bytes.len() > self.1.saturating_sub(self.0.len()) {
             return Err(std::io::Error::other("ranking metadata limit"));
         }
-        self.0
-            .try_reserve_exact(bytes.len())
-            .map_err(std::io::Error::other)?;
+        if self.0.len() + bytes.len() > self.0.capacity() {
+            let capacity = (self.0.len() + bytes.len())
+                .max(self.0.capacity().saturating_mul(2))
+                .min(self.1);
+            self.0
+                .try_reserve_exact(capacity - self.0.len())
+                .map_err(std::io::Error::other)?;
+        }
         self.0.extend_from_slice(bytes);
         Ok(bytes.len())
     }

@@ -106,9 +106,14 @@ impl EvaluatedState {
                 if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
                     return Err(std::io::Error::other("ranking source bytes limit"));
                 }
-                self.bytes
-                    .try_reserve_exact(bytes.len())
-                    .map_err(std::io::Error::other)?;
+                if self.bytes.len() + bytes.len() > self.bytes.capacity() {
+                    let capacity = (self.bytes.len() + bytes.len())
+                        .max(self.bytes.capacity().saturating_mul(2))
+                        .min(self.limit);
+                    self.bytes
+                        .try_reserve_exact(capacity - self.bytes.len())
+                        .map_err(std::io::Error::other)?;
+                }
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
