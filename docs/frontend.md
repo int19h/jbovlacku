@@ -673,6 +673,7 @@ Each step saves the draft in this browser and exposes its save state.
 The first step asks for a freeform definition and its language. A headword is optional at this point.
 “Other language tag” appears only when the language select reads “Other”.
 The select keeps focus when the field appears. Hidden custom text never overrides a selected language.
+While Other has no custom text, the saved language and its review state stay unchanged.
 The optional “Lojban word” field keeps a spelling that the author already chose.
 The app normalizes the spelling to NFC and uses the format's plain spelling for word identity.
 It analyses that plain form locally with `analyzeWord`. Analysis lowercases input, while the draft keeps the entered display spelling.
@@ -1027,10 +1028,17 @@ The full editor also exposes grammatical operands, classification, labels, and e
 Fixed license values, derived identifiers, and generated provenance remain read-only.
 Showing every field does not permit changing import origin or claiming another author's evidence.
 The app offers numbered place insertion, descriptions, glosses, expected values, defaults, constraints, examples, notes, and etymology.
-On first entry to Places or the full editor, the app fills an untouched, empty definition from Meaning.
+
+On entry to Places or the full editor, the app fills an untouched, empty definition when Meaning contains text.
 It proposes place declarations and asks only for numbering approval before publication.
-After approval, focus moves from the removed button to the numbering message.
-The app never replaces existing definition text or refills text that the author clears.
+An explicit zero-place choice keeps its empty frame and approval flag during this fill.
+
+After approval, focus moves from the removed button to the approval paragraph, including when no places are declared.
+
+The app never replaces existing definition text.
+It preserves deliberate clears recorded by the current editor.
+An older empty draft without that record can refill because the app cannot distinguish a deliberate clear from untouched text.
+
 Repeated references can name the same place. Textual order does not determine final place order.
 
 Each rich field uses an accessible editor over the stored node tree. Places and operands are inline chips. Code, word links, and web links are separate inline nodes.

@@ -259,7 +259,9 @@ The author can continue despite every match. The bottom action area shows “Sav
 Underscores remain draft placeholders until the author approves their numbering.
 The original meaning remains separate from later editable definition prose.
 Places and the full editor fill an untouched definition automatically and ask only for numbering approval.
-Existing prose and deliberately cleared definitions stay unchanged.
+Existing prose and deliberate clears recorded by the current editor stay unchanged.
+Older empty drafts without that record can refill from Meaning.
+
 Each semicolon restarts blank numbering at 1. The displayed count is the highest place number in any part.
 Unescaped circled numerals and `{place N}` reserve explicit numbers within each part. Blanks take the free numbers in order.
 
@@ -401,7 +403,7 @@ From edits `derivation`, with source word, nullable exact definition ID, source 
 It does not infer a source place from array position.
 
 Defaults and constraints, Notes, Examples, Etymology, and Sources start as named disclosures.
-Etymology retains accepted formation evidence from step 3. The full editor opens every section and exposes all format fields.
+Etymology retains accepted formation evidence from step 3. The full editor opens every authoring section and exposes all format fields.
 It also permits manual headword and type, grammatical operands, labels, and classification.
 Fixed license values, derived identifiers, and generated provenance remain read-only.
 The editor cannot fabricate import origin or another author's source evidence.
