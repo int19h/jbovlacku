@@ -1985,8 +1985,8 @@ export function richField(label: string, options: RichFieldOptions) {
       el(
         "div",
         { class: "actions" },
-        apply,
         button("Cancel", () => node.close(), { class: "btn" }),
+        apply,
       ),
     );
     form.addEventListener("submit", (event) => {

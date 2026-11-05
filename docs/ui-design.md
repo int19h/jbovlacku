@@ -362,6 +362,8 @@ Escape closes the grid and returns focus to More places. Activating a place inse
 The main definition toolbar stays visible above its editor. Other toolbars follow their editor in display and keyboard order.
 They appear while their field group has focus and keep their space reserved.
 Closing a dialog returns focus to its visible invoker or the editor.
+Editor dialogs use `--surface`, a `--line2` border, a 16px radius, and the soft shadow `0 20px 60px rgba(0,0,0,.18)`.
+Their backdrop is `#0008`. Cancel precedes the primary action, which stays on the right.
 Place buttons use bold 15px digits inside drawn chip faces. Other actions use compact buttons, with Operand hidden until an operand exists.
 The full typed-place hint appears once under the definition. Toolbar keyboard instructions remain screen-reader-only.
 Editor place chips use 1.45em circles with wider badges for two digits and retain normal editor line height.

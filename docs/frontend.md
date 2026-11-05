@@ -1050,6 +1050,8 @@ Arrow keys move within the grid. Home and End move to its first and last place. 
 Place controls show bold digits inside drawn circles. Every standalone control retains a 44px target.
 
 Word link, Web link, and Insert code open labeled dialogs.
+Editor dialogs use `--surface`, a `--line2` border, a 16px radius, and the soft shadow `0 20px 60px rgba(0,0,0,.18)`.
+Their backdrop is `#0008`. Cancel precedes the primary action, which stays on the right.
 The Word link control has the accessible name “Word link, link a Lojban word”. New link labels use a single-line input.
 Line breaks in a selected new label become spaces, as the dialog explains.
 Editing an existing multiline label uses a multiline field and preserves its line breaks as LF after a label edit.

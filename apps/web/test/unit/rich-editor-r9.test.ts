@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { history, undo, redo } from "prosemirror-history";
 import { EditorState, TextSelection } from "prosemirror-state";
 import {
   editorToRich,
@@ -18,7 +19,7 @@ test("plain projection keeps explicit tokens above place 50", () => {
   );
 });
 
-for (const blank of ["\n\n\n", "\n \n", "\n\t\n", "\n \n\t\n"]) {
+for (const blank of ["\n\n\n", "\n \n", "\n\t\n", "\n \n\t\n", "\r\n\r\n"]) {
   test(`paste treats whitespace blank-line runs as one paragraph break ${JSON.stringify(blank)}`, () => {
     for (const convert of [false, true]) {
       assert.deepEqual(pastedRichText(`a${blank}b`, convert), [["a"], ["b"]]);
@@ -39,9 +40,10 @@ const containers: [string, RichNode][] = [
 for (const [name, node] of containers) {
   test(`chip at offset zero goes before ${name}`, () => {
     const doc = richToEditor([[node]]);
-    const state = EditorState.create({
+    let state = EditorState.create({
       doc,
       selection: TextSelection.create(doc, 2),
+      plugins: [history()],
     });
     const tr = replaceInline(
       state,
@@ -51,5 +53,14 @@ for (const [name, node] of containers) {
     );
     assert.deepEqual(editorToRich(tr.doc), [[1, node]]);
     assert.ok(tr.selection.from < tr.doc.child(0).nodeSize);
+    state = state.apply(tr);
+    const dispatch = (next: typeof tr) => {
+      state = state.apply(next);
+    };
+    assert.equal(undo(state, dispatch), true);
+    assert.deepEqual(editorToRich(state.doc), [[node]]);
+    assert.equal(redo(state, dispatch), true);
+    assert.deepEqual(editorToRich(state.doc), [[1, node]]);
+    assert.equal(richTextToText(editorToRich(state.doc)), "①ab");
   });
 }
