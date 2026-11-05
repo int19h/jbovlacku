@@ -1388,6 +1388,7 @@ Keep the admission row unchanged and retain separate completion or unconfirmable
 Show the unconfirmable notice only when this browser first records that outcome for the binding.
 Later visits and reloads do not repeat it. This notice offers no Refresh action.
 A local marker failure alone does not raise an unconfirmable notice. Keep completion evidence truthful when a write needs a retry.
+Skip an unreadable marker for this session without writing evidence.
 Pending and failure notices carry the status role. Refresh after a read failure reads the profile again without another signature.
 After Refresh, focus the connected heading on success or the error notice on failure.
 

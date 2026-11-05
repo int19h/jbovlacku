@@ -503,3 +503,33 @@ test("a failed marker read skips only this session without writing evidence", as
   assert.equal(reads, 1);
   assert.deepEqual([...reloaded.evidence.values()], [true]);
 });
+
+test("rebuilding deleted completion evidence still requires a current profile", async (t) => {
+  const { restore, completed, evidence } = profile(39);
+  let invalidations = 0;
+  let reads = 0;
+  const options = { invalidate: () => invalidations++ };
+  t.mock.method(globalThis, "fetch", async () => {
+    reads++;
+    return Response.json(completed);
+  });
+  assert.equal(await restore(options), true);
+  evidence.clear();
+  assert.equal(await restore(options), true);
+  assert.equal(await restore(options), false);
+  assert.equal(invalidations, 2);
+  assert.equal(reads, 2);
+});
+
+test("rebuilding an unconfirmable marker does not repeat its notice", async (t) => {
+  const { restore, evidence } = profile(40);
+  let warnings = 0;
+  const options = { unconfirmable: () => warnings++ };
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({ code: "missing" }, { status: 404 }),
+  );
+  assert.equal(await restore(options), true);
+  evidence.clear();
+  assert.equal(await restore(options), true);
+  assert.equal(warnings, 1);
+});

@@ -291,6 +291,7 @@ export function mergePeer(
 export class DeliveryEngine {
   private profileCompletions?: Set<string>;
   private profileSkipped?: Set<string>;
+  private profileWarnings?: Set<string>;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<DeliveryListener>();
   private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
@@ -366,10 +367,11 @@ export class DeliveryEngine {
     let current = false;
     const seen = (this.profileCompletions ??= new Set<string>());
     const skipped = (this.profileSkipped ??= new Set<string>());
+    const warned = (this.profileWarnings ??= new Set<string>());
     const keys = new Map<string, { receipt: Receipt; key: string }>();
-    const observe = (key: string, receipt: Receipt) => {
+    const observe = (key: string, receipt: Receipt, newlyChecked = false) => {
       forgetMaterializedReceipt(receipt);
-      if (!seen.has(key)) {
+      if (newlyChecked || !seen.has(key)) {
         current = true;
         options.invalidate?.();
       }
@@ -402,9 +404,11 @@ export class DeliveryEngine {
         }
       }
       signal.throwIfAborted();
-      const first = !seen.has(key);
-      observe(key, receipt);
-      if (unconfirmable && first) options.unconfirmable?.();
+      observe(key, receipt, true);
+      if (unconfirmable && !warned.has(key)) {
+        warned.add(key);
+        options.unconfirmable?.();
+      }
     };
     const restore = async () => {
       let items: OutboxItem[];
