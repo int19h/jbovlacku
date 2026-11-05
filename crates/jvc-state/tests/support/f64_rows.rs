@@ -166,6 +166,18 @@ pub fn vectors() -> Value {
             false,
         ),
     ] {
+        // These are input totals. Normalization scales all three rows toward one.
+        let weights = [rational(1, 2), Rational::from_float(value - 0.5).unwrap()];
+        let normalized = prepared(&weights, &[]);
+        assert!(normalized.get("error").is_none());
+        assert_eq!(
+            normalized,
+            json!({
+                "actor-0000": bits(0.5 / value),
+                "actor-0001": bits((value - 0.5) / value),
+            })
+        );
+        cases.insert(format!("normalize-input-{name}"), normalized);
         let result = approximate::validate_row([0.5, value - 0.5]);
         assert_eq!(result.is_ok(), accepted);
         cases.insert(

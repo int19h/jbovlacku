@@ -269,13 +269,22 @@ impl RowArithmetic for FloatRows {
     ) -> Result<BTreeMap<String, f64>, &'static str> {
         jvc_rank::approximate::normalize_row(weights, blocked).map_err(|error| match error {
             jvc_rank::approximate::PreparationError::NumericUnavailable => "numeric_unavailable",
-            _ => "resource_unavailable",
+            jvc_rank::approximate::PreparationError::Graph(jvc_rank::RankError::ResourceLimit(
+                _,
+            )) => "resource_unavailable",
+            jvc_rank::approximate::PreparationError::Graph(_) => "invalid_graph",
         })
     }
     fn supports(calculation: &str) -> bool {
         calculation == jvc_rank::approximate::ALGORITHM
     }
 }
+fn prepare_roots<A: RowArithmetic>(
+    roots: impl IntoIterator<Item = Rational>,
+) -> Result<Vec<A::Value>, &'static str> {
+    roots.into_iter().map(|root| A::root(&root)).collect()
+}
+
 fn evaluate_context_with_limit(
     evaluation: &Evaluation,
     context: &Context,
@@ -512,21 +521,21 @@ fn resolve_context<A: RowArithmetic>(
             }
         }
     }
-    let roots = actors
-        .iter()
-        .map(|a| {
-            let root = if blocked.contains(a) {
-                Rational::zero()
-            } else {
-                root_weights.get(a).cloned().unwrap_or_else(Rational::zero)
-            };
-            A::root(&root).unwrap_or_else(|reason| {
-                available = false;
-                reasons.insert(reason.into());
-                A::root(&Rational::zero()).expect("zero is a valid root")
-            })
-        })
-        .collect();
+    let root_inputs = actors.iter().map(|a| {
+        if blocked.contains(a) {
+            Rational::zero()
+        } else {
+            root_weights.get(a).cloned().unwrap_or_else(Rational::zero)
+        }
+    });
+    let roots = match prepare_roots::<A>(root_inputs) {
+        Ok(roots) => roots,
+        Err(reason) => {
+            available = false;
+            reasons.insert(reason.into());
+            Vec::new()
+        }
+    };
     let blocked = blocked
         .iter()
         .filter_map(|a| indices.get(a).copied())
@@ -698,6 +707,47 @@ pub(crate) fn valid_overlay(v: &Value, base: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn float_preparation_preserves_failure_classes() {
+        let blocked = BTreeSet::new();
+        let weights = |value| BTreeMap::from([("actor".into(), value)]);
+        assert_eq!(
+            FloatRows::row(&weights(Rational::zero()), &blocked),
+            Err("invalid_graph")
+        );
+        assert_eq!(
+            FloatRows::row(
+                &weights(Rational::from_integer(BigInt::one() << 16384)),
+                &blocked
+            ),
+            Err("resource_unavailable")
+        );
+        assert_eq!(
+            FloatRows::row(
+                &weights(Rational::new(BigInt::one(), BigInt::one() << 1023)),
+                &blocked
+            ),
+            Err("numeric_unavailable")
+        );
+    }
+
+    #[test]
+    fn failed_float_roots_do_not_return_successful_allocations() {
+        for invalid in [
+            Rational::new(BigInt::one(), BigInt::one() << 1023),
+            Rational::from_integer(BigInt::one() << 2000),
+        ] {
+            assert_eq!(
+                prepare_roots::<FloatRows>([Rational::one(), invalid]),
+                Err("numeric_unavailable")
+            );
+        }
+        assert_eq!(
+            prepare_roots::<FloatRows>([Rational::zero(), Rational::one()]),
+            Ok(vec![0.0, 1.0])
+        );
+    }
 
     #[test]
     fn refusal_pair_limit_matches_ranker_default() {

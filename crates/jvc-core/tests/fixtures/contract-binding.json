@@ -3,11 +3,11 @@
   "contract": "docs/format.md",
   "language_rule": "well-formed RFC 5646 section 2.1 syntax, lowercase ASCII, at most 63 bytes; no IANA registry membership test",
   "sha256": {
-    "docs/format.md": "sha256:5650098ede365049587063a7864f1f585e6e5faa01c91fbe233cd8ed9fc93b1d",
+    "docs/format.md": "sha256:0601d081978555211fdaa51b966fb41b7093611bf8ebaad318ec110e90d6cef7",
     "tests/fixtures/provenance.json": "sha256:0e02ac2b806d9ec487906372333047fb28c07bdec62f8052f995bbecfc16e7d8",
     "tests/fixtures/corpus.json": "sha256:c3979f04424b20488fe4c46905bc2c45715a59d2224009dae508c325599396a5",
     "tests/fixtures/definition.json": "sha256:db22b039c31d791c65189d872eb809ed1929fc4e9e0aaebe960ea9d856808e68",
-    "crates/jvc-state/tests/fixtures/f64-rows-v1.json": "sha256:30f32ac35723533408f51f03af1c6ab9cb5f33ca80f7f6786f05c843736d63e1"
+    "crates/jvc-state/tests/fixtures/f64-rows-v1.json": "sha256:4d17a99514d85d14899f504f446fddd884e25da0b916dbd3dd52e66198ecddca"
   },
   "word_identity_rule": "NFC stored spelling; NFD then remove U+0301 then NFC for the word ID; exact display in body.word.spelling"
 }

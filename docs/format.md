@@ -1418,7 +1418,8 @@ A missing definition score makes definition layers incomplete. A missing rafsi s
 
 Propagated masses include prefix masses, route products, and relaxed-vector entries.
 Flush an exact positive propagated value below `f64::MIN_POSITIVE` to zero and drop its prefix or term.
-Increment `flushed_terms` once per drop, including work in a later discarded pending stage.
+Increment `flushed_terms` once per drop.
+Discarding a pending stage adds no second count for the same drop.
 Detect this boundary through operand exponents and significands, even when the product rounds up to the smallest normal value.
 Apply the same rule to initial `H*q` mass and propagated tail contributions.
 Do not count descendants that a dropped prefix never creates or structural zeros.
@@ -1786,7 +1787,7 @@ All semantic coverage uses the [coverage object](#semantic-coverage) below, incl
 One admission procedure governs both signed and virtual targets before indexing or returning a semantic hit.
 
 The semantic extraction version identifies the core projection used to build the embedded input.
-It is a positive integer, currently `4`, exposed by `SEMANTIC_PROJECTION_VERSION` in the shared core.
+It is a positive integer, currently `5`, exposed by `SEMANTIC_PROJECTION_VERSION` in the shared core.
 It applies to native, imported, and virtual targets. It is separate from the Lensisku import string in `legacy.extraction`.
 For a virtual, it versions the semantic input projection of computed content. The conversion rule remains `place-conversion-v1`.
 

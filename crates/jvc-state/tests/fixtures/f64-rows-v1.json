@@ -44,6 +44,18 @@
       "error": "row weights must be positive"
     },
     "normal-input": "3fb999999999999a",
+    "normalize-input-row-above-ceiling": {
+      "actor-0000": "3fdfffffffffffa4",
+      "actor-0001": "3fe000000000002e"
+    },
+    "normalize-input-row-at-ceiling": {
+      "actor-0000": "3fdfffffffffffa6",
+      "actor-0001": "3fe000000000002d"
+    },
+    "normalize-input-row-below-ceiling": {
+      "actor-0000": "3fdfffffffffffa8",
+      "actor-0001": "3fe000000000002c"
+    },
     "overflow-input": {
       "error": "numeric_unavailable"
     },
