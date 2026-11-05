@@ -295,10 +295,193 @@ fn evaluate_context_with_limit(
 ) -> ContextGraph {
     resolve_context::<ExactRows>(evaluation, context, max_refusals)
 }
+type PrivateWeights = BTreeMap<(String, String), Vec<(Value, Rational)>>;
+fn private_trust(evaluation: &Evaluation) -> (Vec<TrustRule>, PrivateWeights) {
+    let resolve = |key: &str| {
+        evaluation
+            .lifecycle
+            .key_actor
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| key.into())
+    };
+    let mut trust = evaluation.trust.clone();
+    let mut private_weights_by_pair: PrivateWeights = BTreeMap::new();
+    if !evaluation.reasons.contains("invalid_overlay") {
+        if let Some(overlay) = &evaluation.overlay {
+            let mut private: BTreeMap<(String, String, String), (Value, BTreeSet<String>)> =
+                BTreeMap::new();
+            for rule in overlay["trust"].as_array().into_iter().flatten() {
+                let issuer = resolve(rule["issuer"].as_str().unwrap());
+                let subject = resolve(rule["subject"].as_str().unwrap());
+                if rule["value"] == "heed" {
+                    private_weights_by_pair
+                        .entry((issuer.clone(), subject.clone()))
+                        .or_default()
+                        .push((
+                            rule["scope"].clone(),
+                            rational(&rule["weight"]).unwrap_or_else(Rational::one),
+                        ));
+                }
+                let entry = private
+                    .entry((issuer, subject, rule["scope"].to_string()))
+                    .or_insert_with(|| (rule["scope"].clone(), BTreeSet::new()));
+                entry.1.insert(rule["value"].as_str().unwrap().into());
+            }
+            // Remove replaced public registers once before adding private registers.
+            trust.retain(|rule| {
+                !private.contains_key(&(
+                    rule.actor.clone(),
+                    rule.subject.clone(),
+                    rule.scope.to_string(),
+                ))
+            });
+            for ((issuer, subject, _), (scope, values)) in private {
+                if values.len() != 1 || !values.contains("clear") {
+                    trust.push(TrustRule {
+                        actor: issuer,
+                        subject,
+                        scope,
+                        values,
+                    });
+                }
+            }
+        }
+    }
+    (trust, private_weights_by_pair)
+}
+
+#[derive(Clone)]
+pub(crate) struct ApproximateContextIndex {
+    pub(crate) words: BTreeMap<String, Vec<String>>,
+    targets: BTreeMap<(String, String, Option<String>), BTreeSet<String>>,
+    trust: Vec<TrustRule>,
+    private_weights: PrivateWeights,
+    pub(crate) pairs_squared: u64,
+}
+impl ApproximateContextIndex {
+    pub(crate) fn new(evaluation: &Evaluation) -> jvc_core::Result<Self> {
+        let (trust, private_weights) = private_trust(evaluation);
+        let mut index = Self {
+            words: BTreeMap::new(),
+            targets: BTreeMap::new(),
+            trust,
+            private_weights,
+            pairs_squared: 0,
+        };
+        for p in evaluation.publications.values() {
+            index
+                .words
+                .entry(p.word.clone())
+                .or_default()
+                .push(p.id.clone());
+            if !matches!(p.kind.as_str(), "definition.publish" | "rafsi.publish") {
+                continue;
+            }
+            let kind = if p.kind == "definition.publish" {
+                "definition"
+            } else {
+                "rafsi"
+            };
+            let targets = index
+                .targets
+                .entry((
+                    kind.into(),
+                    p.word.clone(),
+                    if kind == "definition" {
+                        p.language.clone()
+                    } else {
+                        None
+                    },
+                ))
+                .or_default();
+            targets.insert(p.id.clone());
+            if let Some(assignment) = &p.assignment {
+                targets.insert(assignment.clone());
+            }
+        }
+        let mut pairs: BTreeMap<(&str, &str), u64> = BTreeMap::new();
+        for rule in evaluation.trust.iter().chain(index.trust.iter()) {
+            *pairs.entry((&rule.actor, &rule.subject)).or_default() += 1;
+        }
+        for ((a, b), weights) in &index.private_weights {
+            *pairs.entry((a, b)).or_default() += weights.len() as u64;
+        }
+        for count in pairs.values() {
+            index.pairs_squared = index
+                .pairs_squared
+                .checked_add(count.checked_mul(*count).ok_or_else(|| {
+                    jvc_core::Error::new("resource_unavailable", "preparation count overflow")
+                })?)
+                .ok_or_else(|| {
+                    jvc_core::Error::new("resource_unavailable", "preparation count overflow")
+                })?;
+        }
+        Ok(index)
+    }
+    pub(crate) fn bound(
+        &self,
+        evaluation: &Evaluation,
+        context: &Context,
+    ) -> super::incremental::RankingContextBound {
+        let key = (
+            if context.kind == "definition" {
+                "definition".into()
+            } else {
+                "rafsi".into()
+            },
+            context.word.clone(),
+            if context.kind == "definition" {
+                context.language.clone()
+            } else {
+                None
+            },
+        );
+        let judgments = self.targets.get(&key).map_or(0, |ids| {
+            ids.iter()
+                .filter_map(|id| evaluation.judgments.get(id))
+                .map(BTreeMap::len)
+                .sum::<usize>()
+        }) as u64;
+        let rules = self
+            .trust
+            .iter()
+            .filter(|r| matches(&r.scope, context))
+            .count() as u64;
+        let roots = evaluation
+            .policy
+            .as_ref()
+            .and_then(|p| p["roots"].as_array())
+            .map_or(0, Vec::len) as u64
+            + evaluation
+                .overlay
+                .as_ref()
+                .and_then(|o| o["root_changes"].as_array())
+                .map_or(0, Vec::len) as u64;
+        super::incremental::RankingContextBound {
+            actors: judgments + roots + 2 * rules,
+            edges: rules,
+            refusals: rules,
+            judgments,
+        }
+    }
+    pub(crate) fn context(&self, evaluation: &Evaluation, context: &Context) -> ContextGraph<f64> {
+        resolve_context_indexed::<FloatRows>(evaluation, context, MAX_CONTEXT_REFUSALS, Some(self))
+    }
+}
+
 fn resolve_context<A: RowArithmetic>(
     evaluation: &Evaluation,
     context: &Context,
     max_refusals: usize,
+) -> ContextGraph<A::Value> {
+    resolve_context_indexed::<A>(evaluation, context, max_refusals, None)
+}
+fn resolve_context_indexed<A: RowArithmetic>(
+    evaluation: &Evaluation,
+    context: &Context,
+    max_refusals: usize,
+    index: Option<&ApproximateContextIndex>,
 ) -> ContextGraph<A::Value> {
     let calculation = evaluation
         .policy
@@ -322,7 +505,26 @@ fn resolve_context<A: RowArithmetic>(
         };
     }
     let mut actors = BTreeSet::new();
-    let targets = context_target_ids(evaluation.publications.values(), context);
+    let targets = match index {
+        Some(index) => index
+            .targets
+            .get(&(
+                if context.kind == "definition" {
+                    "definition".into()
+                } else {
+                    "rafsi".into()
+                },
+                context.word.clone(),
+                if context.kind == "definition" {
+                    context.language.clone()
+                } else {
+                    None
+                },
+            ))
+            .map(|ids| ids.iter().map(String::as_str).collect())
+            .unwrap_or_default(),
+        None => context_target_ids(evaluation.publications.values(), context),
+    };
     let judgments = judgments_for_targets(targets.into_iter(), &evaluation.judgments);
     for values in judgments.values() {
         actors.extend(values.keys().cloned());
@@ -352,9 +554,14 @@ fn resolve_context<A: RowArithmetic>(
             }
         }
     }
-    let mut trust = evaluation.trust.clone();
-    let mut private_weights_by_pair: BTreeMap<(String, String), Vec<(Value, Rational)>> =
-        BTreeMap::new();
+    let prepared;
+    let (trust, private_weights_by_pair) = match index {
+        Some(index) => (&index.trust, &index.private_weights),
+        None => {
+            prepared = private_trust(evaluation);
+            (&prepared.0, &prepared.1)
+        }
+    };
     if let Some(overlay) = &evaluation.overlay {
         if overlay["version"] == 2 {
             if let Some(key) = overlay["public_shun_issuer"].as_str() {
@@ -392,43 +599,6 @@ fn resolve_context<A: RowArithmetic>(
                 }
             }
         }
-        let mut private: BTreeMap<(String, String, String), (Value, BTreeSet<String>)> =
-            BTreeMap::new();
-        for rule in overlay["trust"].as_array().into_iter().flatten() {
-            let issuer = resolve(rule["issuer"].as_str().unwrap());
-            let subject = resolve(rule["subject"].as_str().unwrap());
-            if rule["value"] == "heed" {
-                private_weights_by_pair
-                    .entry((issuer.clone(), subject.clone()))
-                    .or_default()
-                    .push((
-                        rule["scope"].clone(),
-                        rational(&rule["weight"]).unwrap_or_else(Rational::one),
-                    ));
-            }
-            let entry = private
-                .entry((issuer, subject, rule["scope"].to_string()))
-                .or_insert_with(|| (rule["scope"].clone(), BTreeSet::new()));
-            entry.1.insert(rule["value"].as_str().unwrap().into());
-        }
-        // Remove replaced public registers once before adding private registers.
-        trust.retain(|rule| {
-            !private.contains_key(&(
-                rule.actor.clone(),
-                rule.subject.clone(),
-                rule.scope.to_string(),
-            ))
-        });
-        for ((issuer, subject, _), (scope, values)) in private {
-            if values.len() != 1 || !values.contains("clear") {
-                trust.push(TrustRule {
-                    actor: issuer,
-                    subject,
-                    scope,
-                    values,
-                });
-            }
-        }
     }
     let mut root_weights: BTreeMap<String, Rational> = BTreeMap::new();
     for (key, q) in raw_roots {
@@ -438,13 +608,13 @@ fn resolve_context<A: RowArithmetic>(
         *current = std::cmp::max(current.clone(), q);
     }
 
-    for rule in &trust {
+    for rule in trust {
         if matches(&rule.scope, context) && !rule.values.iter().all(|v| v == "clear") {
             actors.insert(rule.actor.clone());
             actors.insert(rule.subject.clone());
         }
     }
-    let pairs = scoped_pairs(&trust, context, None);
+    let pairs = scoped_pairs(trust, context, None);
     let actors: Vec<_> = actors.into_iter().collect();
     let indices: BTreeMap<_, _> = actors
         .iter()
