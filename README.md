@@ -238,7 +238,7 @@ Word pages and language packages retain effective deprecated definitions.
 Remote search includes them through its retired-results filter and shows each publication's status.
 Reads pinned to an earlier retained snapshot use that snapshot's state. Word pages and remote searches also use their requested view.
 
-<a id="f64-step-2a-limit"></a>
+<a id="f64-profile-limits"></a>
 
 The signed `simple-routes-shun-f64-v1` profile has schema admission, rational-first row preparation, and a synchronous Rust propagation kernel.
 The kernel returns approximate actor estimates and work counters, including tiny propagated terms that it flushes to zero.
@@ -497,7 +497,7 @@ The [development guide](docs/development.md#optional-ai-assistance) gives the co
 The status editor, transfer editor, wizard meaning search, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID.
 A signed view names `simple-routes-bounds-v1`, `simple-routes-shun-v1`, or `simple-routes-shun-f64-v1` as its calculation profile.
-The float profile supports admission, row preparation, and a synchronous Rust kernel, as described in its [current limits](#f64-step-2a-limit).
+The float profile supports admission, row preparation, and a synchronous Rust kernel, as described in its [current limits](#f64-profile-limits).
 The pages name the profile of each supported result and its route rule. An unknown profile leaves scores unavailable.
 Site calculation metadata uses the digest of canonical JSON null for its absent overlay. An explicit empty overlay keeps its own digest.
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.

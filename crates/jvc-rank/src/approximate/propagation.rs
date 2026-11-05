@@ -101,6 +101,9 @@ impl Graph {
         };
         for &old in &order {
             normal_input(q[old], true)?;
+            if q[old] == 0.0 && q[old].is_sign_negative() {
+                return Err(invalid("negative zero root weight"));
+            }
             let mut row = Vec::with_capacity(rows[old].len());
             for edge in &rows[old] {
                 if edge.to >= n || edge.to == old {
@@ -279,6 +282,7 @@ pub struct Ranker<'a> {
     peak_prefixes: usize,
     work: Work,
     discarded_stage_flushes: u64,
+    upper_flushes: u64,
     upper: Option<EstimateProgress>,
 }
 impl<'a> Ranker<'a> {
@@ -335,6 +339,7 @@ impl<'a> Ranker<'a> {
             peak_prefixes: 0,
             work: Work::default(),
             discarded_stage_flushes: 0,
+            upper_flushes: 0,
             upper: None,
         };
         let initialize = |this: &mut Self| -> Result<()> {
@@ -505,6 +510,7 @@ impl<'a> Ranker<'a> {
                 .ok_or_else(|| self.failure(resource("completed work")))?;
             self.stages += 1;
             self.upper = None;
+            self.upper_flushes = 0;
         }
         Ok(())
     }
@@ -521,7 +527,18 @@ impl<'a> Ranker<'a> {
         let before = self.work.numerical_operations;
         let before_matrix = self.work.matrix_edge_visits;
         let mut progress = EstimateProgress::default();
-        let result = self.estimate_inner(before, max_operations, &mut progress);
+        let mut attempt_flushes = 0;
+        let result =
+            self.estimate_inner(before, max_operations, &mut progress, &mut attempt_flushes);
+        let maximum = self.upper_flushes.max(attempt_flushes);
+        let result = match (self.work.flushed_terms - self.upper_flushes).checked_add(maximum) {
+            Some(total) => {
+                self.work.flushed_terms = total;
+                self.upper_flushes = maximum;
+                result
+            }
+            None => Err(resource("flushed terms")),
+        };
         progress.operations = self.work.numerical_operations - before;
         progress.matrix_edge_visits = self.work.matrix_edge_visits - before_matrix;
         progress.complete = result.is_ok();
@@ -541,6 +558,7 @@ impl<'a> Ranker<'a> {
         before: u64,
         max_operations: u64,
         progress: &mut EstimateProgress,
+        flushed_terms: &mut u64,
     ) -> Result<Vec<Estimate>> {
         let mut upper = self.lower.clone();
         if !self.prefixes.is_empty() {
@@ -562,16 +580,13 @@ impl<'a> Ranker<'a> {
                         }
                         matrix_visits += 1;
                         increment(&mut self.work.matrix_edge_visits, "matrix edge visits")?;
-                        let credit = multiply(
-                            vector[from].finish()?,
-                            edge.share,
-                            &mut self.work.flushed_terms,
-                        )?;
-                        let credit = multiply(
-                            credit,
-                            if k == 0 { 1.0 } else { self.alpha },
-                            &mut self.work.flushed_terms,
-                        )?;
+                        let credit = if k > 0 && self.alpha == 0.0 {
+                            0.0
+                        } else {
+                            let credit =
+                                multiply(vector[from].finish()?, edge.share, flushed_terms)?;
+                            multiply(credit, if k == 0 { 1.0 } else { self.alpha }, flushed_terms)?
+                        };
                         output[edge.to].add(credit)?;
                     }
                     tick(&mut self.work, before, max_operations, Phase::Estimate)?;
@@ -592,7 +607,7 @@ impl<'a> Ranker<'a> {
             let mut tail = initial.finish()?;
             for _ in 0..65 {
                 tick(&mut self.work, before, max_operations, Phase::Estimate)?;
-                tail = multiply(tail, self.alpha, &mut self.work.flushed_terms)?;
+                tail = multiply(tail, self.alpha, flushed_terms)?;
             }
             tick(&mut self.work, before, max_operations, Phase::Estimate)?;
             tail /= 1.0 - self.alpha;

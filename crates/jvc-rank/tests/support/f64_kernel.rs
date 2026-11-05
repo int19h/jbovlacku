@@ -46,6 +46,7 @@ struct Reference {
     upper: Vec<Rational>,
     work: u64,
     stages: usize,
+    depth: usize,
     complete: bool,
 }
 // The oracle retains individual ordered paths. Only stage costing deduplicates sets.
@@ -66,6 +67,7 @@ fn reference(g: &a::Graph, h: f64, alpha: f64, budget: u64) -> Reference {
             .collect();
     let mut work = 0;
     let mut stages = 0;
+    let mut depth = 0;
     while !frontier.is_empty() {
         let keys: BTreeSet<_> = frontier
             .iter()
@@ -92,6 +94,9 @@ fn reference(g: &a::Graph, h: f64, alpha: f64, budget: u64) -> Reference {
                 }
                 let credit = &route.mass * ratio(edge.share);
                 lower[edge.to] += &credit;
+                if !credit.is_zero() {
+                    depth = depth.max(route.path.len());
+                }
                 let mass = credit * &alpha;
                 if !mass.is_zero() {
                     let mut path = route.path.clone();
@@ -139,6 +144,7 @@ fn reference(g: &a::Graph, h: f64, alpha: f64, budget: u64) -> Reference {
         upper,
         work,
         stages,
+        depth,
         complete: frontier.is_empty(),
     }
 }
@@ -157,6 +163,7 @@ fn check(g: &a::Graph, h: f64, alpha: f64, budget: u64) -> a::Ranking {
     assert!(got.numerically_approximate);
     assert_eq!(got.progress.completed_work, expected.work);
     assert_eq!(got.progress.complete_stages, expected.stages);
+    assert_eq!(got.progress.depth, expected.depth);
     assert_eq!(got.progress.exploration_complete, expected.complete);
     assert!(got.progress.upper.as_ref().unwrap().complete);
     for ((estimate, lower), upper) in got.weights.iter().zip(&expected.lower).zip(&expected.upper) {
@@ -208,15 +215,22 @@ fn output(rows: &mut BTreeMap<String, Vec<u64>>, name: &str, value: &a::Ranking)
 
 pub fn oracle_vectors() -> BTreeMap<String, Vec<u64>> {
     let mut result = BTreeMap::new();
-    for seed in 1..=12u64 {
+    for seed in 1..=16u64 {
         let mut state = seed;
         let mut edges = Vec::new();
         let mut refusals = Vec::new();
         for from in 0..5 {
+            let mut outgoing = 0;
             for to in 0..5 {
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 if from != to && state >> 61 > 3 {
-                    edges.push((from, to, 0.25));
+                    let share = if seed <= 12 {
+                        0.25
+                    } else {
+                        [0.3, 0.2, 0.1][outgoing % 3]
+                    };
+                    edges.push((from, to, share));
+                    outgoing += 1;
                 }
                 if from != to && state & 31 == 1 {
                     refusals.push((from, to));
@@ -589,7 +603,6 @@ pub fn retry_and_budget_vectors() -> BTreeMap<String, Vec<u64>> {
     );
     for (name, g, no_flushes) in [("ordinary", ordinary, true), ("tiny", tiny, false)] {
         let mut r = a::Ranker::new(&g, 1.0, 0.5, Limits::default()).unwrap();
-        let mut saw_extra_upper_flush = false;
         for budget in [1, 2, 4, 10, 100, 1000] {
             r.advance(budget).unwrap();
             let resumed = r.estimates().unwrap();
@@ -621,19 +634,115 @@ pub fn retry_and_budget_vectors() -> BTreeMap<String, Vec<u64>> {
                 );
                 assert_eq!(resumed.progress.work.flushed_terms, 0);
             } else {
-                // Each separate upper call can drop new terms. Earlier upper calls
-                // stay counted, so a reused ranker need not match a fresh count.
-                saw_extra_upper_flush |=
-                    resumed.progress.work.flushed_terms > fresh.progress.work.flushed_terms;
+                // The earlier committed state contributed two upper drops. They
+                // stay retained after the route stage commits its own two drops.
+                assert_eq!(fresh.progress.work.flushed_terms, 2);
+                assert_eq!(
+                    resumed.progress.work.flushed_terms,
+                    if budget == 1 { 2 } else { 4 }
+                );
             }
+            let repeated = r.estimates().unwrap();
+            assert_eq!(repeated.weights, resumed.weights);
+            assert_eq!(
+                repeated.progress.work.flushed_terms,
+                resumed.progress.work.flushed_terms
+            );
             output(
                 &mut out,
                 &format!("growing-budget-{name}-{budget}"),
-                &resumed,
+                &repeated,
             );
         }
-        assert_eq!(saw_extra_upper_flush, !no_flushes);
     }
+    out
+}
+
+pub fn upper_retry_and_zero_vectors() -> BTreeMap<String, Vec<u64>> {
+    let mut out = BTreeMap::new();
+    let m = f64::MIN_POSITIVE;
+    let g = graph(3, &[(0, 1, 1.0)], vec![m, 0.0, 1.0], &[]);
+    let mut fresh_ranker = a::Ranker::new(&g, 1.0, 0.5, Limits::default()).unwrap();
+    let fresh = fresh_ranker.estimates().unwrap();
+    let operations = fresh.progress.upper.as_ref().unwrap().operations;
+    assert_eq!(fresh.progress.work.flushed_terms, 1);
+    let mut r = a::Ranker::new(&g, 1.0, 0.5, Limits::default()).unwrap();
+    let mut observed = Vec::new();
+    for limit in [operations - 1, 1, operations - 1] {
+        let failure = r.estimates_with_operation_limit(limit).unwrap_err();
+        assert_eq!(failure.progress.work.flushed_terms, 1);
+        assert_eq!(r.progress().work.flushed_terms, 1);
+        observed.push(failure.progress.work.flushed_terms);
+    }
+    for _ in 0..2 {
+        let repeated = r.estimates().unwrap();
+        assert_eq!(repeated.weights, fresh.weights);
+        assert_eq!(
+            repeated.progress.work.flushed_terms,
+            fresh.progress.work.flushed_terms
+        );
+        observed.extend(encode(&repeated));
+    }
+    out.insert("upper-tail-flush-retries-and-repeats".into(), observed);
+
+    let g = graph(
+        4,
+        &[(0, 1, 1.0), (1, 2, 0.5)],
+        vec![4.0 * m, 0.0, 0.0, 1.0],
+        &[],
+    );
+    let mut r = a::Ranker::new(&g, 1.0, 0.5, Limits::default()).unwrap();
+    assert_eq!(r.estimates().unwrap().progress.work.flushed_terms, 1);
+    r.advance(1).unwrap();
+    assert!(r.progress().upper.is_none());
+    let next = r.estimates().unwrap();
+    assert_eq!(next.progress.work.flushed_terms, 2);
+    let fresh = a::rank(
+        &g,
+        &a::Parameters {
+            h: 1.0,
+            alpha: 0.5,
+            work: 1,
+        },
+        Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(next.weights, fresh.weights);
+    assert_eq!(fresh.progress.work.flushed_terms, 1);
+    assert_eq!(r.estimates().unwrap().progress.work.flushed_terms, 2);
+    output(
+        &mut out,
+        "committed-stage-starts-new-upper-flush-record",
+        &next,
+    );
+
+    let g = graph(3, &[(0, 1, 1.0), (1, 2, 0.5)], vec![m, 0.0, 0.0], &[]);
+    let mut r = a::Ranker::new(&g, 1.0, 0.0, Limits::default()).unwrap();
+    let zero = r.estimates().unwrap();
+    assert_eq!(zero.progress.work.flushed_terms, 0);
+    assert_eq!(zero.weights[1].upper, m);
+    assert_eq!(zero.weights[2].upper, 0.0);
+    output(
+        &mut out,
+        "alpha-zero-relaxed-terms-are-structural-zero",
+        &zero,
+    );
+
+    let error = a::Graph::new(
+        vec!["root".into()],
+        vec![-0.0],
+        vec![vec![]],
+        vec![vec![]],
+        &Limits::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        a::PreparationError::Graph(jvc_rank::RankError::InvalidGraph(
+            "negative zero root weight".into()
+        ))
+    );
+    out.insert("negative-zero-root-rejected".into(), vec![1]);
     out
 }
 
@@ -973,6 +1082,7 @@ pub fn all_vectors() -> BTreeMap<String, Vec<u64>> {
     out.extend(semantic_vectors());
     out.extend(resource_vectors());
     out.extend(retry_and_budget_vectors());
+    out.extend(upper_retry_and_zero_vectors());
     out.extend(flushing_vectors());
     out
 }

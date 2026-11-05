@@ -189,6 +189,7 @@ It compares exact float bits and unavailable outcomes with `crates/jvc-state/tes
 ## Approximate propagation
 
 `approximate::Graph::new` canonicalizes actor, edge, and refusal order and enforces normal input values.
+It rejects negative-zero root weights.
 `approximate::Ranker::advance` commits complete route stages only.
 `estimates` returns actor endpoints only after the full upper calculation succeeds.
 These estimates remain non-certified even when exploration completes.
@@ -197,6 +198,7 @@ The API supplies no score comparisons, margins, or layers.
 Positive propagated products below `f64::MIN_POSITIVE` become zero, and their prefixes or terms disappear.
 `flushed_terms` counts those drops, including products that round up to the smallest normal value.
 Input values still reject subnormals. Accumulator corrections and signed differences keep them.
+At `alpha=0`, later relaxed terms are structural zeros and cause no flushes.
 The tail carries its mass through the 65 alpha factors before division, so a tiny standalone coefficient cannot erase normal mass.
 
 `Progress::work` records initialization, route, and estimate operations, edge attempts, refusal tests, matrix visits, and flushed terms.
@@ -219,7 +221,11 @@ Flushed drops from a discarded stage stay counted, but retries of that stage do 
 A failure reports the same retained `flushed_terms` as `progress()`.
 For the discarded stage, this includes the largest unique count observed across its attempts.
 A shorter retry never lowers that count. Other performed-work counters remain cumulative.
-Separate upper calculations count their own drops, so repeated estimates can exceed a fresh rank's flush count.
+
+Upper attempts on one committed state retain their largest unique drop count, including stopped and complete attempts.
+Retries and repeated estimates of that state do not add the same drops again.
+A committed route stage starts a new upper record and keeps counts from earlier states.
+Those earlier states can make a reused ranker's count exceed a fresh rank's count.
 
 These functions are not resumable tasks or host cancellation APIs.
 A resource error does not establish the requested budget's result, even if a retained earlier stage can still be estimated.
