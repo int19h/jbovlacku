@@ -47,6 +47,9 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test format, causal state, and ranking
         run: cargo test --workspace --locked --jobs 2 -- --test-threads=2
+      - name: Compare native and Wasm float kernel results
+        timeout-minutes: 10
+        run: node scripts/test-f64-kernel-parity.mjs
       - name: Build shared WebAssembly
         run: npm run build:core
       - name: Compare native and browser format results

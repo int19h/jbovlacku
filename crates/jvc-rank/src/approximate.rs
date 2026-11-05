@@ -1,5 +1,5 @@
-//! Row preparation for the non-certified binary64 profile.
-//! This module does not propagate influence or make ranking decisions.
+//! Row preparation and synchronous non-certified influence estimates.
+//! Ranking decisions and host execution remain separate.
 use crate::{Limits, RankError, Rational};
 use num_traits::{One, ToPrimitive, Zero};
 use std::collections::{BTreeMap, BTreeSet};
@@ -7,6 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const ALGORITHM: &str = "simple-routes-shun-f64-v1";
 pub const ROW_CONTRACT: &str = "jvc-f64-rows-v1";
 pub const ROW_SUM_CEILING: f64 = f64::from_bits(0x3ff0_0000_0000_002d);
+
+mod propagation;
+pub use propagation::{
+    rank, Edge, Estimate, EstimateProgress, Failure, Graph, Parameters, Progress, Ranker, Ranking,
+    Work,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PreparationError {
@@ -35,26 +41,40 @@ pub fn input(value: &Rational, allow_zero: bool) -> Result<f64, PreparationError
     Ok(converted)
 }
 
-#[derive(Default)]
-struct Sum {
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Sum {
     total: f64,
     correction: f64,
 }
 impl Sum {
-    fn add(&mut self, value: f64) -> Result<(), PreparationError> {
-        let next = self.total + value;
-        self.correction += if self.total.abs() >= value.abs() {
-            (self.total - next) + value
-        } else {
-            (value - next) + self.total
-        };
-        self.total = next;
-        if !self.total.is_finite() || !self.correction.is_finite() {
+    pub fn new(value: f64) -> Result<Self, PreparationError> {
+        if !value.is_finite() {
             return Err(PreparationError::NumericUnavailable);
         }
+        Ok(Self {
+            total: value,
+            correction: 0.0,
+        })
+    }
+    pub fn add(&mut self, value: f64) -> Result<(), PreparationError> {
+        if !value.is_finite() {
+            return Err(PreparationError::NumericUnavailable);
+        }
+        let next = self.total + value;
+        let correction = self.correction
+            + if self.total.abs() >= value.abs() {
+                (self.total - next) + value
+            } else {
+                (value - next) + self.total
+            };
+        if !next.is_finite() || !correction.is_finite() || !(next + correction).is_finite() {
+            return Err(PreparationError::NumericUnavailable);
+        }
+        self.total = next;
+        self.correction = correction;
         Ok(())
     }
-    fn finish(self) -> Result<f64, PreparationError> {
+    pub fn finish(self) -> Result<f64, PreparationError> {
         let result = self.total + self.correction;
         result
             .is_finite()

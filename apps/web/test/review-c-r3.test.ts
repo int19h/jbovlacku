@@ -3,6 +3,10 @@ import { corePath, createIdentity } from "./helpers.ts";
 
 async function mountComparison(page: any, scenario: string) {
   await page.goto("/");
+  // Wait for app startup before mounting the standalone comparison.
+  await expect(
+    page.getByRole("heading", { name: "Search", exact: true }),
+  ).toBeVisible();
   return page.evaluate(
     async ({ path, scenario }: { path: string; scenario: string }) => {
       const core = await import(path);
