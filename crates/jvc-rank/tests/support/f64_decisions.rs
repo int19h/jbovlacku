@@ -254,9 +254,9 @@ pub fn comparison_vectors() -> BTreeMap<String, Vec<u64>> {
     let ctx2 = d::DecisionContext::new(&g2, &p, &r2, &limits).unwrap();
     let other = d::score(&ctx2, &b, &limits).unwrap();
     let separate = d::separate_difference(&sa, &other).unwrap();
-    assert_eq!(separate.margin.graphs.len(), 2);
+    assert_eq!(separate.margin.graphs.len(), 1);
     out.insert(
-        "decision-distinct-graph-margin-details".into(),
+        "decision-cloned-graph-margin-details".into(),
         comparison(&separate),
     );
     let twice = d::difference(
@@ -365,8 +365,8 @@ pub fn comparison_vectors() -> BTreeMap<String, Vec<u64>> {
         "decision-shared-graph-different-snapshots-count-flush-once".into(),
         comparison(&snapshot_margin),
     );
-    let fg2 = fg.clone();
-    let fr2 = fr.clone();
+    let fg2 = graph(vec![m, 2.0, 0.0], &[(0, 2, 0.5)], &[]);
+    let fr2 = a::rank(&fg2, &fp, limits.clone()).unwrap();
     let fc2 = d::DecisionContext::new(&fg2, &fp, &fr2, &limits).unwrap();
     let empty = candidate("empty", vec![Absent; 3]);
     let s1 = d::score(&fc, &empty, &limits).unwrap();
@@ -910,6 +910,405 @@ pub fn permutation_vectors() -> BTreeMap<String, Vec<u64>> {
     out
 }
 
+pub fn review_permutation_vectors() -> BTreeMap<String, Vec<u64>> {
+    use Verdict::*;
+    let limits = Limits::default();
+    let mut out = BTreeMap::new();
+    let high = f64::from_bits(0x40d1_9799_812d_ea12);
+    let low = f64::from_bits(0x40d1_9799_812d_ea11);
+    let upper = 2.0f64.powi(54);
+    let support = high + 2.0;
+    // A real unexpanded graph supplies a wide support range at depth zero.
+    let ga = graph(
+        vec![upper - support, support, 2.0, 0.0],
+        &[(0, 1, 1.0), (0, 3, 1e-15)],
+        &[],
+    );
+    let gb = graph(vec![f64::EPSILON; 2], &[], &[]);
+    let p = params(1.0, 0.0, 1);
+    let ra = a::rank(&ga, &p, limits.clone()).unwrap();
+    let rb = a::rank(&gb, &p, limits.clone()).unwrap();
+    let ca = d::DecisionContext::new(&ga, &p, &ra, &limits).unwrap();
+    let cb = d::DecisionContext::new(&gb, &p, &rb, &limits).unwrap();
+    let aa = candidate("a", vec![Absent, Bless, Curse, Absent]);
+    let bb = candidate("b", vec![Bless, Curse]);
+    let sa = d::score(&ca, &aa, &limits).unwrap();
+    let sb = d::score(&cb, &bb, &limits).unwrap();
+    assert_eq!(sa.support.upper, upper);
+    assert_eq!(sa.opposition.upper, 2.0);
+    let ab = d::separate_difference(&sa, &sb).unwrap();
+    let ba = d::separate_difference(&sb, &sa).unwrap();
+    assert_eq!(ab.margin, ba.margin);
+    assert_eq!(ab.margin.contribution_mass.to_bits(), 0x4350_0000_0000_0001);
+    assert_eq!(ab.margin.value, high);
+    assert!(ab.difference.lower > low);
+    assert_eq!(ab.difference.lower, high);
+    assert_eq!(ab.difference.lower, -ba.difference.upper);
+    assert_eq!(ab.difference.upper, -ba.difference.lower);
+    assert!(!ab.a_leads());
+    assert!(!ba.b_leads());
+    let entries = [
+        d::LayerCandidate {
+            candidate: &aa,
+            context: Some(&ca),
+        },
+        d::LayerCandidate {
+            candidate: &bb,
+            context: Some(&cb),
+        },
+    ];
+    let forward = d::nondominated_layers(&entries, &limits).unwrap();
+    let reverse = d::nondominated_layers(&[entries[1], entries[0]], &limits).unwrap();
+    assert_eq!(forward, reverse);
+    assert_eq!(forward.layers, vec![vec!["a", "b"]]);
+    assert_eq!(
+        d::automatic_selection(&entries, &[], &rational(1, 1), &limits)
+            .unwrap()
+            .selected,
+        None
+    );
+    let mut values = comparison(&ab);
+    values.extend(comparison(&ba));
+    values.extend(layers(&forward));
+    out.insert(
+        "review-canonical-cross-graph-adjacent-margin-boundary".into(),
+        values,
+    );
+
+    for (i, q) in [[0.1, 0.2], [1e16, 1.0], [1e-100, 1e-101], [upper, 2.0]]
+        .into_iter()
+        .enumerate()
+    {
+        let ga = graph(q.to_vec(), &[], &[]);
+        let gb = graph(vec![0.3, 0.1], &[], &[]);
+        let p = params(0.0, 0.5, 1);
+        let ra = a::rank(&ga, &p, limits.clone()).unwrap();
+        let rb = a::rank(&gb, &p, limits.clone()).unwrap();
+        let ca = d::DecisionContext::new(&ga, &p, &ra, &limits).unwrap();
+        let cb = d::DecisionContext::new(&gb, &p, &rb, &limits).unwrap();
+        let a = candidate("a", vec![Bless, Curse]);
+        let b = candidate("b", vec![Bless, Curse]);
+        let sa = d::score(&ca, &a, &limits).unwrap();
+        let sb = d::score(&cb, &b, &limits).unwrap();
+        let ab = d::separate_difference(&sa, &sb).unwrap();
+        let ba = d::separate_difference(&sb, &sa).unwrap();
+        assert_eq!(ab.margin, ba.margin);
+        assert_eq!(ab.a_leads(), ba.b_leads());
+        assert_eq!(ab.b_leads(), ba.a_leads());
+        let canon = |v: f64| if v == 0.0 { 0.0 } else { v };
+        assert_eq!(
+            canon(ab.difference.lower).to_bits(),
+            canon(-ba.difference.upper).to_bits()
+        );
+        assert_eq!(
+            canon(ab.difference.upper).to_bits(),
+            canon(-ba.difference.lower).to_bits()
+        );
+        out.insert(format!("review-cross-graph-direction-{i}"), comparison(&ab));
+    }
+    let g = graph(vec![1e16, 1.0, 0.0], &[], &[]);
+    let p = params(0.0, 0.5, 1);
+    let r = a::rank(&g, &p, limits.clone()).unwrap();
+    let ctx = d::DecisionContext::new(&g, &p, &r, &limits).unwrap();
+    let a = candidate("a", vec![Bless, Bless, Absent]);
+    let b = candidate("b", vec![Bless, Absent, Absent]);
+    let clone = g.clone();
+    let snapshot = r.clone();
+    let copied = d::DecisionContext::new(&clone, &p, &snapshot, &limits).unwrap();
+    let graph_only = d::DecisionContext::new(&clone, &p, &r, &limits).unwrap();
+    let ranking_only = d::DecisionContext::new(&g, &p, &snapshot, &limits).unwrap();
+    let changed_work = {
+        let mut r = r.clone();
+        r.progress.work.numerical_operations += 17;
+        r
+    };
+    let same_numbers = d::DecisionContext::new(&g, &p, &changed_work, &limits).unwrap();
+    for (i, c) in [&ctx, &graph_only, &ranking_only, &copied, &same_numbers]
+        .into_iter()
+        .enumerate()
+    {
+        let entries = [
+            d::LayerCandidate {
+                candidate: &a,
+                context: Some(&ctx),
+            },
+            d::LayerCandidate {
+                candidate: &b,
+                context: Some(c),
+            },
+        ];
+        let ranked = d::nondominated_layers(&entries, &limits).unwrap();
+        assert_eq!(ranked.layers, vec![vec!["a"], vec!["b"]]);
+        assert_eq!(
+            d::automatic_selection(&entries, &[], &rational(1, 2), &limits)
+                .unwrap()
+                .selected
+                .as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            d::nondominated_layers(&[entries[1], entries[0]], &limits).unwrap(),
+            ranked
+        );
+        out.insert(
+            format!("review-cloned-graph-ranking-cancellation-{i}"),
+            layers(&ranked),
+        );
+    }
+    out
+}
+pub fn review_status_vectors() -> BTreeMap<String, Vec<u64>> {
+    use Verdict::*;
+    let limits = Limits::default();
+    let mut out = BTreeMap::new();
+    let g = graph(vec![1.0], &[], &[]);
+    let p = params(0.0, 0.5, 1);
+    let r = a::rank(&g, &p, limits.clone()).unwrap();
+    let ctx = d::DecisionContext::new(&g, &p, &r, &limits).unwrap();
+    let mut retired = candidate("retired-blessing", vec![Bless]);
+    retired.deprecated = true;
+    let s = d::score(&ctx, &retired, &limits).unwrap();
+    assert_eq!(
+        s.net,
+        a::Estimate {
+            lower: 0.0,
+            upper: 0.0
+        }
+    );
+    assert!(!s.structural_known_zero());
+    assert_eq!(s.direct_reviewers(), 1);
+    let potential = d::eligible_competitor_potential(Some(&s)).unwrap();
+    assert_eq!(potential.status, d::Potential::Possible);
+    assert_eq!(
+        d::automatic_selection(
+            &[d::LayerCandidate {
+                candidate: &retired,
+                context: Some(&ctx)
+            }],
+            &[],
+            &rational(1, 2),
+            &limits
+        )
+        .unwrap()
+        .selected,
+        None
+    );
+    out.insert(
+        "review-deprecated-blessing-retains-structural-potential".into(),
+        vec![
+            potential.status as u64,
+            u64::from(s.structural_known_zero()),
+        ],
+    );
+
+    let mut missing = candidate("missing", vec![Absent]);
+    missing.eligibility = Eligibility::Unavailable;
+    let known = candidate("known", vec![Absent]);
+    let expected =
+        a::PreparationError::Graph(jvc_rank::RankError::UnavailableCandidate("missing".into()));
+    assert_eq!(d::score(&ctx, &missing, &limits).unwrap_err(), expected);
+    assert_eq!(
+        d::difference(&known, &missing, &ctx, &limits).unwrap_err(),
+        expected
+    );
+    assert_eq!(
+        d::difference(&missing, &known, &ctx, &limits).unwrap_err(),
+        expected
+    );
+    let mut unrevealed = missing.clone();
+    unrevealed.verdicts.clear();
+    assert_eq!(d::score(&ctx, &unrevealed, &limits).unwrap_err(), expected);
+    assert_eq!(
+        d::difference(&unrevealed, &known, &ctx, &limits).unwrap_err(),
+        expected
+    );
+    let mut partial = d::nondominated_layers(
+        &[d::LayerCandidate {
+            candidate: &missing,
+            context: None,
+        }],
+        &limits,
+    )
+    .unwrap();
+    assert_eq!(
+        d::order_unjudged(&mut partial, &[]).unwrap_err(),
+        a::PreparationError::Graph(jvc_rank::RankError::InvalidGraph(
+            "incomplete layers".into()
+        ))
+    );
+    let mut ineligible = known.clone();
+    ineligible.eligibility = Eligibility::Ineligible;
+    assert_eq!(
+        d::nondominated_layers(
+            &[d::LayerCandidate {
+                candidate: &ineligible,
+                context: Some(&ctx)
+            }],
+            &limits
+        )
+        .unwrap_err(),
+        a::PreparationError::Graph(jvc_rank::RankError::InvalidGraph(
+            "candidate is not eligible for ranking layers".into()
+        ))
+    );
+    out.insert(
+        "review-unavailable-incomplete-and-ineligible-error-classes".into(),
+        vec![1],
+    );
+
+    let mut a = candidate("a-import", vec![Absent]);
+    let mut z = candidate("z-native", vec![Absent]);
+    for deprecated in [false, true] {
+        a.deprecated = deprecated;
+        z.deprecated = deprecated;
+        let sa = d::score(&ctx, &a, &limits).unwrap();
+        let sz = d::score(&ctx, &z, &limits).unwrap();
+        let mut ranked = d::nondominated_layers(
+            &[
+                d::LayerCandidate {
+                    candidate: &a,
+                    context: Some(&ctx),
+                },
+                d::LayerCandidate {
+                    candidate: &z,
+                    context: Some(&ctx),
+                },
+            ],
+            &limits,
+        )
+        .unwrap();
+        let presentation = [
+            d::Presentation::from_score(a.id.clone(), Some(&sa), d::StartingKind::Imported),
+            d::Presentation::from_score(z.id.clone(), Some(&sz), d::StartingKind::NativeReviewed),
+        ];
+        d::order_unjudged(&mut ranked, &presentation).unwrap();
+        assert_eq!(
+            ranked.layers,
+            if deprecated {
+                vec![vec!["a-import", "z-native"]]
+            } else {
+                vec![vec!["z-native", "a-import"]]
+            }
+        );
+        out.insert(
+            format!("review-starting-preference-active-only-{deprecated}"),
+            layers(&ranked),
+        );
+    }
+    let g = graph(
+        vec![1.0, 0.0, 0.0, 0.0],
+        &[
+            (0, 1, 0.5),
+            (0, 2, 0.5),
+            (1, 0, 0.5),
+            (1, 2, 0.5),
+            (2, 0, 0.5),
+            (2, 1, 0.5),
+        ],
+        &[],
+    );
+    let p = params(1.0, 0.5, 1000);
+    let r = a::rank(&g, &p, limits.clone()).unwrap();
+    assert!(r.progress.exploration_complete);
+    let ctx = d::DecisionContext::new(&g, &p, &r, &limits).unwrap();
+    let c = candidate("unreachable", vec![Absent, Absent, Absent, Bless]);
+    assert!(d::score(&ctx, &c, &limits).unwrap().structural_known_zero());
+    assert_eq!(
+        d::score(
+            &ctx,
+            &c,
+            &Limits {
+                max_candidate_actor_terms: 4,
+                ..limits
+            }
+        )
+        .unwrap_err(),
+        a::PreparationError::Graph(jvc_rank::RankError::ResourceLimit(
+            "structural edge attempts"
+        ))
+    );
+    out.insert(
+        "review-ranked-graph-can-exhaust-structural-attempt-cap".into(),
+        vec![1],
+    );
+    out
+}
+pub fn large_exact_zero_vectors() -> BTreeMap<String, Vec<u64>> {
+    use num_traits::{One, Zero};
+    use Verdict::*;
+    let mut out = BTreeMap::new();
+    let count = 200_000usize;
+    let unit = 2.0f64.powi(-54);
+    let exact_unit = jvc_rank::Rational::new(1.into(), num_bigint::BigInt::from(1u8) << 54usize);
+    let exact_support =
+        jvc_rank::Rational::one() + &exact_unit * jvc_rank::Rational::from_integer(count.into());
+    let mut exact_opposition = jvc_rank::Rational::one();
+    for _ in 0..count {
+        exact_opposition += &exact_unit;
+    }
+    assert_eq!(exact_support, exact_opposition);
+    assert!((&exact_support - &exact_opposition).is_zero());
+    let mut q = vec![1.0 + count as f64 * unit, 1.0];
+    q.extend(std::iter::repeat_n(unit, count));
+    let n = q.len();
+    let limits = Limits {
+        max_actors: n,
+        ..Limits::default()
+    };
+    let g = a::Graph::new(
+        (0..n).map(|i| format!("actor-{i:06}")).collect(),
+        q,
+        vec![vec![]; n],
+        vec![vec![]; n],
+        &limits,
+    )
+    .unwrap();
+    let p = params(0.0, 0.5, 1);
+    let r = a::rank(&g, &p, limits.clone()).unwrap();
+    assert_eq!(r.progress.depth, 0);
+    let ctx = d::DecisionContext::new(&g, &p, &r, &limits).unwrap();
+    let mut v = vec![Curse; n];
+    v[0] = Bless;
+    let c = candidate("large-exact-zero", v);
+    let s = d::score(&ctx, &c, &limits).unwrap();
+    assert_eq!(
+        jvc_rank::Rational::from_float(s.support.lower).unwrap(),
+        exact_support
+    );
+    assert_eq!(
+        jvc_rank::Rational::from_float(s.opposition.lower).unwrap(),
+        exact_opposition
+    );
+    assert_eq!(
+        s.net,
+        a::Estimate {
+            lower: 0.0,
+            upper: 0.0
+        }
+    );
+    let actual = d::actual_positive_support(Some(&s)).unwrap();
+    assert_eq!(actual.status, d::ActualSupport::NotEstablished);
+    let mut naive_opposition = 1.0;
+    for _ in 0..count {
+        naive_opposition += unit;
+    }
+    let naive_net = s.support.lower - naive_opposition;
+    assert!(naive_net > 1e-12 * (s.support.upper + naive_opposition));
+    let mut bits = vec![
+        s.support.lower.to_bits(),
+        s.opposition.lower.to_bits(),
+        s.net.lower.to_bits(),
+        naive_net.to_bits(),
+        actual.status as u64,
+    ];
+    bits.extend(margin(actual.margin.as_ref().unwrap()));
+    out.insert(
+        "review-required-200000-term-rational-exact-zero".into(),
+        bits,
+    );
+    out
+}
+
 #[allow(dead_code)]
 pub fn vectors() -> BTreeMap<String, Vec<u64>> {
     let mut out = numerical_vectors();
@@ -918,5 +1317,8 @@ pub fn vectors() -> BTreeMap<String, Vec<u64>> {
     out.extend(layer_vectors());
     out.extend(validation_vectors());
     out.extend(permutation_vectors());
+    out.extend(review_permutation_vectors());
+    out.extend(review_status_vectors());
+    out.extend(large_exact_zero_vectors());
     out
 }

@@ -249,9 +249,15 @@ It supplies no host session, owned task, or application capability.
 
 `score` adds support and opposition with Neumaier sums and keeps signed net differences, including subnormal differences.
 `difference` cancels identical actor verdicts before it computes the remaining comparison mass.
-Context references share cancellation only when they reference the same graph, ranking, and parameters.
+Cancellation uses value identity, independent of allocation addresses.
+Graph identity includes canonical actor IDs, root bits, edge destinations and share bits, refusal lists, `H`, and `alpha`.
+Estimate identity adds actor endpoint bits, committed depth, and the retained flush count.
+Zero signs are canonicalized for identity. Performed-work counters do not affect numerical identity.
+Cloned graphs and equal completed snapshots therefore retain actor cancellation.
 `separate_difference` uses both scores' upper support and opposition masses without actor cancellation.
-It counts the flushing allowance once per distinct graph and parameter set, even when estimates come from different completed snapshots.
+It orders contexts by graph identity and then estimate identity, with score endpoints as the tie-breaker.
+All cross-graph arithmetic uses that canonical order. Reversing arguments only reverses the resulting difference endpoints.
+It counts the flushing allowance once per distinct graph value and parameter set, even when estimates come from different completed snapshots.
 For a shared graph, details retain the largest observed depth and flush count across those snapshots.
 
 Margins use `factor(d) * M + F`, with compensated addition.
@@ -272,8 +278,11 @@ Threshold decisions convert the rational input and use the inclusive lower-net t
 The returned decision records contain their margins so later rendering need not recalculate them.
 
 Structural zero uses roots, positive edges, alpha, simple routes, shuns, and retained judgment signs.
-Its bounded search never uses computed influence values or flush counts.
+Its bounded search uses retained judgment signs, even when eligibility or deprecation suppresses their numerical score.
+It never uses computed influence values or flush counts.
 A flushed zero therefore remains possible support.
+`max_candidate_actor_terms` also caps structural edge attempts inside each score calculation.
+A graph can rank successfully and still exhaust this structural search cap.
 A search resource failure returns an error and supplies no zero evidence.
 
 `automatic_selection` requires eligibility, actual positive support, threshold acceptance, and leads over all possible eligible competitors.
@@ -281,10 +290,13 @@ Unavailable eligible potential and possible or unavailable unresolved potential 
 The result discloses that uniqueness depends on the known identified same-spelling inventory.
 The caller must restrict its inputs to that inventory. Unknown spellings remain a separate coverage limit.
 
-`nondominated_layers` keeps active targets before deprecated targets and discloses unavailable entries as incomplete.
+`nondominated_layers` accepts eligible candidates, keeps active targets before deprecated targets, and discloses unavailable entries as incomplete.
+It rejects ineligible entries. Callers must filter them before constructing ranking layers.
 The layer builder collapses comparison cycles before it computes successive layers, then orders IDs stably inside each layer.
 `layers_from_comparisons` accepts a complete bounded set of validated pair decisions from different contexts.
-`order_unjudged` changes only known unjudged structural-zero slots in complete layers.
+`order_unjudged` changes only active, known unjudged structural-zero slots in complete layers.
+Presentation data retains deprecation from its matching score, so retired positions keep their ID order.
+An incomplete layer list is invalid input to this helper, rather than a resource-ceiling failure.
 A zero-influence reviewer still occupies its position, and missing reviewer information grants no preference.
 
 The existing native/Wasm kernel script also executes the decision vectors.

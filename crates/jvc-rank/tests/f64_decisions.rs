@@ -25,3 +25,16 @@ fn incomplete_and_resource_limited_decisions() {
 fn actor_and_candidate_permutations() {
     assert_eq!(support::permutation_vectors().len(), 6);
 }
+
+#[test]
+fn review_separate_graph_order_and_semantic_identity() {
+    assert!(!support::review_permutation_vectors().is_empty());
+}
+#[test]
+fn review_retained_signs_status_and_error_classes() {
+    assert!(!support::review_status_vectors().is_empty());
+}
+#[test]
+fn required_large_exact_zero_rational_reference() {
+    assert_eq!(support::large_exact_zero_vectors().len(), 1);
+}
