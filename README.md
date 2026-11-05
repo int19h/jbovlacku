@@ -181,6 +181,8 @@ The Places step and the full editor offer hideable advice above three declared p
 A repeating tail counts once. The advice applies to every word type and never blocks publication or enters signed records.
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
 
+Editor dialogs use surface colors, rounded corners, a soft shadow, and a visible backdrop in both themes.
+Cancel sits to the left of the primary action, including at 360px.
 The rich editors change the stored node tree directly. CR is a carriage return. LF is a line feed. CRLF is their two-character sequence.
 Editing prose, code, or a link label changes CR and CRLF in that node to LF.
 If an edit combines prose fragments into one stored string, that complete string uses LF.

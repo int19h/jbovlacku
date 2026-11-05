@@ -34,6 +34,43 @@ async function settle(page: Page) {
   );
 }
 
+async function expectDialogStyle(dialog: Locator) {
+  const style = await dialog.evaluate((node) => {
+    const css = getComputedStyle(node);
+    const probe = document.createElement("div");
+    probe.style.background = "var(--surface)";
+    probe.style.border = "1px solid var(--line2)";
+    probe.style.boxShadow = "0 20px 60px rgba(0, 0, 0, 0.18)";
+    probe.style.color = "#0008";
+    document.body.append(probe);
+    const expected = getComputedStyle(probe);
+    const result = {
+      background: css.backgroundColor,
+      surface: expected.backgroundColor,
+      border: css.borderColor,
+      line: expected.borderColor,
+      radius: css.borderRadius,
+      shadow: css.boxShadow,
+      expectedShadow: expected.boxShadow,
+      expectedBackdrop: expected.color,
+      backdrop: getComputedStyle(node, "::backdrop").backgroundColor,
+      left: node.getBoundingClientRect().left,
+      right: node.getBoundingClientRect().right,
+      scrollWidth: document.documentElement.scrollWidth,
+    };
+    probe.remove();
+    return result;
+  });
+  expect(style.background).toBe(style.surface);
+  expect(style.border).toBe(style.line);
+  expect(style.radius).toBe("16px");
+  expect(style.shadow).toBe(style.expectedShadow);
+  expect(style.backdrop).toBe(style.expectedBackdrop);
+  expect(style.left).toBeGreaterThanOrEqual(0);
+  expect(style.right).toBeLessThanOrEqual(360);
+  expect(style.scrollWidth).toBeLessThanOrEqual(360);
+}
+
 async function mount(page: Page, value: RichText) {
   await page.goto("/");
   await page.evaluate(async (value) => {
@@ -160,6 +197,12 @@ async function verify(
   await field.press("Control+z");
   await settle(field.page());
   const undone = await evidence(field, info, "undo-value-dom-and-events");
+  await field.press("Control+Shift+z");
+  await settle(field.page());
+  const redone = await evidence(field, info, "redo-value-dom-and-events");
+  expect(redone.value).toEqual(expected);
+  expect(redone.emissions.at(-1)).toEqual(expected);
+  expect(redone.suffixes).toEqual(edited.suffixes);
   expect(undone.value).toEqual(initial);
   expect(edited.value).toEqual(expected);
   expect(edited.emissions.at(-1)).toEqual(expected);
@@ -289,9 +332,7 @@ for (const fixture of fixtures) {
 
 for (const fixture of fixtures) {
   for (const key of ["X", "Enter", "Shift+Enter"]) {
-    test(`trusted ${key} preserves ${fixture.name}`, async ({
-      page,
-    }, info) => {
+    test(`trusted ${key} preserves ${fixture.name}`, async ({ page }, info) => {
       const field = await mount(page, fixture.value);
       await choose(field);
       await field.press(key);
@@ -495,43 +536,174 @@ for (const container of chipContainers) {
     await field.press("Control+z");
     await settle(page);
     const undone = await evidence(field, info, "offset-zero-chip-undo");
+    await field.press("Control+Shift+z");
+    await settle(page);
+    const redone = await evidence(field, info, "offset-zero-chip-redo");
+    expect(redone.value).toEqual(edited.value);
+    expect(redone.emissions.at(-1)).toEqual(edited.value);
     expect(edited.value).toEqual([[1, ...container.value[0]]]);
     expect(edited.emissions.at(-1)).toEqual(edited.value);
     expect(undone.value).toEqual(container.value);
   });
 }
 
-test("plain paste splits whitespace blank-line runs into paragraphs", async ({
-  page,
-}, info) => {
-  const initial: RichText = [["start"]];
-  const field = await mount(page, initial);
-  await field.press("Control+a");
-  await field.evaluate((field) => {
-    const data = new DataTransfer();
-    data.setData("text/plain", "a\n \n\nb");
-    const event = new ClipboardEvent("paste", {
-      bubbles: true,
-      cancelable: true,
-      clipboardData: data,
-    });
-    if (event.clipboardData !== data)
-      Object.defineProperty(event, "clipboardData", { value: data });
-    if (
-      data.getData("text/plain") !== "a\n \n\nb" ||
-      event.clipboardData?.getData("text/plain") !== "a\n \n\nb"
-    )
-      throw new Error(
-        "The paste fixture must supply and expose its exact plain text before dispatch.",
-      );
-    field.dispatchEvent(event);
+for (const blank of ["\n \n\n", "\r\n\r\n"]) {
+  test(`plain paste splits blank-line runs ${JSON.stringify(blank)} into paragraphs`, async ({
+    page,
+  }, info) => {
+    const initial: RichText = [["start"]];
+    const field = await mount(page, initial);
+    await field.press("Control+a");
+    await field.evaluate((field, pasted) => {
+      const data = new DataTransfer();
+      data.setData("text/plain", pasted);
+      const event = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: data,
+      });
+      if (event.clipboardData !== data)
+        Object.defineProperty(event, "clipboardData", { value: data });
+      if (
+        data.getData("text/plain") !== pasted ||
+        event.clipboardData?.getData("text/plain") !== pasted
+      )
+        throw new Error(
+          "The paste fixture must supply and expose its exact plain text before dispatch.",
+        );
+      field.dispatchEvent(event);
+    }, `a${blank}b`);
+    await settle(page);
+    const edited = await evidence(field, info, "blank-line-paste-and-emission");
+    await field.press("Control+z");
+    await settle(page);
+    const undone = await evidence(field, info, "blank-line-paste-undo");
+    await field.press("Control+Shift+z");
+    await settle(page);
+    const redone = await evidence(field, info, "blank-line-paste-redo");
+    expect(redone.value).toEqual([["a"], ["b"]]);
+    expect(redone.emissions.at(-1)).toEqual(redone.value);
+    expect(edited.value).toEqual([["a"], ["b"]]);
+    expect(edited.emissions.at(-1)).toEqual(edited.value);
+    expect(undone.value).toEqual(initial);
   });
-  await settle(page);
-  const edited = await evidence(field, info, "blank-line-paste-and-emission");
-  await field.press("Control+z");
-  await settle(page);
-  const undone = await evidence(field, info, "blank-line-paste-undo");
-  expect(edited.value).toEqual([["a"], ["b"]]);
-  expect(edited.emissions.at(-1)).toEqual(edited.value);
-  expect(undone.value).toEqual(initial);
-});
+}
+
+for (const theme of ["light", "dark"]) {
+  for (const action of [
+    { button: "Word link, link a Lojban word", dialog: "Link a word" },
+    { button: "Web link", dialog: "Web link" },
+    { button: "Insert code", dialog: "Insert code" },
+  ]) {
+    test(`${action.dialog} dialog fits 360px with surface styling in ${theme}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 360, height: 640 });
+      const field = await mount(page, [["text"]]);
+      await page.evaluate(
+        (theme) => (document.documentElement.dataset.theme = theme),
+        theme,
+      );
+      await field.focus();
+      await page
+        .getByRole("button", { name: action.button, exact: true })
+        .click();
+      const dialog = page.getByRole("dialog", {
+        name: action.dialog,
+        exact: true,
+      });
+      await expect(dialog).toBeVisible();
+      await expectDialogStyle(dialog);
+      await expect(dialog.locator(".actions button")).toHaveText([
+        "Cancel",
+        "Insert",
+      ]);
+      const cancel = await dialog
+        .getByRole("button", { name: "Cancel", exact: true })
+        .boundingBox();
+      const insert = await dialog
+        .getByRole("button", { name: "Insert", exact: true })
+        .boundingBox();
+      expect(cancel!.x + cancel!.width).toBeLessThanOrEqual(insert!.x);
+      if (action.dialog !== "Insert code")
+        await expect(
+          dialog.getByLabel("Link label", { exact: true }),
+        ).toHaveJSProperty("tagName", "INPUT");
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(
+        page.getByRole("button", { name: action.button, exact: true }),
+      ).toBeFocused();
+    });
+  }
+}
+
+for (const theme of ["light", "dark"]) {
+  test(`circled-number paste dialog keeps Cancel beside its primary action at 360px in ${theme}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 360, height: 640 });
+    const initial: RichText = [["text"]];
+    const field = await mount(page, initial);
+    await page.evaluate(
+      (theme) => (document.documentElement.dataset.theme = theme),
+      theme,
+    );
+    await field.focus();
+    await field.evaluate((field) => {
+      const data = new DataTransfer();
+      data.setData("text/plain", "①");
+      const event = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: data,
+      });
+      if (event.clipboardData !== data)
+        Object.defineProperty(event, "clipboardData", { value: data });
+      if (event.clipboardData?.getData("text/plain") !== "①")
+        throw new Error("The paste fixture must expose its circled number.");
+      field.dispatchEvent(event);
+    });
+    const dialog = page.getByRole("dialog", {
+      name: "Paste circled numbers",
+      exact: true,
+    });
+    await expect(dialog).toBeVisible();
+    await expectDialogStyle(dialog);
+    await expect(dialog.locator(".actions button")).toHaveText([
+      "Convert circled numbers",
+      "Cancel",
+      "Keep literal text",
+    ]);
+    const primary = dialog.getByRole("button", {
+      name: "Keep literal text",
+      exact: true,
+    });
+    await expect(primary).toHaveClass(/btn-primary/u);
+    await expect(primary).toBeFocused();
+    const cancel = dialog.getByRole("button", { name: "Cancel", exact: true });
+    const actions = await dialog
+      .locator(":scope > .actions")
+      .evaluate((node) => getComputedStyle(node).justifyContent);
+    expect(actions).toBe("flex-end");
+    const cancelBox = (await cancel.boundingBox())!;
+    const primaryBox = (await primary.boundingBox())!;
+    const box = (await dialog.boundingBox())!;
+    expect(cancelBox.y).toBe(primaryBox.y);
+    expect(cancelBox.x + cancelBox.width).toBeLessThanOrEqual(primaryBox.x);
+    expect(primaryBox.x + primaryBox.width).toBeCloseTo(
+      box.x + box.width - 21,
+      0,
+    );
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(360);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(360);
+    await cancel.click();
+    await expect(dialog).toHaveCount(0);
+    expect(await field.evaluate((node) => (node as any).value)).toEqual(
+      initial,
+    );
+  });
+}

@@ -1357,11 +1357,15 @@ label:is(.check, .opt, .chip):has(> input:only-of-type)
   width: min(34rem, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   overflow: auto;
-  border: 1px solid var(--ink3);
-  border-radius: 12px;
+  border: 1px solid var(--line2);
+  border-radius: 16px;
   padding: 20px;
-  background: var(--bg);
+  background: var(--surface);
   color: var(--ink);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+}
+.rich-dialog .actions {
+  justify-content: flex-end;
 }
 .rich-dialog::backdrop {
   background: #0008;
