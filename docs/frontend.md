@@ -1382,9 +1382,13 @@ Restoration, equivalent-envelope reads, and polling share a 15-second limit and 
 The key page shows its short identity, fingerprint, and all local controls before this background work finishes.
 The public page waits before it opens the profile editor.
 Show Checking only when local profile candidates exist, then distinguish a pending view from an unconfirmable receipt.
-A definitive mismatch, refusal, 4xx response, corrupt record, or marker-write failure does not block the normal profile read.
+HTTP 408 and 429 receipt responses remain transient, like network and server failures.
+A definitive mismatch, refusal, other 4xx response, corrupt record, or marker-write failure does not block the normal profile read.
 Keep the admission row unchanged and retain separate completion or unconfirmable evidence where storage permits.
-Pending and failure notices carry the status role. Refresh reads the profile again without another signature.
+Show the unconfirmable notice only when this browser first records that outcome for the binding.
+Later visits and reloads do not repeat it. This notice offers no Refresh action.
+A local marker failure alone does not raise an unconfirmable notice. Keep completion evidence truthful when a write needs a retry.
+Pending and failure notices carry the status role. Refresh after a read failure reads the profile again without another signature.
 After Refresh, focus the connected heading on success or the error notice on failure.
 
 “Edit public profile” opens name, biography, and HTTPS link fields for the current identity.

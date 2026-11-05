@@ -612,6 +612,8 @@ Receipt checks, equivalent-envelope reads, and polling share one fifteen-second 
 Profile notices carry the status role. Refresh moves focus to the new heading or the failure notice.
 The key page keeps all local controls available while its profile loads in the background.
 Definitive receipt failures use separate unconfirmable evidence and permit normal profile reads.
+Their notice appears once when the browser records the outcome and offers no Refresh action.
+HTTP 408 and 429 responses remain transient. Local marker failures do not relabel completed edits.
 Public profiles skip restoration for identities that are not current or retired local keys.
 Personal recomputation also waits for locally accepted records before it downloads the next snapshot.
 These waits stop after fifteen seconds and preserve accepted delivery evidence for another refresh.

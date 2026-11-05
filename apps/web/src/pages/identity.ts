@@ -144,8 +144,7 @@ export async function identityPage(
       if (!live()) return;
       nameNode.textContent =
         profileName(response) ?? shortIdentity(backup.identity);
-      if (unconfirmable)
-        show("A saved profile edit cannot be confirmed here.", true);
+      if (unconfirmable) show("A saved profile edit cannot be confirmed here.");
       else profileNotice.replaceChildren();
       if (focus) {
         heading.tabIndex = -1;

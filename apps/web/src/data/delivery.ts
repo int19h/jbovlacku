@@ -290,7 +290,7 @@ export function mergePeer(
 
 export class DeliveryEngine {
   private profileCompletions?: Set<string>;
-  private profileUnconfirmable?: Set<string>;
+  private profileSkipped?: Set<string>;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<DeliveryListener>();
   private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
@@ -365,19 +365,15 @@ export class DeliveryEngine {
     ]);
     let current = false;
     const seen = (this.profileCompletions ??= new Set<string>());
-    const skipped = (this.profileUnconfirmable ??= new Set<string>());
+    const skipped = (this.profileSkipped ??= new Set<string>());
     const keys = new Map<string, { receipt: Receipt; key: string }>();
-    const observe = (key: string, receipt: Receipt, unconfirmable: boolean) => {
+    const observe = (key: string, receipt: Receipt) => {
       forgetMaterializedReceipt(receipt);
       if (!seen.has(key)) {
         current = true;
         options.invalidate?.();
       }
       seen.add(key);
-      if (unconfirmable) {
-        skipped.add(key);
-        options.unconfirmable?.();
-      }
     };
     const finish = async (
       receipt: Receipt,
@@ -393,19 +389,22 @@ export class DeliveryEngine {
         );
       } catch {
         signal.throwIfAborted();
-        // Local marker failure cannot turn completed evidence into index lag.
-        unconfirmable = true;
+        // Retry the same evidence. A failed write does not change the outcome.
+        skipped.add(key);
         try {
-          await this.store.put("prefs", key, "unconfirmable");
+          await this.store.put(
+            "prefs",
+            key,
+            unconfirmable ? "unconfirmable" : true,
+          );
         } catch {
           /* Skip in this session if storage cannot retain the marker. */
         }
       }
       signal.throwIfAborted();
-      options.invalidate?.();
-      current = true;
-      seen.add(key);
-      observe(key, receipt, unconfirmable);
+      const first = !seen.has(key);
+      observe(key, receipt);
+      if (unconfirmable && first) options.unconfirmable?.();
     };
     const restore = async () => {
       let items: OutboxItem[];
@@ -413,16 +412,12 @@ export class DeliveryEngine {
         items = await this.items();
       } catch {
         signal.throwIfAborted();
-        options.unconfirmable?.();
         return false;
       }
       const candidates = items.flatMap((item) => {
         // Filter saved issuer and action before decoding potentially large bodies.
         if (!item || item.identity !== identity) return [];
-        if (typeof item.transport !== "string") {
-          options.unconfirmable?.();
-          return [];
-        }
+        if (typeof item.transport !== "string") return [];
         if (!item.transport.includes('"identity.profile"')) return [];
         try {
           const transport = JSON.parse(item.transport) as Transport;
@@ -445,7 +440,6 @@ export class DeliveryEngine {
               : [];
           });
         } catch {
-          options.unconfirmable?.();
           return [];
         }
       });
@@ -482,11 +476,10 @@ export class DeliveryEngine {
                   ),
                 );
             } catch {
-              options.unconfirmable?.();
               continue;
             }
             if (skipped.has(key)) {
-              observe(key, receipt, true);
+              observe(key, receipt);
               continue;
             }
             let marker: unknown;
@@ -494,12 +487,13 @@ export class DeliveryEngine {
               marker = await this.store.get<unknown>("prefs", key);
             } catch {
               signal.throwIfAborted();
-              await finish(receipt, key, true);
+              skipped.add(key);
+              observe(key, receipt);
               continue;
             }
             signal.throwIfAborted();
             if (marker === true || marker === "unconfirmable") {
-              observe(key, receipt, marker === "unconfirmable");
+              observe(key, receipt);
               continue;
             }
             let classified: Classified;
@@ -589,7 +583,6 @@ export class DeliveryEngine {
       if (options.signal?.aborted) throw error;
       if (signal.aborted || transientReceiptFailure(error))
         throw new MaterializationPendingError();
-      options.unconfirmable?.();
       return current;
     } finally {
       controller.abort();

@@ -129,14 +129,6 @@ export async function personPage(
         role: "status",
         text: "A saved profile edit cannot be confirmed here.",
       }),
-      button(
-        "Refresh the profile",
-        () => {
-          main.replaceChildren();
-          void personPage(route, context, app, true, true);
-        },
-        { class: "btn" },
-      ),
     );
   if (focusResult) {
     const heading = main.querySelector<HTMLElement>("h1")!;

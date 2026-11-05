@@ -140,16 +140,35 @@ for (const target of ["key", "public"] as const) {
       );
       const heading = page.getByRole("heading", { level: 1 });
       await expect(heading).toContainText("Current Tester");
-      await expect(
-        page.getByRole("status").filter({
-          hasText: "A saved profile edit cannot be confirmed here.",
-        }),
-      ).toBeVisible();
+      const warning = page.getByRole("status").filter({
+        hasText: "A saved profile edit cannot be confirmed here.",
+      });
+      const refresh = page.getByRole("button", { name: "Refresh the profile" });
+      await expect(warning).toBeVisible();
+      await expect(refresh).toHaveCount(0);
       expect(reads).toBe(1);
       await page.reload();
       await expect(heading).toContainText("Current Tester");
-      await page.getByRole("button", { name: "Refresh the profile" }).click();
+      await expect(warning).toHaveCount(0);
+      await expect(refresh).toHaveCount(0);
+      // A real profile-read failure still offers Refresh, without the old warning.
+      let failRead = true;
+      await page.route(`**${path}`, async (route) => {
+        if (failRead)
+          await route.fulfill({
+            status: 503,
+            json: { code: "unavailable", message: "The profile read failed." },
+          });
+        else await route.continue();
+      });
+      await page.reload();
+      await expect(refresh).toBeVisible();
+      await expect(warning).toHaveCount(0);
+      failRead = false;
+      await refresh.click();
       await expect(heading).toContainText("Current Tester");
+      await expect(warning).toHaveCount(0);
+      await expect(refresh).toHaveCount(0);
       if (target === "public")
         await expect(
           page

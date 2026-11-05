@@ -341,17 +341,25 @@ for (const outcome of [
       assert.equal(await restore({ unconfirmable: () => warnings++ }), true);
       assert.equal(hasPendingMaterialization(), false);
       const beforeVisit = reads;
-      assert.equal(await restore(), false);
+      assert.equal(await restore({ unconfirmable: () => warnings++ }), false);
       assert.equal(reads, beforeVisit);
       assert.equal(warnings, 1);
       assert.equal([...evidence.values()][0], "unconfirmable");
       assert.equal(JSON.stringify(item), before);
+      const reloaded = profile(30);
+      for (const [key, value] of evidence) reloaded.evidence.set(key, value);
+      assert.equal(
+        await reloaded.restore({ unconfirmable: () => warnings++ }),
+        true,
+      );
+      assert.equal(warnings, 1);
+      assert.equal(reads, beforeVisit);
     });
   }
 }
 
 test("failed marker writes do not hide a completed profile", async (t) => {
-  const { restore, engine, completed } = profile(31);
+  const { restore, engine, completed, evidence } = profile(31);
   let reads = 0;
   (engine as any).store.put = async () => {
     throw new Error("Storage is full.");
@@ -360,8 +368,11 @@ test("failed marker writes do not hide a completed profile", async (t) => {
     reads++;
     return Response.json(completed);
   });
-  assert.equal(await restore(), true);
-  assert.equal(await restore(), false);
+  let warnings = 0;
+  assert.equal(await restore({ unconfirmable: () => warnings++ }), true);
+  assert.equal(await restore({ unconfirmable: () => warnings++ }), false);
+  assert.equal(warnings, 0);
+  assert.equal(evidence.size, 0);
   assert.equal(reads, 1);
   assert.equal(hasPendingMaterialization(), false);
 });
@@ -375,13 +386,17 @@ test("malformed profile records and failed outbox reads do not block the profile
     throw new Error("The outbox is unreadable.");
   };
   assert.equal(await restore({ unconfirmable: () => warnings++ }), false);
-  assert.equal(warnings, 2);
+  assert.equal(warnings, 0);
 });
 
 test("non-profile records are filtered before transport parsing", async () => {
   const { restore, item } = profile(33);
-  item.transport = "not a profile transport";
-  assert.equal(await restore(), false);
+  let warnings = 0;
+  for (const transport of ["not a profile transport", undefined, null, 42]) {
+    item.transport = transport as string;
+    assert.equal(await restore({ unconfirmable: () => warnings++ }), false);
+  }
+  assert.equal(warnings, 0);
 });
 
 test("a stored profile without its transport body is skipped", async () => {
@@ -391,7 +406,7 @@ test("a stored profile without its transport body is skipped", async () => {
   item.transport = JSON.stringify(transport);
   let warnings = 0;
   assert.equal(await restore({ unconfirmable: () => warnings++ }), false);
-  assert.equal(warnings, 1);
+  assert.equal(warnings, 0);
 });
 
 test("a marker failure after polling also permits the profile", async (t) => {
@@ -403,8 +418,88 @@ test("a marker failure after polling also permits the profile", async (t) => {
   t.mock.method(globalThis, "fetch", async () =>
     Response.json(++reads === 1 ? receipt : completed),
   );
-  assert.equal(await restore(), true);
-  assert.equal(await restore(), false);
+  let warnings = 0;
+  assert.equal(await restore({ unconfirmable: () => warnings++ }), true);
+  assert.equal(await restore({ unconfirmable: () => warnings++ }), false);
+  assert.equal(warnings, 0);
   assert.equal(reads, 2);
   assert.equal(hasPendingMaterialization(), false);
+});
+
+for (const phase of ["first read", "poll"] as const) {
+  test(`a retried marker write keeps completed evidence during ${phase}`, async (t) => {
+    const { restore, engine, receipt, completed, evidence } = profile(36);
+    const put = (engine as any).store.put;
+    let writes = 0;
+    (engine as any).store.put = async (...args: unknown[]) => {
+      if (++writes === 1)
+        throw new Error("Storage was temporarily unavailable.");
+      return put(...args);
+    };
+    let reads = 0;
+    let warnings = 0;
+    t.mock.method(globalThis, "fetch", async () =>
+      Response.json(++reads === 1 && phase === "poll" ? receipt : completed),
+    );
+    assert.equal(await restore({ unconfirmable: () => warnings++ }), true);
+    assert.equal(await restore({ unconfirmable: () => warnings++ }), false);
+    assert.equal(warnings, 0);
+    assert.equal(writes, 2);
+    assert.deepEqual([...evidence.values()], [true]);
+    assert.equal(reads, phase === "poll" ? 2 : 1);
+  });
+}
+
+for (const status of [408, 429]) {
+  for (const phase of ["first read", "poll"] as const) {
+    test(`HTTP ${status} during ${phase} remains transient`, async (t) => {
+      const { restore, receipt, completed, evidence } = profile(37);
+      let reads = 0;
+      let warnings = 0;
+      t.mock.method(globalThis, "fetch", async () => {
+        reads++;
+        if (phase === "poll" && reads === 1) return Response.json(receipt);
+        if (reads === (phase === "poll" ? 2 : 1))
+          return Response.json({ code: "temporary" }, { status });
+        return Response.json(completed);
+      });
+      assert.equal(await restore({ unconfirmable: () => warnings++ }), true);
+      assert.equal(warnings, 0);
+      assert.equal(reads, phase === "poll" ? 3 : 2);
+      assert.deepEqual([...evidence.values()], [true]);
+      assert.equal(hasPendingMaterialization(), false);
+    });
+  }
+}
+
+test("a failed marker read skips only this session without writing evidence", async (t) => {
+  const { restore, engine, item, evidence } = profile(38);
+  let gets = 0;
+  let writes = 0;
+  let warnings = 0;
+  (engine as any).store.get = async () => {
+    gets++;
+    throw new Error("Storage was temporarily unavailable.");
+  };
+  (engine as any).store.put = async () => writes++;
+  t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("This session must skip the unreadable marker.");
+  });
+  const before = JSON.stringify(item);
+  assert.equal(await restore({ unconfirmable: () => warnings++ }), true);
+  assert.equal(await restore({ unconfirmable: () => warnings++ }), false);
+  assert.equal(gets, 1);
+  assert.equal(writes, 0);
+  assert.equal(warnings, 0);
+  assert.equal(evidence.size, 0);
+  assert.equal(JSON.stringify(item), before);
+  const reloaded = profile(38);
+  let reads = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    reads++;
+    return Response.json(reloaded.completed);
+  });
+  assert.equal(await reloaded.restore(), true);
+  assert.equal(reads, 1);
+  assert.deepEqual([...reloaded.evidence.values()], [true]);
 });

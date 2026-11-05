@@ -380,11 +380,14 @@ export function receiptMaterialized(receipt: Receipt, accepted: Receipt) {
     !viewPending(receipt)
   );
 }
-/** Network failures and server errors can still resolve within the deadline. */
+/** Network failures, timeouts, rate limits, and server errors can resolve within the deadline. */
 export function transientReceiptFailure(error: unknown) {
   return (
     error instanceof TransportError ||
-    (error instanceof RequestError && error.status >= 500 && error.status < 600)
+    (error instanceof RequestError &&
+      (error.status === 408 ||
+        error.status === 429 ||
+        (error.status >= 500 && error.status < 600)))
   );
 }
 /** Wait for local accepted records, without changing their delivery state. */

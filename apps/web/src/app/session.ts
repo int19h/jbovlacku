@@ -213,7 +213,6 @@ export class Session {
     this.touch();
     this.changed();
   }
-  /** Retired keys kept for archive access and compromise notices. */
   /** Only current and retired keys can have local profile delivery evidence. */
   async isLocalKey(identity: string): Promise<boolean> {
     if (!this.storageAvailable) return false;
@@ -227,6 +226,7 @@ export class Session {
       return false;
     }
   }
+  /** Retired keys kept for archive access and compromise notices. */
   async retiredBackups(): Promise<KeyBackup[]> {
     if (!this.storageAvailable) return [];
     const ids = (await this.store.keys("keys")).filter((k) =>
