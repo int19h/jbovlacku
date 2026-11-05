@@ -26,6 +26,14 @@ export {
   finishSigning,
   type EvaluationRequest,
   type EvaluationSessionOptions,
+  type RankingPreparationLimits,
+  type RankingPreparationPolicy,
+  type RankingPreparationDescriptor,
+  type RankingPreparationRequest,
+  type RankingPreparationSummary,
+  type RankingPreparationProgress,
+  type PreparationUsage,
+  type PreparationParameters,
   type EvaluationPackageRecord,
   rankWord,
   canonicalizeStorageWrapper,
@@ -63,6 +71,10 @@ export function evaluateSession(input: EvaluationRequest) {
   return {
     state: session.state,
     rankWord: session.rankWord,
+    rankingDescriptor: session.rankingDescriptor,
+    prepareRanking: session.prepareRanking,
+    rankingPreparation: session.rankingPreparation,
+    clearRankingPreparation: session.clearRankingPreparation,
     free: session.free,
   };
 }

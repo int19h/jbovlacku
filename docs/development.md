@@ -1160,9 +1160,11 @@ Install Chromium as described above. Use new corpus directories for each run so 
 mkdir -p .cache
 export JVC_STATE_PARITY_DIR="$(mktemp -d "$PWD/.cache/state-parity.XXXXXX")"
 export JVC_SHUN_PARITY_DIR="$(mktemp -d "$PWD/.cache/shun-parity.XXXXXX")"
+export JVC_PREPARATION_PARITY_DIR="$(mktemp -d "$PWD/.cache/preparation-parity.XXXXXX")"
 cargo test -p jvc-state -p jvc-runtime --locked --jobs 2 -- --test-threads=2
 npm run build:core
 node scripts/test-state-parity.mjs
+node scripts/test-f64-preparation-parity.mjs
 node scripts/test-f64-row-parity.mjs
 ```
 
@@ -1171,6 +1173,9 @@ It also compares host-only extraction and trusted insertion with the original ve
 Ranking cases compare `rank_word`, session ranking, and `rank_with_reviewers`, including `public_shun_block` and `private_block` details.
 When `JVC_SHUN_PARITY_DIR` is set, the runner requires shun-profile cases and both block reasons, separately and together.
 Without that variable, the runner compares state only. CI sets both corpus variables before the native tests and browser comparison.
+The preparation comparison uses native fixtures across fresh, compact-record, forked, full-restore, and result-restore Wasm sessions.
+It compares descriptor bindings, effective targets, context graph metadata, and charged usage.
+It also requires stale requests to leave the current preparation unchanged.
 The runner writes `_wasm-report.json` into `JVC_STATE_PARITY_DIR`.
 `JVC_STATE_PARITY_WASM_DIR` selects another directory of browser bindings. `JVC_CHROMIUM` selects another Chromium executable.
 

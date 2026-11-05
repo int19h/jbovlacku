@@ -5,6 +5,12 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
+mod ranking_preparation;
+pub use ranking_preparation::{
+    FloatParameter, PREPARATION_CONTRACT, PreparationContext, PreparationParameters,
+    PreparationTarget, PreparationUsage, RankingPreparationDescriptor, RankingPreparationLimits,
+    RankingPreparationPolicy, RankingPreparationRequest, RankingPreparationSummary,
+};
 mod search_pattern;
 pub use search_pattern::SearchPattern;
 
@@ -414,6 +420,17 @@ fn rank_word_state(
     word: &str,
     reviewers_limit: Option<usize>,
 ) -> Result<Value> {
+    if evaluation
+        .policy
+        .as_ref()
+        .and_then(|p| p["calculation"].as_str())
+        == Some(jvc_rank::approximate::ALGORITHM)
+    {
+        return Err(Error::new(
+            "unsupported_calculation",
+            "view calculation profile is unsupported",
+        ));
+    }
     let mut targets: BTreeMap<String, (jvc_state::Context, bool, String, bool)> = BTreeMap::new();
     for publication in evaluation
         .publications
@@ -713,6 +730,7 @@ pub struct EvaluationSession {
     state: jvc_state::EvaluatedState,
     identity: String,
     base_identity: Option<String>,
+    preparation: std::cell::RefCell<Option<ranking_preparation::SessionPreparation>>,
 }
 /// Build a session from original records without one combined request.
 #[wasm_bindgen]
@@ -1065,6 +1083,7 @@ impl EvaluationSessionBuilder {
     pub fn finish(self) -> EvaluationSession {
         EvaluationSession {
             identity: session_identity(),
+            preparation: Default::default(),
             base_identity: self.base_identity,
             state: match self.base {
                 Some(base) => base.advance(self.prepared, &self.removed),
@@ -1084,6 +1103,7 @@ impl EvaluationSession {
         Ok(Self {
             state,
             identity: session_identity(),
+            preparation: Default::default(),
             base_identity: None,
         })
     }
@@ -1118,6 +1138,7 @@ impl EvaluationSession {
         }
         Ok(Self {
             identity: session_identity(),
+            preparation: Default::default(),
             base_identity: None,
             state: jvc_state::EvaluatedState::restore_host_result_checkpoint(
                 bytes,
@@ -1134,6 +1155,7 @@ impl EvaluationSession {
     ) -> std::result::Result<EvaluationSession, JsValue> {
         Ok(Self {
             identity: session_identity(),
+            preparation: Default::default(),
             base_identity: None,
             state: jvc_state::EvaluatedState::restore_host_checkpoint(bytes, binding)
                 .map_err(fail)?,
