@@ -1,5 +1,5 @@
-//! Row preparation and synchronous non-certified influence estimates.
-//! Decisions remain non-certified. Host execution lives outside this module.
+//! Row preparation, non-certified influence estimates, decisions, and numerical tasks.
+//! Host execution lives outside this module.
 use crate::{Limits, RankError, Rational};
 use num_traits::{One, ToPrimitive, Zero};
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,8 +11,9 @@ pub const ROW_SUM_CEILING: f64 = f64::from_bits(0x3ff0_0000_0000_002d);
 pub mod decisions;
 mod propagation;
 pub use propagation::{
-    rank, Edge, Estimate, EstimateProgress, Failure, Graph, Parameters, Progress, Ranker, Ranking,
-    Work,
+    rank, AllocationAccount, AllocationCharge, Edge, Estimate, EstimateProgress, Failure, Graph,
+    OwnedProgress, OwnedRanking, OwnedTask, Parameters, PendingProgress, Progress, Ranker, Ranking,
+    SliceUsage, TaskPhase, Work,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]

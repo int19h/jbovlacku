@@ -1,4 +1,4 @@
-# Exact ranking and approximate decisions
+# Exact ranking, approximate decisions, and numerical tasks
 
 This crate implements section 8 of the [format specification](../../docs/format.md) with exact fractions.
 Its calculation profiles are `simple-routes-bounds-v1` and `simple-routes-shun-v1`.
@@ -7,7 +7,8 @@ The library builds for native Rust and `wasm32-unknown-unknown`.
 
 The `approximate` module prepares rows for `simple-routes-shun-f64-v1` under `jvc-f64-rows-v1`.
 It compares and divides rational weights before float conversion, uses compensated sums, and rejects unavailable numerical inputs.
-It also supplies synchronous complete route stages and the 65 relaxed estimates with their scalar tail.
+It also supplies complete route stages and the 65 relaxed estimates with their scalar tail.
+Synchronous calls and owned tasks use the same numerical guards and compensated sums.
 The `approximate::decisions` module supplies non-certified decisions and layers. It does not implement jobs.
 `jvc-state::prepare_approximate_context` shares semantic resolution with the exact path and uses this row helper.
 The [format specification](../../docs/format.md#approximate-shun-calculation) defines its non-certified contract.
@@ -319,3 +320,76 @@ A zero-influence reviewer still occupies its position, and missing reviewer info
 The existing native/Wasm kernel script also executes the decision vectors.
 They cover margin crossings, tiny residues, counted allowances, structural potential, selection gates, cycles, and presentation permutations.
 The exact module remains the fraction-based reference and stays unchanged.
+
+## Owned numerical tasks
+
+An owned task retains its graph and numerical workspace.
+`OwnedTask::new` accepts an immutable `Arc<Graph>`, fixed parameters, kernel limits, and an `AllocationAccount`.
+It validates graph dimensions and canonical order before numerical work starts.
+No session, worker protocol, job, or app capability is part of this interface.
+
+`step(max_operations)` performs at most that many inner numerical operations.
+`numerical_operations` counts initialization, route, and upper-estimate operations, including an operation that fails.
+A zero bound returns an error before phase, counters, storage, or reservations change.
+The host's external `yield_quantum` remains separate from this inner bound.
+This interface does not yield to an event loop.
+
+`progress()` returns the phase, retained kernel progress, and a separate pending-stage observation.
+An ordinary slice retains the pending lower sums, frontier, cursor, and upper vectors.
+Only complete route stages change retained lower estimates, completed expansion work, and retained refusal tests.
+`last_slice_usage()` reports actual work in the latest valid call, including pending refusal searches and failed operations.
+Invalid calls and cancellation preserve that observation.
+Terminal progress retains the last observation after workspace release.
+
+`flushed_terms` never moves backward within a task.
+Each propagated drop is counted once because slices continue the same state without replay.
+Cancellation and failure end the task and retain its counters.
+A new task starts a new attempt and does not inherit a previous attempt's debits.
+
+`result()` supplies a reference only after the entire upper calculation and endpoint readout finish.
+A budget-limited ready result can still have `exploration_complete: false`.
+`take_result()` rejects before mutation when no ready result exists.
+On success, it moves the same weight buffer and its output reservation into `OwnedRanking` once.
+A second transfer fails without changing progress or reservations.
+The output charge remains until that returned owner drops.
+
+Ready tasks retain no graph, route frontier, or upper workspace.
+Cancellation, task drop, and numerical or allocation failure release all remaining owned workspace.
+Repeated cancellation does not release anything twice.
+Dropping a task after transfer does not release the caller's output charge.
+The caller can retain an external graph reference, whose storage remains outside the task's ownership after release.
+
+`AllocationAccount` reserves structural counts before allocation and releases them after storage drops.
+A refused reservation leaves reserved counts unchanged.
+Release must not fail or panic, and neither account method can call back into a task.
+The account's byte coefficients must cover each category conservatively for the delivered build.
+These counts model kernel ownership and do not cap operating-system memory.
+
+| Charge | Covered storage |
+| --- | --- |
+| `graph_actors` | Capacity slots for actors, roots, row headers, and refusal headers |
+| `graph_edges` | Positive edge capacity slots |
+| `graph_refusals` | Refusal capacity slots |
+| `string_bytes` | Actor ID capacity bytes |
+| `indices` | Canonicalization indexes |
+| `sums` | Lower sums and temporary upper vectors |
+| `prefixes` | Frontier slots, map nodes, temporary keys, and transfer slots |
+| `visited` | Entries in retained and temporary visited sets |
+| `estimates` | Returned actor estimates |
+
+Reservations include validation copies, pending lower sums, temporary keys, and the transfer from the map to the frontier.
+The retained input graph charge includes spare vector and string capacity.
+The kernel checks count overflow before calling the account.
+Kernel limits and reservations are inclusive.
+A ready transfer needs no second output reservation or weight copy.
+The kernel does not choose host byte coefficients or admission budgets.
+
+Graph validation, vector setup and clearing, stage transfer, and endpoint readout are bounded structural work.
+They do not count as inner numerical operations.
+Graph dimensions and the prefix and visited-set limits bound these phases before allocation.
+A numerical slice bound alone does not establish a millisecond latency target.
+Host scheduling and its measurements remain separate work.
+
+The kernel parity script also runs the owned-task tests in native Rust and Wasm.
+Those tests compare result bits and counters across slice sizes and against the synchronous kernel.
+They cover invalid steps, pending stages, inclusive limits, allocation refusal, output transfer, cancellation, and release.
