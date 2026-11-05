@@ -257,13 +257,15 @@ Cloned graphs and equal completed snapshots therefore retain actor cancellation.
 `separate_difference` uses both scores' upper support and opposition masses without actor cancellation.
 It orders contexts by graph identity and then estimate identity, with score endpoints as the tie-breaker.
 All cross-graph arithmetic uses that canonical order. Reversing arguments only reverses the resulting difference endpoints.
-It counts the flushing allowance once per distinct graph value and parameter set, even when estimates come from different completed snapshots.
-For a shared graph, details retain the largest observed depth and flush count across those snapshots.
+It sums the flushing allowances of distinct estimate snapshots, even when those snapshots share a graph.
+Only contexts that satisfy `same()` merge their allowances.
+That identity includes the graph, parameters, endpoint bits, depth, and flush count.
+Equal cloned snapshots count once. Distinct snapshots can discard different terms, so both allowances contribute.
 
 Margins use `factor(d) * M + F`, with compensated addition.
 `factor(d)` is `max(1e-12, (2*d + 140) * 2^-52)`.
-Each graph supplies `flushed_terms * 2^-1018` to `F`.
-Cross-graph comparisons use the maximum depth and the sum of their distinct graph allowances.
+Each contributing estimate snapshot supplies `flushed_terms * 2^-1018` to `F`.
+Comparisons use the maximum depth and sum the allowances after snapshot deduplication.
 Zero mass establishes no lead, and the formula adds no unit mass floor.
 
 Public margin details retain depth, factor, mass, each graph's count and allowance, combined `F`, and the final margin.
@@ -274,24 +276,39 @@ Actual-positive support requires a lower net estimate above its margin.
 Eligible-competitor potential remains possible unless structure proves no positive support or the upper net is below the negative margin.
 Unresolved-pair potential uses retained judgments without assuming eligibility gates pass.
 Missing estimates or history give unavailable decisions.
-Threshold decisions convert the rational input and use the inclusive lower-net test.
+Threshold decisions require a positive rational input and use the inclusive lower-net test.
+Out-of-range `H`, `alpha`, and thresholds return `InvalidParameters`.
+A non-approximate ranking or an incomplete upper phase returns `InvalidGraph` at context construction.
+The input subnormal and nonfinite guards still return `NumericUnavailable`.
 The returned decision records contain their margins so later rendering need not recalculate them.
 
 Structural zero uses roots, positive edges, alpha, simple routes, shuns, and retained judgment signs.
 Its bounded search uses retained judgment signs, even when eligibility or deprecation suppresses their numerical score.
 It never uses computed influence values or flush counts.
 A flushed zero therefore remains possible support.
-`max_candidate_actor_terms` also caps structural edge attempts inside each score calculation.
-A graph can rank successfully and still exhaust this structural search cap.
-A search resource failure returns an error and supplies no zero evidence.
+Scores retain the structural inputs and calculate this proof only when potential or presentation reads it.
+Scores, comparisons, and layers do not require the proof.
+Plain reachability first ignores shuns. If no blessing actor is reachable, structure proves zero.
+Otherwise, a refusal-aware search merges states with the same visited set and endpoint.
+`max_candidate_actor_terms` caps edge attempts in that search.
+The prefix, visited-entry, and refusal-test limits also bound the proof.
+If a proof reaches a limit, it returns not known zero and leaves potential possible.
+It does not make a score, layer list, or selection unavailable.
 
 `automatic_selection` requires eligibility, actual positive support, threshold acceptance, and leads over all possible eligible competitors.
 Unavailable eligible potential and possible or unavailable unresolved potential block selection.
 The result discloses that uniqueness depends on the known identified same-spelling inventory.
 The caller must restrict its inputs to that inventory. Unknown spellings remain a separate coverage limit.
+Pairs with unresolved eligibility belong only in `unresolved`, never in `entries`.
+An `Eligibility::Unavailable` entry means missing eligibility evidence.
+`CandidateDecisions` records the eligibility gate. Known ineligible entries have no numerical decisions, rather than unavailable decisions.
+`Score::direct_reviewers()` retains the stored-definition reviewer count.
+`Score::effective_direct_reviewers()` counts scoring-effective judgments and gives zero for deprecated or ineligible targets.
+Callers must use the effective count for deprecated virtual details.
 
 `nondominated_layers` accepts eligible candidates, keeps active targets before deprecated targets, and discloses unavailable entries as incomplete.
 It rejects ineligible entries. Callers must filter them before constructing ranking layers.
+Known deprecated entries form a retired layer without a context or numerical estimate.
 The layer builder collapses comparison cycles before it computes successive layers, then orders IDs stably inside each layer.
 `layers_from_comparisons` accepts a complete bounded set of validated pair decisions from different contexts.
 `order_unjudged` changes only active, known unjudged structural-zero slots in complete layers.

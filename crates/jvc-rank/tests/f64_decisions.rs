@@ -38,3 +38,8 @@ fn review_retained_signs_status_and_error_classes() {
 fn required_large_exact_zero_rational_reference() {
     assert_eq!(support::large_exact_zero_vectors().len(), 1);
 }
+
+#[test]
+fn stage_two_availability_margins_and_error_classes() {
+    assert!(!support::stage_two_vectors().is_empty());
+}

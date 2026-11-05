@@ -1,6 +1,7 @@
 //! Non-certified decisions from complete estimates. No host execution lives here.
 use super::{input, Estimate, Graph, Parameters, PreparationError, Ranking, Sum};
 use crate::{Candidate, Eligibility, Limits, RankError, Rational, Verdict};
+use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
@@ -9,6 +10,9 @@ pub const DECISION_CONTRACT: &str = "jvc-f64-decisions-v1";
 pub const FLUSH_UNIT: f64 = f64::from_bits(5u64 << 52); // 2^-1018
 fn invalid(s: &str) -> PreparationError {
     PreparationError::Graph(RankError::InvalidGraph(s.into()))
+}
+fn parameter(s: &str) -> PreparationError {
+    PreparationError::Graph(RankError::InvalidParameters(s.into()))
 }
 fn resource(s: &'static str) -> PreparationError {
     PreparationError::Graph(RankError::ResourceLimit(s))
@@ -144,7 +148,7 @@ impl<'a> DecisionContext<'a> {
             || parameters.alpha < 0.0
             || parameters.alpha > 0.9
         {
-            return Err(invalid("invalid decision parameters"));
+            return Err(parameter("invalid decision parameters"));
         }
         let p = &ranking.progress;
         if !ranking.numerically_approximate
@@ -153,7 +157,7 @@ impl<'a> DecisionContext<'a> {
                 u.complete && !u.failed && (p.exploration_complete || u.complete_vectors == 65)
             })
         {
-            return Err(resource("incomplete upper estimates"));
+            return Err(invalid("incomplete upper estimates"));
         }
         if ranking.weights.len() != graph.actors.len()
             || p.depth > graph.actors.len().saturating_sub(1)
@@ -213,9 +217,6 @@ impl<'a> DecisionContext<'a> {
                     .cmp(&other.ranking.progress.work.flushed_terms)
             })
     }
-    fn same_graph(&self, other: &Self) -> bool {
-        self.graph_order(other) == Ordering::Equal
-    }
     fn same(&self, other: &Self) -> bool {
         self.snapshot_order(other) == Ordering::Equal
     }
@@ -247,12 +248,7 @@ fn margin(mass: f64, contexts: &[&DecisionContext<'_>]) -> Result<Margin> {
     let mut unique: Vec<(&DecisionContext<'_>, GraphMargin)> = Vec::new();
     for &c in contexts {
         let details = c.details();
-        if let Some((_, retained)) = unique.iter_mut().find(|(u, _)| u.same_graph(c)) {
-            retained.depth = retained.depth.max(details.depth);
-            retained.factor = relative_factor(retained.depth);
-            retained.flushed_terms = retained.flushed_terms.max(details.flushed_terms);
-            retained.flush_margin = retained.flushed_terms as f64 * FLUSH_UNIT;
-        } else {
+        if !unique.iter().any(|(u, _)| u.same(c)) {
             unique.push((c, details));
         }
     }
@@ -282,96 +278,132 @@ fn dimensions(c: &Candidate, context: &DecisionContext<'_>, limits: &Limits) -> 
     Ok(())
 }
 
-/// Search signs and permitted simple routes without numerical products or scores.
-fn structural_zero(
-    context: &DecisionContext<'_>,
-    verdicts: &[Verdict],
-    limits: &Limits,
-) -> Result<bool> {
+/// Prove zero from structure. An exhausted proof leaves support possible.
+fn structural_zero(context: &DecisionContext<'_>, verdicts: &[Verdict], limits: &Limits) -> bool {
     if !verdicts.contains(&Verdict::Bless) {
-        return Ok(true);
+        return true;
     }
     let g = context.graph;
+    // Plain reachability ignores refusals and all numerical products.
+    let mut reached = vec![false; g.actors.len()];
     let mut stack = Vec::new();
     for (i, &q) in g.q.iter().enumerate() {
         if q > 0.0 {
             if verdicts[i] == Verdict::Bless {
-                return Ok(false);
+                return false;
             }
+            reached[i] = true;
             if context.h > 0.0 {
-                if stack.len() >= limits.max_prefixes
-                    || stack.len() >= limits.max_visited_actor_entries
-                {
-                    return Err(resource("structural prefixes"));
-                }
-                stack.push((i, vec![i]));
+                stack.push(i);
             }
         }
     }
-    let mut entries = stack.len();
+    let mut reachable_blessing = false;
+    while let Some(from) = stack.pop() {
+        for edge in &g.rows[from] {
+            if verdicts[edge.to] == Verdict::Bless {
+                reachable_blessing = true;
+            }
+            if !reached[edge.to] {
+                reached[edge.to] = true;
+                if context.alpha > 0.0 {
+                    stack.push(edge.to);
+                }
+            }
+        }
+    }
+    if !reachable_blessing {
+        return true;
+    }
+    // Merge equivalent simple-route states, as the propagation kernel does.
+    let mut pending = BTreeSet::new();
+    for (i, &q) in g.q.iter().enumerate() {
+        if q > 0.0 && context.h > 0.0 {
+            pending.insert((vec![i], i));
+        }
+    }
+    let mut seen = pending.clone();
+    let mut entries = pending.len();
     let mut attempts = 0usize;
     let mut tests = 0;
-    if stack.len() > limits.max_prefixes || entries > limits.max_visited_actor_entries {
-        return Err(resource("structural prefixes"));
+    if seen.len() > limits.max_prefixes || entries > limits.max_visited_actor_entries {
+        return false;
     }
-    while let Some((from, path)) = stack.pop() {
-        entries -= path.len();
+    while let Some((path, from)) = pending.pop_first() {
         for edge in &g.rows[from] {
-            attempts = attempts
-                .checked_add(1)
-                .ok_or_else(|| resource("structural edge attempts"))?;
+            let Some(next_attempts) = attempts.checked_add(1) else {
+                return false;
+            };
+            attempts = next_attempts;
             if attempts > limits.max_candidate_actor_terms {
-                return Err(resource("structural edge attempts"));
+                return false;
             }
-            if path.binary_search(&edge.to).is_ok()
-                || crate::refused(
-                    &path,
-                    &g.refusals[edge.to],
-                    &mut tests,
-                    limits.max_refusal_tests,
-                )
-                .map_err(PreparationError::Graph)?
-            {
+            if path.binary_search(&edge.to).is_ok() {
                 continue;
             }
+            match crate::refused(
+                &path,
+                &g.refusals[edge.to],
+                &mut tests,
+                limits.max_refusal_tests,
+            ) {
+                Ok(true) => continue,
+                Err(_) => return false,
+                Ok(false) => (),
+            }
             if verdicts[edge.to] == Verdict::Bless {
-                return Ok(false);
+                return false;
             }
             if context.alpha > 0.0 && !g.rows[edge.to].is_empty() {
-                if stack.len() >= limits.max_prefixes {
-                    return Err(resource("structural prefixes"));
-                }
-                entries = entries
-                    .checked_add(path.len() + 1)
-                    .ok_or_else(|| resource("structural visited entries"))?;
-                if entries > limits.max_visited_actor_entries {
-                    return Err(resource("structural visited entries"));
-                }
                 let mut next = path.clone();
                 let at = next.binary_search(&edge.to).unwrap_err();
                 next.insert(at, edge.to);
-                stack.push((edge.to, next));
+                let state = (next, edge.to);
+                if seen.contains(&state) {
+                    continue;
+                }
+                let Some(next_entries) = entries.checked_add(state.0.len()) else {
+                    return false;
+                };
+                if seen.len() >= limits.max_prefixes
+                    || next_entries > limits.max_visited_actor_entries
+                {
+                    return false;
+                }
+                entries = next_entries;
+                seen.insert(state.clone());
+                pending.insert(state);
             }
         }
     }
-    Ok(true)
+    true
 }
 #[derive(Clone, Debug)]
 pub struct Score<'a> {
     pub support: Estimate,
     pub opposition: Estimate,
     pub net: Estimate,
-    structural_known_zero: bool,
+    structural_known_zero: OnceCell<bool>,
+    retained: Vec<Verdict>,
+    structural_limits: Limits,
     direct_reviewers: usize,
+    effective_direct_reviewers: usize,
     deprecated: bool,
     context: &'a DecisionContext<'a>,
 }
 impl Score<'_> {
     pub fn structural_known_zero(&self) -> bool {
-        self.structural_known_zero
+        *self
+            .structural_known_zero
+            .get_or_init(|| structural_zero(self.context, &self.retained, &self.structural_limits))
     }
+    /// Retained reviewers, for stored-definition presentation.
     pub fn direct_reviewers(&self) -> usize {
         self.direct_reviewers
+    }
+    /// Effective reviewers, including zero for deprecated virtual targets.
+    pub fn effective_direct_reviewers(&self) -> usize {
+        self.effective_direct_reviewers
     }
 }
 fn valid_score(s: &Score<'_>) -> Result<()> {
@@ -420,7 +452,10 @@ fn raw_score<'a>(
         support,
         opposition,
         net: net(support, opposition)?,
-        structural_known_zero: structural_zero(context, retained, limits)?,
+        structural_known_zero: OnceCell::new(),
+        retained: retained.to_vec(),
+        structural_limits: limits.clone(),
+        effective_direct_reviewers: verdicts.iter().filter(|&&v| v != Verdict::Absent).count(),
         direct_reviewers: retained.iter().filter(|&&v| v != Verdict::Absent).count(),
         deprecated: false,
         context,
@@ -612,7 +647,7 @@ pub fn eligible_competitor_potential(score: Option<&Score<'_>>) -> Result<Decisi
     valid_score(s)?;
     let m = margin(sum([s.support.upper, s.opposition.upper])?, &[s.context])?;
     Ok(Decision {
-        status: if s.structural_known_zero || s.net.upper < -m.value {
+        status: if s.net.upper < -m.value || s.structural_known_zero() {
             Potential::Nonpositive
         } else {
             Potential::Possible
@@ -634,6 +669,9 @@ pub fn meets_threshold(
     score: Option<&Score<'_>>,
     threshold: &Rational,
 ) -> Result<Decision<Threshold>> {
+    if threshold <= &crate::rational(0, 1) {
+        return Err(parameter("rafsi threshold must be positive"));
+    }
     let t = input(threshold, true)?;
     let Some(s) = score else {
         return Ok(Decision {
@@ -731,7 +769,12 @@ pub fn nondominated_layers(entries: &[LayerCandidate<'_>], limits: &Limits) -> R
     let mut active = Vec::new();
     let mut scores = Vec::new();
     let mut unavailable = Vec::new();
+    let mut retired = Vec::new();
     for e in entries {
+        if e.candidate.eligibility == Eligibility::Eligible && e.candidate.deprecated {
+            retired.push(e.candidate.id.clone());
+            continue;
+        }
         match (e.candidate.eligibility, e.context) {
             (Eligibility::Unavailable, _) | (Eligibility::Eligible, None) => {
                 unavailable.push(e.candidate.id.clone())
@@ -746,40 +789,26 @@ pub fn nondominated_layers(entries: &[LayerCandidate<'_>], limits: &Limits) -> R
             }
         }
     }
-    let mut comparisons = Vec::new();
+    let mut edges = vec![Vec::new(); active.len()];
     for i in 0..active.len() {
         for j in i + 1..active.len() {
-            if active[i].candidate.deprecated != active[j].candidate.deprecated {
-                comparisons.push((i, j, None));
-            } else {
-                comparisons.push((
-                    i,
-                    j,
-                    Some(compare_entries(
-                        &active[i], &active[j], &scores[i], &scores[j], limits,
-                    )?),
-                ));
-            }
-        }
-    }
-    let mut edges = vec![Vec::new(); active.len()];
-    for (i, j, c) in comparisons {
-        if let Some(c) = c {
-            if c.a_leads() {
+            let comparison =
+                compare_entries(&active[i], &active[j], &scores[i], &scores[j], limits)?;
+            if comparison.a_leads() {
                 edges[i].push(j);
-            } else if c.b_leads() {
+            } else if comparison.b_leads() {
                 edges[j].push(i);
             }
-        } else if active[i].candidate.deprecated {
-            edges[j].push(i);
-        } else {
-            edges[i].push(j);
         }
     }
     let mut result = layers_from_edges(
         active.iter().map(|e| e.candidate.id.clone()).collect(),
         edges,
     )?;
+    retired.sort();
+    if !retired.is_empty() {
+        result.layers.push(retired);
+    }
     unavailable.sort();
     result.incomplete = !unavailable.is_empty();
     result.unavailable = unavailable;
@@ -948,7 +977,9 @@ impl Presentation {
         Self {
             id,
             direct_reviewers: score.map(|s| s.direct_reviewers),
-            structural_known_zero: score.is_some_and(|s| s.structural_known_zero),
+            structural_known_zero: score.is_some_and(|s| {
+                !s.deprecated && s.direct_reviewers == 0 && s.structural_known_zero()
+            }),
             deprecated: score.is_some_and(|s| s.deprecated),
             kind,
         }
@@ -990,9 +1021,11 @@ pub fn order_unjudged(layers: &mut Layers, presentation: &[Presentation]) -> Res
 #[derive(Clone, Debug, PartialEq)]
 pub struct CandidateDecisions {
     pub id: String,
-    pub actual: Decision<ActualSupport>,
-    pub eligible_potential: Decision<Potential>,
-    pub threshold: Decision<Threshold>,
+    pub eligibility: Eligibility,
+    /// Known ineligible entries have no numerical decisions.
+    pub actual: Option<Decision<ActualSupport>>,
+    pub eligible_potential: Option<Decision<Potential>>,
+    pub threshold: Option<Decision<Threshold>>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Selection {
@@ -1001,7 +1034,9 @@ pub struct Selection {
     pub unresolved: Vec<Decision<Potential>>,
     pub conditional_on_identified_inventory: bool,
 }
-/// All entries and unresolved potentials belong to one known same-spelling inventory.
+/// All inputs belong to one known same-spelling inventory.
+/// Pairs with unresolved eligibility belong only in `unresolved`, never in `entries`.
+/// An `Unavailable` entry means missing eligibility evidence, not an unresolved pair.
 pub fn automatic_selection(
     entries: &[LayerCandidate<'_>],
     unresolved: &[Decision<Potential>],
@@ -1009,7 +1044,7 @@ pub fn automatic_selection(
     limits: &Limits,
 ) -> Result<Selection> {
     if threshold <= &crate::rational(0, 1) {
-        return Err(invalid("rafsi threshold must be positive"));
+        return Err(parameter("rafsi threshold must be positive"));
     }
     pair_limit(entries.len(), actors_per_pair(entries)?, limits)?;
     if entries
@@ -1033,9 +1068,22 @@ pub fn automatic_selection(
         };
         candidates.push(CandidateDecisions {
             id: e.candidate.id.clone(),
-            actual: actual_positive_support(s.as_ref())?,
-            eligible_potential: eligible_competitor_potential(s.as_ref())?,
-            threshold: meets_threshold(s.as_ref(), threshold)?,
+            eligibility: e.candidate.eligibility,
+            actual: if e.candidate.eligibility == Eligibility::Ineligible {
+                None
+            } else {
+                Some(actual_positive_support(s.as_ref())?)
+            },
+            eligible_potential: if e.candidate.eligibility == Eligibility::Ineligible {
+                None
+            } else {
+                Some(eligible_competitor_potential(s.as_ref())?)
+            },
+            threshold: if e.candidate.eligibility == Eligibility::Ineligible {
+                None
+            } else {
+                Some(meets_threshold(s.as_ref(), threshold)?)
+            },
         });
         scores.push(s);
     }
@@ -1048,8 +1096,12 @@ pub fn automatic_selection(
             let d = &candidates[i];
             if e.candidate.eligibility != Eligibility::Eligible
                 || e.candidate.deprecated
-                || d.actual.status != ActualSupport::Positive
-                || d.threshold.status != Threshold::Accepted
+                || d.actual
+                    .as_ref()
+                    .is_none_or(|v| v.status != ActualSupport::Positive)
+                || d.threshold
+                    .as_ref()
+                    .is_none_or(|v| v.status != Threshold::Accepted)
             {
                 continue;
             }
@@ -1061,7 +1113,12 @@ pub fn automatic_selection(
                 {
                     continue;
                 }
-                match candidates[j].eligible_potential.status {
+                match candidates[j]
+                    .eligible_potential
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing eligible decision"))?
+                    .status
+                {
                     Potential::Nonpositive => (),
                     Potential::Unavailable => {
                         wins = false;

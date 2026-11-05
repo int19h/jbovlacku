@@ -210,12 +210,11 @@ pub fn numerical_vectors() -> BTreeMap<String, Vec<u64>> {
         d::actual_positive_support(Some(&zero)).unwrap().status,
         d::ActualSupport::NotEstablished
     );
-    let equality = d::meets_threshold(Some(&zero), &rational(0, 1)).unwrap();
-    assert_eq!(equality.status, d::Threshold::Accepted);
-    assert_eq!(equality.margin.as_ref().unwrap().value, 0.0);
+    let decision = d::actual_positive_support(Some(&zero)).unwrap();
+    assert_eq!(decision.margin.as_ref().unwrap().value, 0.0);
     out.insert(
-        "decision-inclusive-zero-margin-equality".into(),
-        margin(equality.margin.as_ref().unwrap()),
+        "decision-empty-graph-zero-margin".into(),
+        margin(decision.margin.as_ref().unwrap()),
     );
     assert_eq!(d::relative_factor(0), 1e-12);
     assert!(d::relative_factor(3000) > 1e-12);
@@ -362,7 +361,7 @@ pub fn comparison_vectors() -> BTreeMap<String, Vec<u64>> {
     assert_eq!(snapshot_margin.margin.graphs.len(), 1);
     assert_eq!(snapshot_margin.margin.absolute, d::FLUSH_UNIT);
     out.insert(
-        "decision-shared-graph-different-snapshots-count-flush-once".into(),
+        "decision-shared-graph-equal-snapshots-count-flush-once".into(),
         comparison(&snapshot_margin),
     );
     let fg2 = graph(vec![m, 2.0, 0.0], &[(0, 2, 0.5)], &[]);
@@ -474,9 +473,13 @@ pub fn potential_vectors() -> BTreeMap<String, Vec<u64>> {
     out.insert(
         "rafsi-overlapping-eligible-potential-blocks".into(),
         vec![
-            blocked.candidates[0].actual.status as u64,
-            blocked.candidates[1].actual.status as u64,
-            blocked.candidates[1].eligible_potential.status as u64,
+            blocked.candidates[0].actual.as_ref().unwrap().status as u64,
+            blocked.candidates[1].actual.as_ref().unwrap().status as u64,
+            blocked.candidates[1]
+                .eligible_potential
+                .as_ref()
+                .unwrap()
+                .status as u64,
         ],
     );
 
@@ -498,7 +501,13 @@ pub fn potential_vectors() -> BTreeMap<String, Vec<u64>> {
     assert!(selected.conditional_on_identified_inventory);
     out.insert(
         "rafsi-nonpositive-competitor-does-not-block".into(),
-        vec![selected.candidates[1].eligible_potential.status as u64],
+        vec![
+            selected.candidates[1]
+                .eligible_potential
+                .as_ref()
+                .unwrap()
+                .status as u64,
+        ],
     );
     let unresolved = d::unresolved_pair_potential(Some(&ctx), Some(&b.verdicts), &limits).unwrap();
     assert_eq!(unresolved.status, d::Potential::Possible);
@@ -817,7 +826,9 @@ pub fn validation_vectors() -> BTreeMap<String, Vec<u64>> {
         max_prefixes: 0,
         ..limits
     };
-    assert!(d::score(&ctx, &c, &zero_search).is_err());
+    assert!(!d::score(&ctx, &c, &zero_search)
+        .unwrap()
+        .structural_known_zero());
     out.insert(
         "decisions-structural-search-limits-never-imply-zero".into(),
         vec![1],
@@ -1213,22 +1224,18 @@ pub fn review_status_vectors() -> BTreeMap<String, Vec<u64>> {
     let ctx = d::DecisionContext::new(&g, &p, &r, &limits).unwrap();
     let c = candidate("unreachable", vec![Absent, Absent, Absent, Bless]);
     assert!(d::score(&ctx, &c, &limits).unwrap().structural_known_zero());
-    assert_eq!(
-        d::score(
-            &ctx,
-            &c,
-            &Limits {
-                max_candidate_actor_terms: 4,
-                ..limits
-            }
-        )
-        .unwrap_err(),
-        a::PreparationError::Graph(jvc_rank::RankError::ResourceLimit(
-            "structural edge attempts"
-        ))
-    );
+    assert!(d::score(
+        &ctx,
+        &c,
+        &Limits {
+            max_candidate_actor_terms: 4,
+            ..limits
+        }
+    )
+    .unwrap()
+    .structural_known_zero());
     out.insert(
-        "review-ranked-graph-can-exhaust-structural-attempt-cap".into(),
+        "review-unreachable-blesser-uses-plain-reachability".into(),
         vec![1],
     );
     out
@@ -1320,5 +1327,335 @@ pub fn vectors() -> BTreeMap<String, Vec<u64>> {
     out.extend(review_permutation_vectors());
     out.extend(review_status_vectors());
     out.extend(large_exact_zero_vectors());
+    out.extend(stage_two_vectors());
+    out
+}
+
+pub fn stage_two_vectors() -> BTreeMap<String, Vec<u64>> {
+    use Verdict::*;
+    let mut out = BTreeMap::new();
+    let limits = Limits::default();
+    // An unreachable blesser cannot remove ordinary dense-community layers.
+    for k in 8..=12 {
+        let mut q = vec![0.0; k + 1];
+        q[0] = 1.0;
+        let edges: Vec<_> = (0..k)
+            .flat_map(|from| {
+                (0..k)
+                    .filter(move |&to| to != from)
+                    .map(move |to| (from, to, 1.0 / 16.0))
+            })
+            .collect();
+        let g = graph(q, &edges, &[]);
+        let p = params(3.0, 0.5, 1_000_000);
+        let r = a::rank(&g, &p, limits.clone()).unwrap();
+        assert!(r.progress.exploration_complete);
+        let ctx = d::DecisionContext::new(&g, &p, &r, &limits).unwrap();
+        let mut signs = vec![Absent; k + 1];
+        signs[k] = Bless;
+        let unreachable = candidate("unreachable", signs);
+        let mut signs = vec![Absent; k + 1];
+        signs[0] = Bless;
+        let winner = candidate("winner", signs);
+        let entries = [
+            d::LayerCandidate {
+                candidate: &winner,
+                context: Some(&ctx),
+            },
+            d::LayerCandidate {
+                candidate: &unreachable,
+                context: Some(&ctx),
+            },
+        ];
+        let ranked = d::nondominated_layers(&entries, &limits).unwrap();
+        assert!(!ranked.incomplete);
+        let selection = d::automatic_selection(&entries, &[], &rational(1, 2), &limits).unwrap();
+        assert_eq!(selection.selected.as_deref(), Some("winner"));
+        let s = d::score(&ctx, &unreachable, &limits).unwrap();
+        assert!(s.structural_known_zero());
+        out.insert(format!("review-dense-cluster-{k}"), layers(&ranked));
+    }
+    // Many permutations share each visited-set/endpoint state. The blesser
+    // is reachable without refusals, so only the merged proof establishes zero.
+    let k = 12;
+    let mut q = vec![0.0; k + 1];
+    q[0] = 1.0;
+    let mut edges: Vec<_> = (0..k)
+        .flat_map(|from| {
+            (0..k)
+                .filter(move |&to| to != from)
+                .map(move |to| (from, to, 1.0 / 16.0))
+        })
+        .collect();
+    edges.extend((0..k).map(|from| (from, k, 1.0 / 16.0)));
+    let g = graph(q, &edges, &[(0, k)]);
+    let p = params(3.0, 0.5, 1_000_000);
+    let r = a::rank(&g, &p, limits.clone()).unwrap();
+    let ctx = d::DecisionContext::new(&g, &p, &r, &limits).unwrap();
+    let mut signs = vec![Absent; k + 1];
+    signs[k] = Bless;
+    let c = candidate("refused-dense-blesser", signs);
+    let s = d::score(&ctx, &c, &limits).unwrap();
+    assert!(s.structural_known_zero());
+    assert_eq!(
+        d::eligible_competitor_potential(Some(&s)).unwrap().status,
+        d::Potential::Nonpositive
+    );
+    out.insert("review-dense-refusal-search-merges-states".into(), vec![1]);
+    // A reachable blesser is blocked by a root refusal. Exhaustion is unknown.
+    let g = graph(
+        vec![1.0, 0.0, 0.0, 0.0],
+        &[
+            (0, 1, 0.5),
+            (0, 2, 0.5),
+            (1, 2, 0.5),
+            (2, 1, 0.5),
+            (1, 3, 0.5),
+            (2, 3, 0.5),
+        ],
+        &[(0, 3)],
+    );
+    let p = params(3.0, 0.5, 1000);
+    let r = a::rank(&g, &p, limits.clone()).unwrap();
+    let ctx = d::DecisionContext::new(&g, &p, &r, &limits).unwrap();
+    let c = candidate("blocked", vec![Absent, Absent, Absent, Bless]);
+    assert!(d::score(&ctx, &c, &limits).unwrap().structural_known_zero());
+    let tight = Limits {
+        max_candidate_actor_terms: 4,
+        ..limits.clone()
+    };
+    let s = d::score(&ctx, &c, &tight).unwrap();
+    assert!(!s.structural_known_zero());
+    assert_eq!(
+        d::eligible_competitor_potential(Some(&s)).unwrap().status,
+        d::Potential::Possible
+    );
+    assert!(
+        !d::nondominated_layers(
+            &[d::LayerCandidate {
+                candidate: &c,
+                context: Some(&ctx)
+            }],
+            &tight
+        )
+        .unwrap()
+        .incomplete
+    );
+    out.insert("review-structural-exhaustion-is-unknown".into(), vec![1]);
+
+    // Estimate snapshots share a graph but carry separate dropped mass.
+    let g = graph(vec![f64::MIN_POSITIVE, 1.0, 0.0], &[(0, 2, 0.5)], &[]);
+    let p = params(3.0, 0.5, 100);
+    let r = a::rank(&g, &p, limits.clone()).unwrap();
+    let mut later = r.clone();
+    later.progress.depth = 2;
+    later.progress.work.flushed_terms = 3;
+    let first = d::DecisionContext::new(&g, &p, &r, &limits).unwrap();
+    let second = d::DecisionContext::new(&g, &p, &later, &limits).unwrap();
+    let empty = candidate("empty", vec![Absent; 3]);
+    let one = d::score(&first, &empty, &limits).unwrap();
+    let two = d::score(&second, &empty, &limits).unwrap();
+    let forward = d::separate_difference(&one, &two).unwrap();
+    let reverse = d::separate_difference(&two, &one).unwrap();
+    assert_eq!(forward.margin, reverse.margin);
+    assert_eq!(forward.margin.graphs.len(), 2);
+    assert_eq!(forward.margin.depth, 2);
+    assert_eq!(forward.margin.absolute, 4.0 * d::FLUSH_UNIT);
+    assert_eq!(
+        forward
+            .margin
+            .graphs
+            .iter()
+            .map(|g| g.flushed_terms)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    out.insert(
+        "review-distinct-snapshots-sum-allowances".into(),
+        comparison(&forward),
+    );
+
+    let g = graph(vec![1.0], &[], &[]);
+    let p = params(0.0, 0.5, 1);
+    let r = a::rank(&g, &p, limits.clone()).unwrap();
+    for (name, h, alpha) in [
+        ("h", 101.0, 0.5),
+        ("alpha", 0.0, 1.0),
+        ("negative-h", -1.0, 0.5),
+        ("negative-alpha", 0.0, -0.1),
+    ] {
+        assert!(matches!(
+            d::DecisionContext::new(&g, &params(h, alpha, 1), &r, &limits),
+            Err(a::PreparationError::Graph(
+                jvc_rank::RankError::InvalidParameters(_)
+            ))
+        ));
+        out.insert(format!("review-invalid-parameter-{name}"), vec![1]);
+    }
+    for (name, approximate, complete) in [
+        ("not-approximate", false, true),
+        ("incomplete", true, false),
+    ] {
+        let mut bad = r.clone();
+        bad.numerically_approximate = approximate;
+        if !complete {
+            bad.progress.upper = None;
+        }
+        assert!(matches!(
+            d::DecisionContext::new(&g, &p, &bad, &limits),
+            Err(a::PreparationError::Graph(
+                jvc_rank::RankError::InvalidGraph(_)
+            ))
+        ));
+        out.insert(format!("review-invalid-binding-{name}"), vec![1]);
+    }
+    let ctx = d::DecisionContext::new(&g, &p, &r, &limits).unwrap();
+    let winner = candidate("winner", vec![Bless]);
+    let s = d::score(&ctx, &winner, &limits).unwrap();
+    for threshold in [rational(0, 1), rational(-1, 1)] {
+        assert!(matches!(
+            d::meets_threshold(Some(&s), &threshold),
+            Err(a::PreparationError::Graph(
+                jvc_rank::RankError::InvalidParameters(_)
+            ))
+        ));
+        assert!(matches!(
+            d::automatic_selection(&[], &[], &threshold, &limits),
+            Err(a::PreparationError::Graph(
+                jvc_rank::RankError::InvalidParameters(_)
+            ))
+        ));
+    }
+    out.insert("review-invalid-threshold-class".into(), vec![1]);
+
+    let mut retired = candidate("retired", vec![Bless]);
+    retired.deprecated = true;
+    let retired_score = d::score(&ctx, &retired, &limits).unwrap();
+    assert_eq!(retired_score.direct_reviewers(), 1);
+    assert_eq!(retired_score.effective_direct_reviewers(), 0);
+    let mut ineligible = winner.clone();
+    ineligible.id = "ineligible".into();
+    ineligible.eligibility = Eligibility::Ineligible;
+    let iscore = d::score(&ctx, &ineligible, &limits).unwrap();
+    assert_eq!(iscore.direct_reviewers(), 1);
+    assert_eq!(iscore.effective_direct_reviewers(), 0);
+    let entries = [
+        d::LayerCandidate {
+            candidate: &winner,
+            context: Some(&ctx),
+        },
+        d::LayerCandidate {
+            candidate: &ineligible,
+            context: None,
+        },
+    ];
+    let selected = d::automatic_selection(&entries, &[], &rational(1, 2), &limits).unwrap();
+    assert_eq!(selected.selected.as_deref(), Some("winner"));
+    let gate = &selected.candidates[0];
+    assert_eq!(gate.eligibility, Eligibility::Ineligible);
+    assert!(gate.actual.is_none() && gate.threshold.is_none() && gate.eligible_potential.is_none());
+    out.insert(
+        "review-effective-reviewers-and-ineligible-gate".into(),
+        vec![1],
+    );
+    let entries = [
+        entries[0],
+        d::LayerCandidate {
+            candidate: &retired,
+            context: None,
+        },
+    ];
+    let mut ranked = d::nondominated_layers(&entries, &limits).unwrap();
+    assert!(!ranked.incomplete);
+    assert_eq!(ranked.layers, vec![vec!["winner"], vec!["retired"]]);
+    d::order_unjudged(&mut ranked, &[]).unwrap();
+    out.insert(
+        "review-retired-layer-without-context".into(),
+        layers(&ranked),
+    );
+    let unresolved = d::unresolved_pair_potential(Some(&ctx), Some(&[Curse]), &limits).unwrap();
+    assert_eq!(unresolved.status, d::Potential::Nonpositive);
+    assert_eq!(
+        d::automatic_selection(&entries[..1], &[unresolved], &rational(1, 2), &limits)
+            .unwrap()
+            .selected
+            .as_deref(),
+        Some("winner")
+    );
+    let mut missing = winner.clone();
+    missing.id = "missing-evidence".into();
+    missing.eligibility = Eligibility::Unavailable;
+    let entries = [
+        entries[0],
+        d::LayerCandidate {
+            candidate: &missing,
+            context: None,
+        },
+    ];
+    let selection = d::automatic_selection(&entries, &[], &rational(1, 2), &limits).unwrap();
+    assert_eq!(selection.selected, None);
+    assert_eq!(
+        selection.candidates[0].eligibility,
+        Eligibility::Unavailable
+    );
+    assert_eq!(
+        selection.candidates[0]
+            .eligible_potential
+            .as_ref()
+            .unwrap()
+            .status,
+        d::Potential::Unavailable
+    );
+    out.insert(
+        "review-unresolved-and-missing-evidence-channels".into(),
+        vec![1],
+    );
+
+    // Both chains have the same exact product, in different multiplication orders.
+    let length = 4402;
+    let n = 2 * (length + 1);
+    let mut edges = Vec::new();
+    let mut q = vec![0.0; n];
+    q[0] = 1.0;
+    q[length + 1] = 1.0;
+    for chain in 0..2 {
+        for hop in 0..length {
+            edges.push((
+                chain * (length + 1) + hop,
+                chain * (length + 1) + hop + 1,
+                if (hop + chain) % 2 == 0 {
+                    0.999_999
+                } else {
+                    0.999_998
+                },
+            ));
+        }
+    }
+    let g = graph(q, &edges, &[]);
+    let p = params(3.0, 0.9, 100_000);
+    let r = a::rank(&g, &p, limits.clone()).unwrap();
+    assert_ne!(
+        r.weights[length].lower.to_bits(),
+        r.weights[n - 1].lower.to_bits()
+    );
+    let ctx = d::DecisionContext::new(&g, &p, &r, &limits).unwrap();
+    let mut signs = vec![Absent; n];
+    signs[length] = Bless;
+    let one = candidate("one", signs);
+    let mut signs = vec![Absent; n];
+    signs[n - 1] = Bless;
+    let two = candidate("two", signs);
+    for (name, a, b) in [("forward", &one, &two), ("reverse", &two, &one)] {
+        let compared = d::difference(a, b, &ctx, &limits).unwrap();
+        assert!(!compared.a_leads() && !compared.b_leads());
+        assert_eq!(compared.margin.depth, length);
+        assert!(compared.margin.factor > 1e-12);
+        let mut encoded = comparison(&compared);
+        encoded.extend([
+            r.weights[length].lower.to_bits(),
+            r.weights[n - 1].lower.to_bits(),
+        ]);
+        out.insert(format!("review-long-equal-chains-{name}"), encoded);
+    }
     out
 }
