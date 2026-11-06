@@ -1,4 +1,21 @@
 import { readFile } from "node:fs/promises";
+
+export const childRunning = (child) =>
+  !!child && child.exitCode === null && child.signalCode === null;
+
+const shutdowns = new WeakMap();
+export function stopChild(child) {
+  if (!child) return Promise.resolve();
+  if (shutdowns.has(child)) return shutdowns.get(child);
+  if (!childRunning(child)) return Promise.resolve();
+  const stopped = new Promise((resolve) => {
+    child.once("exit", resolve);
+    child.kill("SIGTERM");
+  });
+  shutdowns.set(child, stopped);
+  return stopped;
+}
+
 export async function rendererLimiter(cdp, rate) {
   const identities = new Map();
   let stopped = false,

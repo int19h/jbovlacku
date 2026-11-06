@@ -1,10 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { once } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { distribution, profileSummary } from "./metrics.mjs";
-import { rendererLimiter } from "./limits.mjs";
+import { rendererLimiter, childRunning, stopChild } from "./limits.mjs";
+import { validateSample, readCachedDataset } from "./samples.mjs";
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 test("nearest-rank distributions retain zeros and exclude non-finite observations", () => {
   assert.deepEqual(distribution([]), {
@@ -83,8 +86,102 @@ test("the renderer limiter resumes its owned process after cancellation", async 
   } finally {
     await limiter?.stop();
     child.kill("SIGCONT");
-    child.kill("SIGTERM");
-    await once(child, "exit");
+    await stopChild(child);
+  }
+});
+
+test(
+  "server shutdown recognizes an earlier signal exit without a new waiter",
+  { timeout: 5000 },
+  async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"]);
+    const exited = once(child, "exit");
+    child.kill("SIGKILL");
+    await exited;
+    assert.equal(child.exitCode, null);
+    assert.equal(child.signalCode, "SIGKILL");
+    assert.equal(childRunning(child), false);
+    const listeners = child.listenerCount("exit");
+    await stopChild(child);
+    await stopChild(child);
+    assert.equal(child.listenerCount("exit"), listeners);
+  },
+);
+
+test(
+  "normal server shutdown waits before signaling and is repeat-safe",
+  { timeout: 5000 },
+  async () => {
+    const child = spawn(process.execPath, [
+      "-e",
+      "process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),20));setInterval(()=>{},1000);console.log('ready')",
+    ]);
+    try {
+      await once(child.stdout, "data");
+      let signals = 0;
+      const kill = child.kill.bind(child);
+      child.kill = (signal) => {
+        assert.equal(child.listenerCount("exit"), 1);
+        signals++;
+        return kill(signal);
+      };
+      assert.equal(childRunning(child), true);
+      const stopped = stopChild(child);
+      assert.equal(stopChild(child), stopped);
+      await stopped;
+      await stopChild(child);
+      assert.equal(signals, 1);
+      assert.equal(child.exitCode, 0);
+      assert.equal(child.signalCode, null);
+      assert.equal(childRunning(child), false);
+    } finally {
+      await stopChild(child);
+    }
+  },
+);
+
+const sampleWords = (count = 60, middle = "heavily_judged") =>
+  Array.from({ length: count }, (_, index) => ({
+    word: String(index),
+    cohort: index < 20 ? "common_manual" : index < 40 ? middle : "long_tail",
+  }));
+
+test("sample admission requires 60 distinct words and three cohorts of 20", () => {
+  assert.throws(
+    () => validateSample(sampleWords(59)),
+    /60 distinct eligible words/,
+  );
+  assert.doesNotThrow(() => validateSample(sampleWords()));
+  assert.doesNotThrow(() =>
+    validateSample(sampleWords(60, "many_definitions_no_judgments")),
+  );
+  const duplicate = sampleWords();
+  duplicate[59].word = duplicate[0].word;
+  assert.throws(() => validateSample(duplicate), /60 distinct eligible words/);
+  const uneven = sampleWords();
+  uneven[59].cohort = "common_manual";
+  assert.throws(() => validateSample(uneven), /60 distinct eligible words/);
+});
+
+test("cached sample admission rejects undersized schema-2 and schema-3 datasets", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "browser-eval-sample-"));
+  const path = join(directory, "dataset.json");
+  try {
+    for (const schema of [2, 3]) {
+      await writeFile(
+        path,
+        JSON.stringify({ schema, sample: sampleWords(59) }),
+      );
+      await assert.rejects(
+        readCachedDataset(path),
+        /60 distinct eligible words/,
+      );
+      const valid = { schema, sample: sampleWords() };
+      await writeFile(path, JSON.stringify(valid));
+      assert.deepEqual(await readCachedDataset(path), valid);
+    }
+  } finally {
+    await rm(directory, { recursive: true });
   }
 });
 

@@ -18,8 +18,9 @@ import { spawn, execFileSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
 import { deserialize } from "node:v8";
 import { distribution, profileSummary } from "./metrics.mjs";
-import { rendererLimiter } from "./limits.mjs";
+import { rendererLimiter, childRunning, stopChild } from "./limits.mjs";
 import { ancestryShape } from "./ancestry.mjs";
+import { validateSample, readCachedDataset } from "./samples.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const args = Object.fromEntries(
@@ -130,10 +131,10 @@ await writeFile(
 
 async function prepare() {
   const cached = join(out, "input.json");
+  const old = await readCachedDataset(join(out, "dataset.json"));
   try {
-    const old = JSON.parse(await readFile(join(out, "dataset.json"), "utf8"));
-    if (old.schema === 3) return old;
-    if (old.schema === 2) {
+    if (old?.schema === 3) return old;
+    if (old?.schema === 2) {
       const { DatabaseSync } = await import("node:sqlite");
       const db = new DatabaseSync(join(data, "coordinator.sqlite"), {
         readOnly: true,
@@ -325,8 +326,7 @@ async function prepare() {
       if (sample.length >= 60) break;
       take(w, "long_tail");
     }
-    if (sample.length < 50)
-      throw Error("At least 50 distinct real words are required.");
+    validateSample(sample);
     const serialized = JSON.stringify(input);
     await writeFile(cached, serialized);
     const dataset = {
@@ -426,7 +426,7 @@ for (const signal of ["SIGINT", "SIGTERM"])
     process.exitCode = signal === "SIGINT" ? 130 : 143;
     void (async () => {
       await activeCleanup?.();
-      if (serverProcess?.exitCode === null) serverProcess.kill("SIGTERM");
+      await stopChild(serverProcess);
     })();
   });
 async function startProductServer() {
@@ -480,8 +480,10 @@ async function startProductServer() {
   serverProcess.stderr.on("data", (chunk) => log.write(chunk));
   serverProcess.once("close", () => log.end());
   for (let i = 0; i < 600; i++) {
-    if (serverProcess.exitCode !== null)
-      throw Error(`The disposable server exited: ${serverProcess.exitCode}`);
+    if (!childRunning(serverProcess))
+      throw Error(
+        `The disposable server exited: ${serverProcess.signalCode ?? serverProcess.exitCode}`,
+      );
     if (!ownedListening) {
       await delay(1000);
       continue;
@@ -1105,8 +1107,5 @@ try {
   );
 } finally {
   await new Promise((r) => http.close(r));
-  if (serverProcess && serverProcess.exitCode === null) {
-    serverProcess.kill("SIGTERM");
-    await new Promise((r) => serverProcess.once("exit", r));
-  }
+  await stopChild(serverProcess);
 }

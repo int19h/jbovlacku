@@ -133,6 +133,13 @@ The limiter runs renderers for 10 ms, then stops them for 30 or 50 ms.
 It checks process identity before each signal and resumes owned processes during cleanup.
 It also refreshes renderer identities after the worker starts.
 
+PID means a numeric process identifier that Linux can reuse after exit.
+Start-time comparisons reduce stale-PID risk but cannot guarantee that every signal reaches a renderer launched by this run.
+A renderer can exit and its PID can change owners between the start-time comparison and the signal.
+PID reuse between the CDP process list and identity capture can also associate an unrelated process with this run.
+In these rare cases, an unrelated process can receive `SIGSTOP` or `SIGCONT`.
+The safeguard is not a security boundary.
+
 The duty cycle constrains average CPU availability, rather than instruction speed.
 Short operations can finish inside one active burst at full speed.
 It does not reproduce a phone processor, thermal throttling, memory bandwidth, or operating-system scheduling.
@@ -162,6 +169,7 @@ When the snapshot contains no judgments, the middle cohort instead contains word
 The common cohort is a manual list, rather than a measured frequency ranking.
 The long-tail cohort uses low judgment counts and a stable identifier order, rather than search-usage statistics.
 All cohorts require active eligible publications with effective receipts in the copied checkpoint.
+Fresh and cached samples must contain 60 distinct words, with 20 in each cohort, before trials start.
 
 The output includes a pinned dataset description, source input hash, per-word records, condition summaries, and environment information.
 Each label gets separate NDJSON, summary, and environment files.
@@ -190,6 +198,7 @@ The ancestry model gives only identifier-vector payload bounds for complete, sam
 It excludes map, node, string, allocator, capacity-slack, and transient-copy costs.
 
 The helper tests cover percentile handling, profile categorization, ancestry-model preconditions, and cleanup of stopped processes.
+They also cover repeat-safe server shutdown and sample admission for fresh and cached datasets.
 Run them with the command below.
 
 ```sh
