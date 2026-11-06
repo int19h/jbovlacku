@@ -473,12 +473,19 @@ fn large_source_is_streamed_and_context_charges_do_not_repeat_dictionary_bytes()
     let session = EvaluationSession::new(&f.bytes()).unwrap();
     let baseline = prepared(&session, &f.word);
     let d = session.ranking_descriptor_native(&policy()).unwrap();
-    let source_bytes = (d.setup.setup_bytes - 256 * d.setup.setup_records as u64) / 16;
+    let source_bytes = d.setup.source_bytes;
     assert!(source_bytes > 3_000_000);
     assert_eq!(baseline.contexts.len(), 2);
-    assert!(
-        d.setup.setup_units + 2 * 16 * source_bytes > policy().limits.units,
-        "the former per-context source formula must fail this vector"
+    let mut source_bounded = policy();
+    source_bounded.limits.source_bytes = source_bytes as usize;
+    assert!(session.ranking_descriptor_native(&source_bounded).is_ok());
+    source_bounded.limits.source_bytes -= 1;
+    assert_eq!(
+        session
+            .ranking_descriptor_native(&source_bounded)
+            .unwrap_err()
+            .code,
+        "resource_unavailable"
     );
     assert!(baseline.usage.charged_units < policy().limits.units);
     let mut bounded = policy();

@@ -4,13 +4,15 @@ use super::*;
 use jvc_rank::approximate as a;
 use std::{collections::BTreeSet, sync::Arc};
 
-pub const PREPARATION_CONTRACT: &str = "jvc-session-ranking-preparation-v2";
+pub const PREPARATION_CONTRACT: &str = "jvc-session-ranking-preparation-v3";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RankingPreparationLimits {
     pub records: usize,
     pub setup_bytes: usize,
     pub units: u64,
+    pub source_bytes: usize,
+    pub source_millis: u64,
     pub word_publications: usize,
     pub targets: usize,
     pub contexts: usize,
@@ -22,7 +24,9 @@ impl Default for RankingPreparationLimits {
         Self {
             records: 1_000_000,
             setup_bytes: 512 * 1024 * 1024,
-            units: 100_000_000,
+            units: 300_000_000,
+            source_bytes: 256 * 1024 * 1024,
+            source_millis: 30_000,
             word_publications: 8192,
             targets: 4096,
             contexts: 128,
@@ -40,6 +44,38 @@ pub struct RankingPreparationPolicy {
     pub limits: RankingPreparationLimits,
 }
 impl RankingPreparationPolicy {
+    /// A preflight envelope from index inputs, without index allocation.
+    pub fn setup_estimate(&self, c: &jvc_state::RankingIndexCounts) -> Result<(u64, u64)> {
+        self.validate()?;
+        let terms = [
+            (c.words, 256),
+            (c.word_publications, 64),
+            (c.target_groups, 256),
+            (c.targets, 96),
+            (c.judgment_groups, 192),
+            (c.trust_rules, 1024),
+            (c.scope_buckets, 256),
+            (c.scope_rules, 16),
+            (c.private_pairs, 192),
+            (c.private_weights, 512),
+            (c.private_rules, 1536),
+        ];
+        let mut bytes = c.key_bytes;
+        let mut entries = 0;
+        for (count, coefficient) in terms {
+            bytes = add(bytes, mul(count, coefficient)?)?;
+            entries = add(entries, count)?;
+        }
+        // Native requested-heap measurements calibrate the coefficients.
+        // Two times the base also covers allocator overhead and transient maps.
+        let bytes = mul(bytes, 2)?;
+        let log = u64::from(64 - add(entries, 1)?.leading_zeros());
+        let units = mul(add(mul(mul(entries, 8)?, log)?, c.key_bytes)?, 2)?;
+        if bytes > self.limits.setup_bytes as u64 || units > self.limits.units {
+            return Err(resource("ranking setup envelope limit"));
+        }
+        Ok((bytes, units))
+    }
     fn validate(&self) -> Result<()> {
         let l = &self.limits;
         if !jvc_core::valid_id(&self.core_binding, "sha256:")
@@ -49,6 +85,10 @@ impl RankingPreparationPolicy {
             || l.setup_bytes > 1024 * 1024 * 1024
             || l.units == 0
             || l.units > 1_000_000_000
+            || l.source_bytes == 0
+            || l.source_bytes > 1024 * 1024 * 1024
+            || l.source_millis == 0
+            || l.source_millis > 120_000
             || l.word_publications == 0
             || l.word_publications > 200_000
             || l.targets == 0
@@ -73,6 +113,7 @@ pub struct PreparationUsage {
     pub setup_records: usize,
     pub setup_bytes: u64,
     pub setup_units: u64,
+    pub source_bytes: u64,
     pub visited_publications: usize,
     pub charged_units: u64,
     pub context_calls: usize,
@@ -184,6 +225,32 @@ fn mul(a: u64, b: u64) -> Result<u64> {
 fn bits(value: f64) -> String {
     format!("{:016x}", value.to_bits())
 }
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn setup_now() -> f64;
+}
+fn source_binding(
+    state: &jvc_state::EvaluatedState,
+    limits: &RankingPreparationLimits,
+) -> Result<(String, usize)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let start = std::time::Instant::now();
+    #[cfg(target_arch = "wasm32")]
+    let start = setup_now();
+    state.ranking_source_binding_checked(limits.source_bytes, || {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            start.elapsed().as_secs_f64() * 1000.0 <= limits.source_millis as f64
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let elapsed = setup_now() - start;
+            elapsed.is_finite() && elapsed >= 0.0 && elapsed <= limits.source_millis as f64
+        }
+    })
+}
 struct Capped(Vec<u8>, usize);
 impl std::io::Write for Capped {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -278,7 +345,7 @@ impl SessionPreparation {
         let available =
             e.available && algorithm.as_deref() == Some(a::ALGORITHM) && parameters.is_some();
         // Unsupported profiles need no ranking input identity or dictionary walk.
-        let (input_binding, records, setup_bytes, setup_units) = if unsupported {
+        let (input_binding, records, setup_bytes, setup_units, source_bytes) = if unsupported {
             (
                 digest(
                     b"jvc-ranking-unsupported-v1\n",
@@ -288,35 +355,20 @@ impl SessionPreparation {
                 0,
                 0,
                 0,
+                0,
             )
         } else {
             let records = session.state.ranking_source_records()?;
             if records > limits.records {
                 return Err(resource("ranking setup record limit"));
             }
-            let fixed_bytes = mul(records as u64, 256)?;
-            let source_limit = (limits.setup_bytes as u64)
-                .checked_sub(fixed_bytes)
-                .ok_or_else(|| resource("ranking setup envelope limit"))?
-                / 16;
-            let (binding, bytes) = session
-                .state
-                .ranking_source_binding(source_limit as usize)?;
-            let setup_bytes = add(mul(bytes as u64, 16)?, fixed_bytes)?;
-            let setup_units = add(
-                mul(bytes as u64, 4)?,
-                mul(
-                    mul(records as u64 + 1, 64)?,
-                    u64::from(usize::BITS - (records + 1).leading_zeros()),
-                )?,
-            )?;
-            if setup_units > limits.units {
-                return Err(resource("ranking setup envelope limit"));
-            }
+            let counts = session.state.ranking_index_bound()?;
+            let (setup_bytes, setup_units) = policy.setup_estimate(&counts)?;
+            let (binding, bytes) = source_binding(&session.state, limits)?;
             if available {
                 session.state.ensure_ranking_index()?;
             }
-            (binding, records, setup_bytes, setup_units)
+            (binding, records, setup_bytes, setup_units, bytes as u64)
         };
         let contract_binding = digest(
             b"jvc-ranking-preparation-contract-v1\n",
@@ -353,6 +405,7 @@ impl SessionPreparation {
             setup_records: records,
             setup_bytes,
             setup_units,
+            source_bytes,
             charged_units: setup_units,
             ..Default::default()
         };
@@ -1034,5 +1087,81 @@ mod tests {
         assert!(summary.contexts[0].available);
         assert_eq!(summary.contexts[0].actors, 1001);
         assert_eq!(summary.contexts[0].edges, 6000);
+    }
+    #[test]
+    fn measured_dictionary_shape_has_memory_and_work_headroom() {
+        let c = jvc_state::RankingIndexCounts {
+            words: 89687,
+            word_publications: 89687,
+            target_groups: 89687,
+            targets: 93806,
+            judgment_groups: 89687,
+            key_bytes: 33432924,
+            ..Default::default()
+        };
+        let mut p = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let (bytes, units) = p.setup_estimate(&c).unwrap();
+        assert_eq!((bytes, units), (222_635_832, 204_442_264));
+        assert!(
+            bytes + p.limits.graph_bytes as u64 + (p.limits.metadata_bytes as u64)
+                < p.limits.setup_bytes as u64
+        );
+        assert!(units + 50_000_000 < p.limits.units);
+        assert!(165_438_058 < p.limits.source_bytes);
+        p.limits.setup_bytes = bytes as usize;
+        p.limits.units = units;
+        assert_eq!(p.setup_estimate(&c).unwrap(), (bytes, units));
+        p.limits.setup_bytes -= 1;
+        assert_eq!(
+            p.setup_estimate(&c).unwrap_err().code,
+            "resource_unavailable"
+        );
+        p.limits.setup_bytes += 1;
+        p.limits.units -= 1;
+        assert_eq!(
+            p.setup_estimate(&c).unwrap_err().code,
+            "resource_unavailable"
+        );
+        p.limits.setup_bytes = 1024 * 1024 * 1024;
+        p.limits.units = 1_000_000_000;
+        let mut large = c.clone();
+        large.words *= 8;
+        large.word_publications *= 8;
+        large.target_groups *= 8;
+        large.targets *= 8;
+        large.judgment_groups *= 8;
+        large.key_bytes *= 8;
+        assert_eq!(
+            p.setup_estimate(&large).unwrap_err().code,
+            "resource_unavailable"
+        );
+        large.words = u64::MAX;
+        assert_eq!(
+            p.setup_estimate(&large).unwrap_err().code,
+            "resource_unavailable"
+        );
+    }
+    #[test]
+    fn source_budgets_have_independent_hard_ceilings() {
+        let mut p = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        p.limits.source_bytes = 1024 * 1024 * 1024;
+        p.limits.source_millis = 120_000;
+        p.validate().unwrap();
+        p.limits.source_bytes += 1;
+        assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
+        p.limits.source_bytes -= 1;
+        p.limits.source_millis += 1;
+        assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
+        p.limits.source_millis = 0;
+        assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
+        p.limits.source_millis = 1;
+        p.limits.source_bytes = 0;
+        assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
     }
 }

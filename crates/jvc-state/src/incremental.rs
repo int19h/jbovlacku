@@ -105,7 +105,48 @@ impl EvaluatedState {
     /// Hash retained authenticated projections without another input buffer.
     /// Value maps must retain serde_json's sorted-key encoding. A test pins this assumption.
     pub fn ranking_source_binding(&self, max_bytes: usize) -> jvc_core::Result<(String, usize)> {
-        let mut writer = jvc_core::HashWriter::new(b"jvc-ranking-state-v1\n", max_bytes);
+        self.ranking_source_binding_checked(max_bytes, || true)
+    }
+    /// The host supplies a monotonic deadline check. Check at most 256 KiB apart.
+    pub fn ranking_source_binding_checked(
+        &self,
+        max_bytes: usize,
+        mut within_deadline: impl FnMut() -> bool,
+    ) -> jvc_core::Result<(String, usize)> {
+        struct BudgetWriter<'a> {
+            hash: jvc_core::HashWriter,
+            check: &'a mut dyn FnMut() -> bool,
+            remaining: usize,
+        }
+        impl std::io::Write for BudgetWriter<'_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                for chunk in bytes.chunks(256 * 1024) {
+                    if chunk.len() >= self.remaining {
+                        if !(self.check)() {
+                            return Err(std::io::Error::other("ranking source time limit"));
+                        }
+                        self.remaining = 256 * 1024;
+                    }
+                    self.hash.write_all(chunk)?;
+                    self.remaining -= chunk.len();
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        if !within_deadline() {
+            return Err(jvc_core::Error::new(
+                "resource_unavailable",
+                "ranking source time limit",
+            ));
+        }
+        let mut writer = BudgetWriter {
+            hash: jvc_core::HashWriter::new(b"jvc-ranking-state-v1\n", max_bytes),
+            check: &mut within_deadline,
+            remaining: 256 * 1024,
+        };
         serde_json::to_writer(
             &mut writer,
             &(
@@ -116,7 +157,13 @@ impl EvaluatedState {
             ),
         )
         .map_err(|e| jvc_core::Error::new("resource_unavailable", e.to_string()))?;
-        Ok(writer.finish("sha256:"))
+        if !(writer.check)() {
+            return Err(jvc_core::Error::new(
+                "resource_unavailable",
+                "ranking source time limit",
+            ));
+        }
+        Ok(writer.hash.finish("sha256:"))
     }
     /// Count index inputs without cloning them. Policy checks precede index allocation.
     pub fn ranking_source_records(&self) -> jvc_core::Result<usize> {
@@ -150,6 +197,16 @@ impl EvaluatedState {
             })?;
         }
         Ok(count)
+    }
+    pub fn ranking_index_bound(&self) -> jvc_core::Result<policy::RankingIndexCounts> {
+        policy::ranking_index_bound(&self.evaluation)
+    }
+    /// Diagnostic counts after index construction. This does not build an index.
+    pub fn ranking_index_counts(&self) -> Option<policy::RankingIndexCounts> {
+        self.ranking_index
+            .borrow()
+            .as_ref()
+            .map(|i| i.counts(&self.evaluation))
     }
     pub fn ensure_ranking_index(&self) -> jvc_core::Result<()> {
         if self.ranking_index.borrow().is_none() {
@@ -992,5 +1049,33 @@ mod rebuild_tests {
                 .code,
             "resource_unavailable"
         );
+    }
+    #[test]
+    fn source_deadline_stops_streaming_without_a_partial_binding() {
+        let mut state = base().into_state();
+        let (binding, bytes) = state.ranking_source_binding(1_000_000).unwrap();
+        assert_eq!(
+            state
+                .ranking_source_binding_checked(bytes, || true)
+                .unwrap(),
+            (binding, bytes)
+        );
+        assert_eq!(
+            state
+                .ranking_source_binding_checked(bytes, || false)
+                .unwrap_err()
+                .code,
+            "resource_unavailable"
+        );
+        // Add a large unrelated field. The callback expires during the walk.
+        state.evaluation.policy = Some(json!({"padding":"x".repeat(1_000_000)}));
+        let mut calls = 0;
+        let failed = state.ranking_source_binding_checked(2_000_000, || {
+            calls += 1;
+            calls < 3
+        });
+        assert_eq!(failed.unwrap_err().code, "resource_unavailable");
+        assert_eq!(calls, 3);
+        assert!(state.ranking_index_counts().is_none());
     }
 }

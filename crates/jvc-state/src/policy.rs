@@ -432,6 +432,101 @@ impl ScopedRuleIndex {
     }
 }
 
+/// Index entries and copied string bytes. Bounds need no index allocation.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RankingIndexCounts {
+    pub words: u64,
+    pub word_publications: u64,
+    pub target_groups: u64,
+    pub targets: u64,
+    pub judgment_groups: u64,
+    pub trust_rules: u64,
+    pub scope_buckets: u64,
+    pub scope_rules: u64,
+    pub private_pairs: u64,
+    pub private_weights: u64,
+    pub private_rules: u64,
+    pub key_bytes: u64,
+}
+fn value_strings(value: &Value) -> u64 {
+    match value {
+        Value::String(s) => s.len() as u64,
+        Value::Array(a) => a.iter().map(value_strings).sum(),
+        Value::Object(o) => o
+            .iter()
+            .map(|(k, v)| k.len() as u64 + value_strings(v))
+            .sum(),
+        _ => 0,
+    }
+}
+/// Upper bounds permit one bucket per input, including duplicate keys.
+pub(crate) fn ranking_index_bound(e: &Evaluation) -> jvc_core::Result<RankingIndexCounts> {
+    let mut c = RankingIndexCounts::default();
+    let mut bytes = 0u64;
+    let mut add_bytes = |n: u64| -> jvc_core::Result<()> {
+        bytes = bytes.checked_add(n).ok_or_else(count_overflow)?;
+        Ok(())
+    };
+    for p in e.publications.values() {
+        c.words += 1;
+        c.word_publications += 1;
+        add_bytes((p.word.len() + p.id.len()) as u64)?;
+        if matches!(p.kind.as_str(), "definition.publish" | "rafsi.publish") {
+            c.target_groups += 1;
+            c.judgment_groups += 1;
+            c.targets += 1 + u64::from(p.assignment.is_some());
+            add_bytes(
+                (2 * (10 + p.word.len() + p.language.as_ref().map_or(0, String::len))
+                    + p.id.len()
+                    + p.assignment.as_ref().map_or(0, String::len)) as u64,
+            )?;
+        }
+    }
+    let public = e.trust.len() as u64;
+    for r in &e.trust {
+        add_bytes(
+            8 * (r.actor.len() as u64
+                + r.subject.len() as u64
+                + value_strings(&r.scope)
+                + r.values.iter().map(|v| v.len() as u64).sum::<u64>()),
+        )?;
+    }
+    if !e.reasons.contains("invalid_overlay") {
+        for r in e
+            .overlay
+            .iter()
+            .flat_map(|o| o["trust"].as_array())
+            .flatten()
+        {
+            c.private_rules += 1;
+            c.private_weights += u64::from(r["value"] == "heed");
+            // Continuity IDs can be longer than the issuer keys in the overlay.
+            let actor = |key: &str| {
+                e.lifecycle
+                    .key_actor
+                    .get(key)
+                    .map_or(key.len(), String::len) as u64
+            };
+            add_bytes(
+                8 * (actor(r["issuer"].as_str().unwrap())
+                    + actor(r["subject"].as_str().unwrap())
+                    + value_strings(&r["scope"])
+                    + 16),
+            )?;
+        }
+    }
+    c.private_pairs = c.private_weights;
+    c.trust_rules = public
+        .checked_add(c.private_rules)
+        .ok_or_else(count_overflow)?;
+    c.scope_rules = public
+        .checked_add(c.trust_rules)
+        .ok_or_else(count_overflow)?;
+    c.scope_buckets = c.scope_rules;
+    c.key_bytes = bytes;
+    Ok(c)
+}
+
 #[derive(Clone)]
 pub(crate) struct ApproximateContextIndex {
     pub(crate) words: BTreeMap<String, Vec<String>>,
@@ -496,6 +591,69 @@ impl ApproximateContextIndex {
             index.judgments.insert(key.clone(), count);
         }
         Ok(index)
+    }
+    pub(crate) fn counts(&self, e: &Evaluation) -> RankingIndexCounts {
+        let scopes = [&self.merged_rules, &self.public_rules];
+        let mut c = RankingIndexCounts {
+            words: self.words.len() as u64,
+            word_publications: self.words.values().map(|v| v.len() as u64).sum(),
+            target_groups: self.targets.len() as u64,
+            targets: self.targets.values().map(|v| v.len() as u64).sum(),
+            judgment_groups: self.judgments.len() as u64,
+            trust_rules: self.trust.len() as u64,
+            scope_buckets: scopes.iter().map(|i| i.0.len() as u64).sum(),
+            scope_rules: scopes
+                .iter()
+                .flat_map(|i| i.0.values())
+                .map(|b| b.ids.len() as u64)
+                .sum(),
+            private_pairs: self.private_weights.len() as u64,
+            private_weights: self.private_weights.values().map(|v| v.len() as u64).sum(),
+            private_rules: e
+                .overlay
+                .iter()
+                .flat_map(|o| o["trust"].as_array())
+                .map(|a| a.len() as u64)
+                .sum(),
+            key_bytes: 0,
+        };
+        let target_bytes = |k: &(String, String, Option<String>)| {
+            (k.0.len() + k.1.len() + k.2.as_ref().map_or(0, String::len)) as u64
+        };
+        c.key_bytes = self
+            .words
+            .iter()
+            .map(|(k, v)| k.len() as u64 + v.iter().map(|s| s.len() as u64).sum::<u64>())
+            .sum::<u64>()
+            + self
+                .targets
+                .iter()
+                .map(|(k, v)| target_bytes(k) + v.iter().map(|s| s.len() as u64).sum::<u64>())
+                .sum::<u64>()
+            + self.judgments.keys().map(target_bytes).sum::<u64>()
+            + self
+                .trust
+                .iter()
+                .map(|r| {
+                    (r.actor.len() + r.subject.len()) as u64
+                        + value_strings(&r.scope)
+                        + r.values.iter().map(|s| s.len() as u64).sum::<u64>()
+                })
+                .sum::<u64>()
+            + scopes
+                .iter()
+                .flat_map(|i| i.0.keys())
+                .map(|k| (k.0.len() + k.1.len() + k.2.len()) as u64)
+                .sum::<u64>()
+            + self
+                .private_weights
+                .iter()
+                .map(|((a, b), v)| {
+                    (a.len() + b.len()) as u64
+                        + v.iter().map(|(scope, _)| value_strings(scope)).sum::<u64>()
+                })
+                .sum::<u64>();
+        c
     }
     fn target_key(context: &Context) -> (String, String, Option<String>) {
         (

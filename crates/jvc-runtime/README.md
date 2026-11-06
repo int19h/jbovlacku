@@ -15,7 +15,7 @@ Fresh, forked, and restored equivalent float states share semantic bindings.
 Exact profiles return unavailable descriptors before the source walk or index construction.
 Their diagnostic input binding names the selected view and algorithm, without identifying the complete input.
 Unavailable descriptors cannot prepare graphs.
-The preparation contract is `jvc-session-ranking-preparation-v2`.
+The preparation contract is `jvc-session-ranking-preparation-v3`.
 Source serialization keeps the existing serde field order and sorted `serde_json::Value` object keys.
 A regression test pins that sorted-key assumption against future dependency feature changes.
 Each session also supplies a separate owner identity that prevents cross-session requests.
@@ -40,17 +40,70 @@ Preparation generations stay monotonic through both successful and refused polic
 The TypeScript handle exposes these operations as `rankingDescriptor`, `prepareRanking`, `rankingPreparation`, and `clearRankingPreparation`.
 The browser facade exposes them without host insertion or checkpoint restore.
 
-The default policy permits 1,000,000 structural records, a 512 MiB setup envelope, and 100,000,000 preparation units.
+The default policy permits 1,000,000 structural records, a 512 MiB setup envelope, and 300,000,000 preparation units.
 It permits 8,192 publications per word, 4,096 targets, 128 contexts, a 64 MiB graph envelope, and 16 MiB metadata encodings.
-All limits are inclusive and bounded by implementation ceilings.
-These defaults are admission bounds, not measured dictionary capacity.
+The setup ceiling is 1 GiB. The unit ceiling is 1,000,000,000.
+All limits are inclusive. These envelopes model allocation and work, rather than operating-system memory or CPU time.
 
-The source hash writer counts bytes and retains no source buffer.
-Its source limit is `(setup_bytes - 256 * records) / 16`, with checked subtraction before the walk.
-The one-time setup envelope charges `16 * source_bytes + 256 * records`.
-Setup units use `4 * source_bytes + 64 * (records + 1) * bit_length(records + 1)`.
+Setup admission counts index inputs before it allocates indexes.
+It permits one bucket per input, even when duplicate keys later share a bucket.
+The target count includes publication IDs and assignment IDs.
+Merged trust counts include all public and private rules, even when replacement or clears later remove some rules.
+Both public and merged scope indexes contribute their bucket and rule counts.
+Private heed rules each reserve a pair bucket and a weight entry.
+Private rules also reserve transient conflict-map space.
+This preflight count can exceed the final retained entry count.
+
+The base byte coefficients follow native heap measurements across dictionary, unique-publication, shared-rafsi, and private-scope shapes.
+The model doubles the base for a safety margin.
+The copied-key allowance counts the string copies used by the indexes and their temporary maps.
+It excludes body text and unrelated serialized record fields.
+Publications reserve their word, ID, assignment, language, and context-kind copies.
+Each trust or private rule reserves eight copies of its actor, subject, scope, and value strings.
+Private actor sizes use resolved continuity IDs.
+
+| Input count | Base bytes per entry |
+| --- | ---: |
+| Word buckets | 256 |
+| Publication IDs in word buckets | 64 |
+| Target buckets | 256 |
+| IDs in target buckets | 96 |
+| Judgment-count buckets | 192 |
+| Merged trust rules | 1,024 |
+| Scope buckets, both indexes | 256 |
+| Rule IDs in scope buckets | 16 |
+| Private pair buckets | 192 |
+| Private weights | 512 |
+| Private conflict rules, including temporary space | 1,536 |
+
+Let `I` be the sum of these counts and `K` be the copied-key byte allowance.
+The unit coefficient reserves eight operations per entry per tree level.
+The safety margin also doubles the key and operation terms.
+Units describe count-based work, rather than measured CPU seconds.
+
+```text
+setup_bytes = 2 * (sum(count * base_bytes) + K)
+setup_units = 2 * (8 * I * bit_length(I + 1) + K)
+```
+
+The measured dictionary has 269,350 structural records and 165,438,058 source bytes.
+Its indexes retain 64,033,159 requested heap bytes.
+The preflight envelope reserves 222,635,832 bytes and 204,442,264 units.
+The default budget also accommodates the 64 MiB graph envelope and 16 MiB metadata envelope.
+It leaves more than 95 million units for word preparation.
+The measurements do not guarantee capacity for every word or every future dictionary revision.
+
+The streaming source hash has independent limits, `source_bytes` and `source_millis`.
+Their defaults are 256 MiB and 30,000 elapsed milliseconds. Their ceilings are 1 GiB and 120,000 milliseconds.
+The measured native source walk takes about 0.75 CPU seconds and retains no source buffer.
+The writer measures bytes and consults a monotonic clock at most 256 KiB apart and after serialization.
+Native builds use `Instant`. Wasm builds use the host's `performance.now()`.
+The time limit stops cooperatively at writer boundaries. It does not preempt serialization between writes.
+A refused walk returns no partial binding and does not construct an index.
+The source length remains part of usage reporting, but it does not charge setup memory or preparation units.
+
 The state counts retained nodes, evaluation maps, nested judgments, and overlay entries as structural records.
-A preparation attempt starts with those setup units already charged.
+A preparation attempt starts with its setup units already charged.
 Discovery charges `1 + 8 * visited_publications`.
 
 Each context charges `1 + 4*T + 4*J + 24*(U+V) + 8*(Q+E+Z) + 32*O + 8*P2`.
@@ -91,3 +144,26 @@ Preparation returns target statuses and context metadata with execution and cont
 It does not return word scores, ranking layers, or numerical results.
 There is no result cache, job protocol, worker integration, or app capability.
 `rankWord` remains the synchronous exact operation and explicitly rejects `simple-routes-shun-f64-v1`.
+
+## Measure setup allocation
+
+The native measurement example uses a counting global allocator and process CPU counters.
+It reports requested live heap growth and peak heap growth around index construction.
+It excludes checkpoint restoration from those index measurements.
+It also reports counts by index kind, conservative input counts, and source-hash time and temporary allocation.
+The full process peak includes restoration and synthetic input construction.
+Allocator metadata and size-class rounding remain outside the requested-byte counter.
+The doubled admission envelope supplies additional margin for them.
+
+Use only independently authenticated host projections for these arguments.
+The example does not authenticate a checkpoint or its projected nodes.
+It never writes to its input files.
+
+```sh
+cargo run -p jvc-runtime --example ranking_setup_measurement --release --locked -- trusted-core.json trusted-nodes.ndjson
+```
+
+The example restores one dictionary and builds three synthetic shapes from its publication metadata.
+The synthetic shapes use unique words, shared rafsi assignments, and unique private scopes.
+Each run requires its actual index counts to fit the preflight counts.
+Each run also requires the default model to cover its measured peak heap and admit its setup.
