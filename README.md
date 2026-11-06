@@ -245,6 +245,9 @@ Owned Rust tasks retain their graph and numerical workspace between bounded call
 The Rust API returns approximate actor estimates, work counters, margin details, support and threshold decisions, and stable layers.
 It counts tiny propagated terms that it flushes to zero and keeps structural zeros separate from computed zeros.
 The existing evaluation session also supports [bounded float graph preparation](crates/jvc-runtime/README.md).
+It supports owned word-result slices, float decisions, optional reviewer details, and a bounded serialized word cache.
+Ready tickets retain their bytes for a fixed 60 seconds under the 32 MiB session budget.
+Fixed deadline markers survive evaluation-worker repair when the logical session owner retains the cache.
 Preparation shares its authenticated state, applies effective receipts and private overlays, and binds the selected policy without another input owner.
 It returns graph metadata only. The synchronous `rankWord` operation explicitly rejects the float profile.
 
@@ -503,7 +506,7 @@ The [development guide](docs/development.md#optional-ai-assistance) gives the co
 The status editor, transfer editor, wizard meaning search, and Lensisku cross-posting remain target features.
 The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID.
 A signed view names `simple-routes-bounds-v1`, `simple-routes-shun-v1`, or `simple-routes-shun-f64-v1` as its calculation profile.
-The float profile supports admission, row preparation, propagation, and decisions in Rust.
+The float profile supports admission, row preparation, propagation, decisions, and owned session word results in Rust.
 Its [current limits](#f64-profile-limits) describe synchronous calls and owned tasks.
 The pages name the profile of each supported result and its route rule. An unknown profile leaves scores unavailable.
 Site calculation metadata uses the digest of canonical JSON null for its absent overlay. An explicit empty overlay keeps its own digest.

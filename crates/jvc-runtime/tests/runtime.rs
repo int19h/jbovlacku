@@ -1511,3 +1511,6 @@ mod resolver_cases;
 
 #[path = "support/session_preparation.rs"]
 mod session_preparation;
+
+#[path = "support/word_results.rs"]
+mod word_results;

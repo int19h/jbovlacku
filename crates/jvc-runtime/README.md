@@ -89,5 +89,116 @@ Metadata encodings have their own byte limit, which does not limit source hashin
 
 Preparation returns target statuses and context metadata with execution and context bindings.
 It does not return word scores, ranking layers, or numerical results.
-There is no result cache, job protocol, worker integration, or app capability.
+Word results and their serialized cache are separate operations described below.
+There is no job protocol, worker integration, or app capability.
 `rankWord` remains the synchronous exact operation and explicitly rejects `simple-routes-shun-f64-v1`.
+
+## Owned word results
+
+`start_word_results` consumes the session's current prepared graphs.
+The request names the owner, descriptor binding, preparation identity, and unsigned `WordResultPolicy`.
+`word_result_policy_binding` hashes the normalized policy and numerical contracts before cache admission.
+The TypeScript function is `wordResultPolicyBinding`.
+A second active attempt returns `ranking_busy`.
+A valid preparation or policy replacement cancels the old numerical attempt.
+Invalid bindings and malformed policies leave it intact.
+
+`step_word_results` accepts 1 through 65,536 numerical operations per slice.
+Invalid steps fail before mutation.
+The attempt uses owned kernel tasks and the float decisions module.
+Only a complete upper calculation permits scores or comparisons.
+A completed upper calculation with incomplete route exploration still gives usable intervals.
+Definition layers report `layers_complete: false` when a definition lacks its required estimate.
+A missing rafsi estimate does not make definition layers incomplete.
+Rafsi decisions cover the requested word's pairs only.
+They do not select between different spellings or claim uniqueness across other words.
+Unresolved pairs retain their potential decisions without becoming eligible.
+
+Results include support, opposition, net intervals, comparison margins, definition layers, and unavailable reasons.
+Each score includes actual-positive, eligible-potential, and threshold decisions with their margins.
+Optional reviewer details include bounded incoming identities and explicit completeness fields.
+The result labels float intervals as numerically approximate and uncertified.
+Aggregate results omit reviewer lists.
+`reviewers: 0` requests empty lists and differs from an aggregate request.
+
+The default policy permits 10,000,000 numerical operations, 64 MiB of modeled memory, and 4 MiB of serialized output.
+It permits 128 targets, 8,192 candidate comparisons, 1,000,000 actor terms, and 4,096 reviewer entries.
+The reviewer limit defaults to absent and has a ceiling of 128 per target.
+Policy ceilings permit 100,000,000 operations, 256 MiB of memory, and 4,096 targets.
+They permit 1,000,000 comparisons, 10,000,000 actor terms, and 16,384 reviewer entries.
+The output ceiling stays at 4 MiB.
+All bounds are inclusive.
+Conservative preflight envelopes can refuse work before those actual counts reach their limits.
+The actor-term envelope also bounds score proofs and structural known-zero searches.
+
+Graph reservations charge 1,024 bytes per actor, 128 per edge, and 64 per refusal.
+The decision envelope charges 32 bytes per target-actor entry and 320 per reserved proof entry.
+The envelope also reserves twice its modeled serialized output for assembly and encoding.
+Kernel reservations separately charge owned tasks, pending stages, and retained graph outcomes.
+These coefficients bound admission models, not operating-system memory.
+
+Identical execution bindings share one graph outcome within an attempt.
+The reuse key includes the result policy binding.
+Progress reports actual numerical operations and `in_call_reuse` separately.
+Pending work appears in graph progress and contributes to the performed counters.
+`take_word_result` consumes the ready bytes exactly once.
+Cancellation, failures, session disposal, and successful serialization release graphs, pending stages, and numerical outcomes.
+Serialized ready bytes hold no graph lease.
+
+The TypeScript handle exposes `startWordResults`, `stepWordResults`, `wordResultProgress`, `takeWordResult`, and `cancelWordResults`.
+The caller drives slices explicitly.
+These methods create no scheduler, worker, job protocol, route, or app capability.
+`rankWord` keeps its exact-profile behavior.
+
+## Serialized word cache
+
+`WordResultCache` belongs to the logical session owner, outside a disposable evaluation worker.
+It retains only serialized results and fixed failures.
+Its complete identity requires snapshot, logical inventory, input, view, overlay, mode, build, contract, policy, algorithm, and logical session.
+The host supplies authenticated identities from its retained snapshot.
+Exact-profile diagnostic descriptor bindings alone do not identify that snapshot.
+The word and reviewer requirement also belong to each entry's key.
+Use `wordResultPolicyBinding` for the result policy component.
+`describeWordResults` keeps available evaluation evidence when descriptor admission fails.
+
+Call `bind` after any identity component changes.
+Body mapping and import selection changes must change the supplied snapshot or inventory identity.
+Personal overlay identities must include identity changes and the effective `public_shun_issuer`.
+Site mode requires a null overlay.
+A changed binding clears fixed failures, reservations, and unpinned old results.
+Promised pinned delivery survives invalidation.
+A repaired worker uses the same logical identity and preserves deadline failures.
+A fork uses a new logical session identity.
+
+Admission reserves output bytes, one consumer slot, and failure-marker capacity before numerical work starts.
+The cache permits 32 MiB of result bytes and reservations, with 4 MiB per result.
+It retains at most 16 unpinned entries for reuse.
+Live tickets can pin more entries under the 64-consumer ceiling.
+Pinned bytes count once per distinct result.
+Admission evicts only unpinned entries or returns `ranking_busy` with `retry_after: 1`.
+
+`complete` transfers ownership of a full `Uint8Array` buffer and detaches the caller's buffer.
+Each result expires 60 seconds after completion.
+All attached tickets share that fixed expiry.
+Reads return a delivery copy and never extend the expiry.
+Tickets retain their pins after reads until expiry or cancellation.
+The cache retains no evaluation-session reference.
+
+Fixed failures retain at most 128 markers and 1 MiB of metadata.
+Admission reserves 8,192 metadata bytes per pending marker.
+A full marker table refuses new uncached work while cached reads remain available.
+`deadline` records `resource_unavailable`, `limit: deadline`, and `retryable: false`.
+It also keeps the parent's `background_evaluation_running_at_expiry` observation.
+No deadline observer or worker repair loop exists in this step.
+The future parent controller supplies that observation and calls `deadline`.
+Cancellation releases reservations without creating a fixed failure.
+Disposal releases all retained bytes and metadata.
+A process restart loses this in-memory cache and its markers.
+
+## Setup measurement
+
+The `jvc-state` example `ranking_setup_size` measures a trusted checkpoint and projected node stream.
+Run it with a core-result JSON file and a node-per-line JSON file.
+It reports source bytes, structural records, setup bytes, and setup units against existing ceilings.
+It restores the checkpoint and streams its source without retaining a source serialization buffer.
+Measurement does not change runtime policy limits.
