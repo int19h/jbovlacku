@@ -53,21 +53,23 @@ fn verify_with_public_key(
     signature: &[u8; 64],
 ) -> Result<()> {
     // Dalek 2.2.0 raw_verify compares the supplied compressed R bytes with
-    // compress([S]B - [k]A), without cofactor multiplication. It also checks
-    // canonical S (legacy_compatibility is disabled). Since this key and B
-    // have prime order, success proves R's canonical encoding and membership
-    // in the prime-order subgroup, including the permitted identity R.
-    if public_key
-        .key
-        .verify(message, &Signature::from_bytes(signature))
-        .is_ok()
+    // compress([S]B - [k]A), without cofactor multiplication. The core gates
+    // success on canonical S independently of Dalek's dependency features.
+    // Since this key and B have prime order, success proves R's canonical
+    // encoding and subgroup membership, including the permitted identity R.
+    let scalar: [u8; 32] = signature[32..].try_into().unwrap();
+    let scalar_ok = bool::from(Scalar::from_canonical_bytes(scalar).is_some());
+    if scalar_ok
+        && public_key
+            .key
+            .verify(message, &Signature::from_bytes(signature))
+            .is_ok()
     {
         return Ok(());
     }
-    // Preserve the existing error precedence when the equation fails.
+    // Preserve the existing error precedence when the scalar gate or equation fails.
     point(signature[..32].try_into().unwrap(), false)?;
-    let scalar: [u8; 32] = signature[32..].try_into().unwrap();
-    if !bool::from(Scalar::from_canonical_bytes(scalar).is_some()) {
+    if !scalar_ok {
         return Err(crypto_error("signature scalar is not below L"));
     }
     Err(crypto_error("Ed25519 equation failed"))
@@ -269,6 +271,6 @@ mod profile_tests {
             );
             cases += 1;
         }
-        assert!(cases >= 35);
+        assert!(cases >= 37);
     }
 }

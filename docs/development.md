@@ -1273,6 +1273,7 @@ An `EnvelopeVerifier` caches public keys that pass the static prime-order profil
 Each verifier retains at most 1,024 keys in least-recently-used order.
 Two bounded B-trees store the keys and their access order. Access and eviction take logarithmic time.
 A cache miss still applies every key requirement. Failed key checks never enter the cache.
+Public point tests run on cache misses, including after eviction and in each fresh verifier.
 
 A larger first-keys-only cache still misses later popular keys. Eviction permits those keys to replace old entries.
 The limit bounds storage independently of the record count, without a process-wide key registry.
@@ -1283,10 +1284,13 @@ Full evaluation inputs, staged session builders, canonical JSONL imports, and ca
 Single-record entry points retain independent verifiers.
 
 Dalek 2.2.0 compares the supplied R bytes with the compressed point `[S]B - [k]A`.
-It rejects a noncanonical scalar S before that comparison and uses no cofactor multiplication.
+The core requires canonical S before it attempts that equation, independently of Dalek's dependency features.
+The equation uses no cofactor multiplication.
 A validated key A and the base point B have prime order. A successful byte comparison therefore proves the R profile too.
 Identity R remains valid when the equation holds.
-After a failed equation, the core applies the original R and S tests to preserve error precedence and messages.
+
+If the scalar gate or equation fails, the core tests R before it reports a scalar or equation error.
+This diagnostic path preserves the original error precedence and messages.
 See the pinned [verification source](https://github.com/dalek-cryptography/curve25519-dalek/blob/8016d6d9b9cdbaa681f24147e0b9377cc8cef934/ed25519-dalek/src/verifying.rs#L201-L217)
 and [point calculation](https://github.com/dalek-cryptography/curve25519-dalek/blob/8016d6d9b9cdbaa681f24147e0b9377cc8cef934/ed25519-dalek/src/verifying.rs#L548-L555).
 

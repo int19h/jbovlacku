@@ -1386,12 +1386,49 @@ mod state_output_tests {
         assert_eq!(input.events.len(), 12);
         assert_eq!(verifier.public_key_checks(), 2);
         let mut bad: Value = serde_json::from_str(wire["events"][11].as_str().unwrap()).unwrap();
-        bad["signature"] = json!("AAAA");
+        // Re-encode the decoded SSHSIG without adding a test dependency.
+        let encode = |bytes: &[u8]| {
+            const ALPHABET: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            bytes
+                .chunks(3)
+                .flat_map(|chunk| {
+                    let a = chunk[0];
+                    let b = chunk.get(1).copied().unwrap_or(0);
+                    let c = chunk.get(2).copied().unwrap_or(0);
+                    [
+                        ALPHABET[(a >> 2) as usize],
+                        ALPHABET[(((a & 3) << 4) | (b >> 4)) as usize],
+                        if chunk.len() > 1 {
+                            ALPHABET[(((b & 15) << 2) | (c >> 6)) as usize]
+                        } else {
+                            b'='
+                        },
+                        if chunk.len() > 2 {
+                            ALPHABET[(c & 63) as usize]
+                        } else {
+                            b'='
+                        },
+                    ]
+                })
+                .map(char::from)
+                .collect::<String>()
+        };
+        let mut signature = input.events[11].signature_bytes().to_vec();
+        assert_eq!(encode(&signature), bad["signature"].as_str().unwrap());
+        let end = signature.len();
+        let scalar = &mut signature[end - 32..];
+        let was_zero = scalar.iter().all(|byte| *byte == 0);
+        scalar.fill(0);
+        if was_zero {
+            scalar[0] = 1;
+        }
+        bad["signature"] = json!(encode(&signature));
         wire["events"][11] = json!(serde_json::to_string(&bad).unwrap());
         let error =
             evaluation_input_with_verifier(&serde_json::to_vec(&wire).unwrap(), &mut verifier)
                 .unwrap_err();
-        assert_eq!(error.code, "signature");
+        assert_eq!(error, Error::new("signature", "Ed25519 equation failed"));
         assert_eq!(verifier.public_key_checks(), 2);
     }
 
