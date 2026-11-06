@@ -61,14 +61,10 @@ fn run(session: &EvaluationSession, request: &WordResultRequest, step: u64) -> V
     }
     panic!("word did not terminate")
 }
-fn normalize(mut value: Value) -> Value {
-    value["progress"].as_object_mut().unwrap().remove("token");
-    value
-}
 fn export(f: &Fixture, name: &str, policy: &WordResultPolicy, result: &Value) {
     if let Ok(dir) = std::env::var("JVC_WORD_RESULT_PARITY_DIR") {
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(std::path::Path::new(&dir).join(format!("{name}.json")),serde_json::to_vec(&json!({"input":String::from_utf8(f.bytes()).unwrap(),"word":f.word,"policy":policy,"expected":normalize(result.clone())})).unwrap()).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join(format!("{name}.json")),serde_json::to_vec(&json!({"input":String::from_utf8(f.bytes()).unwrap(),"word":f.word,"policy":policy,"expected":result})).unwrap()).unwrap();
     }
 }
 #[test]
@@ -80,6 +76,7 @@ fn owned_word_scores_layers_comparisons_and_reviewer_details() {
     assert_eq!(aggregate["layers_complete"], true);
     assert_eq!(aggregate["numerically_approximate"], true);
     assert_eq!(aggregate["certified"], false);
+    assert!(aggregate["progress"].get("token").is_none());
     assert_eq!(aggregate["scores"].as_array().unwrap().len(), 2);
     assert!(aggregate["scores"][0].get("reviewers").is_none());
     assert_eq!(aggregate["comparisons"].as_array().unwrap().len(), 1);
@@ -207,6 +204,10 @@ fn deterministic_caps_refuse_before_retaining_native_results() {
             "{limit}"
         );
         assert_eq!(s.word_result_progress().unwrap(), "null");
+        // A valid but refused start leaves the same prepared graphs available.
+        r.policy = WordResultPolicy::default();
+        let result = run(&s, &r, 4096);
+        assert_eq!(result["scores"].as_array().unwrap().len(), 2);
     }
 }
 #[test]

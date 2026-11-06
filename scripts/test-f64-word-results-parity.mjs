@@ -9,10 +9,6 @@ const generated = resolve("packages/core/generated");
 const wasm = await import(pathToFileURL(resolve(generated, "jvc_runtime.js")));
 wasm.initSync({ module: await readFile(resolve(generated, "jvc_runtime_bg.wasm")) });
 const utf8 = (v) => new TextEncoder().encode(JSON.stringify(v));
-const normalize = (v) => {
-  delete v.progress.token;
-  return v;
-};
 const files = (await readdir(directory)).filter((f) => f.endsWith(".json")).sort();
 assert.equal(files.length, 10, "Generate every native word-result case.");
 let comparisons = 0;
@@ -53,7 +49,8 @@ for (const file of files) {
         }
         assert.equal(progress.phase, "ready", file);
         const bytes = session.take_word_result(start.token);
-        const result = normalize(JSON.parse(new TextDecoder().decode(bytes)));
+        const result = JSON.parse(new TextDecoder().decode(bytes));
+        assert.equal(result.progress.token, undefined);
         assert.deepEqual(result, row.expected, `${file}, step ${step}`);
         assert.throws(() => session.take_word_result(start.token), /ranking_result/);
         assert.equal(session.word_result_progress(), "null");

@@ -5,7 +5,7 @@ use a::decisions as d;
 use jvc_rank::{Candidate, Eligibility, Limits, Verdict, approximate as a};
 use std::sync::{Arc, Mutex};
 
-pub const WORD_RESULT_CONTRACT: &str = "jvc-f64-word-results-v1";
+pub const WORD_RESULT_CONTRACT: &str = "jvc-f64-word-results-v2";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WordResultPolicy {
@@ -159,6 +159,14 @@ impl a::AllocationAccount for Memory {
         *self.live.lock().unwrap() -= Self::bytes(c).unwrap();
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DecisionPoint {
+    Context(usize),
+    Score(usize),
+    Comparison(usize, usize),
+    Unresolved(usize),
+    Layers,
+}
 pub(crate) struct WordAttempt {
     token: String,
     binding: String,
@@ -185,14 +193,17 @@ pub(crate) struct WordAttempt {
     phase: &'static str,
     error: Option<Error>,
     ready: Option<Vec<u8>>,
+    #[cfg(test)]
+    decision_fault: Option<DecisionPoint>,
 }
 impl WordAttempt {
     fn new(
-        mut prepared: PreparedRanking,
+        slot: &mut Option<PreparedRanking>,
         parameters: &PreparationParameters,
         policy: WordResultPolicy,
         imported: std::collections::BTreeSet<String>,
     ) -> Result<Self> {
+        let prepared = slot.as_ref().unwrap();
         let policy_binding = word_result_policy_binding_native(&policy)?;
         let token = prepared.summary.preparation_id.clone();
         let mut groups = Vec::new();
@@ -207,9 +218,6 @@ impl WordAttempt {
                         groups.len() - 1
                     })
             });
-            if group.is_some_and(|g| groups[g] != i) {
-                prepared.contexts[i].graph.take();
-            }
             mapping.push(group);
         }
         let n = prepared.summary.targets.len();
@@ -221,19 +229,16 @@ impl WordAttempt {
             .map(|c| c.actors)
             .max()
             .unwrap_or(0);
-        let edges = prepared
-            .summary
-            .contexts
-            .iter()
-            .map(|c| c.edges)
-            .max()
-            .unwrap_or(0);
         let reviewers = checked(n, policy.reviewers.unwrap_or(0).min(actors))?;
         let mut visits = 0;
         let mut graph_bytes = 0;
+        let mut incoming_edges = 0;
         for i in &groups {
             let graph = prepared.contexts[*i].graph.as_ref().unwrap();
             let e = graph.rows.iter().map(Vec::len).sum::<usize>();
+            if policy.reviewers.is_some_and(|n| n > 0) {
+                incoming_edges = total(incoming_edges, e)?;
+            }
             let r = graph.refusals.iter().map(Vec::len).sum::<usize>();
             visits = total(visits, total(graph.actors.len(), total(e, r)?)?)?;
             graph_bytes = total(
@@ -246,7 +251,7 @@ impl WordAttempt {
         }
         let terms = total(
             total(checked(n, actors)?, checked(checked(pairs, actors)?, 6)?)?,
-            total(checked(visits, 4)?, checked(reviewers, edges)?)?,
+            total(checked(visits, 4)?, incoming_edges)?,
         )?;
         let proof_terms = if actors == 0 {
             0
@@ -316,6 +321,13 @@ impl WordAttempt {
                 65536,
             )?,
         );
+        // Transfer only after every fallible preflight operation succeeds.
+        let mut prepared = slot.take().unwrap();
+        for (i, group) in mapping.iter().enumerate() {
+            if group.is_some_and(|g| groups[g] != i) {
+                prepared.contexts[i].graph.take();
+            }
+        }
         let count = groups.len();
         Ok(Self {
             token,
@@ -347,6 +359,8 @@ impl WordAttempt {
             phase: "running",
             error: None,
             ready: None,
+            #[cfg(test)]
+            decision_fault: None,
         })
     }
     fn drop_work(&mut self) {
@@ -456,6 +470,17 @@ impl WordAttempt {
         }
         Ok(self.snapshot())
     }
+    fn decide<T>(
+        &self,
+        _point: DecisionPoint,
+        result: std::result::Result<T, a::PreparationError>,
+    ) -> Result<T> {
+        #[cfg(test)]
+        if self.decision_fault == Some(_point) {
+            return Err(Error::new("numeric_unavailable", "injected decision fault"));
+        }
+        result.map_err(numeric)
+    }
     fn finish(&self) -> Result<Value> {
         let p = self.prepared.as_ref().unwrap();
         let limits = Limits {
@@ -470,22 +495,30 @@ impl WordAttempt {
             score_limits.max_visited_actor_entries.min(self.proof_terms);
         score_limits.max_refusal_tests =
             score_limits.max_refusal_tests.min(self.proof_terms as u64);
+        let mut context_causes = vec![None; self.groups.len()];
         let contexts: Vec<_> = self
             .groups
             .iter()
             .enumerate()
             .map(|(g, c)| match &self.rankings[g] {
-                Some(r) => d::DecisionContext::new(
-                    p.contexts[*c].graph.as_ref().unwrap(),
-                    &self.parameters,
-                    r.ranking(),
-                    &limits,
-                )
-                .map(Some)
-                .map_err(numeric),
-                None => Ok(None),
+                Some(r) => match self.decide(
+                    DecisionPoint::Context(g),
+                    d::DecisionContext::new(
+                        p.contexts[*c].graph.as_ref().unwrap(),
+                        &self.parameters,
+                        r.ranking(),
+                        &limits,
+                    ),
+                ) {
+                    Ok(context) => Some(context),
+                    Err(e) => {
+                        context_causes[g] = Some(e.to_string());
+                        None
+                    }
+                },
+                None => None,
             })
-            .collect::<Result<_>>()?;
+            .collect();
         let candidates: Vec<_> = p
             .summary
             .targets
@@ -539,22 +572,72 @@ impl WordAttempt {
                     .and_then(|i| contexts[i].as_ref()),
             })
             .collect();
-        let scores: Vec<_> = entries
+        let mut target_causes: Vec<_> = p
+            .summary
+            .targets
             .iter()
-            .map(|e| {
-                match e
-                    .context
-                    .filter(|_| e.candidate.eligibility == Eligibility::Eligible)
-                {
-                    Some(c) => d::score(c, e.candidate, &score_limits)
-                        .map(Some)
-                        .map_err(numeric),
-                    None => Ok(None),
-                }
+            .map(|t| {
+                t.context
+                    .and_then(|c| self.mapping[c])
+                    .and_then(|g| context_causes[g].clone())
             })
-            .collect::<Result<_>>()?;
+            .collect();
+        let mut scores = Vec::new();
+        let mut decisions = Vec::new();
+        for (i, e) in entries.iter().enumerate() {
+            let result = e
+                .context
+                .filter(|_| e.candidate.eligibility == Eligibility::Eligible)
+                .map(|c| {
+                    self.decide(
+                        DecisionPoint::Score(i),
+                        d::score(c, e.candidate, &score_limits).and_then(|s| {
+                            let actual = d::actual_positive_support(Some(&s))?;
+                            let potential = d::eligible_competitor_potential(Some(&s))?;
+                            let threshold = d::meets_threshold(Some(&s), &self.threshold)?;
+                            Ok((s, (actual, potential, threshold)))
+                        }),
+                    )
+                });
+            match result {
+                Some(Ok((score, decision))) => {
+                    scores.push(Some(score));
+                    decisions.push(Some(decision));
+                }
+                other => {
+                    if let Some(Err(e)) = other {
+                        target_causes[i] = Some(e.to_string());
+                    }
+                    scores.push(None);
+                    decisions.push(None);
+                }
+            }
+        }
+        // One bounded incoming index per computed graph serves every target.
+        let incoming: Vec<Vec<(Vec<usize>, usize)>> = self
+            .groups
+            .iter()
+            .enumerate()
+            .map(|(g, c)| {
+                if self.rankings[g].is_none() || !self.policy.reviewers.is_some_and(|n| n > 0) {
+                    return Vec::new();
+                }
+                let graph = p.contexts[*c].graph.as_ref().unwrap();
+                let mut index = vec![(Vec::new(), 0); graph.actors.len()];
+                for (from, row) in graph.rows.iter().enumerate() {
+                    for edge in row {
+                        let (sources, count) = &mut index[edge.to];
+                        *count += 1;
+                        if sources.len() < 16 {
+                            sources.push(from);
+                        }
+                    }
+                }
+                index
+            })
+            .collect();
         let mut output = Vec::new();
-        let mut unavailable = Vec::new();
+        let mut unavailable = BTreeMap::<String, std::collections::BTreeSet<String>>::new();
         let mut inactive = Vec::new();
         for (i, (t, s)) in p.summary.targets.iter().zip(&scores).enumerate() {
             let Some(s) = s else {
@@ -569,15 +652,16 @@ impl WordAttempt {
                         reasons.insert(cause);
                     }
                 }
+                if let Some(cause) = &target_causes[i] {
+                    reasons.insert(cause.clone());
+                }
                 if reasons.is_empty() {
                     reasons.insert("context_unavailable".into());
                 }
-                unavailable.push(json!({"target":t.id,"reasons":reasons}));
+                unavailable.insert(t.id.clone(), reasons);
                 continue;
             };
-            let actual = d::actual_positive_support(Some(s)).map_err(numeric)?;
-            let potential = d::eligible_competitor_potential(Some(s)).map_err(numeric)?;
-            let threshold = d::meets_threshold(Some(s), &self.threshold).map_err(numeric)?;
+            let (actual, potential, threshold) = decisions[i].as_ref().unwrap();
             let mut value = json!({"target":t.id,"status":t.status,"support":interval(s.support),"opposition":interval(s.opposition),"net":interval(s.net),
                 "direct_reviewers":s.direct_reviewers(),"structural_known_zero":s.structural_known_zero(),
                 "actual_positive_support":match actual.status { d::ActualSupport::Positive=>"positive",d::ActualSupport::NotEstablished=>"not_established",d::ActualSupport::Unavailable=>"unavailable" },"eligible_potential":match potential.status { d::Potential::Nonpositive=>"nonpositive",d::Potential::Possible=>"possible",d::Potential::Unavailable=>"unavailable" },"threshold":match threshold.status { d::Threshold::Accepted=>"accepted",d::Threshold::NotEstablished=>"not_established",d::Threshold::Unavailable=>"unavailable" },"actual_positive_margin":actual.margin.as_ref().map(margin),"eligible_potential_margin":potential.margin.as_ref().map(margin),"threshold_margin":threshold.margin.as_ref().map(margin)});
@@ -594,34 +678,82 @@ impl WordAttempt {
                     .filter(|(_, v)| **v != Verdict::Absent)
                     .take(max)
                 {
-                    let mut incoming = Vec::new();
-                    let mut count = 0;
-                    for (from, row) in graph.rows.iter().enumerate() {
-                        for edge in row {
-                            if edge.to == actor {
-                                count += 1;
-                                if incoming.len() < 16 {
-                                    incoming.push(&graph.actors[from]);
-                                }
-                            }
-                        }
-                    }
+                    let (sources, count) = &incoming[g][actor];
+                    let incoming: Vec<_> =
+                        sources.iter().map(|from| &graph.actors[*from]).collect();
                     details.push(json!({"identity":graph.actors[actor],"verdict":match verdict { Verdict::Bless=>"bless",Verdict::Curse=>"curse",Verdict::Absent=>"absent" },"weight":interval(r.weights[actor]),"root":graph.q[actor],
                         "blocked":p.contexts[c].blocked.contains(&actor),"public_shun_block":p.contexts[c].public_shun_blocked.contains(&actor),"private_block":p.contexts[c].private_blocked.contains(&actor),
-                        "incoming":incoming,"incoming_count":count,"incoming_complete":count<=16}));
+                        "incoming":incoming,"incoming_count":count,"incoming_complete":*count<=16}));
                 }
                 value["reviewers_complete"] = json!(details.len() == s.direct_reviewers());
                 value["reviewers"] = json!(details);
             }
             output.push(value);
         }
+        let mut comparisons = Vec::new();
+        let mut unavailable_comparisons = Vec::new();
+        let mut unordered = std::collections::BTreeSet::new();
+        for i in 0..entries.len() {
+            for j in i + 1..entries.len() {
+                if !p.summary.targets[i].definition || !p.summary.targets[j].definition {
+                    continue;
+                }
+                let (Some(a), Some(b)) = (&scores[i], &scores[j]) else {
+                    continue;
+                };
+                let same = p.summary.targets[i].context.and_then(|c| self.mapping[c])
+                    == p.summary.targets[j].context.and_then(|c| self.mapping[c]);
+                let comparison = if same {
+                    d::difference(
+                        &candidates[i],
+                        &candidates[j],
+                        entries[i].context.unwrap(),
+                        &limits,
+                    )
+                } else {
+                    d::separate_difference(a, b)
+                };
+                let c = match self.decide(DecisionPoint::Comparison(i, j), comparison) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        unordered.insert(i);
+                        unordered.insert(j);
+                        unavailable_comparisons.push(json!({"a":candidates[i].id,"b":candidates[j].id,"reasons":[e.to_string()]}));
+                        continue;
+                    }
+                };
+                comparisons.push(json!({"a":candidates[i].id,"b":candidates[j].id,"difference":interval(c.difference),"margin":margin(&c.margin),"a_leads":c.a_leads(),"b_leads":c.b_leads()}));
+            }
+        }
         let definitions: Vec<_> = entries
             .iter()
-            .zip(&p.summary.targets)
-            .filter(|(_, t)| t.definition)
-            .map(|(e, _)| *e)
+            .enumerate()
+            .filter(|(i, _)| p.summary.targets[*i].definition)
+            .map(|(i, e)| d::LayerCandidate {
+                candidate: e.candidate,
+                context: if scores[i].is_some() && !unordered.contains(&i) {
+                    e.context
+                } else {
+                    None
+                },
+            })
             .collect();
-        let mut layers = d::nondominated_layers(&definitions, &limits).map_err(numeric)?;
+        let mut ordering_error = None;
+        let mut layers = match self.decide(
+            DecisionPoint::Layers,
+            d::nondominated_layers(&definitions, &limits),
+        ) {
+            Ok(layers) => layers,
+            Err(e) => {
+                ordering_error = Some(e.to_string());
+                d::Layers {
+                    layers: Vec::new(),
+                    comparison_cycle: false,
+                    incomplete: true,
+                    unavailable: definitions.iter().map(|e| e.candidate.id.clone()).collect(),
+                }
+            }
+        };
         let presentation: Vec<_> = p
             .summary
             .targets
@@ -641,56 +773,40 @@ impl WordAttempt {
             })
             .collect();
         if !layers.incomplete {
-            d::order_unjudged(&mut layers, &presentation).map_err(numeric)?;
-        }
-        let mut comparisons = Vec::new();
-        for i in 0..entries.len() {
-            for j in i + 1..entries.len() {
-                if !p.summary.targets[i].definition || !p.summary.targets[j].definition {
-                    continue;
-                }
-                let (Some(a), Some(b)) = (&scores[i], &scores[j]) else {
-                    continue;
-                };
-                let same = p.summary.targets[i].context.and_then(|c| self.mapping[c])
-                    == p.summary.targets[j].context.and_then(|c| self.mapping[c]);
-                let c = if same {
-                    d::difference(
-                        &candidates[i],
-                        &candidates[j],
-                        entries[i].context.unwrap(),
-                        &limits,
-                    )
-                } else {
-                    d::separate_difference(a, b)
-                }
-                .map_err(numeric)?;
-                comparisons.push(json!({"a":candidates[i].id,"b":candidates[j].id,"difference":interval(c.difference),"margin":margin(&c.margin),"a_leads":c.a_leads(),"b_leads":c.b_leads()}));
+            if let Err(e) = d::order_unjudged(&mut layers, &presentation) {
+                ordering_error = Some(numeric(e).to_string());
+                layers.incomplete = true;
+                layers.layers.clear();
             }
         }
-        let unresolved = p
+        let mut unresolved_wire = Vec::new();
+        for (i, t) in p
             .summary
             .targets
             .iter()
             .enumerate()
             .filter(|(_, t)| !t.definition && t.status == "unavailable")
-            .map(|(i, _)| {
-                d::unresolved_pair_potential(
-                    entries[i].context,
-                    Some(&candidates[i].verdicts),
-                    &score_limits,
-                )
-                .map_err(numeric)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let unresolved_wire:Vec<_>=p.summary.targets.iter().filter(|t|!t.definition && t.status=="unavailable").zip(&unresolved)
-            .map(|(t,d)|json!({"target":t.id,"potential":match d.status { d::Potential::Possible=>"possible",d::Potential::Nonpositive=>"nonpositive",d::Potential::Unavailable=>"unavailable" },"margin":d.margin.as_ref().map(margin)})).collect();
+        {
+            match self.decide(DecisionPoint::Unresolved(i),d::unresolved_pair_potential(entries[i].context,Some(&candidates[i].verdicts),&score_limits)) {
+                Ok(d)=>unresolved_wire.push(json!({"target":t.id,"potential":match d.status {d::Potential::Possible=>"possible",d::Potential::Nonpositive=>"nonpositive",d::Potential::Unavailable=>"unavailable"},"margin":d.margin.as_ref().map(margin)})),
+                Err(e)=> {
+                    unavailable.entry(t.id.clone()).or_default().insert(e.to_string());
+                    unresolved_wire.push(json!({"target":t.id,"potential":"unavailable","margin":null}));
+                }
+            }
+        }
+        let unavailable: Vec<_> = unavailable
+            .into_iter()
+            .map(|(target, reasons)| json!({"target":target,"reasons":reasons}))
+            .collect();
+        let mut result_progress = self.snapshot();
+        result_progress.as_object_mut().unwrap().remove("token");
         Ok(
             json!({"version":1,"contract":WORD_RESULT_CONTRACT,"binding":self.binding,"preparation_binding":p.summary.binding,"result_policy_binding":self.policy_binding,
             "word":p.summary.word,"algorithm":a::ALGORITHM,"numerically_approximate":true,"certified":false,
             "scores":output,"comparisons":comparisons,"layers":layers.layers,"layers_complete":!layers.incomplete,
-            "comparison_cycle":layers.comparison_cycle,"inactive_targets":inactive,"unavailable_scores":unavailable,"partial":!unavailable.is_empty(),
-            "rafsi_scope":"requested_word","unresolved_rafsi":unresolved_wire,"progress":self.snapshot()}),
+            "comparison_cycle":layers.comparison_cycle,"inactive_targets":inactive,"unavailable_scores":unavailable,"partial":!unavailable.is_empty() || !unavailable_comparisons.is_empty() || ordering_error.is_some(),"unavailable_comparisons":unavailable_comparisons,"unavailable_ordering":ordering_error,
+            "rafsi_scope":"requested_word","unresolved_rafsi":unresolved_wire,"progress":result_progress}),
         )
     }
 }
@@ -737,7 +853,7 @@ impl EvaluationSession {
             .map(|t| t.id.clone())
             .collect();
         let attempt = WordAttempt::new(
-            state.prepared.take().unwrap(),
+            &mut state.prepared,
             parameters,
             request.policy.clone(),
             imported,
@@ -842,7 +958,7 @@ mod release_tests {
             public_shun_blocked: BTreeSet::new(),
             private_blocked: BTreeSet::new(),
         };
-        let prepared = PreparedRanking {
+        let mut prepared = PreparedRanking {
             contexts: vec![context],
             summary: RankingPreparationSummary {
                 owner_session: "owner".into(),
@@ -875,6 +991,33 @@ mod release_tests {
                 usage: Default::default(),
             },
         };
+        let second = crate::ranking_preparation::PreparedContext {
+            graph: prepared.contexts[0].graph.clone(),
+            judgments: BTreeMap::new(),
+            blocked: BTreeSet::new(),
+            public_shun_blocked: BTreeSet::new(),
+            private_blocked: BTreeSet::new(),
+        };
+        prepared.contexts.push(second);
+        let mut context = prepared.summary.contexts[0].clone();
+        context.execution_binding = Some("second-graph".into());
+        context.context.kind = "rafsi".into();
+        context.context.language = None;
+        prepared.summary.contexts.push(context);
+        for (id, definition, eligible, status, c) in [
+            ("second-definition", true, true, "active", 0),
+            ("rafsi", false, true, "active", 1),
+            ("unresolved", false, false, "unavailable", 1),
+        ] {
+            prepared.summary.targets.push(PreparationTarget {
+                id: id.into(),
+                context: Some(c),
+                status: status.into(),
+                definition,
+                eligible,
+                reasons: BTreeSet::new(),
+            });
+        }
         let parameter = |numerator: &str, denominator: &str, v: f64| FloatParameter {
             numerator: numerator.into(),
             denominator: denominator.into(),
@@ -888,7 +1031,7 @@ mod release_tests {
         };
         (
             WordAttempt::new(
-                prepared,
+                &mut Some(prepared),
                 &parameters,
                 WordResultPolicy::default(),
                 BTreeSet::new(),
@@ -896,6 +1039,118 @@ mod release_tests {
             .unwrap(),
             weak,
         )
+    }
+    #[test]
+    fn reviewer_index_admits_a_graph_that_repeated_edge_scans_refused() {
+        let (mut original, _) = attempt();
+        let mut prepared = original.prepared.take().unwrap();
+        drop(original);
+        let actors: Vec<_> = (0..101).map(|i| format!("actor-{i:03}")).collect();
+        let rows: Vec<_> = (0..101)
+            .map(|from| {
+                (0..101)
+                    .filter(|to| *to != from)
+                    .map(|to| a::Edge { to, share: 0.01 })
+                    .collect()
+            })
+            .collect();
+        let mut q = vec![0.0; 101];
+        q[0] = 1.0;
+        let graph = Arc::new(
+            a::Graph::new(
+                actors.clone(),
+                q,
+                rows,
+                vec![vec![]; 101],
+                &Limits::default(),
+            )
+            .unwrap(),
+        );
+        prepared.contexts.truncate(1);
+        prepared.contexts[0].graph = Some(graph);
+        prepared.summary.contexts.truncate(1);
+        prepared.summary.contexts[0].actors = 101;
+        prepared.summary.contexts[0].edges = 10100;
+        let template = prepared.summary.targets[0].clone();
+        prepared.summary.targets = (0..10)
+            .map(|i| PreparationTarget {
+                id: format!("target-{i:02}"),
+                ..template.clone()
+            })
+            .collect();
+        for target in &prepared.summary.targets {
+            prepared.contexts[0].judgments.insert(
+                target.id.clone(),
+                actors
+                    .iter()
+                    .take(16)
+                    .map(|id| (id.clone(), jvc_state::Judgment::Bless))
+                    .collect(),
+            );
+        }
+        let parameter = |numerator: &str, denominator: &str, v: f64| FloatParameter {
+            numerator: numerator.into(),
+            denominator: denominator.into(),
+            bits: format!("{:016x}", v.to_bits()),
+        };
+        let parameters = PreparationParameters {
+            h: parameter("3", "1", 3.0),
+            alpha: parameter("1", "2", 0.5),
+            threshold: parameter("1", "1", 1.0),
+            work: 1000,
+        };
+        let policy = WordResultPolicy {
+            reviewers: Some(16),
+            ..Default::default()
+        };
+        assert!(10 * 16 * 10100 > policy.actor_terms);
+        let word =
+            WordAttempt::new(&mut Some(prepared), &parameters, policy, BTreeSet::new()).unwrap();
+        assert_eq!(word.phase, "running");
+    }
+    #[test]
+    fn local_decision_faults_keep_other_completed_results() {
+        for point in [
+            DecisionPoint::Context(1),
+            DecisionPoint::Score(2),
+            DecisionPoint::Unresolved(3),
+            DecisionPoint::Score(0),
+            DecisionPoint::Comparison(0, 1),
+            DecisionPoint::Layers,
+        ] {
+            let (mut attempt, weak) = attempt();
+            attempt.decision_fault = Some(point);
+            let memory = attempt.memory.clone();
+            while attempt.phase == "running" {
+                attempt.step(4096).unwrap();
+            }
+            assert_eq!(attempt.phase, "ready");
+            let result: Value = serde_json::from_slice(attempt.ready.as_ref().unwrap()).unwrap();
+            assert_eq!(result["partial"], true);
+            assert!(
+                result["scores"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s["target"] == "second-definition")
+            );
+            assert!(result["progress"].get("token").is_none());
+            if matches!(
+                point,
+                DecisionPoint::Context(1) | DecisionPoint::Score(2) | DecisionPoint::Unresolved(3)
+            ) {
+                assert_eq!(result["layers_complete"], true);
+            } else {
+                assert_eq!(result["layers_complete"], false);
+            }
+            assert!(
+                String::from_utf8(attempt.ready.take().unwrap())
+                    .unwrap()
+                    .contains("injected decision fault")
+            );
+            assert!(weak.upgrade().is_none());
+            assert_eq!(*memory.live.lock().unwrap(), 0);
+        }
     }
     #[test]
     fn ready_fault_cancel_and_disposal_release_all_native_graphs_and_leases() {

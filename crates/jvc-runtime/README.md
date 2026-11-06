@@ -95,7 +95,9 @@ There is no job protocol, worker integration, or app capability.
 
 ## Owned word results
 
-`start_word_results` consumes the session's current prepared graphs.
+`start_word_results` consumes the session's current prepared graphs after preflight admission.
+A valid but refused start leaves those graphs and their preparation identity unchanged.
+The caller can retry that same preparation with a corrected result policy.
 The request names the owner, descriptor binding, preparation identity, and unsigned `WordResultPolicy`.
 `word_result_policy_binding` hashes the normalized policy and numerical contracts before cache admission.
 The TypeScript function is `wordResultPolicyBinding`.
@@ -155,11 +157,14 @@ These methods create no scheduler, worker, job protocol, route, or app capabilit
 
 `WordResultCache` belongs to the logical session owner, outside a disposable evaluation worker.
 It retains only serialized results and fixed failures.
-Its complete identity requires snapshot, logical inventory, input, view, overlay, mode, build, contract, policy, algorithm, and logical session.
+Its complete identity requires snapshot, logical inventory, input, view, overlay, mode, build, contract, algorithm, and logical session.
 The host supplies authenticated identities from its retained snapshot.
 Exact-profile diagnostic descriptor bindings alone do not identify that snapshot.
-The word and reviewer requirement also belong to each entry's key.
-Use `wordResultPolicyBinding` for the result policy component.
+The complete normalized result policy belongs to each word key, including its reviewer requirement and output limit.
+`reserve(word, policy, now)` derives that digest and reservation from one serialized policy value.
+Aggregate and reviewer requests share one budget without clearing each other's results or failure markers.
+Initialize the shared core before using policy normalization or cache admission.
+`wordResultPolicyBinding` exposes the same normalized digest.
 `describeWordResults` keeps available evaluation evidence when descriptor admission fails.
 
 Supply monotonic milliseconds to cache operations that accept a clock value.
@@ -172,14 +177,19 @@ Promised pinned delivery survives invalidation.
 A repaired worker uses the same logical identity and preserves deadline failures.
 A fork uses a new logical session identity.
 
-Admission reserves output bytes, one consumer slot, and failure-marker capacity before numerical work starts.
+Admission reserves the policy output limit, one consumer slot, and failure-marker capacity before numerical work starts.
 The cache permits 32 MiB of result bytes and reservations, with 4 MiB per result.
 It retains at most 16 unpinned entries for reuse.
 Live tickets can pin more entries under the 64-consumer ceiling.
 Pinned bytes count once per distinct result.
-Admission evicts only unpinned entries or returns `ranking_busy` with `retry_after: 1`.
+Admission decides whether all required capacity exists before it evicts any reusable entry.
+It evicts only unpinned entries.
+Transient reservation and consumer pressure returns `ranking_busy` with `retry_after: 1`.
+Pinned-byte pressure reports seconds until the earliest fixed pinned expiry.
 
-`complete` transfers ownership of a full `Uint8Array` buffer and detaches the caller's buffer.
+`complete` returns a ready ticket after it transfers a full `Uint8Array` buffer and detaches the caller's buffer.
+An output larger than the reserved policy limit returns a frozen retryable `output_bytes` failure and releases the reservation.
+That transfer refusal creates no permanent failure marker.
 Each result expires 60 seconds after completion.
 All attached tickets share that fixed expiry.
 Reads return a delivery copy and never extend the expiry.
@@ -188,9 +198,13 @@ The cache retains no evaluation-session reference.
 
 Fixed failures retain at most 128 markers and 1 MiB of metadata.
 Admission reserves 8,192 metadata bytes per pending marker.
-A full marker table refuses new uncached work while cached reads remain available.
+Permanent marker saturation returns `markers_full` without a retry hint.
+In-flight marker reservations cause transient `ranking_busy` refusals.
+Cached successes and failures remain readable in both cases.
 `deadline` records `resource_unavailable`, `limit: deadline`, and `retryable: false`.
 It also keeps the parent's `background_evaluation_running_at_expiry` observation.
+Every deadline marker requires that boolean.
+Other failure markers reject that field.
 No deadline observer or worker repair loop exists in this step.
 The future parent controller supplies that observation and calls `deadline`.
 Cancellation releases reservations without creating a fixed failure.
@@ -204,3 +218,37 @@ Run it with a core-result JSON file and a node-per-line JSON file.
 It reports source bytes, structural records, setup bytes, and setup units against existing ceilings.
 It restores the checkpoint and streams its source without retaining a source serialization buffer.
 Measurement does not change runtime policy limits.
+
+## Partial decisions and remaining limits
+
+The result contract is `jvc-f64-word-results-v2`.
+Serialized result progress omits the physical session token.
+Step and progress replies retain that token for native attempt control.
+Fresh, forked, and restored results compare without removing any provenance field.
+
+A context or target decision failure keeps healthy contexts and scores available.
+Its target retains the cause in `unavailable_scores`.
+A failed comparison appears in `unavailable_comparisons`, and its candidates leave the complete ordering subset.
+An ordering failure sets `unavailable_ordering` and leaves scores and successful comparisons intact.
+These ordering gaps make `layers_complete` false and the result partial.
+A rafsi-only decision error does not make definition layers incomplete.
+Whole-word encoding failures still release all work and fail the attempt.
+
+Reviewer construction scans each computed graph once and retains at most 16 incoming indices per actor, plus the complete incoming count.
+Admission charges those edge visits once, rather than once per listed reviewer.
+The existing graph byte envelope covers this bounded index.
+The float reviewer contract remains separate from the exact contract.
+Its `root` field contains a float q value, including zero for a non-root.
+It omits `multiple_routes` and always emits boolean `public_shun_block` and `private_block` fields in every mode.
+The exact contract instead uses a nullable rational root and conditional block-reason fields.
+
+The final numerical slice performs the entire bounded finish phase synchronously.
+That phase constructs decisions, layers, comparisons, reviewer details, and serialized output.
+A one-operation numerical slice can therefore include the full finish phase.
+Step 4 must address or measure this responsiveness limit before it claims slice latency bounds.
+This step adds no finish scheduler or new yield control.
+
+The cache enforces 64 consumers within each logical session.
+A duplicate in-flight probe returns `pending` without adding a consumer.
+Step 5 must enforce the global consumer cap and count shared pending attachments.
+The present cache does not implement that global scheduling rule.
