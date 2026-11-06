@@ -9,13 +9,14 @@ Every browser trial starts a fresh Chromium process and context.
 ## Prepare a disposable copy
 
 Run these commands from the repository root with Node.js 24 and the repository's pinned tools.
-Select an unused scratch directory under `/build`.
+Select an unused scratch directory with enough disk space for the copy and outputs.
+Replace the angle-bracket placeholders below with paths for your environment.
 Set `JVC_BENCH_SOURCE` to a directory that contains the dictionary snapshot.
 Keep the running site and its data unchanged.
 
 ```sh
-export JVC_BENCH_ROOT=/build/jbovlacku/browser-measurement
-export JVC_BENCH_SOURCE=/path/to/read-only-dictionary-snapshot
+export JVC_BENCH_ROOT="<out-dir>"
+export JVC_BENCH_SOURCE="<source-snapshot>"
 mkdir -p "$JVC_BENCH_ROOT"
 cp -a --reflink=auto "$JVC_BENCH_SOURCE" "$JVC_BENCH_ROOT/data"
 printf '%s\n' disposable-browser-evaluation-copy > "$JVC_BENCH_ROOT/data/.browser-eval-disposable-copy"
@@ -32,17 +33,18 @@ rm "$JVC_BENCH_ROOT/data/.node-data-lock/owner.json"
 rmdir "$JVC_BENCH_ROOT/data/.node-data-lock"
 ```
 
-Use the task's existing Rust target directory and shared dependencies.
+Install the dependencies and pinned tools described in the [development guide](../../docs/development.md).
+Set the build and browser paths below for your environment.
 Build the normal core and standalone server before measurement.
 The harness builds only its measurement page and worker wrapper into scratch space.
 The compiled core remains the normal release artifact.
 
 ```sh
-export CARGO_TARGET_DIR=/build/jbovlacku/targets/f64-contract
-export JVC_WASM_BINDGEN=/build/jbovlacku/toolchain/bin/wasm-bindgen
-export PLAYWRIGHT_BROWSERS_PATH=/path/to/existing/playwright-browsers
-HEAVY_LABEL=jbovlacku/browser-eval-baseline /build/locks/run-heavy npm run build:core
-HEAVY_LABEL=jbovlacku/browser-eval-baseline /build/locks/run-heavy npm run build:server
+export CARGO_TARGET_DIR="<rust-target-dir>"
+export JVC_WASM_BINDGEN="<wasm-bindgen-path>"
+export PLAYWRIGHT_BROWSERS_PATH="<playwright-browsers-dir>"
+npm run build:core
+npm run build:server
 ```
 
 ## Run the measurements
@@ -59,8 +61,7 @@ The probe records whether Chromium accepts worker CPU throttling and measures a 
 It needs no dictionary server or data copy.
 
 ```sh
-HEAVY_LABEL=jbovlacku/browser-eval-baseline /build/locks/run-heavy \
-  node --import tsx scripts/browser-eval-baseline/run.mjs \
+node --import tsx scripts/browser-eval-baseline/run.mjs \
   --out="$JVC_BENCH_ROOT/probe" --probe
 ```
 
@@ -71,8 +72,7 @@ The new judgment exists only in diagnostic input and is never delivered to a pee
 It uses a fixed, publicly known disposable seed.
 
 ```sh
-HEAVY_LABEL=jbovlacku/browser-eval-baseline /build/locks/run-heavy \
-  /usr/bin/time -v node --expose-gc --max-old-space-size=6144 --import tsx \
+/usr/bin/time -v node --expose-gc --max-old-space-size=6144 --import tsx \
   scripts/browser-eval-baseline/run.mjs \
   --out="$JVC_BENCH_ROOT" --data="$JVC_BENCH_ROOT/data" \
   --conditions=cpu1,cpu4,cpu6,mid,phone --repeats=3 --label=matrix
@@ -92,14 +92,12 @@ It has no incremental-submission phase.
 This option does not assert that the source snapshot contains those judgments.
 
 ```sh
-HEAVY_LABEL=jbovlacku/browser-eval-baseline /build/locks/run-heavy \
-  /usr/bin/time -v node --expose-gc --max-old-space-size=6144 --import tsx \
+/usr/bin/time -v node --expose-gc --max-old-space-size=6144 --import tsx \
   scripts/browser-eval-baseline/run.mjs \
   --out="$JVC_BENCH_ROOT" --data="$JVC_BENCH_ROOT/data" \
   --conditions=cpu1 --repeats=1 --profile --label=profile-real
 
-HEAVY_LABEL=jbovlacku/browser-eval-baseline /build/locks/run-heavy \
-  node --expose-gc --max-old-space-size=6144 --import tsx \
+node --expose-gc --max-old-space-size=6144 --import tsx \
   scripts/browser-eval-baseline/run.mjs \
   --out="$JVC_BENCH_ROOT" --data="$JVC_BENCH_ROOT/data" \
   --conditions=cpu1 --repeats=1 --profile --stress-only --label=profile-synthetic
@@ -151,7 +149,10 @@ PSS means proportional set size, which divides shared resident pages among proce
 The watchdog is a sampled stop rule, rather than a kernel allocation limit.
 It can miss short peaks and overshoot its budget before it stops the browser.
 It excludes the Node server, the harness, the operating system, and other applications.
-The surrounding `run-heavy` memory cap remains in force.
+
+Heavy runs need enough RAM for Chromium, the Node server, and the harness.
+The baseline measured a peak browser PSS of 7,938,784,256 bytes, or about 7.39 GiB.
+Allow extra RAM for the server, harness, operating system, and other applications.
 No physical phone or calibrated mobile hardware is used.
 
 ## Samples, output, and interpretation
