@@ -66,9 +66,25 @@ impl RankingPreparationPolicy {
             bytes = add(bytes, mul(count, coefficient)?)?;
             entries = add(entries, count)?;
         }
-        // Native requested-heap measurements calibrate the coefficients.
-        // Two times the base also covers allocator overhead and transient maps.
-        let bytes = mul(bytes, 2)?;
+        // Root allocations are not amortized for small maps and sets.
+        // Empty B-trees allocate nothing. One scratch pair map is live at a time.
+        let nonempty = |n| u64::from(n != 0);
+        let mut maps = 0;
+        for n in [
+            c.words,
+            c.target_groups,
+            c.judgment_groups,
+            c.private_pairs,
+            c.private_rules,
+        ] {
+            maps = add(maps, nonempty(n))?;
+        }
+        maps = add(maps, mul(nonempty(c.scope_buckets), 3)?)?;
+        let sets = add(c.target_groups, c.private_rules)?;
+        let fixed = add(mul(maps, 1536)?, mul(sets, 384)?)?;
+        // Measured roots and first split nodes fit these base allowances.
+        // The outer factor also covers allocator overhead and transient maps.
+        let bytes = mul(add(bytes, fixed)?, 2)?;
         let log = u64::from(64 - add(entries, 1)?.leading_zeros());
         let units = mul(add(mul(mul(entries, 8)?, log)?, c.key_bytes)?, 2)?;
         if bytes > self.limits.setup_bytes as u64 || units > self.limits.units {
@@ -1107,7 +1123,7 @@ mod tests {
             limits: Default::default(),
         };
         let (bytes, units) = p.setup_estimate(&c).unwrap();
-        assert_eq!((bytes, units), (222_635_832, 204_442_264));
+        assert_eq!((bytes, units), (291_524_664, 204_442_264));
         assert!(
             bytes + p.limits.graph_bytes as u64 + (p.limits.metadata_bytes as u64)
                 < p.limits.setup_bytes as u64
@@ -1166,5 +1182,23 @@ mod tests {
         p.limits.source_millis = 1;
         p.limits.source_bytes = 0;
         assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
+    }
+    #[test]
+    fn fixed_roots_cover_the_one_rafsi_shape_and_skip_empty_indexes() {
+        let p = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        assert_eq!(p.setup_estimate(&Default::default()).unwrap(), (0, 0));
+        let c = jvc_state::RankingIndexCounts {
+            words: 1,
+            word_publications: 1,
+            target_groups: 1,
+            targets: 2,
+            judgment_groups: 1,
+            key_bytes: 434,
+            ..Default::default()
+        };
+        assert_eq!(p.setup_estimate(&c).unwrap(), (12_772, 1_156));
     }
 }

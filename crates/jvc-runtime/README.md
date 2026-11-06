@@ -55,7 +55,7 @@ Private rules also reserve transient conflict-map space.
 This preflight count can exceed the final retained entry count.
 
 The base byte coefficients follow native heap measurements across dictionary, unique-publication, shared-rafsi, and private-scope shapes.
-The model doubles the base for a safety margin.
+The model also reserves fixed B-tree root costs, then doubles the whole base for a safety margin.
 The copied-key allowance counts the string copies used by the indexes and their temporary maps.
 It excludes body text and unrelated serialized record fields.
 Publications reserve their word, ID, assignment, language, and context-kind copies.
@@ -76,26 +76,44 @@ Private actor sizes use resolved continuity IDs.
 | Private weights | 512 |
 | Private conflict rules, including temporary space | 1,536 |
 
-Let `I` be the sum of these counts and `K` be the copied-key byte allowance.
+Small B-trees allocate a node with spare slots, even for one entry.
+Each nonempty index map reserves 1,536 base bytes for its root and first split node.
+Each target or private-conflict set reserves 384 base bytes.
+The aarch64 allocation probes observe map nodes up to 1,520 bytes and set nodes up to 376 bytes.
+Cloned scope objects and trust-value sets remain covered by their existing per-rule coefficients.
+
+Let `nz(x)` be one for a positive count and zero otherwise.
+The map count includes word, target, judgment, private-pair, and temporary conflict maps.
+When scope rules exist, it also reserves both scope maps and one scratch pair map.
+Only one scratch pair map is live at a time.
+The set count permits one target set per target bucket and one conflict set per private input rule.
+Preflight can overcount shared buckets and conflict groups.
+Empty indexes reserve no root allocation.
+
+Let `I` be the sum of entry counts and `K` be the copied-key byte allowance.
 The unit coefficient reserves eight operations per entry per tree level.
 The safety margin also doubles the key and operation terms.
 Units describe count-based work, rather than measured CPU seconds.
 
 ```text
-setup_bytes = 2 * (sum(count * base_bytes) + K)
+M = nz(words) + nz(target_groups) + nz(judgment_groups)
+    + nz(private_pairs) + nz(private_rules) + 3 * nz(scope_buckets)
+S = target_groups + private_rules
+B = 1536 * M + 384 * S
+setup_bytes = 2 * (sum(count * base_bytes) + K + B)
 setup_units = 2 * (8 * I * bit_length(I + 1) + K)
 ```
 
 The measured dictionary has 269,350 structural records and 165,438,058 source bytes.
 Its indexes retain 64,033,159 requested heap bytes.
-The preflight envelope reserves 222,635,832 bytes and 204,442,264 units.
+The preflight envelope reserves 291,524,664 bytes and 204,442,264 units.
 The default budget also accommodates the 64 MiB graph envelope and 16 MiB metadata envelope.
 It leaves more than 95 million units for word preparation.
 The measurements do not guarantee capacity for every word or every future dictionary revision.
 
 The streaming source hash has independent limits, `source_bytes` and `source_millis`.
 Their defaults are 256 MiB and 30,000 elapsed milliseconds. Their ceilings are 1 GiB and 120,000 milliseconds.
-The measured native source walk takes about 0.75 CPU seconds and retains no source buffer.
+The measured native source walk takes about one CPU second and retains no source buffer.
 The writer measures bytes and consults a monotonic clock at most 256 KiB apart and after serialization.
 Native builds use `Instant`. Wasm builds use the host's `performance.now()`.
 The time limit stops cooperatively at writer boundaries. It does not preempt serialization between writes.
@@ -150,7 +168,8 @@ There is no job protocol, worker integration, or app capability.
 
 The native measurement example uses a counting global allocator and process CPU counters.
 It reports requested live heap growth and peak heap growth around index construction.
-It excludes checkpoint restoration from those index measurements.
+It excludes checkpoint restoration and other threads from those index measurements.
+The example and allocation regression share one thread-local measurement window.
 It also reports counts by index kind, conservative input counts, and source-hash time and temporary allocation.
 The full process peak includes restoration and synthetic input construction.
 Allocator metadata and size-class rounding remain outside the requested-byte counter.
@@ -164,10 +183,18 @@ It never writes to its input files.
 cargo run -p jvc-runtime --example ranking_setup_measurement --release --locked -- trusted-core.json trusted-nodes.ndjson
 ```
 
-The example restores one dictionary and builds three synthetic shapes from its publication metadata.
-The synthetic shapes use unique words, shared rafsi assignments, and unique private scopes.
+The example first measures 420 small shapes, then restores one dictionary and builds three large synthetic shapes.
+The large shapes use unique words, shared rafsi assignments, and unique private scopes.
+The small shapes cover single entries, shared keys, public scopes, private weights, clears, conflicts, and mixed inputs.
+Their sizes include 11/12/13 entries and further B-tree split boundaries through 257 entries.
 Each run requires its actual index counts to fit the preflight counts.
 Each run also requires the default model to cover its measured peak heap and admit its setup.
+The small suite also runs without a dictionary:
+
+```sh
+cargo run -p jvc-runtime --example ranking_setup_measurement --release --locked -- --small
+cargo test -p jvc-runtime --test setup_allocations --locked
+```
 
 ## Owned word results
 
