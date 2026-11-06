@@ -55,7 +55,8 @@ Discovery charges `1 + 8 * visited_publications`.
 
 Each context charges `1 + 4*T + 4*J + 24*(U+V) + 8*(Q+E+Z) + 32*O + 8*P2`.
 The context charge does not include source bytes or the whole-state record count.
-The index supplies these counts through at most eight scope bucket lookups and one target lookup.
+Each trust index needs at most eight scope bucket lookups.
+Target and judgment counts need two context-key lookups.
 A scope bucket groups rules with identical kind, word, and language fields.
 The indexed resolver visits only matching trust buckets.
 
