@@ -244,6 +244,10 @@ The signed `simple-routes-shun-f64-v1` profile has schema admission, rational-fi
 Owned Rust tasks retain their graph and numerical workspace between bounded calls.
 The Rust API returns approximate actor estimates, work counters, margin details, support and threshold decisions, and stable layers.
 It counts tiny propagated terms that it flushes to zero and keeps structural zeros separate from computed zeros.
+The existing evaluation session also supports [bounded float graph preparation](crates/jvc-runtime/README.md).
+Preparation shares its authenticated state, applies effective receipts and private overlays, and binds the selected policy without another input owner.
+It returns graph metadata only. The synchronous `rankWord` operation explicitly rejects the float profile.
+
 Jobs and app capability remain unavailable. Exact ranking never substitutes float arithmetic.
 Until step 6, word pages under this profile show the generic ranking-unavailable message without the profile name.
 The Trust page describes its shun route rule, but float scores remain unavailable.

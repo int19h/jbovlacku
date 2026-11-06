@@ -108,6 +108,8 @@ pub enum TaskPhase {
     Taken,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// `operations` and `edge_attempts` are already included in `progress.work`.
+/// `refusal_tests` reports pending searches, which are not in `progress.work` yet.
 pub struct PendingProgress {
     pub operations: u64,
     pub edge_attempts: u64,

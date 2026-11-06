@@ -90,6 +90,43 @@ pub fn hash_id(prefix: &str, domain: &[u8], bytes: &[u8]) -> String {
     h.update(bytes);
     format!("{prefix}{}", hex::encode(h.finalize()))
 }
+/// Hash a bounded byte stream without retaining its source bytes.
+pub struct HashWriter {
+    hash: Sha256,
+    bytes: usize,
+    limit: usize,
+}
+impl HashWriter {
+    pub fn new(domain: &[u8], limit: usize) -> Self {
+        let mut hash = Sha256::new();
+        hash.update(domain);
+        Self {
+            hash,
+            bytes: 0,
+            limit,
+        }
+    }
+    pub fn finish(self, prefix: &str) -> (String, usize) {
+        (
+            format!("{prefix}{}", hex::encode(self.hash.finalize())),
+            self.bytes,
+        )
+    }
+}
+impl std::io::Write for HashWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes) {
+            return Err(std::io::Error::other("hash source byte limit"));
+        }
+        self.hash.update(bytes);
+        self.bytes += bytes.len();
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 pub fn sorted_ids(values: &[String], prefix: &str, max: usize) -> Result<()> {
     if values.len() > max
         || values.iter().any(|v| !valid_id(v, prefix))
@@ -451,4 +488,20 @@ pub fn envelope_from_signature(
         })
         .unwrap(),
     )
+}
+
+#[cfg(test)]
+mod hash_writer_tests {
+    use super::*;
+    use std::io::Write;
+    #[test]
+    fn bounded_hash_stream_matches_bytes_and_refuses_before_mutation() {
+        let mut writer = HashWriter::new(b"domain\n", 7);
+        writer.write_all(b"abc").unwrap();
+        writer.write_all(b"defg").unwrap();
+        assert!(writer.write_all(b"h").is_err());
+        let (hash, bytes) = writer.finish("sha256:");
+        assert_eq!(bytes, 7);
+        assert_eq!(hash, hash_id("sha256:", b"domain\n", b"abcdefg"));
+    }
 }

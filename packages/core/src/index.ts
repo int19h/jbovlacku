@@ -203,9 +203,100 @@ export interface EvaluationPackageRecord {
   body_hash: string | null;
   body: Record<string, unknown> | null;
 }
+/** Unsigned limits bound discovery and graph preparation, without numerical work. */
+export interface RankingPreparationLimits {
+  records: number;
+  setup_bytes: number;
+  units: number;
+  word_publications: number;
+  targets: number;
+  contexts: number;
+  graph_bytes: number;
+  metadata_bytes: number;
+}
+export interface RankingPreparationPolicy {
+  /** Identity of the delivered core build, authenticated by the caller. */
+  core_binding: string;
+  limits?: Partial<RankingPreparationLimits>;
+}
+export interface PreparationUsage {
+  setup_records: number;
+  setup_bytes: number;
+  setup_units: number;
+  visited_publications: number;
+  charged_units: number;
+  context_calls: number;
+  graph_bytes: number;
+}
+export interface PreparationParameters {
+  h: { numerator: string; denominator: string; bits: string };
+  alpha: { numerator: string; denominator: string; bits: string };
+  threshold: { numerator: string; denominator: string; bits: string };
+  work: number;
+}
+export interface RankingPreparationDescriptor {
+  version: 1;
+  owner_session: string;
+  binding: string;
+  input_binding: string;
+  contract_binding: string;
+  policy_binding: string;
+  core_binding: string;
+  selected_view: string;
+  mode: "site" | "personal";
+  algorithm: string | null;
+  available: boolean;
+  reasons: string[];
+  parameters: PreparationParameters | null;
+  setup: PreparationUsage;
+}
+export interface RankingPreparationRequest {
+  owner_session: string;
+  descriptor_binding: string;
+  word: string;
+}
+export interface RankingPreparationSummary {
+  owner_session: string;
+  preparation_id: string;
+  descriptor_binding: string;
+  word: string;
+  binding: string;
+  targets: {
+    id: string;
+    context: number | null;
+    status: string;
+    definition: boolean;
+    eligible: boolean;
+    reasons: string[];
+  }[];
+  contexts: {
+    context: { kind: string; word: string; language: string | null };
+    available: boolean;
+    reasons: string[];
+    actors: number;
+    edges: number;
+    refusals: number;
+    execution_binding: string | null;
+    context_binding: string | null;
+  }[];
+  usage: PreparationUsage;
+}
+export interface RankingPreparationProgress {
+  descriptor_binding: string;
+  usage: PreparationUsage;
+  prepared: RankingPreparationSummary | null;
+  retained_graphs: number;
+}
+
 export interface EvaluationSessionHandle {
   readonly state: Evaluation;
   rankWord(word: string, reviewers?: number): any;
+  rankingDescriptor(
+    policy: RankingPreparationPolicy,
+  ): RankingPreparationDescriptor;
+  prepareRanking(request: RankingPreparationRequest): RankingPreparationSummary;
+  rankingPreparation(): RankingPreparationProgress | null;
+  clearRankingPreparation(): void;
   fork(options: EvaluationSessionOptions): EvaluationBuilder;
   checkpoint(binding: string, resultsOnly?: boolean): Uint8Array;
   updateStatistics(): {
@@ -353,6 +444,12 @@ function wrapEvaluationSession(
           ? session.rank(word)
           : session.rank_with_reviewers(word, reviewers),
       ),
+    rankingDescriptor: (policy) =>
+      JSON.parse(session.ranking_descriptor(utf8(JSON.stringify(policy)))),
+    prepareRanking: (request) =>
+      JSON.parse(session.prepare_ranking(utf8(JSON.stringify(request)))),
+    rankingPreparation: () => JSON.parse(session.ranking_preparation()),
+    clearRankingPreparation: () => session.clear_ranking_preparation(),
     fork: (options) =>
       wrapEvaluationBuilder(session.fork(encodeEvaluationRequest(options)), {
         state,

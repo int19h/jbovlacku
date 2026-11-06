@@ -22,7 +22,6 @@ pub struct JudgmentChanges {
 
 /// Retained authenticated input and its evaluated state.
 /// A fork owns its result and shares only immutable ancestor payloads.
-#[derive(Clone)]
 pub struct EvaluatedState {
     prepared: PreparedEvaluationInput,
     evaluation: Evaluation,
@@ -31,6 +30,36 @@ pub struct EvaluatedState {
     remaining_work: usize,
     statistics: UpdateStatistics,
     judgment_changes: Option<JudgmentChanges>,
+    ranking_index: std::cell::RefCell<Option<policy::ApproximateContextIndex>>,
+}
+
+pub struct RankingContextBound {
+    pub actors: u64,
+    pub edges: u64,
+    pub refusals: u64,
+    pub judgments: u64,
+    pub targets: u64,
+    pub trust_rules: u64,
+    pub public_rules: u64,
+    pub roots: u64,
+    pub exclusions: u64,
+    pub suspensions: u64,
+    pub overlay_entries: u64,
+    pub pairs_squared: u64,
+}
+impl Clone for EvaluatedState {
+    fn clone(&self) -> Self {
+        Self {
+            prepared: self.prepared.clone(),
+            evaluation: self.evaluation.clone(),
+            graph: self.graph.clone(),
+            unresolved: self.unresolved.clone(),
+            remaining_work: self.remaining_work,
+            statistics: self.statistics.clone(),
+            judgment_changes: self.judgment_changes.clone(),
+            ranking_index: Default::default(),
+        }
+    }
 }
 
 impl EvaluatedState {
@@ -55,6 +84,7 @@ impl EvaluatedState {
             remaining_work: 0,
             statistics: UpdateStatistics::default(),
             judgment_changes: None,
+            ranking_index: Default::default(),
         };
         state.rebuild();
         state
@@ -70,6 +100,109 @@ impl EvaluatedState {
 
     pub fn judgment_changes(&self) -> Option<&JudgmentChanges> {
         self.judgment_changes.as_ref()
+    }
+
+    /// Hash retained authenticated projections without another input buffer.
+    /// Value maps must retain serde_json's sorted-key encoding. A test pins this assumption.
+    pub fn ranking_source_binding(&self, max_bytes: usize) -> jvc_core::Result<(String, usize)> {
+        let mut writer = jvc_core::HashWriter::new(b"jvc-ranking-state-v1\n", max_bytes);
+        serde_json::to_writer(
+            &mut writer,
+            &(
+                &self.prepared.options,
+                &self.prepared.nodes,
+                self.prepared.event_limit_exceeded,
+                &self.evaluation,
+            ),
+        )
+        .map_err(|e| jvc_core::Error::new("resource_unavailable", e.to_string()))?;
+        Ok(writer.finish("sha256:"))
+    }
+    /// Count index inputs without cloning them. Policy checks precede index allocation.
+    pub fn ranking_source_records(&self) -> jvc_core::Result<usize> {
+        let e = &self.evaluation;
+        let mut count = self.prepared.nodes.len();
+        for n in [
+            e.publications.len(),
+            e.receipts.len(),
+            e.registers.len(),
+            e.trust.len(),
+            e.judgments.len(),
+            e.lifecycle.key_actor.len(),
+            e.accounts.len(),
+        ] {
+            count = count.checked_add(n).ok_or_else(|| {
+                jvc_core::Error::new("resource_unavailable", "ranking record count overflow")
+            })?;
+        }
+        for n in e
+            .judgments
+            .values()
+            .map(BTreeMap::len)
+            .chain(e.overlay.iter().flat_map(|v| {
+                ["trust", "blocked", "root_changes"]
+                    .into_iter()
+                    .map(move |k| v[k].as_array().map_or(0, Vec::len))
+            }))
+        {
+            count = count.checked_add(n).ok_or_else(|| {
+                jvc_core::Error::new("resource_unavailable", "ranking record count overflow")
+            })?;
+        }
+        Ok(count)
+    }
+    pub fn ensure_ranking_index(&self) -> jvc_core::Result<()> {
+        if self.ranking_index.borrow().is_none() {
+            let index = policy::ApproximateContextIndex::new(&self.evaluation)?;
+            *self.ranking_index.borrow_mut() = Some(index);
+        }
+        Ok(())
+    }
+    /// Borrow publications from this state, using its own bounded derived index.
+    pub fn ranking_publications(
+        &self,
+        word: &str,
+        limit: usize,
+    ) -> jvc_core::Result<Vec<&Publication>> {
+        let index = self.ranking_index.borrow();
+        let index = index.as_ref().ok_or_else(|| {
+            jvc_core::Error::new("ranking_preparation", "ranking index is not initialized")
+        })?;
+        let Some(ids) = index.words.get(word) else {
+            return Ok(Vec::new());
+        };
+        if ids.len() > limit {
+            return Err(jvc_core::Error::new(
+                "resource_unavailable",
+                "word publication limit",
+            ));
+        }
+        Ok(ids
+            .iter()
+            .map(|id| &self.evaluation.publications[id])
+            .collect())
+    }
+    pub fn ranking_context_bound(
+        &self,
+        context: &Context,
+    ) -> jvc_core::Result<RankingContextBound> {
+        let index = self.ranking_index.borrow();
+        index
+            .as_ref()
+            .ok_or_else(|| {
+                jvc_core::Error::new("ranking_preparation", "ranking index is not initialized")
+            })?
+            .bound(&self.evaluation, context)
+    }
+    pub fn prepare_indexed_approximate_context(
+        &self,
+        context: &Context,
+    ) -> jvc_core::Result<ContextGraph<f64>> {
+        let index = self.ranking_index.borrow();
+        let index = index.as_ref().ok_or_else(|| {
+            jvc_core::Error::new("ranking_preparation", "ranking index is not initialized")
+        })?;
+        Ok(index.context(&self.evaluation, context))
     }
 
     fn rebuild(&mut self) {
@@ -93,6 +226,7 @@ impl EvaluatedState {
     /// Advance from original records that already passed record preparation.
     /// Existing record replacements and removals always rebuild the state.
     pub fn advance(mut self, delta: PreparedEvaluationInput, removed: &[String]) -> Self {
+        self.ranking_index = Default::default();
         let mut rebuild_reason =
             (self.prepared.options != delta.options).then(|| "configuration_changed".to_owned());
         self.prepared.options = delta.options;
@@ -473,6 +607,7 @@ impl EvaluatedState {
             remaining_work: saved.remaining_work,
             statistics: UpdateStatistics::default(),
             judgment_changes: None,
+            ranking_index: Default::default(),
         })
     }
 }
@@ -783,5 +918,79 @@ mod rebuild_tests {
             assert_eq!(state.statistics().incremental_records, 0);
             assert_eq!(state.evaluation(), &complete.evaluate());
         }
+    }
+    #[test]
+    fn ranking_indexes_are_once_per_state_and_never_enter_checkpoints_or_forks() {
+        let mut prepared = base();
+        let (record, body) = publication();
+        prepared.add_record(&record, body.as_deref());
+        let mut state = prepared.into_state();
+        state.evaluation.policy.as_mut().unwrap()["calculation"] =
+            json!(jvc_rank::approximate::ALGORITHM);
+        let before = state.checkpoint("index-test").unwrap();
+        assert!(state.ranking_index.borrow().is_none());
+        state.ensure_ranking_index().unwrap();
+        let pointer = state.ranking_index.borrow().as_ref().unwrap() as *const _;
+        state.ensure_ranking_index().unwrap();
+        assert_eq!(
+            state.ranking_index.borrow().as_ref().unwrap() as *const _,
+            pointer
+        );
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        for (kind, language) in [
+            ("definition", Some("en".into())),
+            ("definition", Some("fr".into())),
+            ("rafsi", None),
+            ("other", Some("ignored".into())),
+        ] {
+            let context = policy::Context {
+                kind: kind.into(),
+                word: word.clone(),
+                language,
+            };
+            let indexed = state.prepare_indexed_approximate_context(&context).unwrap();
+            let direct = policy::prepare_approximate_context(state.evaluation(), &context);
+            assert_eq!(
+                serde_json::to_value(&indexed).unwrap(),
+                serde_json::to_value(&direct).unwrap()
+            );
+        }
+        assert_eq!(state.checkpoint("index-test").unwrap(), before);
+        assert!(state.clone().ranking_index.borrow().is_none());
+        let restored = EvaluatedState::restore_host_checkpoint(&before, "index-test").unwrap();
+        assert!(restored.ranking_index.borrow().is_none());
+        let delta = PreparedEvaluationInput::new(state.prepared.options.clone());
+        let advanced = state.advance(delta, &[]);
+        assert!(advanced.ranking_index.borrow().is_none());
+    }
+    #[test]
+    fn source_stream_pins_sorted_value_maps_and_matches_previous_bytes() {
+        // Do not enable serde_json/preserve_order without changing the binding contract.
+        let value: Value = serde_json::from_str(r#"{"z":0,"é":{"z":1,"a":2},"a":3}"#).unwrap();
+        assert_eq!(
+            serde_json::to_string(&value).unwrap(),
+            r#"{"a":3,"z":0,"é":{"a":2,"z":1}}"#
+        );
+        let state = base().into_state();
+        let bytes = serde_json::to_vec(&(
+            &state.prepared.options,
+            &state.prepared.nodes,
+            state.prepared.event_limit_exceeded,
+            &state.evaluation,
+        ))
+        .unwrap();
+        let (binding, count) = state.ranking_source_binding(bytes.len()).unwrap();
+        assert_eq!(count, bytes.len());
+        assert_eq!(
+            binding,
+            jvc_core::hash_id("sha256:", b"jvc-ranking-state-v1\n", &bytes)
+        );
+        assert_eq!(
+            state
+                .ranking_source_binding(bytes.len() - 1)
+                .unwrap_err()
+                .code,
+            "resource_unavailable"
+        );
     }
 }

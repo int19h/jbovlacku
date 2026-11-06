@@ -1508,3 +1508,6 @@ fn signed_invalid_definition_action_keeps_an_inert_decodable_record() {
 
 #[path = "support/resolver_cases.rs"]
 mod resolver_cases;
+
+#[path = "support/session_preparation.rs"]
+mod session_preparation;

@@ -8,6 +8,7 @@ RUN rustup target add wasm32-unknown-unknown \
 WORKDIR /source
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
+COPY docs/format.md docs/format.md
 COPY scripts/build-core.sh scripts/build-core.sh
 RUN bash scripts/build-core.sh
 
