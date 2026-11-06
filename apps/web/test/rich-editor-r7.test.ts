@@ -1220,14 +1220,34 @@ test("biography L2 a name-only signed profile edit preserves stored whitespace",
     await store.queueGroup([item]);
   }, corePath);
   await page.goto("/outbox");
-  await expect
-    .poll(async () =>
-      page.evaluate(async () => {
-        const { LocalStore } = await import(String("/src/data/store.ts"));
-        return (await new LocalStore().list("outbox"))[0]?.peers.self.state;
-      }),
-    )
-    .toBe("accepted");
+  const deliveryStates: unknown[] = [];
+  let previousDelivery = "";
+  try {
+    // A transient failure schedules a 15-second retry, beyond the usual poll.
+    // Allow that backoff and a 20-second HTTP attempt without retrying the test.
+    await expect
+      .poll(
+        async () => {
+          const peer = await page.evaluate(async () => {
+            const { LocalStore } = await import(String("/src/data/store.ts"));
+            return (await new LocalStore().list("outbox"))[0]?.peers.self;
+          });
+          const state = JSON.stringify(peer);
+          if (state !== previousDelivery) {
+            deliveryStates.push({ observedAt: Date.now(), peer });
+            previousDelivery = state;
+          }
+          return peer?.state;
+        },
+        { timeout: 45000 },
+      )
+      .toBe("accepted");
+  } finally {
+    await info.attach("L2-initial-delivery-states", {
+      contentType: "application/json",
+      body: JSON.stringify(deliveryStates, null, 2),
+    });
+  }
   await page.goto("/identity");
   await page
     .getByLabel("Passphrase", { exact: true })
