@@ -5,6 +5,10 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
+mod word_results;
+pub use word_results::{
+    WORD_RESULT_CONTRACT, WordResultPolicy, WordResultRequest, word_result_policy_binding_native,
+};
 mod ranking_preparation;
 pub use ranking_preparation::{
     FloatParameter, PREPARATION_CONTRACT, PreparationContext, PreparationParameters,
@@ -732,6 +736,7 @@ pub struct EvaluationSession {
     base_identity: Option<String>,
     preparation: std::cell::RefCell<Option<ranking_preparation::SessionPreparation>>,
     preparation_generation: std::cell::Cell<u64>,
+    word_results: std::cell::RefCell<Option<word_results::WordAttempt>>,
 }
 /// Build a session from original records without one combined request.
 #[wasm_bindgen]
@@ -1086,6 +1091,7 @@ impl EvaluationSessionBuilder {
             identity: session_identity(),
             preparation: Default::default(),
             preparation_generation: Default::default(),
+            word_results: Default::default(),
             base_identity: self.base_identity,
             state: match self.base {
                 Some(base) => base.advance(self.prepared, &self.removed),
@@ -1107,6 +1113,7 @@ impl EvaluationSession {
             identity: session_identity(),
             preparation: Default::default(),
             preparation_generation: Default::default(),
+            word_results: Default::default(),
             base_identity: None,
         })
     }
@@ -1143,6 +1150,7 @@ impl EvaluationSession {
             identity: session_identity(),
             preparation: Default::default(),
             preparation_generation: Default::default(),
+            word_results: Default::default(),
             base_identity: None,
             state: jvc_state::EvaluatedState::restore_host_result_checkpoint(
                 bytes,
@@ -1161,6 +1169,7 @@ impl EvaluationSession {
             identity: session_identity(),
             preparation: Default::default(),
             preparation_generation: Default::default(),
+            word_results: Default::default(),
             base_identity: None,
             state: jvc_state::EvaluatedState::restore_host_checkpoint(bytes, binding)
                 .map_err(fail)?,

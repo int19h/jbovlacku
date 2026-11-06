@@ -139,6 +139,11 @@ test("the browser exposes authenticated preparation without host restore or inse
         "prepareRanking",
         "rankingPreparation",
         "clearRankingPreparation",
+        "startWordResults",
+        "stepWordResults",
+        "wordResultProgress",
+        "takeWordResult",
+        "cancelWordResults",
         "free",
       ].sort(),
     );
