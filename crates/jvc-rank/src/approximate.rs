@@ -1,5 +1,5 @@
-//! Row preparation and non-certified numerical tasks.
-//! Ranking decisions and host execution remain separate.
+//! Row preparation, non-certified influence estimates, decisions, and numerical tasks.
+//! Host execution lives outside this module.
 use crate::{Limits, RankError, Rational};
 use num_traits::{One, ToPrimitive, Zero};
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,6 +8,7 @@ pub const ALGORITHM: &str = "simple-routes-shun-f64-v1";
 pub const ROW_CONTRACT: &str = "jvc-f64-rows-v1";
 pub const ROW_SUM_CEILING: f64 = f64::from_bits(0x3ff0_0000_0000_002d);
 
+pub mod decisions;
 mod propagation;
 pub use propagation::{
     rank, AllocationAccount, AllocationCharge, Edge, Estimate, EstimateProgress, Failure, Graph,
