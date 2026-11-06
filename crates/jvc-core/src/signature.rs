@@ -38,7 +38,7 @@ impl ValidatedPublicKey {
     }
 }
 
-/// Apply the specified uncofactored equation after point and scalar checks.
+/// Apply the specified prime-order profile and uncofactored equation.
 pub fn verify_ed25519_profile(
     public_key: &[u8; 32],
     message: &[u8],
@@ -52,16 +52,25 @@ fn verify_with_public_key(
     message: &[u8],
     signature: &[u8; 64],
 ) -> Result<()> {
+    // Dalek 2.2.0 raw_verify compares the supplied compressed R bytes with
+    // compress([S]B - [k]A), without cofactor multiplication. It also checks
+    // canonical S (legacy_compatibility is disabled). Since this key and B
+    // have prime order, success proves that
+    // R is canonical and prime-order too, including the permitted identity R.
+    if public_key
+        .key
+        .verify(message, &Signature::from_bytes(signature))
+        .is_ok()
+    {
+        return Ok(());
+    }
+    // Preserve the existing error precedence when the equation fails.
     point(signature[..32].try_into().unwrap(), false)?;
     let scalar: [u8; 32] = signature[32..].try_into().unwrap();
     if !bool::from(Scalar::from_canonical_bytes(scalar).is_some()) {
         return Err(crypto_error("signature scalar is not below L"));
     }
-    // Dalek computes R = [S]B - [k]A. Its strict method also rejects identity R.
-    public_key
-        .key
-        .verify(message, &Signature::from_bytes(signature))
-        .map_err(|_| crypto_error("Ed25519 equation failed"))
+    Err(crypto_error("Ed25519 equation failed"))
 }
 
 pub fn identity_from_seed(seed: &[u8; 32]) -> String {
@@ -170,4 +179,96 @@ pub(crate) fn wrap_signature(issuer: &str, raw_signature: &[u8; 64]) -> Result<S
     let sshsig = SshSig::new(public, NAMESPACE, HashAlg::Sha512, raw)
         .map_err(|e| crypto_error(e.to_string()))?;
     Ok(STANDARD.encode(encode(&sshsig)?))
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    // Retain the old order as an independent error and acceptance control.
+    fn previous(public: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> Result<()> {
+        let key = ValidatedPublicKey::new(public)?;
+        point(signature[..32].try_into().unwrap(), false)?;
+        let scalar = signature[32..].try_into().unwrap();
+        if !bool::from(Scalar::from_canonical_bytes(scalar).is_some()) {
+            return Err(crypto_error("signature scalar is not below L"));
+        }
+        key.key
+            .verify(message, &Signature::from_bytes(signature))
+            .map_err(|_| crypto_error("Ed25519 equation failed"))
+    }
+
+    #[test]
+    fn corpus_acceptance_and_errors_match_the_previous_order() {
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/corpus.json")).unwrap();
+        let mut cases = 0;
+        for case in corpus["cases"].as_array().unwrap() {
+            if case["op"] != "ed25519" {
+                continue;
+            }
+            let public = hex::decode(case["public"].as_str().unwrap()).unwrap();
+            let message = hex::decode(case["message"].as_str().unwrap()).unwrap();
+            let signature = hex::decode(case["signature"].as_str().unwrap()).unwrap();
+            let public: [u8; 32] = public.try_into().unwrap();
+            let signature: [u8; 64] = signature.try_into().unwrap();
+            assert_eq!(
+                verify_ed25519_profile(&public, &message, &signature),
+                previous(&public, &message, &signature),
+                "{}",
+                case["name"]
+            );
+            let expected_message = match case["name"].as_str().unwrap() {
+                "negative-zero-r"
+                | "low-order-r-1"
+                | "mixed-order-r-1"
+                | "reject-identity-key"
+                | "noncanonical-identity-r" => {
+                    Some("point does not satisfy the canonical prime-order profile")
+                }
+                "scalar-equals-L" => Some("signature scalar is not below L"),
+                "invalid-equation" => Some("Ed25519 equation failed"),
+                _ => None,
+            };
+            if let Some(expected) = expected_message {
+                assert_eq!(
+                    verify_ed25519_profile(&public, &message, &signature),
+                    Err(Error::new("signature", expected)),
+                    "{}",
+                    case["name"]
+                );
+            }
+            if case["name"] == "rfc8032-empty-message" {
+                // S + L satisfies the reduced equation but must stay invalid.
+                let order =
+                    hex::decode("edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010")
+                        .unwrap();
+                let mut malleable = signature;
+                let mut carry = 0u16;
+                for (s, l) in malleable[32..].iter_mut().zip(order) {
+                    let sum = *s as u16 + l as u16 + carry;
+                    *s = sum as u8;
+                    carry = sum >> 8;
+                }
+                assert_eq!(carry, 0);
+                let expected = Err(Error::new("signature", "signature scalar is not below L"));
+                assert_eq!(previous(&public, &message, &malleable), expected);
+                assert_eq!(
+                    verify_ed25519_profile(&public, &message, &malleable),
+                    expected
+                );
+            }
+            // R errors precede scalar errors, and key errors precede both.
+            let mut invalid_scalar = signature;
+            invalid_scalar[32..].fill(255);
+            assert_eq!(
+                verify_ed25519_profile(&public, &message, &invalid_scalar),
+                previous(&public, &message, &invalid_scalar),
+                "{} with noncanonical S",
+                case["name"]
+            );
+            cases += 1;
+        }
+        assert!(cases >= 35);
+    }
 }

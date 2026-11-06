@@ -150,12 +150,18 @@ struct EvaluationWire {
     limits: jvc_state::Limits,
 }
 fn evaluation_input(bytes: &[u8]) -> Result<jvc_state::EvaluationInput> {
+    evaluation_input_with_verifier(bytes, &mut jvc_core::EnvelopeVerifier::default())
+}
+fn evaluation_input_with_verifier(
+    bytes: &[u8],
+    verifier: &mut jvc_core::EnvelopeVerifier,
+) -> Result<jvc_state::EvaluationInput> {
     let wire: EvaluationWire = serde_json::from_value(parse_json(bytes)?)
         .map_err(|e| Error::new("evaluation", e.to_string()))?;
     let events = wire
         .events
         .iter()
-        .map(|s| verify_envelope(s.as_bytes()))
+        .map(|s| verifier.verify(s.as_bytes()))
         .collect::<Result<Vec<_>>>()?;
     Ok(jvc_state::EvaluationInput {
         events,
@@ -1351,6 +1357,43 @@ mod aggregation_tests {
 #[cfg(test)]
 mod state_output_tests {
     use super::*;
+
+    #[test]
+    fn evaluation_input_checks_each_distinct_key_once_and_every_signature() {
+        let mut events = Vec::new();
+        for i in 0..12u8 {
+            let seed = [1 + i % 2; 32];
+            let event = jvc_core::sign_header(
+                &seed,
+                jvc_core::Header {
+                    version: 1,
+                    issuer: jvc_core::identity_from_seed(&seed),
+                    previous: vec![],
+                    nonce: format!("{i:032x}"),
+                    action: json!({"kind":"identity.merge"}),
+                    content: None,
+                },
+            )
+            .unwrap();
+            events.push(String::from_utf8(event.canonical_envelope().unwrap()).unwrap());
+        }
+        let mut wire = json!({"events":events,"bodies":{},"selected_view":"unused",
+            "import_selections":{}});
+        let mut verifier = jvc_core::EnvelopeVerifier::default();
+        let input =
+            evaluation_input_with_verifier(&serde_json::to_vec(&wire).unwrap(), &mut verifier)
+                .unwrap();
+        assert_eq!(input.events.len(), 12);
+        assert_eq!(verifier.public_key_checks(), 2);
+        let mut bad: Value = serde_json::from_str(wire["events"][11].as_str().unwrap()).unwrap();
+        bad["signature"] = json!("AAAA");
+        wire["events"][11] = json!(serde_json::to_string(&bad).unwrap());
+        let error =
+            evaluation_input_with_verifier(&serde_json::to_vec(&wire).unwrap(), &mut verifier)
+                .unwrap_err();
+        assert_eq!(error.code, "signature");
+        assert_eq!(verifier.public_key_checks(), 2);
+    }
 
     #[test]
     fn state_delta_writer_accepts_the_limit_and_falls_back_above_it() {

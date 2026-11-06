@@ -371,6 +371,12 @@ impl Snapshot {
         Ok(bytes)
     }
     pub fn from_jsonl(bytes: &[u8]) -> Result<Self> {
+        Self::from_jsonl_with_verifier(bytes, &mut jvc_core::EnvelopeVerifier::default())
+    }
+    fn from_jsonl_with_verifier(
+        bytes: &[u8],
+        verifier: &mut jvc_core::EnvelopeVerifier,
+    ) -> Result<Self> {
         let mut snapshot = Self::new();
         if bytes.is_empty() {
             return Ok(snapshot);
@@ -409,7 +415,7 @@ impl Snapshot {
                     "carrier record requires exactly body and envelope",
                 ));
             }
-            let event = verify_envelope(&canonical_value(&record["envelope"])?)?;
+            let event = verifier.verify(&canonical_value(&record["envelope"])?)?;
             if snapshot.events.contains_key(event.id()) {
                 return Err(error(
                     "duplicate_event",
@@ -498,6 +504,7 @@ impl Snapshot {
             .get("README.md")
             .ok_or_else(|| error("readme_missing", "README.md is missing"))?
             .clone();
+        let mut verifier = jvc_core::EnvelopeVerifier::default();
         for (path, bytes) in files {
             if path.starts_with("records/") {
                 if bytes.is_empty() || bytes.len() > PART_BYTES {
@@ -506,7 +513,7 @@ impl Snapshot {
                         format!("{path} is empty or exceeds 8 MiB"),
                     ));
                 }
-                let part = Self::from_jsonl(bytes)?;
+                let part = Self::from_jsonl_with_verifier(bytes, &mut verifier)?;
                 for event in part.events.values() {
                     if event.id()[5..7] != path[8..10] {
                         return Err(error(
