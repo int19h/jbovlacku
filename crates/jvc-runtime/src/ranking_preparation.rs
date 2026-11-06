@@ -207,7 +207,7 @@ pub(crate) struct PreparedRanking {
 }
 pub(crate) struct SessionPreparation {
     policy: RankingPreparationPolicy,
-    descriptor: RankingPreparationDescriptor,
+    pub(crate) descriptor: RankingPreparationDescriptor,
     usage: PreparationUsage,
     pub(crate) prepared: Option<PreparedRanking>,
 }
@@ -272,7 +272,7 @@ impl std::io::Write for Capped {
         Ok(())
     }
 }
-fn encoded(value: &impl Serialize, max: usize) -> Result<Vec<u8>> {
+pub(crate) fn encoded(value: &impl Serialize, max: usize) -> Result<Vec<u8>> {
     let mut output = Capped(Vec::new(), max);
     serde_json::to_writer(&mut output, value).map_err(|e| resource(&e.to_string()))?;
     Ok(output.0)
@@ -491,6 +491,7 @@ impl SessionPreparation {
             .checked_add(1)
             .ok_or_else(|| resource("preparation generation overflow"))?;
         // A valid replacement drops old graphs before allocating their successors.
+        session.word_results.borrow_mut().take();
         self.prepared = None;
         session.preparation_generation.set(generation);
         self.usage = self.descriptor.setup.clone();
@@ -788,6 +789,7 @@ impl EvaluationSession {
         }
         // Shape-invalid policies leave the controller intact. A different valid
         // policy releases it before setup admission, even when admission refuses.
+        self.word_results.borrow_mut().take();
         self.preparation.borrow_mut().take();
         let preparation = SessionPreparation::new(self, policy)?;
         let descriptor = preparation.descriptor.clone();
@@ -850,6 +852,7 @@ impl EvaluationSession {
             .map_err(fail)
     }
     pub fn clear_ranking_preparation(&self) {
+        self.word_results.borrow_mut().take();
         if let Some(p) = self.preparation.borrow_mut().as_mut() {
             p.prepared = None;
         }

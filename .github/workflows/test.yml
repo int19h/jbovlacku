@@ -24,6 +24,7 @@ jobs:
       JVC_STATE_PARITY_DIR: /build/jbovlacku/state-parity
       JVC_SHUN_PARITY_DIR: /build/jbovlacku/shun-parity
       JVC_PREPARATION_PARITY_DIR: /build/jbovlacku/preparation-parity
+      JVC_WORD_RESULT_PARITY_DIR: /build/jbovlacku/word-result-parity
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -59,10 +60,14 @@ jobs:
         run: node scripts/test-state-parity.mjs
       - name: Compare native and WebAssembly session preparation
         run: node scripts/test-f64-preparation-parity.mjs
+      - name: Compare native and WebAssembly word results
+        run: node scripts/test-f64-word-results-parity.mjs
       - name: Compare native and WebAssembly float row bits
         run: node scripts/test-f64-row-parity.mjs
       - name: Check TypeScript
         run: npm run typecheck
+      - name: Test core session results and cache
+        run: npx tsx --test --test-concurrency=2 packages/core/test/*.test.ts
       - name: Test TypeScript morphology
         run: npm run test:morphology
       - name: Shared lexical search tests

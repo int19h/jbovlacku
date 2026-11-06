@@ -1,3 +1,5 @@
+import type { WordResultPolicy } from "./word-policy.ts";
+export { wordResultPolicyBinding, type WordResultPolicy } from "./word-policy.ts";
 import init, * as wasm from "../generated/jvc_runtime.js";
 import { encodeEvaluationRequest } from "./evaluation-request.ts";
 const encoder = new TextEncoder();
@@ -300,6 +302,11 @@ export interface EvaluationSessionHandle {
   prepareRanking(request: RankingPreparationRequest): RankingPreparationSummary;
   rankingPreparation(): RankingPreparationProgress | null;
   clearRankingPreparation(): void;
+  startWordResults(request: WordResultRequest): Record<string, any>;
+  stepWordResults(token: string, operations: number): Record<string, any>;
+  wordResultProgress(): Record<string, any> | null;
+  takeWordResult(token: string): Uint8Array;
+  cancelWordResults(token: string): Record<string, any> | null;
   fork(options: EvaluationSessionOptions): EvaluationBuilder;
   checkpoint(binding: string, resultsOnly?: boolean): Uint8Array;
   updateStatistics(): {
@@ -453,6 +460,21 @@ function wrapEvaluationSession(
       JSON.parse(session.prepare_ranking(utf8(JSON.stringify(request)))),
     rankingPreparation: () => JSON.parse(session.ranking_preparation()),
     clearRankingPreparation: () => session.clear_ranking_preparation(),
+    startWordResults: (request) =>
+      JSON.parse(session.start_word_results(utf8(JSON.stringify(request)))),
+    stepWordResults: (token, operations) => {
+      if (
+        !Number.isSafeInteger(operations) ||
+        operations < 1 ||
+        operations > 65536
+      )
+        throw new Error("invalid word slice");
+      return JSON.parse(session.step_word_results(token, operations));
+    },
+    wordResultProgress: () => JSON.parse(session.word_result_progress()),
+    takeWordResult: (token) => session.take_word_result(token),
+    cancelWordResults: (token) =>
+      JSON.parse(session.cancel_word_results(token)),
     fork: (options) =>
       wrapEvaluationBuilder(session.fork(encodeEvaluationRequest(options)), {
         state,
@@ -551,3 +573,39 @@ export {
   buildLujvo,
   generateGismu,
 } from "../../morphology/src/index.ts";
+
+export {
+  WordResultCache,
+  WORD_CACHE_LIMITS,
+  type WordCacheIdentity,
+  type WordFailure,
+  type ReadyWordTicket,
+  type WordAdmission,
+  type WordCompletion,
+} from "./word-cache.ts";
+/** Preserve evaluation diagnostics even when float setup admission refuses. */
+export function describeWordResults(
+  session: Pick<EvaluationSessionHandle, "state" | "rankingDescriptor">,
+  policy: RankingPreparationPolicy,
+) {
+  const evaluation = {
+    available: session.state.available,
+    reasons: [...session.state.reasons],
+    selected_view: session.state.selected_view,
+  };
+  try {
+    return {
+      evaluation,
+      descriptor: session.rankingDescriptor(policy),
+      error: null,
+    };
+  } catch (error) {
+    return { evaluation, descriptor: null, error: String(error) };
+  }
+}
+export interface WordResultRequest {
+  owner_session: string;
+  descriptor_binding: string;
+  preparation_id: string;
+  policy?: WordResultPolicy;
+}
