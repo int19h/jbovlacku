@@ -329,6 +329,20 @@ test("deadline observations are mandatory and exclusive to deadline failures", (
       ),
     /failure/,
   );
+  assert.throws(
+    () =>
+      c.fail(
+        r,
+        {
+          code: "numeric_unavailable",
+          limit: "deadline",
+          retryable: false,
+          background_evaluation_running_at_expiry: true,
+        },
+        0,
+      ),
+    /failure/,
+  );
   assert.deepEqual(c.statistics(), before);
   c.deadline(r, false, 0);
 });

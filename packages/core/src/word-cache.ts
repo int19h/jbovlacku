@@ -357,7 +357,8 @@ export class WordResultCache {
       typeof failure.limit !== "string" ||
       failure.limit.length > 128 ||
       (failure.limit === "deadline"
-        ? typeof failure.background_evaluation_running_at_expiry !== "boolean"
+        ? failure.code !== "resource_unavailable" ||
+          typeof failure.background_evaluation_running_at_expiry !== "boolean"
         : failure.background_evaluation_running_at_expiry !== undefined)
     )
       throw new Error("invalid word failure");
