@@ -112,6 +112,7 @@ node --expose-gc --max-old-space-size=6144 --import tsx \
 
 The product measurement calls `PersonalCalculator.ensure` from a blank measurement page.
 Its uninstrumented product worker is separate from the diagnostic worker wrapper.
+
 It retains the normal inventory, byte, and evaluation limits.
 The page does not render the dictionary application or measure paint, search, layout, or accessibility.
 The diagnostic retains only the last complete ranking response, rather than the application's whole word-result cache.
@@ -133,6 +134,7 @@ The environment file records the compiled core and wrapper hashes.
 
 Chromium's [CPU emulation command](https://chromedevtools.github.io/devtools-protocol/tot/Emulation/) does not necessarily apply to dedicated workers.
 The probe records the actual command result and calibration time.
+
 The product-gate phase uses the requested page rate of 1, 4, or 6.
 The worker diagnostic clears page throttling and applies a separate Linux renderer duty cycle for the slower conditions.
 The limiter runs renderers for 10 ms, then stops them for 30 or 50 ms.
@@ -179,6 +181,7 @@ When the snapshot contains no judgments, the middle cohort instead contains word
 The common cohort is a manual list, rather than a measured frequency ranking.
 The long-tail cohort uses low judgment counts and a stable identifier order, rather than search-usage statistics.
 All cohorts require active eligible publications with effective receipts in the copied checkpoint.
+
 Fresh and cached samples must contain 60 distinct words, with 20 in each cohort, before trials start.
 Cache reuse compares the input file's byte count and streaming hash with the recorded values before any trial.
 Keep the input file unchanged throughout the run.
@@ -211,6 +214,7 @@ It is not application time to usable interaction.
 CPU time from CDP covers this Chromium instance, with coarse operating-system resolution for short words.
 `time -v` also records the harness and its child processes, including server startup.
 Profiles remain separate from primary measurements.
+
 Profile categories use visible sampled call stacks and cannot recover every inlined ancestry operation.
 The ancestry bucket describes matched graph-cache stacks, rather than all ancestry work.
 The ancestry model gives only identifier-vector payload bounds for complete, same-issuer single-parent histories.
