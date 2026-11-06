@@ -110,6 +110,7 @@ Only a complete upper calculation permits scores or comparisons.
 A completed upper calculation with incomplete route exploration still gives usable intervals.
 Definition layers report `layers_complete: false` when a definition lacks its required estimate.
 A missing rafsi estimate does not make definition layers incomplete.
+Known inactive pairs appear separately and do not make a complete word partial.
 Rafsi decisions cover the requested word's pairs only.
 They do not select between different spellings or claim uniqueness across other words.
 Unresolved pairs retain their potential decisions without becoming eligible.
@@ -161,6 +162,7 @@ The word and reviewer requirement also belong to each entry's key.
 Use `wordResultPolicyBinding` for the result policy component.
 `describeWordResults` keeps available evaluation evidence when descriptor admission fails.
 
+Supply monotonic milliseconds to cache operations that accept a clock value.
 Call `bind` after any identity component changes.
 Body mapping and import selection changes must change the supplied snapshot or inventory identity.
 Personal overlay identities must include identity changes and the effective `public_shun_issuer`.

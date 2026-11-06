@@ -14,7 +14,7 @@ const normalize = (v) => {
   return v;
 };
 const files = (await readdir(directory)).filter((f) => f.endsWith(".json")).sort();
-assert.equal(files.length, 9, "Generate every native word-result case.");
+assert.equal(files.length, 10, "Generate every native word-result case.");
 let comparisons = 0;
 for (const file of files) {
   const row = JSON.parse(await readFile(resolve(directory, file), "utf8"));

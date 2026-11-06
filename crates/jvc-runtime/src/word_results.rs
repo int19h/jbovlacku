@@ -555,8 +555,13 @@ impl WordAttempt {
             .collect::<Result<_>>()?;
         let mut output = Vec::new();
         let mut unavailable = Vec::new();
+        let mut inactive = Vec::new();
         for (i, (t, s)) in p.summary.targets.iter().zip(&scores).enumerate() {
             let Some(s) = s else {
+                if candidates[i].eligibility == Eligibility::Ineligible {
+                    inactive.push(json!({"target":t.id,"status":t.status}));
+                    continue;
+                }
                 let mut reasons: std::collections::BTreeSet<String> = t.reasons.clone();
                 if let Some(c) = t.context {
                     reasons.extend(p.summary.contexts[c].reasons.iter().cloned());
@@ -684,7 +689,7 @@ impl WordAttempt {
             json!({"version":1,"contract":WORD_RESULT_CONTRACT,"binding":self.binding,"preparation_binding":p.summary.binding,"result_policy_binding":self.policy_binding,
             "word":p.summary.word,"algorithm":a::ALGORITHM,"numerically_approximate":true,"certified":false,
             "scores":output,"comparisons":comparisons,"layers":layers.layers,"layers_complete":!layers.incomplete,
-            "comparison_cycle":layers.comparison_cycle,"unavailable_scores":unavailable,"partial":!unavailable.is_empty(),
+            "comparison_cycle":layers.comparison_cycle,"inactive_targets":inactive,"unavailable_scores":unavailable,"partial":!unavailable.is_empty(),
             "rafsi_scope":"requested_word","unresolved_rafsi":unresolved_wire,"progress":self.snapshot()}),
         )
     }

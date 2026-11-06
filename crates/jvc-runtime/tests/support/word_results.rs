@@ -323,3 +323,37 @@ fn unresolved_rafsi_retains_potential_without_a_zero_placeholder() {
     );
     export(&f, "rafsi-unknown", &r.policy, &v);
 }
+
+#[test]
+fn known_inactive_pairs_do_not_make_a_complete_retired_word_partial() {
+    let (mut f, _, _, _) = rafsi_fixture();
+    let mut definitions: Vec<String> = f
+        .events
+        .iter()
+        .filter_map(|event| {
+            let event: Value = serde_json::from_str(event).unwrap();
+            (event["header"]["action"]["kind"] == "definition.publish")
+                .then(|| event["id"].as_str().unwrap().to_owned())
+        })
+        .collect();
+    for definition in &definitions {
+        f.event_after(
+            9,
+            vec![definition.clone()],
+            json!({"kind":"status.set","target":definition,"value":"deprecated"}),
+            None,
+        );
+    }
+    definitions.sort();
+    let (s, r) = setup(&f);
+    let v = run(&s, &r, 11);
+    assert_eq!(v["partial"], false);
+    assert_eq!(v["layers_complete"], true);
+    assert_eq!(v["layers"], json!([definitions]));
+    assert_eq!(v["inactive_targets"].as_array().unwrap().len(), 2);
+    assert_eq!(v["scores"].as_array().unwrap().len(), 2);
+    for score in v["scores"].as_array().unwrap() {
+        assert_eq!(score["support"], json!([0.0, 0.0]));
+    }
+    export(&f, "inactive-pairs", &r.policy, &v);
+}
