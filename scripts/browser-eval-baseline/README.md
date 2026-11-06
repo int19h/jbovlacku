@@ -56,10 +56,22 @@ It waits for its own child server's listening message before it uses that API.
 Both listeners bind to `127.0.0.1`.
 
 Normal completion, handled interruptions, and controlled output failures close the listeners and stop the copied server.
-Forced termination can bypass cleanup.
+An external SIGKILL or host termination can bypass cleanup.
 Graceful shutdown can wait for the copied server without a fixed deadline.
 Cancellation during data preparation is deferred until preparation returns.
 The default ports are 9250 for the copied service and 9251 for the measurement page.
+
+SIGINT, SIGTERM, and SIGHUP request graceful shutdown with exit status 130, 143, and 129, respectively.
+A second signal of any of those types triggers escalation.
+An output failure keeps exit status 1 through escalation and does not count as a signal.
+Cancellation admits no new trial or numerical operation, including operations whose setup was pending.
+The lifecycle registers each limiter before its initial scan and stops all registered limiters before browser or server shutdown.
+
+The second handled termination signal sets a 250 ms exit deadline independent of browser close, server exit, HTTP drain, or CDP completion.
+The forced path first disables every limiter and synchronously resumes matching recorded identities.
+It then kills the owned copied server through its child handle at the deadline.
+Playwright's process-exit hook terminates its owned Chromium process groups.
+The documented PID reuse limits also apply to this final resume pass.
 
 Run the small protocol probe first.
 The probe records whether Chromium accepts worker CPU throttling and measures a fixed worker loop.
@@ -222,8 +234,9 @@ It excludes map, node, string, allocator, capacity-slack, and transient-copy cos
 
 The helper tests cover percentile handling, profile categorization, ancestry-model preconditions, and cleanup of stopped processes.
 They also cover repeat-safe server shutdown and sample admission for fresh and cached datasets.
+Lifecycle tests cover late limiter setup, pending stop ticks, repeated and mixed signals, SIGHUP, and cancelled operation admission.
 Run them with the command below.
 
 ```sh
-node --test scripts/browser-eval-baseline/metrics.test.mjs
+node --test scripts/browser-eval-baseline/*.test.mjs
 ```

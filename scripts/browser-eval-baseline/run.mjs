@@ -18,14 +18,10 @@ import { spawn, execFileSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
 import { deserialize } from "node:v8";
 import { workerTimings, profileSummary } from "./metrics.mjs";
-import {
-  rendererLimiter,
-  childRunning,
-  stopChild,
-  configureWorkerThrottle,
-} from "./limits.mjs";
+import { childRunning, stopChild, configureWorkerThrottle } from "./limits.mjs";
 import { ancestryShape } from "./ancestry.mjs";
 import { validateSample, readCachedDataset } from "./samples.mjs";
+import { createLifecycle } from "./lifecycle.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const args = Object.fromEntries(
@@ -432,37 +428,32 @@ class WorkerCDP {
 }
 
 let serverProcess = null,
-  interrupted = false,
   activeCleanup = null,
-  shutdownPromise = null,
   outputFailure = null;
-
-function shutdown() {
-  if (!serverProcess && !activeCleanup) return Promise.resolve();
-  return (shutdownPromise ??= (async () => {
+const lifecycle = createLifecycle({
+  closeBrowser: async () => {
+    await activeCleanup?.();
+  },
+  stopServer: () => stopChild(serverProcess),
+  forceExit: (status) => {
     try {
-      await activeCleanup?.();
+      if (childRunning(serverProcess)) serverProcess.kill("SIGKILL");
     } finally {
-      await stopChild(serverProcess);
+      // Playwright's process-exit hook kills its owned browser process groups.
+      process.exit(status);
     }
-  })());
-}
+  },
+});
 
 function failOutput(error) {
   if (outputFailure) return;
   outputFailure = error;
-  interrupted = true;
-  process.exitCode = 1;
   console.error("Measurement output failed:", error);
-  void shutdown().catch((error) => console.error("Cleanup failed:", error));
+  lifecycle.fail(error);
 }
 
-for (const signal of ["SIGINT", "SIGTERM"])
-  process.on(signal, () => {
-    if (!interrupted) process.exitCode = signal === "SIGINT" ? 130 : 143;
-    interrupted = true;
-    void shutdown().catch((error) => console.error("Cleanup failed:", error));
-  });
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
+  process.on(signal, () => lifecycle.handleSignal(signal));
 async function startProductServer() {
   // Refuse an occupied port before sending any request to it.
   const reserved = createServer();
@@ -513,7 +504,7 @@ async function startProductServer() {
   });
   serverProcess.stderr.on("data", (chunk) => log.write(chunk));
   serverProcess.once("close", () => log.end());
-  if (interrupted) await shutdown();
+  if (lifecycle.cancelled) await lifecycle.shutdown();
   for (let i = 0; i < 600; i++) {
     if (!childRunning(serverProcess))
       throw Error(
@@ -608,6 +599,7 @@ if (!/^[A-Za-z0-9_.-]+$/.test(label))
 const output = join(out, `${label}.ndjson`);
 async function record(v) {
   if (outputFailure) throw outputFailure;
+  lifecycle.assertActive();
   const row = { timestamp: new Date().toISOString(), head, ...v };
   try {
     await appendFile(output, JSON.stringify(row) + "\n");
@@ -646,22 +638,29 @@ async function trial(condition, rep, profile = false) {
     closing = null;
   const closeBrowser = () =>
     (closing ??= (async () => {
-      await limiter?.stop();
+      clearInterval(watcher);
+      clearInterval(heartbeat);
       await browser?.close().catch(() => {});
     })());
+  const setup = (action) => lifecycle.runOperation(async () => {}, action);
   const cpuPids = new Map(),
     network = [];
   let caseId = `${condition.name}-${rep}${profile ? "-profile" : ""}`;
   const memory = async () => {
+    lifecycle.assertActive();
     const worker = workerCDP
-      ? await workerCDP.send("Runtime.getHeapUsage")
+      ? await setup(() => workerCDP.send("Runtime.getHeapUsage"))
       : null;
     const linear = workerCDP
-      ? await workerCDP.evaluate("self.measurement() ")
+      ? await setup(() => workerCDP.evaluate("self.measurement() "))
       : null;
     return {
-      page_js: pageCDP ? await pageCDP.send("Runtime.getHeapUsage") : null,
-      page: page ? await page.evaluate(() => window.bench.mainMemory()) : null,
+      page_js: pageCDP
+        ? await setup(() => pageCDP.send("Runtime.getHeapUsage"))
+        : null,
+      page: page
+        ? await setup(() => page.evaluate(() => window.bench.mainMemory()))
+        : null,
       worker_js: worker,
       worker: linear,
       browser_pss_bytes: lastPss,
@@ -672,99 +671,114 @@ async function trial(condition, rep, profile = false) {
     };
   };
   const cpu = async () => {
+    lifecycle.assertActive();
     const info = await rootCDP.send("SystemInfo.getProcessInfo");
     for (const p of info.processInfo)
       cpuPids.set(p.id, Math.max(cpuPids.get(p.id) ?? 0, p.cpuTime));
     return [...cpuPids.values()].reduce((a, b) => a + b, 0);
   };
-  const operation = async (label, fn, extra = {}) => {
-    phase = label;
-    const before = await cpu();
-    const start = performance.now();
-    console.log(
-      JSON.stringify({
-        trial: caseId,
-        starting: label,
-        spelling: extra.spelling,
-      }),
+  const operation = (label, fn, extra = {}) =>
+    lifecycle.runOperation(
+      async () => {
+        phase = label;
+        return cpu();
+      },
+      async (before) => {
+        const start = performance.now();
+        console.log(
+          JSON.stringify({
+            trial: caseId,
+            starting: label,
+            spelling: extra.spelling,
+          }),
+        );
+        let timer;
+        try {
+          if (
+            profile &&
+            workerCDP &&
+            /^(actors|load|increment-actors|increment-load|stress-actors|stress-load)$/.test(
+              label,
+            )
+          ) {
+            await setup(() => workerCDP.send("Profiler.enable"));
+            await setup(() =>
+              workerCDP.send("Profiler.setSamplingInterval", {
+                interval: 1000,
+              }),
+            );
+            await setup(() => workerCDP.send("Profiler.start"));
+          }
+          lifecycle.assertActive();
+          const value = await Promise.race([
+            fn(),
+            new Promise((_, reject) => {
+              timer = setTimeout(
+                () =>
+                  reject(
+                    Error(
+                      `Operation exceeded ${args["timeout-ms"] ?? 600000} ms`,
+                    ),
+                  ),
+                Number(args["timeout-ms"] ?? 600000),
+              );
+            }),
+          ]);
+          lifecycle.assertActive();
+          const ms = performance.now() - start;
+          clearTimeout(timer);
+          if (
+            profile &&
+            workerCDP &&
+            /^(actors|load|increment-actors|increment-load|stress-actors|stress-load)$/.test(
+              label,
+            )
+          ) {
+            const { profile: p } = await setup(() =>
+              workerCDP.send("Profiler.stop"),
+            );
+            const name = `${args.label ?? "measurements"}-${caseId}-${label.replaceAll(/[^a-z0-9-]/gi, "_")}.cpuprofile`;
+            await writeFile(join(out, name), JSON.stringify(p));
+            await record({
+              type: "profile",
+              trial: caseId,
+              condition: condition.name,
+              phase: label,
+              file: name,
+              summary: profileSummary(p),
+            });
+          }
+          const row = {
+            type: "operation",
+            trial: caseId,
+            condition: condition.name,
+            phase: label,
+            ms,
+            cpu_seconds: (await cpu()) - before,
+            value,
+            memory: await memory(),
+            ...extra,
+          };
+          await record(row);
+          return value;
+        } catch (e) {
+          await record({
+            type: "operation-error",
+            trial: caseId,
+            condition: condition.name,
+            phase: label,
+            ms: performance.now() - start,
+            error: String(e),
+            ...extra,
+          });
+          throw e;
+        } finally {
+          clearTimeout(timer);
+        }
+      },
     );
-    let timer;
-    try {
-      if (
-        profile &&
-        workerCDP &&
-        /^(actors|load|increment-actors|increment-load|stress-actors|stress-load)$/.test(
-          label,
-        )
-      ) {
-        await workerCDP.send("Profiler.enable");
-        await workerCDP.send("Profiler.setSamplingInterval", {
-          interval: 1000,
-        });
-        await workerCDP.send("Profiler.start");
-      }
-      const value = await Promise.race([
-        fn(),
-        new Promise((_, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                Error(`Operation exceeded ${args["timeout-ms"] ?? 600000} ms`),
-              ),
-            Number(args["timeout-ms"] ?? 600000),
-          );
-        }),
-      ]);
-      const ms = performance.now() - start;
-      clearTimeout(timer);
-      if (
-        profile &&
-        workerCDP &&
-        /^(actors|load|increment-actors|increment-load|stress-actors|stress-load)$/.test(
-          label,
-        )
-      ) {
-        const { profile: p } = await workerCDP.send("Profiler.stop");
-        const name = `${args.label ?? "measurements"}-${caseId}-${label.replaceAll(/[^a-z0-9-]/gi, "_")}.cpuprofile`;
-        await writeFile(join(out, name), JSON.stringify(p));
-        await record({
-          type: "profile",
-          trial: caseId,
-          condition: condition.name,
-          phase: label,
-          file: name,
-          summary: profileSummary(p),
-        });
-      }
-      const row = {
-        type: "operation",
-        trial: caseId,
-        condition: condition.name,
-        phase: label,
-        ms,
-        cpu_seconds: (await cpu()) - before,
-        value,
-        memory: await memory(),
-        ...extra,
-      };
-      await record(row);
-      return value;
-    } catch (e) {
-      await record({
-        type: "operation-error",
-        trial: caseId,
-        condition: condition.name,
-        phase: label,
-        ms: performance.now() - start,
-        error: String(e),
-        ...extra,
-      });
-      throw e;
-    } finally {
-      clearTimeout(timer);
-    }
-  };
   try {
+    lifecycle.assertActive();
     const launchArgs = [
       "--enable-precise-memory-info",
       "--disable-background-timer-throttling",
@@ -777,13 +791,14 @@ async function trial(condition, rep, profile = false) {
       args: launchArgs,
       handleSIGINT: false,
       handleSIGTERM: false,
+      handleSIGHUP: false,
     });
     activeCleanup = closeBrowser;
-    if (interrupted) return;
+    if (lifecycle.cancelled) return;
     manifest.chromium = browser.version();
-    rootCDP = await browser.newBrowserCDPSession();
-    const context = await browser.newContext();
-    page = await context.newPage();
+    rootCDP = await setup(() => browser.newBrowserCDPSession());
+    const context = await setup(() => browser.newContext());
+    page = await setup(() => context.newPage());
     page.setDefaultTimeout(600000);
     context.on("requestfinished", async (request) => {
       const attribution = phase;
@@ -799,18 +814,23 @@ async function trial(condition, rep, profile = false) {
       if (m.type() === "error")
         console.log(JSON.stringify({ trial: caseId, console: m.text() }));
     });
-    pageCDP = await context.newCDPSession(page);
-    await pageCDP.send("Network.enable");
-    await pageCDP.send("Network.setCacheDisabled", { cacheDisabled: true });
-    await pageCDP.send("Emulation.setCPUThrottlingRate", {
-      rate: condition.rate,
-    });
+    pageCDP = await setup(() => context.newCDPSession(page));
+    await setup(() => pageCDP.send("Network.enable"));
+    await setup(() =>
+      pageCDP.send("Network.setCacheDisabled", { cacheDisabled: true }),
+    );
+    await setup(() =>
+      pageCDP.send("Emulation.setCPUThrottlingRate", {
+        rate: condition.rate,
+      }),
+    );
     let sampling = false;
     watcher = setInterval(async () => {
-      if (sampling || !browser?.isConnected()) return;
+      if (sampling || lifecycle.cancelled || !browser?.isConnected()) return;
       sampling = true;
       try {
         const info = await rootCDP.send("SystemInfo.getProcessInfo");
+        if (lifecycle.cancelled) return;
         let bytes = 0;
         for (const p of info.processInfo) {
           cpuPids.set(p.id, Math.max(cpuPids.get(p.id) ?? 0, p.cpuTime));
@@ -832,24 +852,23 @@ async function trial(condition, rep, profile = false) {
       }
     }, 500);
     const navigationStart = performance.now();
-    heartbeat = setInterval(
-      () =>
-        record({
-          type: "heartbeat",
-          trial: caseId,
-          condition: condition.name,
-          phase,
-          browser_pss_bytes: lastPss,
-          browser_pss_peak: pssPeak,
-          cpu_seconds: [...cpuPids.values()].reduce((a, b) => a + b, 0),
-        }).catch((error) => {
-          clearInterval(heartbeat);
-          failOutput(error);
-        }),
-      30000,
-    );
-    await page.goto(`http://127.0.0.1:${port}`);
-    await page.waitForFunction(() => !!window.bench);
+    heartbeat = setInterval(() => {
+      if (lifecycle.cancelled) return;
+      void record({
+        type: "heartbeat",
+        trial: caseId,
+        condition: condition.name,
+        phase,
+        browser_pss_bytes: lastPss,
+        browser_pss_peak: pssPeak,
+        cpu_seconds: [...cpuPids.values()].reduce((a, b) => a + b, 0),
+      }).catch((error) => {
+        clearInterval(heartbeat);
+        if (!lifecycle.cancelled) failOutput(error);
+      });
+    }, 30000);
+    await setup(() => page.goto(`http://127.0.0.1:${port}`));
+    await setup(() => page.waitForFunction(() => !!window.bench));
     await record({
       type: "navigation",
       trial: caseId,
@@ -864,8 +883,13 @@ async function trial(condition, rep, profile = false) {
     // Page-only CDP throttling does not slow dedicated workers. The diagnostic
     // uses a separately labeled renderer duty cycle, without double-throttling.
     if ((!args.probe || args["worker-limit"]) && condition.rate > 1) {
-      await pageCDP.send("Emulation.setCPUThrottlingRate", { rate: 1 });
-      limiter = await rendererLimiter(rootCDP, condition.rate);
+      lifecycle.assertActive();
+      if (closing) throw Error("Measurement interrupted during browser close.");
+      await setup(() =>
+        pageCDP.send("Emulation.setCPUThrottlingRate", { rate: 1 }),
+      );
+      limiter = await lifecycle.startLimiter(rootCDP, condition.rate);
+      lifecycle.assertActive();
     }
     const diagnosticStart = performance.now();
     if (!args.probe)
@@ -881,10 +905,12 @@ async function trial(condition, rep, profile = false) {
       );
     }
     const workerReady = page.waitForEvent("worker");
-    await page.evaluate(() => window.bench.start());
-    const playwrightWorker = await workerReady;
+    void workerReady.catch(() => {});
+    await setup(() => page.evaluate(() => window.bench.start()));
+    const playwrightWorker = await setup(() => workerReady);
     let target;
     for (let i = 0; i < 50; i++) {
+      lifecycle.assertActive();
       target = (await rootCDP.send("Target.getTargets")).targetInfos.find(
         (t) => t.type === "worker" && t.url.endsWith("/worker.js"),
       );
@@ -892,21 +918,23 @@ async function trial(condition, rep, profile = false) {
       await delay(20);
     }
     if (!target) throw Error("No dedicated evaluation worker target.");
-    const attached = await rootCDP.send("Target.attachToTarget", {
-      targetId: target.targetId,
-      flatten: false,
-    });
-    workerCDP = new WorkerCDP(rootCDP, attached.sessionId);
-    await limiter?.sync();
-    const workerThrottle = await configureWorkerThrottle(
-      workerCDP,
-      condition.rate,
-      limiter,
+    const attached = await setup(() =>
+      rootCDP.send("Target.attachToTarget", {
+        targetId: target.targetId,
+        flatten: false,
+      }),
     );
-    await workerCDP.send("Runtime.enable");
+    workerCDP = new WorkerCDP(rootCDP, attached.sessionId);
+    await setup(() => limiter?.sync());
+    const workerThrottle = await setup(() =>
+      configureWorkerThrottle(workerCDP, condition.rate, limiter),
+    );
+    await setup(() => workerCDP.send("Runtime.enable"));
     const calibrate = async () => {
-      const value = await workerCDP.evaluate(
-        "(()=>{let x=1;const start=performance.now();for(let i=0;i<400000000;i++)x=(Math.imul(x,1664525)+1013904223)|0;return {ms:performance.now()-start,iterations:400000000,checksum:x};})()",
+      const value = await setup(() =>
+        workerCDP.evaluate(
+          "(()=>{let x=1;const start=performance.now();for(let i=0;i<400000000;i++)x=(Math.imul(x,1664525)+1013904223)|0;return {ms:performance.now()-start,iterations:400000000,checksum:x};})()",
+        ),
       );
       await record({
         type: "calibration",
@@ -946,7 +974,7 @@ async function trial(condition, rep, profile = false) {
       ms: performance.now() - diagnosticStart,
       network: [...network],
     });
-    await page.evaluate(() => window.bench.releaseInput());
+    await setup(() => page.evaluate(() => window.bench.releaseInput()));
     await calibrate();
     if (context.pages().length !== 1 || page.workers().length !== 1)
       throw Error("Measurement requires one page and one worker.");
@@ -972,6 +1000,8 @@ async function trial(condition, rep, profile = false) {
         );
       } catch (e) {
         if (
+          lifecycle.cancelled ||
+          outputFailure ||
           budgetFailure ||
           !browser.isConnected() ||
           page.isClosed() ||
@@ -981,8 +1011,8 @@ async function trial(condition, rep, profile = false) {
       }
     };
     if (profile) {
-      await workerCDP.send("Profiler.enable");
-      await workerCDP.send("Profiler.start");
+      await setup(() => workerCDP.send("Profiler.enable"));
+      await setup(() => workerCDP.send("Profiler.start"));
     }
     for (const [i, w] of sample.entries())
       await rankOne(
@@ -991,7 +1021,7 @@ async function trial(condition, rep, profile = false) {
         "base",
       );
     if (profile) {
-      const { profile: p } = await workerCDP.send("Profiler.stop");
+      const { profile: p } = await setup(() => workerCDP.send("Profiler.stop"));
       const file = `${label}-${caseId}-ranks.cpuprofile`;
       await writeFile(join(out, file), JSON.stringify(p));
       await record({
@@ -1004,8 +1034,8 @@ async function trial(condition, rep, profile = false) {
       });
     }
     await operation("post-rank-gc", async () => {
-      await workerCDP.send("HeapProfiler.collectGarbage");
-      await pageCDP.send("HeapProfiler.collectGarbage");
+      await setup(() => workerCDP.send("HeapProfiler.collectGarbage"));
+      await setup(() => pageCDP.send("HeapProfiler.collectGarbage"));
       return { gc_requested: true };
     });
     if (args["stress-only"]) {
@@ -1044,7 +1074,7 @@ async function trial(condition, rep, profile = false) {
     );
     if (!updated.available)
       throw Error(`Updated evaluation unavailable: ${updated.reasons}`);
-    await page.evaluate(() => window.bench.releaseInput());
+    await setup(() => page.evaluate(() => window.bench.releaseInput()));
     for (const [i, w] of sample.entries())
       await rankOne(
         { ...w, sample_index: i, first_word: i === 0 },
@@ -1072,8 +1102,9 @@ async function trial(condition, rep, profile = false) {
   } finally {
     clearInterval(watcher);
     clearInterval(heartbeat);
-    activeCleanup = null;
+    await lifecycle.stopLimiters();
     await closeBrowser();
+    if (activeCleanup === closeBrowser) activeCleanup = null;
   }
 }
 try {
@@ -1085,7 +1116,7 @@ try {
       )
     )
       throw Error("The measurement requires an exact-profile view.");
-    if (!interrupted) await startProductServer();
+    if (!lifecycle.cancelled) await startProductServer();
     global.gc?.();
   }
   const modes = {
@@ -1107,8 +1138,8 @@ try {
   const repeats = Number(args.repeats ?? (args.probe ? 1 : 3));
   if (!Number.isInteger(repeats) || repeats < 1 || repeats > 10)
     throw Error("Choose 1 through 10 repetitions.");
-  for (let rep = 0; rep < repeats && !interrupted; rep++)
-    for (let i = 0; i < selected.length && !interrupted; i++)
+  for (let rep = 0; rep < repeats && !lifecycle.cancelled; rep++)
+    for (let i = 0; i < selected.length && !lifecycle.cancelled; i++)
       await trial(selected[(i + rep) % selected.length], rep, !!args.profile);
   await writeFile(
     join(
@@ -1157,8 +1188,8 @@ try {
     JSON.stringify(summary, null, 2),
   );
 } catch (error) {
-  if (!interrupted) throw error;
+  if (!lifecycle.cancelled) throw error;
 } finally {
-  await shutdown();
+  await lifecycle.shutdown();
   await new Promise((r) => http.close(r));
 }
