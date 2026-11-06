@@ -316,10 +316,10 @@ A process restart loses this in-memory cache and its markers.
 
 ## Setup measurement
 
-The `jvc-state` example `ranking_setup_size` measures a trusted checkpoint and projected node stream.
-Run it with a core-result JSON file and a node-per-line JSON file.
-It reports source bytes, structural records, setup bytes, and setup units against existing ceilings.
-It restores the checkpoint and streams its source without retaining a source serialization buffer.
+Use the `jvc-runtime` example `ranking_setup_measurement` for the current index-based setup model.
+It reports measured heap, index counts, modeled setup bytes and units, source bytes, and hash-walk timing.
+Source hashing has independent byte and time limits, as described above.
+The [allocation measurement guide](#measure-setup-allocation) gives the command and trusted-input requirements.
 Measurement does not change runtime policy limits.
 
 ## Partial decisions and remaining limits
