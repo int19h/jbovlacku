@@ -14,6 +14,9 @@ It does not restrict expressly authorized work on private GitHub issues and pull
 
 The Rust libraries implement canonical records, SSHSIG signatures, causal state, identity continuity, imported account controls, and exact ranking bounds.
 Native and WebAssembly builds share the format rules. The TypeScript application uses generated WebAssembly bindings.
+Full evaluation inputs and carrier imports reuse a bounded public-key cache.
+Every record still applies the complete signature profile and equation, with the same rejection errors.
+The [development guide](docs/development.md#signature-verification) explains the cache and the verification cost example.
 
 The definition validator accepts omitted [optional definition fields](docs/format.md#absent-fields-and-compatibility) and their explicit default values.
 Readers and editors apply defaults to separate interpreted values. Stored bodies, exports, hashes, signatures, and event IDs retain the original signed content.

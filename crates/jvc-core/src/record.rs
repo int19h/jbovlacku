@@ -261,26 +261,64 @@ pub fn body_descriptor(bytes: &[u8]) -> Result<ContentDescriptor> {
 }
 const VERIFIED_KEY_CACHE_LIMIT: usize = 1024;
 /// A bounded, local cache of public keys that passed the static profile checks.
-/// Every record still checks its signature point, scalar, and equation.
+/// Every record still applies the complete signature profile and equation.
+/// The least recently used key leaves the cache at its 1,024-key limit.
 #[derive(Default)]
 pub struct EnvelopeVerifier {
-    keys: BTreeMap<[u8; 32], signature::ValidatedPublicKey>,
+    keys: BTreeMap<[u8; 32], (signature::ValidatedPublicKey, u64)>,
+    recency: BTreeMap<u64, [u8; 32]>,
+    clock: u64,
+    public_key_checks: u64,
 }
 impl EnvelopeVerifier {
+    /// Count static public-key profile checks, including failed checks.
+    pub fn public_key_checks(&self) -> u64 {
+        self.public_key_checks
+    }
     pub fn verify(&mut self, bytes: &[u8]) -> Result<VerifiedEnvelope> {
         if bytes.len() > MAX_ENVELOPE_BYTES {
             return Err(Error::new("size", "complete envelope exceeds 20 KiB"));
         }
         self.verify_value(parse_json(bytes)?)
     }
+    /// Read a canonical stored envelope with the same bounded key cache.
+    pub fn verify_stored(&mut self, bytes: &[u8]) -> Result<VerifiedEnvelope> {
+        if bytes.len() > MAX_ENVELOPE_BYTES {
+            return Err(Error::new("size", "complete envelope exceeds 20 KiB"));
+        }
+        self.verify_value(parse_stored_json(bytes)?)
+    }
+    fn tick(&mut self) -> u64 {
+        if self.clock == u64::MAX {
+            // Keep the order on wrap, with bounded work and storage.
+            let order = std::mem::take(&mut self.recency);
+            for (i, bytes) in order.into_values().enumerate() {
+                let stamp = i as u64;
+                self.keys.get_mut(&bytes).unwrap().1 = stamp;
+                self.recency.insert(stamp, bytes);
+            }
+            self.clock = self.keys.len() as u64;
+        }
+        let stamp = self.clock;
+        self.clock += 1;
+        stamp
+    }
     fn public_key(&mut self, bytes: &[u8; 32]) -> Result<signature::ValidatedPublicKey> {
-        if let Some(key) = self.keys.get(bytes) {
+        let stamp = self.tick();
+        if let Some((key, old_stamp)) = self.keys.get_mut(bytes) {
+            self.recency.remove(old_stamp);
+            *old_stamp = stamp;
+            self.recency.insert(stamp, *bytes);
             return Ok(key.clone());
         }
+        self.public_key_checks = self.public_key_checks.saturating_add(1);
         let key = signature::ValidatedPublicKey::new(bytes)?;
-        if self.keys.len() < VERIFIED_KEY_CACHE_LIMIT {
-            self.keys.insert(*bytes, key.clone());
+        if self.keys.len() == VERIFIED_KEY_CACHE_LIMIT {
+            let (_, oldest) = self.recency.pop_first().unwrap();
+            self.keys.remove(&oldest);
         }
+        self.keys.insert(*bytes, (key.clone(), stamp));
+        self.recency.insert(stamp, *bytes);
         Ok(key)
     }
     fn verify_value(&mut self, value: Value) -> Result<VerifiedEnvelope> {
@@ -339,10 +377,7 @@ pub fn verify_envelope(bytes: &[u8]) -> Result<VerifiedEnvelope> {
     EnvelopeVerifier::default().verify(bytes)
 }
 pub fn verify_stored_envelope(bytes: &[u8]) -> Result<VerifiedEnvelope> {
-    if bytes.len() > MAX_ENVELOPE_BYTES {
-        return Err(Error::new("size", "complete envelope exceeds 20 KiB"));
-    }
-    verify_value(parse_stored_json(bytes)?)
+    EnvelopeVerifier::default().verify_stored(bytes)
 }
 pub fn sign_header(seed: &[u8; 32], header: Header) -> Result<VerifiedEnvelope> {
     if header.issuer != signature::identity_from_seed(seed) {
@@ -452,19 +487,20 @@ pub fn import_jsonl(bytes: &[u8]) -> Result<Vec<VerifiedEnvelope>> {
         return Ok(Vec::new());
     }
     let mut events = Vec::new();
+    let mut verifier = EnvelopeVerifier::default();
     for line in bytes
         .strip_suffix(b"\n")
         .unwrap_or(bytes)
         .split(|b| *b == b'\n')
     {
-        events.push(verify_stored_envelope(line)?);
+        events.push(verifier.verify_stored(line)?);
     }
     let export = export_jsonl(&events)?;
     export
         .strip_suffix(b"\n")
         .unwrap_or(&export)
         .split(|b| *b == b'\n')
-        .map(verify_stored_envelope)
+        .map(|line| verifier.verify_stored(line))
         .collect()
 }
 
@@ -503,5 +539,57 @@ mod hash_writer_tests {
         let (hash, bytes) = writer.finish("sha256:");
         assert_eq!(bytes, 7);
         assert_eq!(hash, hash_id("sha256:", b"domain\n", b"abcdefg"));
+    }
+}
+
+#[cfg(test)]
+mod verifier_cache_tests {
+    use super::*;
+    use curve25519_dalek::{constants::ED25519_BASEPOINT_POINT, scalar::Scalar};
+
+    #[test]
+    fn key_cache_keeps_recent_keys_after_its_limit_and_clock_wrap() {
+        let mut verifier = EnvelopeVerifier::default();
+        let keys: Vec<_> = (1..=VERIFIED_KEY_CACHE_LIMIT + 2)
+            .map(|i| {
+                (Scalar::from(i as u64) * ED25519_BASEPOINT_POINT)
+                    .compress()
+                    .to_bytes()
+            })
+            .collect();
+        for bytes in &keys[..VERIFIED_KEY_CACHE_LIMIT] {
+            verifier.public_key(bytes).unwrap();
+        }
+        verifier.public_key(&keys[0]).unwrap();
+        verifier
+            .public_key(&keys[VERIFIED_KEY_CACHE_LIMIT])
+            .unwrap();
+        assert!(verifier.keys.contains_key(&keys[0]));
+        assert!(!verifier.keys.contains_key(&keys[1]));
+        let checks = verifier.public_key_checks();
+        for _ in 0..5 {
+            verifier
+                .public_key(&keys[VERIFIED_KEY_CACHE_LIMIT])
+                .unwrap();
+        }
+        assert_eq!(verifier.public_key_checks(), checks);
+        verifier.clock = u64::MAX;
+        verifier.public_key(&keys[0]).unwrap();
+        verifier
+            .public_key(&keys[VERIFIED_KEY_CACHE_LIMIT + 1])
+            .unwrap();
+        assert!(verifier.keys.contains_key(&keys[0]));
+        assert!(!verifier.keys.contains_key(&keys[2]));
+        assert_eq!(verifier.keys.len(), VERIFIED_KEY_CACHE_LIMIT);
+        assert_eq!(verifier.recency.len(), VERIFIED_KEY_CACHE_LIMIT);
+        for (bytes, (_, stamp)) in &verifier.keys {
+            assert_eq!(verifier.recency.get(stamp), Some(bytes));
+        }
+        let checks = verifier.public_key_checks();
+        for _ in 0..2 {
+            assert!(verifier.public_key(&[0; 32]).is_err());
+        }
+        assert_eq!(verifier.public_key_checks(), checks + 2);
+        assert_eq!(verifier.keys.len(), VERIFIED_KEY_CACHE_LIMIT);
     }
 }
