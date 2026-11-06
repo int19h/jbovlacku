@@ -1,4 +1,7 @@
 import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 
 export function validateSample(sample) {
   const middle = sample?.[20]?.cohort;
@@ -28,7 +31,28 @@ export async function readCachedDataset(path) {
   } catch {
     return null;
   }
-  if (dataset?.schema === 2 || dataset?.schema === 3)
+  if (dataset?.schema === 2 || dataset?.schema === 3) {
     validateSample(dataset.sample);
+    try {
+      const hash = createHash("sha256");
+      let bytes = 0;
+      for await (const chunk of createReadStream(
+        join(dirname(path), "input.json"),
+      )) {
+        bytes += chunk.length;
+        hash.update(chunk);
+      }
+      if (
+        bytes !== dataset.input_bytes ||
+        hash.digest("hex") !== dataset.input_sha256
+      )
+        throw Error("The cached hash or byte count differs.");
+    } catch (cause) {
+      throw Error(
+        "Cached input is missing or differs from its recorded hash and byte count.",
+        { cause },
+      );
+    }
+  }
   return dataset;
 }

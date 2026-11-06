@@ -5,10 +5,40 @@ import { readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { distribution, profileSummary } from "./metrics.mjs";
-import { rendererLimiter, childRunning, stopChild } from "./limits.mjs";
+import { createHash } from "node:crypto";
+import { distribution, profileSummary, workerTimings } from "./metrics.mjs";
+import {
+  rendererLimiter,
+  childRunning,
+  stopChild,
+  configureWorkerThrottle,
+} from "./limits.mjs";
 import { validateSample, readCachedDataset } from "./samples.mjs";
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+test("an active renderer limiter skips even a successful worker throttle command", async () => {
+  const commands = [];
+  const cdp = { send: async (...args) => commands.push(args) };
+  assert.equal(
+    await configureWorkerThrottle(cdp, 4, {}),
+    "skipped: renderer limiter active",
+  );
+  assert.deepEqual(commands, []);
+  assert.equal(await configureWorkerThrottle(cdp, 4, null), "applied");
+  assert.deepEqual(commands, [["Emulation.setCPUThrottlingRate", { rate: 4 }]]);
+});
+
+test("worker distributions count missing timings without substituting parent time", () => {
+  const result = workerTimings([
+    { ms: 100, value: { measurement: { worker_ms: 4 } } },
+    { ms: 200, value: {} },
+    { ms: 300, value: { measurement: { worker_ms: NaN } } },
+    { ms: 400, value: { measurement: { worker_ms: 0 } } },
+  ]);
+  assert.equal(result.n, 2);
+  assert.equal(result.max, 4);
+  assert.equal(result.p50, 0);
+  assert.equal(result.missing_worker_timings, 2);
+});
 test("nearest-rank distributions retain zeros and exclude non-finite observations", () => {
   assert.deepEqual(distribution([]), {
     n: 0,
@@ -176,9 +206,51 @@ test("cached sample admission rejects undersized schema-2 and schema-3 datasets"
         readCachedDataset(path),
         /60 distinct eligible words/,
       );
-      const valid = { schema, sample: sampleWords() };
+      const bytes = Buffer.from("{}");
+      await writeFile(join(directory, "input.json"), bytes);
+      const valid = {
+        schema,
+        sample: sampleWords(),
+        input_bytes: bytes.length,
+        input_sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
       await writeFile(path, JSON.stringify(valid));
       assert.deepEqual(await readCachedDataset(path), valid);
+    }
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test("cached input integrity rejects changed hashes, byte counts, and missing files", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "browser-eval-integrity-"));
+  const path = join(directory, "dataset.json");
+  const input = join(directory, "input.json");
+  try {
+    for (const schema of [2, 3]) {
+      const bytes = Buffer.from("{}");
+      const dataset = {
+        schema,
+        sample: sampleWords(),
+        input_bytes: 2,
+        input_sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+      await writeFile(path, JSON.stringify(dataset));
+      await writeFile(input, "[]");
+      await assert.rejects(
+        readCachedDataset(path),
+        /Cached input is missing or differs/,
+      );
+      await writeFile(input, "{} ");
+      await assert.rejects(
+        readCachedDataset(path),
+        /Cached input is missing or differs/,
+      );
+      await rm(input);
+      await assert.rejects(
+        readCachedDataset(path),
+        /Cached input is missing or differs/,
+      );
     }
   } finally {
     await rm(directory, { recursive: true });

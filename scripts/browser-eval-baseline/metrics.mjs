@@ -15,6 +15,15 @@ export function distribution(values) {
       : null,
   };
 }
+export function workerTimings(records) {
+  const values = records.map((r) => r.value?.measurement?.worker_ms);
+  return {
+    ...distribution(values),
+    missing_worker_timings: values.filter((value) => !Number.isFinite(value))
+      .length,
+  };
+}
+
 export function profileSummary(profile) {
   const nodes = new Map(profile.nodes.map((n) => [n.id, n]));
   const parents = new Map();

@@ -17,8 +17,13 @@ import { createHash } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
 import { deserialize } from "node:v8";
-import { distribution, profileSummary } from "./metrics.mjs";
-import { rendererLimiter, childRunning, stopChild } from "./limits.mjs";
+import { workerTimings, profileSummary } from "./metrics.mjs";
+import {
+  rendererLimiter,
+  childRunning,
+  stopChild,
+  configureWorkerThrottle,
+} from "./limits.mjs";
 import { ancestryShape } from "./ancestry.mjs";
 import { validateSample, readCachedDataset } from "./samples.mjs";
 
@@ -85,6 +90,14 @@ await build({
   logLevel: "error",
 });
 await build({
+  entryPoints: [join(root, "apps/web/src/workers/evaluate.ts")],
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  outfile: join(assets, "product-worker.js"),
+  logLevel: "error",
+});
+await build({
   entryPoints: [join(root, "scripts/browser-eval-baseline/worker.mjs")],
   bundle: true,
   format: "esm",
@@ -118,6 +131,7 @@ const manifest = {
   memory: capture("free", ["-b"]),
   wasm_sha256: sha(await readFile(wasmPath)),
   worker_sha256: sha(await readFile(join(assets, "worker.js"))),
+  product_worker_sha256: sha(await readFile(join(assets, "product-worker.js"))),
   page_sha256: sha(await readFile(join(assets, "page.js"))),
   config: args,
 };
@@ -419,15 +433,35 @@ class WorkerCDP {
 
 let serverProcess = null,
   interrupted = false,
-  activeCleanup = null;
-for (const signal of ["SIGINT", "SIGTERM"])
-  process.once(signal, () => {
-    interrupted = true;
-    process.exitCode = signal === "SIGINT" ? 130 : 143;
-    void (async () => {
+  activeCleanup = null,
+  shutdownPromise = null,
+  outputFailure = null;
+
+function shutdown() {
+  if (!serverProcess && !activeCleanup) return Promise.resolve();
+  return (shutdownPromise ??= (async () => {
+    try {
       await activeCleanup?.();
+    } finally {
       await stopChild(serverProcess);
-    })();
+    }
+  })());
+}
+
+function failOutput(error) {
+  if (outputFailure) return;
+  outputFailure = error;
+  interrupted = true;
+  process.exitCode = 1;
+  console.error("Measurement output failed:", error);
+  void shutdown().catch((error) => console.error("Cleanup failed:", error));
+}
+
+for (const signal of ["SIGINT", "SIGTERM"])
+  process.on(signal, () => {
+    if (!interrupted) process.exitCode = signal === "SIGINT" ? 130 : 143;
+    interrupted = true;
+    void shutdown().catch((error) => console.error("Cleanup failed:", error));
   });
 async function startProductServer() {
   // Refuse an occupied port before sending any request to it.
@@ -479,6 +513,7 @@ async function startProductServer() {
   });
   serverProcess.stderr.on("data", (chunk) => log.write(chunk));
   serverProcess.once("close", () => log.end());
+  if (interrupted) await shutdown();
   for (let i = 0; i < 600; i++) {
     if (!childRunning(serverProcess))
       throw Error(
@@ -535,7 +570,12 @@ const http = createServer(async (req, res) => {
     "/": [null, "text/html"],
     "/page.js": [join(assets, "page.js"), "text/javascript"],
     "/worker.js": [join(assets, "worker.js"), "text/javascript"],
+    "/workers/evaluate.ts": [
+      join(assets, "product-worker.js"),
+      "text/javascript",
+    ],
     "/jvc_runtime_bg.wasm": [wasmPath, "application/wasm"],
+    "/workers/jvc_runtime_bg.wasm": [wasmPath, "application/wasm"],
     "/input.json": [join(out, "input.json"), "application/json"],
   };
   const entry = map[req.url];
@@ -567,9 +607,15 @@ if (!/^[A-Za-z0-9_.-]+$/.test(label))
   throw Error("Use a simple output label without path separators.");
 const output = join(out, `${label}.ndjson`);
 async function record(v) {
+  if (outputFailure) throw outputFailure;
   const row = { timestamp: new Date().toISOString(), head, ...v };
+  try {
+    await appendFile(output, JSON.stringify(row) + "\n");
+  } catch (error) {
+    failOutput(error);
+    throw error;
+  }
   records.push(row);
-  await appendFile(output, JSON.stringify(row) + "\n");
   console.log(
     JSON.stringify({
       trial: row.trial,
@@ -596,7 +642,13 @@ async function trial(condition, rep, profile = false) {
     pssPeak = 0,
     lastPss = 0,
     lastPssAt = 0,
-    budgetFailure = null;
+    budgetFailure = null,
+    closing = null;
+  const closeBrowser = () =>
+    (closing ??= (async () => {
+      await limiter?.stop();
+      await browser?.close().catch(() => {});
+    })());
   const cpuPids = new Map(),
     network = [];
   let caseId = `${condition.name}-${rep}${profile ? "-profile" : ""}`;
@@ -720,11 +772,14 @@ async function trial(condition, rep, profile = false) {
     ];
     if (condition.oldSpace)
       launchArgs.push(`--js-flags=--max-old-space-size=${condition.oldSpace}`);
-    browser = await chromium.launch({ headless: true, args: launchArgs });
-    activeCleanup = async () => {
-      await limiter?.stop();
-      await browser?.close().catch(() => {});
-    };
+    browser = await chromium.launch({
+      headless: true,
+      args: launchArgs,
+      handleSIGINT: false,
+      handleSIGTERM: false,
+    });
+    activeCleanup = closeBrowser;
+    if (interrupted) return;
     manifest.chromium = browser.version();
     rootCDP = await browser.newBrowserCDPSession();
     const context = await browser.newContext();
@@ -787,6 +842,9 @@ async function trial(condition, rep, profile = false) {
           browser_pss_bytes: lastPss,
           browser_pss_peak: pssPeak,
           cpu_seconds: [...cpuPids.values()].reduce((a, b) => a + b, 0),
+        }).catch((error) => {
+          clearInterval(heartbeat);
+          failOutput(error);
         }),
       30000,
     );
@@ -840,15 +898,11 @@ async function trial(condition, rep, profile = false) {
     });
     workerCDP = new WorkerCDP(rootCDP, attached.sessionId);
     await limiter?.sync();
-    let workerThrottle;
-    try {
-      await workerCDP.send("Emulation.setCPUThrottlingRate", {
-        rate: condition.rate,
-      });
-      workerThrottle = "applied";
-    } catch (e) {
-      workerThrottle = String(e);
-    }
+    const workerThrottle = await configureWorkerThrottle(
+      workerCDP,
+      condition.rate,
+      limiter,
+    );
     await workerCDP.send("Runtime.enable");
     const calibrate = async () => {
       const value = await workerCDP.evaluate(
@@ -1019,8 +1073,7 @@ async function trial(condition, rep, profile = false) {
     clearInterval(watcher);
     clearInterval(heartbeat);
     activeCleanup = null;
-    await limiter?.stop();
-    await browser?.close().catch(() => {});
+    await closeBrowser();
   }
 }
 try {
@@ -1032,7 +1085,7 @@ try {
       )
     )
       throw Error("The measurement requires an exact-profile view.");
-    await startProductServer();
+    if (!interrupted) await startProductServer();
     global.gc?.();
   }
   const modes = {
@@ -1085,15 +1138,13 @@ try {
             "increment-load",
           ].map((phase) => [
             phase,
-            distribution(
-              records
-                .filter(
-                  (r) =>
-                    r.type === "operation" &&
-                    r.condition === c.name &&
-                    r.phase === phase,
-                )
-                .map((r) => r.value?.measurement?.worker_ms ?? r.ms),
+            workerTimings(
+              records.filter(
+                (r) =>
+                  r.type === "operation" &&
+                  r.condition === c.name &&
+                  r.phase === phase,
+              ),
             ),
           ]),
         ),
@@ -1105,7 +1156,9 @@ try {
     join(out, `${label}-summary.json`),
     JSON.stringify(summary, null, 2),
   );
+} catch (error) {
+  if (!interrupted) throw error;
 } finally {
+  await shutdown();
   await new Promise((r) => http.close(r));
-  await stopChild(serverProcess);
 }

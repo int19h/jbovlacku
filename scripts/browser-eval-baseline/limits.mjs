@@ -16,6 +16,16 @@ export function stopChild(child) {
   return stopped;
 }
 
+export async function configureWorkerThrottle(cdp, rate, limiter) {
+  if (limiter) return "skipped: renderer limiter active";
+  try {
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate });
+    return "applied";
+  } catch (error) {
+    return String(error);
+  }
+}
+
 export async function rendererLimiter(cdp, rate) {
   const identities = new Map();
   let stopped = false,

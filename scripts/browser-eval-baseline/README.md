@@ -53,7 +53,12 @@ The harness requires the data copy to reside below its output directory.
 It also requires the disposable-copy marker shown above.
 It refuses an occupied API port before it sends any request there.
 It waits for its own child server's listening message before it uses that API.
-Both listeners bind to `127.0.0.1` and stop when the harness exits.
+Both listeners bind to `127.0.0.1`.
+
+Normal completion, handled interruptions, and controlled output failures close the listeners and stop the copied server.
+Forced termination can bypass cleanup.
+Graceful shutdown can wait for the copied server without a fixed deadline.
+Cancellation during data preparation is deferred until preparation returns.
 The default ports are 9250 for the copied service and 9251 for the measurement page.
 
 Run the small protocol probe first.
@@ -106,6 +111,7 @@ node --expose-gc --max-old-space-size=6144 --import tsx \
 ## Boundaries and constraints
 
 The product measurement calls `PersonalCalculator.ensure` from a blank measurement page.
+Its uninstrumented product worker is separate from the diagnostic worker wrapper.
 It retains the normal inventory, byte, and evaluation limits.
 The page does not render the dictionary application or measure paint, search, layout, or accessibility.
 The diagnostic retains only the last complete ranking response, rather than the application's whole word-result cache.
@@ -138,6 +144,10 @@ Start-time comparisons reduce stale-PID risk but cannot guarantee that every sig
 A renderer can exit and its PID can change owners between the start-time comparison and the signal.
 PID reuse between the CDP process list and identity capture can also associate an unrelated process with this run.
 In these rare cases, an unrelated process can receive `SIGSTOP` or `SIGCONT`.
+
+An unrelated process can remain stopped after a misdirected `SIGSTOP`, even after the harness ends.
+After an interrupted run, inspect stopped processes and establish each affected process's identity before any manual signal.
+Do not broadly resume every stopped process on the machine.
 The safeguard is not a security boundary.
 
 The duty cycle constrains average CPU availability, rather than instruction speed.
@@ -170,12 +180,20 @@ The common cohort is a manual list, rather than a measured frequency ranking.
 The long-tail cohort uses low judgment counts and a stable identifier order, rather than search-usage statistics.
 All cohorts require active eligible publications with effective receipts in the copied checkpoint.
 Fresh and cached samples must contain 60 distinct words, with 20 in each cohort, before trials start.
+Cache reuse compares the input file's byte count and streaming hash with the recorded values before any trial.
+Keep the input file unchanged throughout the run.
 
 The output includes a pinned dataset description, source input hash, per-word records, condition summaries, and environment information.
 Each label gets separate NDJSON, summary, and environment files.
 Successful rankings include worker computation time, parent round-trip time, JavaScript heap metrics, Wasm capacity, and the latest browser PSS sample.
 The summary uses nearest-rank percentiles and records the number of observations.
 Failed operations remain separate from successful latency distributions.
+
+`trial-complete` and `completed_trials` mean that trial flow finished, rather than that every word succeeded.
+Inspect `operation_errors` and each distribution's `n` before treating a trial as fully successful.
+An ordinary complete base trial needs 60 successful word observations in each ranking phase.
+Worker distributions use only finite worker timings and count missing timings in `missing_worker_timings`.
+Parent round-trip timings remain separate in the raw operation records.
 
 Heap metrics describe each V8 isolate at the query time.
 Wasm capacity is `memory.buffer.byteLength`, including reusable allocator space and its high-water growth.
@@ -194,6 +212,7 @@ CPU time from CDP covers this Chromium instance, with coarse operating-system re
 `time -v` also records the harness and its child processes, including server startup.
 Profiles remain separate from primary measurements.
 Profile categories use visible sampled call stacks and cannot recover every inlined ancestry operation.
+The ancestry bucket describes matched graph-cache stacks, rather than all ancestry work.
 The ancestry model gives only identifier-vector payload bounds for complete, same-issuer single-parent histories.
 It excludes map, node, string, allocator, capacity-slack, and transient-copy costs.
 
