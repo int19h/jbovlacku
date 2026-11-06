@@ -183,3 +183,52 @@ console.log(
     native_wasm_bindings_and_graph_metadata_equal: true,
   }),
 );
+
+// Refused evaluations can retain raw overlays that validation never reached.
+const resourceRow = JSON.parse(await readFile(resolve(directory, files[0]), "utf8"));
+const rawOverlay = { trust: [{ issuer: 1 }] };
+const smallPolicy = {
+  core_binding: `sha256:${"a".repeat(64)}`,
+  limits: { setup_bytes: 1, setup_units: 1 },
+};
+for (const limits of [{ events: 1 }, { traversal: 0 }]) {
+  const input = { ...JSON.parse(resourceRow.input), limits, overlay: rawOverlay };
+  const session = new wasm.EvaluationSession(utf8(input));
+  try {
+    const descriptor = JSON.parse(session.ranking_descriptor(utf8(smallPolicy)));
+    assert.equal(descriptor.available, false);
+    assert(descriptor.reasons.includes("resource_unavailable"));
+    assert.equal(descriptor.setup.setup_bytes, 0);
+    assert.equal(descriptor.setup.setup_units, 0);
+    assert.equal(JSON.parse(session.state()).available, false);
+  } finally {
+    session.free();
+  }
+}
+const resourceOriginal = new wasm.EvaluationSession(utf8(JSON.parse(resourceRow.input)));
+try {
+  const checkpoint = JSON.parse(new TextDecoder().decode(resourceOriginal.checkpoint("raw-overlay")));
+  checkpoint.options.overlay = rawOverlay;
+  checkpoint.evaluation.overlay = rawOverlay;
+  for (const available of [false, true]) {
+    checkpoint.evaluation.available = available;
+    checkpoint.evaluation.reasons = available ? [] : ["resource_unavailable"];
+    const restored = wasm.EvaluationSession.restore_host_checkpoint(utf8(checkpoint), "raw-overlay");
+    try {
+      if (available) {
+        assert.throws(() => restored.ranking_descriptor(utf8(resourceRow.policy)), /invalid_overlay/);
+      } else {
+        const descriptor = JSON.parse(restored.ranking_descriptor(utf8(smallPolicy)));
+        assert.equal(descriptor.available, false);
+        assert.equal(descriptor.setup.setup_bytes, 0);
+        assert.equal(descriptor.setup.setup_units, 0);
+      }
+      assert.equal(JSON.parse(restored.state()).available, available);
+    } finally {
+      restored.free();
+    }
+  }
+} finally {
+  resourceOriginal.free();
+}
+console.log(JSON.stringify({ unavailable_and_malformed_overlay_wasm_cases: 4, session_handles_remain_usable: true }));

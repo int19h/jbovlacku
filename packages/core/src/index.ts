@@ -210,6 +210,9 @@ export interface RankingPreparationLimits {
   records: number;
   setup_bytes: number;
   units: number;
+  setup_units: number;
+  source_bytes: number;
+  source_millis: number;
   word_publications: number;
   targets: number;
   contexts: number;
@@ -225,6 +228,7 @@ export interface PreparationUsage {
   setup_records: number;
   setup_bytes: number;
   setup_units: number;
+  source_bytes: number;
   visited_publications: number;
   charged_units: number;
   context_calls: number;
