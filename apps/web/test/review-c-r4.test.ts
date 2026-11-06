@@ -36,6 +36,11 @@ test("typed TeX and backslashes keep their values in the saved draft", async ({
     .getByLabel("Code", { exact: true })
     .pressSequentially(String.raw`\rho`);
   await code.getByRole("button", { name: "Insert", exact: true }).click();
+  // close() hides the dialog before its queued close handler restores focus.
+  await expect(page.locator("dialog.rich-dialog")).toHaveCount(0);
+  await expect(
+    toolbar.getByRole("button", { name: "Insert code", exact: true }),
+  ).toBeFocused();
   await editor.pressSequentially(" ");
   await toolbar.getByRole("button", { name: "Web link", exact: true }).click();
   const web = page.getByRole("dialog", { name: "Web link", exact: true });
@@ -46,6 +51,10 @@ test("typed TeX and backslashes keep their values in the saved draft", async ({
     .getByLabel("Link label", { exact: true })
     .pressSequentially(String.raw`\rm label`);
   await web.getByRole("button", { name: "Insert", exact: true }).click();
+  await expect(page.locator("dialog.rich-dialog")).toHaveCount(0);
+  await expect(
+    toolbar.getByRole("button", { name: "Web link", exact: true }),
+  ).toBeFocused();
   await editor.pressSequentially(" C:\\");
   await editor.press("Enter");
   await editor.pressSequentially("Next.");

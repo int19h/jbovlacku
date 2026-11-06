@@ -911,69 +911,80 @@ globalThis.fetch = async (url, init) => {
   }
 });
 
-test("a stalled 429 body preserves its header cooldown without automatically retrying the timeout", async () => {
-  const clock = fakeClock();
-  let sends = 0;
-  let canceled = false;
-  await fixture(
-    async () => {
-      sends++;
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            controller.enqueue(utf8('{"error":'));
-          },
-          cancel() {
-            canceled = true;
-          },
-        }),
-        { status: 429, headers: { "retry-after": "61" } },
-      );
-    },
-    async ({ store, assistance, budget, id, path }) => {
-      const result = await new SemanticIndexer(store, assistance, clock).run(
-        id,
-      );
-      assert.equal(result.generation.error, "embedding_timeout");
-      assert.equal(result.generation.state, "paused");
-      assert.equal(sends, 1);
-      assert.deepEqual(clock.waits, []);
-      assert.equal(
-        await store.retryAfter(result.generation.profile),
-        clock.now() + 61000,
-      );
-      await assistance.drainEmbeddingTransports();
-      assert(canceled);
-      const [batch] = await store.batches(id);
-      assert.equal(batch.state, "ambiguous");
-      const snapshot = (await budget.load())!;
-      assert(snapshot.version === 2);
-      const charge = snapshot.entries.find(
-        (entry) => entry.id === batch.operation,
-      )!;
-      assert.equal(charge.costKnown, false);
-      assert.equal(charge.settledUsd, quote);
-      assert.equal(charge.reservedUsd, quote);
-      const reopened = new SqliteVectorStore(path);
-      try {
-        const next = await prepare(reopened, 1, 2001);
-        const blocked = await new SemanticIndexer(
-          reopened,
-          assistance,
-          clock,
-        ).run(next.id);
-        assert.equal(blocked.generation.error, "embedding_rate_limited");
-        assert.deepEqual(await reopened.batches(next.id), []);
+test(
+  "a stalled 429 body preserves its header cooldown without automatically retrying the timeout",
+  { timeout: 10000 },
+  async (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    const bodyReading = deferred();
+    const clock = fakeClock();
+    let sends = 0;
+    let canceled = false;
+    await fixture(
+      async () => {
+        sends++;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(utf8('{"error":'));
+            },
+            pull() {
+              // The queued prefix is consumed only after the 429 headers are read.
+              bodyReading.resolve();
+            },
+            cancel() {
+              canceled = true;
+            },
+          }),
+          { status: 429, headers: { "retry-after": "61" } },
+        );
+      },
+      async ({ store, assistance, budget, id, path }) => {
+        const running = new SemanticIndexer(store, assistance, clock).run(id);
+        await bodyReading.promise;
+        t.mock.timers.tick(40);
+        const result = await running;
+        assert.equal(result.generation.error, "embedding_timeout");
+        assert.equal(result.generation.state, "paused");
         assert.equal(sends, 1);
         assert.deepEqual(clock.waits, []);
-      } finally {
-        reopened.close();
-      }
-    },
-    1,
-    { timeoutMs: 40 },
-  );
-});
+        assert.equal(
+          await store.retryAfter(result.generation.profile),
+          clock.now() + 61000,
+        );
+        await assistance.drainEmbeddingTransports();
+        assert(canceled);
+        const [batch] = await store.batches(id);
+        assert.equal(batch.state, "ambiguous");
+        const snapshot = (await budget.load())!;
+        assert(snapshot.version === 2);
+        const charge = snapshot.entries.find(
+          (entry) => entry.id === batch.operation,
+        )!;
+        assert.equal(charge.costKnown, false);
+        assert.equal(charge.settledUsd, quote);
+        assert.equal(charge.reservedUsd, quote);
+        const reopened = new SqliteVectorStore(path);
+        try {
+          const next = await prepare(reopened, 1, 2001);
+          const blocked = await new SemanticIndexer(
+            reopened,
+            assistance,
+            clock,
+          ).run(next.id);
+          assert.equal(blocked.generation.error, "embedding_rate_limited");
+          assert.deepEqual(await reopened.batches(next.id), []);
+          assert.equal(sends, 1);
+          assert.deepEqual(clock.waits, []);
+        } finally {
+          reopened.close();
+        }
+      },
+      1,
+      { timeoutMs: 40 },
+    );
+  },
+);
 
 test("an already canceled run reports an operator pause without a false rate limit", async () => {
   let sends = 0;

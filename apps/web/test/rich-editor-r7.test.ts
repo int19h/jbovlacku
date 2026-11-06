@@ -1220,14 +1220,37 @@ test("biography L2 a name-only signed profile edit preserves stored whitespace",
     await store.queueGroup([item]);
   }, corePath);
   await page.goto("/outbox");
-  await expect
-    .poll(async () =>
-      page.evaluate(async () => {
-        const { LocalStore } = await import(String("/src/data/store.ts"));
-        return (await new LocalStore().list("outbox"))[0]?.peers.self.state;
-      }),
-    )
-    .toBe("accepted");
+  const deliveryStates: unknown[] = [];
+  let previousDelivery = "";
+  try {
+    // The first attempt can take 20 seconds. Its 15-second retry delay starts
+    // at attempt start, so those waits overlap. Allow the larger wait, then
+    // a 20-second receipt lookup, a possible 20-second resend, and 5 seconds
+    // for scheduling and polling. Keep the accepted assertion without test retries.
+    const deliveryTimeout = Math.max(20000, 15000) + 20000 + 20000 + 5000;
+    await expect
+      .poll(
+        async () => {
+          const peer = await page.evaluate(async () => {
+            const { LocalStore } = await import(String("/src/data/store.ts"));
+            return (await new LocalStore().list("outbox"))[0]?.peers.self;
+          });
+          const state = JSON.stringify(peer);
+          if (state !== previousDelivery) {
+            deliveryStates.push({ observedAt: Date.now(), peer });
+            previousDelivery = state;
+          }
+          return peer?.state;
+        },
+        { timeout: deliveryTimeout },
+      )
+      .toBe("accepted");
+  } finally {
+    await info.attach("L2-initial-delivery-states", {
+      contentType: "application/json",
+      body: JSON.stringify(deliveryStates, null, 2),
+    });
+  }
   await page.goto("/identity");
   await page
     .getByLabel("Passphrase", { exact: true })
