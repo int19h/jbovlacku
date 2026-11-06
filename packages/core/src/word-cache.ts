@@ -1,3 +1,7 @@
+import {
+  wordResultPolicyIdentity,
+  type WordResultPolicy,
+} from "./word-policy.ts";
 /** Serialized word storage. This module starts no calculation or worker. */
 export const WORD_CACHE_LIMITS = Object.freeze({
   reuse: 16,
@@ -20,7 +24,6 @@ export interface WordCacheIdentity {
   mode: "site" | "personal";
   build: string;
   contract: string;
-  policy: string;
   algorithm: string;
 }
 export interface WordFailure {
@@ -43,7 +46,18 @@ export type WordAdmission =
   | { status: "ready"; ticket: ReadyWordTicket }
   | { status: "failure"; failure: Readonly<WordFailure> }
   | { status: "pending" }
+  | { status: "markers_full" }
   | { status: "ranking_busy"; retry_after: number };
+export type WordCompletion =
+  | { status: "ready"; ticket: ReadyWordTicket }
+  | {
+      status: "failure";
+      failure: Readonly<{
+        code: "resource_unavailable";
+        limit: "output_bytes";
+        retryable: true;
+      }>;
+    };
 interface Entry {
   key: string;
   epoch: number;
@@ -64,9 +78,7 @@ const hash = (s: unknown, prefix = "sha256:") =>
 function identityKey(i: WordCacheIdentity): string {
   if (
     !i ||
-    ![i.snapshot, i.inventory, i.input, i.build, i.policy].every((v) =>
-      hash(v),
-    ) ||
+    ![i.snapshot, i.inventory, i.input, i.build].every((v) => hash(v)) ||
     !hash(i.view, "jve1:") ||
     ![i.logical_session, i.contract, i.algorithm].every(
       (v) => typeof v === "string" && v.length > 0 && v.length <= 128,
@@ -88,7 +100,6 @@ function identityKey(i: WordCacheIdentity): string {
     i.mode,
     i.build,
     i.contract,
-    i.policy,
     i.algorithm,
   ]);
 }
@@ -146,16 +157,11 @@ export class WordResultCache {
       throw new Error("ranking identifier limit");
     return prefix + ++this.#sequence;
   }
-  #key(word: string, reviewers: number | null): string {
+  #key(word: string, policyBinding: string): string {
     this.#alive();
-    if (
-      this.#identity === null ||
-      !hash(word, "jvw1:") ||
-      (reviewers !== null &&
-        (!Number.isSafeInteger(reviewers) || reviewers < 0 || reviewers > 128))
-    )
+    if (this.#identity === null || !hash(word, "jvw1:") || !hash(policyBinding))
       throw new Error("invalid word cache key");
-    return JSON.stringify([this.#epoch, this.#identity, word, reviewers]);
+    return JSON.stringify([this.#epoch, this.#identity, word, policyBinding]);
   }
   #bytes() {
     return (
@@ -194,19 +200,10 @@ export class WordResultCache {
     this.#tickets.set(id, e);
     return { id, ready_at: e.ready, expires_at: e.expiry };
   }
-  reserve(
-    word: string,
-    reviewers: number | null,
-    now: number,
-    outputBytes: number = WORD_CACHE_LIMITS.output,
-  ): WordAdmission {
-    const key = this.#key(word, reviewers);
-    if (
-      !Number.isSafeInteger(outputBytes) ||
-      outputBytes <= 0 ||
-      outputBytes > WORD_CACHE_LIMITS.output
-    )
-      throw new Error("invalid result reservation");
+  reserve(word: string, policy: WordResultPolicy, now: number): WordAdmission {
+    const normalized = wordResultPolicyIdentity(policy);
+    const key = this.#key(word, normalized.binding);
+    const outputBytes = normalized.output_bytes;
     this.#time(now);
     const marker = this.#markers.get(key);
     if (marker) return { status: "failure", failure: marker.failure };
@@ -219,24 +216,43 @@ export class WordResultCache {
     }
     if ([...this.#reservations.values()].some((r) => r.key === key))
       return { status: "pending" };
+    // Permanent markers cannot leave through time or ordinary cancellation.
+    if (
+      this.#markers.size >= WORD_CACHE_LIMITS.markers ||
+      [...this.#markers.values()].reduce((n, m) => n + m.bytes, 0) +
+        WORD_CACHE_LIMITS.markerReservation >
+        WORD_CACHE_LIMITS.markerBytes
+    )
+      return { status: "markers_full" };
     if (
       this.#markers.size + this.#reservations.size >=
         WORD_CACHE_LIMITS.markers ||
       this.#markerBytes() + WORD_CACHE_LIMITS.markerReservation >
-        WORD_CACHE_LIMITS.markerBytes
+        WORD_CACHE_LIMITS.markerBytes ||
+      this.#tickets.size + this.#reservations.size >=
+        WORD_CACHE_LIMITS.consumers
     )
       return { status: "ranking_busy", retry_after: 1 };
     const free = [...this.#entries.values()]
       .filter((e) => e.pins === 0)
       .sort((a, b) => a.touched - b.touched);
+    const available = free.reduce((n, e) => n + e.bytes.byteLength, 0);
+    // Refuse before eviction when even every reusable entry cannot make room.
+    if (this.#bytes() - available + outputBytes > WORD_CACHE_LIMITS.bytes) {
+      const expiry = Math.min(
+        ...[...this.#entries.values()]
+          .filter((e) => e.pins > 0)
+          .map((e) => e.expiry),
+      );
+      return {
+        status: "ranking_busy",
+        retry_after: Number.isFinite(expiry)
+          ? Math.max(1, Math.ceil((expiry - now) / 1000))
+          : 1,
+      };
+    }
     while (this.#bytes() + outputBytes > WORD_CACHE_LIMITS.bytes && free.length)
       this.#entries.delete(free.shift()!.key);
-    if (
-      this.#bytes() + outputBytes > WORD_CACHE_LIMITS.bytes ||
-      this.#tickets.size + this.#reservations.size >=
-        WORD_CACHE_LIMITS.consumers
-    )
-      return { status: "ranking_busy", retry_after: 1 };
     const reservation = this.#id("reservation-");
     this.#reservations.set(reservation, {
       key,
@@ -249,7 +265,7 @@ export class WordResultCache {
     reservation: string,
     bytes: Uint8Array,
     now: number,
-  ): ReadyWordTicket {
+  ): WordCompletion {
     this.#time(now);
     const r = this.#reservations.get(reservation);
     if (!r || r.epoch !== this.#epoch)
@@ -262,16 +278,15 @@ export class WordResultCache {
     )
       throw new Error("result requires an owned byte buffer");
     if (bytes.byteLength > r.bytes) {
-      this.fail(
-        reservation,
-        {
+      this.#reservations.delete(reservation);
+      return {
+        status: "failure",
+        failure: Object.freeze({
           code: "resource_unavailable",
           limit: "output_bytes",
-          retryable: false,
-        },
-        now,
-      );
-      throw new Error("word result exceeds its reservation");
+          retryable: true,
+        }),
+      };
     }
     if (
       this.#tickets.size + this.#reservations.size >
@@ -293,7 +308,7 @@ export class WordResultCache {
     this.#entries.set(r.key, entry);
     const ticket = this.#pin(entry)!;
     this.#prune();
-    return ticket;
+    return { status: "ready", ticket };
   }
   read(
     ticket: string,
@@ -341,8 +356,9 @@ export class WordResultCache {
       failure.retryable !== false ||
       typeof failure.limit !== "string" ||
       failure.limit.length > 128 ||
-      (failure.background_evaluation_running_at_expiry !== undefined &&
-        typeof failure.background_evaluation_running_at_expiry !== "boolean")
+      (failure.limit === "deadline"
+        ? typeof failure.background_evaluation_running_at_expiry !== "boolean"
+        : failure.background_evaluation_running_at_expiry !== undefined)
     )
       throw new Error("invalid word failure");
     const fixed: Readonly<WordFailure> = Object.freeze({

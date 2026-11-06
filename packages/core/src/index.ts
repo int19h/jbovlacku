@@ -1,3 +1,5 @@
+import type { WordResultPolicy } from "./word-policy.ts";
+export { wordResultPolicyBinding, type WordResultPolicy } from "./word-policy.ts";
 import init, * as wasm from "../generated/jvc_runtime.js";
 import { encodeEvaluationRequest } from "./evaluation-request.ts";
 const encoder = new TextEncoder();
@@ -576,6 +578,7 @@ export {
   type WordFailure,
   type ReadyWordTicket,
   type WordAdmission,
+  type WordCompletion,
 } from "./word-cache.ts";
 /** Preserve evaluation diagnostics even when float setup admission refuses. */
 export function describeWordResults(
@@ -597,22 +600,9 @@ export function describeWordResults(
     return { evaluation, descriptor: null, error: String(error) };
   }
 }
-export interface WordResultPolicy {
-  numerical_operations?: number;
-  memory_bytes?: number;
-  output_bytes?: number;
-  targets?: number;
-  comparisons?: number;
-  actor_terms?: number;
-  reviewers?: number | null;
-  reviewer_terms?: number;
-}
 export interface WordResultRequest {
   owner_session: string;
   descriptor_binding: string;
   preparation_id: string;
   policy?: WordResultPolicy;
 }
-
-export const wordResultPolicyBinding = (policy: WordResultPolicy = {}): string =>
-  wasm.word_result_policy_binding(utf8(JSON.stringify(policy)));

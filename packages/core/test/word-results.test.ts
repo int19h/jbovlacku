@@ -139,12 +139,11 @@ test("consuming native delivery stays readable after native disposal without a r
     mode: "site",
     build: hash(5),
     contract: descriptor.contract_binding,
-    policy: wordResultPolicyBinding(request.policy),
     algorithm: descriptor.algorithm!,
   };
   const cache = new WordResultCache();
   cache.bind(identity);
-  const admission = cache.reserve(word, 4, 0);
+  const admission = cache.reserve(word, request.policy, 0);
   assert.equal(admission.status, "reserved");
   if (admission.status !== "reserved") throw Error("reserve");
   const start = session.startWordResults(request);
@@ -153,7 +152,9 @@ test("consuming native delivery stays readable after native disposal without a r
   assert.equal(p.phase, "ready");
   const bytes = session.takeWordResult(start.token);
   assert.equal(session.wordResultProgress(), null);
-  const ticket = cache.complete(admission.reservation, bytes, 100);
+  const completed = cache.complete(admission.reservation, bytes, 100);
+  if (completed.status !== "ready") throw Error("completion");
+  const ticket = completed.ticket;
   assert.equal(bytes.byteLength, 0);
   session.free();
   const result = JSON.parse(
@@ -181,11 +182,10 @@ test("repair keeps deadline evidence and descriptor refusal preserves evaluation
     mode: "site",
     build: hash(5),
     contract: first.descriptor.contract_binding,
-    policy: hash(6),
     algorithm: first.descriptor.algorithm!,
   };
   cache.bind(identity);
-  const r = cache.reserve(word, null, 0);
+  const r = cache.reserve(word, {}, 0);
   if (r.status !== "reserved") throw Error("reserve");
   cache.deadline(r.reservation, true, 5_000);
   old.free();
@@ -197,7 +197,7 @@ test("repair keeps deadline evidence and descriptor refusal preserves evaluation
       cache.bind({ ...identity, input: next.descriptor.input_binding }),
       false,
     );
-    assert.equal(cache.reserve(word, null, 5001).status, "failure");
+    assert.equal(cache.reserve(word, {}, 5001).status, "failure");
     assert.equal(repaired.wordResultProgress(), null);
     const evidence = describeWordResults(repaired, {
       core_binding: hash(5),
@@ -214,8 +214,17 @@ test("repair keeps deadline evidence and descriptor refusal preserves evaluation
   }
 });
 
-test("policy identity normalizes defaults and separates reviewer requirements",()=> {
-  assert.equal(wordResultPolicyBinding({}),wordResultPolicyBinding({reviewers:null}));
-  assert.notEqual(wordResultPolicyBinding({}),wordResultPolicyBinding({reviewers:0}));
-  assert.notEqual(wordResultPolicyBinding({reviewers:1}),wordResultPolicyBinding({reviewers:2}));
+test("policy identity normalizes defaults and separates reviewer requirements", () => {
+  assert.equal(
+    wordResultPolicyBinding({}),
+    wordResultPolicyBinding({ reviewers: null }),
+  );
+  assert.notEqual(
+    wordResultPolicyBinding({}),
+    wordResultPolicyBinding({ reviewers: 0 }),
+  );
+  assert.notEqual(
+    wordResultPolicyBinding({ reviewers: 1 }),
+    wordResultPolicyBinding({ reviewers: 2 }),
+  );
 });
