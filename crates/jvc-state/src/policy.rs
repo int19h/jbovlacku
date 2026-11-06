@@ -147,7 +147,7 @@ fn narrower(a: &Value, b: &Value) -> bool {
     a != b && a.iter().zip(b.iter()).all(|(a, b)| a == b || b == "*")
 }
 fn scoped_pairs<'a>(
-    trust: &'a [TrustRule],
+    trust: impl IntoIterator<Item = &'a TrustRule>,
     context: &Context,
     issuer: Option<&str>,
 ) -> BTreeMap<(String, String), Vec<&'a TrustRule>> {
@@ -351,23 +351,110 @@ fn private_trust(evaluation: &Evaluation) -> (Vec<TrustRule>, PrivateWeights) {
     (trust, private_weights_by_pair)
 }
 
+type ScopeKey = (String, String, String);
+#[derive(Clone, Default)]
+struct RuleBucket {
+    ids: Vec<usize>,
+    pairs_squared: u64,
+}
+#[derive(Clone, Default)]
+struct ScopedRuleIndex(BTreeMap<ScopeKey, RuleBucket>);
+fn count_overflow() -> jvc_core::Error {
+    jvc_core::Error::new("resource_unavailable", "preparation count overflow")
+}
+impl ScopedRuleIndex {
+    fn new(trust: &[TrustRule], weights: Option<&PrivateWeights>) -> jvc_core::Result<Self> {
+        let mut result = Self::default();
+        for (id, rule) in trust.iter().enumerate() {
+            let key = (
+                rule.scope["kind"].as_str().unwrap_or_default().into(),
+                rule.scope["word"].as_str().unwrap_or_default().into(),
+                rule.scope["language"].as_str().unwrap_or_default().into(),
+            );
+            result.0.entry(key).or_default().ids.push(id);
+        }
+        for bucket in result.0.values_mut() {
+            let mut pairs: BTreeMap<(&str, &str), u64> = BTreeMap::new();
+            for id in &bucket.ids {
+                let rule = &trust[*id];
+                *pairs.entry((&rule.actor, &rule.subject)).or_default() += 1;
+            }
+            for ((actor, subject), count) in pairs {
+                // The resolver checks every private weight for a matching pair.
+                let private = weights
+                    .and_then(|w| w.get(&(actor.into(), subject.into())))
+                    .map_or(0, Vec::len) as u64;
+                let count = count.checked_add(private).ok_or_else(count_overflow)?;
+                bucket.pairs_squared = bucket
+                    .pairs_squared
+                    .checked_add(count.checked_mul(count).ok_or_else(count_overflow)?)
+                    .ok_or_else(count_overflow)?;
+            }
+        }
+        Ok(result)
+    }
+    fn matching(&self, context: &Context) -> Vec<&RuleBucket> {
+        let mut keys = BTreeSet::new();
+        for kind in ["*", &context.kind] {
+            for word in ["*", &context.word] {
+                for language in ["*", context.language.as_deref().unwrap_or("*")] {
+                    keys.insert((kind.into(), word.into(), language.into()));
+                }
+            }
+        }
+        keys.into_iter()
+            .filter_map(|key| self.0.get(&key))
+            .collect()
+    }
+    fn counts(&self, context: &Context) -> jvc_core::Result<(u64, u64)> {
+        let buckets = self.matching(context);
+        let count = buckets.iter().map(|b| b.ids.len() as u64).sum();
+        let squares = buckets.iter().try_fold(0u64, |a, b| {
+            a.checked_add(b.pairs_squared).ok_or_else(count_overflow)
+        })?;
+        // At most eight scope buckets match. Cauchy's inequality bounds each
+        // combined pair square by the bucket count times the sum of squares.
+        Ok((
+            count,
+            squares
+                .checked_mul(buckets.len() as u64)
+                .ok_or_else(count_overflow)?,
+        ))
+    }
+    fn rules<'a>(&self, trust: &'a [TrustRule], context: &Context) -> Vec<&'a TrustRule> {
+        let mut ids: Vec<_> = self
+            .matching(context)
+            .iter()
+            .flat_map(|b| b.ids.iter().copied())
+            .collect();
+        ids.sort_unstable();
+        ids.into_iter().map(|id| &trust[id]).collect()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ApproximateContextIndex {
     pub(crate) words: BTreeMap<String, Vec<String>>,
     targets: BTreeMap<(String, String, Option<String>), BTreeSet<String>>,
+    judgments: BTreeMap<(String, String, Option<String>), u64>,
     trust: Vec<TrustRule>,
     private_weights: PrivateWeights,
-    pub(crate) pairs_squared: u64,
+    merged_rules: ScopedRuleIndex,
+    public_rules: ScopedRuleIndex,
 }
 impl ApproximateContextIndex {
     pub(crate) fn new(evaluation: &Evaluation) -> jvc_core::Result<Self> {
         let (trust, private_weights) = private_trust(evaluation);
+        let merged_rules = ScopedRuleIndex::new(&trust, Some(&private_weights))?;
+        let public_rules = ScopedRuleIndex::new(&evaluation.trust, None)?;
         let mut index = Self {
             words: BTreeMap::new(),
             targets: BTreeMap::new(),
+            judgments: BTreeMap::new(),
             trust,
             private_weights,
-            pairs_squared: 0,
+            merged_rules,
+            public_rules,
         };
         for p in evaluation.publications.values() {
             index
@@ -400,31 +487,18 @@ impl ApproximateContextIndex {
                 targets.insert(assignment.clone());
             }
         }
-        let mut pairs: BTreeMap<(&str, &str), u64> = BTreeMap::new();
-        for rule in evaluation.trust.iter().chain(index.trust.iter()) {
-            *pairs.entry((&rule.actor, &rule.subject)).or_default() += 1;
-        }
-        for ((a, b), weights) in &index.private_weights {
-            *pairs.entry((a, b)).or_default() += weights.len() as u64;
-        }
-        for count in pairs.values() {
-            index.pairs_squared = index
-                .pairs_squared
-                .checked_add(count.checked_mul(*count).ok_or_else(|| {
-                    jvc_core::Error::new("resource_unavailable", "preparation count overflow")
-                })?)
-                .ok_or_else(|| {
-                    jvc_core::Error::new("resource_unavailable", "preparation count overflow")
-                })?;
+        for (key, targets) in &index.targets {
+            let count = targets
+                .iter()
+                .filter_map(|id| evaluation.judgments.get(id))
+                .map(|j| j.len() as u64)
+                .sum();
+            index.judgments.insert(key.clone(), count);
         }
         Ok(index)
     }
-    pub(crate) fn bound(
-        &self,
-        evaluation: &Evaluation,
-        context: &Context,
-    ) -> super::incremental::RankingContextBound {
-        let key = (
+    fn target_key(context: &Context) -> (String, String, Option<String>) {
+        (
             if context.kind == "definition" {
                 "definition".into()
             } else {
@@ -436,34 +510,49 @@ impl ApproximateContextIndex {
             } else {
                 None
             },
-        );
-        let judgments = self.targets.get(&key).map_or(0, |ids| {
-            ids.iter()
-                .filter_map(|id| evaluation.judgments.get(id))
-                .map(BTreeMap::len)
-                .sum::<usize>()
-        }) as u64;
-        let rules = self
-            .trust
-            .iter()
-            .filter(|r| matches(&r.scope, context))
-            .count() as u64;
-        let roots = evaluation
-            .policy
+        )
+    }
+    pub(crate) fn bound(
+        &self,
+        evaluation: &Evaluation,
+        context: &Context,
+    ) -> jvc_core::Result<super::incremental::RankingContextBound> {
+        let key = Self::target_key(context);
+        let targets = self.targets.get(&key).map_or(0, BTreeSet::len) as u64;
+        let judgments = self.judgments.get(&key).copied().unwrap_or(0);
+        let (rules, merged_squares) = self.merged_rules.counts(context)?;
+        let shun = evaluation
+            .overlay
             .as_ref()
-            .and_then(|p| p["roots"].as_array())
-            .map_or(0, Vec::len) as u64
-            + evaluation
-                .overlay
-                .as_ref()
-                .and_then(|o| o["root_changes"].as_array())
-                .map_or(0, Vec::len) as u64;
-        super::incremental::RankingContextBound {
-            actors: judgments + roots + 2 * rules,
+            .is_some_and(|o| o["version"] == 2 && o["public_shun_issuer"].is_string());
+        let (public_rules, public_squares) = if shun {
+            self.public_rules.counts(context)?
+        } else {
+            (0, 0)
+        };
+        let array_len = |value: Option<&Value>, field: &str| {
+            value.and_then(|v| v[field].as_array()).map_or(0, Vec::len) as u64
+        };
+        let roots = array_len(evaluation.policy.as_ref(), "roots");
+        let changes = array_len(evaluation.overlay.as_ref(), "root_changes");
+        Ok(super::incremental::RankingContextBound {
+            actors: judgments + roots + changes + 2 * rules,
             edges: rules,
             refusals: rules,
             judgments,
-        }
+            targets,
+            trust_rules: rules,
+            public_rules,
+            roots,
+            exclusions: array_len(evaluation.policy.as_ref(), "excluded"),
+            suspensions: evaluation.lifecycle.suspended.len() as u64,
+            overlay_entries: changes
+                + array_len(evaluation.overlay.as_ref(), "blocked")
+                + u64::from(shun),
+            pairs_squared: merged_squares
+                .checked_add(public_squares)
+                .ok_or_else(count_overflow)?,
+        })
     }
     pub(crate) fn context(&self, evaluation: &Evaluation, context: &Context) -> ContextGraph<f64> {
         resolve_context_indexed::<FloatRows>(evaluation, context, MAX_CONTEXT_REFUSALS, Some(self))
@@ -556,10 +645,13 @@ fn resolve_context_indexed<A: RowArithmetic>(
     }
     let prepared;
     let (trust, private_weights_by_pair) = match index {
-        Some(index) => (&index.trust, &index.private_weights),
+        Some(index) => (
+            index.merged_rules.rules(&index.trust, context),
+            &index.private_weights,
+        ),
         None => {
             prepared = private_trust(evaluation);
-            (&prepared.0, &prepared.1)
+            (prepared.0.iter().collect::<Vec<_>>(), &prepared.1)
         }
     };
     if let Some(overlay) = &evaluation.overlay {
@@ -567,8 +659,11 @@ fn resolve_context_indexed<A: RowArithmetic>(
             if let Some(key) = overlay["public_shun_issuer"].as_str() {
                 let issuer = resolve(key);
                 // Public personal blocks use public rules before private replacement.
-                for ((_, subject), rules) in scoped_pairs(&evaluation.trust, context, Some(&issuer))
-                {
+                let public = match index {
+                    Some(index) => index.public_rules.rules(&evaluation.trust, context),
+                    None => evaluation.trust.iter().collect(),
+                };
+                for ((_, subject), rules) in scoped_pairs(public, context, Some(&issuer)) {
                     if retained_rules(&rules)
                         .iter()
                         .any(|rule| rule.values.contains("shun"))
@@ -608,7 +703,7 @@ fn resolve_context_indexed<A: RowArithmetic>(
         *current = std::cmp::max(current.clone(), q);
     }
 
-    for rule in trust {
+    for rule in &trust {
         if matches(&rule.scope, context) && !rule.values.iter().all(|v| v == "clear") {
             actors.insert(rule.actor.clone());
             actors.insert(rule.subject.clone());

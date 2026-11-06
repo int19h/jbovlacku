@@ -38,6 +38,14 @@ pub struct RankingContextBound {
     pub edges: u64,
     pub refusals: u64,
     pub judgments: u64,
+    pub targets: u64,
+    pub trust_rules: u64,
+    pub public_rules: u64,
+    pub roots: u64,
+    pub exclusions: u64,
+    pub suspensions: u64,
+    pub overlay_entries: u64,
+    pub pairs_squared: u64,
 }
 impl Clone for EvaluatedState {
     fn clone(&self) -> Self {
@@ -94,37 +102,10 @@ impl EvaluatedState {
         self.judgment_changes.as_ref()
     }
 
-    /// Encode only retained authenticated projections and their evaluation.
-    /// This port accepts no new record bytes and performs no authentication.
-    pub fn ranking_source_bytes(&self, max_bytes: usize) -> jvc_core::Result<Vec<u8>> {
-        struct Writer {
-            bytes: Vec<u8>,
-            limit: usize,
-        }
-        impl std::io::Write for Writer {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
-                    return Err(std::io::Error::other("ranking source bytes limit"));
-                }
-                if self.bytes.len() + bytes.len() > self.bytes.capacity() {
-                    let capacity = (self.bytes.len() + bytes.len())
-                        .max(self.bytes.capacity().saturating_mul(2))
-                        .min(self.limit);
-                    self.bytes
-                        .try_reserve_exact(capacity - self.bytes.len())
-                        .map_err(std::io::Error::other)?;
-                }
-                self.bytes.extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let mut writer = Writer {
-            bytes: Vec::new(),
-            limit: max_bytes,
-        };
+    /// Hash retained authenticated projections without another input buffer.
+    /// Value maps must retain serde_json's sorted-key encoding. A test pins this assumption.
+    pub fn ranking_source_binding(&self, max_bytes: usize) -> jvc_core::Result<(String, usize)> {
+        let mut writer = jvc_core::HashWriter::new(b"jvc-ranking-state-v1\n", max_bytes);
         serde_json::to_writer(
             &mut writer,
             &(
@@ -135,7 +116,7 @@ impl EvaluatedState {
             ),
         )
         .map_err(|e| jvc_core::Error::new("resource_unavailable", e.to_string()))?;
-        Ok(writer.bytes)
+        Ok(writer.finish("sha256:"))
     }
     /// Count index inputs without cloning them. Policy checks precede index allocation.
     pub fn ranking_source_records(&self) -> jvc_core::Result<usize> {
@@ -170,12 +151,12 @@ impl EvaluatedState {
         }
         Ok(count)
     }
-    pub fn ensure_ranking_index(&self) -> jvc_core::Result<u64> {
+    pub fn ensure_ranking_index(&self) -> jvc_core::Result<()> {
         if self.ranking_index.borrow().is_none() {
             let index = policy::ApproximateContextIndex::new(&self.evaluation)?;
             *self.ranking_index.borrow_mut() = Some(index);
         }
-        Ok(self.ranking_index.borrow().as_ref().unwrap().pairs_squared)
+        Ok(())
     }
     /// Borrow publications from this state, using its own bounded derived index.
     pub fn ranking_publications(
@@ -206,12 +187,12 @@ impl EvaluatedState {
         context: &Context,
     ) -> jvc_core::Result<RankingContextBound> {
         let index = self.ranking_index.borrow();
-        Ok(index
+        index
             .as_ref()
             .ok_or_else(|| {
                 jvc_core::Error::new("ranking_preparation", "ranking index is not initialized")
             })?
-            .bound(&self.evaluation, context))
+            .bound(&self.evaluation, context)
     }
     pub fn prepare_indexed_approximate_context(
         &self,
@@ -981,5 +962,35 @@ mod rebuild_tests {
         let delta = PreparedEvaluationInput::new(state.prepared.options.clone());
         let advanced = state.advance(delta, &[]);
         assert!(advanced.ranking_index.borrow().is_none());
+    }
+    #[test]
+    fn source_stream_pins_sorted_value_maps_and_matches_previous_bytes() {
+        // Do not enable serde_json/preserve_order without changing the binding contract.
+        let value: Value = serde_json::from_str(r#"{"z":0,"é":{"z":1,"a":2},"a":3}"#).unwrap();
+        assert_eq!(
+            serde_json::to_string(&value).unwrap(),
+            r#"{"a":3,"z":0,"é":{"a":2,"z":1}}"#
+        );
+        let state = base().into_state();
+        let bytes = serde_json::to_vec(&(
+            &state.prepared.options,
+            &state.prepared.nodes,
+            state.prepared.event_limit_exceeded,
+            &state.evaluation,
+        ))
+        .unwrap();
+        let (binding, count) = state.ranking_source_binding(bytes.len()).unwrap();
+        assert_eq!(count, bytes.len());
+        assert_eq!(
+            binding,
+            jvc_core::hash_id("sha256:", b"jvc-ranking-state-v1\n", &bytes)
+        );
+        assert_eq!(
+            state
+                .ranking_source_binding(bytes.len() - 1)
+                .unwrap_err()
+                .code,
+            "resource_unavailable"
+        );
     }
 }

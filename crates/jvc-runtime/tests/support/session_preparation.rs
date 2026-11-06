@@ -37,6 +37,14 @@ fn normalized<T: serde::Serialize>(value: &T) -> Value {
     value
 }
 fn export(f: &Fixture, name: &str, summary: &RankingPreparationSummary) {
+    export_with_policy(f, name, summary, &policy());
+}
+fn export_with_policy(
+    f: &Fixture,
+    name: &str,
+    summary: &RankingPreparationSummary,
+    selected_policy: &RankingPreparationPolicy,
+) {
     let mut input = jvc_state::PreparedEvaluationInput::new(jvc_state::EvaluationOptions {
         selected_view: f.selected_view.clone(),
         overlay: f.overlay.clone(),
@@ -62,12 +70,12 @@ fn export(f: &Fixture, name: &str, summary: &RankingPreparationSummary) {
     if let Ok(directory) = std::env::var("JVC_PREPARATION_PARITY_DIR") {
         std::fs::create_dir_all(&directory).unwrap();
         let session = EvaluationSession::new(&f.bytes()).unwrap();
-        let descriptor = session.ranking_descriptor_native(&policy()).unwrap();
+        let descriptor = session.ranking_descriptor_native(selected_policy).unwrap();
         let native = session
             .prepare_ranking_native(&request(&descriptor, &f.word))
             .unwrap();
         assert_eq!(normalized(summary), normalized(&native));
-        let data = json!({"input":String::from_utf8(f.bytes()).unwrap(),"word":f.word,"policy":policy(),"descriptor":normalized(&descriptor),"summary":normalized(&native)});
+        let data = json!({"input":String::from_utf8(f.bytes()).unwrap(),"word":f.word,"policy":selected_policy,"descriptor":normalized(&descriptor),"summary":normalized(&native)});
         std::fs::write(
             std::path::Path::new(&directory).join(format!("{name}.json")),
             serde_json::to_vec(&data).unwrap(),
@@ -448,4 +456,318 @@ fn unknown_word_and_rafsi_discovery_have_no_numerical_results() {
     assert!(missing.targets.is_empty());
     assert!(missing.contexts.is_empty());
     assert_eq!(missing.usage.context_calls, 0);
+}
+
+#[test]
+fn large_source_is_streamed_and_context_charges_do_not_repeat_dictionary_bytes() {
+    let (mut f, _) = fixture();
+    f.definition("fr");
+    // Authenticated unrelated profile records enlarge the retained state, not this word's contexts.
+    for n in 0..50 {
+        f.event(
+            6,
+            json!({"kind":"identity.profile"}),
+            Some(json!({"name":format!("synthetic-{n}"),"bio":[["x".repeat(200_000)]],"links":[]})),
+        );
+    }
+    let session = EvaluationSession::new(&f.bytes()).unwrap();
+    let baseline = prepared(&session, &f.word);
+    let d = session.ranking_descriptor_native(&policy()).unwrap();
+    let source_bytes = (d.setup.setup_bytes - 256 * d.setup.setup_records as u64) / 16;
+    assert!(source_bytes > 3_000_000);
+    assert_eq!(baseline.contexts.len(), 2);
+    assert!(
+        d.setup.setup_units + 2 * 16 * source_bytes > policy().limits.units,
+        "the former per-context source formula must fail this vector"
+    );
+    assert!(baseline.usage.charged_units < policy().limits.units);
+    let mut bounded = policy();
+    bounded.limits.metadata_bytes = 8192;
+    let streamed = session.ranking_descriptor_native(&bounded).unwrap();
+    assert_eq!(streamed.input_binding, d.input_binding);
+    let summary = session
+        .prepare_ranking_native(&request(&streamed, &f.word))
+        .unwrap();
+    assert_eq!(summary.usage, baseline.usage);
+    export_with_policy(&f, "large-streamed-source", &summary, &bounded);
+}
+
+#[test]
+fn exact_profiles_skip_the_source_walk_and_float_unavailability_keeps_its_reason() {
+    let mut f = Fixture::new();
+    f.definition("en");
+    f.view("simple-routes-bounds-v1", &[1], 1000);
+    let exact = EvaluationSession::new(&f.bytes()).unwrap();
+    let mut tiny = policy();
+    tiny.limits.records = 1;
+    tiny.limits.setup_bytes = 1;
+    tiny.limits.units = 1;
+    let d = exact.ranking_descriptor_native(&tiny).unwrap();
+    assert!(!d.available && d.reasons.contains("unsupported_calculation"));
+    assert_eq!(d.setup.setup_bytes, 0);
+    assert_eq!(d.setup.setup_records, 0);
+    assert_eq!(
+        exact
+            .prepare_ranking_native(&request(&d, &f.word))
+            .unwrap_err()
+            .code,
+        "unsupported_calculation"
+    );
+    export_unavailable("exact-skips-source", &f, &tiny, "unsupported_calculation");
+    f.view(jvc_rank::approximate::ALGORITHM, &[1], 1000);
+    f.overlay = Some(json!({"invalid":true}));
+    let unavailable = EvaluationSession::new(&f.bytes()).unwrap();
+    let d = unavailable.ranking_descriptor_native(&policy()).unwrap();
+    assert!(!d.available && d.reasons.contains("invalid_overlay"));
+    let error = unavailable
+        .prepare_ranking_native(&request(&d, &f.word))
+        .unwrap_err();
+    assert_eq!(error.code, "ranking_unavailable");
+    assert!(error.message.contains("invalid_overlay"));
+    export_unavailable(
+        "unavailable-float-reason",
+        &f,
+        &policy(),
+        "ranking_unavailable",
+    );
+}
+
+#[test]
+fn resource_refused_policy_releases_controller_and_old_requests_without_resetting_generation() {
+    let (f, _) = fixture();
+    let session = EvaluationSession::new(&f.bytes()).unwrap();
+    let before = prepared(&session, &f.word);
+    let d = session.ranking_descriptor_native(&policy()).unwrap();
+    let mut limited = policy();
+    limited.limits.records = 1;
+    assert_eq!(
+        session
+            .ranking_descriptor_native(&limited)
+            .unwrap_err()
+            .code,
+        "resource_unavailable"
+    );
+    assert_eq!(session.ranking_preparation().unwrap(), "null");
+    assert_eq!(
+        session
+            .prepare_ranking_native(&request(&d, &f.word))
+            .unwrap_err()
+            .code,
+        "ranking_preparation"
+    );
+    let after = prepared(&session, &f.word);
+    assert_eq!(before.binding, after.binding);
+    assert!(after.preparation_id.ends_with("preparation-2"));
+}
+
+#[test]
+fn equal_graphs_share_execution_bindings_but_contexts_and_metadata_boundaries_stay_distinct() {
+    let mut f = Fixture::new();
+    f.definition("en");
+    f.definition("fr");
+    f.view(jvc_rank::approximate::ALGORITHM, &[1], 1000);
+    let session = EvaluationSession::new(&f.bytes()).unwrap();
+    let baseline = prepared(&session, &f.word);
+    assert_eq!(baseline.contexts.len(), 2);
+    assert_eq!(
+        baseline.contexts[0].execution_binding,
+        baseline.contexts[1].execution_binding
+    );
+    assert_ne!(
+        baseline.contexts[0].context_binding,
+        baseline.contexts[1].context_binding
+    );
+    let bytes = session.ranking_preparation().unwrap().len();
+    assert!(
+        bytes
+            > serde_json::to_vec(&session.ranking_descriptor_native(&policy()).unwrap())
+                .unwrap()
+                .len()
+    );
+    let mut exact = policy();
+    exact.limits.metadata_bytes = bytes;
+    let d = session.ranking_descriptor_native(&exact).unwrap();
+    session
+        .prepare_ranking_native(&request(&d, &f.word))
+        .unwrap();
+    assert_eq!(session.ranking_preparation().unwrap().len(), bytes);
+    exact.limits.metadata_bytes -= 1;
+    let d = session.ranking_descriptor_native(&exact).unwrap();
+    assert_eq!(
+        session
+            .prepare_ranking_native(&request(&d, &f.word))
+            .unwrap_err()
+            .code,
+        "resource_unavailable"
+    );
+    let metadata: Value = serde_json::from_str(&session.ranking_preparation().unwrap()).unwrap();
+    assert_eq!(metadata["retained_graphs"], 0);
+    export(&f, "equal-execution-distinct-contexts", &baseline);
+}
+
+fn export_input(name: &str, input: &Value, word: &str, summary: &RankingPreparationSummary) {
+    if let Ok(directory) = std::env::var("JVC_PREPARATION_PARITY_DIR") {
+        std::fs::create_dir_all(&directory).unwrap();
+        let fresh = EvaluationSession::new(&canonical_value(input).unwrap()).unwrap();
+        let descriptor = fresh.ranking_descriptor_native(&policy()).unwrap();
+        let expected = fresh
+            .prepare_ranking_native(&request(&descriptor, word))
+            .unwrap();
+        assert_eq!(normalized(summary), normalized(&expected));
+        std::fs::write(std::path::Path::new(&directory).join(format!("{name}.json")),
+            serde_json::to_vec(&json!({"input":String::from_utf8(canonical_value(input).unwrap()).unwrap(),"word":word,"policy":policy(),"descriptor":normalized(&descriptor),"summary":normalized(&expected)})).unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn isolated_import_continuity_account_and_public_shun_changes_bind_forks() {
+    for change in ["imports", "continuity", "account", "public-shun"] {
+        let (mut f, target) = fixture();
+        let claim = if change == "account" {
+            Some(f.event(7, json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}), None))
+        } else {
+            None
+        };
+        if change == "account" {
+            let mut view: Value = serde_json::from_str(&f.bodies[&f.selected_view]).unwrap();
+            view["account_authority"] = json!(true);
+            view["account_witnesses"] = json!([key(10)]);
+            f.selected_view = f.event(
+                20,
+                json!({"kind":"view.publish","parents":[f.selected_view]}),
+                Some(view),
+            );
+            f.event(10, json!({"kind":"account.observe","origin":"https://source.example","account":41,"claim":claim,"result":"present"}), Some(json!({
+                "origin":"https://source.example","account":41,"username":"author","field_hash":format!("sha256:{}", "0".repeat(64)),"markers":[claim],"method":"lensisku-public-profile-v1","observed_at":"2026-10-11T00:00:00Z"
+            })));
+        }
+        if change == "continuity" {
+            f.overlay = Some(local_overlay(
+                &f,
+                None,
+                json!([]),
+                json!([{"identity":key(8),"scope":{"kind":"*","word":"*","language":"*"}}]),
+            ));
+        } else if change == "public-shun" {
+            f.overlay = Some(local_overlay(&f, None, json!([]), json!([])));
+        }
+        let parent = EvaluationSession::new(&f.bytes()).unwrap();
+        let before = prepared(&parent, &f.word);
+        let begin = f.events.len();
+        let mut imports = json!({});
+        match change {
+            "imports" => {
+                let ids = canonical_value(&json!([target])).unwrap();
+                imports[jvc_core::hash_id("sha256:", b"", &ids)] = json!([target]);
+            }
+            "continuity" => {
+                let transfer = f.event(
+                    1,
+                    json!({"kind":"identity.transfer","successor":key(8)}),
+                    None,
+                );
+                f.event(
+                    8,
+                    json!({"kind":"identity.accept","transfer":transfer}),
+                    None,
+                );
+            }
+            "account" => {
+                f.event_after(7, vec![claim.unwrap()], json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"clear"}), None);
+            }
+            _ => {
+                f.overlay.as_mut().unwrap()["public_shun_issuer"] = json!(key(2));
+            }
+        }
+        let mut input: Value = serde_json::from_slice(&f.bytes()).unwrap();
+        input["import_selections"] = imports.clone();
+        let options = canonical_value(&json!({"selected_view":f.selected_view,"import_selections":imports,"overlay":f.overlay})).unwrap();
+        let mut builder = parent.fork(&options).unwrap();
+        for envelope in &f.events[begin..] {
+            let id = serde_json::from_str::<Value>(envelope).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            builder
+                .add_record(
+                    envelope.as_bytes(),
+                    f.bodies.get(&id).map(|b| b.as_bytes().to_vec()),
+                )
+                .unwrap();
+        }
+        let child = builder.finish();
+        let after = prepared(&child, &f.word);
+        assert_ne!(
+            before.descriptor_binding, after.descriptor_binding,
+            "{change}"
+        );
+        let fresh = EvaluationSession::new(&canonical_value(&input).unwrap()).unwrap();
+        assert_eq!(normalized(&after), normalized(&prepared(&fresh, &f.word)));
+        if change == "account" {
+            let old: Value = serde_json::from_str(&parent.state().unwrap()).unwrap();
+            let new: Value = serde_json::from_str(&child.state().unwrap()).unwrap();
+            assert_ne!(old["accounts"], new["accounts"]);
+        }
+        if change == "continuity" {
+            let new: Value = serde_json::from_str(&child.state().unwrap()).unwrap();
+            assert_eq!(new["lifecycle"]["key_actor"][key(8)], key(1));
+        }
+        assert_eq!(normalized(&prepared(&parent, &f.word)), normalized(&before));
+        export_input(&format!("binding-{change}"), &input, &f.word, &after);
+    }
+}
+
+#[test]
+fn indexed_float_contexts_match_direct_conflicts_clears_and_narrowing() {
+    for case in ["conflict", "clear", "narrowing"] {
+        let (mut f, _) = fixture();
+        f.definition("fr");
+        let rule = |scope: Value, value: &str, weight: Value| json!({"issuer":key(1),"subject":key(2),"scope":scope,"value":value,"weight":weight});
+        let en = json!({"kind":"definition","word":"*","language":"en"});
+        let mut trust = match case {
+            "conflict" => vec![
+                rule(en, "heed", json!({"numerator":1,"denominator":3})),
+                rule(
+                    json!({"kind":"definition","word":f.word,"language":"*"}),
+                    "heed",
+                    json!({"numerator":2,"denominator":3}),
+                ),
+            ],
+            "clear" => vec![rule(en, "clear", Value::Null)],
+            _ => vec![
+                rule(
+                    json!({"kind":"definition","word":"*","language":"*"}),
+                    "heed",
+                    json!({"numerator":1,"denominator":3}),
+                ),
+                rule(en, "heed", json!({"numerator":2,"denominator":3})),
+            ],
+        };
+        trust.sort_by_key(|v| canonical_value(v).unwrap());
+        f.overlay = Some(local_overlay(&f, Some(2), json!(trust), json!([])));
+        let summary = prepared(&EvaluationSession::new(&f.bytes()).unwrap(), &f.word);
+        let english = summary
+            .contexts
+            .iter()
+            .find(|c| c.context.language.as_deref() == Some("en"))
+            .unwrap();
+        assert_eq!(english.edges, usize::from(case == "narrowing"));
+        export(&f, &format!("indexed-private-{case}"), &summary);
+    }
+}
+
+fn export_unavailable(name: &str, f: &Fixture, policy: &RankingPreparationPolicy, error: &str) {
+    if let Ok(directory) = std::env::var("JVC_PREPARATION_PARITY_DIR") {
+        std::fs::create_dir_all(&directory).unwrap();
+        let session = EvaluationSession::new(&f.bytes()).unwrap();
+        let descriptor = session.ranking_descriptor_native(policy).unwrap();
+        assert_eq!(
+            session
+                .prepare_ranking_native(&request(&descriptor, &f.word))
+                .unwrap_err()
+                .code,
+            error
+        );
+        std::fs::write(std::path::Path::new(&directory).join(format!("{name}.json")), serde_json::to_vec(&json!({"input":String::from_utf8(f.bytes()).unwrap(),"word":f.word,"policy":policy,"descriptor":normalized(&descriptor),"error":error})).unwrap()).unwrap();
+    }
 }

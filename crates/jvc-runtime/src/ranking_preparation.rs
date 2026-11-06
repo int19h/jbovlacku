@@ -4,7 +4,7 @@ use super::*;
 use jvc_rank::approximate as a;
 use std::{collections::BTreeSet, sync::Arc};
 
-pub const PREPARATION_CONTRACT: &str = "jvc-session-ranking-preparation-v1";
+pub const PREPARATION_CONTRACT: &str = "jvc-session-ranking-preparation-v2";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RankingPreparationLimits {
@@ -167,9 +167,6 @@ pub(crate) struct PreparedRanking {
 pub(crate) struct SessionPreparation {
     policy: RankingPreparationPolicy,
     descriptor: RankingPreparationDescriptor,
-    source_bytes: u64,
-    squared_pairs: u64,
-    generation: u64,
     usage: PreparationUsage,
     pub(crate) prepared: Option<PreparedRanking>,
 }
@@ -260,25 +257,6 @@ impl SessionPreparation {
     fn new(session: &EvaluationSession, policy: &RankingPreparationPolicy) -> Result<Self> {
         policy.validate()?;
         let limits = &policy.limits;
-        let records = session.state.ranking_source_records()?;
-        if records > limits.records {
-            return Err(resource("ranking setup record limit"));
-        }
-        let source = session.state.ranking_source_bytes(limits.metadata_bytes)?;
-        let source_bytes = source.len() as u64;
-        let setup_bytes = add(mul(source_bytes, 16)?, mul(records as u64, 256)?)?;
-        let setup_units = add(
-            mul(source_bytes, 4)?,
-            mul(
-                mul(records as u64 + 1, 64)?,
-                u64::from(usize::BITS - (records + 1).leading_zeros()),
-            )?,
-        )?;
-        if setup_bytes > limits.setup_bytes as u64 || setup_units > limits.units {
-            return Err(resource("ranking setup envelope limit"));
-        }
-        let input_binding = jvc_core::hash_id("sha256:", b"jvc-ranking-state-v1\n", &source);
-        drop(source);
         let e = session.state.evaluation();
         let algorithm = e
             .policy
@@ -286,7 +264,8 @@ impl SessionPreparation {
             .and_then(|p| p["calculation"].as_str())
             .map(str::to_owned);
         let mut reasons = e.reasons.clone();
-        if algorithm.as_deref() != Some(a::ALGORITHM) {
+        let unsupported = algorithm.as_deref().is_some_and(|a| a != a::ALGORITHM);
+        if unsupported {
             reasons.insert("unsupported_calculation".into());
         }
         let parameters = match parameters(e) {
@@ -298,10 +277,46 @@ impl SessionPreparation {
         };
         let available =
             e.available && algorithm.as_deref() == Some(a::ALGORITHM) && parameters.is_some();
-        let squared_pairs = if available {
-            session.state.ensure_ranking_index()?
+        // Unsupported profiles need no ranking input identity or dictionary walk.
+        let (input_binding, records, setup_bytes, setup_units) = if unsupported {
+            (
+                digest(
+                    b"jvc-ranking-unsupported-v1\n",
+                    &(&e.selected_view, &algorithm),
+                    limits.metadata_bytes,
+                )?,
+                0,
+                0,
+                0,
+            )
         } else {
-            0
+            let records = session.state.ranking_source_records()?;
+            if records > limits.records {
+                return Err(resource("ranking setup record limit"));
+            }
+            let fixed_bytes = mul(records as u64, 256)?;
+            let source_limit = (limits.setup_bytes as u64)
+                .checked_sub(fixed_bytes)
+                .ok_or_else(|| resource("ranking setup envelope limit"))?
+                / 16;
+            let (binding, bytes) = session
+                .state
+                .ranking_source_binding(source_limit as usize)?;
+            let setup_bytes = add(mul(bytes as u64, 16)?, fixed_bytes)?;
+            let setup_units = add(
+                mul(bytes as u64, 4)?,
+                mul(
+                    mul(records as u64 + 1, 64)?,
+                    u64::from(usize::BITS - (records + 1).leading_zeros()),
+                )?,
+            )?;
+            if setup_units > limits.units {
+                return Err(resource("ranking setup envelope limit"));
+            }
+            if available {
+                session.state.ensure_ranking_index()?;
+            }
+            (binding, records, setup_bytes, setup_units)
         };
         let contract_binding = digest(
             b"jvc-ranking-preparation-contract-v1\n",
@@ -366,9 +381,6 @@ impl SessionPreparation {
         Ok(Self {
             policy: policy.clone(),
             descriptor,
-            source_bytes,
-            squared_pairs,
-            generation: 0,
             usage: setup,
             prepared: None,
         })
@@ -404,17 +416,30 @@ impl SessionPreparation {
         }
         if !self.descriptor.available {
             return Err(Error::new(
-                "unsupported_calculation",
-                "session is unavailable for float preparation",
+                if self.descriptor.reasons.contains("unsupported_calculation") {
+                    "unsupported_calculation"
+                } else {
+                    "ranking_unavailable"
+                },
+                format!(
+                    "session is unavailable for float preparation: {}",
+                    self.descriptor
+                        .reasons
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             ));
         }
-        let generation = self
-            .generation
+        let generation = session
+            .preparation_generation
+            .get()
             .checked_add(1)
             .ok_or_else(|| resource("preparation generation overflow"))?;
         // A valid replacement drops old graphs before allocating their successors.
         self.prepared = None;
-        self.generation = generation;
+        session.preparation_generation.set(generation);
         self.usage = self.descriptor.setup.clone();
         let publications = session
             .state
@@ -503,15 +528,24 @@ impl SessionPreparation {
                 word: request.word.clone(),
                 language: language.clone(),
             };
+            let bound = session.state.ranking_context_bound(&context)?;
             let cost = add(
                 add(
-                    mul(self.source_bytes, 16)?,
-                    mul(self.descriptor.setup.setup_records as u64, 64)?,
+                    mul(add(bound.targets, bound.judgments)?, 4)?,
+                    mul(add(bound.trust_rules, bound.public_rules)?, 24)?,
                 )?,
-                mul(self.squared_pairs, 8)?,
+                add(
+                    add(
+                        mul(
+                            add(add(bound.roots, bound.exclusions)?, bound.suspensions)?,
+                            8,
+                        )?,
+                        mul(bound.overlay_entries, 32)?,
+                    )?,
+                    mul(bound.pairs_squared, 8)?,
+                )?,
             )?;
             self.charge(add(1, cost)?)?;
-            let bound = session.state.ranking_context_bound(&context)?;
             let limits = jvc_rank::Limits::default();
             let graph_bytes = add(
                 mul(bound.actors, 1024)?,
@@ -520,11 +554,8 @@ impl SessionPreparation {
                     add(mul(bound.refusals, 64)?, mul(bound.judgments, 512)?)?,
                 )?,
             )?;
-            if bound.actors > limits.max_actors as u64
-                || bound.edges > limits.max_edges as u64
-                || bound.refusals > limits.max_refusals as u64
-                || graph_bytes
-                    > (self.policy.limits.graph_bytes as u64).saturating_sub(self.usage.graph_bytes)
+            if graph_bytes
+                > (self.policy.limits.graph_bytes as u64).saturating_sub(self.usage.graph_bytes)
             {
                 return Err(resource("ranking context envelope limit"));
             }
@@ -556,7 +587,13 @@ impl SessionPreparation {
                     contextual.refusals,
                     &limits,
                 ) {
-                    Ok(g) => Some(Arc::new(g)),
+                    Ok(g) => {
+                        let graph = Arc::new(g);
+                        #[cfg(test)]
+                        CREATED_GRAPHS
+                            .with(|graphs| graphs.borrow_mut().push(Arc::downgrade(&graph)));
+                        Some(graph)
+                    }
                     Err(error) => {
                         reasons.insert(
                             match error {
@@ -696,10 +733,10 @@ impl EvaluationSession {
                 .descriptor
                 .clone());
         }
-        let mut preparation = SessionPreparation::new(self, policy)?;
-        if let Some(previous) = self.preparation.borrow().as_ref() {
-            preparation.generation = previous.generation;
-        }
+        // Shape-invalid policies leave the controller intact. A different valid
+        // policy releases it before setup admission, even when admission refuses.
+        self.preparation.borrow_mut().take();
+        let preparation = SessionPreparation::new(self, policy)?;
         let descriptor = preparation.descriptor.clone();
         *self.preparation.borrow_mut() = Some(preparation);
         Ok(descriptor)
@@ -767,6 +804,10 @@ impl EvaluationSession {
 }
 
 #[cfg(test)]
+thread_local! {
+    static CREATED_GRAPHS: std::cell::RefCell<Vec<std::sync::Weak<a::Graph>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -780,8 +821,23 @@ mod tests {
             .iter()
             .find(|r| r["name"] == "f64-contract-0")
             .unwrap();
-        let envelope = row["envelope"].as_str().unwrap();
-        let view: Value = serde_json::from_str(envelope).unwrap();
+        let mut view_body: Value = serde_json::from_str(row["body"].as_str().unwrap()).unwrap();
+        view_body["roots"] = json!([{"identity":jvc_core::identity_from_seed(&[9;32]),"q":{"numerator":1,"denominator":1}}]);
+        let view_body = canonical_value(&view_body).unwrap();
+        let view_record = jvc_core::sign_header(
+            &[20; 32],
+            jvc_core::Header {
+                version: 1,
+                issuer: jvc_core::identity_from_seed(&[20; 32]),
+                previous: vec![],
+                nonce: "3".repeat(32),
+                action: json!({"kind":"view.publish","parents":[]}),
+                content: Some(jvc_core::body_descriptor(&view_body).unwrap()),
+            },
+        )
+        .unwrap();
+        let envelope = String::from_utf8(view_record.canonical_envelope().unwrap()).unwrap();
+        let view: Value = serde_json::from_str(&envelope).unwrap();
         let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
         let body = canonical_value(
             &serde_json::from_str::<Value>(include_str!(
@@ -798,7 +854,7 @@ mod tests {
         let mut bodies = BTreeMap::new();
         bodies.insert(
             view["id"].as_str().unwrap().to_owned(),
-            row["body"].as_str().unwrap().to_owned(),
+            String::from_utf8(view_body).unwrap(),
         );
         bodies.insert(id.to_owned(), String::from_utf8(body).unwrap());
         let input = json!({"events":[envelope,String::from_utf8(signed.canonical_envelope().unwrap()).unwrap()],"bodies":bodies,"selected_view":view["id"],"import_selections":{}});
@@ -851,8 +907,132 @@ mod tests {
         assert!(third.upgrade().is_none());
         request.descriptor_binding = descriptor.binding;
         session.prepare_ranking_native(&request).unwrap();
+        let refused = graph(&session);
+        let mut smaller = policy.clone();
+        smaller.limits.records = 1;
+        assert_eq!(
+            session
+                .ranking_descriptor_native(&smaller)
+                .unwrap_err()
+                .code,
+            "resource_unavailable"
+        );
+        assert!(refused.upgrade().is_none());
+        assert!(session.preparation.borrow().is_none());
+        request.descriptor_binding = session.ranking_descriptor_native(&policy).unwrap().binding;
+        session.prepare_ranking_native(&request).unwrap();
         let last = graph(&session);
         drop(session);
         assert!(last.upgrade().is_none());
+    }
+    fn with_second_context(session: EvaluationSession, word: &str) -> EvaluationSession {
+        let e = session.state.evaluation();
+        let options =
+            serde_json::to_vec(&json!({"selected_view":e.selected_view,"import_selections":{}}))
+                .unwrap();
+        let mut builder = session.fork(&options).unwrap();
+        let mut body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        body["language"] = json!("fr");
+        let body = canonical_value(&body).unwrap();
+        let record = jvc_core::sign_header(&[8;32], jvc_core::Header {
+            version:1, issuer:jvc_core::identity_from_seed(&[8;32]), previous:vec![], nonce:"2".repeat(32),
+            action:json!({"kind":"definition.publish","word":word,"language":"fr","parents":[],"origin":"native"}),
+            content:Some(jvc_core::body_descriptor(&body).unwrap()),
+        }).unwrap();
+        builder
+            .add_record(&record.canonical_envelope().unwrap(), Some(body))
+            .unwrap();
+        builder.finish()
+    }
+    #[test]
+    fn later_context_refusal_releases_the_earlier_temporary_graph() {
+        let (session, word) = session();
+        let session = with_second_context(session, &word);
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        let mut request = RankingPreparationRequest {
+            owner_session: descriptor.owner_session,
+            descriptor_binding: descriptor.binding,
+            word,
+        };
+        let summary = session.prepare_ranking_native(&request).unwrap();
+        let previous = graph(&session);
+        assert_eq!(summary.contexts.len(), 2);
+        let bound = session
+            .state
+            .ranking_context_bound(&summary.contexts[0].context)
+            .unwrap();
+        let first_bytes =
+            bound.actors * 1024 + bound.edges * 128 + bound.refusals * 64 + bound.judgments * 512;
+        policy.limits.graph_bytes = first_bytes as usize;
+        request.descriptor_binding = session.ranking_descriptor_native(&policy).unwrap().binding;
+        assert!(previous.upgrade().is_none());
+        CREATED_GRAPHS.with(|graphs| graphs.borrow_mut().clear());
+        assert_eq!(
+            session.prepare_ranking_native(&request).unwrap_err().code,
+            "resource_unavailable"
+        );
+        CREATED_GRAPHS.with(|graphs| {
+            let graphs = graphs.borrow();
+            assert_eq!(graphs.len(), 1);
+            assert!(graphs[0].upgrade().is_none());
+        });
+        let p = session.preparation.borrow();
+        assert!(p.as_ref().unwrap().prepared.is_none());
+        assert_eq!(p.as_ref().unwrap().usage.context_calls, 1);
+    }
+    #[test]
+    fn repeated_actor_bound_does_not_replace_actual_kernel_count_limits() {
+        let (mut session, word) = session();
+        // This trusted synthetic snapshot isolates the preparation count model.
+        let mut saved: Value =
+            serde_json::from_slice(&session.checkpoint("synthetic").unwrap()).unwrap();
+        let actors: Vec<_> = (0u64..1000)
+            .map(|n| {
+                let mut seed = [0; 32];
+                seed[..8].copy_from_slice(&n.to_le_bytes());
+                jvc_core::identity_from_seed(&seed)
+            })
+            .collect();
+        let mut trust = Vec::new();
+        for i in 0..1000 {
+            for hop in 1..=6 {
+                trust.push(json!({"actor":actors[i],"subject":actors[(i+hop)%1000],"scope":{"kind":"definition","word":"*","language":"en"},"values":["heed"]}));
+            }
+        }
+        saved["evaluation"]["trust"] = json!(trust);
+        session.state = jvc_state::EvaluatedState::restore_host_checkpoint(
+            &serde_json::to_vec(&saved).unwrap(),
+            "synthetic",
+        )
+        .unwrap();
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        let context = jvc_state::Context {
+            kind: "definition".into(),
+            word: word.clone(),
+            language: Some("en".into()),
+        };
+        let bound = session.state.ranking_context_bound(&context).unwrap();
+        assert!(bound.actors > jvc_rank::Limits::default().max_actors as u64);
+        let summary = session
+            .prepare_ranking_native(&RankingPreparationRequest {
+                owner_session: descriptor.owner_session,
+                descriptor_binding: descriptor.binding,
+                word,
+            })
+            .unwrap();
+        assert!(summary.contexts[0].available);
+        assert_eq!(summary.contexts[0].actors, 1001);
+        assert_eq!(summary.contexts[0].edges, 6000);
     }
 }

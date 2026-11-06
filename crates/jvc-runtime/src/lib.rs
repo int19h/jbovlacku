@@ -731,6 +731,7 @@ pub struct EvaluationSession {
     identity: String,
     base_identity: Option<String>,
     preparation: std::cell::RefCell<Option<ranking_preparation::SessionPreparation>>,
+    preparation_generation: std::cell::Cell<u64>,
 }
 /// Build a session from original records without one combined request.
 #[wasm_bindgen]
@@ -1084,6 +1085,7 @@ impl EvaluationSessionBuilder {
         EvaluationSession {
             identity: session_identity(),
             preparation: Default::default(),
+            preparation_generation: Default::default(),
             base_identity: self.base_identity,
             state: match self.base {
                 Some(base) => base.advance(self.prepared, &self.removed),
@@ -1104,6 +1106,7 @@ impl EvaluationSession {
             state,
             identity: session_identity(),
             preparation: Default::default(),
+            preparation_generation: Default::default(),
             base_identity: None,
         })
     }
@@ -1139,6 +1142,7 @@ impl EvaluationSession {
         Ok(Self {
             identity: session_identity(),
             preparation: Default::default(),
+            preparation_generation: Default::default(),
             base_identity: None,
             state: jvc_state::EvaluatedState::restore_host_result_checkpoint(
                 bytes,
@@ -1156,6 +1160,7 @@ impl EvaluationSession {
         Ok(Self {
             identity: session_identity(),
             preparation: Default::default(),
+            preparation_generation: Default::default(),
             base_identity: None,
             state: jvc_state::EvaluatedState::restore_host_checkpoint(bytes, binding)
                 .map_err(fail)?,

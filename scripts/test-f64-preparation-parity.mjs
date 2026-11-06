@@ -24,9 +24,10 @@ const files = (await readdir(directory))
   .filter((f) => f.endsWith(".json"))
   .sort();
 assert(
-  files.length >= 8,
+  files.length >= 19,
   "Generate every native preparation case before this comparison.",
 );
+let metadataBoundaries = 0;
 for (const file of files) {
   const row = JSON.parse(await readFile(resolve(directory, file), "utf8"));
   const input = JSON.parse(row.input);
@@ -71,6 +72,14 @@ for (const file of files) {
         descriptor_binding: descriptor.binding,
         word: row.word,
       };
+      if (row.error) {
+        assert.throws(
+          () => session.prepare_ranking(utf8(request)),
+          new RegExp(row.error),
+        );
+        assert.equal(session.state(), state);
+        continue;
+      }
       const summary = JSON.parse(session.prepare_ranking(utf8(request)));
       assert.deepEqual(normalize(summary), row.summary, file);
       const before = session.ranking_preparation();
@@ -89,6 +98,70 @@ for (const file of files) {
       assert.equal(session.ranking_preparation(), before);
       assert.equal(session.state(), state);
       assert.throws(() => session.rank(row.word), /unsupported_calculation/);
+      const refusedPolicy = {
+        ...row.policy,
+        limits: { ...row.policy.limits, records: 1 },
+      };
+      assert.throws(
+        () => session.ranking_descriptor(utf8(refusedPolicy)),
+        /resource_unavailable/,
+      );
+      assert.equal(session.ranking_preparation(), "null");
+      assert.throws(
+        () => session.prepare_ranking(utf8(request)),
+        /ranking_preparation/,
+      );
+      const restored = JSON.parse(session.ranking_descriptor(utf8(row.policy)));
+      assert.deepEqual(normalize(restored), row.descriptor);
+      const recovered = JSON.parse(session.prepare_ranking(utf8(request)));
+      assert.deepEqual(normalize(recovered), row.summary);
+      const metadataBytes = new TextEncoder().encode(
+        session.ranking_preparation(),
+      ).length;
+      if (
+        metadataBytes >
+        new TextEncoder().encode(JSON.stringify(restored)).length
+      ) {
+        const boundaryPolicy = {
+          ...row.policy,
+          limits: { ...row.policy.limits, metadata_bytes: metadataBytes },
+        };
+        const boundary = JSON.parse(
+          session.ranking_descriptor(utf8(boundaryPolicy)),
+        );
+        const boundaryRequest = {
+          ...request,
+          descriptor_binding: boundary.binding,
+        };
+        session.prepare_ranking(utf8(boundaryRequest));
+        assert.equal(
+          new TextEncoder().encode(session.ranking_preparation()).length,
+          metadataBytes,
+        );
+        const below = JSON.parse(
+          session.ranking_descriptor(
+            utf8({
+              ...boundaryPolicy,
+              limits: {
+                ...boundaryPolicy.limits,
+                metadata_bytes: metadataBytes - 1,
+              },
+            }),
+          ),
+        );
+        assert.throws(
+          () =>
+            session.prepare_ranking(
+              utf8({ ...request, descriptor_binding: below.binding }),
+            ),
+          /resource_unavailable/,
+        );
+        assert.equal(
+          JSON.parse(session.ranking_preparation()).retained_graphs,
+          0,
+        );
+        metadataBoundaries += 1;
+      }
       session.clear_ranking_preparation();
       session.clear_ranking_preparation();
       assert.equal(
@@ -101,9 +174,11 @@ for (const file of files) {
     for (const session of sessions) session.free();
   }
 }
+assert(metadataBoundaries > 0);
 console.log(
   JSON.stringify({
     cases: files.length,
+    metadata_boundaries: metadataBoundaries,
     session_paths: 5,
     native_wasm_bindings_and_graph_metadata_equal: true,
   }),
