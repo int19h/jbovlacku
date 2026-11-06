@@ -360,9 +360,16 @@ fn stale_requests_fail_before_replacement_and_policy_changes_drop_preparation() 
     let metadata: Value = serde_json::from_str(&session.ranking_preparation().unwrap()).unwrap();
     assert!(metadata["prepared"].is_null());
     assert_eq!(metadata["retained_graphs"], 0);
-    session
+    let replaced = session
         .prepare_ranking_native(&request(&changed, &f.word))
         .unwrap();
+    let restored_policy = session.ranking_descriptor_native(&policy()).unwrap();
+    let next = session
+        .prepare_ranking_native(&request(&restored_policy, &f.word))
+        .unwrap();
+    assert_eq!(restored_policy.binding, descriptor.binding);
+    assert_ne!(next.preparation_id, replaced.preparation_id);
+    assert!(next.preparation_id.ends_with("preparation-3"));
     session.clear_ranking_preparation();
     session.clear_ranking_preparation();
     let metadata: Value = serde_json::from_str(&session.ranking_preparation().unwrap()).unwrap();

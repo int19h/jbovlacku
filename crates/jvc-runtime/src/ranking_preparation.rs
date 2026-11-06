@@ -696,7 +696,10 @@ impl EvaluationSession {
                 .descriptor
                 .clone());
         }
-        let preparation = SessionPreparation::new(self, policy)?;
+        let mut preparation = SessionPreparation::new(self, policy)?;
+        if let Some(previous) = self.preparation.borrow().as_ref() {
+            preparation.generation = previous.generation;
+        }
         let descriptor = preparation.descriptor.clone();
         *self.preparation.borrow_mut() = Some(preparation);
         Ok(descriptor)
