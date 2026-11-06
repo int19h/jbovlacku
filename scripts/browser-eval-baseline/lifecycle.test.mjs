@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { once } from "node:events";
+import { once, EventEmitter } from "node:events";
+import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { createLifecycle, FORCE_EXIT_DELAY_MS } from "./lifecycle.mjs";
-import { stopChild } from "./limits.mjs";
+import { stopChild, childRunning } from "./limits.mjs";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const deferred = () => {
@@ -128,6 +129,132 @@ test(
       assert.equal(owner.limiterCount, 0);
     } finally {
       release.resolve();
+      child.kill("SIGCONT");
+      await stopChild(child);
+    }
+  },
+);
+
+for (const phase of ["reservation", "log"])
+  test(
+    `server startup refuses cancellation during ${phase} and releases resources`,
+    { timeout: 5000 },
+    async () => {
+      const source = await readFile(
+        new URL("./run.mjs", import.meta.url),
+        "utf8",
+      );
+      const startup = source.slice(
+        source.indexOf("async function startProductServer() {"),
+        source.indexOf("\nconst http = createServer"),
+      );
+      const execute = new Function(
+        "createLifecycle",
+        "stopChild",
+        "childRunning",
+        "spawnReal",
+        "EventEmitter",
+        "join",
+        "phase",
+        `return (async () => {
+      let serverProcess = null, spawnCalls = 0, logEnded = false, closeCalls = 0;
+      const root='.',out='.',data='/disposable-test',apiPort=12345,port=12346,dataset={snapshot:'test'};
+      const lifecycle=createLifecycle({setExitStatus(){},stopServer:()=>stopChild(serverProcess)});
+      const interrupt=async()=>{lifecycle.handleSignal('SIGINT');await lifecycle.shutdown();};
+      const createServer=()=>{
+        const reserved=new EventEmitter();
+        reserved.listen=(_port,_host,ready)=>setImmediate(async()=>{if(phase==='reservation')await interrupt();ready();});
+        reserved.close=done=>{closeCalls++;setImmediate(done);};
+        return reserved;
+      };
+      const createWriteStream=()=>{
+        const log=new EventEmitter();log.write=()=>true;log.end=()=>{logEnded=true;};
+        setImmediate(async()=>{if(phase==='log')await interrupt();log.emit('open');});
+        return log;
+      };
+      const spawn=(...args)=>{spawnCalls++;return spawnReal(...args);};
+      const delay=()=>new Promise(resolve=>setTimeout(resolve,5));
+      const fetch=async()=>({ok:true,json:async()=>({snapshot:'test'})});
+      const writeFile=async()=>{};
+      ${startup}
+      let error;
+      try{await startProductServer();}catch(value){error=value;}
+      try {
+        await lifecycle.shutdown();
+        return {spawnCalls,logEnded,closeCalls,error:error?.message,childAlive:childRunning(serverProcess)};
+      } finally { await stopChild(serverProcess); }
+    })();`,
+      );
+      const result = await execute(
+        createLifecycle,
+        stopChild,
+        childRunning,
+        () =>
+          spawn(
+            process.execPath,
+            [
+              "-e",
+              "console.log(JSON.stringify({event:'listening',data:'/disposable-test',address:{port:12345}}));setInterval(()=>{},1000)",
+            ],
+            { stdio: ["ignore", "pipe", "pipe"] },
+          ),
+        EventEmitter,
+        join,
+        phase,
+      );
+      assert.equal(result.spawnCalls, 0);
+      assert.equal(result.logEnded, true);
+      assert.equal(result.closeCalls, 1);
+      assert.equal(result.childAlive, false);
+      assert.match(result.error, /SIGINT/);
+    },
+  );
+
+test(
+  "failed limiter stop still attempts browser and server cleanup and retains its error",
+  { timeout: 5000 },
+  async () => {
+    const child = target(),
+      original = Error("injected limiter stop failure"),
+      exited = deferred();
+    let browsers = 0,
+      servers = 0;
+    const owner = life({
+      closeBrowser: async () => {
+        browsers++;
+        throw Error("later browser failure");
+      },
+      stopServer: async () => {
+        servers++;
+        throw Error("later server failure");
+      },
+      forceExit: exited.resolve,
+    });
+    try {
+      await owner.startLimiter(
+        {
+          send: async () => ({
+            processInfo: [{ type: "renderer", id: child.pid }],
+          }),
+        },
+        4,
+        {
+          readIdentity: async (pid) => {
+            if (owner.cancelled) throw original;
+            return (await stat(pid)).start;
+          },
+        },
+      );
+      child.kill("SIGSTOP");
+      await waitUntil(async () => (await stat(child.pid)).state === "T");
+      await assert.rejects(owner.shutdown(), (error) => error === original);
+      assert.equal(browsers, 1);
+      assert.equal(servers, 1);
+      assert.equal(owner.limiterCount, 1);
+      owner.forceShutdown();
+      await waitUntil(async () => (await stat(child.pid)).state !== "T");
+      await exited.promise;
+    } finally {
       child.kill("SIGCONT");
       await stopChild(child);
     }

@@ -21,7 +21,8 @@ import { workerTimings, profileSummary } from "./metrics.mjs";
 import { childRunning, stopChild, configureWorkerThrottle } from "./limits.mjs";
 import { ancestryShape } from "./ancestry.mjs";
 import { validateSample, readCachedDataset } from "./samples.mjs";
-import { createLifecycle } from "./lifecycle.mjs";
+import { createLifecycle, cleanupInOrder } from "./lifecycle.mjs";
+import { WorkerCDP } from "./worker-cdp.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const args = Object.fromEntries(
@@ -377,56 +378,6 @@ async function prepare() {
   }
 }
 
-class WorkerCDP {
-  constructor(root, session) {
-    this.root = root;
-    this.session = session;
-    this.id = 0;
-    this.pending = new Map();
-    root.on("Target.detachedFromTarget", ({ sessionId }) => {
-      if (sessionId === session) {
-        for (const p of this.pending.values())
-          p.reject(Error("Worker target detached"));
-        this.pending.clear();
-      }
-    });
-    root.on("Target.receivedMessageFromTarget", ({ sessionId, message }) => {
-      if (sessionId !== session) return;
-      const value = JSON.parse(message);
-      if (value.id) {
-        const p = this.pending.get(value.id);
-        if (p) {
-          this.pending.delete(value.id);
-          value.error
-            ? p.reject(Error(JSON.stringify(value.error)))
-            : p.resolve(value.result);
-        }
-      }
-    });
-  }
-  send(method, params = {}) {
-    const id = ++this.id;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.root
-        .send("Target.sendMessageToTarget", {
-          sessionId: this.session,
-          message: JSON.stringify({ id, method, params }),
-        })
-        .catch(reject);
-    });
-  }
-  async evaluate(expression) {
-    const r = await this.send("Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    if (r.exceptionDetails) throw Error(JSON.stringify(r.exceptionDetails));
-    return r.result.value;
-  }
-}
-
 let serverProcess = null,
   activeCleanup = null,
   outputFailure = null;
@@ -457,33 +408,44 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
 async function startProductServer() {
   // Refuse an occupied port before sending any request to it.
   const reserved = createServer();
-  await new Promise((resolve, reject) => {
-    reserved.once("error", reject);
-    reserved.listen(apiPort, "127.0.0.1", resolve);
-  });
-  await new Promise((r) => reserved.close(r));
-  const log = createWriteStream(join(out, "server.log"), { flags: "a" });
-  await new Promise((r, reject) => {
-    log.once("open", r);
-    log.once("error", reject);
-  });
+  let log,
+    reservationReleased = false;
   let ownedListening = false,
     lines = "";
-  serverProcess = spawn(process.execPath, ["apps/server/dist/main.js"], {
-    cwd: root,
-    env: {
-      ...process.env,
-      JVC_DATA_DIR: data,
-      HOST: "127.0.0.1",
-      PORT: String(apiPort),
-      JVC_PUBLIC_ORIGIN: `http://127.0.0.1:${port}`,
-      JVC_AI_ENABLED: "disabled",
-      JVC_SEMANTIC_INDEXING: "disabled",
-      JVC_SEMANTIC_PROFILE: "",
-      JVC_SEMANTIC_ROUTE: undefined,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  try {
+    await new Promise((resolve, reject) => {
+      reserved.once("error", reject);
+      reserved.listen(apiPort, "127.0.0.1", resolve);
+    });
+    await new Promise((r) => reserved.close(r));
+    reservationReleased = true;
+    log = createWriteStream(join(out, "server.log"), { flags: "a" });
+    await new Promise((r, reject) => {
+      log.once("open", r);
+      log.once("error", reject);
+    });
+    lifecycle.assertActive();
+    serverProcess = spawn(process.execPath, ["apps/server/dist/main.js"], {
+      cwd: root,
+      env: {
+        ...process.env,
+        JVC_DATA_DIR: data,
+        HOST: "127.0.0.1",
+        PORT: String(apiPort),
+        JVC_PUBLIC_ORIGIN: `http://127.0.0.1:${port}`,
+        JVC_AI_ENABLED: "disabled",
+        JVC_SEMANTIC_INDEXING: "disabled",
+        JVC_SEMANTIC_PROFILE: "",
+        JVC_SEMANTIC_ROUTE: undefined,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    log?.end();
+    if (!reservationReleased)
+      await new Promise((resolve) => reserved.close(resolve));
+    throw error;
+  }
   serverProcess.stdout.on("data", (chunk) => {
     log.write(chunk);
     lines += chunk.toString();
@@ -924,7 +886,10 @@ async function trial(condition, rep, profile = false) {
         flatten: false,
       }),
     );
-    workerCDP = new WorkerCDP(rootCDP, attached.sessionId);
+    workerCDP = new WorkerCDP(rootCDP, attached.sessionId, {
+      browser,
+      lifecycle,
+    });
     await setup(() => limiter?.sync());
     const workerThrottle = await setup(() =>
       configureWorkerThrottle(workerCDP, condition.rate, limiter),
@@ -1102,8 +1067,7 @@ async function trial(condition, rep, profile = false) {
   } finally {
     clearInterval(watcher);
     clearInterval(heartbeat);
-    await lifecycle.stopLimiters();
-    await closeBrowser();
+    await cleanupInOrder(() => lifecycle.stopLimiters(), closeBrowser);
     if (activeCleanup === closeBrowser) activeCleanup = null;
   }
 }

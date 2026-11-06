@@ -2,6 +2,22 @@ import { createRendererLimiter } from "./limits.mjs";
 
 export const FORCE_EXIT_DELAY_MS = 250;
 
+export async function cleanupInOrder(...steps) {
+  let failed = false,
+    original;
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (error) {
+      if (!failed) {
+        failed = true;
+        original = error;
+      }
+    }
+  }
+  if (failed) throw original;
+}
+
 export function createLifecycle({
   closeBrowser = async () => {},
   stopServer = async () => {},
@@ -12,6 +28,7 @@ export function createLifecycle({
   reportError = (error) => console.error("Cleanup failed:", error),
 } = {}) {
   const limiters = new Set();
+  const cancellationListeners = new Set();
   let cancelled = false,
     reason = null,
     signals = 0,
@@ -22,9 +39,20 @@ export function createLifecycle({
     if (cancelled) throw reason;
   };
   const cancel = (error = Error("Measurement interrupted.")) => {
+    const first = !cancelled;
     cancelled = true;
     reason ??= error;
     for (const limiter of limiters) limiter.disable();
+    if (first) {
+      for (const listener of cancellationListeners) {
+        try {
+          listener(reason);
+        } catch (error) {
+          reportError(error);
+        }
+      }
+      cancellationListeners.clear();
+    }
   };
   const stopLimiters = async () => {
     const owned = [...limiters];
@@ -38,14 +66,11 @@ export function createLifecycle({
   };
   const shutdown = () => {
     cancel();
-    return (graceful ??= (async () => {
-      await stopLimiters();
-      try {
-        await closeBrowser();
-      } finally {
-        await stopServer();
-      }
-    })());
+    return (graceful ??= cleanupInOrder(
+      stopLimiters,
+      closeBrowser,
+      stopServer,
+    ));
   };
   const forceShutdown = () => {
     if (forced) return;
@@ -66,6 +91,11 @@ export function createLifecycle({
     shutdown,
     stopLimiters,
     forceShutdown,
+    onCancel(listener) {
+      if (cancelled) listener(reason);
+      else cancellationListeners.add(listener);
+      return () => cancellationListeners.delete(listener);
+    },
     async startLimiter(cdp, rate, options) {
       assertActive();
       const limiter = createRendererLimiter(cdp, rate, options);

@@ -235,6 +235,7 @@ It excludes map, node, string, allocator, capacity-slack, and transient-copy cos
 The helper tests cover percentile handling, profile categorization, ancestry-model preconditions, and cleanup of stopped processes.
 They also cover repeat-safe server shutdown and sample admission for fresh and cached datasets.
 Lifecycle tests cover late limiter setup, pending stop ticks, repeated and mixed signals, SIGHUP, and cancelled operation admission.
+They also cover cancelled server startup, cleanup rejection, and cancellation of pending worker requests.
 Run them with the command below.
 
 ```sh
