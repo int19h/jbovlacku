@@ -1223,8 +1223,11 @@ test("biography L2 a name-only signed profile edit preserves stored whitespace",
   const deliveryStates: unknown[] = [];
   let previousDelivery = "";
   try {
-    // A transient failure schedules a 15-second retry, beyond the usual poll.
-    // Allow that backoff and a 20-second HTTP attempt without retrying the test.
+    // The first attempt can take 20 seconds. Its 15-second retry delay starts
+    // at attempt start, so those waits overlap. Allow the larger wait, then
+    // a 20-second receipt lookup, a possible 20-second resend, and 5 seconds
+    // for scheduling and polling. Keep the accepted assertion without test retries.
+    const deliveryTimeout = Math.max(20000, 15000) + 20000 + 20000 + 5000;
     await expect
       .poll(
         async () => {
@@ -1239,7 +1242,7 @@ test("biography L2 a name-only signed profile edit preserves stored whitespace",
           }
           return peer?.state;
         },
-        { timeout: 45000 },
+        { timeout: deliveryTimeout },
       )
       .toBe("accepted");
   } finally {
