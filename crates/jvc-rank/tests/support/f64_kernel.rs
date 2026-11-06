@@ -1,3 +1,5 @@
+#[path = "f64_decisions.rs"]
+mod decisions;
 #[path = "f64_owned.rs"]
 mod owned;
 use jvc_rank::approximate as a;
@@ -1086,6 +1088,7 @@ pub fn all_vectors() -> BTreeMap<String, Vec<u64>> {
     out.extend(retry_and_budget_vectors());
     out.extend(upper_retry_and_zero_vectors());
     out.extend(flushing_vectors());
+    out.extend(decisions::vectors());
     out.extend(owned::vectors());
     out
 }
