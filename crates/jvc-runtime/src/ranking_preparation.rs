@@ -4,13 +4,14 @@ use super::*;
 use jvc_rank::approximate as a;
 use std::{collections::BTreeSet, sync::Arc};
 
-pub const PREPARATION_CONTRACT: &str = "jvc-session-ranking-preparation-v3";
+pub const PREPARATION_CONTRACT: &str = "jvc-session-ranking-preparation-v4";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RankingPreparationLimits {
     pub records: usize,
     pub setup_bytes: usize,
     pub units: u64,
+    pub setup_units: u64,
     pub source_bytes: usize,
     pub source_millis: u64,
     pub word_publications: usize,
@@ -24,7 +25,8 @@ impl Default for RankingPreparationLimits {
         Self {
             records: 1_000_000,
             setup_bytes: 512 * 1024 * 1024,
-            units: 300_000_000,
+            units: 100_000_000,
+            setup_units: 400_000_000,
             source_bytes: 256 * 1024 * 1024,
             source_millis: 30_000,
             word_publications: 8192,
@@ -87,7 +89,7 @@ impl RankingPreparationPolicy {
         let bytes = mul(add(bytes, fixed)?, 2)?;
         let log = u64::from(64 - add(entries, 1)?.leading_zeros());
         let units = mul(add(mul(mul(entries, 8)?, log)?, c.key_bytes)?, 2)?;
-        if bytes > self.limits.setup_bytes as u64 || units > self.limits.units {
+        if bytes > self.limits.setup_bytes as u64 || units > self.limits.setup_units {
             return Err(resource("ranking setup envelope limit"));
         }
         Ok((bytes, units))
@@ -101,6 +103,8 @@ impl RankingPreparationPolicy {
             || l.setup_bytes > 1024 * 1024 * 1024
             || l.units == 0
             || l.units > 1_000_000_000
+            || l.setup_units == 0
+            || l.setup_units > 1_000_000_000
             || l.source_bytes == 0
             || l.source_bytes > 1024 * 1024 * 1024
             || l.source_millis == 0
@@ -378,8 +382,12 @@ impl SessionPreparation {
             if records > limits.records {
                 return Err(resource("ranking setup record limit"));
             }
-            let counts = session.state.ranking_index_bound()?;
-            let (setup_bytes, setup_units) = policy.setup_estimate(&counts)?;
+            let (setup_bytes, setup_units) = if available {
+                let counts = session.state.ranking_index_bound()?;
+                policy.setup_estimate(&counts)?
+            } else {
+                (0, 0)
+            };
             let (binding, bytes) = source_binding(&session.state, limits)?;
             if available {
                 session.state.ensure_ranking_index()?;
@@ -422,7 +430,7 @@ impl SessionPreparation {
             setup_bytes,
             setup_units,
             source_bytes,
-            charged_units: setup_units,
+            charged_units: 0,
             ..Default::default()
         };
         let descriptor = RankingPreparationDescriptor {
@@ -1128,10 +1136,23 @@ mod tests {
             bytes + p.limits.graph_bytes as u64 + (p.limits.metadata_bytes as u64)
                 < p.limits.setup_bytes as u64
         );
-        assert!(units + 50_000_000 < p.limits.units);
+        assert!(units + 50_000_000 < p.limits.setup_units);
+        assert_eq!(p.limits.units, 100_000_000);
         assert!(165_438_058 < p.limits.source_bytes);
+        let mut grown = serde_json::to_value(&c).unwrap();
+        for count in grown.as_object_mut().unwrap().values_mut() {
+            *count = json!(count.as_u64().unwrap() * 3 / 2);
+        }
+        let grown: jvc_state::RankingIndexCounts = serde_json::from_value(grown).unwrap();
+        let (grown_bytes, _) = p.setup_estimate(&grown).unwrap();
+        assert!(
+            grown_bytes + p.limits.graph_bytes as u64 + (p.limits.metadata_bytes as u64)
+                < p.limits.setup_bytes as u64
+        );
+        assert!(165_438_058 * 3 / 2 < p.limits.source_bytes);
+        assert!(269_350 * 3 / 2 < p.limits.records);
         p.limits.setup_bytes = bytes as usize;
-        p.limits.units = units;
+        p.limits.setup_units = units;
         assert_eq!(p.setup_estimate(&c).unwrap(), (bytes, units));
         p.limits.setup_bytes -= 1;
         assert_eq!(
@@ -1139,13 +1160,13 @@ mod tests {
             "resource_unavailable"
         );
         p.limits.setup_bytes += 1;
-        p.limits.units -= 1;
+        p.limits.setup_units -= 1;
         assert_eq!(
             p.setup_estimate(&c).unwrap_err().code,
             "resource_unavailable"
         );
         p.limits.setup_bytes = 1024 * 1024 * 1024;
-        p.limits.units = 1_000_000_000;
+        p.limits.setup_units = 1_000_000_000;
         let mut large = c.clone();
         large.words *= 8;
         large.word_publications *= 8;
@@ -1200,5 +1221,39 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(p.setup_estimate(&c).unwrap(), (12_772, 1_156));
+    }
+    #[test]
+    fn setup_units_do_not_spend_the_context_allowance() {
+        let (session, word) = session();
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(descriptor.setup.setup_units > 0);
+        assert_eq!(descriptor.setup.charged_units, 0);
+        let request = RankingPreparationRequest {
+            owner_session: descriptor.owner_session,
+            descriptor_binding: descriptor.binding,
+            word,
+        };
+        let summary = session.prepare_ranking_native(&request).unwrap();
+        assert!(summary.usage.charged_units > 0);
+        assert_eq!(summary.usage.setup_units, descriptor.setup.setup_units);
+        policy.limits.units = summary.usage.charged_units;
+        let d = session.ranking_descriptor_native(&policy).unwrap();
+        let mut request = request;
+        request.descriptor_binding = d.binding;
+        assert!(session.prepare_ranking_native(&request).is_ok());
+        policy.limits.units -= 1;
+        request.descriptor_binding = session.ranking_descriptor_native(&policy).unwrap().binding;
+        assert_eq!(
+            session.prepare_ranking_native(&request).unwrap_err().code,
+            "resource_unavailable"
+        );
+        policy.limits.setup_units = 0;
+        assert_eq!(policy.validate().unwrap_err().code, "ranking_policy");
+        policy.limits.setup_units = 1_000_000_001;
+        assert_eq!(policy.validate().unwrap_err().code, "ranking_policy");
     }
 }

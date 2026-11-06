@@ -210,6 +210,7 @@ export interface RankingPreparationLimits {
   records: number;
   setup_bytes: number;
   units: number;
+  setup_units: number;
   source_bytes: number;
   source_millis: number;
   word_publications: number;

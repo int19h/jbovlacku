@@ -459,6 +459,41 @@ fn value_strings(value: &Value) -> u64 {
         _ => 0,
     }
 }
+fn invalid_index_overlay() -> jvc_core::Error {
+    jvc_core::Error::new(
+        "invalid_overlay",
+        "ranking setup overlay fields are malformed",
+    )
+}
+fn index_private_rules(e: &Evaluation) -> jvc_core::Result<&[Value]> {
+    if e.reasons.contains("invalid_overlay") {
+        return Ok(&[]);
+    }
+    let Some(overlay) = &e.overlay else {
+        return Ok(&[]);
+    };
+    let rules = overlay
+        .get("trust")
+        .and_then(Value::as_array)
+        .ok_or_else(invalid_index_overlay)?;
+    for rule in rules {
+        if rule.get("issuer").and_then(Value::as_str).is_none()
+            || rule.get("subject").and_then(Value::as_str).is_none()
+            || !rule
+                .get("value")
+                .and_then(Value::as_str)
+                .is_some_and(|v| matches!(v, "heed" | "shun" | "clear"))
+            || !rule.get("scope").is_some_and(|v| {
+                ["kind", "word", "language"]
+                    .iter()
+                    .all(|k| v.get(*k).and_then(Value::as_str).is_some())
+            })
+        {
+            return Err(invalid_index_overlay());
+        }
+    }
+    Ok(rules)
+}
 /// Upper bounds permit one bucket per input, including duplicate keys.
 pub(crate) fn ranking_index_bound(e: &Evaluation) -> jvc_core::Result<RankingIndexCounts> {
     let mut c = RankingIndexCounts::default();
@@ -491,29 +526,22 @@ pub(crate) fn ranking_index_bound(e: &Evaluation) -> jvc_core::Result<RankingInd
                 + r.values.iter().map(|v| v.len() as u64).sum::<u64>()),
         )?;
     }
-    if !e.reasons.contains("invalid_overlay") {
-        for r in e
-            .overlay
-            .iter()
-            .flat_map(|o| o["trust"].as_array())
-            .flatten()
-        {
-            c.private_rules += 1;
-            c.private_weights += u64::from(r["value"] == "heed");
-            // Continuity IDs can be longer than the issuer keys in the overlay.
-            let actor = |key: &str| {
-                e.lifecycle
-                    .key_actor
-                    .get(key)
-                    .map_or(key.len(), String::len) as u64
-            };
-            add_bytes(
-                8 * (actor(r["issuer"].as_str().unwrap())
-                    + actor(r["subject"].as_str().unwrap())
-                    + value_strings(&r["scope"])
-                    + 16),
-            )?;
-        }
+    for r in index_private_rules(e)? {
+        c.private_rules += 1;
+        c.private_weights += u64::from(r["value"] == "heed");
+        // Continuity IDs can be longer than the issuer keys in the overlay.
+        let actor = |key: &str| {
+            e.lifecycle
+                .key_actor
+                .get(key)
+                .map_or(key.len(), String::len) as u64
+        };
+        add_bytes(
+            8 * (actor(r["issuer"].as_str().ok_or_else(invalid_index_overlay)?)
+                + actor(r["subject"].as_str().ok_or_else(invalid_index_overlay)?)
+                + value_strings(&r["scope"])
+                + 16),
+        )?;
     }
     c.private_pairs = c.private_weights;
     c.trust_rules = public
@@ -539,6 +567,7 @@ pub(crate) struct ApproximateContextIndex {
 }
 impl ApproximateContextIndex {
     pub(crate) fn new(evaluation: &Evaluation) -> jvc_core::Result<Self> {
+        index_private_rules(evaluation)?;
         let (trust, private_weights) = private_trust(evaluation);
         let merged_rules = ScopedRuleIndex::new(&trust, Some(&private_weights))?;
         let public_rules = ScopedRuleIndex::new(&evaluation.trust, None)?;
@@ -592,7 +621,7 @@ impl ApproximateContextIndex {
         }
         Ok(index)
     }
-    pub(crate) fn counts(&self, e: &Evaluation) -> RankingIndexCounts {
+    pub(crate) fn counts(&self, e: &Evaluation) -> jvc_core::Result<RankingIndexCounts> {
         let scopes = [&self.merged_rules, &self.public_rules];
         let mut c = RankingIndexCounts {
             words: self.words.len() as u64,
@@ -609,12 +638,7 @@ impl ApproximateContextIndex {
                 .sum(),
             private_pairs: self.private_weights.len() as u64,
             private_weights: self.private_weights.values().map(|v| v.len() as u64).sum(),
-            private_rules: e
-                .overlay
-                .iter()
-                .flat_map(|o| o["trust"].as_array())
-                .map(|a| a.len() as u64)
-                .sum(),
+            private_rules: index_private_rules(e)?.len() as u64,
             key_bytes: 0,
         };
         let target_bytes = |k: &(String, String, Option<String>)| {
@@ -653,7 +677,7 @@ impl ApproximateContextIndex {
                         + v.iter().map(|(scope, _)| value_strings(scope)).sum::<u64>()
                 })
                 .sum::<u64>();
-        c
+        Ok(c)
     }
     fn target_key(context: &Context) -> (String, String, Option<String>) {
         (

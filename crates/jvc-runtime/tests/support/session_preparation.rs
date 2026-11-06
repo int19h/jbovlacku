@@ -396,6 +396,7 @@ fn inclusive_preparation_limits_refuse_before_context_allocation() {
     exact.limits.records = d.setup.setup_records;
     exact.limits.setup_bytes = d.setup.setup_bytes as usize;
     exact.limits.units = baseline.usage.charged_units;
+    exact.limits.setup_units = baseline.usage.setup_units;
     exact.limits.word_publications = baseline.usage.visited_publications;
     exact.limits.targets = baseline.targets.len();
     exact.limits.contexts = baseline.contexts.len();
@@ -408,6 +409,7 @@ fn inclusive_preparation_limits_refuse_before_context_allocation() {
     for limit in [
         "records",
         "setup_bytes",
+        "setup_units",
         "units",
         "word_publications",
         "targets",
@@ -419,6 +421,7 @@ fn inclusive_preparation_limits_refuse_before_context_allocation() {
         match limit {
             "records" => policy.limits.records -= 1,
             "setup_bytes" => policy.limits.setup_bytes -= 1,
+            "setup_units" => policy.limits.setup_units -= 1,
             "units" => policy.limits.units -= 1,
             "word_publications" => policy.limits.word_publications -= 1,
             "targets" => policy.limits.targets -= 1,
@@ -776,5 +779,86 @@ fn export_unavailable(name: &str, f: &Fixture, policy: &RankingPreparationPolicy
             error
         );
         std::fs::write(std::path::Path::new(&directory).join(format!("{name}.json")), serde_json::to_vec(&json!({"input":String::from_utf8(f.bytes()).unwrap(),"word":f.word,"policy":policy,"descriptor":normalized(&descriptor),"error":error})).unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn unavailable_evaluations_skip_setup_bounds_for_raw_overlays() {
+    let (f, _) = fixture();
+    for (name, limits) in [
+        ("event-limit", json!({"events":1})),
+        ("graph-resource", json!({"traversal":0})),
+    ] {
+        let mut input: Value = serde_json::from_slice(&f.bytes()).unwrap();
+        input["limits"] = limits;
+        input["overlay"] = json!({"trust":[{"issuer":1}]});
+        let bytes = serde_json::to_vec(&input).unwrap();
+        let state = jvc_runtime::evaluate_bytes(&bytes).unwrap();
+        assert_eq!(state["available"], false, "{name}");
+        assert!(
+            state["reasons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "resource_unavailable")
+        );
+        assert!(
+            !state["reasons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "invalid_overlay")
+        );
+        let session = EvaluationSession::new(&bytes).unwrap();
+        let mut tiny = policy();
+        tiny.limits.setup_bytes = 1;
+        tiny.limits.setup_units = 1;
+        let descriptor = session.ranking_descriptor_native(&tiny).unwrap();
+        assert!(!descriptor.available, "{name}");
+        assert!(descriptor.reasons.contains("resource_unavailable"));
+        assert_eq!(descriptor.setup.setup_bytes, 0);
+        assert_eq!(descriptor.setup.setup_units, 0);
+        assert_eq!(descriptor.setup.charged_units, 0);
+        assert_eq!(
+            serde_json::from_str::<Value>(&session.state().unwrap()).unwrap(),
+            state
+        );
+    }
+}
+
+#[test]
+fn restored_malformed_overlay_never_panics_in_setup() {
+    let (f, _) = fixture();
+    let session = EvaluationSession::new(&f.bytes()).unwrap();
+    let mut saved: Value =
+        serde_json::from_slice(&session.checkpoint("raw-overlay").unwrap()).unwrap();
+    let overlay = json!({"trust":[{"issuer":1}]});
+    saved["evaluation"]["overlay"] = overlay.clone();
+    saved["options"]["overlay"] = overlay;
+    for available in [false, true] {
+        saved["evaluation"]["available"] = json!(available);
+        saved["evaluation"]["reasons"] = if available {
+            json!([])
+        } else {
+            json!(["resource_unavailable"])
+        };
+        let restored = EvaluationSession::restore_host_checkpoint(
+            &serde_json::to_vec(&saved).unwrap(),
+            "raw-overlay",
+        )
+        .unwrap();
+        if available {
+            assert_eq!(
+                restored
+                    .ranking_descriptor_native(&policy())
+                    .unwrap_err()
+                    .code,
+                "invalid_overlay"
+            );
+        } else {
+            let d = restored.ranking_descriptor_native(&policy()).unwrap();
+            assert!(!d.available);
+            assert_eq!((d.setup.setup_bytes, d.setup.setup_units), (0, 0));
+        }
     }
 }

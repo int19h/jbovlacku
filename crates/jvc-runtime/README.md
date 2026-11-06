@@ -4,6 +4,8 @@ Float preparation attaches to the existing `EvaluationSession`.
 It borrows the retained authenticated records and their evaluation.
 It does not accept another input container or repeat envelope authentication.
 The state builds its target, scope, judgment-count, and private-weight indexes once, after setup admission.
+Unavailable descriptors skip the index bound and setup estimate, reporting zero setup bytes and units.
+Their source walk still has its independent byte and time limits. Malformed restored overlays return an error instead of a panic.
 Every fork and restore starts without those indexes or prepared graphs.
 
 `ranking_descriptor` accepts an unsigned policy with a `core_binding` and optional limits.
@@ -15,7 +17,7 @@ Fresh, forked, and restored equivalent float states share semantic bindings.
 Exact profiles return unavailable descriptors before the source walk or index construction.
 Their diagnostic input binding names the selected view and algorithm, without identifying the complete input.
 Unavailable descriptors cannot prepare graphs.
-The preparation contract is `jvc-session-ranking-preparation-v3`.
+The preparation contract is `jvc-session-ranking-preparation-v4`.
 Source serialization keeps the existing serde field order and sorted `serde_json::Value` object keys.
 A regression test pins that sorted-key assumption against future dependency feature changes.
 Each session also supplies a separate owner identity that prevents cross-session requests.
@@ -40,9 +42,10 @@ Preparation generations stay monotonic through both successful and refused polic
 The TypeScript handle exposes these operations as `rankingDescriptor`, `prepareRanking`, `rankingPreparation`, and `clearRankingPreparation`.
 The browser facade exposes them without host insertion or checkpoint restore.
 
-The default policy permits 1,000,000 structural records, a 512 MiB setup envelope, and 300,000,000 preparation units.
+The default policy permits 1,000,000 structural records and a 512 MiB setup envelope.
+It has separate unit allowances: 400,000,000 `setup_units` and 100,000,000 context `units`.
 It permits 8,192 publications per word, 4,096 targets, 128 contexts, a 64 MiB graph envelope, and 16 MiB metadata encodings.
-The setup ceiling is 1 GiB. The unit ceiling is 1,000,000,000.
+The setup ceiling is 1 GiB. Each unit allowance has a 1,000,000,000 ceiling.
 All limits are inclusive. These envelopes model allocation and work, rather than operating-system memory or CPU time.
 
 Setup admission counts index inputs before it allocates indexes.
@@ -108,20 +111,26 @@ The measured dictionary has 269,350 structural records and 165,438,058 source by
 Its indexes retain 64,033,159 requested heap bytes.
 The preflight envelope reserves 291,524,664 bytes and 204,442,264 units.
 The default budget also accommodates the 64 MiB graph envelope and 16 MiB metadata envelope.
-It leaves more than 95 million units for word preparation.
+The dictionary leaves 195,557,736 setup units unused. Word preparation retains its full 100,000,000-unit allowance.
+A uniform 50% increase in dictionary counts and copied-key bytes still fits the default setup units and memory.
+That growth also fits the source-byte and record limits, with the graph and metadata envelopes reserved.
+Growth near 55% reaches the combined setup-memory envelope before the separate setup-unit allowance.
+These count-based growth figures assume the same shape and do not promise that every future word fits.
 The measurements do not guarantee capacity for every word or every future dictionary revision.
 
 The streaming source hash has independent limits, `source_bytes` and `source_millis`.
 Their defaults are 256 MiB and 30,000 elapsed milliseconds. Their ceilings are 1 GiB and 120,000 milliseconds.
 The measured native source walk takes about one CPU second and retains no source buffer.
 The writer measures bytes and consults a monotonic clock at most 256 KiB apart and after serialization.
-Native builds use `Instant`. Wasm builds use the host's `performance.now()`.
+Native builds use `Instant`. Wasm builds require the host's `performance.now()`.
+Browsers, browser workers, and Node provide that clock. Bare hosts must supply it.
 The time limit stops cooperatively at writer boundaries. It does not preempt serialization between writes.
+This deadline covers hashing only. Count walks and index construction have record and unit limits, without an elapsed-time deadline.
 A refused walk returns no partial binding and does not construct an index.
 The source length remains part of usage reporting, but it does not charge setup memory or preparation units.
 
 The state counts retained nodes, evaluation maps, nested judgments, and overlay entries as structural records.
-A preparation attempt starts with its setup units already charged.
+`setup_units` usage records index work separately. `charged_units` starts at zero and counts only discovery and context work.
 Discovery charges `1 + 8 * visited_publications`.
 
 Each context charges `1 + 4*T + 4*J + 24*(U+V) + 8*(Q+E+Z) + 32*O + 8*P2`.
@@ -170,6 +179,8 @@ The native measurement example uses a counting global allocator and process CPU 
 It reports requested live heap growth and peak heap growth around index construction.
 It excludes checkpoint restoration and other threads from those index measurements.
 The example and allocation regression share one thread-local measurement window.
+Reallocation conservatively counts old and new buffers together, even when the allocator can grow in place.
+Every window requires the unmargined base to cover its peak, leaving the full outer 2x margin unused.
 It also reports counts by index kind, conservative input counts, and source-hash time and temporary allocation.
 The full process peak includes restoration and synthetic input construction.
 Allocator metadata and size-class rounding remain outside the requested-byte counter.
@@ -188,7 +199,7 @@ The large shapes use unique words, shared rafsi assignments, and unique private 
 The small shapes cover single entries, shared keys, public scopes, private weights, clears, conflicts, and mixed inputs.
 Their sizes include 11/12/13 entries and further B-tree split boundaries through 257 entries.
 Each run requires its actual index counts to fit the preflight counts.
-Each run also requires the default model to cover its measured peak heap and admit its setup.
+Each run requires the default model to admit setup and reserve at least twice its measured peak heap.
 The small suite also runs without a dictionary:
 
 ```sh

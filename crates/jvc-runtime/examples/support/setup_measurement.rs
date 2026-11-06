@@ -69,8 +69,9 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
         let q = unsafe { System.realloc(p, l, n) };
         if !q.is_null() {
-            released(l.size());
+            // Reserve old plus new even if System reallocates in place.
             acquired(n);
+            released(l.size());
         }
         q
     }
@@ -104,7 +105,7 @@ fn measure(name: &str, state: EvaluatedState) -> [usize; 4] {
     let retained = allocations.live as usize;
     let peak = allocations.peak;
     let largest = allocations.largest;
-    let entries = state.ranking_index_counts().unwrap();
+    let entries = state.ranking_index_counts().unwrap().unwrap();
     let actual_json = serde_json::to_value(&entries).unwrap();
     let bound_json = serde_json::to_value(&bound).unwrap();
     for (key, value) in actual_json.as_object().unwrap() {
@@ -119,10 +120,10 @@ fn measure(name: &str, state: EvaluatedState) -> [usize; 4] {
     };
     let (modeled_bytes, modeled_units) = policy.setup_estimate(&bound).unwrap();
     assert!(
-        modeled_bytes >= peak as u64,
+        modeled_bytes >= 2 * peak as u64,
         "{name}: peak={peak}, charge={modeled_bytes}"
     );
-    assert!(modeled_units + 1_000_000 < policy.limits.units);
+    assert!(modeled_units + 1_000_000 < policy.limits.setup_units);
 
     begin_window();
     let start = Instant::now();
@@ -193,7 +194,20 @@ pub struct AllocationCoverage {
     pub cases: usize,
     pub tree_nodes: [usize; 4],
 }
+pub fn realloc_peak_regression() {
+    let layout = Layout::from_size_align(64, 8).unwrap();
+    begin_window();
+    let pointer = unsafe { std::alloc::alloc(layout) };
+    assert!(!pointer.is_null());
+    let pointer = unsafe { std::alloc::realloc(pointer, layout, 128) };
+    assert!(!pointer.is_null());
+    let window = end_window();
+    unsafe { std::alloc::dealloc(pointer, Layout::from_size_align(128, 8).unwrap()) };
+    assert_eq!(window.live, 128);
+    assert_eq!(window.peak, 192);
+}
 pub fn small_shapes() -> AllocationCoverage {
+    realloc_peak_regression();
     let mut coverage = AllocationCoverage::default();
     let prototype = json!({
         "id":"jve1:0000000000000000000000000000000000000000000000000000000000000000",

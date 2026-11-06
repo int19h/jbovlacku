@@ -202,11 +202,12 @@ impl EvaluatedState {
         policy::ranking_index_bound(&self.evaluation)
     }
     /// Diagnostic counts after index construction. This does not build an index.
-    pub fn ranking_index_counts(&self) -> Option<policy::RankingIndexCounts> {
+    pub fn ranking_index_counts(&self) -> jvc_core::Result<Option<policy::RankingIndexCounts>> {
         self.ranking_index
             .borrow()
             .as_ref()
             .map(|i| i.counts(&self.evaluation))
+            .transpose()
     }
     pub fn ensure_ranking_index(&self) -> jvc_core::Result<()> {
         if self.ranking_index.borrow().is_none() {
@@ -1076,6 +1077,32 @@ mod rebuild_tests {
         });
         assert_eq!(failed.unwrap_err().code, "resource_unavailable");
         assert_eq!(calls, 3);
-        assert!(state.ranking_index_counts().is_none());
+        assert!(state.ranking_index_counts().unwrap().is_none());
+    }
+    #[test]
+    fn malformed_overlay_bound_errors_and_invalid_overlay_counts_are_ignored() {
+        let mut state = base().into_state();
+        state.evaluation.overlay = Some(json!({"trust":[{"issuer":1}]}));
+        state.evaluation.reasons.remove("invalid_overlay");
+        assert_eq!(
+            state.ranking_index_bound().unwrap_err().code,
+            "invalid_overlay"
+        );
+        assert_eq!(
+            state.ensure_ranking_index().unwrap_err().code,
+            "invalid_overlay"
+        );
+        state.evaluation.reasons.insert("invalid_overlay".into());
+        assert_eq!(state.ranking_index_bound().unwrap().private_rules, 0);
+        state.ensure_ranking_index().unwrap();
+        assert_eq!(
+            state.ranking_index_counts().unwrap().unwrap().private_rules,
+            0
+        );
+        state.evaluation.reasons.remove("invalid_overlay");
+        assert_eq!(
+            state.ranking_index_counts().unwrap_err().code,
+            "invalid_overlay"
+        );
     }
 }
