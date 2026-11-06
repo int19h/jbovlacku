@@ -55,8 +55,8 @@ fn verify_with_public_key(
     // Dalek 2.2.0 raw_verify compares the supplied compressed R bytes with
     // compress([S]B - [k]A), without cofactor multiplication. It also checks
     // canonical S (legacy_compatibility is disabled). Since this key and B
-    // have prime order, success proves that
-    // R is canonical and prime-order too, including the permitted identity R.
+    // have prime order, success proves R's canonical encoding and membership
+    // in the prime-order subgroup, including the permitted identity R.
     if public_key
         .key
         .verify(message, &Signature::from_bytes(signature))
