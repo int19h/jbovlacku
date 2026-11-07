@@ -8,7 +8,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, writeFile, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, stat, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { readFile as rf } from "node:fs/promises";
@@ -96,7 +96,7 @@ async function api(o: Opts, path: string, init?: RequestInit): Promise<any> {
 }
 const refused = (e: any): never => { console.error(`refused: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); };
 
-interface Pin { base_snapshot: string; base_inventory: string }
+interface Pin { base_snapshot: string; base_inventory: string; base_event_count?: number | null }
 interface Identity { seed: string; identity: string; base_snapshot: string; base_inventory: string }
 async function loadIdentity(o: Opts): Promise<Identity> {
   if (!o.state) { console.error("refused: --state is required"); process.exit(2); }
@@ -115,38 +115,73 @@ async function loadOrCreatePin(o: Opts): Promise<Pin> {
   let m: any;
   try { m = await api(o, "/manifest"); } catch (e: any) { console.error(`refused: cannot read the base pin from the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
   if (!m.snapshot || !m.logical_inventory) { console.error("refused: server manifest has no snapshot or logical inventory for the base pin"); process.exit(3); }
-  const pin: Pin = { base_snapshot: m.snapshot, base_inventory: m.logical_inventory };
+  const pin: Pin = { base_snapshot: m.snapshot, base_inventory: m.logical_inventory, base_event_count: Number.isInteger(m.manifest?.events?.count) ? m.manifest.events.count : null };
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(pin, null, 2) + "\n");
   return pin;
 }
 
-const pidAlive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch (e: any) { return e?.code === "EPERM"; } };
+/** Process start ticks from /proc, or null where /proc is absent. */
+async function procStartTicks(pid: number): Promise<number | null> {
+  try {
+    const text = await readFile(`/proc/${pid}/stat`, "utf8");
+    const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+    const ticks = Number(fields[19]);
+    return Number.isSafeInteger(ticks) ? ticks : null;
+  } catch { return null; }
+}
+/** True only when the recorded owner is the process that now holds the PID. */
+async function ownerLive(owner: any): Promise<boolean> {
+  if (!owner || !Number.isInteger(owner.pid)) return false;
+  try { process.kill(owner.pid, 0); } catch (e: any) { return e?.code === "EPERM"; }
+  const ticks = await procStartTicks(owner.pid);
+  if (ticks === null) return true; // No start identity to compare. Stay safe.
+  if (Number.isSafeInteger(owner.proc_start)) return owner.proc_start === ticks;
+  // Locks without a recorded start tick: compare the wall-clock start
+  // with the process start time. A reused PID starts at another time.
+  try {
+    const boot = Number((await readFile("/proc/stat", "utf8")).match(/^btime (\d+)$/m)?.[1]);
+    const startedMs = Date.parse(owner.started_at ?? "");
+    if (!Number.isSafeInteger(boot) || !Number.isFinite(startedMs)) return true;
+    return Math.abs(boot * 1000 + (ticks / 100) * 1000 - startedMs) <= 20000;
+  } catch { return true; }
+}
+async function readOwner(ownerPath: string): Promise<any> {
+  try { return JSON.parse(await readFile(ownerPath, "utf8")); } catch { return null; }
+}
+/**
+ * Claim a stale lock by renaming its directory to a private name.
+ * Rename is atomic: only one recoverer wins it. The others loop and
+ * then see the winner's live lock.
+ */
+async function claimStale(dir: string, token: string): Promise<boolean> {
+  const trash = `${dir}.stale-${token}`;
+  try { await rename(dir, trash); } catch { return false; }
+  await rm(trash, { recursive: true, force: true });
+  return true;
+}
 async function lock(o: Opts): Promise<() => Promise<void>> {
   const dir = join(o.state, "lock");
   const ownerPath = join(dir, "owner.json");
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const token = hex(randomBytes(16));
+  for (let attempt = 0; attempt < 8; attempt++) {
     try {
       await mkdir(dir);
     } catch (e: any) {
       if (e?.code !== "EEXIST") { console.error(`error: cannot create the write lock: ${e?.code ?? ""} ${e?.message ?? String(e)}`); process.exit(1); }
-      // A lock exists. Read its owner to tell a live writer from a crash remnant.
-      let owner: any = null;
-      try { owner = JSON.parse(await readFile(ownerPath, "utf8")); } catch {}
-      const staleByOwner = owner && Number.isInteger(owner.pid) && !pidAlive(owner.pid);
-      let staleByAge = false;
-      if (!owner) { try { staleByAge = Date.now() - (await stat(dir)).mtimeMs > 10000; } catch {} }
-      if (staleByOwner || staleByAge) {
-        await rm(dir, { recursive: true, force: true });
-        console.error("recovered stale lock from a stopped write");
-        continue;
-      }
-      console.error("refused: another write is in progress for this state folder");
-      process.exit(3);
+      const owner = await readOwner(ownerPath);
+      let stale = false;
+      if (owner) stale = !(await ownerLive(owner));
+      else { try { stale = Date.now() - (await stat(dir)).mtimeMs > 10000; } catch { continue; } }
+      if (!stale) { console.error("refused: another write is in progress for this state folder"); process.exit(3); }
+      if (await claimStale(dir, token)) console.error("recovered stale lock from a stopped write");
+      continue;
     }
-    try { await writeFile(ownerPath, JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }) + "\n"); }
+    const owner = { pid: process.pid, proc_start: await procStartTicks(process.pid), started_at: new Date().toISOString(), token };
+    try { await writeFile(ownerPath, JSON.stringify(owner) + "\n"); }
     catch (e: any) { await rm(dir, { recursive: true, force: true }); console.error(`error: cannot write the lock owner: ${e?.code ?? ""} ${e?.message ?? String(e)}`); process.exit(1); }
-    return async () => rm(dir, { recursive: true, force: true });
+    // Release only our own lock. A recoverer may own the folder by then.
+    return async () => { const current = await readOwner(ownerPath); if (current?.token === token) await rm(dir, { recursive: true, force: true }); };
   }
   console.error("refused: another write is in progress for this state folder");
   process.exit(3);
@@ -217,7 +252,20 @@ async function main(): Promise<void> {
       const p = join(o.state, "identity.json");
       if (existsSync(p)) { const j = JSON.parse(await readFile(p, "utf8")); console.log(`identity ${j.identity}`); return; }
       // One pin serves the whole run. A late identity reads the same file.
+      const pinExisted = existsSync(pinPath(o));
       const pin = await loadOrCreatePin(o);
+      if (pinExisted && pin.base_event_count != null) {
+        // A server that has not grown past the pin must match it exactly.
+        // A server that grew past it holds this run's later events, which
+        // the capture and restore checks prove. Anything else is a pin
+        // for another base.
+        let m: any;
+        try { m = await api(o, "/manifest"); } catch (e: any) { console.error(`refused: cannot check the base pin against the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
+        const grown = Number.isInteger(m.manifest?.events?.count) && m.manifest.events.count > pin.base_event_count;
+        if (m.snapshot !== pin.base_snapshot && !grown) {
+          console.error("refused: base pin does not match this server; a new base needs a new pin file"); process.exit(3);
+        }
+      }
       const seed = randomBytes(32); const identity = identityFromSeed(new Uint8Array(seed));
       const rec: Identity = { seed: hex(new Uint8Array(seed)), identity, base_snapshot: pin.base_snapshot, base_inventory: pin.base_inventory };
       await writeFile(p, JSON.stringify(rec, null, 2) + "\n", { mode: 0o600 });
@@ -225,11 +273,13 @@ async function main(): Promise<void> {
     } else if (cmd === "unlock") {
       if (!o.state) throw new Error("--state is required");
       const dir = join(o.state, "lock"); const ownerPath = join(dir, "owner.json");
-      let owner: any = null; try { owner = JSON.parse(await readFile(ownerPath, "utf8")); } catch {}
-      if (owner && Number.isInteger(owner.pid) && pidAlive(owner.pid) && flag(o, "force") !== "true") {
+      const owner = await readOwner(ownerPath);
+      if ((await ownerLive(owner)) && flag(o, "force") !== "true") {
         console.error(`refused: the lock owner process ${owner.pid} is still running`); process.exit(3);
       }
-      await rm(dir, { recursive: true, force: true });
+      if (existsSync(dir) && !(await claimStale(dir, hex(randomBytes(16))))) {
+        console.error("refused: the lock changed while it was being cleared; try again"); process.exit(3);
+      }
       console.log("lock cleared");
     } else if (cmd === "whoami") { const j = await loadIdentity(o); console.log(j.identity); }
     else if (cmd === "search") {
@@ -387,34 +437,66 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   const synthetic = new Set<string>(transports.map((t: any) => t.envelope.id));
   if (synthetic.size !== transports.length) fail(`capture holds a duplicate event id`);
   for (const t of transports) { try { const p = prepareAdmission(utf8(JSON.stringify(t))); if (!p.action_valid || p.body_status === "invalid") fail(`current code refuses event ${t.envelope?.id ?? "?"}: invalid action or body`); } catch (e: any) { fail(`current code refuses event ${t.envelope?.id ?? "?"}: ${e.message ?? String(e)}`); } }
-  let serverManifest: any; let before: string[] = [];
-  try { serverManifest = await api(o, "/manifest"); before = await inventoryIds(o); } catch (e: any) { fail(`cannot read server manifest: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); }
-  const present = transports.filter((t: any) => before.includes(t.envelope.id));
-  const fresh = serverManifest.snapshot === manifest.base_snapshot && serverManifest.logical_inventory === manifest.base_inventory;
-  // The all-present case comes first. A server with delayed
-  // materialization can still report the base snapshot after a restore.
+  // Prove the exact inventory from event IDs before any post. The
+  // manifest can lag behind the admitted inventory, so it never
+  // decides the case. It only confirms a fresh copy, with a wait.
+  let before: string[] = [];
+  try { before = await inventoryIds(o); } catch (e: any) { fail(`cannot read server inventory: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); }
+  const beforeSet = new Set(before);
+  const present = transports.filter((t: any) => beforeSet.has(t.envelope.id));
+  let resumed = 0;
   if (present.length === transports.length) {
-    // Already restored. This is a separate checked case, not a base bypass.
-    if (before.length !== manifest.expected_final_event_count)
+    // Already restored. The ID set must be exactly the pinned base
+    // plus the capture. Bodies are proved after the repost below.
+    if (digestIds(before) !== manifest.expected_final_inventory_digest)
       fail(`already restored inventory is not the pinned base plus the capture: ${before.length} events, expected ${manifest.expected_final_event_count}`);
-  } else if (fresh) {
-    if (digestIds(before) !== manifest.base_inventory_digest || before.length !== manifest.base_event_count)
-      fail(`base inventory does not match the capture pin`);
+    resumed = present.length;
   } else if (present.length > 0) {
-    // Partial restore. It can resume only at the exact base-plus-subset size.
-    if (before.length !== manifest.base_event_count + present.length)
-      fail(`partial restore has a foreign event: ${before.length} events, expected base ${manifest.base_event_count} plus ${present.length} restored`);
-  } else if (serverManifest.snapshot === manifest.base_snapshot) {
-    fail(`base inventory mismatch: server ${serverManifest.logical_inventory} capture base ${manifest.base_inventory}`);
+    // Partial restore. The other IDs must be exactly the pinned base.
+    const rest = before.filter((id) => !synthetic.has(id));
+    if (digestIds(rest) !== manifest.base_inventory_digest)
+      fail(`partial restore does not hold the pinned base; refusing to write`);
+    resumed = present.length;
   } else {
-    fail(`base snapshot mismatch: server ${serverManifest.snapshot} capture base ${manifest.base_snapshot}`);
+    if (digestIds(before) !== manifest.base_inventory_digest)
+      fail(`base inventory does not match the capture pin; refusing to write`);
+    // Fresh copy. Give a lagged manifest a bounded time to reach the pin.
+    const waitMs = Number(flag(o, "wait-ms", "10000"));
+    const deadline = Date.now() + (Number.isFinite(waitMs) && waitMs >= 0 ? waitMs : 10000);
+    let matched = false; let last: any = null;
+    for (;;) {
+      try { last = await api(o, "/manifest"); } catch (e: any) { fail(`cannot read server manifest: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); }
+      if (last.snapshot === manifest.base_snapshot && last.logical_inventory === manifest.base_inventory) { matched = true; break; }
+      if (Date.now() >= deadline) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (!matched) {
+      if (last?.snapshot === manifest.base_snapshot)
+        fail(`base inventory mismatch: server ${last.logical_inventory} capture base ${manifest.base_inventory}`);
+      fail(`base snapshot mismatch: server ${last?.snapshot} capture base ${manifest.base_snapshot}`);
+    }
   }
-  const missing = transports.filter((t: any) => !before.includes(t.envelope.id));
-  for (const t of missing) { try { await api(o, "/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(t) }); } catch (e: any) { fail(`server refuses event ${t.envelope.id}: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); } }
+  // Post every captured transport, not only the missing ones. A
+  // repost is idempotent. It makes the server validate each captured
+  // representation and supplies any body that an earlier admission
+  // left out.
+  for (const t of transports) { try { await api(o, "/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(t) }); } catch (e: any) { fail(`server refuses event ${t.envelope.id}: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); } }
   const afterIds = await inventoryIds(o);
   if (afterIds.length !== manifest.expected_final_event_count || digestIds(afterIds) !== manifest.expected_final_inventory_digest)
     fail(`final inventory is not the pinned base plus the capture: ${afterIds.length} events, expected ${manifest.expected_final_event_count}`);
+  // An event ID alone is not reusable. The envelope must match the
+  // capture, and every captured body must be present.
+  for (const t of transports) {
+    let env: any;
+    try { env = await api(o, `/events/${encodeURIComponent(t.envelope.id)}`); } catch (e: any) { fail(`captured event ${t.envelope.id} is not readable after restore: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); }
+    if (canonicalize(utf8(JSON.stringify(env))) !== canonicalize(utf8(JSON.stringify(t.envelope))))
+      fail(`captured envelope ${t.envelope.id} does not match the restored copy`);
+    if (t.body !== null && t.body !== undefined) {
+      const hash = t.envelope.header?.content?.hash;
+      try { await api(o, `/bodies/${encodeURIComponent(hash)}`); } catch { fail(`captured body for event ${t.envelope.id} is missing after restore`); }
+    }
+  }
   if (checkOnly) console.log("reusable");
-  else console.log(`restored ${transports.length} events resumed=${present.length} inventory=${afterIds.length} digest=${digestIds(afterIds)}`);
+  else console.log(`restored ${transports.length} events resumed=${resumed} inventory=${afterIds.length} digest=${digestIds(afterIds)}`);
 }
 main();

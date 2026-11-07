@@ -31,6 +31,14 @@ first. Never put that marker into data that must stay live. A
 plain dictionary server has no marker endpoint, so this tool
 refuses it. That refusal is intended.
 
+The test server holds the same data-directory lock as the
+standalone server. A second server on the same data folder is
+refused. On shutdown it flushes materialization and saves its
+evaluation state before it closes its stores and releases the
+lock. A `loaded-view.json` file that exists and is bad, or that
+names a view the data does not retain, also refuses startup. It
+never falls back to a reduced server.
+
 ## Setup
 
 Build the core first from the repository root:
@@ -60,27 +68,47 @@ any synthetic event exists:
 npx tsx scripts/synthetic-activity/cli.ts --server http://127.0.0.1:8795 --state .cache/synthetic/a pin-base
 ```
 
-The pin holds the server snapshot and its logical inventory. It
-goes to a `base-pin.json` file beside the state folders, or to
-the path given with `--pin`. Every `init` reads that same pin
-file. An identity that starts later gets the same base, even
-after other identities have written. If no pin file exists,
-`init` reads the server manifest and creates the pin. If it
-cannot read a base, `init` fails and writes no identity. It
-never creates an identity with an empty base.
+The pin holds the server snapshot, its logical inventory, and
+its event count. It goes to a `base-pin.json` file beside the
+state folders, or to the path given with `--pin`. Every `init`
+reads that same pin file. An identity that starts later gets
+the same base, even after other identities have written. If no
+pin file exists, `init` reads the server manifest and creates
+the pin. If it cannot read a base, `init` fails and writes no
+identity. It never creates an identity with an empty base.
+
+A new base needs a new pin file. When a fresh identity uses an
+existing pin, `init` compares the pin with the server. A server
+that has not grown past the pin must match it. A server that
+has grown past it holds this run's later events, which the
+capture checks prove. If the pin does not match and the server
+has not grown past it, `init` refuses. Delete the old pin
+file, or pass a new `--pin` path, to start a run on a new
+base.
 
 ### Write lock and crash recovery
 
 A write creates a `lock` folder inside the state folder. The
-folder holds `owner.json` with the process ID and the start
-time. A second write while that process runs is refused. If the
-owner process is gone, the next write removes the old lock,
-prints `recovered stale lock from a stopped write`, and goes on.
-A lock with no owner file is treated as stale after ten seconds.
-The `unlock` command clears a lock by hand. It refuses while the
-owner process still runs, unless `--force` is given. A real
-filesystem error, such as no permission, is reported as an
-`error:` line. It is not reported as another writer.
+folder holds `owner.json` with the process ID, the process
+start tick from `/proc`, the start time, and a random ownership
+token. A second write while that owner process runs is refused.
+
+The owner check compares the process start tick, not only the
+process ID. A new process that reuses an old process ID has a
+different start tick, so its lock is stale, not live. Where
+`/proc` is absent, the tool cannot compare start ticks and it
+treats a running process ID as live.
+
+Recovery claims a stale lock by renaming its folder to a
+private name. Rename is atomic, so only one recoverer wins.
+The others loop and then see the winner's live lock. A lock
+with no owner file is treated as stale after ten seconds. The
+release step removes the lock only when the token still
+matches. The `unlock` command clears a lock by hand. It
+refuses while the owner process still runs, unless `--force`
+is given. A real filesystem error, such as no permission, is
+reported as an `error:` line. It is not reported as another
+writer.
 
 ## Commands
 
@@ -161,25 +189,32 @@ revision, counts by kind and by issuer, the public keys, and
 the SHA-256 of the event file. The keys file holds private
 keys. Keep a capture folder private.
 
-Restore and the reuse check enforce the pinned base. Three
-cases pass:
+Restore and the reuse check enforce the pinned base. They
+prove the exact inventory from event IDs before they post
+anything. The manifest can lag behind the admitted inventory,
+so it never decides the case. Three cases pass:
 
-- Fresh copy: the server snapshot and logical inventory equal
-  the pin, and its event inventory digest equals the base
-  digest in the manifest. Restore posts every captured event.
-- Already restored copy: every captured event is present, and
-  the inventory count is exactly the base count plus the
-  capture count. Nothing is posted again.
+- Fresh copy: the event IDs are exactly the pinned base IDs.
+  The manifest must also reach the pin. The tool waits at most
+  ten seconds for that (`--wait-ms` changes the bound).
+- Already restored copy: the event IDs are exactly the pinned
+  base plus the capture.
 - Partial restore: some captured events are present, and the
-  inventory count is exactly the base count plus the present
-  count. Restore posts only the missing events. The same
-  command can resume after a stopped restore.
+  other IDs are exactly the pinned base IDs. The same command
+  resumes a stopped restore.
 
-Any other inventory fails. A foreign base, an inventory with
-extra events, or a tampered base value in the manifest is
-refused with the first mismatch as the reason. After posting,
-the final inventory must equal the expected final inventory
-digest from the manifest.
+Any other inventory is refused before any post. A foreign
+event, a missing base event, or a tampered base value in the
+manifest is refused with the first mismatch as the reason.
+
+After the proof, restore posts every captured transport, not
+only the missing ones. A repost is idempotent. It makes the
+server validate each captured representation again, and it
+supplies any body that an earlier admission left out. At the
+end, the inventory must equal the expected final digest, each
+restored envelope must equal the captured envelope, and every
+captured body must be present. An event ID alone is never
+enough for `reusable`.
 
 The reuse check does the same work on a fresh disposable copy.
 It prints `reusable` when every event still passes the current

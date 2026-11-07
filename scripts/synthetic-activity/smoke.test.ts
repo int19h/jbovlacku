@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, mkdir, writeFile, utimes, cp } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -134,14 +135,14 @@ test("foreign base, tampered inventory and superset are refused; a partial resto
     const fstate = join(root, "foreign-state");
     await cmd(["--server", "http://127.0.0.1:8796", "--state", fstate, "init"]);
     await cmd(["--server", "http://127.0.0.1:8796", "--state", fstate, "define", "--word", "foreigntwo", "--text", "unrelated entry"]);
-    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "restore", "--capture", cap]), /refused: base snapshot mismatch/);
-    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "reuse-check", "--capture", cap]), /not reusable: base snapshot mismatch/);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "restore", "--capture", cap]), /refused: base inventory does not match the capture pin; refusing to write/);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "reuse-check", "--capture", cap]), /not reusable: base inventory does not match the capture pin; refusing to write/);
     // Tampered base inventory on a fresh server.
     const tampered = join(root, "tampered"); await cp(cap, tampered, { recursive: true });
     const tm = JSON.parse(await readFile(join(tampered, "manifest.json"), "utf8")); tm.base_inventory = "sha256:" + "0".repeat(64);
     await writeFile(join(tampered, "manifest.json"), JSON.stringify(tm, null, 2));
     const s2 = await startServer(join(root, "fresh2"), 8797); servers.push(s2);
-    assert.match(await cmdFail(["--server", "http://127.0.0.1:8797", "restore", "--capture", tampered]), /refused: base inventory mismatch/);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8797", "restore", "--capture", tampered, "--wait-ms", "200"]), /refused: base inventory mismatch/);
     // Partial restore: post only the first captured event, then resume.
     const s3 = await startServer(join(root, "fresh3"), 8798); servers.push(s3);
     const lines = (await readFile(join(cap, "events.jsonl"), "utf8")).trim().split("\n");
@@ -176,12 +177,17 @@ test("a crash-remnant lock recovers, a live lock refuses, and a late init joins 
     await mkdir(join(a, "lock"), { recursive: true });
     const old = new Date(Date.now() - 60000); await utimes(join(a, "lock"), old, old);
     assert.match(await cmd(["--server", url, "--state", a, "profile", "--name", "Recovered"]), /accepted/);
-    // A lock whose owner process is alive refuses.
-    await mkdir(join(a, "lock"), { recursive: true });
-    await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }));
-    assert.match(await cmdFail(["--server", url, "--state", a, "define", "--word", "lockthree", "--text", "blocked"]), /refused: another write is in progress/);
-    assert.match(await cmdFail(["--server", url, "--state", a, "unlock"]), /refused: the lock owner process .* is still running/);
-    await rm(join(a, "lock"), { recursive: true, force: true });
+    // A lock whose owner process is alive refuses. The owner record
+    // carries the sleeper's real process start tick.
+    const sleeper = spawn("sleep", ["30"]);
+    try {
+      const statText = await readFile(`/proc/${sleeper.pid}/stat`, "utf8");
+      const ticks = Number(statText.slice(statText.lastIndexOf(")") + 2).split(" ")[19]);
+      await mkdir(join(a, "lock"), { recursive: true });
+      await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: sleeper.pid, proc_start: ticks, started_at: new Date().toISOString(), token: "live" }));
+      assert.match(await cmdFail(["--server", url, "--state", a, "define", "--word", "lockthree", "--text", "blocked"]), /refused: another write is in progress/);
+      assert.match(await cmdFail(["--server", url, "--state", a, "unlock"]), /refused: the lock owner process .* is still running/);
+    } finally { sleeper.kill(); await rm(join(a, "lock"), { recursive: true, force: true }); }
     // Late init: B starts after A has written, and still joins the capture.
     await cmd(["--server", url, "--state", b, "init"]);
     await cmd(["--server", url, "--state", b, "define", "--word", "lockfour", "--text", "late starter"]);
@@ -237,5 +243,122 @@ test("recent and history page past one server page, and heads past 64 merge", as
     await mkdir(headState, { recursive: true });
     await writeFile(join(headState, "identity.json"), JSON.stringify({ seed: Buffer.from(seed2).toString("hex"), identity: identityFromSeed(seed2), base_snapshot: m.snapshot, base_inventory: m.logical_inventory }, null, 2));
     assert.match(await cmd(["--server", url, "--state", headState, "define", "--word", "headsword", "--text", "after many heads"]), /accepted/);
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("many recoverers of one stale lock stay one writer, and a reused PID does not block", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 8795);
+  try {
+    const url = "http://127.0.0.1:8795";
+    const a = join(root, "a");
+    const identity = (await cmd(["--server", url, "--state", a, "init"])).match(/ed25519:[a-f0-9]{64}/)![0];
+    await cmd(["--server", url, "--state", a, "define", "--word", "raceone", "--text", "before the race"]);
+    // One dead-owner lock, eight writers at the same time.
+    await mkdir(join(a, "lock"), { recursive: true });
+    await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: 999999, proc_start: 1, started_at: new Date(0).toISOString(), token: "dead" }));
+    const runs = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+      run(tsx, [cli, "--server", url, "--state", a, "define", "--word", `race${i}`, "--text", "race write"], { timeout: 180000 })
+        .then((r) => (r.stdout + r.stderr)).catch((e: any) => (e.stdout ?? "") + (e.stderr ?? ""))));
+    const accepted = runs.filter((r) => r.includes("accepted"));
+    assert.ok(accepted.length >= 1 && accepted.length < 8, runs.join("\n"));
+    const heads = await (await fetch(`${url}/api/v1/identity-heads/${encodeURIComponent(identity)}?limit=200`)).json() as any;
+    assert.equal(heads.heads.length, 1, JSON.stringify(heads));
+    // A live PID with an old start time is a reused PID, not the owner.
+    const sleeper = spawn("sleep", ["30"]);
+    try {
+      await mkdir(join(a, "lock"), { recursive: true });
+      await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: sleeper.pid, started_at: new Date(0).toISOString() }));
+      assert.match(await cmd(["--server", url, "--state", a, "define", "--word", "raceafter", "--text", "after pid reuse"]), /accepted/);
+      // The same reused-PID lock can be cleared by hand.
+      await mkdir(join(a, "lock"), { recursive: true });
+      await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: sleeper.pid, started_at: new Date(0).toISOString() }));
+      assert.match(await cmd(["--server", url, "--state", a, "unlock"]), /lock cleared/);
+    } finally { sleeper.kill(); }
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("envelope-only inventory is repaired and proved, foreign partial writes nothing, delayed manifest resumes", async () => {
+  const root = await rootOf();
+  const servers: Awaited<ReturnType<typeof startServer>>[] = [];
+  try {
+    const s1 = await startServer(join(root, "src"), 8795); servers.push(s1);
+    const a = join(root, "a");
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "define", "--word", "bodyone", "--text", "a body that must be present"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "profile", "--name", "Body A"]);
+    const cap = join(root, "capture");
+    await cmd(["--server", "http://127.0.0.1:8795", "capture", "--state", a, "--out", cap]);
+    const transports = (await readFile(join(cap, "events.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    const defTransport = transports.find((t: any) => t.envelope.header.action.kind === "definition.publish");
+    // Envelope-only target: same IDs, no bodies.
+    const s2 = await startServer(join(root, "envonly"), 8796); servers.push(s2);
+    await s2.service.admitMany(transports.map((t: any) => utf8(JSON.stringify({ envelope: t.envelope, body: null }))));
+    const hash = defTransport.envelope.header.content.hash;
+    assert.equal((await fetch(`http://127.0.0.1:8796/api/v1/bodies/${encodeURIComponent(hash)}`)).status, 404);
+    // The reuse check reposts the full transports, then proves bodies.
+    assert.match(await cmd(["--server", "http://127.0.0.1:8796", "reuse-check", "--capture", cap]), /^reusable$/m);
+    assert.equal((await fetch(`http://127.0.0.1:8796/api/v1/bodies/${encodeURIComponent(hash)}`)).status, 200);
+    // Foreign partial: a foreign event and one captured event. No write may happen.
+    const s3 = await startServer(join(root, "foreign"), 8797); servers.push(s3);
+    const f = join(root, "f");
+    await cmd(["--server", "http://127.0.0.1:8797", "--state", f, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8797", "--state", f, "define", "--word", "foreignword", "--text", "not the base"]);
+    assert.ok((await fetch("http://127.0.0.1:8797/api/v1/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(transports[0]) })).ok);
+    const countBefore = ((await (await fetch("http://127.0.0.1:8797/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids.length;
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8797", "restore", "--capture", cap]), /refused: partial restore does not hold the pinned base; refusing to write/);
+    const idsAfter = ((await (await fetch("http://127.0.0.1:8797/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    assert.equal(idsAfter.length, countBefore);
+    assert.ok(!idsAfter.includes(transports[1].envelope.id));
+    // Delayed manifest: a proxy reports the pinned base manifest while
+    // the target already holds one captured event.
+    const s4 = await startServer(join(root, "delayed"), 8798); servers.push(s4);
+    const baseManifest = await (await fetch("http://127.0.0.1:8798/api/v1/manifest")).json();
+    assert.ok((await fetch("http://127.0.0.1:8798/api/v1/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(transports[0]) })).ok);
+    const proxy = createServer(async (req, res) => {
+      if (req.url === "/synthetic-disposable") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ disposable: true })); return; }
+      if (req.url === "/api/v1/manifest") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(baseManifest)); return; }
+      const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
+      const upstream = await fetch(`http://127.0.0.1:8798${req.url}`, { method: req.method, headers: { "content-type": "application/json" }, body: ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : Buffer.concat(chunks) });
+      res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+      res.end(Buffer.from(await upstream.arrayBuffer()));
+    });
+    await new Promise<void>((r) => proxy.listen(8799, "127.0.0.1", r));
+    try {
+      assert.match(await cmd(["--server", "http://127.0.0.1:8799", "restore", "--capture", cap]), /restored .* resumed=1/);
+    } finally { await new Promise<void>((r) => proxy.close(() => r())); }
+  } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("a bad loaded-view file and a pin for another server are refused", async () => {
+  const root = await rootOf();
+  // Unparsable loaded-view file.
+  const bad = join(root, "bad"); await mkdir(bad, { recursive: true });
+  await writeFile(join(bad, "disposable.json"), JSON.stringify({ disposable: true }));
+  await writeFile(join(bad, "loaded-view.json"), "{");
+  await assert.rejects(() => startServer(bad, 8795));
+  // A loaded view that names no retained event or selection.
+  const ghost = join(root, "ghost"); await mkdir(ghost, { recursive: true });
+  await writeFile(join(ghost, "disposable.json"), JSON.stringify({ disposable: true }));
+  await writeFile(join(ghost, "loaded-view.json"), JSON.stringify({ version: 1, view: "jve1:" + "0".repeat(64), selection: "sha256:" + "0".repeat(64) }));
+  await assert.rejects(() => startServer(ghost, 8795), /not retained|invalid/);
+  // Two servers on one data directory: the second start is refused.
+  const s = await startServer(join(root, "data"), 8795);
+  try {
+    await assert.rejects(() => startServer(join(root, "data"), 8796), /locked/);
+    // A pin taken on one server refuses a fresh identity on another.
+    // The pin is taken after a first event, so its snapshot differs
+    // from a fresh empty server.
+    const a = join(root, "run", "a");
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "define", "--word", "pinone", "--text", "pin source event"]);
+    const pinFile = join(root, "run", "base-pin2.json");
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "--pin", pinFile, "pin-base"]);
+    const s2 = await startServer(join(root, "other"), 8796);
+    try {
+      const b = join(root, "run2", "b");
+      assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "--state", b, "--pin", pinFile, "init"]), /refused: base pin does not match this server/);
+      assert.equal(existsSync(join(b, "identity.json")), false);
+    } finally { await s2.close(); }
   } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
 });
