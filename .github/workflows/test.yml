@@ -76,6 +76,8 @@ jobs:
         run: |
           npm run test:service
           npx tsx --test packages/importer/test/*.test.ts
+      - name: Test synthetic activity kit
+        run: npm run test:synthetic
       - name: Build standalone and browser applications
         run: |
           npm run build:server
