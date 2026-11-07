@@ -77,9 +77,12 @@ any synthetic event exists:
 npx tsx scripts/synthetic-activity/cli.ts --server http://127.0.0.1:8795 --state .cache/synthetic/a pin-base
 ```
 
-The pin holds the server snapshot, its logical inventory, its
-event count, and a digest of its event IDs. A second file,
-`<pin>.ids`, holds the base event ID list. Both go beside the
+The pin holds the server snapshot, its logical inventory, and
+the counts and digests of all three components of the base
+logical inventory: retained events, bodies, and import
+selections. Three list files hold the base entries:
+`<pin>.ids` for event IDs, `<pin>.bodies` for body hashes, and
+`<pin>.selections` for import selections. They go beside the
 state folders, or to the paths from `--pin`. Every `init`
 reads that same pin. An identity that starts later gets the
 same base, even after other identities have written. If no
@@ -240,38 +243,47 @@ Capture collects only events by the identities in the given
 state folders. It writes `events.jsonl`, `manifest.json`, and
 `keys.json`. The event file uses canonical JSON, one event per
 line. The manifest holds the base snapshot, the base inventory
-value, the base event count, a digest of the base event IDs,
-the expected final event count and inventory digest, the kit
-revision, counts by kind and by issuer, the public keys, and
-the SHA-256 of the event file. The keys file holds private
+value, counts and digests for all three components of the base
+logical inventory (retained events, bodies, and import
+selections), a digest of the base bodies that the capture does
+not itself carry, the expected final counts and digests of all
+three components, the expected final logical inventory, the
+kit revision, counts by kind and by issuer, the public keys,
+and the SHA-256 of the event file. The keys file holds private
 keys. Keep a capture folder private.
 
 Restore and the reuse check enforce the pinned base. They
-prove the exact inventory from event IDs before they post
-anything. The manifest can lag behind the admitted inventory,
-so it never decides the case. Three cases pass:
+prove the whole logical inventory, not only event IDs, before
+they post anything: the retained events, bodies, and import
+selections are read at one pinned admitted snapshot. A body
+that a captured event shares with a base event counts once, in
+the captured set, so a missing captured body stays repairable
+while a missing or added base body is refused. The manifest
+can lag behind the admitted inventory, so it never decides the
+case. Three cases pass:
 
-- Fresh copy: the event IDs are exactly the pinned base IDs.
-  The manifest must also reach the pin. The tool waits at most
-  ten seconds for that (`--wait-ms` changes the bound).
-- Already restored copy: the event IDs are exactly the pinned
+- Fresh copy: the inventory is exactly the pinned base. The
+  manifest must also reach the pin. The tool waits at most ten
+  seconds for that (`--wait-ms` changes the bound).
+- Already restored copy: the inventory is exactly the pinned
   base plus the capture.
 - Partial restore: some captured events are present, and the
-  other IDs are exactly the pinned base IDs. The same command
-  resumes a stopped restore.
+  rest of the inventory is exactly the pinned base. The same
+  command resumes a stopped restore.
 
 Any other inventory is refused before any post. A foreign
-event, a missing base event, or a tampered base value in the
-manifest is refused with the first mismatch as the reason.
+event, a missing or added base body or import selection, or a
+tampered base value in the manifest is refused with the first
+mismatch as the reason.
 
 After the proof, restore posts every captured transport, not
 only the missing ones. A repost is idempotent. It makes the
 server validate each captured representation again, and it
 supplies any body that an earlier admission left out. At the
-end, the inventory must equal the expected final digest, each
-restored envelope must equal the captured envelope, and every
-captured body must be present. An event ID alone is never
-enough for `reusable`.
+end, all three components and the final logical inventory must
+equal the expected final values, each restored envelope must
+equal the captured envelope, and every captured body must be
+present. An event ID alone is never enough for `reusable`.
 
 The reuse check does the same work on a fresh disposable copy.
 It prints `reusable` when every event still passes the current

@@ -22,6 +22,13 @@ const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 const unhex = (s: string) => new Uint8Array(Buffer.from(s, "hex"));
 const plain = (rt: unknown): string => Array.isArray(rt) ? rt.map(plain).join("") : typeof rt === "string" ? rt : "";
 const digestIds = (ids: string[]) => sha256([...ids].sort().join("\n"));
+/** The service logical-inventory digest: one hash over the sorted
+ * retained event IDs, body hashes and import selections. */
+function logicalInventoryDigest(events: string[], bodies: string[], selections: string[]): string {
+  return contentHash(utf8(canonicalize(utf8(JSON.stringify({
+    events: [...events].sort(), bodies: [...bodies].sort(), import_selections: [...selections].sort(),
+  })))));
+}
 
 interface Opts { server: string; state: string; view?: string; full: boolean; limit: number; args: string[]; flags: Map<string, string>; multi: Map<string, string[]> }
 function parse(argv: string[]): Opts {
@@ -99,8 +106,8 @@ async function api(o: Opts, path: string, init?: RequestInit): Promise<any> {
 }
 const refused = (e: any): never => { console.error(`refused: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); };
 
-interface Pin { base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string }
-interface Identity { seed: string; identity: string; base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string }
+interface Pin { base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string }
+interface Identity { seed: string; identity: string; base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string }
 async function loadIdentity(o: Opts): Promise<Identity> {
   if (!o.state) { console.error("refused: --state is required"); process.exit(2); }
   return JSON.parse(await readFile(join(o.state, "identity.json"), "utf8"));
@@ -109,9 +116,15 @@ function pinPath(o: Opts): string {
   return flag(o, "pin") ?? join(dirname(resolve(o.state)), "base-pin.json");
 }
 const pinIdsPath = (path: string) => path + ".ids";
-/** A usable pin carries its base evidence: count, ID digest, and the ID list. */
+const pinBodiesPath = (path: string) => path + ".bodies";
+const pinSelectionsPath = (path: string) => path + ".selections";
+/** A usable pin carries evidence for the whole logical inventory:
+ * counts, digests, and the retained lists of all three components. */
 function pinHasEvidence(pin: Pin, path: string): boolean {
-  return Number.isInteger(pin.base_event_count) && typeof pin.base_inventory_digest === "string" && existsSync(pinIdsPath(path));
+  return Number.isInteger(pin.base_event_count) && typeof pin.base_inventory_digest === "string"
+    && Number.isInteger(pin.base_body_count) && typeof pin.base_body_digest === "string"
+    && Number.isInteger(pin.base_selection_count) && typeof pin.base_selection_digest === "string"
+    && existsSync(pinIdsPath(path)) && existsSync(pinBodiesPath(path)) && existsSync(pinSelectionsPath(path));
 }
 /** Write through a temp file and rename, so a crash keeps the old file whole. */
 async function writeAtomic(path: string, text: string): Promise<void> {
@@ -119,13 +132,19 @@ async function writeAtomic(path: string, text: string): Promise<void> {
   await writeFile(tmp, text);
   await rename(tmp, path);
 }
-/** Read the pin ID list and check it against the pinned count and digest. */
-async function readPinEvidence(pin: Pin, path: string): Promise<string[]> {
-  const ids = (await readFile(pinIdsPath(path), "utf8")).split("\n").filter(Boolean);
-  if (ids.length !== pin.base_event_count || digestIds(ids) !== pin.base_inventory_digest) {
-    console.error("refused: base pin evidence does not match its ID list; take a new pin with pin-base"); process.exit(3);
+interface PinLists { events: string[]; bodies: string[]; selections: string[] }
+/** Read the three pin lists and check each against its pinned count and digest. */
+async function readPinEvidence(pin: Pin, path: string): Promise<PinLists> {
+  const read = async (p: string) => (await readFile(p, "utf8")).split("\n").filter(Boolean);
+  const events = await read(pinIdsPath(path));
+  const bodies = await read(pinBodiesPath(path));
+  const selections = await read(pinSelectionsPath(path));
+  if (events.length !== pin.base_event_count || digestIds(events) !== pin.base_inventory_digest
+    || bodies.length !== pin.base_body_count || digestIds(bodies) !== pin.base_body_digest
+    || selections.length !== pin.base_selection_count || digestIds(selections) !== pin.base_selection_digest) {
+    console.error("refused: base pin evidence does not match its lists; take a new pin with pin-base"); process.exit(3);
   }
-  return ids;
+  return { events, bodies, selections };
 }
 async function loadOrCreatePin(o: Opts): Promise<Pin> {
   const path = pinPath(o);
@@ -134,13 +153,25 @@ async function loadOrCreatePin(o: Opts): Promise<Pin> {
     if (!pin.base_snapshot || !pin.base_inventory) { console.error(`refused: base pin file has no base: ${path}`); process.exit(3); }
     return pin;
   }
-  let m: any;
-  try { m = await api(o, "/manifest"); } catch (e: any) { console.error(`refused: cannot read the base pin from the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
-  if (!m.snapshot || !m.logical_inventory) { console.error("refused: server manifest has no snapshot or logical inventory for the base pin"); process.exit(3); }
-  const ids = await inventoryIds(o, m.snapshot);
-  const pin: Pin = { base_snapshot: m.snapshot, base_inventory: m.logical_inventory, base_event_count: ids.length, base_inventory_digest: digestIds(ids) };
+  // Pin the whole logical inventory at one admitted snapshot. The
+  // first inventory page names that snapshot; every list below is
+  // pinned to it, so the three components describe one point in time.
+  let firstPage: any;
+  try { firstPage = await api(o, "/inventory?kind=events&limit=1000"); } catch (e: any) { console.error(`refused: cannot read the base pin from the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
+  const snapshot: string = firstPage.snapshot;
+  const ids = await inventoryIds(o, snapshot);
+  const bodies = await inventoryList(o, "bodies", snapshot);
+  const selections = await inventoryList(o, "import_selections", snapshot);
+  const pin: Pin = {
+    base_snapshot: snapshot, base_inventory: logicalInventoryDigest(ids, bodies, selections),
+    base_event_count: ids.length, base_inventory_digest: digestIds(ids),
+    base_body_count: bodies.length, base_body_digest: digestIds(bodies),
+    base_selection_count: selections.length, base_selection_digest: digestIds(selections),
+  };
   await mkdir(dirname(path), { recursive: true });
   await writeAtomic(pinIdsPath(path), ids.join("\n") + (ids.length ? "\n" : ""));
+  await writeAtomic(pinBodiesPath(path), bodies.join("\n") + (bodies.length ? "\n" : ""));
+  await writeAtomic(pinSelectionsPath(path), selections.join("\n") + (selections.length ? "\n" : ""));
   await writeAtomic(path, JSON.stringify(pin, null, 2) + "\n");
   return pin;
 }
@@ -343,23 +374,26 @@ async function main(): Promise<void> {
         // pin evidence must be consistent, it must match this
         // identity's recorded base, and the server must hold
         // every pinned base ID.
-        if (j.base_inventory_digest == null || j.base_event_count == null) {
+        if (j.base_inventory_digest == null || j.base_event_count == null || j.base_body_digest == null || j.base_selection_digest == null) {
           const path = pinPath(o);
           if (!existsSync(path)) {
             console.error(`note: no base pin file at ${path}; this identity has no base evidence for capture`);
           } else {
             const pin = JSON.parse(await readFile(path, "utf8"));
             if (!pinHasEvidence(pin, path)) { console.error("refused: base pin file has no base evidence; a new base needs a new pin file"); process.exit(3); }
-            const baseIds = await readPinEvidence(pin, path);
+            const lists = await readPinEvidence(pin, path);
             if ((j.base_snapshot && j.base_snapshot !== pin.base_snapshot) || (j.base_inventory && j.base_inventory !== pin.base_inventory)) {
               console.error("refused: base pin does not match this identity's recorded base; start a new state folder"); process.exit(3);
             }
-            const serverIds = await inventoryIds(o);
-            const serverSet = new Set(serverIds);
-            if (!baseIds.every((id) => serverSet.has(id))) {
+            const serverEvents = new Set(await inventoryIds(o));
+            const serverBodies = new Set(await inventoryList(o, "bodies"));
+            const serverSelections = new Set(await inventoryList(o, "import_selections"));
+            if (!lists.events.every((id) => serverEvents.has(id)) || !lists.bodies.every((h) => serverBodies.has(h)) || !lists.selections.every((s) => serverSelections.has(s))) {
               console.error("refused: base pin does not match this server; a new base needs a new pin file"); process.exit(3);
             }
             j.base_event_count = pin.base_event_count; j.base_inventory_digest = pin.base_inventory_digest;
+            j.base_body_count = pin.base_body_count; j.base_body_digest = pin.base_body_digest;
+            j.base_selection_count = pin.base_selection_count; j.base_selection_digest = pin.base_selection_digest;
             j.base_snapshot ??= pin.base_snapshot; j.base_inventory ??= pin.base_inventory;
             await writeFile(p, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 });
           }
@@ -383,13 +417,13 @@ async function main(): Promise<void> {
         let serverIds: string[];
         try { serverIds = await inventoryIds(o); } catch (e: any) { console.error(`refused: cannot check the base pin against the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
         const serverSet = new Set(serverIds);
-        const baseIds = await readPinEvidence(pin, pinPath(o));
+        const baseIds = (await readPinEvidence(pin, pinPath(o))).events;
         if (!baseIds.every((id) => serverSet.has(id))) {
           console.error("refused: base pin does not match this server; a new base needs a new pin file"); process.exit(3);
         }
       }
       const seed = randomBytes(32); const identity = identityFromSeed(new Uint8Array(seed));
-      const rec: Identity = { seed: hex(new Uint8Array(seed)), identity, base_snapshot: pin.base_snapshot, base_inventory: pin.base_inventory, base_event_count: pin.base_event_count ?? null, base_inventory_digest: pin.base_inventory_digest };
+      const rec: Identity = { seed: hex(new Uint8Array(seed)), identity, base_snapshot: pin.base_snapshot, base_inventory: pin.base_inventory, base_event_count: pin.base_event_count ?? null, base_inventory_digest: pin.base_inventory_digest, base_body_count: pin.base_body_count ?? null, base_body_digest: pin.base_body_digest, base_selection_count: pin.base_selection_count ?? null, base_selection_digest: pin.base_selection_digest };
       await writeFile(p, JSON.stringify(rec, null, 2) + "\n", { mode: 0o600 });
       console.log(`identity ${identity}`); console.log(`state ${resolve(o.state)}`);
     } else if (cmd === "unlock") {
@@ -569,11 +603,39 @@ async function captureBody(o: Opts): Promise<void> {
   // folder is missing, or an event outside the given folders is
   // being absorbed into the base, and the capture could not restore.
   if (!identities[0].base_inventory_digest || !Number.isInteger(identities[0].base_event_count)) { console.error("refused: identity has no base evidence; run init once to backfill it, or start a new state folder"); process.exit(3); }
+  // The full base proof needs the pin lists themselves, beside the
+  // state folders (or at --pin). An identity record carries only the
+  // digests, which cannot separate base bodies from captured ones.
+  const capturePinPath = flag(o, "pin") ?? join(dirname(resolve(states[0])), "base-pin.json");
+  if (!existsSync(capturePinPath)) { console.error(`refused: capture needs the base pin file with its full evidence lists (expected ${capturePinPath}); run pin-base for this run first`); process.exit(3); }
+  const capturePin: Pin = JSON.parse(await readFile(capturePinPath, "utf8"));
+  if (!pinHasEvidence(capturePin, capturePinPath)) { console.error("refused: base pin file has no full base evidence; take a new pin with pin-base"); process.exit(3); }
+  const pinLists = await readPinEvidence(capturePin, capturePinPath);
+  if (capturePin.base_snapshot !== identities[0].base_snapshot || capturePin.base_inventory !== identities[0].base_inventory
+    || identities.some((i) => i.base_body_digest !== capturePin.base_body_digest || i.base_selection_digest !== capturePin.base_selection_digest)) {
+    console.error("refused: state folders do not match the base pin file; use the pin file of this run"); process.exit(3);
+  }
   const allIds = await inventoryIds(o, sourceSnapshot);
+  const allBodies = await inventoryList(o, "bodies", sourceSnapshot);
+  const allSelections = await inventoryList(o, "import_selections", sourceSnapshot);
   const synthetic = new Set(transports.map((t) => t.envelope.id));
+  const syntheticBodies = new Set<string>();
+  for (const t of transports) { const h = t.envelope.header?.content?.hash; if (t.body != null && typeof h === "string") syntheticBodies.add(h); }
   const baseIds = allIds.filter((id) => !synthetic.has(id));
   if (baseIds.length !== identities[0].base_event_count || digestIds(baseIds) !== identities[0].base_inventory_digest) {
     console.error(`refused: capture base does not match the pin: derived base ${baseIds.length} events digest ${digestIds(baseIds)}, pin ${identities[0].base_event_count} events digest ${identities[0].base_inventory_digest}; a state folder may be missing, or a write landed during capture`);
+    process.exit(3);
+  }
+  // Bodies and selections get the same proof as events. The expected
+  // body set is the pinned base bodies plus the captured bodies; a
+  // hash that both share is one set member, so this compare is exact.
+  const expectedBodies = [...new Set([...pinLists.bodies, ...syntheticBodies])].sort();
+  if (digestIds(allBodies) !== digestIds(expectedBodies)) {
+    console.error(`refused: capture base bodies do not match the pin: server holds ${allBodies.length} bodies digest ${digestIds(allBodies)}, pin plus capture holds ${expectedBodies.length} digest ${digestIds(expectedBodies)}; a base body changed after the pin`);
+    process.exit(3);
+  }
+  if (digestIds(allSelections) !== capturePin.base_selection_digest) {
+    console.error(`refused: capture base import selections do not match the pin: server holds ${allSelections.length} selections digest ${digestIds(allSelections)}, pin holds ${capturePin.base_selection_count} digest ${capturePin.base_selection_digest}; a base selection changed after the pin`);
     process.exit(3);
   }
   // Read the admitted snapshot once more. If it moved, a writer is
@@ -595,18 +657,27 @@ async function captureBody(o: Opts): Promise<void> {
     format: 1, capture_snapshot: sourceSnapshot, base_snapshot: identities[0].base_snapshot, base_inventory: identities[0].base_inventory, kit_revision,
     event_count: transports.length, by_kind: byKind, by_issuer: byIssuer, public_keys: identities.map((i) => i.identity),
     event_file_sha256: sha256(bytes), base_event_count: baseIds.length, base_inventory_digest: digestIds(baseIds),
+    base_body_count: pinLists.bodies.length, base_body_digest: digestIds(pinLists.bodies),
+    base_selection_count: pinLists.selections.length, base_selection_digest: digestIds(pinLists.selections),
+    base_minus_captured_body_digest: digestIds(pinLists.bodies.filter((h) => !syntheticBodies.has(h))),
     expected_final_event_count: baseIds.length + transports.length, expected_final_inventory_digest: digestIds(allIds),
+    expected_final_body_count: allBodies.length, expected_final_body_digest: digestIds(allBodies),
+    expected_final_selection_count: allSelections.length, expected_final_selection_digest: digestIds(allSelections),
+    expected_final_logical_inventory: logicalInventoryDigest(allIds, allBodies, allSelections),
   };
   await writeFile(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
   const keys: Record<string, string> = {}; for (const i of identities) keys[i.identity] = i.seed;
   await writeFile(join(outDir, "keys.json"), JSON.stringify(keys, null, 2) + "\n", { mode: 0o600 });
   console.log(`captured ${transports.length} events snapshot=${sourceSnapshot} sha256=${manifest.event_file_sha256}`);
 }
-async function inventoryIds(o: Opts, snapshot?: string): Promise<string[]> {
+async function inventoryList(o: Opts, kind: string, snapshot?: string): Promise<string[]> {
   const ids: string[] = []; let after: string | null = null;
   const snap = snapshot ? `&snapshot=${encodeURIComponent(snapshot)}` : "";
-  for (;;) { const j: any = await api(o, `/inventory?kind=events&limit=1000${snap}${after ? `&after=${encodeURIComponent(after)}` : ""}`); ids.push(...(j.ids ?? [])); if (!j.next) break; after = j.next; }
+  for (;;) { const j: any = await api(o, `/inventory?kind=${kind}&limit=1000${snap}${after ? `&after=${encodeURIComponent(after)}` : ""}`); ids.push(...(j.ids ?? [])); if (!j.next) break; after = j.next; }
   return ids.sort();
+}
+async function inventoryIds(o: Opts, snapshot?: string): Promise<string[]> {
+  return inventoryList(o, "events", snapshot);
 }
 async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   const dir = flag(o, "capture"); if (!dir) { console.error("refused: --capture is required"); process.exit(2); }
@@ -616,7 +687,9 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
     manifest = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8"));
     bytes = await readFile(join(dir, "events.jsonl"));
   } catch (e: any) { fail(`capture cannot be read: ${e.message ?? String(e)}`); }
-  if (!manifest.base_snapshot || !manifest.base_inventory || !Number.isInteger(manifest.base_event_count) || !manifest.base_inventory_digest || !Number.isInteger(manifest.expected_final_event_count) || !manifest.expected_final_inventory_digest || !manifest.event_file_sha256 || !Number.isInteger(manifest.event_count)) fail(`capture manifest is missing a required field`);
+  if (!manifest.base_snapshot || !manifest.base_inventory || !Number.isInteger(manifest.base_event_count) || !manifest.base_inventory_digest || !Number.isInteger(manifest.expected_final_event_count) || !manifest.expected_final_inventory_digest || !manifest.event_file_sha256 || !Number.isInteger(manifest.event_count)
+    || !Number.isInteger(manifest.base_body_count) || !manifest.base_body_digest || !Number.isInteger(manifest.base_selection_count) || !manifest.base_selection_digest || !manifest.base_minus_captured_body_digest
+    || !Number.isInteger(manifest.expected_final_body_count) || !manifest.expected_final_body_digest || !Number.isInteger(manifest.expected_final_selection_count) || !manifest.expected_final_selection_digest || !manifest.expected_final_logical_inventory) fail(`capture manifest is missing a required field`);
   if (sha256(bytes) !== manifest.event_file_sha256) fail(`event file hash does not match manifest`);
   const lines = new TextDecoder().decode(bytes).trim().split("\n").filter(Boolean);
   if (lines.length !== manifest.event_count) fail(`event count ${lines.length} does not match manifest ${manifest.event_count}`);
@@ -624,27 +697,46 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   const synthetic = new Set<string>(transports.map((t: any) => t.envelope.id));
   if (synthetic.size !== transports.length) fail(`capture holds a duplicate event id`);
   for (const t of transports) { try { const p = prepareAdmission(utf8(JSON.stringify(t))); if (!p.action_valid || p.body_status === "invalid") fail(`current code refuses event ${t.envelope?.id ?? "?"}: invalid action or body`); } catch (e: any) { fail(`current code refuses event ${t.envelope?.id ?? "?"}: ${e.message ?? String(e)}`); } }
-  // Prove the exact inventory from event IDs before any post. The
-  // manifest can lag behind the admitted inventory, so it never
-  // decides the case. It only confirms a fresh copy, with a wait.
-  let before: string[] = [];
-  try { before = await inventoryIds(o); } catch (e: any) { fail(`cannot read server inventory: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); }
+  // Prove the whole logical inventory before any post: retained
+  // events, bodies and import selections, each read at one pinned
+  // admitted snapshot. Event IDs alone are not proof. The manifest
+  // can lag behind the admitted inventory, so it never decides the
+  // case. It only confirms a fresh copy, with a wait.
+  const capturedBodies = new Set<string>();
+  for (const t of transports) { const h = t.envelope.header?.content?.hash; if (t.body != null && typeof h === "string") capturedBodies.add(h); }
+  let before: string[] = []; let beforeBodies: string[] = []; let beforeSelections: string[] = [];
+  try {
+    const firstPage = await api(o, "/inventory?kind=events&limit=1000");
+    before = await inventoryIds(o, firstPage.snapshot);
+    beforeBodies = await inventoryList(o, "bodies", firstPage.snapshot);
+    beforeSelections = await inventoryList(o, "import_selections", firstPage.snapshot);
+  } catch (e: any) { fail(`cannot read server inventory: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); }
   const beforeSet = new Set(before);
   const present = transports.filter((t: any) => beforeSet.has(t.envelope.id));
   let resumed = 0;
-  if (present.length === transports.length) {
-    // Already restored. The ID set must be exactly the pinned base
-    // plus the capture. Bodies are proved after the repost below.
-    if (digestIds(before) !== manifest.expected_final_inventory_digest)
-      fail(`already restored inventory is not the pinned base plus the capture: ${before.length} events, expected ${manifest.expected_final_event_count}`);
-    resumed = present.length;
-  } else if (present.length > 0) {
-    // Partial restore. The other IDs must be exactly the pinned base.
+  {
+    // Events outside the capture must be exactly the pinned base.
     const rest = before.filter((id) => !synthetic.has(id));
-    if (digestIds(rest) !== manifest.base_inventory_digest)
-      fail(`partial restore does not hold the pinned base; refusing to write`);
+    if (digestIds(rest) !== manifest.base_inventory_digest) {
+      if (present.length === transports.length && transports.length > 0)
+        fail(`already restored inventory is not the pinned base plus the capture: ${before.length} events, expected ${manifest.expected_final_event_count}`);
+      if (present.length > 0)
+        fail(`partial restore does not hold the pinned base; refusing to write`);
+      fail(`base inventory does not match the capture pin; refusing to write`);
+    }
+    // Bodies outside the capture must be exactly the pinned base
+    // bodies that the capture does not itself carry. A captured body
+    // may share its hash with a base body; the set difference keeps
+    // that case repairable, while a missing or added base body
+    // changes this digest.
+    const restBodies = beforeBodies.filter((h) => !capturedBodies.has(h));
+    if (digestIds(restBodies) !== manifest.base_minus_captured_body_digest)
+      fail(`base bodies do not match the pin: server holds ${restBodies.length} non-captured bodies digest ${digestIds(restBodies)}, expected digest ${manifest.base_minus_captured_body_digest}; refusing to write`);
+    if (digestIds(beforeSelections) !== manifest.base_selection_digest)
+      fail(`base import selections do not match the pin: server holds ${beforeSelections.length} selections digest ${digestIds(beforeSelections)}, expected ${manifest.base_selection_count} digest ${manifest.base_selection_digest}; refusing to write`);
     resumed = present.length;
-  } else {
+  }
+  if (present.length === 0) {
     if (digestIds(before) !== manifest.base_inventory_digest)
       fail(`base inventory does not match the capture pin; refusing to write`);
     // Fresh copy. Give a lagged manifest a bounded time to reach the pin.
@@ -662,20 +754,36 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
         fail(`base inventory mismatch: server ${last.logical_inventory} capture base ${manifest.base_inventory}`);
       fail(`base snapshot mismatch: server ${last?.snapshot} capture base ${manifest.base_snapshot}`);
     }
-    // Read the inventory again after the wait. It must still be the
-    // pinned base before anything posts.
-    const waitedIds = await inventoryIds(o).catch((e: any) => fail(`cannot read server inventory: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`));
-    if (digestIds(waitedIds as string[]) !== manifest.base_inventory_digest)
-      fail(`inventory changed while waiting for the manifest; refusing to write`);
+    // Read the whole inventory again after the wait, at one pinned
+    // snapshot. It must still be the pinned base before anything posts.
+    try {
+      const waitedPage = await api(o, "/inventory?kind=events&limit=1000");
+      const waitedIds = await inventoryIds(o, waitedPage.snapshot);
+      const waitedBodies = await inventoryList(o, "bodies", waitedPage.snapshot);
+      const waitedSelections = await inventoryList(o, "import_selections", waitedPage.snapshot);
+      if (digestIds(waitedIds) !== manifest.base_inventory_digest
+        || digestIds(waitedBodies.filter((h) => !capturedBodies.has(h))) !== manifest.base_minus_captured_body_digest
+        || digestIds(waitedSelections) !== manifest.base_selection_digest)
+        fail(`inventory changed while waiting for the manifest; refusing to write`);
+    } catch (e: any) { fail(`cannot read server inventory: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); }
   }
   // Post every captured transport, not only the missing ones. A
   // repost is idempotent. It makes the server validate each captured
   // representation and supplies any body that an earlier admission
   // left out.
   for (const t of transports) { try { await api(o, "/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(t) }); } catch (e: any) { fail(`server refuses event ${t.envelope.id}: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); } }
-  const afterIds = await inventoryIds(o);
+  const afterPage = await api(o, "/inventory?kind=events&limit=1000");
+  const afterIds = await inventoryIds(o, afterPage.snapshot);
+  const afterBodies = await inventoryList(o, "bodies", afterPage.snapshot);
+  const afterSelections = await inventoryList(o, "import_selections", afterPage.snapshot);
   if (afterIds.length !== manifest.expected_final_event_count || digestIds(afterIds) !== manifest.expected_final_inventory_digest)
     fail(`final inventory is not the pinned base plus the capture: ${afterIds.length} events, expected ${manifest.expected_final_event_count}`);
+  if (afterBodies.length !== manifest.expected_final_body_count || digestIds(afterBodies) !== manifest.expected_final_body_digest)
+    fail(`final bodies are not the pinned base plus the capture: ${afterBodies.length} bodies, expected ${manifest.expected_final_body_count}`);
+  if (afterSelections.length !== manifest.expected_final_selection_count || digestIds(afterSelections) !== manifest.expected_final_selection_digest)
+    fail(`final import selections are not the pinned base plus the capture: ${afterSelections.length} selections, expected ${manifest.expected_final_selection_count}`);
+  if (logicalInventoryDigest(afterIds, afterBodies, afterSelections) !== manifest.expected_final_logical_inventory)
+    fail(`final logical inventory is not the pinned base plus the capture`);
   // An event ID alone is not reusable. The envelope must match the
   // capture, and every captured body must be present.
   for (const t of transports) {

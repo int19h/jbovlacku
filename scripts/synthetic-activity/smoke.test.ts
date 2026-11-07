@@ -564,8 +564,8 @@ test("marker content, capture base proof, pin evidence, manifest fields, unlock,
     const idsText = await readFile(idsPath, "utf8");
     await writeFile(idsPath, "jve1:" + "0".repeat(64) + "\n");
     const late = join(root, "late");
-    assert.match(await cmdFail(["--server", url, "--state", late, "--pin", pinFile, "init"]), /refused: base pin evidence does not match its ID list/);
-    assert.match(await cmdFail(["--server", url, "--state", a, "--pin", pinFile, "pin-base"]), /refused: base pin evidence does not match its ID list/);
+    assert.match(await cmdFail(["--server", url, "--state", late, "--pin", pinFile, "init"]), /refused: base pin evidence does not match its lists/);
+    assert.match(await cmdFail(["--server", url, "--state", a, "--pin", pinFile, "pin-base"]), /refused: base pin evidence does not match its lists/);
     await writeFile(idsPath, idsText);
     // An explicit missing pin refuses init.
     assert.match(await cmdFail(["--server", url, "--state", late, "--pin", join(root, "missing.json"), "init"]), /refused: base pin file not found/);
@@ -760,4 +760,155 @@ test("a kit writer that starts during capture is refused, and the capture holds 
       assert.match(await cmd(["--server", url, "--state", a, "define", "--word", "capthree", "--text", "during capture"]), /accepted/);
     } finally { await new Promise<void>((r) => proxy.close(() => r())); }
   } finally { await s1.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("full base proof: missing or added base bodies and selections refuse before any post", async () => {
+  const root = await rootOf();
+  const servers: Awaited<ReturnType<typeof startServer>>[] = [];
+  const post = async (port: number, ev: any) => {
+    const r = await fetch(`http://127.0.0.1:${port}/api/v1/events`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ev) });
+    assert.ok(r.ok, await r.text());
+  };
+  const eventCount = async (port: number) => ((await (await fetch(`http://127.0.0.1:${port}/api/v1/inventory?kind=events&limit=1000`)).json() as any).ids as string[]).length;
+  try {
+    // Source: one base profile with body and selection, then two
+    // synthetic profiles with bodies of their own.
+    const base = createEvent(new Uint8Array(32).fill(103), [], "1".repeat(32), { kind: "identity.profile" }, { name: "Base profile", bio: [], links: [] });
+    const s1 = await startServer(join(root, "src"), 8795); servers.push(s1);
+    await post(8795, base);
+    const sel = await fetch("http://127.0.0.1:8795/api/v1/import-selections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([base.envelope.id]) });
+    assert.ok(sel.ok, await sel.text());
+    const a = join(root, "persona");
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "profile", "--name", "Synthetic one"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "profile", "--name", "Synthetic two"]);
+    const cap = join(root, "capture");
+    assert.match(await cmd(["--server", "http://127.0.0.1:8795", "capture", "--state", a, "--out", cap]), /captured 2 events/);
+    const transports = (await readFile(join(cap, "events.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    const baseHash = base.envelope.header.content.hash;
+
+    // Partial restore, base body missing: refuse, and post nothing.
+    const s2 = await startServer(join(root, "missing-body"), 8796); servers.push(s2);
+    await post(8796, { ...base, body: null });
+    const selM = await fetch("http://127.0.0.1:8796/api/v1/import-selections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([base.envelope.id]) });
+    assert.ok(selM.ok, await selM.text());
+    await post(8796, transports[0]);
+    const beforeMissing = await eventCount(8796);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "reuse-check", "--capture", cap]), /not reusable: base bodies do not match the pin/);
+    assert.equal(await eventCount(8796), beforeMissing);
+    // Completed restore, base body missing: refuse too.
+    await post(8796, transports[1]);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "reuse-check", "--capture", cap]), /not reusable: base bodies do not match the pin/);
+    assert.equal((await fetch(`http://127.0.0.1:8796/api/v1/bodies/${baseHash}`)).status, 404);
+
+    // Partial restore, base selection missing: refuse, post nothing.
+    const s3 = await startServer(join(root, "missing-selection"), 8797); servers.push(s3);
+    await post(8797, base);
+    await post(8797, transports[0]);
+    const beforeSel = await eventCount(8797);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8797", "reuse-check", "--capture", cap]), /not reusable: base import selections do not match the pin/);
+    assert.equal(await eventCount(8797), beforeSel);
+    // Completed restore, base selection missing: refuse too.
+    for (const t of transports.slice(1)) await post(8797, t);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8797", "reuse-check", "--capture", cap]), /not reusable: base import selections do not match the pin/);
+
+    // Missing captured bodies stay repairable when the base is exact.
+    const s4 = await startServer(join(root, "repair"), 8798); servers.push(s4);
+    await post(8798, base);
+    const sel2 = await fetch("http://127.0.0.1:8798/api/v1/import-selections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([base.envelope.id]) });
+    assert.ok(sel2.ok, await sel2.text());
+    for (const t of transports) await post(8798, { ...t, body: null });
+    assert.match(await cmd(["--server", "http://127.0.0.1:8798", "reuse-check", "--capture", cap]), /^reusable$/m);
+    assert.equal((await fetch(`http://127.0.0.1:8798/api/v1/bodies/${baseHash}`)).status, 200);
+
+    // Shared body hash: a synthetic profile with the same body as the
+    // base. A target that holds the envelopes without any of the
+    // bodies is repaired by the repost, shared hash included.
+    const base2 = createEvent(new Uint8Array(32).fill(105), [], "3".repeat(32), { kind: "identity.profile" }, { name: "Base profile", bio: [], links: [] });
+    const s5 = await startServer(join(root, "shared-src"), 8799); servers.push(s5);
+    await post(8799, base2);
+    const e = join(root, "shared-run", "persona");
+    await cmd(["--server", "http://127.0.0.1:8799", "--state", e, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8799", "--state", e, "profile", "--name", "Base profile"]);
+    await cmd(["--server", "http://127.0.0.1:8799", "--state", e, "profile", "--name", "Shared other"]);
+    const sharedCap = join(root, "shared-capture");
+    assert.match(await cmd(["--server", "http://127.0.0.1:8799", "capture", "--state", e, "--out", sharedCap]), /captured 2 events/);
+    const sharedTransports = (await readFile(join(sharedCap, "events.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    assert.ok(sharedTransports.some((t: any) => t.envelope.header?.content?.hash === base2.envelope.header.content.hash), "no captured event shares the base body hash");
+    await s5.close(); servers.splice(servers.indexOf(s5), 1);
+    const s6 = await startServer(join(root, "shared-repair"), 8799); servers.push(s6);
+    await post(8799, { ...base2, body: null });
+    for (const t of sharedTransports) await post(8799, { ...t, body: null });
+    assert.match(await cmd(["--server", "http://127.0.0.1:8799", "reuse-check", "--capture", sharedCap]), /^reusable$/m);
+    assert.equal((await fetch(`http://127.0.0.1:8799/api/v1/bodies/${base2.envelope.header.content.hash}`)).status, 200);
+  } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("changed base before capture refuses, added base body refuses restore, empty capture enforces the pin", async () => {
+  const root = await rootOf();
+  const servers: Awaited<ReturnType<typeof startServer>>[] = [];
+  const post = async (port: number, ev: any) => {
+    const r = await fetch(`http://127.0.0.1:${port}/api/v1/events`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ev) });
+    assert.ok(r.ok, await r.text());
+  };
+  try {
+    const base = createEvent(new Uint8Array(32).fill(104), [], "2".repeat(32), { kind: "identity.profile" }, { name: "Base profile", bio: [], links: [] });
+    // Base body supplied after the pin: capture must refuse.
+    const s1 = await startServer(join(root, "late-body"), 8795); servers.push(s1);
+    await post(8795, { ...base, body: null });
+    const a = join(root, "run-a", "persona");
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "init"]);
+    await post(8795, base);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "profile", "--name", "Late body synthetic"]);
+    const lateCap = join(root, "late-capture");
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8795", "capture", "--state", a, "--out", lateCap]), /refused: capture base bodies do not match the pin/);
+    assert.equal(existsSync(join(lateCap, "manifest.json")), false);
+
+    // Capture from the envelope-only base, then a target that holds
+    // the base body the pin does not have: refuse before any post.
+    const s2 = await startServer(join(root, "env-base"), 8796); servers.push(s2);
+    await post(8796, { ...base, body: null });
+    const b = join(root, "run-b", "persona");
+    await cmd(["--server", "http://127.0.0.1:8796", "--state", b, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8796", "--state", b, "profile", "--name", "Env base synthetic"]);
+    const cap = join(root, "capture");
+    assert.match(await cmd(["--server", "http://127.0.0.1:8796", "capture", "--state", b, "--out", cap]), /captured 1 events/);
+    const transports = (await readFile(join(cap, "events.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    const s3 = await startServer(join(root, "added-body"), 8797); servers.push(s3);
+    await post(8797, base);
+    await post(8797, transports[0]);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8797", "reuse-check", "--capture", cap]), /not reusable: base bodies do not match the pin/);
+
+    // Base selection added after the pin: capture must refuse.
+    const s4 = await startServer(join(root, "late-selection"), 8798); servers.push(s4);
+    await post(8798, base);
+    const c = join(root, "run-c", "persona");
+    await cmd(["--server", "http://127.0.0.1:8798", "--state", c, "init"]);
+    const sel = await fetch("http://127.0.0.1:8798/api/v1/import-selections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([base.envelope.id]) });
+    assert.ok(sel.ok, await sel.text());
+    await cmd(["--server", "http://127.0.0.1:8798", "--state", c, "profile", "--name", "Late selection synthetic"]);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8798", "capture", "--state", c, "--out", join(root, "sel-capture")]), /refused: capture base import selections do not match the pin/);
+
+    // Empty capture: no synthetic events, still the full pin proof.
+    const s5 = await startServer(join(root, "empty-src"), 8799); servers.push(s5);
+    await post(8799, base);
+    const selE = await fetch("http://127.0.0.1:8799/api/v1/import-selections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([base.envelope.id]) });
+    assert.ok(selE.ok, await selE.text());
+    const d = join(root, "run-d", "persona");
+    await cmd(["--server", "http://127.0.0.1:8799", "--state", d, "init"]);
+    const emptyCap = join(root, "empty-capture");
+    assert.match(await cmd(["--server", "http://127.0.0.1:8799", "capture", "--state", d, "--out", emptyCap]), /captured 0 events/);
+    await s5.close(); servers.splice(servers.indexOf(s5), 1);
+    const s6 = await startServer(join(root, "empty-exact"), 8799); servers.push(s6);
+    await post(8799, base);
+    const selE2 = await fetch("http://127.0.0.1:8799/api/v1/import-selections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([base.envelope.id]) });
+    assert.ok(selE2.ok, await selE2.text());
+    assert.match(await cmd(["--server", "http://127.0.0.1:8799", "reuse-check", "--capture", emptyCap]), /^reusable$/m);
+    await s6.close(); servers.splice(servers.indexOf(s6), 1);
+    const s7 = await startServer(join(root, "empty-wrong"), 8799); servers.push(s7);
+    await post(8799, { ...base, body: null });
+    const selE3 = await fetch("http://127.0.0.1:8799/api/v1/import-selections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([base.envelope.id]) });
+    assert.ok(selE3.ok, await selE3.text());
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8799", "reuse-check", "--capture", emptyCap]), /not reusable: base bodies do not match the pin/);
+  } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
 });
