@@ -157,7 +157,8 @@ test("foreign base, tampered inventory and superset are refused; a partial resto
     assert.match(await cmdFail(["--server", "http://127.0.0.1:8798", "reuse-check", "--capture", cap]), /not reusable: already restored inventory is not the pinned base plus the capture/);
     // The superset above fails because its count passes the pinned
     // base plus the capture. The exact restored copy passed earlier
-    // in this test, before the extra write.  } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
+    // in this test, before the extra write.
+  } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("a crash-remnant lock recovers, a live lock refuses, and a late init joins the capture", async () => {
