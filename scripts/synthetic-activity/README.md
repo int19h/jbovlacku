@@ -5,6 +5,32 @@ It creates disposable identities, reads a local dictionary server, and
 submits signed events through the server HTTP admission path.
 It never writes server store files directly.
 
+## Safety rules
+
+The tool refuses unsafe targets in code, before it sends any request.
+
+- The server URL must be a loopback URL. The host must be
+  `127.0.0.1`, `::1`, or `localhost`. A URL with a user name or a
+  password is refused. Any other host is refused with
+  `refused: server must be a loopback URL`.
+- Redirects must stay on the same origin. The tool follows at most
+  five redirects by hand. A redirect to another origin is refused
+  with `refused: redirect leaves the loopback server`.
+- The server must prove that it holds a disposable copy. Before
+  its first request, the tool reads `/synthetic-disposable` from
+  the server. It needs a JSON answer with `"disposable": true`.
+  Any other answer is refused with `refused: server does not prove
+  it holds a disposable copy`.
+
+The test server in `server.ts` provides that proof. It writes a
+`disposable.json` marker into a fresh empty data folder. If a data
+folder already holds data and has no marker, the server refuses to
+start. To serve a disposable copy of existing data, put a
+`disposable.json` file with `{"disposable": true}` into the copy
+first. Never put that marker into data that must stay live. A
+plain dictionary server has no marker endpoint, so this tool
+refuses it. That refusal is intended.
+
 ## Setup
 
 Build the core first from the repository root:
@@ -23,14 +49,46 @@ One state folder holds one identity. Use one folder per identity.
 Several identities can write at the same time to one server.
 The server serializes admission. One identity must use one state
 folder at a time. The tool locks the state folder during a write.
-If two processes use the same folder, the second write is refused.
 Run parallel writers with separate state folders.
+
+### One base pin for the whole run
+
+A run starts from one pinned base snapshot. Take the pin before
+any synthetic event exists:
+
+```sh
+npx tsx scripts/synthetic-activity/cli.ts --server http://127.0.0.1:8795 --state .cache/synthetic/a pin-base
+```
+
+The pin holds the server snapshot and its logical inventory. It
+goes to a `base-pin.json` file beside the state folders, or to
+the path given with `--pin`. Every `init` reads that same pin
+file. An identity that starts later gets the same base, even
+after other identities have written. If no pin file exists,
+`init` reads the server manifest and creates the pin. If it
+cannot read a base, `init` fails and writes no identity. It
+never creates an identity with an empty base.
+
+### Write lock and crash recovery
+
+A write creates a `lock` folder inside the state folder. The
+folder holds `owner.json` with the process ID and the start
+time. A second write while that process runs is refused. If the
+owner process is gone, the next write removes the old lock,
+prints `recovered stale lock from a stopped write`, and goes on.
+A lock with no owner file is treated as stale after ten seconds.
+The `unlock` command clears a lock by hand. It refuses while the
+owner process still runs, unless `--force` is given. A real
+filesystem error, such as no permission, is reported as an
+`error:` line. It is not reported as another writer.
 
 ## Commands
 
 | Command | Example |
 | --- | --- |
+| Pin the base | `pin-base` |
 | Create identity | `init` |
+| Clear a stale lock | `unlock` |
 | Show identity | `whoami` |
 | Search words | `search klama` |
 | Show entry | `show klama` |
@@ -40,7 +98,7 @@ Run parallel writers with separate state folders.
 | Revise definition | `define --word smokeword --text "x1 is revised" --parents jve1:...` |
 | Publish rafsi claim | `rafsi --word smokeword --rafsi smo` |
 | Judge definition | `judge --target jve1:... --value bless` |
-| Judge virtual | `judge --base jve1:... --conversion te --value bless` |
+| Judge virtual | `judge --base jve1:... --conversion te --value bless` (refused by the current product, see below) |
 | Judge rafsi pair | `judge --target jvr1:... --value curse` |
 | Clear judgment | `judge --target jve1:... --value clear` |
 | Trust | `trust --subject ed25519:... --value heed --scope-kind "*" --scope-word "*" --scope-language "*"` |
@@ -54,12 +112,33 @@ Run parallel writers with separate state folders.
 | Reuse check | `reuse-check --capture DIR` |
 
 Global options come before the command: `--server`, `--state`,
-`--view`, `--limit`, and `--full`. The default output is short.
-`--full` prints full JSON where a read supports it.
+`--view`, `--limit`, `--full`, and `--pin`. The default output
+is short. `--full` prints full JSON where a read supports it.
 
-A refused write prints one line on standard error. It starts with
-`refused:` and keeps the server or validator message exact. The
-process exits with code 3. Fix the input and run the command again.
+Read output prints complete event IDs. A printed ID can go
+straight into `--parents`, `--target`, or `--base`. Search
+prints the preview event ID, the spelling, the word ID, the
+definition IDs, and the preview text of each hit. The `recent`
+command pages through the whole event journal and prints the
+latest events last admitted. The `history` command pages
+through all of an identity's actions. Head reads page as well.
+A write by an identity with more than 64 heads first combines
+them with merge events in batches of 64.
+
+A refused write prints one line on standard error. It starts
+with `refused:` and keeps the server or validator message
+exact. The process exits with code 3. Fix the input and run the
+command again.
+
+### Virtual judgments
+
+The format allows a judgment on a virtual target. The current
+product refuses it. The validator accepts only `jve1:` and
+`jvr1:` judgment targets, and it does not accept the `virtual`
+field. The tool builds the format form, and the write is refused
+with `refused: Draft does not satisfy version 1 action and body
+rules.` Do not treat the virtual judge command as working until
+the product accepts it.
 
 ## Actions not included
 
@@ -72,23 +151,41 @@ process exits with code 3. Fix the input and run the command again.
 
 ## Capture and restore
 
-Capture collects only events by the identities in the given state
-folders. It writes `events.jsonl`, `manifest.json`, and `keys.json`.
-The event file uses canonical JSON, one event per line. The manifest
-holds the base snapshot, the base inventory value, the kit revision,
-counts by kind and by issuer, the public keys, and the SHA-256 of
-the event file. The keys file holds private keys. Keep a capture
-folder private.
+Capture collects only events by the identities in the given
+state folders. It writes `events.jsonl`, `manifest.json`, and
+`keys.json`. The event file uses canonical JSON, one event per
+line. The manifest holds the base snapshot, the base inventory
+value, the base event count, a digest of the base event IDs,
+the expected final event count and inventory digest, the kit
+revision, counts by kind and by issuer, the public keys, and
+the SHA-256 of the event file. The keys file holds private
+keys. Keep a capture folder private.
 
-Restore posts every event to a fresh server copy of the same base
-snapshot through the normal admission path. It then checks the
-final inventory against the base inventory plus the captured events.
+Restore and the reuse check enforce the pinned base. Three
+cases pass:
 
-The reuse check does the same work on a fresh disposable copy. It
-prints `reusable` when every event still passes the current code.
-It prints `not reusable:` and the first reason when it does not.
-That result is the signal to create the data again. This tool has
-no migration code.
+- Fresh copy: the server snapshot and logical inventory equal
+  the pin, and its event inventory digest equals the base
+  digest in the manifest. Restore posts every captured event.
+- Already restored copy: every captured event is present, and
+  the inventory count is exactly the base count plus the
+  capture count. Nothing is posted again.
+- Partial restore: some captured events are present, and the
+  inventory count is exactly the base count plus the present
+  count. Restore posts only the missing events. The same
+  command can resume after a stopped restore.
+
+Any other inventory fails. A foreign base, an inventory with
+extra events, or a tampered base value in the manifest is
+refused with the first mismatch as the reason. After posting,
+the final inventory must equal the expected final inventory
+digest from the manifest.
+
+The reuse check does the same work on a fresh disposable copy.
+It prints `reusable` when every event still passes the current
+code. It prints `not reusable:` and the first reason when it
+does not. That result is the signal to create the data again.
+This tool has no migration code.
 
 ## Tests
 

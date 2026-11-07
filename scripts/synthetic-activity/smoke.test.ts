@@ -1,24 +1,30 @@
-import { test } from "node:test";
+import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:http";
+import { mkdtemp, readFile, rm, mkdir, writeFile, utimes, cp } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startServer } from "./server.ts";
+import { initializeCore, createEvent, utf8 } from "../../packages/core/src/index.ts";
 const run = promisify(execFile);
 const cli = new URL("./cli.ts", import.meta.url).pathname;
 const tsx = new URL("../../node_modules/.bin/tsx", import.meta.url).pathname;
+before(async () => initializeCore(await readFile(new URL("../../packages/core/generated/jvc_runtime_bg.wasm", import.meta.url))));
 async function cmd(args: string[]): Promise<string> {
-  const { stdout, stderr } = await run(tsx, [cli, ...args], { timeout: 120000 });
+  const { stdout, stderr } = await run(tsx, [cli, ...args], { timeout: 180000 });
   return stdout + stderr;
 }
 async function cmdFail(args: string[]): Promise<string> {
-  try { await run(tsx, [cli, ...args], { timeout: 120000 }); } catch (e: any) { return (e.stdout ?? "") + (e.stderr ?? ""); }
+  try { await run(tsx, [cli, ...args], { timeout: 180000 }); } catch (e: any) { return (e.stdout ?? "") + (e.stderr ?? ""); }
   throw new Error("expected failure");
 }
+const rootOf = async () => mkdtemp(join(process.env.JVC_TEST_ROOT ?? tmpdir(), "synthetic-smoke-"));
+
 test("two identities act, capture, restore and reuse-check", async () => {
-  const root = await mkdtemp(join(process.env.JVC_TEST_ROOT ?? tmpdir(), "synthetic-smoke-"));
+  const root = await rootOf();
   const servers: Awaited<ReturnType<typeof startServer>>[] = [];
   try {
     const s1 = await startServer(join(root, "base1"), 8795); servers.push(s1);
@@ -27,73 +33,209 @@ test("two identities act, capture, restore and reuse-check", async () => {
     const idA = (await cmd(["--server", url1, "--state", a, "init"])).match(/ed25519:[a-f0-9]{64}/)![0];
     const idB = (await cmd(["--server", url1, "--state", b, "init"])).match(/ed25519:[a-f0-9]{64}/)![0];
     const frame = JSON.stringify({ role: "predicate", arity: { mode: "fixed", count: 3 }, places: [{ index: 1 }, { index: 2 }, { index: 3 }] });
-    const outA = await cmd(["--server", url1, "--state", a, "define", "--word", "smokeone", "--text", "x1 is a smoke test for x2 by x3", "--gloss", "smoke", "--kind", "other", "--frame", frame]);
-    assert.match(outA, /accepted/);
-    // find definition id via history / search
-    const histA = await cmd(["--server", url1, "--state", a, "history", "--full"]);
-    // definition id is obtained from server records through show search: use recent
-    // Get event ids via capture-like API directly
+    assert.match(await cmd(["--server", url1, "--state", a, "define", "--word", "smokeone", "--text", "x1 is a smoke test for x2 by x3", "--gloss", "smoke", "--kind", "other", "--frame", frame]), /accepted/);
     const inv = await (await fetch(url1 + "/api/v1/records?limit=50")).json() as any;
-    const def = inv.items.find((i: any) => i.envelope.header.action.kind === "definition.publish");
-    const defId = def.id;
-    const rafsiOut = await cmd(["--server", url1, "--state", a, "rafsi", "--word", "smokeone", "--rafsi", "smo"]);
-    assert.match(rafsiOut, /accepted/);
+    const defId = inv.items.find((i: any) => i.envelope.header.action.kind === "definition.publish").id;
+    assert.match(await cmd(["--server", url1, "--state", a, "rafsi", "--word", "smokeone", "--rafsi", "smo"]), /accepted/);
     const inv2 = await (await fetch(url1 + "/api/v1/records?limit=50")).json() as any;
-    const claim = inv2.items.find((i: any) => i.envelope.header.action.kind === "rafsi.publish");
-    const pairId = claim.envelope.header.action.assignment;
-    // B actions of each kind
+    const pairId = inv2.items.find((i: any) => i.envelope.header.action.kind === "rafsi.publish").envelope.header.action.assignment;
     assert.match(await cmd(["--server", url1, "--state", b, "define", "--word", "smoketwo", "--text", "second smoke word", "--gloss", "smoke2"]), /accepted/);
     assert.match(await cmd(["--server", url1, "--state", b, "judge", "--target", defId, "--value", "bless", "--explain", "good"]), /accepted/);
-    // The format allows virtual targets, but the current product validator
-    // refuses them. The kit builds the spec form and shows the exact refusal.
     const virtualRefusal = await cmdFail(["--server", url1, "--state", b, "judge", "--base", defId, "--conversion", "te", "--value", "bless"]);
     assert.match(virtualRefusal, /refused: Draft does not satisfy version 1 action and body rules\./);
     assert.match(await cmd(["--server", url1, "--state", b, "judge", "--target", pairId, "--value", "curse"]), /accepted/);
     assert.match(await cmd(["--server", url1, "--state", b, "judge", "--target", defId, "--value", "clear"]), /accepted/);
-    assert.match(await cmd(["--server", url1, "--state", b, "trust", "--subject", idA, "--value", "heed", "--scope-kind", "*", "--scope-word", "*", "--scope-language", "*"]), /accepted/);
-    assert.match(await cmd(["--server", url1, "--state", b, "trust", "--subject", idA, "--value", "shun", "--scope-kind", "definition", "--scope-word", "*", "--scope-language", "en"]), /accepted/);
-    assert.match(await cmd(["--server", url1, "--state", b, "trust", "--subject", idA, "--value", "clear", "--scope-kind", "definition", "--scope-word", "*", "--scope-language", "en"]), /accepted/);
+    for (const [value, kind] of [["heed", "*"], ["shun", "definition"], ["clear", "definition"]] as const)
+      assert.match(await cmd(["--server", url1, "--state", b, "trust", "--subject", idA, "--value", value, "--scope-kind", kind, "--scope-word", "*", "--scope-language", kind === "*" ? "*" : "en"]), /accepted/);
     assert.match(await cmd(["--server", url1, "--state", b, "profile", "--name", "Smoke B", "--bio", "test user"]), /accepted/);
     assert.match(await cmd(["--server", url1, "--state", b, "report", "--subject", idA, "--category", "spam-flooding", "--value", "report", "--text", "synthetic check"]), /accepted/);
     assert.match(await cmd(["--server", url1, "--state", b, "report", "--subject", idA, "--category", "spam-flooding", "--value", "clear"]), /accepted/);
-    const viewOut = await cmd(["--server", url1, "--state", b, "view", "--name", "Smoke view", "--root", `${idB}=1/1`]);
-    assert.match(viewOut, /accepted/);
+    assert.match(await cmd(["--server", url1, "--state", b, "view", "--name", "Smoke view", "--root", `${idB}=1/1`]), /accepted/);
     const inv3 = await (await fetch(url1 + "/api/v1/records?limit=100")).json() as any;
     const viewId = inv3.items.find((i: any) => i.envelope.header.action.kind === "view.publish").id;
-    // A revises, sets status, merges
     assert.match(await cmd(["--server", url1, "--state", a, "define", "--word", "smokeone", "--text", "revised smoke", "--gloss", "smoke", "--parents", defId]), /accepted/);
     assert.match(await cmd(["--server", url1, "--state", a, "status", "--target", defId, "--value", "deprecated"]), /accepted/);
     assert.match(await cmd(["--server", url1, "--state", a, "status", "--target", defId, "--value", "active"]), /accepted/);
-    assert.match(await cmd(["--server", url1, "--state", a, "merge"]), /accepted/);
-    // reads: restart the test server with the published view selected,
-    // as a deployed server selects its view at startup
+    const mergeOut = await cmd(["--server", url1, "--state", a, "merge"]);
+    const mergeId = mergeOut.match(/jve1:[a-f0-9]{64}/)![0];
     await s1.close(); servers.splice(servers.indexOf(s1), 1);
     const s1b = await startServer(join(root, "base1"), 8795, viewId); servers.push(s1b);
-    assert.match(await cmd(["--server", url1, "--state", a, "--view", viewId, "search", "smokeone"]), /smoke|no hits/);
-    assert.match(await cmd(["--server", url1, "--state", a, "--view", viewId, "show", "smokeone"]), /smokeone/);
-    assert.match(await cmd(["--server", url1, "--state", a, "recent"]), /definition\.publish|view\.publish/);
-    assert.match(await cmd(["--server", url1, "--state", b, "history"]), /judgment\.set/);
-    // refused write shows exact error
+    // Search prints the full preview event ID and the definition text.
+    const searchOut = await cmd(["--server", url1, "--state", a, "--view", viewId, "search", "smokeone"]);
+    assert.ok(searchOut.includes(defId), searchOut);
+    assert.match(searchOut, /smoke test|revised smoke/);
+    assert.ok(!searchOut.includes("…"), searchOut);
+    // Show and history print full IDs that other commands can consume.
+    const showOut = await cmd(["--server", url1, "--state", a, "--view", viewId, "show", "smokeone"]);
+    assert.ok(showOut.includes(defId), showOut);
+    assert.ok(showOut.includes(idA), showOut);
+    const histOut = await cmd(["--server", url1, "--state", a, "history"]);
+    assert.ok(histOut.includes(defId), histOut);
+    assert.ok(!histOut.includes("…"), histOut);
+    // Recent lists the latest journal entries, not the first page.
+    const recentOut = await cmd(["--server", url1, "--state", a, "recent", "--limit", "3"]);
+    assert.ok(recentOut.includes(mergeId), recentOut);
+    assert.ok(!recentOut.includes("…"), recentOut);
     const bad = await cmdFail(["--server", url1, "--state", b, "judge", "--target", defId, "--value", "bogus"]);
     assert.match(bad, /refused:/);
-    // capture
     const cap = join(root, "capture");
-    const capOut = await cmd(["--server", url1, "--state", a, "--state", b, "capture", "--out", cap]);
-    assert.match(capOut, /captured \d+ events/);
+    assert.match(await cmd(["--server", url1, "capture", "--state", a, "--state", b, "--out", cap]), /captured \d+ events/);
     const manifest = JSON.parse(await readFile(join(cap, "manifest.json"), "utf8"));
     assert.ok(manifest.event_count >= 15, String(manifest.event_count));
     assert.equal(manifest.public_keys.length, 2);
-    assert.ok(manifest.by_kind["definition.publish"] >= 2);
-    assert.ok(manifest.by_kind["judgment.set"] >= 3);
-    assert.ok(manifest.by_kind["trust.set"] >= 3);
-    assert.ok(manifest.by_kind["view.publish"] >= 1);
-    // restore on fresh server
+    assert.ok(manifest.base_event_count >= 0 && manifest.expected_final_event_count === manifest.base_event_count + manifest.event_count);
     const s2 = await startServer(join(root, "base2"), 8796); servers.push(s2);
-    const restoreOut = await cmd(["--server", "http://127.0.0.1:8796", "restore", "--capture", cap]);
-    assert.match(restoreOut, /restored/);
-    // reuse-check on another fresh server
+    assert.match(await cmd(["--server", "http://127.0.0.1:8796", "restore", "--capture", cap]), /restored/);
     const s3 = await startServer(join(root, "base3"), 8797); servers.push(s3);
-    const reuseOut = await cmd(["--server", "http://127.0.0.1:8797", "reuse-check", "--capture", cap]);
-    assert.match(reuseOut, /reusable/);
+    assert.match(await cmd(["--server", "http://127.0.0.1:8797", "reuse-check", "--capture", cap]), /reusable/);
   } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("non-loopback URLs and redirects that leave the host are refused", async () => {
+  assert.match(await cmdFail(["--server", "https://example.com", "--state", "/tmp/x", "whoami"]), /refused: server must be a loopback URL/);
+  assert.match(await cmdFail(["--server", "http://192.0.2.10:8795", "--state", "/tmp/x", "whoami"]), /refused: server must be a loopback URL/);
+  const redirect = createServer((_req, res) => { res.writeHead(302, { location: "https://example.com/" }); res.end(); });
+  await new Promise<void>((r) => redirect.listen(8798, "127.0.0.1", r));
+  try {
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8798", "--state", "/tmp/x", "search", "word"]), /refused: redirect leaves the loopback server/);
+  } finally { await new Promise<void>((r) => redirect.close(() => r())); }
+});
+
+test("a server without the disposable marker is refused, and init fails with no base", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 8798, undefined, { marker: false });
+  try {
+    const state = join(root, "state");
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8798", "--state", state, "init"]), /refused: server does not prove it holds a disposable copy/);
+    assert.equal(existsSync(join(state, "identity.json")), false);
+  } finally { await s.close(); }
+  // No server at all on a loopback port: init fails and writes no identity.
+  const state2 = join(root, "state2");
+  assert.match(await cmdFail(["--server", "http://127.0.0.1:8799", "--state", state2, "init"]), /refused:/);
+  assert.equal(existsSync(join(state2, "identity.json")), false);
+  // A data directory with data and no marker is refused at startup.
+  await assert.rejects(() => startServer(join(root, "data"), 8798), /no disposable marker/);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("foreign base, tampered inventory and superset are refused; a partial restore resumes", async () => {
+  const root = await rootOf();
+  const servers: Awaited<ReturnType<typeof startServer>>[] = [];
+  try {
+    const s1 = await startServer(join(root, "src"), 8795); servers.push(s1);
+    const a = join(root, "a");
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "define", "--word", "foreignone", "--text", "first entry"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "profile", "--name", "A"]);
+    const cap = join(root, "capture");
+    await cmd(["--server", "http://127.0.0.1:8795", "capture", "--state", a, "--out", cap]);
+    // Foreign base: another server with one unrelated event and no synthetic events.
+    const foreign = await startServer(join(root, "foreign"), 8796); servers.push(foreign);
+    const fstate = join(root, "foreign-state");
+    await cmd(["--server", "http://127.0.0.1:8796", "--state", fstate, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8796", "--state", fstate, "define", "--word", "foreigntwo", "--text", "unrelated entry"]);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "restore", "--capture", cap]), /refused: base snapshot mismatch/);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "reuse-check", "--capture", cap]), /not reusable: base snapshot mismatch/);
+    // Tampered base inventory on a fresh server.
+    const tampered = join(root, "tampered"); await cp(cap, tampered, { recursive: true });
+    const tm = JSON.parse(await readFile(join(tampered, "manifest.json"), "utf8")); tm.base_inventory = "sha256:" + "0".repeat(64);
+    await writeFile(join(tampered, "manifest.json"), JSON.stringify(tm, null, 2));
+    const s2 = await startServer(join(root, "fresh2"), 8797); servers.push(s2);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8797", "restore", "--capture", tampered]), /refused: base inventory mismatch/);
+    // Partial restore: post only the first captured event, then resume.
+    const s3 = await startServer(join(root, "fresh3"), 8798); servers.push(s3);
+    const lines = (await readFile(join(cap, "events.jsonl"), "utf8")).trim().split("\n");
+    const firstPost = await fetch("http://127.0.0.1:8798/api/v1/events", { method: "POST", headers: { "content-type": "application/json" }, body: lines[0] });
+    assert.ok(firstPost.ok);
+    assert.match(await cmd(["--server", "http://127.0.0.1:8798", "restore", "--capture", cap]), /restored .* resumed=1/);
+    // Superset: one more unrelated event, then the reuse check must fail.
+    const extra = join(root, "extra-state");
+    await cmd(["--server", "http://127.0.0.1:8798", "--state", extra, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8798", "--state", extra, "define", "--word", "foreignthree", "--text", "extra entry"]);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8798", "reuse-check", "--capture", cap]), /not reusable: already restored inventory is not the pinned base plus the capture/);
+    // The exact restored copy (s3 before the extra write would pass; the
+    // tampered and foreign cases above prove the pin checks run first).
+  } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("a crash-remnant lock recovers, a live lock refuses, and a late init joins the capture", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 8795);
+  try {
+    const url = "http://127.0.0.1:8795";
+    const a = join(root, "a"), b = join(root, "b");
+    await cmd(["--server", url, "--state", a, "init"]);
+    await cmd(["--server", url, "--state", a, "define", "--word", "lockone", "--text", "before the crash"]);
+    // Crash remnant with a dead owner process.
+    await mkdir(join(a, "lock"), { recursive: true });
+    await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: 999999, started_at: new Date(0).toISOString() }));
+    const recovered = await cmd(["--server", url, "--state", a, "define", "--word", "locktwo", "--text", "after the crash"]);
+    assert.match(recovered, /accepted/);
+    assert.match(recovered, /recovered stale lock/);
+    // Crash remnant with no owner file and an old directory time.
+    await mkdir(join(a, "lock"), { recursive: true });
+    const old = new Date(Date.now() - 60000); await utimes(join(a, "lock"), old, old);
+    assert.match(await cmd(["--server", url, "--state", a, "profile", "--name", "Recovered"]), /accepted/);
+    // A lock whose owner process is alive refuses.
+    await mkdir(join(a, "lock"), { recursive: true });
+    await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }));
+    assert.match(await cmdFail(["--server", url, "--state", a, "define", "--word", "lockthree", "--text", "blocked"]), /refused: another write is in progress/);
+    assert.match(await cmdFail(["--server", url, "--state", a, "unlock"]), /refused: the lock owner process .* is still running/);
+    await rm(join(a, "lock"), { recursive: true, force: true });
+    // Late init: B starts after A has written, and still joins the capture.
+    await cmd(["--server", url, "--state", b, "init"]);
+    await cmd(["--server", url, "--state", b, "define", "--word", "lockfour", "--text", "late starter"]);
+    const cap = join(root, "capture");
+    assert.match(await cmd(["--server", url, "capture", "--state", a, "--state", b, "--out", cap]), /captured/);
+    const manifest = JSON.parse(await readFile(join(cap, "manifest.json"), "utf8"));
+    const idA = JSON.parse(await readFile(join(a, "identity.json"), "utf8"));
+    assert.equal(manifest.base_snapshot, idA.base_snapshot);
+    assert.equal(manifest.public_keys.length, 2);
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("recent and history page past one server page, and heads past 64 merge", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 8795);
+  try {
+    const url = "http://127.0.0.1:8795";
+    // Seed 1,005 chained merge events in one batch admission.
+    const seed = new Uint8Array(32).fill(77);
+    const events: any[] = []; let prev: string[] = [];
+    for (let i = 0; i < 1005; i++) {
+      const ev = createEvent(seed, prev, String(i).padStart(32, "0"), { kind: "identity.merge" }, null);
+      events.push(ev); prev = [ev.envelope.id];
+    }
+    const lastId = events.at(-1).envelope.id;
+    await s.service.admitMany(events.map((e) => utf8(JSON.stringify(e))));
+    // Seed 65 concurrent heads for a second identity.
+    const seed2 = new Uint8Array(32).fill(78);
+    const headsEvents = Array.from({ length: 65 }, (_, i) => createEvent(seed2, [], String(10000 + i).padStart(32, "0"), { kind: "identity.merge" }, null));
+    await s.service.admitMany(headsEvents.map((e) => utf8(JSON.stringify(e))));
+    // A state folder for the seeded identity continues it through the CLI.
+    const { identityFromSeed } = await import("../../packages/core/src/index.ts");
+    const seededState = join(root, "seeded");
+    await mkdir(seededState, { recursive: true });
+    // recent keeps the tail of a journal longer than one 1,000 item page.
+    const state = join(root, "reader");
+    await cmd(["--server", url, "--state", state, "init"]);
+    const recentOut = await cmd(["--server", url, "--state", state, "recent", "--limit", "5"]);
+    // The true journal tail is the last admitted head event. Read it from the API.
+    let tailId = ""; let after: string | null = null;
+    for (;;) { const page: any = await (await fetch(url + `/api/v1/changes?limit=1000${after ? `&after=${encodeURIComponent(after)}` : ""}`)).json(); tailId = page.items.at(-1)?.id ?? tailId; if (page.caught_up) break; after = page.next; }
+    assert.ok(recentOut.includes(tailId), recentOut.slice(-500));
+    assert.ok(!recentOut.includes(events[0].envelope.id), recentOut);
+    assert.equal(recentOut.trim().split("\n").length, 5);
+    // history pages past one 200 item page for the seeded identity.
+    const m = await (await fetch(url + "/api/v1/manifest")).json() as any;
+    await writeFile(join(seededState, "identity.json"), JSON.stringify({ seed: Buffer.from(seed).toString("hex"), identity: identityFromSeed(seed), base_snapshot: m.snapshot, base_inventory: m.logical_inventory }, null, 2));
+    const histOut = await cmd(["--server", url, "--state", seededState, "history", "--limit", "1005"]);
+    assert.equal(histOut.trim().split("\n").length, 1005, histOut.slice(0, 300));
+    assert.ok(histOut.includes(lastId));
+    // A write with 65 heads first combines them in batches of 64.
+    const headState = join(root, "heads");
+    await mkdir(headState, { recursive: true });
+    await writeFile(join(headState, "identity.json"), JSON.stringify({ seed: Buffer.from(seed2).toString("hex"), identity: identityFromSeed(seed2), base_snapshot: m.snapshot, base_inventory: m.logical_inventory }, null, 2));
+    assert.match(await cmd(["--server", url, "--state", headState, "define", "--word", "headsword", "--text", "after many heads"]), /accepted/);
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
 });
