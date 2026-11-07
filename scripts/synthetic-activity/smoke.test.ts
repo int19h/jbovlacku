@@ -714,3 +714,50 @@ test("existing-identity backfill checks the pin, and a missing pin prints a note
     assert.match(await cmdFail(["--server", url, "--state", d, "init"]), /refused: base pin does not match this identity's recorded base/);
   } finally { await s1.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test("a kit writer that starts during capture is refused, and the capture holds exactly snapshot S", async () => {
+  const root = await rootOf();
+  const s1 = await startServer(join(root, "data"), 8795);
+  try {
+    const url = "http://127.0.0.1:8795";
+    const a = join(root, "a");
+    await cmd(["--server", url, "--state", a, "init"]);
+    await cmd(["--server", url, "--state", a, "define", "--word", "capone", "--text", "capture point one"]);
+    await cmd(["--server", url, "--state", a, "define", "--word", "captwo", "--text", "capture point two"]);
+    // A slow proxy stretches the capture so a writer can start inside it.
+    const proxy = createServer(async (req, res) => {
+      if (req.url === "/synthetic-disposable") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ disposable: true })); return; }
+      const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
+      const upstream = await fetch(`http://127.0.0.1:8795${req.url}`, { method: req.method, headers: { "content-type": "application/json" }, body: ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : Buffer.concat(chunks) });
+      const bytes = Buffer.from(await upstream.arrayBuffer());
+      await new Promise((r) => setTimeout(r, 600));
+      res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+      res.end(bytes);
+    });
+    await new Promise<void>((r) => proxy.listen(8796, "127.0.0.1", r));
+    try {
+      const cap = join(root, "capture");
+      const captureRun = run(tsx, [cli, "--server", "http://127.0.0.1:8796", "capture", "--state", a, "--out", cap], { timeout: 180000 })
+        .then((r) => r.stdout + r.stderr).catch((e: any) => (e.stdout ?? "") + (e.stderr ?? ""));
+      // Wait until capture holds the state folder lock, then write.
+      let locked = false;
+      for (let i = 0; i < 500 && !locked; i++) { locked = existsSync(join(a, "lock")); if (!locked) await new Promise((r) => setTimeout(r, 10)); }
+      assert.ok(locked, "capture never took the write lock");
+      const writerOut = await cmdFail(["--server", url, "--state", a, "define", "--word", "capthree", "--text", "during capture"]);
+      assert.match(writerOut, /refused: another write is in progress for this state folder/);
+      const captureOut = await captureRun;
+      const m = captureOut.match(/captured (\d+) events snapshot=(\S+)/);
+      assert.ok(m, captureOut);
+      // The capture holds every synthetic event of snapshot S, and only those.
+      const identity = JSON.parse(await readFile(join(a, "identity.json"), "utf8"));
+      const atS = await (await fetch(`${url}/api/v1/identities/${encodeURIComponent(identity.identity)}/activity?accepted=1&limit=200&snapshot=${encodeURIComponent(m[2])}`)).json() as any;
+      const want = atS.items.map((i: any) => i.id).sort();
+      const got = (await readFile(join(cap, "events.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l).envelope.id).sort();
+      assert.deepEqual(got, want);
+      const manifest = JSON.parse(await readFile(join(cap, "manifest.json"), "utf8"));
+      assert.equal(manifest.capture_snapshot, m[2]);
+      // After capture, the same writer succeeds.
+      assert.match(await cmd(["--server", url, "--state", a, "define", "--word", "capthree", "--text", "during capture"]), /accepted/);
+    } finally { await new Promise<void>((r) => proxy.close(() => r())); }
+  } finally { await s1.close(); await rm(root, { recursive: true, force: true }); }
+});

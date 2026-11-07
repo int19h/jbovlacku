@@ -9,7 +9,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile, rm, rename, link } from "node:fs/promises";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, rmSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -204,7 +204,7 @@ async function claimStale(lockPath: string, myToken: string, judgedToken: string
   await rm(trash, { force: true });
   return false;
 }
-interface LockHandle { release: () => Promise<void>; verify: () => Promise<boolean> }
+interface LockHandle { release: () => Promise<void>; releaseSync: () => void; verify: () => Promise<boolean> }
 /**
  * The lock is one file. Its content is the complete owner record.
  * A writer builds the record in a private temp file, then
@@ -214,7 +214,12 @@ interface LockHandle { release: () => Promise<void>; verify: () => Promise<boole
  * stopped before the link holds nothing. A writer stopped after
  * it leaves a complete record that recovery can judge.
  */
-async function lock(o: Opts): Promise<LockHandle> {
+async function lock(o: Opts, opts?: { throwOnRefusal?: boolean }): Promise<LockHandle> {
+  const refuseLock = (): never => {
+    rmSync(`${join(o.state, "lock")}.tmp-${token}`, { force: true });
+    if (opts?.throwOnRefusal) throw new Error("another write is in progress for this state folder");
+    console.error("refused: another write is in progress for this state folder"); process.exit(3);
+  };
   const lockPath = join(o.state, "lock");
   const token = hex(randomBytes(16));
   const owner = { pid: process.pid, proc_start: await procStartTicks(process.pid), started_at: new Date().toISOString(), token };
@@ -236,6 +241,7 @@ async function lock(o: Opts): Promise<LockHandle> {
         return {
           // Release only our own lock. A recoverer may own the path by then.
           release: async () => { const current = await readOwner(lockPath); if (current?.token === token) await rm(lockPath, { force: true }); },
+          releaseSync: () => { try { const current = JSON.parse(readFileSync(lockPath, "utf8")); if (current?.token === token) rmSync(lockPath, { force: true }); } catch {} },
           // The holder checks its token at the lock path before it posts.
           // A writer whose lock was claimed stops. It never posts under
           // another writer's lock in normal operation.
@@ -245,7 +251,7 @@ async function lock(o: Opts): Promise<LockHandle> {
       const judged = await readOwner(lockPath);
       // The lock file always holds a complete record. An unreadable
       // record is treated as a live lock, never as stale.
-      if (!judged || (await ownerLive(judged))) { rmSync(tmp, { force: true }); console.error("refused: another write is in progress for this state folder"); process.exit(3); }
+      if (!judged || (await ownerLive(judged))) refuseLock();
       await testPause();
       // Read the owner again after the wait. A changed token means a
       // peer recovered first. Do not rename in that case.
@@ -254,10 +260,9 @@ async function lock(o: Opts): Promise<LockHandle> {
       if (again && (await ownerLive(again))) continue;
       if (await claimStale(lockPath, token, judged?.token ?? null)) console.error("recovered stale lock from a stopped write");
     }
-    rmSync(tmp, { force: true });
-    console.error("refused: another write is in progress for this state folder");
-    process.exit(3);
+    refuseLock();
   } finally { await rm(tmp, { force: true }); }
+  throw new Error("unreachable");
 }
 async function heads(o: Opts, identity: string): Promise<string[]> {
   const out: string[] = []; let after: string | null = null;
@@ -523,7 +528,28 @@ async function collectSynthetic(o: Opts, states: string[], snapshot?: string): P
   while (pending.size) { let progress = false; for (const [id, t] of pending) { const prev: string[] = t.envelope.header.previous ?? []; if (prev.every((p) => !byId.has(p) || done.has(p))) { out.push(t); done.add(id); pending.delete(id); progress = true; } } if (!progress) throw new Error("synthetic events have an unresolved predecessor cycle"); }
   return { transports: out, identities };
 }
+/**
+ * Capture holds the write lock of every state folder it captures,
+ * from before its first read until its files are complete. A kit
+ * writer that starts during capture gets the normal lock refusal
+ * and retries later. The exit handler releases the locks
+ * synchronously when a refusal ends the process, and the finally
+ * step releases them on success and on other errors.
+ */
 async function capture(o: Opts): Promise<void> {
+  const states = [...new Set(o.multi.get("state") ?? [])];
+  const handles: LockHandle[] = [];
+  process.on("exit", () => { for (const h of handles) { try { h.releaseSync(); } catch {} } });
+  try {
+    for (const s of states) handles.push(await lock({ ...o, state: s }, { throwOnRefusal: true }));
+  } catch (e: any) {
+    for (const h of handles) await h.release();
+    console.error(`refused: ${e.message ?? String(e)}`); process.exit(3);
+  }
+  try { await captureBody(o); }
+  finally { for (const h of handles) await h.release(); }
+}
+async function captureBody(o: Opts): Promise<void> {
   const outDir = flag(o, "out"); if (!outDir) { console.error("refused: --out is required"); process.exit(2); }
   const states = o.multi.get("state") ?? []; if (!states.length) { console.error("refused: --state is required (repeat for each identity)"); process.exit(2); }
   // Take the capture snapshot from the first unpinned inventory
@@ -566,7 +592,7 @@ async function capture(o: Opts): Promise<void> {
   for (const t of transports) { const k = t.envelope.header.action.kind; byKind[k] = (byKind[k] ?? 0) + 1; const iss = t.envelope.header.issuer; byIssuer[iss] = (byIssuer[iss] ?? 0) + 1; }
   let kit_revision = "unknown"; try { kit_revision = execFileSync("git", ["-C", resolve(dirname(fileURLToPath(import.meta.url)), "../.."), "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
   const manifest = {
-    format: 1, base_snapshot: identities[0].base_snapshot, base_inventory: identities[0].base_inventory, kit_revision,
+    format: 1, capture_snapshot: sourceSnapshot, base_snapshot: identities[0].base_snapshot, base_inventory: identities[0].base_inventory, kit_revision,
     event_count: transports.length, by_kind: byKind, by_issuer: byIssuer, public_keys: identities.map((i) => i.identity),
     event_file_sha256: sha256(bytes), base_event_count: baseIds.length, base_inventory_digest: digestIds(baseIds),
     expected_final_event_count: baseIds.length + transports.length, expected_final_inventory_digest: digestIds(allIds),
@@ -574,7 +600,7 @@ async function capture(o: Opts): Promise<void> {
   await writeFile(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
   const keys: Record<string, string> = {}; for (const i of identities) keys[i.identity] = i.seed;
   await writeFile(join(outDir, "keys.json"), JSON.stringify(keys, null, 2) + "\n", { mode: 0o600 });
-  console.log(`captured ${transports.length} events sha256=${manifest.event_file_sha256}`);
+  console.log(`captured ${transports.length} events snapshot=${sourceSnapshot} sha256=${manifest.event_file_sha256}`);
 }
 async function inventoryIds(o: Opts, snapshot?: string): Promise<string[]> {
   const ids: string[] = []; let after: string | null = null;

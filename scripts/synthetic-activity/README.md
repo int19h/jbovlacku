@@ -226,6 +226,16 @@ the product accepts it.
 
 ## Capture and restore
 
+Capture is a point-in-time copy. It holds the write lock of
+every state folder it captures, from before its first read
+until its files are complete, so a writer from this kit is
+refused during capture and retries later. The capture holds
+exactly the synthetic events of one admitted snapshot. The
+success line and the manifest name that snapshot as
+`capture_snapshot`. An event that a writer outside this kit
+admits after the final check is after that snapshot, and so
+is not in the capture.
+
 Capture collects only events by the identities in the given
 state folders. It writes `events.jsonl`, `manifest.json`, and
 `keys.json`. The event file uses canonical JSON, one event per
