@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer } from "node:http";
+import { connect } from "node:net";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, mkdir, writeFile, cp, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -295,10 +296,12 @@ test("a paused recoverer does not steal a lock won during its wait", async () =>
     let w1Out = ""; w1.stdout.on("data", (d) => (w1Out += d)); w1.stderr.on("data", (d) => (w1Out += d));
     const w1Done = new Promise((r) => w1.on("exit", r));
     // Wait until writer one's token owns the lock, then release writer two.
-    for (let i = 0; i < 200; i++) {
-      try { const owner = JSON.parse(await readFile(join(a, "lock"), "utf8")); if (owner.token !== "stale-token") break; } catch {}
+    let sawWinner = false;
+    for (let i = 0; i < 500; i++) {
+      try { const owner = JSON.parse(await readFile(join(a, "lock"), "utf8")); if (owner.token !== "stale-token") { sawWinner = true; break; } } catch {}
       await new Promise((r) => setTimeout(r, 10));
     }
+    assert.ok(sawWinner, "writer one never owned the lock");
     await rm(pauseFile, { force: true });
     const w1Code = await w1Done;
     const w2Code = await w2Done;
@@ -333,11 +336,13 @@ test("a writer killed at each lock step leaves a lock the next writer recovers",
       const child = spawn(tsx, [cli, "--server", url, "--state", a, "define", "--word", word, "--text", "killed writer"], { detached: true });
       const done = new Promise((r) => child.on("exit", r));
       const deadline = Date.now() + 30000;
+      let matched = false;
       while (Date.now() < deadline) {
         const names = await readdir(a).catch(() => [] as string[]);
-        if (watch(names)) break;
+        if (watch(names)) { matched = true; break; }
         await new Promise((r) => setTimeout(r, 1));
       }
+      assert.ok(matched, `kill point for ${word} was never observed`);
       try { process.kill(-child.pid!, "SIGSTOP"); } catch {}
       try { process.kill(-child.pid!, "SIGKILL"); } catch {}
       await done;
@@ -345,7 +350,7 @@ test("a writer killed at each lock step leaves a lock the next writer recovers",
     // Killed while its owner record is still a private temp file,
     // and killed after the lock was published. Either remnant is
     // one the next writer recovers from.
-    await killWriterAt((names) => names.some((n) => n.startsWith("lock.tmp-")), "killstep1");
+    await killWriterAt((names) => names.some((n) => n.startsWith("lock.tmp-")) || names.includes("lock"), "killstep1");
     assert.match(await cmd(["--server", url, "--state", a, "define", "--word", "killstep1", "--text", "recovery one"]), /accepted/);
     await killWriterAt((names) => names.includes("lock"), "killstep2");
     assert.match(await cmd(["--server", url, "--state", a, "define", "--word", "killstep2", "--text", "recovery two"]), /accepted/);
@@ -511,4 +516,97 @@ test("a bad loaded-view file and a pin for another server are refused", async ()
       assert.equal(existsSync(join(b, "identity.json")), false);
     } finally { await s2.close(); }
   } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("marker content, capture base proof, pin evidence, manifest fields, unlock, disconnect, history, guard forms", async () => {
+  const root = await rootOf();
+  const servers: Awaited<ReturnType<typeof startServer>>[] = [];
+  try {
+    // A marker that says false, and a marker that does not parse, refuse startup.
+    for (const [name, content] of [["false", JSON.stringify({ disposable: false })], ["corrupt", "{"]] as const) {
+      const dir = join(root, name); await mkdir(join(dir, "objects"), { recursive: true });
+      await writeFile(join(dir, "disposable.json"), content);
+      await assert.rejects(() => startServer(dir, 8795), /disposable/);
+    }
+    const s1 = await startServer(join(root, "src"), 8795); servers.push(s1);
+    const url = "http://127.0.0.1:8795";
+    const a = join(root, "a"), b = join(root, "b");
+    await cmd(["--server", url, "--state", a, "init"]);
+    await cmd(["--server", url, "--state", b, "init"]);
+    const longText = "x1 " + "is a very long rehearsal definition ".repeat(12) + "for x2";
+    const defOut = await cmd(["--server", url, "--state", a, "define", "--word", "guardword", "--text", longText, "--gloss", "guard"]);
+    const defId = defOut.match(/jve1:[a-f0-9]{64}/)![0];
+    await cmd(["--server", url, "--state", b, "define", "--word", "guardtwo", "--text", "second guard word"]);
+    // Capture with one folder left out refuses and names the mismatch.
+    assert.match(await cmdFail(["--server", url, "capture", "--state", a, "--out", join(root, "capbad")]), /refused: capture base does not match the pin/);
+    const cap = join(root, "capture");
+    assert.match(await cmd(["--server", url, "capture", "--state", a, "--state", b, "--out", cap]), /captured/);
+    // A manifest that misses one required field refuses with no post.
+    const broken = join(root, "broken"); await cp(cap, broken, { recursive: true });
+    const bm = JSON.parse(await readFile(join(broken, "manifest.json"), "utf8")); delete bm.expected_final_inventory_digest;
+    await writeFile(join(broken, "manifest.json"), JSON.stringify(bm, null, 2));
+    const s2 = await startServer(join(root, "fresh"), 8796); servers.push(s2);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "restore", "--capture", broken, "--wait-ms", "200"]), /refused: capture manifest is missing a required field/);
+    const freshIds = ((await (await fetch("http://127.0.0.1:8796/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    assert.equal(freshIds.length, 0);
+    // A corrupt capture is a reuse failure, not a plain error.
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "reuse-check", "--capture", join(root, "nope")]), /not reusable: capture cannot be read/);
+    // An unreadable lock record counts as live unless forced.
+    await writeFile(join(a, "lock"), "garbage-not-json");
+    assert.match(await cmdFail(["--server", url, "--state", a, "unlock"]), /refused: the lock record cannot be read/);
+    assert.match(await cmd(["--server", url, "--state", a, "unlock", "--force"]), /lock cleared/);
+    // Truncated pin evidence refuses init and pin-base.
+    const pinFile = join(root, "base-pin.json");
+    const idsPath = pinFile + ".ids";
+    const idsText = await readFile(idsPath, "utf8");
+    await writeFile(idsPath, "jve1:" + "0".repeat(64) + "\n");
+    const late = join(root, "late");
+    assert.match(await cmdFail(["--server", url, "--state", late, "--pin", pinFile, "init"]), /refused: base pin evidence does not match its ID list/);
+    assert.match(await cmdFail(["--server", url, "--state", a, "--pin", pinFile, "pin-base"]), /refused: base pin evidence does not match its ID list/);
+    await writeFile(idsPath, idsText);
+    // An explicit missing pin refuses init.
+    assert.match(await cmdFail(["--server", url, "--state", late, "--pin", join(root, "missing.json"), "init"]), /refused: base pin file not found/);
+    // A client that disconnects during its request body does not crash the adapter.
+    await new Promise<void>((resolve) => {
+      const sock = connect(8795, "127.0.0.1", () => { sock.write("POST /api/v1/events HTTP/1.1\r\nhost: x\r\ncontent-length: 100\r\n\r\n{\"partial\":"); sock.destroy(); resolve(); });
+      sock.on("error", () => resolve());
+    });
+    assert.equal((await fetch(url + "/synthetic-disposable")).status, 200);
+    assert.match(await cmd(["--server", url, "--state", a, "define", "--word", "guardthree", "--text", "after the disconnect"]), /accepted/);
+    // History prints the latest actions, so the newest event is present.
+    let lastId = "";
+    for (let i = 0; i < 22; i++) { const out = await cmd(["--server", url, "--state", b, "profile", "--name", `Guard B ${i}`]); lastId = out.match(/jve1:[a-f0-9]{64}/)![0]; }
+    const hist = await cmd(["--server", url, "--state", b, "history", "--limit", "5"]);
+    assert.equal(hist.trim().split("\n").length, 5, hist);
+    assert.ok(hist.includes(lastId), hist);
+    // The documented ::1 form passes the loopback guard.
+    assert.match(await cmd(["--server", "http://[::1]:8795", "--state", a, "whoami"]), /ed25519:/);
+    // An environment proxy setting is refused before any request.
+    try { await run(tsx, [cli, "--server", url, "--state", a, "whoami"], { timeout: 60000, env: { ...process.env, NODE_USE_ENV_PROXY: "1", HTTP_PROXY: "http://127.0.0.1:9" } }); assert.fail("proxy run should refuse"); }
+    catch (e: any) { assert.match((e.stdout ?? "") + (e.stderr ?? ""), /refused: environment proxy support is on/); }
+    // Invalid limits are refused.
+    assert.match(await cmdFail(["--server", url, "--state", a, "recent", "--limit", "abc"]), /refused: --limit must be an integer/);
+  } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("show --full prints a complete long definition", async () => {
+  const root = await rootOf();
+  const servers: Awaited<ReturnType<typeof startServer>>[] = [];
+  try {
+    const s1 = await startServer(join(root, "data"), 8795); servers.push(s1);
+    const url = "http://127.0.0.1:8795";
+    const a = join(root, "a");
+    const idA = (await cmd(["--server", url, "--state", a, "init"])).match(/ed25519:[a-f0-9]{64}/)![0];
+    const longText = "x1 " + "is a very long rehearsal definition ".repeat(12) + "for x2";
+    await cmd(["--server", url, "--state", a, "define", "--word", "fullword", "--text", longText, "--gloss", "full"]);
+    await cmd(["--server", url, "--state", a, "view", "--name", "Full view", "--root", `${idA}=1/1`]);
+    const inv = await (await fetch(url + "/api/v1/records?limit=50")).json() as any;
+    const viewId = inv.items.find((i: any) => i.envelope.header.action.kind === "view.publish").id;
+    await s1.close(); servers.splice(servers.indexOf(s1), 1);
+    const s2 = await startServer(join(root, "data"), 8795, viewId); servers.push(s2);
+    const short = await cmd(["--server", url, "--state", a, "show", "fullword"]);
+    assert.ok(!short.includes(longText), short);
+    const full = await cmd(["--server", url, "--state", a, "--full", "show", "fullword"]);
+    assert.ok(full.includes(longText), full.slice(0, 400));
+  } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
 });

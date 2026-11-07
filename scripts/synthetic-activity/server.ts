@@ -20,12 +20,24 @@ export interface ServerOptions { marker?: boolean; selectedView?: string }
 export async function startServer(directory: string, port: number, selectedView?: string, options: ServerOptions = {}) {
   await mkdir(directory, { recursive: true });
   const markerPath = join(directory, "disposable.json");
+  // The marker's content decides, not only its presence. A file that
+  // does not parse, or that does not say disposable: true, refuses
+  // startup and never answers the marker endpoint.
+  let markerValid = false;
   if (options.marker !== false) {
     const hasData = existsSync(join(directory, "coordinator.sqlite")) || existsSync(join(directory, "objects"));
-    if (hasData && !existsSync(markerPath))
+    if (existsSync(markerPath)) {
+      let parsed: any;
+      try { parsed = JSON.parse(await readFile(markerPath, "utf8")); } catch { parsed = null; }
+      if (parsed?.disposable !== true)
+        throw new Error("refused: disposable.json does not say disposable: true; the copy is not marked disposable");
+      markerValid = true;
+    } else if (hasData) {
       throw new Error("refused: data directory has no disposable marker; mark a disposable copy before it is served");
-    if (!existsSync(markerPath))
+    } else {
       await writeFile(markerPath, JSON.stringify({ disposable: true, created_at: new Date().toISOString() }) + "\n");
+      markerValid = true;
+    }
   }
   // The standalone server holds one lock for the whole data directory.
   const release = await lockDataDirectory(directory, "node-server");
@@ -64,17 +76,24 @@ export async function startServer(directory: string, port: number, selectedView?
     });
     if (rich) await service.initialize();
     const http = createServer(async (req, res) => {
-      if (options.marker !== false && req.method === "GET" && req.url === "/synthetic-disposable") {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ disposable: true }));
-        return;
+      try {
+        if (markerValid && req.method === "GET" && req.url === "/synthetic-disposable") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ disposable: true }));
+          return;
+        }
+        const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
+        const body = Buffer.concat(chunks);
+        const request = new Request(`http://127.0.0.1:${port}${req.url}`, { method: req.method, headers: req.headers as HeadersInit, body: ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : body });
+        const response = await service.fetch(request);
+        res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
+        res.end(Buffer.from(await response.arrayBuffer()));
+      } catch {
+        // A client that disconnects during its request body must not
+        // crash the adapter for every other client.
+        if (!res.headersSent) { try { res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ code: "internal_error", message: "Request failed." })); } catch {} }
+        else { try { res.destroy(); } catch {} }
       }
-      const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
-      const body = Buffer.concat(chunks);
-      const request = new Request(`http://127.0.0.1:${port}${req.url}`, { method: req.method, headers: req.headers as HeadersInit, body: ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : body });
-      const response = await service.fetch(request);
-      res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
-      res.end(Buffer.from(await response.arrayBuffer()));
     });
     await new Promise<void>((resolveListen, rejectListen) => {
       http.once("error", rejectListen);
@@ -90,7 +109,12 @@ export async function startServer(directory: string, port: number, selectedView?
       // lock is released last, even when a step fails.
       let firstError: unknown;
       const step = async (fn: () => unknown) => { try { await fn(); } catch (e) { firstError ??= e; } };
-      await step(() => new Promise<void>((r) => http.close(() => r())));
+      // Stop accepting, give in-flight work a bounded grace, then
+      // close the remaining connections so close cannot hang.
+      await step(() => Promise.race([
+        new Promise<void>((r) => http.close(() => r())),
+        new Promise<void>((r) => setTimeout(() => { try { http.closeAllConnections(); } catch {} r(); }, 10000)),
+      ]));
       if (rich) {
         await step(() => service.flushMaterialization());
         await step(() => service.prepareEvaluationShutdown());

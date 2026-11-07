@@ -10,5 +10,5 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": ["packages/**/*.ts", "apps/server/**/*.ts"]
+  "include": ["packages/**/*.ts", "apps/server/**/*.ts", "scripts/synthetic-activity/**/*.ts"]
 }

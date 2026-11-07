@@ -9,9 +9,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile, rm, rename, link } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { readFile as rf } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import {
   initializeCore, identityFromSeed, createEvent, wordId, canonicalize,
   contentHash, utf8, prepareAdmission,
@@ -20,7 +20,7 @@ import {
 const sha256 = (b: Uint8Array | string) => "sha256:" + createHash("sha256").update(b as never).digest("hex");
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 const unhex = (s: string) => new Uint8Array(Buffer.from(s, "hex"));
-const plain = (rt: unknown): string => Array.isArray(rt) ? rt.map(plain).join("") : typeof rt === "string" ? rt : typeof rt === "number" ? "" : "";
+const plain = (rt: unknown): string => Array.isArray(rt) ? rt.map(plain).join("") : typeof rt === "string" ? rt : "";
 const digestIds = (ids: string[]) => sha256([...ids].sort().join("\n"));
 
 interface Opts { server: string; state: string; view?: string; full: boolean; limit: number; args: string[]; flags: Map<string, string>; multi: Map<string, string[]> }
@@ -33,7 +33,7 @@ function parse(argv: string[]): Opts {
     else if (a === "--server") server = argv[++i];
     else if (a === "--state") { state = argv[++i]; const l = multi.get("state") ?? []; l.push(state); multi.set("state", l); }
     else if (a === "--view") view = argv[++i];
-    else if (a === "--limit") limit = Number(argv[++i]);
+    else if (a === "--limit") { limit = Number(argv[++i]); if (!Number.isInteger(limit) || limit < 1 || limit > 100000) { console.error("refused: --limit must be an integer from 1 to 100000"); process.exit(3); } }
     else if (a.startsWith("--")) { const v = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true"; flags.set(a.slice(2), v); const l = multi.get(a.slice(2)) ?? []; l.push(v); multi.set(a.slice(2), l); }
     else args.push(a);
   }
@@ -43,9 +43,12 @@ const flag = (o: Opts, n: string, d?: string) => o.flags.get(n) ?? d;
 
 /** Only loopback targets are allowed. This runs before any request. */
 function checkServer(server: string): URL {
+  // An environment proxy would decide what the loopback name means.
+  const proxyOn = /^(1|true)$/i.test(process.env.NODE_USE_ENV_PROXY ?? "") || /--use-env-proxy/.test(process.env.NODE_OPTIONS ?? "") || process.execArgv.some((a) => a.includes("--use-env-proxy"));
+  if (proxyOn) { console.error("refused: environment proxy support is on (NODE_USE_ENV_PROXY or --use-env-proxy); a proxy must not route loopback requests"); process.exit(3); }
   let url: URL;
   try { url = new URL(server); } catch { console.error(`refused: server URL is not a valid loopback URL: ${server}`); process.exit(3); }
-  const loopback = url.hostname === "127.0.0.1" || url.hostname === "::1" || url.hostname === "localhost";
+  const loopback = url.hostname === "127.0.0.1" || url.hostname === "::1" || url.hostname === "[::1]" || url.hostname === "localhost";
   if ((url.protocol !== "http:" && url.protocol !== "https:") || !loopback || url.username || url.password) {
     console.error(`refused: server must be a loopback URL (127.0.0.1, ::1 or localhost): ${server}`);
     process.exit(3);
@@ -56,7 +59,7 @@ function checkServer(server: string): URL {
 async function rawFetch(o: Opts, urlText: string, init?: RequestInit): Promise<Response> {
   let current = urlText;
   for (let hop = 0; hop <= 5; hop++) {
-    const r = await fetch(current, { ...init, redirect: "manual" });
+    const r = await fetch(current, { ...init, redirect: "manual", signal: init?.signal ?? AbortSignal.timeout(180000) });
     if (r.status >= 300 && r.status < 400) {
       const location = r.headers.get("location");
       if (!location) return r;
@@ -97,7 +100,7 @@ async function api(o: Opts, path: string, init?: RequestInit): Promise<any> {
 const refused = (e: any): never => { console.error(`refused: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); };
 
 interface Pin { base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string }
-interface Identity { seed: string; identity: string; base_snapshot: string; base_inventory: string }
+interface Identity { seed: string; identity: string; base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string }
 async function loadIdentity(o: Opts): Promise<Identity> {
   if (!o.state) { console.error("refused: --state is required"); process.exit(2); }
   return JSON.parse(await readFile(join(o.state, "identity.json"), "utf8"));
@@ -110,6 +113,20 @@ const pinIdsPath = (path: string) => path + ".ids";
 function pinHasEvidence(pin: Pin, path: string): boolean {
   return Number.isInteger(pin.base_event_count) && typeof pin.base_inventory_digest === "string" && existsSync(pinIdsPath(path));
 }
+/** Write through a temp file and rename, so a crash keeps the old file whole. */
+async function writeAtomic(path: string, text: string): Promise<void> {
+  const tmp = `${path}.tmp-${hex(randomBytes(8))}`;
+  await writeFile(tmp, text);
+  await rename(tmp, path);
+}
+/** Read the pin ID list and check it against the pinned count and digest. */
+async function readPinEvidence(pin: Pin, path: string): Promise<string[]> {
+  const ids = (await readFile(pinIdsPath(path), "utf8")).split("\n").filter(Boolean);
+  if (ids.length !== pin.base_event_count || digestIds(ids) !== pin.base_inventory_digest) {
+    console.error("refused: base pin evidence does not match its ID list; take a new pin with pin-base"); process.exit(3);
+  }
+  return ids;
+}
 async function loadOrCreatePin(o: Opts): Promise<Pin> {
   const path = pinPath(o);
   if (existsSync(path)) {
@@ -120,11 +137,11 @@ async function loadOrCreatePin(o: Opts): Promise<Pin> {
   let m: any;
   try { m = await api(o, "/manifest"); } catch (e: any) { console.error(`refused: cannot read the base pin from the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
   if (!m.snapshot || !m.logical_inventory) { console.error("refused: server manifest has no snapshot or logical inventory for the base pin"); process.exit(3); }
-  const ids = await inventoryIds(o);
+  const ids = await inventoryIds(o, m.snapshot);
   const pin: Pin = { base_snapshot: m.snapshot, base_inventory: m.logical_inventory, base_event_count: ids.length, base_inventory_digest: digestIds(ids) };
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(pin, null, 2) + "\n");
-  await writeFile(pinIdsPath(path), ids.join("\n") + (ids.length ? "\n" : ""));
+  await writeAtomic(pinIdsPath(path), ids.join("\n") + (ids.length ? "\n" : ""));
+  await writeAtomic(path, JSON.stringify(pin, null, 2) + "\n");
   return pin;
 }
 
@@ -228,7 +245,7 @@ async function lock(o: Opts): Promise<LockHandle> {
       const judged = await readOwner(lockPath);
       // The lock file always holds a complete record. An unreadable
       // record is treated as a live lock, never as stale.
-      if (!judged || (await ownerLive(judged))) { console.error("refused: another write is in progress for this state folder"); process.exit(3); }
+      if (!judged || (await ownerLive(judged))) { rmSync(tmp, { force: true }); console.error("refused: another write is in progress for this state folder"); process.exit(3); }
       await testPause();
       // Read the owner again after the wait. A changed token means a
       // peer recovered first. Do not rename in that case.
@@ -237,6 +254,7 @@ async function lock(o: Opts): Promise<LockHandle> {
       if (again && (await ownerLive(again))) continue;
       if (await claimStale(lockPath, token, judged?.token ?? null)) console.error("recovered stale lock from a stopped write");
     }
+    rmSync(tmp, { force: true });
     console.error("refused: another write is in progress for this state folder");
     process.exit(3);
   } finally { await rm(tmp, { force: true }); }
@@ -275,7 +293,8 @@ async function writeEvent(o: Opts, action: Record<string, unknown>, body: unknow
     const prev = await fitHeads(o, seed, idn.identity, handle.verify);
     const started = Date.now();
     const { ev, receipt: r } = await postEvent(o, seed, prev, action, body, handle.verify);
-    console.log(`accepted ${r.id ?? ev.envelope.id} admission=${r.admission ?? "accepted"} ms=${Date.now() - started}`);
+    const reasons = Array.isArray(r.reasons) && r.reasons.length ? ` reasons=${r.reasons.join(",")}` : "";
+    console.log(`accepted ${r.id ?? ev.envelope.id} admission=${r.admission ?? "accepted"} interpretation=${r.interpretation ?? "unknown"}${reasons} ms=${Date.now() - started}`);
   } finally { await handle.release(); }
 }
 const rich = (text?: string) => text ? [[text]] : [];
@@ -297,13 +316,14 @@ async function main(): Promise<void> {
   const o = parse(process.argv.slice(2));
   // The loopback test runs before the core loads and before any request.
   checkServer(o.server);
-  await initializeCore(await rf(new URL("../../packages/core/generated/jvc_runtime_bg.wasm", import.meta.url)));
+  await initializeCore(await readFile(new URL("../../packages/core/generated/jvc_runtime_bg.wasm", import.meta.url)));
   const [cmd, ...rest] = o.args;
   try {
     if (cmd === "pin-base") {
       if (!o.state && !flag(o, "pin")) throw new Error("--pin or --state is required");
       const pin = await loadOrCreatePin(o);
       if (!pinHasEvidence(pin, pinPath(o))) { console.error("refused: base pin file has no base evidence; delete it or use a new --pin path, then run pin-base again"); process.exit(3); }
+      await readPinEvidence(pin, pinPath(o));
       console.log(`base_snapshot ${pin.base_snapshot}`);
       console.log(`base_inventory ${pin.base_inventory}`);
     } else if (cmd === "init") {
@@ -312,6 +332,9 @@ async function main(): Promise<void> {
       const p = join(o.state, "identity.json");
       if (existsSync(p)) { const j = JSON.parse(await readFile(p, "utf8")); console.log(`identity ${j.identity}`); return; }
       // One pin serves the whole run. A late identity reads the same file.
+      // An explicit --pin that does not exist is a wrong path, not a
+      // new pin. Only the default pin path may be created by init.
+      if (flag(o, "pin") && !existsSync(pinPath(o))) { console.error(`refused: base pin file not found: ${pinPath(o)} (run pin-base first)`); process.exit(3); }
       const pinExisted = existsSync(pinPath(o));
       const pin = await loadOrCreatePin(o);
       if (pinExisted) {
@@ -325,19 +348,23 @@ async function main(): Promise<void> {
         let serverIds: string[];
         try { serverIds = await inventoryIds(o); } catch (e: any) { console.error(`refused: cannot check the base pin against the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
         const serverSet = new Set(serverIds);
-        const baseIds = (await readFile(pinIdsPath(pinPath(o)), "utf8")).split("\n").filter(Boolean);
+        const baseIds = await readPinEvidence(pin, pinPath(o));
         if (!baseIds.every((id) => serverSet.has(id))) {
           console.error("refused: base pin does not match this server; a new base needs a new pin file"); process.exit(3);
         }
       }
       const seed = randomBytes(32); const identity = identityFromSeed(new Uint8Array(seed));
-      const rec: Identity = { seed: hex(new Uint8Array(seed)), identity, base_snapshot: pin.base_snapshot, base_inventory: pin.base_inventory };
+      const rec: Identity = { seed: hex(new Uint8Array(seed)), identity, base_snapshot: pin.base_snapshot, base_inventory: pin.base_inventory, base_event_count: pin.base_event_count ?? null, base_inventory_digest: pin.base_inventory_digest };
       await writeFile(p, JSON.stringify(rec, null, 2) + "\n", { mode: 0o600 });
       console.log(`identity ${identity}`); console.log(`state ${resolve(o.state)}`);
     } else if (cmd === "unlock") {
       if (!o.state) throw new Error("--state is required");
       const lockPath = join(o.state, "lock");
       const owner = await readOwner(lockPath);
+      // An unreadable record counts as live, as on the write path.
+      if (!owner && existsSync(lockPath) && flag(o, "force") !== "true") {
+        console.error("refused: the lock record cannot be read; it counts as a live lock (use --force to clear it)"); process.exit(3);
+      }
       if ((await ownerLive(owner)) && flag(o, "force") !== "true") {
         console.error(`refused: the lock owner process ${owner.pid} is still running`); process.exit(3);
       }
@@ -359,7 +386,8 @@ async function main(): Promise<void> {
       const spelling = rest.join(" "); const wid = wordId({ language: "jbo", spelling });
       const v = o.view ? `?view=${encodeURIComponent(o.view)}` : "";
       const j = await api(o, `/words/${wid}${v}`);
-      if (o.full) { console.log(JSON.stringify(j, null, 2)); return; }
+      // With --full, the listing below prints each definition's
+      // complete text instead of the 160 character preview.
       console.log(`word ${spelling} ${wid}`);
       if (j.word) console.log(`spelling ${j.word.spelling ?? spelling}`);
       for (const id of (j.definitions ?? [])) {
@@ -367,7 +395,7 @@ async function main(): Promise<void> {
         let text = "", issuer = env.header?.issuer ?? "";
         if (env.header?.content) { try { const b = await api(o, `/bodies/${encodeURIComponent(env.header.content.hash)}`); text = plain(b.text); } catch {} }
         const score = (j.scores ?? []).find((s: any) => s.target === id);
-        console.log(`${id} by ${issuer} ${text.slice(0, 160)}`);
+        console.log(`${id} by ${issuer} ${o.full ? text : text.slice(0, 160)}`);
         if (score) console.log(`  score support=${JSON.stringify(score.support)} opposition=${JSON.stringify(score.opposition)} reviewers=${score.direct_reviewers ?? "?"}`);
       }
       for (const a of (j.assignments ?? [])) console.log(`rafsi ${a.id} status=${a.status} claims=${(a.claims ?? []).join(",")}`);
@@ -385,13 +413,17 @@ async function main(): Promise<void> {
       if (!tail.length) console.log("no events");
     } else if (cmd === "history") {
       const idn = await loadIdentity(o); const target = flag(o, "identity", idn.identity)!;
-      const items: any[] = []; let after: string | null = null;
-      while (items.length < o.limit) {
-        const pageSize = Math.min(200, o.limit - items.length);
-        const j: any = await api(o, `/identities/${encodeURIComponent(target)}/activity?accepted=1&limit=${pageSize}${after ? `&after=${encodeURIComponent(after)}` : ""}`);
-        items.push(...(j.items ?? []));
+      // Activity pages come in event-ID order. Page all of it, order by
+      // the receipt position, and print the latest --limit actions.
+      const all: any[] = []; let after: string | null = null;
+      for (;;) {
+        const j: any = await api(o, `/identities/${encodeURIComponent(target)}/activity?accepted=1&limit=200${after ? `&after=${encodeURIComponent(after)}` : ""}`);
+        all.push(...(j.items ?? []));
         if (!j.next || !(j.items ?? []).length) break; after = j.next;
       }
+      const seenOf = (it: any) => { const n = Number(String(it.seen ?? "").split(".").at(-1)); return Number.isFinite(n) ? n : 0; };
+      all.sort((x, y) => seenOf(x) - seenOf(y));
+      const items = all.slice(-o.limit);
       for (const it of items) console.log(`${it.id} ${it.action?.kind ?? "?"} ${JSON.stringify(it.action ?? {}).slice(0, o.full ? 500 : 120)}`);
       if (!items.length) console.log("no actions");
     }
@@ -430,17 +462,23 @@ async function main(): Promise<void> {
     else if (cmd === "restore") { await restore(o, false); }
     else if (cmd === "reuse-check") { await restore(o, true); }
     else { console.error("usage: pin-base|init|unlock|whoami|search|show|recent|history|define|rafsi|judge|trust|status|profile|report|view|merge|capture|restore|reuse-check (see README)"); process.exit(2); }
-  } catch (e: any) { if (cmd && ["define","rafsi","judge","trust","status","profile","report","view","merge"].includes(cmd)) refused(e); console.error(`error: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(1); }
+  } catch (e: any) {
+    const network = /fetch failed|ECONNREFUSED|AbortError|timed out/i.test(String(e?.message ?? e)) && !e?.code;
+    if (cmd && ["define","rafsi","judge","trust","status","profile","report","view","merge"].includes(cmd) && !network) refused(e);
+    if (network) { console.error(`error: cannot reach the server: ${e.message ?? String(e)}`); process.exit(1); }
+    console.error(`error: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(1);
+  }
 }
 
-async function collectSynthetic(o: Opts, states: string[]): Promise<{ transports: any[]; identities: Identity[] }> {
+async function collectSynthetic(o: Opts, states: string[], snapshot?: string): Promise<{ transports: any[]; identities: Identity[] }> {
   const identities: Identity[] = [];
   for (const s of [...new Set(states)]) identities.push(JSON.parse(await readFile(join(s, "identity.json"), "utf8")));
   const byId = new Map<string, any>();
+  const snap = snapshot ? `&snapshot=${encodeURIComponent(snapshot)}` : "";
   for (const idn of identities) {
     let after: string | null = null;
     for (;;) {
-      const j: any = await api(o, `/identities/${encodeURIComponent(idn.identity)}/activity?accepted=1&limit=200${after ? `&after=${encodeURIComponent(after)}` : ""}`);
+      const j: any = await api(o, `/identities/${encodeURIComponent(idn.identity)}/activity?accepted=1&limit=200${snap}${after ? `&after=${encodeURIComponent(after)}` : ""}`);
       for (const it of (j.items ?? [])) {
         const env = await api(o, `/events/${encodeURIComponent(it.id)}`);
         let body = null;
@@ -457,21 +495,31 @@ async function collectSynthetic(o: Opts, states: string[]): Promise<{ transports
 async function capture(o: Opts): Promise<void> {
   const outDir = flag(o, "out"); if (!outDir) { console.error("refused: --out is required"); process.exit(2); }
   const states = o.multi.get("state") ?? []; if (!states.length) { console.error("refused: --state is required (repeat for each identity)"); process.exit(2); }
-  const { transports, identities: rawIdentities } = await collectSynthetic(o, states);
+  // Read one server snapshot for the whole capture, so a write that
+  // lands during capture is not split across two reads.
+  const source = await api(o, "/manifest");
+  const { transports, identities: rawIdentities } = await collectSynthetic(o, states, source.snapshot);
   const identities = rawIdentities.filter((v, i, a) => a.findIndex((x) => x.identity === v.identity) === i);
   if (!identities[0]?.base_snapshot || !identities[0]?.base_inventory) { console.error("refused: identity has no base pin; run init again with a base pin"); process.exit(3); }
   const bases = new Set(identities.map((i) => i.base_snapshot + "|" + i.base_inventory)); if (bases.size > 1) { console.error("refused: state folders do not share one base pin; use one --pin file for the whole run"); process.exit(3); }
-  // The source inventory must be the pinned base plus the captured events.
-  const allIds = await inventoryIds(o);
+  // The derived base must equal the pin evidence. Otherwise a state
+  // folder is missing, or an event outside the given folders is
+  // being absorbed into the base, and the capture could not restore.
+  if (!identities[0].base_inventory_digest || !Number.isInteger(identities[0].base_event_count)) { console.error("refused: identity has no base evidence; run init again with a current pin"); process.exit(3); }
+  const allIds = await inventoryIds(o, source.snapshot);
   const synthetic = new Set(transports.map((t) => t.envelope.id));
   const baseIds = allIds.filter((id) => !synthetic.has(id));
+  if (baseIds.length !== identities[0].base_event_count || digestIds(baseIds) !== identities[0].base_inventory_digest) {
+    console.error(`refused: capture base does not match the pin: derived base ${baseIds.length} events digest ${digestIds(baseIds)}, pin ${identities[0].base_event_count} events digest ${identities[0].base_inventory_digest}; a state folder may be missing, or a write landed during capture`);
+    process.exit(3);
+  }
   await mkdir(outDir, { recursive: true });
   const lines = transports.map((t) => canonicalize(utf8(JSON.stringify(t))));
   const bytes = utf8(lines.join("\n") + (lines.length ? "\n" : ""));
   await writeFile(join(outDir, "events.jsonl"), bytes);
   const byKind: Record<string, number> = {}, byIssuer: Record<string, number> = {};
   for (const t of transports) { const k = t.envelope.header.action.kind; byKind[k] = (byKind[k] ?? 0) + 1; const iss = t.envelope.header.issuer; byIssuer[iss] = (byIssuer[iss] ?? 0) + 1; }
-  let kit_revision = "unknown"; try { kit_revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
+  let kit_revision = "unknown"; try { kit_revision = execFileSync("git", ["-C", resolve(dirname(fileURLToPath(import.meta.url)), "../.."), "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
   const manifest = {
     format: 1, base_snapshot: identities[0].base_snapshot, base_inventory: identities[0].base_inventory, kit_revision,
     event_count: transports.length, by_kind: byKind, by_issuer: byIssuer, public_keys: identities.map((i) => i.identity),
@@ -483,17 +531,21 @@ async function capture(o: Opts): Promise<void> {
   await writeFile(join(outDir, "keys.json"), JSON.stringify(keys, null, 2) + "\n", { mode: 0o600 });
   console.log(`captured ${transports.length} events sha256=${manifest.event_file_sha256}`);
 }
-async function inventoryIds(o: Opts): Promise<string[]> {
+async function inventoryIds(o: Opts, snapshot?: string): Promise<string[]> {
   const ids: string[] = []; let after: string | null = null;
-  for (;;) { const j: any = await api(o, `/inventory?kind=events&limit=1000${after ? `&after=${encodeURIComponent(after)}` : ""}`); ids.push(...(j.ids ?? [])); if (!j.next) break; after = j.next; }
+  const snap = snapshot ? `&snapshot=${encodeURIComponent(snapshot)}` : "";
+  for (;;) { const j: any = await api(o, `/inventory?kind=events&limit=1000${snap}${after ? `&after=${encodeURIComponent(after)}` : ""}`); ids.push(...(j.ids ?? [])); if (!j.next) break; after = j.next; }
   return ids.sort();
 }
 async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   const dir = flag(o, "capture"); if (!dir) { console.error("refused: --capture is required"); process.exit(2); }
   const fail = (reason: string): never => { if (checkOnly) console.log(`not reusable: ${reason}`); else console.error(`refused: ${reason}`); process.exit(3); };
-  const manifest = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8"));
-  if (!manifest.base_snapshot || !manifest.base_inventory || !Number.isInteger(manifest.base_event_count) || !manifest.base_inventory_digest || !Number.isInteger(manifest.expected_final_event_count)) fail(`capture manifest has no complete base pin`);
-  const bytes = await readFile(join(dir, "events.jsonl"));
+  let manifest: any = {}; let bytes: Buffer = Buffer.alloc(0);
+  try {
+    manifest = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8"));
+    bytes = await readFile(join(dir, "events.jsonl"));
+  } catch (e: any) { fail(`capture cannot be read: ${e.message ?? String(e)}`); }
+  if (!manifest.base_snapshot || !manifest.base_inventory || !Number.isInteger(manifest.base_event_count) || !manifest.base_inventory_digest || !Number.isInteger(manifest.expected_final_event_count) || !manifest.expected_final_inventory_digest || !manifest.event_file_sha256 || !Number.isInteger(manifest.event_count)) fail(`capture manifest is missing a required field`);
   if (sha256(bytes) !== manifest.event_file_sha256) fail(`event file hash does not match manifest`);
   const lines = new TextDecoder().decode(bytes).trim().split("\n").filter(Boolean);
   if (lines.length !== manifest.event_count) fail(`event count ${lines.length} does not match manifest ${manifest.event_count}`);
@@ -562,7 +614,10 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
       fail(`captured envelope ${t.envelope.id} does not match the restored copy`);
     if (t.body !== null && t.body !== undefined) {
       const hash = t.envelope.header?.content?.hash;
-      try { await api(o, `/bodies/${encodeURIComponent(hash)}`); } catch { fail(`captured body for event ${t.envelope.id} is missing after restore`); }
+      let fetched: any;
+      try { fetched = await api(o, `/bodies/${encodeURIComponent(hash)}`); } catch { fail(`captured body for event ${t.envelope.id} is missing after restore`); }
+      if (canonicalize(utf8(JSON.stringify(fetched))) !== canonicalize(utf8(JSON.stringify(t.body))))
+        fail(`captured body for event ${t.envelope.id} does not match the restored copy`);
     }
   }
   if (checkOnly) console.log("reusable");

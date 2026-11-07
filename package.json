@@ -21,7 +21,8 @@
     "test:adapters": "tsx scripts/test-adapters.ts",
     "build:morphology": "node scripts/build-morphology.mjs",
     "test:morphology": "node scripts/build-morphology.mjs --check && tsx --test packages/morphology/test/*.test.ts",
-    "test:search": "tsx --test packages/search/test/*.test.ts"
+    "test:search": "tsx --test packages/search/test/*.test.ts",
+    "test:synthetic": "tsx --test --test-concurrency=2 scripts/synthetic-activity/smoke.test.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",

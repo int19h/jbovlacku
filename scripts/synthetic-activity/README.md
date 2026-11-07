@@ -12,7 +12,9 @@ The tool refuses unsafe targets in code, before it sends any request.
 - The server URL must be a loopback URL. The host must be
   `127.0.0.1`, `::1`, or `localhost`. A URL with a user name or a
   password is refused. Any other host is refused with
-  `refused: server must be a loopback URL`.
+  `refused: server must be a loopback URL`. Environment proxy
+  support (`NODE_USE_ENV_PROXY` or `--use-env-proxy`) is also
+  refused. A proxy would decide what the loopback name means.
 - Redirects must stay on the same origin. The tool follows at most
   five redirects by hand. A redirect to another origin is refused
   with `refused: redirect leaves the loopback server`.
@@ -85,6 +87,10 @@ pin file exists, `init` reads the server and creates the
 pin. If it cannot read a base, `init` fails and writes no
 identity. It never creates an identity with an empty base.
 
+An explicit `--pin` path that does not exist is refused at
+`init`. A wrong path must not create a new pin late in a run.
+Only the default pin path may be created by `init`.
+
 A new base needs a new pin file. When a fresh identity uses
 an existing pin, `init` requires every pinned base ID on the
 server. A server that holds the base plus this run's later
@@ -143,7 +149,9 @@ In normal operation this prevents forks, including when a
 writer crashes or is killed at any point. Under an
 adversarial schedule, a fork can still occur: a live writer
 held for a long time at an exact point, while another
-writer's post is held. A fork is valid data. The format
+writer's post is held. A third writer can also slip into the
+short gap while a claimed lock is checked and linked back.
+A fork is valid data. The format
 treats concurrent branches of one identity as valid, and
 the next write uses all heads, with merges when it must.
 
@@ -186,7 +194,9 @@ prints the preview event ID, the spelling, the word ID, the
 definition IDs, and the preview text of each hit. The `recent`
 command pages through the whole event journal and prints the
 latest events last admitted. The `history` command pages
-through all of an identity's actions. Head reads page as well.
+through all of an identity's actions, orders them by receipt
+position, and prints the latest ones. Head reads page as well.
+With `--full`, `show` prints each definition's complete text.
 A write by an identity with more than 64 heads first combines
 them with merge events in batches of 64.
 
@@ -258,6 +268,15 @@ It prints `reusable` when every event still passes the current
 code. It prints `not reusable:` and the first reason when it
 does not. That result is the signal to create the data again.
 This tool has no migration code.
+
+`reusable` proves that the current code accepts each captured
+event and body, and that the restored copy holds exactly the
+pinned base plus the capture, with equal envelopes and bodies.
+It does not prove that an event keeps the same interpretation,
+such as a score or a status effect, under the selected view.
+The `accepted` line of a write prints the receipt's
+`interpretation` and any `reasons`, so a single action shows
+that difference at write time.
 
 ## Tests
 
