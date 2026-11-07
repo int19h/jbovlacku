@@ -276,6 +276,12 @@ event, a missing or added base body or import selection, or a
 tampered base value in the manifest is refused with the first
 mismatch as the reason.
 
+A fresh target must match the pinned base in all three
+components, so a missing base body is refused even when a
+captured event shares its hash. Missing captured bodies are
+repaired only in the partial and already-restored cases, where
+a restore already started on a correct base.
+
 After the proof, restore posts every captured transport, not
 only the missing ones. A repost is idempotent. It makes the
 server validate each captured representation again, and it

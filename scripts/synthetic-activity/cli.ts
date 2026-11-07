@@ -739,6 +739,13 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   if (present.length === 0) {
     if (digestIds(before) !== manifest.base_inventory_digest)
       fail(`base inventory does not match the capture pin; refusing to write`);
+    // A fresh target must match the pinned base in every component.
+    // A missing base body is refused here even when a captured event
+    // shares its hash. Repair of a missing captured body applies
+    // only to a restore that already started on a correct base: the
+    // partial and already-restored cases above.
+    if (digestIds(beforeBodies) !== manifest.base_body_digest)
+      fail(`base bodies do not match the pin: server holds ${beforeBodies.length} bodies digest ${digestIds(beforeBodies)}, expected ${manifest.base_body_count} digest ${manifest.base_body_digest}; refusing to write`);
     // Fresh copy. Give a lagged manifest a bounded time to reach the pin.
     const waitMs = Number(flag(o, "wait-ms", "10000"));
     const deadline = Date.now() + (Number.isFinite(waitMs) && waitMs >= 0 ? waitMs : 10000);

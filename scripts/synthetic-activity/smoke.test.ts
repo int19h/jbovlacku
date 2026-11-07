@@ -912,3 +912,37 @@ test("changed base before capture refuses, added base body refuses restore, empt
     assert.match(await cmdFail(["--server", "http://127.0.0.1:8799", "reuse-check", "--capture", emptyCap]), /not reusable: base bodies do not match the pin/);
   } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test("fresh target missing a base body shared with the capture refuses by component, with no post", async () => {
+  const root = await rootOf();
+  const servers: Awaited<ReturnType<typeof startServer>>[] = [];
+  const post = async (port: number, ev: any) => {
+    const r = await fetch(`http://127.0.0.1:${port}/api/v1/events`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ev) });
+    assert.ok(r.ok, await r.text());
+  };
+  const eventCount = async (port: number) => ((await (await fetch(`http://127.0.0.1:${port}/api/v1/inventory?kind=events&limit=1000`)).json() as any).ids as string[]).length;
+  try {
+    // Pin a base with one profile body. Capture two profiles, one
+    // with the identical body and one with another body.
+    const base = createEvent(new Uint8Array(32).fill(106), [], "4".repeat(32), { kind: "identity.profile" }, { name: "Base profile", bio: [], links: [] });
+    const s1 = await startServer(join(root, "src"), 8795); servers.push(s1);
+    await post(8795, base);
+    const a = join(root, "persona");
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "profile", "--name", "Base profile"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "profile", "--name", "Other body"]);
+    const cap = join(root, "capture");
+    assert.match(await cmd(["--server", "http://127.0.0.1:8795", "capture", "--state", a, "--out", cap]), /captured 2 events/);
+    // Fresh target: only the base envelope, without its body. A
+    // fresh target must be exactly the pinned base, so restore
+    // refuses, names the missing component, and posts nothing.
+    // Repair of the shared hash applies only to a restore that
+    // already started on a correct base.
+    const s2 = await startServer(join(root, "fresh"), 8796); servers.push(s2);
+    await post(8796, { ...base, body: null });
+    const before = await eventCount(8796);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "restore", "--capture", cap, "--wait-ms", "0"]), /refused: base bodies do not match the pin/);
+    assert.equal(await eventCount(8796), before);
+    assert.equal((await fetch(`http://127.0.0.1:8796/api/v1/bodies/${base.envelope.header.content.hash}`)).status, 404);
+  } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
+});
