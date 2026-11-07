@@ -8,7 +8,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, writeFile, rm, stat, rename } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, rename, link } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { readFile as rf } from "node:fs/promises";
@@ -169,66 +169,77 @@ async function testPause(): Promise<void> {
   while (existsSync(path) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
 }
 /**
- * Claim a stale lock by renaming its directory to a private name,
- * then verify what was claimed. Rename is atomic, so only one
- * recoverer moves the directory. If the moved owner token is not
- * the stale token that was judged, a peer won the lock during the
- * wait: the directory goes back at once, and this process starts
- * again. It never deletes a lock that is not the judged stale one.
+ * Claim a stale lock file by renaming it to a private name, then
+ * verify what was claimed. Only one recoverer wins the rename.
+ * If the moved token is not the stale token that was judged, a
+ * peer published a new lock during the wait: link it back, and
+ * start again. A claim deletes only the judged stale record.
  */
-async function claimStale(dir: string, myToken: string, judgedToken: string | null): Promise<boolean> {
-  const trash = `${dir}.stale-${myToken}`;
-  try { await rename(dir, trash); } catch { return false; }
-  const moved = await readOwner(join(trash, "owner.json"));
+async function claimStale(lockPath: string, myToken: string, judgedToken: string | null): Promise<boolean> {
+  const trash = `${lockPath}.stale-${myToken}`;
+  try { await rename(lockPath, trash); } catch { return false; }
+  const moved = await readOwner(trash);
   if ((moved?.token ?? null) === judgedToken) {
-    await rm(trash, { recursive: true, force: true });
+    await rm(trash, { force: true });
     return true;
   }
-  // We moved a peer's new lock by mistake. Put it back. If the path
-  // is taken again already, drop our copy: that peer's holder checks
-  // its token at the lock path before it posts, so it cannot write
-  // under the newer lock either.
-  try { await rename(trash, dir); } catch { await rm(trash, { recursive: true, force: true }); }
+  try { await link(trash, lockPath); } catch {}
+  await rm(trash, { force: true });
   return false;
 }
 interface LockHandle { release: () => Promise<void>; verify: () => Promise<boolean> }
+/**
+ * The lock is one file. Its content is the complete owner record.
+ * A writer builds the record in a private temp file, then
+ * publishes it with link. Link is atomic and fails when the lock
+ * exists, so the lock never exists without its owner record,
+ * and no writer can overwrite another owner's record. A writer
+ * stopped before the link holds nothing. A writer stopped after
+ * it leaves a complete record that recovery can judge.
+ */
 async function lock(o: Opts): Promise<LockHandle> {
-  const dir = join(o.state, "lock");
-  const ownerPath = join(dir, "owner.json");
+  const lockPath = join(o.state, "lock");
   const token = hex(randomBytes(16));
-  for (let attempt = 0; attempt < 16; attempt++) {
-    try {
-      await mkdir(dir);
-    } catch (e: any) {
-      if (e?.code !== "EEXIST") { console.error(`error: cannot create the write lock: ${e?.code ?? ""} ${e?.message ?? String(e)}`); process.exit(1); }
-      const judged = await readOwner(ownerPath);
-      let stale = false;
-      if (judged) stale = !(await ownerLive(judged));
-      else { try { stale = Date.now() - (await stat(dir)).mtimeMs > 10000; } catch { continue; } }
-      if (!stale) { console.error("refused: another write is in progress for this state folder"); process.exit(3); }
+  const owner = { pid: process.pid, proc_start: await procStartTicks(process.pid), started_at: new Date().toISOString(), token };
+  const tmp = `${lockPath}.tmp-${token}`;
+  try {
+    await writeFile(tmp, JSON.stringify(owner) + "\n");
+  } catch (e: any) { console.error(`error: cannot write the lock owner: ${e?.code ?? ""} ${e?.message ?? String(e)}`); process.exit(1); }
+  const publish = async (): Promise<boolean> => {
+    try { await link(tmp, lockPath); return true; }
+    catch (e: any) {
+      if (e?.code === "EEXIST") return false;
+      await rm(tmp, { force: true });
+      console.error(`error: cannot create the write lock: ${e?.code ?? ""} ${e?.message ?? String(e)}`); process.exit(1);
+    }
+  };
+  try {
+    for (let attempt = 0; attempt < 16; attempt++) {
+      if (await publish()) {
+        return {
+          // Release only our own lock. A recoverer may own the path by then.
+          release: async () => { const current = await readOwner(lockPath); if (current?.token === token) await rm(lockPath, { force: true }); },
+          // The holder checks its token at the lock path before it posts.
+          // A writer whose lock was claimed stops. It never posts under
+          // another writer's lock in normal operation.
+          verify: async () => (await readOwner(lockPath))?.token === token,
+        };
+      }
+      const judged = await readOwner(lockPath);
+      // The lock file always holds a complete record. An unreadable
+      // record is treated as a live lock, never as stale.
+      if (!judged || (await ownerLive(judged))) { console.error("refused: another write is in progress for this state folder"); process.exit(3); }
       await testPause();
       // Read the owner again after the wait. A changed token means a
       // peer recovered first. Do not rename in that case.
-      const again = await readOwner(ownerPath);
+      const again = await readOwner(lockPath);
       if ((again?.token ?? null) !== (judged?.token ?? null)) continue;
       if (again && (await ownerLive(again))) continue;
-      if (await claimStale(dir, token, judged?.token ?? null)) console.error("recovered stale lock from a stopped write");
-      continue;
+      if (await claimStale(lockPath, token, judged?.token ?? null)) console.error("recovered stale lock from a stopped write");
     }
-    const owner = { pid: process.pid, proc_start: await procStartTicks(process.pid), started_at: new Date().toISOString(), token };
-    try { await writeFile(ownerPath, JSON.stringify(owner) + "\n"); }
-    catch (e: any) { await rm(dir, { recursive: true, force: true }); console.error(`error: cannot write the lock owner: ${e?.code ?? ""} ${e?.message ?? String(e)}`); process.exit(1); }
-    return {
-      // Release only our own lock. A recoverer may own the folder by then.
-      release: async () => { const current = await readOwner(ownerPath); if (current?.token === token) await rm(dir, { recursive: true, force: true }); },
-      // The holder checks its token at the lock path before it posts.
-      // If a recoverer moved this lock, the write stops. It never
-      // posts under another writer's lock.
-      verify: async () => (await readOwner(ownerPath))?.token === token,
-    };
-  }
-  console.error("refused: another write is in progress for this state folder");
-  process.exit(3);
+    console.error("refused: another write is in progress for this state folder");
+    process.exit(3);
+  } finally { await rm(tmp, { force: true }); }
 }
 async function heads(o: Opts, identity: string): Promise<string[]> {
   const out: string[] = []; let after: string | null = null;
@@ -325,12 +336,12 @@ async function main(): Promise<void> {
       console.log(`identity ${identity}`); console.log(`state ${resolve(o.state)}`);
     } else if (cmd === "unlock") {
       if (!o.state) throw new Error("--state is required");
-      const dir = join(o.state, "lock"); const ownerPath = join(dir, "owner.json");
-      const owner = await readOwner(ownerPath);
+      const lockPath = join(o.state, "lock");
+      const owner = await readOwner(lockPath);
       if ((await ownerLive(owner)) && flag(o, "force") !== "true") {
         console.error(`refused: the lock owner process ${owner.pid} is still running`); process.exit(3);
       }
-      if (existsSync(dir) && !(await claimStale(dir, hex(randomBytes(16)), owner?.token ?? null))) {
+      if (existsSync(lockPath) && !(await claimStale(lockPath, hex(randomBytes(16)), owner?.token ?? null))) {
         console.error("refused: the lock changed while it was being cleared; try again"); process.exit(3);
       }
       console.log("lock cleared");

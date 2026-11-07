@@ -75,59 +75,77 @@ any synthetic event exists:
 npx tsx scripts/synthetic-activity/cli.ts --server http://127.0.0.1:8795 --state .cache/synthetic/a pin-base
 ```
 
-The pin holds the server snapshot, its logical inventory, and
-its event count. It goes to a `base-pin.json` file beside the
-state folders, or to the path given with `--pin`. Every `init`
-reads that same pin file. An identity that starts later gets
-the same base, even after other identities have written. If no
-pin file exists, `init` reads the server manifest and creates
-the pin. If it cannot read a base, `init` fails and writes no
+The pin holds the server snapshot, its logical inventory, its
+event count, and a digest of its event IDs. A second file,
+`<pin>.ids`, holds the base event ID list. Both go beside the
+state folders, or to the paths from `--pin`. Every `init`
+reads that same pin. An identity that starts later gets the
+same base, even after other identities have written. If no
+pin file exists, `init` reads the server and creates the
+pin. If it cannot read a base, `init` fails and writes no
 identity. It never creates an identity with an empty base.
 
-A new base needs a new pin file. When a fresh identity uses an
-existing pin, `init` compares the pin with the server. A server
-that has not grown past the pin must match it. A server that
-has grown past it holds this run's later events, which the
-capture checks prove. If the pin does not match and the server
-has not grown past it, `init` refuses. Delete the old pin
-file, or pass a new `--pin` path, to start a run on a new
-base.
+A new base needs a new pin file. When a fresh identity uses
+an existing pin, `init` requires every pinned base ID on the
+server. A server that holds the base plus this run's later
+events passes. A larger server without the pinned base IDs
+is refused. A pin file with no base count or no ID list is
+refused. Delete the old pin file, or pass a new `--pin`
+path, to start a run on a new base.
+
+Known limit: a pin for an empty base has an empty ID list,
+so a larger unrelated server can pass this check. Restore
+still rejects the later capture, because its base evidence
+does not match. Take the pin before any synthetic event.
+This limit is a follow-up. It is not fixed in this version.
 
 ### Write lock and crash recovery
 
-A write creates a `lock` folder inside the state folder. The
-folder holds `owner.json` with the process ID, the process
-start tick from `/proc`, the start time, and a random ownership
-token. A second write while that owner process runs is refused.
+The lock is one file named `lock` in the state folder. Its
+content is the complete owner record: the process ID, the
+process start tick from `/proc`, the start time, and a random
+ownership token. A writer builds that record in a private
+temp file, then publishes it with `link`. Link is atomic
+and fails when the lock already exists. So the lock never
+exists without its owner record, and no writer can overwrite
+another owner's record. A second write while that owner
+process runs is refused.
 
-The owner check compares the process start tick, not only the
-process ID. A new process that reuses an old process ID has a
-different start tick, so its lock is stale, not live. Where
-`/proc` is absent, the tool cannot compare start ticks and it
-treats a running process ID as live.
+The owner check compares the process start tick, not only
+the process ID. A new process that reuses an old process ID
+has a different start tick, so its lock is stale, not live.
+Where `/proc` is absent, the tool cannot compare start
+ticks and it treats a running process ID as live. An
+unreadable lock record is treated as live, never as stale.
 
 Recovery works in steps. A recoverer reads the owner and
-judges it stale. It then reads the owner again after the wait
-for the process check. If the token changed, a peer recovered
-first, and this process does not rename anything. If the
-token is the same, it claims the stale lock by renaming its
-folder to a private name. Rename is atomic, so only one
-recoverer moves the folder. It then checks the moved folder.
-If the moved token is not the stale token it judged, a peer
-won the lock during the wait. The folder goes back at once,
-and this process starts again. It never deletes a lock that
-is not the stale one it judged.
+judges it stale. It then reads the owner again after the
+wait for the process check. If the token changed, a peer
+recovered first, and this process renames nothing. If the
+token is the same, it claims the stale lock by renaming the
+file to a private name. Only one recoverer wins that rename.
+It then checks the moved file. If the moved token is not
+the stale token it judged, a peer won during the wait. The
+file is linked back, and this process starts again. A claim
+deletes only the stale record it judged.
 
 The holder checks its own token at the lock path before it
-posts. A writer whose lock was moved stops. It does not post
-under another writer's lock. The release step removes the
-lock only when the token still matches. A lock with no owner
-file is treated as stale after ten seconds. The `unlock`
-command clears a lock by hand with the same claim check. It
-refuses while the owner process still runs, unless `--force`
-is given. A real filesystem error, such as no permission, is
-reported as an `error:` line. It is not reported as another
-writer.
+posts. A writer whose lock was claimed stops. It does not
+post under another writer's lock. The release step removes
+the lock only when the token still matches. The `unlock`
+command clears a lock by hand with the same claim check.
+It refuses while the owner process still runs, unless
+`--force` is given. A real filesystem error, such as no
+permission, is reported as an `error:` line. It is not
+reported as another writer.
+
+In normal operation this prevents forks, including when a
+writer crashes or is killed at any point. Under an
+adversarial schedule, a fork can still occur: a live writer
+held for a long time at an exact point, while another
+writer's post is held. A fork is valid data. The format
+treats concurrent branches of one identity as valid, and
+the next write uses all heads, with merges when it must.
 
 ## Commands
 

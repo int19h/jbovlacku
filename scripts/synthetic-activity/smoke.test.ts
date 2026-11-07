@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, mkdir, writeFile, utimes, cp } from "node:fs/promises";
+import { mkdtemp, readFile, rm, mkdir, writeFile, cp, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -168,26 +168,23 @@ test("a crash-remnant lock recovers, a live lock refuses, and a late init joins 
     await cmd(["--server", url, "--state", a, "init"]);
     await cmd(["--server", url, "--state", a, "define", "--word", "lockone", "--text", "before the crash"]);
     // Crash remnant with a dead owner process.
-    await mkdir(join(a, "lock"), { recursive: true });
-    await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: 999999, started_at: new Date(0).toISOString() }));
+    await writeFile(join(a, "lock"), JSON.stringify({ pid: 999999, started_at: new Date(0).toISOString() }));
     const recovered = await cmd(["--server", url, "--state", a, "define", "--word", "locktwo", "--text", "after the crash"]);
     assert.match(recovered, /accepted/);
     assert.match(recovered, /recovered stale lock/);
-    // Crash remnant with no owner file and an old directory time.
-    await mkdir(join(a, "lock"), { recursive: true });
-    const old = new Date(Date.now() - 60000); await utimes(join(a, "lock"), old, old);
-    assert.match(await cmd(["--server", url, "--state", a, "profile", "--name", "Recovered"]), /accepted/);
+    // The unlock command also clears a dead owner's lock by hand.
+    await writeFile(join(a, "lock"), JSON.stringify({ pid: 999999, started_at: new Date(0).toISOString(), token: "dead-again" }));
+    assert.match(await cmd(["--server", url, "--state", a, "unlock"]), /lock cleared/);
     // A lock whose owner process is alive refuses. The owner record
     // carries the sleeper's real process start tick.
     const sleeper = spawn("sleep", ["30"]);
     try {
       const statText = await readFile(`/proc/${sleeper.pid}/stat`, "utf8");
       const ticks = Number(statText.slice(statText.lastIndexOf(")") + 2).split(" ")[19]);
-      await mkdir(join(a, "lock"), { recursive: true });
-      await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: sleeper.pid, proc_start: ticks, started_at: new Date().toISOString(), token: "live" }));
+      await writeFile(join(a, "lock"), JSON.stringify({ pid: sleeper.pid, proc_start: ticks, started_at: new Date().toISOString(), token: "live" }));
       assert.match(await cmdFail(["--server", url, "--state", a, "define", "--word", "lockthree", "--text", "blocked"]), /refused: another write is in progress/);
       assert.match(await cmdFail(["--server", url, "--state", a, "unlock"]), /refused: the lock owner process .* is still running/);
-    } finally { sleeper.kill(); await rm(join(a, "lock"), { recursive: true, force: true }); }
+    } finally { sleeper.kill(); await rm(join(a, "lock"), { force: true }); }
     // Late init: B starts after A has written, and still joins the capture.
     await cmd(["--server", url, "--state", b, "init"]);
     await cmd(["--server", url, "--state", b, "define", "--word", "lockfour", "--text", "late starter"]);
@@ -255,8 +252,7 @@ test("many recoverers of one stale lock stay one writer, and a reused PID does n
     const identity = (await cmd(["--server", url, "--state", a, "init"])).match(/ed25519:[a-f0-9]{64}/)![0];
     await cmd(["--server", url, "--state", a, "define", "--word", "raceone", "--text", "before the race"]);
     // One dead-owner lock, eight writers at the same time.
-    await mkdir(join(a, "lock"), { recursive: true });
-    await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: 999999, proc_start: 1, started_at: new Date(0).toISOString(), token: "dead" }));
+    await writeFile(join(a, "lock"), JSON.stringify({ pid: 999999, proc_start: 1, started_at: new Date(0).toISOString(), token: "dead" }));
     const runs = await Promise.all(Array.from({ length: 8 }, (_, i) =>
       run(tsx, [cli, "--server", url, "--state", a, "define", "--word", `race${i}`, "--text", "race write"], { timeout: 180000 })
         .then((r) => (r.stdout + r.stderr)).catch((e: any) => (e.stdout ?? "") + (e.stderr ?? ""))));
@@ -267,12 +263,10 @@ test("many recoverers of one stale lock stay one writer, and a reused PID does n
     // A live PID with an old start time is a reused PID, not the owner.
     const sleeper = spawn("sleep", ["30"]);
     try {
-      await mkdir(join(a, "lock"), { recursive: true });
-      await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: sleeper.pid, started_at: new Date(0).toISOString() }));
+      await writeFile(join(a, "lock"), JSON.stringify({ pid: sleeper.pid, started_at: new Date(0).toISOString() }));
       assert.match(await cmd(["--server", url, "--state", a, "define", "--word", "raceafter", "--text", "after pid reuse"]), /accepted/);
       // The same reused-PID lock can be cleared by hand.
-      await mkdir(join(a, "lock"), { recursive: true });
-      await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: sleeper.pid, started_at: new Date(0).toISOString() }));
+      await writeFile(join(a, "lock"), JSON.stringify({ pid: sleeper.pid, started_at: new Date(0).toISOString() }));
       assert.match(await cmd(["--server", url, "--state", a, "unlock"]), /lock cleared/);
     } finally { sleeper.kill(); }
   } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
@@ -288,8 +282,7 @@ test("a paused recoverer does not steal a lock won during its wait", async () =>
     const identity = (await cmd(["--server", url, "--state", a, "init"])).match(/ed25519:[a-f0-9]{64}/)![0];
     await cmd(["--server", url, "--state", a, "define", "--word", "pauseone", "--text", "before the pause"]);
     // Stale lock: a live process whose start tick does not match.
-    await mkdir(join(a, "lock"), { recursive: true });
-    await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: sleeper.pid, proc_start: 1, started_at: new Date(0).toISOString(), token: "stale-token" }));
+    await writeFile(join(a, "lock"), JSON.stringify({ pid: sleeper.pid, proc_start: 1, started_at: new Date(0).toISOString(), token: "stale-token" }));
     // Writer two judges the lock stale, then pauses on the test hook.
     const pauseFile = join(root, "pause");
     await writeFile(pauseFile, "pause");
@@ -303,7 +296,7 @@ test("a paused recoverer does not steal a lock won during its wait", async () =>
     const w1Done = new Promise((r) => w1.on("exit", r));
     // Wait until writer one's token owns the lock, then release writer two.
     for (let i = 0; i < 200; i++) {
-      try { const owner = JSON.parse(await readFile(join(a, "lock", "owner.json"), "utf8")); if (owner.token !== "stale-token") break; } catch {}
+      try { const owner = JSON.parse(await readFile(join(a, "lock"), "utf8")); if (owner.token !== "stale-token") break; } catch {}
       await new Promise((r) => setTimeout(r, 10));
     }
     await rm(pauseFile, { force: true });
@@ -326,6 +319,48 @@ test("a paused recoverer does not steal a lock won during its wait", async () =>
     const heads = await (await fetch(`${url}/api/v1/identity-heads/${encodeURIComponent(identity)}?limit=200`)).json() as any;
     assert.equal(heads.heads.length, 1);
   } finally { sleeper.kill(); await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("a writer killed at each lock step leaves a lock the next writer recovers", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 8795);
+  try {
+    const url = "http://127.0.0.1:8795";
+    const a = join(root, "a");
+    const identity = (await cmd(["--server", url, "--state", a, "init"])).match(/ed25519:[a-f0-9]{64}/)![0];
+    await cmd(["--server", url, "--state", a, "define", "--word", "killbase", "--text", "before the kills"]);
+    const killWriterAt = async (watch: (names: string[]) => boolean, word: string) => {
+      const child = spawn(tsx, [cli, "--server", url, "--state", a, "define", "--word", word, "--text", "killed writer"], { detached: true });
+      const done = new Promise((r) => child.on("exit", r));
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        const names = await readdir(a).catch(() => [] as string[]);
+        if (watch(names)) break;
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      try { process.kill(-child.pid!, "SIGSTOP"); } catch {}
+      try { process.kill(-child.pid!, "SIGKILL"); } catch {}
+      await done;
+    };
+    // Killed while its owner record is still a private temp file,
+    // and killed after the lock was published. Either remnant is
+    // one the next writer recovers from.
+    await killWriterAt((names) => names.some((n) => n.startsWith("lock.tmp-")), "killstep1");
+    assert.match(await cmd(["--server", url, "--state", a, "define", "--word", "killstep1", "--text", "recovery one"]), /accepted/);
+    await killWriterAt((names) => names.includes("lock"), "killstep2");
+    assert.match(await cmd(["--server", url, "--state", a, "define", "--word", "killstep2", "--text", "recovery two"]), /accepted/);
+    // No fork through any kill point.
+    const activity = await (await fetch(`${url}/api/v1/identities/${encodeURIComponent(identity)}/activity?accepted=1&limit=1000`)).json() as any;
+    const seen = new Map<string, string>();
+    for (const item of activity.items) {
+      const env = await (await fetch(`${url}/api/v1/events/${encodeURIComponent(item.id)}`)).json() as any;
+      const key = JSON.stringify(env.header.previous);
+      assert.ok(!seen.has(key), `shared previous ${key}`);
+      seen.set(key, item.id);
+    }
+    const heads = await (await fetch(`${url}/api/v1/identity-heads/${encodeURIComponent(identity)}?limit=200`)).json() as any;
+    assert.equal(heads.heads.length, 1);
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("a pin without evidence and a larger unrelated server are refused at init", async () => {
