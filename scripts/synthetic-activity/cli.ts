@@ -768,8 +768,12 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
       const waitedIds = await inventoryIds(o, waitedPage.snapshot);
       const waitedBodies = await inventoryList(o, "bodies", waitedPage.snapshot);
       const waitedSelections = await inventoryList(o, "import_selections", waitedPage.snapshot);
+      // This is the fresh case, so the waited body set must equal
+      // the pinned base bodies exactly, as in the first fresh
+      // check. The set-difference comparison belongs to the
+      // partial and already-restored cases only.
       if (digestIds(waitedIds) !== manifest.base_inventory_digest
-        || digestIds(waitedBodies.filter((h) => !capturedBodies.has(h))) !== manifest.base_minus_captured_body_digest
+        || digestIds(waitedBodies) !== manifest.base_body_digest
         || digestIds(waitedSelections) !== manifest.base_selection_digest)
         fail(`inventory changed while waiting for the manifest; refusing to write`);
     } catch (e: any) { fail(`cannot read server inventory: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); }

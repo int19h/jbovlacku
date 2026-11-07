@@ -183,7 +183,7 @@ the next write uses all heads, with merges when it must.
 | Report | `report --subject ed25519:... --category spam-flooding --value report --text "Test"` |
 | Publish view | `view --name "Test view" --root ed25519:...=1/1` |
 | Merge heads | `merge` |
-| Capture | `capture --state A --state B --out DIR` |
+| Capture | `capture --state A --state B --out DIR --pin PIN` |
 | Restore | `restore --capture DIR` |
 | Reuse check | `reuse-check --capture DIR` |
 
@@ -240,7 +240,9 @@ admits after the final check is after that snapshot, and so
 is not in the capture.
 
 Capture collects only events by the identities in the given
-state folders. It writes `events.jsonl`, `manifest.json`, and
+state folders. Capture needs the run's pin file: pass `--pin`,
+or keep `base-pin.json` beside the first state folder. It
+writes `events.jsonl`, `manifest.json`, and
 `keys.json`. The event file uses canonical JSON, one event per
 line. The manifest holds the base snapshot, the base inventory
 value, counts and digests for all three components of the base

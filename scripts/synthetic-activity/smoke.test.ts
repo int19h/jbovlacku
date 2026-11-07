@@ -946,3 +946,48 @@ test("fresh target missing a base body shared with the capture refuses by compon
     assert.equal((await fetch(`http://127.0.0.1:8796/api/v1/bodies/${base.envelope.header.content.hash}`)).status, 404);
   } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test("shared body supplied during the fresh manifest wait refuses, with zero restore posts", async () => {
+  const root = await rootOf();
+  const servers: Awaited<ReturnType<typeof startServer>>[] = [];
+  const post = async (port: number, ev: any) => {
+    const r = await fetch(`http://127.0.0.1:${port}/api/v1/events`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ev) });
+    assert.ok(r.ok, await r.text());
+  };
+  try {
+    // Pin a base event whose body is absent. Capture one synthetic
+    // profile whose body uses the same hash.
+    const base = createEvent(new Uint8Array(32).fill(107), [], "5".repeat(32), { kind: "identity.profile" }, { name: "Shared late body", bio: [], links: [] });
+    const s1 = await startServer(join(root, "src"), 8795); servers.push(s1);
+    await post(8795, { ...base, body: null });
+    const a = join(root, "persona");
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "profile", "--name", "Shared late body"]);
+    const cap = join(root, "capture");
+    assert.match(await cmd(["--server", "http://127.0.0.1:8795", "capture", "--state", a, "--out", cap]), /captured 1 events/);
+    // Exact fresh target: only the base envelope, no body. A proxy
+    // returns the real manifest, then an outside post supplies the
+    // shared body before restore reads the inventory again. The
+    // second fresh read must compare the complete body set, so
+    // restore refuses and posts nothing.
+    const s2 = await startServer(join(root, "target"), 8796); servers.push(s2);
+    await post(8796, { ...base, body: null });
+    let injected = false, restorePosts = 0;
+    const proxy = createServer(async (req, res) => {
+      const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
+      if (req.method === "POST") restorePosts++;
+      const upstream = await fetch(`http://127.0.0.1:8796${req.url}`, { method: req.method, headers: { "content-type": "application/json" }, body: ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : Buffer.concat(chunks) });
+      const bytes = Buffer.from(await upstream.arrayBuffer());
+      if (req.url === "/api/v1/manifest" && !injected) { injected = true; await post(8796, base); }
+      res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+      res.end(bytes);
+    });
+    await new Promise<void>((r) => proxy.listen(8797, "127.0.0.1", r));
+    try {
+      assert.match(await cmdFail(["--server", "http://127.0.0.1:8797", "restore", "--capture", cap, "--wait-ms", "0"]), /refused: inventory changed while waiting for the manifest; refusing to write/);
+      assert.equal(restorePosts, 0);
+      const inv = await (await fetch("http://127.0.0.1:8796/api/v1/inventory?kind=events&limit=1000")).json() as any;
+      assert.equal(inv.ids.length, 1);
+    } finally { await new Promise<void>((r) => proxy.close(() => r())); }
+  } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
+});
