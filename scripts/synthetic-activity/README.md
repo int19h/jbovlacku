@@ -39,6 +39,13 @@ lock. A `loaded-view.json` file that exists and is bad, or that
 names a view the data does not retain, also refuses startup. It
 never falls back to a reduced server.
 
+If a server stops hard, its data folder keeps a
+`.node-data-lock` folder. First make sure that no server
+process uses that data folder. Then delete that exact
+`.node-data-lock` folder inside the data folder, and nothing
+else. The next server start can then take the lock. Never
+delete that folder while a server may still run on the data.
+
 ## Setup
 
 Build the core first from the repository root:
@@ -99,12 +106,24 @@ different start tick, so its lock is stale, not live. Where
 `/proc` is absent, the tool cannot compare start ticks and it
 treats a running process ID as live.
 
-Recovery claims a stale lock by renaming its folder to a
-private name. Rename is atomic, so only one recoverer wins.
-The others loop and then see the winner's live lock. A lock
-with no owner file is treated as stale after ten seconds. The
-release step removes the lock only when the token still
-matches. The `unlock` command clears a lock by hand. It
+Recovery works in steps. A recoverer reads the owner and
+judges it stale. It then reads the owner again after the wait
+for the process check. If the token changed, a peer recovered
+first, and this process does not rename anything. If the
+token is the same, it claims the stale lock by renaming its
+folder to a private name. Rename is atomic, so only one
+recoverer moves the folder. It then checks the moved folder.
+If the moved token is not the stale token it judged, a peer
+won the lock during the wait. The folder goes back at once,
+and this process starts again. It never deletes a lock that
+is not the stale one it judged.
+
+The holder checks its own token at the lock path before it
+posts. A writer whose lock was moved stops. It does not post
+under another writer's lock. The release step removes the
+lock only when the token still matches. A lock with no owner
+file is treated as stale after ten seconds. The `unlock`
+command clears a lock by hand with the same claim check. It
 refuses while the owner process still runs, unless `--force`
 is given. A real filesystem error, such as no permission, is
 reported as an `error:` line. It is not reported as another

@@ -278,6 +278,121 @@ test("many recoverers of one stale lock stay one writer, and a reused PID does n
   } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test("a paused recoverer does not steal a lock won during its wait", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 8795);
+  const sleeper = spawn("sleep", ["60"]);
+  try {
+    const url = "http://127.0.0.1:8795";
+    const a = join(root, "a");
+    const identity = (await cmd(["--server", url, "--state", a, "init"])).match(/ed25519:[a-f0-9]{64}/)![0];
+    await cmd(["--server", url, "--state", a, "define", "--word", "pauseone", "--text", "before the pause"]);
+    // Stale lock: a live process whose start tick does not match.
+    await mkdir(join(a, "lock"), { recursive: true });
+    await writeFile(join(a, "lock", "owner.json"), JSON.stringify({ pid: sleeper.pid, proc_start: 1, started_at: new Date(0).toISOString(), token: "stale-token" }));
+    // Writer two judges the lock stale, then pauses on the test hook.
+    const pauseFile = join(root, "pause");
+    await writeFile(pauseFile, "pause");
+    const w2 = spawn(tsx, [cli, "--server", url, "--state", a, "define", "--word", "pausedword", "--text", "paused writer"], { env: { ...process.env, SYNTHETIC_ACTIVITY_TEST_PAUSE: pauseFile } });
+    let w2Out = ""; w2.stdout.on("data", (d) => (w2Out += d)); w2.stderr.on("data", (d) => (w2Out += d));
+    const w2Done = new Promise((r) => w2.on("exit", r));
+    await new Promise((r) => setTimeout(r, 2000));
+    // Writer one recovers the same lock and holds it.
+    const w1 = spawn(tsx, [cli, "--server", url, "--state", a, "define", "--word", "winnerword", "--text", "winning writer"]);
+    let w1Out = ""; w1.stdout.on("data", (d) => (w1Out += d)); w1.stderr.on("data", (d) => (w1Out += d));
+    const w1Done = new Promise((r) => w1.on("exit", r));
+    // Wait until writer one's token owns the lock, then release writer two.
+    for (let i = 0; i < 200; i++) {
+      try { const owner = JSON.parse(await readFile(join(a, "lock", "owner.json"), "utf8")); if (owner.token !== "stale-token") break; } catch {}
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await rm(pauseFile, { force: true });
+    const w1Code = await w1Done;
+    const w2Code = await w2Done;
+    assert.equal(w1Code, 0, w1Out);
+    assert.match(w1Out, /accepted/);
+    // Writer two either refused or wrote after writer one. Never both at once.
+    assert.ok(w2Code === 0 || w2Code === 3, w2Out);
+    // No two events of this identity share one previous list.
+    const activity = await (await fetch(`${url}/api/v1/identities/${encodeURIComponent(identity)}/activity?accepted=1&limit=1000`)).json() as any;
+    const own = [];
+    for (const item of activity.items) own.push({ id: item.id, envelope: await (await fetch(`${url}/api/v1/events/${encodeURIComponent(item.id)}`)).json() });
+    const seen = new Map<string, string>();
+    for (const item of own) {
+      const key = JSON.stringify(item.envelope.header.previous);
+      assert.ok(!seen.has(key), `shared previous ${key} by ${seen.get(key)} and ${item.id}`);
+      seen.set(key, item.id);
+    }
+    const heads = await (await fetch(`${url}/api/v1/identity-heads/${encodeURIComponent(identity)}?limit=200`)).json() as any;
+    assert.equal(heads.heads.length, 1);
+  } finally { sleeper.kill(); await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("a pin without evidence and a larger unrelated server are refused at init", async () => {
+  const root = await rootOf();
+  const s1 = await startServer(join(root, "one"), 8795);
+  const s2 = await startServer(join(root, "two"), 8796);
+  try {
+    const a = join(root, "a");
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "define", "--word", "evidone", "--text", "base event one"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "define", "--word", "evidtwo", "--text", "base event two"]);
+    const pinFile = join(root, "pins", "base-pin.json");
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "--pin", pinFile, "pin-base"]);
+    // The second server holds more events, and none of the pinned base.
+    const b = join(root, "b");
+    await cmd(["--server", "http://127.0.0.1:8796", "--state", b, "init"]);
+    for (const w of ["unrelone", "unreltwo", "unrelthree"]) await cmd(["--server", "http://127.0.0.1:8796", "--state", b, "define", "--word", w, "--text", "unrelated event"]);
+    const c = join(root, "c");
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "--state", c, "--pin", pinFile, "init"]), /refused: base pin does not match this server/);
+    assert.equal(existsSync(join(c, "identity.json")), false);
+    // A pin file with no base evidence is refused as well.
+    const barePin = join(root, "pins", "bare.json");
+    await mkdir(join(root, "pins"), { recursive: true });
+    await writeFile(barePin, JSON.stringify({ base_snapshot: "sha256:" + "0".repeat(64), base_inventory: "sha256:" + "0".repeat(64) }));
+    const d = join(root, "d");
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8795", "--state", d, "--pin", barePin, "init"]), /refused: base pin file has no base evidence/);
+    assert.equal(existsSync(join(d, "identity.json")), false);
+  } finally { await s1.close(); await s2.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("an inventory that changes during the manifest wait is refused with no post", async () => {
+  const root = await rootOf();
+  const servers: Awaited<ReturnType<typeof startServer>>[] = [];
+  try {
+    const s1 = await startServer(join(root, "src"), 8795); servers.push(s1);
+    const a = join(root, "a");
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "init"]);
+    await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "define", "--word", "waitone", "--text", "waiting capture"]);
+    const cap = join(root, "capture");
+    await cmd(["--server", "http://127.0.0.1:8795", "capture", "--state", a, "--out", cap]);
+    const target = await startServer(join(root, "target"), 8796); servers.push(target);
+    const pinManifest = await (await fetch("http://127.0.0.1:8796/api/v1/manifest")).json();
+    const staleManifest = { ...pinManifest, snapshot: "sha256:" + "f".repeat(64) };
+    let manifestReads = 0;
+    const proxy = createServer(async (req, res) => {
+      if (req.url === "/synthetic-disposable") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ disposable: true })); return; }
+      if (req.url === "/api/v1/manifest") { manifestReads++; res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(manifestReads < 6 ? staleManifest : pinManifest)); return; }
+      const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
+      const upstream = await fetch(`http://127.0.0.1:8796${req.url}`, { method: req.method, headers: { "content-type": "application/json" }, body: ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : Buffer.concat(chunks) });
+      res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+      res.end(Buffer.from(await upstream.arrayBuffer()));
+    });
+    await new Promise<void>((r) => proxy.listen(8797, "127.0.0.1", r));
+    try {
+      const restore = run(tsx, [cli, "--server", "http://127.0.0.1:8797", "restore", "--capture", cap], { timeout: 180000 }).then((r) => r.stdout + r.stderr).catch((e: any) => (e.stdout ?? "") + (e.stderr ?? ""));
+      // Land a foreign event on the target while the restore waits.
+      await new Promise((r) => setTimeout(r, 400));
+      const f = join(root, "f");
+      await cmd(["--server", "http://127.0.0.1:8796", "--state", f, "init"]);
+      await cmd(["--server", "http://127.0.0.1:8796", "--state", f, "define", "--word", "waitforeign", "--text", "lands during the wait"]);
+      assert.match(await restore, /refused: inventory changed while waiting for the manifest; refusing to write/);
+      const ids = ((await (await fetch("http://127.0.0.1:8796/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+      assert.equal(ids.length, 1);
+    } finally { await new Promise<void>((r) => proxy.close(() => r())); }
+  } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("envelope-only inventory is repaired and proved, foreign partial writes nothing, delayed manifest resumes", async () => {
   const root = await rootOf();
   const servers: Awaited<ReturnType<typeof startServer>>[] = [];

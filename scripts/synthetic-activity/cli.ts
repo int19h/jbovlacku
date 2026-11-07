@@ -96,7 +96,7 @@ async function api(o: Opts, path: string, init?: RequestInit): Promise<any> {
 }
 const refused = (e: any): never => { console.error(`refused: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); };
 
-interface Pin { base_snapshot: string; base_inventory: string; base_event_count?: number | null }
+interface Pin { base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string }
 interface Identity { seed: string; identity: string; base_snapshot: string; base_inventory: string }
 async function loadIdentity(o: Opts): Promise<Identity> {
   if (!o.state) { console.error("refused: --state is required"); process.exit(2); }
@@ -104,6 +104,11 @@ async function loadIdentity(o: Opts): Promise<Identity> {
 }
 function pinPath(o: Opts): string {
   return flag(o, "pin") ?? join(dirname(resolve(o.state)), "base-pin.json");
+}
+const pinIdsPath = (path: string) => path + ".ids";
+/** A usable pin carries its base evidence: count, ID digest, and the ID list. */
+function pinHasEvidence(pin: Pin, path: string): boolean {
+  return Number.isInteger(pin.base_event_count) && typeof pin.base_inventory_digest === "string" && existsSync(pinIdsPath(path));
 }
 async function loadOrCreatePin(o: Opts): Promise<Pin> {
   const path = pinPath(o);
@@ -115,9 +120,11 @@ async function loadOrCreatePin(o: Opts): Promise<Pin> {
   let m: any;
   try { m = await api(o, "/manifest"); } catch (e: any) { console.error(`refused: cannot read the base pin from the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
   if (!m.snapshot || !m.logical_inventory) { console.error("refused: server manifest has no snapshot or logical inventory for the base pin"); process.exit(3); }
-  const pin: Pin = { base_snapshot: m.snapshot, base_inventory: m.logical_inventory, base_event_count: Number.isInteger(m.manifest?.events?.count) ? m.manifest.events.count : null };
+  const ids = await inventoryIds(o);
+  const pin: Pin = { base_snapshot: m.snapshot, base_inventory: m.logical_inventory, base_event_count: ids.length, base_inventory_digest: digestIds(ids) };
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(pin, null, 2) + "\n");
+  await writeFile(pinIdsPath(path), ids.join("\n") + (ids.length ? "\n" : ""));
   return pin;
 }
 
@@ -150,38 +157,75 @@ async function readOwner(ownerPath: string): Promise<any> {
   try { return JSON.parse(await readFile(ownerPath, "utf8")); } catch { return null; }
 }
 /**
- * Claim a stale lock by renaming its directory to a private name.
- * Rename is atomic: only one recoverer wins it. The others loop and
- * then see the winner's live lock.
+ * Test hook. When SYNTHETIC_ACTIVITY_TEST_PAUSE names a file, a
+ * recoverer that has judged a lock stale waits until that file is
+ * gone before it acts. Tests use it to force two recoverers into
+ * the same window. Normal runs never set it.
  */
-async function claimStale(dir: string, token: string): Promise<boolean> {
-  const trash = `${dir}.stale-${token}`;
-  try { await rename(dir, trash); } catch { return false; }
-  await rm(trash, { recursive: true, force: true });
-  return true;
+async function testPause(): Promise<void> {
+  const path = process.env.SYNTHETIC_ACTIVITY_TEST_PAUSE;
+  if (!path) return;
+  const deadline = Date.now() + 120000;
+  while (existsSync(path) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
 }
-async function lock(o: Opts): Promise<() => Promise<void>> {
+/**
+ * Claim a stale lock by renaming its directory to a private name,
+ * then verify what was claimed. Rename is atomic, so only one
+ * recoverer moves the directory. If the moved owner token is not
+ * the stale token that was judged, a peer won the lock during the
+ * wait: the directory goes back at once, and this process starts
+ * again. It never deletes a lock that is not the judged stale one.
+ */
+async function claimStale(dir: string, myToken: string, judgedToken: string | null): Promise<boolean> {
+  const trash = `${dir}.stale-${myToken}`;
+  try { await rename(dir, trash); } catch { return false; }
+  const moved = await readOwner(join(trash, "owner.json"));
+  if ((moved?.token ?? null) === judgedToken) {
+    await rm(trash, { recursive: true, force: true });
+    return true;
+  }
+  // We moved a peer's new lock by mistake. Put it back. If the path
+  // is taken again already, drop our copy: that peer's holder checks
+  // its token at the lock path before it posts, so it cannot write
+  // under the newer lock either.
+  try { await rename(trash, dir); } catch { await rm(trash, { recursive: true, force: true }); }
+  return false;
+}
+interface LockHandle { release: () => Promise<void>; verify: () => Promise<boolean> }
+async function lock(o: Opts): Promise<LockHandle> {
   const dir = join(o.state, "lock");
   const ownerPath = join(dir, "owner.json");
   const token = hex(randomBytes(16));
-  for (let attempt = 0; attempt < 8; attempt++) {
+  for (let attempt = 0; attempt < 16; attempt++) {
     try {
       await mkdir(dir);
     } catch (e: any) {
       if (e?.code !== "EEXIST") { console.error(`error: cannot create the write lock: ${e?.code ?? ""} ${e?.message ?? String(e)}`); process.exit(1); }
-      const owner = await readOwner(ownerPath);
+      const judged = await readOwner(ownerPath);
       let stale = false;
-      if (owner) stale = !(await ownerLive(owner));
+      if (judged) stale = !(await ownerLive(judged));
       else { try { stale = Date.now() - (await stat(dir)).mtimeMs > 10000; } catch { continue; } }
       if (!stale) { console.error("refused: another write is in progress for this state folder"); process.exit(3); }
-      if (await claimStale(dir, token)) console.error("recovered stale lock from a stopped write");
+      await testPause();
+      // Read the owner again after the wait. A changed token means a
+      // peer recovered first. Do not rename in that case.
+      const again = await readOwner(ownerPath);
+      if ((again?.token ?? null) !== (judged?.token ?? null)) continue;
+      if (again && (await ownerLive(again))) continue;
+      if (await claimStale(dir, token, judged?.token ?? null)) console.error("recovered stale lock from a stopped write");
       continue;
     }
     const owner = { pid: process.pid, proc_start: await procStartTicks(process.pid), started_at: new Date().toISOString(), token };
     try { await writeFile(ownerPath, JSON.stringify(owner) + "\n"); }
     catch (e: any) { await rm(dir, { recursive: true, force: true }); console.error(`error: cannot write the lock owner: ${e?.code ?? ""} ${e?.message ?? String(e)}`); process.exit(1); }
-    // Release only our own lock. A recoverer may own the folder by then.
-    return async () => { const current = await readOwner(ownerPath); if (current?.token === token) await rm(dir, { recursive: true, force: true }); };
+    return {
+      // Release only our own lock. A recoverer may own the folder by then.
+      release: async () => { const current = await readOwner(ownerPath); if (current?.token === token) await rm(dir, { recursive: true, force: true }); },
+      // The holder checks its token at the lock path before it posts.
+      // If a recoverer moved this lock, the write stops. It never
+      // posts under another writer's lock.
+      verify: async () => (await readOwner(ownerPath))?.token === token,
+    };
   }
   console.error("refused: another write is in progress for this state folder");
   process.exit(3);
@@ -195,29 +239,33 @@ async function heads(o: Opts, identity: string): Promise<string[]> {
   }
   return out;
 }
-async function postEvent(o: Opts, seed: Uint8Array, prev: string[], action: Record<string, unknown>, body: unknown | null): Promise<any> {
+async function postEvent(o: Opts, seed: Uint8Array, prev: string[], action: Record<string, unknown>, body: unknown | null, verify?: () => Promise<boolean>): Promise<any> {
+  // A writer whose lock was moved never posts. This check and the
+  // post are the last step under the lock, so a second writer can
+  // only start after this post or after this writer stops here.
+  if (verify && !(await verify())) { console.error("refused: the write lock was taken by another writer; this write did not post"); process.exit(3); }
   const ev = createEvent(seed, [...prev].sort(), hex(randomBytes(16)), action, body);
   const r = await api(o, "/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ev) });
   return { ev, receipt: r };
 }
 /** Combine heads in batches of 64 until the frontier fits one event. */
-async function fitHeads(o: Opts, seed: Uint8Array, identity: string): Promise<string[]> {
+async function fitHeads(o: Opts, seed: Uint8Array, identity: string, verify?: () => Promise<boolean>): Promise<string[]> {
   let current = await heads(o, identity);
   while (current.length > 64) {
-    await postEvent(o, seed, current.slice(0, 64), { kind: "identity.merge" }, null);
+    await postEvent(o, seed, current.slice(0, 64), { kind: "identity.merge" }, null, verify);
     current = await heads(o, identity);
   }
   return current;
 }
 async function writeEvent(o: Opts, action: Record<string, unknown>, body: unknown | null): Promise<void> {
-  const idn = await loadIdentity(o); const release = await lock(o);
+  const idn = await loadIdentity(o); const handle = await lock(o);
   try {
     const seed = unhex(idn.seed);
-    const prev = await fitHeads(o, seed, idn.identity);
+    const prev = await fitHeads(o, seed, idn.identity, handle.verify);
     const started = Date.now();
-    const { ev, receipt: r } = await postEvent(o, seed, prev, action, body);
+    const { ev, receipt: r } = await postEvent(o, seed, prev, action, body, handle.verify);
     console.log(`accepted ${r.id ?? ev.envelope.id} admission=${r.admission ?? "accepted"} ms=${Date.now() - started}`);
-  } finally { await release(); }
+  } finally { await handle.release(); }
 }
 const rich = (text?: string) => text ? [[text]] : [];
 function defBody(o: Opts): any {
@@ -244,6 +292,7 @@ async function main(): Promise<void> {
     if (cmd === "pin-base") {
       if (!o.state && !flag(o, "pin")) throw new Error("--pin or --state is required");
       const pin = await loadOrCreatePin(o);
+      if (!pinHasEvidence(pin, pinPath(o))) { console.error("refused: base pin file has no base evidence; delete it or use a new --pin path, then run pin-base again"); process.exit(3); }
       console.log(`base_snapshot ${pin.base_snapshot}`);
       console.log(`base_inventory ${pin.base_inventory}`);
     } else if (cmd === "init") {
@@ -254,15 +303,19 @@ async function main(): Promise<void> {
       // One pin serves the whole run. A late identity reads the same file.
       const pinExisted = existsSync(pinPath(o));
       const pin = await loadOrCreatePin(o);
-      if (pinExisted && pin.base_event_count != null) {
-        // A server that has not grown past the pin must match it exactly.
-        // A server that grew past it holds this run's later events, which
-        // the capture and restore checks prove. Anything else is a pin
-        // for another base.
-        let m: any;
-        try { m = await api(o, "/manifest"); } catch (e: any) { console.error(`refused: cannot check the base pin against the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
-        const grown = Number.isInteger(m.manifest?.events?.count) && m.manifest.events.count > pin.base_event_count;
-        if (m.snapshot !== pin.base_snapshot && !grown) {
+      if (pinExisted) {
+        // Compare base evidence, not only a count. The server must
+        // hold every pinned base ID. A server that grew past the pin
+        // holds the base plus this run's later events, which the
+        // capture checks prove. A pin without evidence is refused.
+        if (!pinHasEvidence(pin, pinPath(o))) {
+          console.error("refused: base pin file has no base evidence; take a new pin with pin-base"); process.exit(3);
+        }
+        let serverIds: string[];
+        try { serverIds = await inventoryIds(o); } catch (e: any) { console.error(`refused: cannot check the base pin against the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
+        const serverSet = new Set(serverIds);
+        const baseIds = (await readFile(pinIdsPath(pinPath(o)), "utf8")).split("\n").filter(Boolean);
+        if (!baseIds.every((id) => serverSet.has(id))) {
           console.error("refused: base pin does not match this server; a new base needs a new pin file"); process.exit(3);
         }
       }
@@ -277,7 +330,7 @@ async function main(): Promise<void> {
       if ((await ownerLive(owner)) && flag(o, "force") !== "true") {
         console.error(`refused: the lock owner process ${owner.pid} is still running`); process.exit(3);
       }
-      if (existsSync(dir) && !(await claimStale(dir, hex(randomBytes(16))))) {
+      if (existsSync(dir) && !(await claimStale(dir, hex(randomBytes(16)), owner?.token ?? null))) {
         console.error("refused: the lock changed while it was being cleared; try again"); process.exit(3);
       }
       console.log("lock cleared");
@@ -475,6 +528,11 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
         fail(`base inventory mismatch: server ${last.logical_inventory} capture base ${manifest.base_inventory}`);
       fail(`base snapshot mismatch: server ${last?.snapshot} capture base ${manifest.base_snapshot}`);
     }
+    // Read the inventory again after the wait. It must still be the
+    // pinned base before anything posts.
+    const waitedIds = await inventoryIds(o).catch((e: any) => fail(`cannot read server inventory: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`));
+    if (digestIds(waitedIds as string[]) !== manifest.base_inventory_digest)
+      fail(`inventory changed while waiting for the manifest; refusing to write`);
   }
   // Post every captured transport, not only the missing ones. A
   // repost is idempotent. It makes the server validate each captured

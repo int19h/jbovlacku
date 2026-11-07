@@ -76,29 +76,36 @@ export async function startServer(directory: string, port: number, selectedView?
       res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
       res.end(Buffer.from(await response.arrayBuffer()));
     });
-    await new Promise<void>((r) => http.listen(port, "127.0.0.1", r));
+    await new Promise<void>((resolveListen, rejectListen) => {
+      http.once("error", rejectListen);
+      http.listen(port, "127.0.0.1", () => { http.removeListener("error", rejectListen); resolveListen(); });
+    });
+    http.on("error", () => {});
     let closed = false;
     const close = async () => {
       if (closed) return; closed = true;
-      try {
-        // The standalone shutdown order: stop accepting, flush
-        // materialization, save evaluation state, then close storage
-        // and release the data lock.
-        await new Promise<void>((r) => http.close(() => r()));
-        if (rich) {
-          await service.flushMaterialization();
-          await service.prepareEvaluationShutdown();
-        }
-        await evaluationRuntime?.close();
-        index?.close();
-        coordinator?.close();
-      } finally { await release(); }
+      // Attempt every step, in the standalone order: stop accepting,
+      // flush materialization, save evaluation state, stop the
+      // runtime, close the coordinator and then the index. The data
+      // lock is released last, even when a step fails.
+      let firstError: unknown;
+      const step = async (fn: () => unknown) => { try { await fn(); } catch (e) { firstError ??= e; } };
+      await step(() => new Promise<void>((r) => http.close(() => r())));
+      if (rich) {
+        await step(() => service.flushMaterialization());
+        await step(() => service.prepareEvaluationShutdown());
+      }
+      await step(() => evaluationRuntime?.close());
+      await step(() => coordinator?.close());
+      await step(() => index?.close());
+      await step(() => release());
+      if (firstError) throw firstError;
     };
     return { http, service, coordinator, close };
   } catch (error) {
     try { await evaluationRuntime?.close(); } catch {}
-    try { index?.close(); } catch {}
     try { coordinator?.close(); } catch {}
+    try { index?.close(); } catch {}
     await release().catch(() => {});
     throw error;
   }
