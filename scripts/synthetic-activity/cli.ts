@@ -330,7 +330,25 @@ async function main(): Promise<void> {
       if (!o.state) throw new Error("--state is required");
       await mkdir(o.state, { recursive: true });
       const p = join(o.state, "identity.json");
-      if (existsSync(p)) { const j = JSON.parse(await readFile(p, "utf8")); console.log(`identity ${j.identity}`); return; }
+      if (existsSync(p)) {
+        const j = JSON.parse(await readFile(p, "utf8"));
+        // Backfill the base evidence from the pin for identities
+        // that were created before capture required it.
+        if (j.base_inventory_digest == null || j.base_event_count == null) {
+          try {
+            const path = pinPath(o);
+            if (existsSync(path)) {
+              const pin = JSON.parse(await readFile(path, "utf8"));
+              if (pin.base_inventory_digest && Number.isInteger(pin.base_event_count)) {
+                j.base_event_count = pin.base_event_count; j.base_inventory_digest = pin.base_inventory_digest;
+                j.base_snapshot ??= pin.base_snapshot; j.base_inventory ??= pin.base_inventory;
+                await writeFile(p, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 });
+              }
+            }
+          } catch {}
+        }
+        console.log(`identity ${j.identity}`); return;
+      }
       // One pin serves the whole run. A late identity reads the same file.
       // An explicit --pin that does not exist is a wrong path, not a
       // new pin. Only the default pin path may be created by init.
@@ -463,7 +481,8 @@ async function main(): Promise<void> {
     else if (cmd === "reuse-check") { await restore(o, true); }
     else { console.error("usage: pin-base|init|unlock|whoami|search|show|recent|history|define|rafsi|judge|trust|status|profile|report|view|merge|capture|restore|reuse-check (see README)"); process.exit(2); }
   } catch (e: any) {
-    const network = /fetch failed|ECONNREFUSED|AbortError|timed out/i.test(String(e?.message ?? e)) && !e?.code;
+    if (e?.name === "TimeoutError") { console.error("error: the server did not answer in time (check history before you retry)"); process.exit(1); }
+    const network = /fetch failed|ECONNREFUSED/i.test(String(e?.message ?? e)) && !e?.code;
     if (cmd && ["define","rafsi","judge","trust","status","profile","report","view","merge"].includes(cmd) && !network) refused(e);
     if (network) { console.error(`error: cannot reach the server: ${e.message ?? String(e)}`); process.exit(1); }
     console.error(`error: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(1);
@@ -495,18 +514,24 @@ async function collectSynthetic(o: Opts, states: string[], snapshot?: string): P
 async function capture(o: Opts): Promise<void> {
   const outDir = flag(o, "out"); if (!outDir) { console.error("refused: --out is required"); process.exit(2); }
   const states = o.multi.get("state") ?? []; if (!states.length) { console.error("refused: --state is required (repeat for each identity)"); process.exit(2); }
-  // Read one server snapshot for the whole capture, so a write that
-  // lands during capture is not split across two reads.
-  const source = await api(o, "/manifest");
-  const { transports, identities: rawIdentities } = await collectSynthetic(o, states, source.snapshot);
+  // Take the capture snapshot from the first unpinned inventory
+  // page. That page names the admitted snapshot, which holds every
+  // event the server has admitted. The manifest names the last
+  // materialized snapshot instead, and that one can lag admission.
+  // Every later read is pinned to the admitted snapshot, so the
+  // capture is one point in time and no admitted event is missing.
+  // A write that lands after that page is after the capture point.
+  const firstPage = await api(o, "/inventory?kind=events&limit=1000");
+  const sourceSnapshot: string = firstPage.snapshot;
+  const { transports, identities: rawIdentities } = await collectSynthetic(o, states, sourceSnapshot);
   const identities = rawIdentities.filter((v, i, a) => a.findIndex((x) => x.identity === v.identity) === i);
   if (!identities[0]?.base_snapshot || !identities[0]?.base_inventory) { console.error("refused: identity has no base pin; run init again with a base pin"); process.exit(3); }
   const bases = new Set(identities.map((i) => i.base_snapshot + "|" + i.base_inventory)); if (bases.size > 1) { console.error("refused: state folders do not share one base pin; use one --pin file for the whole run"); process.exit(3); }
   // The derived base must equal the pin evidence. Otherwise a state
   // folder is missing, or an event outside the given folders is
   // being absorbed into the base, and the capture could not restore.
-  if (!identities[0].base_inventory_digest || !Number.isInteger(identities[0].base_event_count)) { console.error("refused: identity has no base evidence; run init again with a current pin"); process.exit(3); }
-  const allIds = await inventoryIds(o, source.snapshot);
+  if (!identities[0].base_inventory_digest || !Number.isInteger(identities[0].base_event_count)) { console.error("refused: identity has no base evidence; run init once to backfill it, or start a new state folder"); process.exit(3); }
+  const allIds = await inventoryIds(o, sourceSnapshot);
   const synthetic = new Set(transports.map((t) => t.envelope.id));
   const baseIds = allIds.filter((id) => !synthetic.has(id));
   if (baseIds.length !== identities[0].base_event_count || digestIds(baseIds) !== identities[0].base_inventory_digest) {

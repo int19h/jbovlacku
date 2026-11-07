@@ -348,9 +348,11 @@ test("a writer killed at each lock step leaves a lock the next writer recovers",
       try { process.kill(-child.pid!, "SIGKILL"); } catch {}
       await done;
     };
-    // Killed while its owner record is still a private temp file,
-    // and killed after the lock was published. Either remnant is
-    // one the next writer recovers from.
+    // The first kill lands at whichever remnant of lock creation
+    // exists when the watch fires: the private temp record, or the
+    // published lock just after it. The second kill lands on the
+    // published lock. Each remnant is one the next writer
+    // recovers from.
     await killWriterAt((names) => names.some((n) => n.startsWith("lock.tmp-")) || names.includes("lock"), "killstep1");
     assert.match(await cmd(["--server", url, "--state", a, "define", "--word", "killstep1", "--text", "recovery one"]), /accepted/);
     await killWriterAt((names) => names.includes("lock"), "killstep2");
@@ -610,4 +612,35 @@ test("show --full prints a complete long definition", async () => {
     const full = await cmd(["--server", url, "--state", a, "--full", "show", "fullword"]);
     assert.ok(full.includes(longText), full.slice(0, 400));
   } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("capture takes its snapshot from the admitted inventory, not the lagging manifest", async () => {
+  const root = await rootOf();
+  const s1 = await startServer(join(root, "data"), 8795);
+  try {
+    const url = "http://127.0.0.1:8795";
+    const a = join(root, "a");
+    await cmd(["--server", url, "--state", a, "init"]);
+    await cmd(["--server", url, "--state", a, "define", "--word", "lagone", "--text", "first lag event"]);
+    const staleManifest = await (await fetch(url + "/api/v1/manifest")).json() as any;
+    const second = await cmd(["--server", url, "--state", a, "define", "--word", "lagtwo", "--text", "newest lag event"]);
+    const secondId = second.match(/jve1:[a-f0-9]{64}/)![0];
+    // A proxy that reports the stale manifest snapshot, as a rich
+    // server does while materialization lags admission.
+    const proxy = createServer(async (req, res) => {
+      if (req.url === "/synthetic-disposable") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ disposable: true })); return; }
+      if (req.url === "/api/v1/manifest") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(staleManifest)); return; }
+      const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
+      const upstream = await fetch(`http://127.0.0.1:8795${req.url}`, { method: req.method, headers: { "content-type": "application/json" }, body: ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : Buffer.concat(chunks) });
+      res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+      res.end(Buffer.from(await upstream.arrayBuffer()));
+    });
+    await new Promise<void>((r) => proxy.listen(8796, "127.0.0.1", r));
+    try {
+      const cap = join(root, "capture");
+      assert.match(await cmd(["--server", "http://127.0.0.1:8796", "capture", "--state", a, "--out", cap]), /captured 2 events/);
+      const events = await readFile(join(cap, "events.jsonl"), "utf8");
+      assert.ok(events.includes(secondId), events);
+    } finally { await new Promise<void>((r) => proxy.close(() => r())); }
+  } finally { await s1.close(); await rm(root, { recursive: true, force: true }); }
 });

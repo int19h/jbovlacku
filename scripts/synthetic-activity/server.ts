@@ -111,10 +111,10 @@ export async function startServer(directory: string, port: number, selectedView?
       const step = async (fn: () => unknown) => { try { await fn(); } catch (e) { firstError ??= e; } };
       // Stop accepting, give in-flight work a bounded grace, then
       // close the remaining connections so close cannot hang.
-      await step(() => Promise.race([
-        new Promise<void>((r) => http.close(() => r())),
-        new Promise<void>((r) => setTimeout(() => { try { http.closeAllConnections(); } catch {} r(); }, 10000)),
-      ]));
+      await step(() => new Promise<void>((resolveClose) => {
+        const timer = setTimeout(() => { try { http.closeAllConnections(); } catch {} resolveClose(); }, 10000);
+        http.close(() => { clearTimeout(timer); resolveClose(); });
+      }));
       if (rich) {
         await step(() => service.flushMaterialization());
         await step(() => service.prepareEvaluationShutdown());
