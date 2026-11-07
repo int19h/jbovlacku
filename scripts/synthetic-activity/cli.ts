@@ -333,19 +333,31 @@ async function main(): Promise<void> {
       if (existsSync(p)) {
         const j = JSON.parse(await readFile(p, "utf8"));
         // Backfill the base evidence from the pin for identities
-        // that were created before capture required it.
+        // that were created before capture required it. The
+        // backfill runs the same checks as a new identity: the
+        // pin evidence must be consistent, it must match this
+        // identity's recorded base, and the server must hold
+        // every pinned base ID.
         if (j.base_inventory_digest == null || j.base_event_count == null) {
-          try {
-            const path = pinPath(o);
-            if (existsSync(path)) {
-              const pin = JSON.parse(await readFile(path, "utf8"));
-              if (pin.base_inventory_digest && Number.isInteger(pin.base_event_count)) {
-                j.base_event_count = pin.base_event_count; j.base_inventory_digest = pin.base_inventory_digest;
-                j.base_snapshot ??= pin.base_snapshot; j.base_inventory ??= pin.base_inventory;
-                await writeFile(p, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 });
-              }
+          const path = pinPath(o);
+          if (!existsSync(path)) {
+            console.error(`note: no base pin file at ${path}; this identity has no base evidence for capture`);
+          } else {
+            const pin = JSON.parse(await readFile(path, "utf8"));
+            if (!pinHasEvidence(pin, path)) { console.error("refused: base pin file has no base evidence; a new base needs a new pin file"); process.exit(3); }
+            const baseIds = await readPinEvidence(pin, path);
+            if ((j.base_snapshot && j.base_snapshot !== pin.base_snapshot) || (j.base_inventory && j.base_inventory !== pin.base_inventory)) {
+              console.error("refused: base pin does not match this identity's recorded base; start a new state folder"); process.exit(3);
             }
-          } catch {}
+            const serverIds = await inventoryIds(o);
+            const serverSet = new Set(serverIds);
+            if (!baseIds.every((id) => serverSet.has(id))) {
+              console.error("refused: base pin does not match this server; a new base needs a new pin file"); process.exit(3);
+            }
+            j.base_event_count = pin.base_event_count; j.base_inventory_digest = pin.base_inventory_digest;
+            j.base_snapshot ??= pin.base_snapshot; j.base_inventory ??= pin.base_inventory;
+            await writeFile(p, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 });
+          }
         }
         console.log(`identity ${j.identity}`); return;
       }
@@ -536,6 +548,14 @@ async function capture(o: Opts): Promise<void> {
   const baseIds = allIds.filter((id) => !synthetic.has(id));
   if (baseIds.length !== identities[0].base_event_count || digestIds(baseIds) !== identities[0].base_inventory_digest) {
     console.error(`refused: capture base does not match the pin: derived base ${baseIds.length} events digest ${digestIds(baseIds)}, pin ${identities[0].base_event_count} events digest ${identities[0].base_inventory_digest}; a state folder may be missing, or a write landed during capture`);
+    process.exit(3);
+  }
+  // Read the admitted snapshot once more. If it moved, a writer is
+  // still active and this capture would omit its event. Refuse and
+  // write no capture files.
+  const nowPage = await api(o, "/inventory?kind=events&limit=1");
+  if (nowPage.snapshot !== sourceSnapshot) {
+    console.error("refused: writers are still active (the admitted snapshot changed during capture); stop them and capture again");
     process.exit(3);
   }
   await mkdir(outDir, { recursive: true });

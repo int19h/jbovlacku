@@ -644,3 +644,73 @@ test("capture takes its snapshot from the admitted inventory, not the lagging ma
     } finally { await new Promise<void>((r) => proxy.close(() => r())); }
   } finally { await s1.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test("capture refuses when a writer admits after the first inventory page, and writes no files", async () => {
+  const root = await rootOf();
+  const s1 = await startServer(join(root, "data"), 8795);
+  try {
+    const url = "http://127.0.0.1:8795";
+    const a = join(root, "a");
+    await cmd(["--server", url, "--state", a, "init"]);
+    await cmd(["--server", url, "--state", a, "define", "--word", "stillone", "--text", "before capture"]);
+    // Pre-build a second event from the same identity, to be
+    // admitted by the proxy right after capture's first page.
+    const identity = JSON.parse(await readFile(join(a, "identity.json"), "utf8"));
+    const heads = (await (await fetch(`${url}/api/v1/identity-heads/${encodeURIComponent(identity.identity)}?limit=200`)).json() as any).heads;
+    const { createEvent, wordId } = await import("../../packages/core/src/index.ts");
+    const body = { word: { language: "jbo", spelling: "stilltwo" }, language: "en", text: [["writer still active"]], frame: null, glosses: [{ language: "en", text: "writer still active", sense: null }], notes: [], classification: { kind: "other", selmaho: [] }, license: { expression: "CC0-1.0", url: "https://creativecommons.org/publicdomain/zero/1.0/", attribution: "" }, legacy: null };
+    const late = createEvent(new Uint8Array(Buffer.from(identity.seed, "hex")), heads, "f".repeat(32), { kind: "definition.publish", word: wordId({ language: "jbo", spelling: "stilltwo" }), language: "en", parents: [], origin: "native" }, body);
+    let admitted = false;
+    const proxy = createServer(async (req, res) => {
+      if (req.url === "/synthetic-disposable") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ disposable: true })); return; }
+      const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
+      const upstream = await fetch(`http://127.0.0.1:8795${req.url}`, { method: req.method, headers: { "content-type": "application/json" }, body: ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : Buffer.concat(chunks) });
+      const bytes = Buffer.from(await upstream.arrayBuffer());
+      res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+      res.end(bytes);
+      if (!admitted && req.method === "GET" && req.url?.startsWith("/api/v1/inventory")) {
+        admitted = true;
+        await fetch("http://127.0.0.1:8795/api/v1/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(late) });
+      }
+    });
+    await new Promise<void>((r) => proxy.listen(8796, "127.0.0.1", r));
+    try {
+      const cap = join(root, "capture");
+      assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "capture", "--state", a, "--out", cap]), /refused: writers are still active \(the admitted snapshot changed during capture\); stop them and capture again/);
+      assert.equal(existsSync(cap), false);
+      assert.ok(admitted);
+    } finally { await new Promise<void>((r) => proxy.close(() => r())); }
+  } finally { await s1.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("existing-identity backfill checks the pin, and a missing pin prints a note", async () => {
+  const root = await rootOf();
+  const s1 = await startServer(join(root, "data"), 8795);
+  try {
+    const url = "http://127.0.0.1:8795";
+    const a = join(root, "a");
+    await cmd(["--server", url, "--state", a, "init"]);
+    await cmd(["--server", url, "--state", a, "define", "--word", "backone", "--text", "backfill source"]);
+    // An old identity record without the evidence fields.
+    const old = JSON.parse(await readFile(join(a, "identity.json"), "utf8"));
+    delete old.base_event_count; delete old.base_inventory_digest;
+    const b = join(root, "b"); await mkdir(b, { recursive: true });
+    await writeFile(join(b, "identity.json"), JSON.stringify(old, null, 2));
+    await cmd(["--server", url, "--state", b, "init"]);
+    const filled = JSON.parse(await readFile(join(b, "identity.json"), "utf8"));
+    assert.ok(Number.isInteger(filled.base_event_count) && typeof filled.base_inventory_digest === "string", JSON.stringify(filled));
+    // The backfilled identity joins a capture.
+    assert.match(await cmd(["--server", url, "capture", "--state", a, "--state", b, "--out", join(root, "cap")]), /captured/);
+    // A missing pin file prints a note instead of skipping silently.
+    const c = join(root, "c"); await mkdir(c, { recursive: true });
+    await writeFile(join(c, "identity.json"), JSON.stringify(old, null, 2));
+    assert.match(await cmd(["--server", url, "--state", c, "--pin", join(root, "missing-pin.json"), "init"]), /note: no base pin file/);
+    // A pin that does not match the identity's base refuses.
+    const wrong = JSON.parse(await readFile(join(b, "identity.json"), "utf8"));
+    wrong.base_snapshot = "sha256:" + "0".repeat(64);
+    delete wrong.base_event_count; delete wrong.base_inventory_digest;
+    const d = join(root, "d"); await mkdir(d, { recursive: true });
+    await writeFile(join(d, "identity.json"), JSON.stringify(wrong, null, 2));
+    assert.match(await cmdFail(["--server", url, "--state", d, "init"]), /refused: base pin does not match this identity's recorded base/);
+  } finally { await s1.close(); await rm(root, { recursive: true, force: true }); }
+});
