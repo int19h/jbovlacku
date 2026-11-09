@@ -668,6 +668,8 @@ A flat history costs eight units per record and a single-parent chain costs eigh
 The Node loader can retain a larger explicit traversal budget for a local import.
 A larger traversal budget does not remove memory limits.
 
+Evaluation work is not yet bounded by the traversal budget on every path. The budget bounds ancestry construction and the charges named above. Some register, retention, account, certificate, and downstream paths can still do work that grows faster than the charged units on large histories. A follow-up change adds a work meter that charges those inner loops, so that a large input refuses deterministically instead of running long.
+
 The server, worker, and Wasm artifacts at `fedfec3` match the earlier measurement at `b6c0354`.
 That run restored its checkpoint in 22.68 seconds. A later restart took 29.33 seconds.
 The repaired host measurement uses `5aefd15`, with 59,125 imported definitions in 44 languages.

@@ -32,6 +32,7 @@ Construction stops as soon as the budget runs out. The evaluator does not publis
 Range metadata has a hard cap of 64 MiB, counted cumulatively over every range vector a union copies or allocates, including discarded temporaries. A history past the cap returns `resource_unavailable` at any budget.
 The default budget is 10,000,000 units. A flat history costs eight units per record, and a single-parent chain costs eighteen units per record except for ten units saved across the roots, before evaluation-time closure charges.
 Exceeding the budget makes the entire evaluation unavailable, including other accounts and native publications, with reason `resource_unavailable`.
+Evaluation work is not yet bounded by this budget on every path. Some register, retention, account, certificate, and downstream paths can do work that grows faster than the charged units on large histories. A follow-up change adds a work meter for those inner loops.
 A signed chain of 2,429 imported definitions with four certified account periods passes the default budget.
 Witness groups are cached per policy. Claim chains and carry boundaries are cached per account candidate.
 A 5,000-event chain with a smaller budget returns unavailable without recursive traversal.
