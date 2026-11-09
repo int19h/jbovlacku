@@ -1436,6 +1436,10 @@ mod rebuild_tests {
                     tips.insert(second.clone(), accept_id);
                 }
             }
+            // Account records here cover layout and causality only:
+            // the base view has no account witnesses, so these claims
+            // are not certified and carry evaluation is covered by
+            // the restored-state and carry-split tests instead.
             if seed % 4 == 0 {
                 if let Some(tip) = tips.get(&issuers[0]).cloned() {
                     let claim_id = fresh_id(&mut counter);
@@ -2159,6 +2163,165 @@ mod rebuild_tests {
         assert_eq!(cap_bytes(&advanced), cap_bytes(&full_state), "restored");
     }
 
+    fn witnessed_view() -> PreparedEvaluationInput {
+        let (view, view_body) = event(
+            1,
+            77,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(
+                json!({"name":"fixture","description":[],"roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],"rafsi_threshold":{"numerator":1,"denominator":1},"H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},"excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,"import_sets":[],"account_witnesses":[identity_from_seed(&[10;32]),identity_from_seed(&[11;32])],"account_authority":true,"notes":[]}),
+            ),
+        );
+        let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::new(),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        prepared.add_record(&view, view_body.as_deref());
+        prepared
+    }
+
+    fn observe(prepared: &mut PreparedEvaluationInput, seed: u8, nonce: u8, claim_id: &str) {
+        let (observation, observation_body) = event(
+            seed,
+            nonce,
+            json!({"kind":"account.observe","origin":"https://source.example","account":41,"claim":claim_id,"result":"present"}),
+            Some(
+                json!({"origin":"https://source.example","account":41,"username":"author","field_hash":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","markers":[claim_id],"method":"lensisku-public-profile-v1","observed_at":"2026-10-11T00:00:00Z"}),
+            ),
+        );
+        prepared.add_record(&observation, observation_body.as_deref());
+    }
+
+    /// Certified claims whose issuer history is incomplete enter the
+    /// missing-history lookup once per claim. The per-issuer index
+    /// must keep the audited work within a constant times the
+    /// charged units at two sizes.
+    #[test]
+    fn account_claims_with_missing_history_scale_linearly() {
+        for claims in [120usize, 240] {
+            let mut prepared = witnessed_view();
+            let issuer = identity_from_seed(&[1u8; 32]);
+            let mut previous = format!("jve1:{:064x}", 900_000usize);
+            let mut action_previous: Option<String> = None;
+            for i in 0..claims {
+                let claim_id = format!("jve1:{:064x}", 900_100 + i);
+                prepared.add_host_verified_record(host(
+                    claim_id.clone(),
+                    &issuer,
+                    vec![previous],
+                    json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":action_previous,"carry":[]}),
+                ));
+                observe(&mut prepared, 10, (i % 256) as u8, &claim_id);
+                observe(&mut prepared, 11, (i % 256) as u8, &claim_id);
+                previous = claim_id.clone();
+                action_previous = Some(claim_id);
+            }
+            graph::reset_audit_work();
+            let state = prepared.into_state();
+            assert!(state.evaluation().available);
+            let used = 10_000_000 - remaining_work(&state);
+            let work = graph::audit_work();
+            assert!(
+                work <= 16 * used,
+                "{work} audited work for {used} charged units at {claims} claims"
+            );
+        }
+    }
+
+    /// One imported publication and a chain of `import.status`
+    /// records naming one claim: authorization must read the
+    /// account index, not walk a growing closure per record.
+    #[test]
+    fn import_status_authorization_scales_linearly() {
+        let mut prepared = witnessed_view();
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"klama"})).unwrap();
+        let mut body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        body["legacy"] = json!({"source":"fixture","snapshot":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","extraction":"fixture-v1","record":{"kind":"definition","id":1},"locator":"fixture","original":{},"attribution":{"author":"author","editor":null,"author_account":{"origin":"https://source.example","account":41,"username":"author","evidence":{"kind":"source-id","source":{"label":"source author numeric field","url":null,"event":null,"locator":"author_id"}}},"dates":{}}});
+        let (publication, publication_body) = event(
+            9,
+            3,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"import"}),
+            Some(body),
+        );
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, publication_body.as_deref());
+        let issuer = identity_from_seed(&[1u8; 32]);
+        let claim_id = format!("jve1:{:064x}", 910_000usize);
+        prepared.add_host_verified_record(host(
+            claim_id.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+        ));
+        let mut previous = claim_id.clone();
+        for i in 0..240usize {
+            let status_id = format!("jve1:{:064x}", 910_100 + i);
+            prepared.add_host_verified_record(host(
+                status_id.clone(),
+                &issuer,
+                vec![previous],
+                json!({"kind":"import.status","target":publication_id,"claim":claim_id,"value":"active"}),
+            ));
+            previous = status_id;
+        }
+        graph::reset_audit_work();
+        let state = prepared.into_state();
+        assert!(state.evaluation().available);
+        let used = 10_000_000 - remaining_work(&state);
+        let work = graph::audit_work();
+        assert!(
+            work <= 16 * used,
+            "{work} audited work for {used} charged units"
+        );
+    }
+
+    /// Whole-evaluator guard: across the shapes the audit touched,
+    /// the counted inner-loop work stays within a fixed multiple of
+    /// the charged logical units.
+    #[test]
+    fn evaluator_audit_work_stays_within_charged_units() {
+        // Flat root judgments on one target (register maxima).
+        let mut flat = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        flat.add_record(&publication, body.as_deref());
+        let judge = identity_from_seed(&[8u8; 32]);
+        for i in 0..1_500usize {
+            flat.add_host_verified_record(host(
+                format!("jve1:{:064x}", 920_000 + i),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+            ));
+        }
+        // Independent transfers to an absent successor.
+        let mut transfers = base();
+        for i in 0..1_500usize {
+            transfers.add_host_verified_record(host(
+                format!("jve1:{:064x}", 930_000 + i),
+                &format!("ed25519:{i:064x}"),
+                vec![],
+                json!({"kind":"identity.transfer","successor":"ed25519:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}),
+            ));
+        }
+        for (name, prepared) in [("flat judgments", flat), ("transfers", transfers)] {
+            graph::reset_audit_work();
+            let state = prepared.into_state();
+            assert!(state.evaluation().available, "{name}");
+            let used = 10_000_000 - remaining_work(&state);
+            let work = graph::audit_work();
+            assert!(
+                work <= 16 * used,
+                "{name}: {work} audited work for {used} charged units"
+            );
+        }
+    }
+
     /// A checkpoint written before the byte total was saved has no
     /// total to seed. Its first advance rebuilds instead of guessing,
     /// and still matches a full evaluation.
@@ -2309,7 +2472,7 @@ mod rebuild_tests {
     /// evaluation at the exact budget and one below.
     #[test]
     fn carry_split_append_matches_full_at_tight_budgets() {
-        let mut prepared = base();
+        let mut prepared = witnessed_view();
         let (publication, body) = publication();
         let publication_id = publication.id().to_string();
         prepared.add_record(&publication, body.as_deref());
@@ -2330,11 +2493,15 @@ mod rebuild_tests {
             json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":claim_id,"carry":[claim_id]}),
         ));
         prepared.add_host_verified_record(host(
-            third_id,
+            third_id.clone(),
             &issuer,
             vec![status_id.clone()],
             json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":status_id,"carry":[status_id]}),
         ));
+        // Certify the chain head, so account evaluation really
+        // constructs the carries this test is about.
+        observe(&mut prepared, 10, 5, &third_id);
+        observe(&mut prepared, 11, 5, &third_id);
         assert!(
             prepared
                 .nodes
@@ -2342,6 +2509,14 @@ mod rebuild_tests {
                 .filter(|node| node.kind == "account.set")
                 .all(|node| node.semantic),
             "carry-split account records must be semantically valid"
+        );
+        let construction_bytes =
+            graph::Graph::new(prepared.nodes.clone(), &prepared.options.limits)
+                .ancestry
+                .bytes();
+        assert!(
+            cap_bytes(&prepared.clone().into_state()) > construction_bytes,
+            "carry evaluation must add ancestry bytes beyond construction"
         );
         // The ID sorts between the two claims, so a fresh layout
         // splits the carried closure.

@@ -21,6 +21,38 @@ thread_local! {
 pub(super) fn lifecycle_visits() -> usize {
     LIFECYCLE_VISITS.with(Cell::get)
 }
+#[cfg(test)]
+thread_local! {
+    /// Ranges examined by `Graph::maxima` while merging closures.
+    static MAXIMA_RANGE_VISITS: Cell<usize> = const { Cell::new(0) };
+}
+#[cfg(test)]
+pub(super) fn maxima_range_visits() -> usize {
+    MAXIMA_RANGE_VISITS.with(Cell::get)
+}
+#[cfg(test)]
+pub(super) fn reset_maxima_range_visits() {
+    MAXIMA_RANGE_VISITS.with(|count| count.set(0));
+}
+#[cfg(test)]
+thread_local! {
+    /// Work done by the inner loops the resource audit touched
+    /// (lifecycle indexing and walks, maxima merges, account index
+    /// lookups). The guard test compares it with charged units.
+    static AUDIT_WORK: Cell<usize> = const { Cell::new(0) };
+}
+#[cfg(test)]
+pub(crate) fn count_work(amount: usize) {
+    AUDIT_WORK.with(|count| count.set(count.get() + amount));
+}
+#[cfg(test)]
+pub(crate) fn audit_work() -> usize {
+    AUDIT_WORK.with(Cell::get)
+}
+#[cfg(test)]
+pub(crate) fn reset_audit_work() {
+    AUDIT_WORK.with(|count| count.set(0));
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -192,6 +224,17 @@ pub(crate) struct Graph {
     /// `local_complete`, computed in one pass at lifecycle build and
     /// kept current by appends.
     pub issuer_complete: BTreeMap<String, bool>,
+    /// Semantic `account.set` record IDs by account token
+    /// (`origin#account`), in record order. Account evaluation reads
+    /// this index instead of scanning all records per claim.
+    pub account_sets: BTreeMap<String, Vec<String>>,
+    /// Memoized downstream issuer sets. The successor map does not
+    /// change after build (appends never touch it), so a computed
+    /// set stays valid for the life of the graph.
+    pub downstream_cache: std::cell::RefCell<BTreeMap<String, BTreeSet<String>>>,
+    /// Per issuer, the union of missing IDs over its retained
+    /// records, for account evaluation's missing-history lookup.
+    pub issuer_missing: BTreeMap<String, BTreeSet<String>>,
     /// Records appended to this state, in append order. Per state: a
     /// sibling's appends never appear here.
     pub appended_ids: Vec<String>,
@@ -218,6 +261,9 @@ impl Graph {
             ancestry: super::ancestors::AncestryBudget::new(),
             boundary: BoundaryCrossings::default(),
             issuer_complete: BTreeMap::new(),
+            account_sets: BTreeMap::new(),
+            downstream_cache: std::cell::RefCell::new(BTreeMap::new()),
+            issuer_missing: BTreeMap::new(),
             appended_ids: Vec::new(),
             appended_rank: BTreeMap::new(),
             own: Rc::default(),
@@ -593,18 +639,22 @@ impl Graph {
         let mut enters_cycle: BTreeMap<&str, bool> = BTreeMap::new();
         for key in edges.keys() {
             let mut path: Vec<&str> = Vec::new();
+            let mut on_path: BTreeSet<&str> = BTreeSet::new();
             let mut at = key.as_str();
             let result = loop {
                 if let Some(&known) = enters_cycle.get(at) {
                     break known;
                 }
-                if path.contains(&at) {
+                if on_path.contains(at) {
                     break true;
                 }
                 let Some(next) = edges.get(at) else {
                     break false;
                 };
                 path.push(at);
+                on_path.insert(at);
+                #[cfg(test)]
+                count_work(1);
                 at = next.as_str();
             };
             for item in path {
@@ -628,17 +678,21 @@ impl Graph {
         let mut resolved: BTreeMap<&str, &str> = BTreeMap::new();
         for key in &keys {
             let mut path: Vec<&str> = Vec::new();
+            let mut on_path: BTreeSet<&str> = BTreeSet::new();
             let mut at = key.as_str();
             let actor = loop {
                 if let Some(&done) = resolved.get(at) {
                     break done;
                 }
-                if path.contains(&at) {
+                if on_path.contains(at) {
                     break at;
                 }
                 match predecessor.get(at) {
                     Some(parent) => {
                         path.push(at);
+                        on_path.insert(at);
+                        #[cfg(test)]
+                        count_work(1);
                         at = parent;
                     }
                     None => break at,
@@ -670,6 +724,23 @@ impl Graph {
                 .issuer_complete
                 .entry(node.issuer.clone())
                 .or_insert(true) &= complete;
+            if node.semantic && node.kind == "account.set" {
+                if let (Some(origin), Some(account)) = (
+                    node.action["origin"].as_str(),
+                    node.action["account"].as_u64(),
+                ) {
+                    self.account_sets
+                        .entry(format!("{origin}#{account}"))
+                        .or_default()
+                        .push(id.clone());
+                }
+            }
+            if !self.lifecycle.successor.contains_key(&node.issuer) || self.retained(id) {
+                self.issuer_missing
+                    .entry(node.issuer.clone())
+                    .or_default()
+                    .extend(self.own[id].missing.iter().cloned());
+            }
         }
         for (id, node) in &self.nodes {
             if !self.own_complete(id) || self.pending_cutoffs.contains(&node.issuer) {
@@ -760,26 +831,12 @@ impl Graph {
     /// Position bounds of one issuer's block in the layout, if any of
     /// its records are positioned.
     pub fn issuer_block(&self, issuer: &str) -> Option<(u32, u32)> {
-        let mut bounds: Option<(u32, u32)> = None;
-        for node in self.nodes.values().filter(|n| n.issuer == issuer) {
-            if let Some(position) = self.space.position(&node.id) {
-                bounds = Some(match bounds {
-                    None => (position, position),
-                    Some((first, last)) => (first.min(position), last.max(position)),
-                });
-            }
-        }
-        bounds
+        self.space.block(issuer)
     }
 
     /// First layout position of any issuer block after the given one.
     pub fn next_block_start(&self, issuer: &str) -> u32 {
-        self.nodes
-            .values()
-            .filter(|n| n.issuer.as_str() > issuer)
-            .filter_map(|n| self.space.position(&n.id))
-            .min()
-            .unwrap_or_else(|| self.space.len() as u32)
+        self.space.next_block_start(issuer)
     }
 
     pub fn actor(&self, key: &str) -> String {
@@ -812,6 +869,7 @@ impl Graph {
             result
         };
         let own = closure(&self.own);
+        let own_missing = own.missing.clone();
         let shared =
             Rc::ptr_eq(&self.own, &self.structural) && Rc::ptr_eq(&self.own, &self.accepted);
         let mut own = own;
@@ -889,6 +947,23 @@ impl Graph {
             .issuer_complete
             .entry(node.issuer.clone())
             .or_insert(true) &= complete;
+        if node.semantic && node.kind == "account.set" {
+            if let (Some(origin), Some(account)) = (
+                node.action["origin"].as_str(),
+                node.action["account"].as_u64(),
+            ) {
+                self.account_sets
+                    .entry(format!("{origin}#{account}"))
+                    .or_default()
+                    .push(node.id.clone());
+            }
+        }
+        if !self.lifecycle.successor.contains_key(&node.issuer) || self.retained(&node.id) {
+            self.issuer_missing
+                .entry(node.issuer.clone())
+                .or_default()
+                .extend(own_missing.iter().cloned());
+        }
         self.appended += 1;
     }
     pub fn own_complete(&self, id: &str) -> bool {
@@ -943,23 +1018,89 @@ impl Graph {
             }
             .is_some_and(|c| c.ids.contains(earlier))
     }
+    /// The members of `ids` that no other member follows. A member
+    /// is not a maximum exactly when another member's closure
+    /// contains it. Members are grouped by closure size: a member
+    /// contained in another of the same size has an identical
+    /// closure (closures are transitive), so same-size elimination
+    /// is an identical-closure test, and larger closures are merged
+    /// into one accumulated union that smaller members are tested
+    /// against. The work is linear in the stored ranges examined,
+    /// not in the square of the member count.
     pub fn maxima(&self, ids: BTreeSet<String>, structural: bool) -> BTreeSet<String> {
-        ids.iter()
-            .filter(|id| !ids.iter().any(|later| self.follows(later, id, structural)))
-            .cloned()
-            .collect()
+        let cache = if structural {
+            &self.structural
+        } else {
+            &self.accepted
+        };
+        let mut unknown: BTreeSet<String> = BTreeSet::new();
+        let mut groups: BTreeMap<usize, Vec<(&String, &Closure)>> = BTreeMap::new();
+        for id in &ids {
+            match cache.get(id) {
+                Some(closure) => groups
+                    .entry(closure.ids.member_count())
+                    .or_default()
+                    .push((id, closure)),
+                None => {
+                    unknown.insert(id.clone());
+                }
+            }
+        }
+        let mut result = unknown;
+        let mut larger = IdSet::empty(self.space.clone());
+        for (_, members) in groups.iter().rev() {
+            // Same-size members eliminate each other only through
+            // identical closures, which eliminate every member that
+            // shares them.
+            type Signature<'a> = (Vec<(u32, u32)>, &'a BTreeSet<String>);
+            let mut signatures: BTreeMap<Signature<'_>, usize> = BTreeMap::new();
+            for (_, closure) in members {
+                *signatures
+                    .entry((closure.ids.ranges().collect(), &closure.ids.extra))
+                    .or_insert(0) += 1;
+            }
+            for (id, closure) in members {
+                let signature = (
+                    closure.ids.ranges().collect::<Vec<(u32, u32)>>(),
+                    &closure.ids.extra,
+                );
+                if signatures[&signature] < 2 && !larger.contains(id) {
+                    result.insert((*id).clone());
+                }
+            }
+            for (_, closure) in members {
+                #[cfg(test)]
+                {
+                    let examined = larger.range_count() + closure.ids.range_count();
+                    MAXIMA_RANGE_VISITS.with(|count| count.set(count.get() + examined));
+                    count_work(examined);
+                }
+                larger.union_uncharged(&closure.ids);
+            }
+        }
+        result
     }
     pub fn structurally_connected(&self, root: &str, issuer: &str, event: &str) -> bool {
         if root == issuer {
             return true;
         }
+        // The root issuer's records occupy one contiguous block, so
+        // the closure is connected to it exactly when a stored range
+        // overlaps that block or an appended member belongs to it.
         self.structural.get(event).is_some_and(|c| {
-            c.ids
-                .iter_unordered()
-                .any(|id| self.nodes[id.as_str()].issuer == root)
+            self.space
+                .block(root)
+                .is_some_and(|(first, last)| c.ids.intersects_positions(first, last))
+                || c.ids
+                    .extra
+                    .iter()
+                    .any(|id| self.nodes[id.as_str()].issuer == root)
         })
     }
     pub fn downstream(&self, root: &str) -> BTreeSet<String> {
+        if let Some(keys) = self.downstream_cache.borrow().get(root) {
+            return keys.clone();
+        }
         let mut keys = BTreeSet::new();
         let mut at = root;
         while keys.insert(at.into()) {
@@ -968,6 +1109,9 @@ impl Graph {
                 None => break,
             }
         }
+        self.downstream_cache
+            .borrow_mut()
+            .insert(root.to_string(), keys.clone());
         keys
     }
     pub fn local_complete(&self, root: &str, _claim: &str) -> bool {
@@ -1060,6 +1204,107 @@ mod tests {
             visits <= 3 * count,
             "{visits} lifecycle visits for {count} records"
         );
+    }
+
+    /// Many root judgments by one issuer on one target form one
+    /// register group of unrelated heads. Maxima must stay linear
+    /// in the stored ranges examined, not quadratic in the group.
+    #[test]
+    fn flat_register_maxima_examine_linear_ranges() {
+        let count = 4_000usize;
+        let mut nodes = nodes(count, false);
+        for node in nodes.values_mut() {
+            node.action = json!({"kind":"judgment.set","target":"jve1:target","value":"bless"});
+            node.kind = "judgment.set".into();
+        }
+        let graph = Graph::new(nodes, &Limits::default());
+        assert!(!graph.resource.get());
+        reset_maxima_range_visits();
+        let ids: BTreeSet<String> = graph.nodes.keys().cloned().collect();
+        let heads = graph.maxima(ids, false);
+        assert_eq!(heads.len(), count);
+        let visits = maxima_range_visits();
+        assert!(
+            visits <= 4 * count,
+            "{visits} range visits for {count} flat heads"
+        );
+    }
+
+    /// A successor chain in ascending key order: each issuer
+    /// transfers to the next, whose only root accepts. Lifecycle
+    /// indexing and walks must visit a linear number of records and
+    /// links, in both walk directions.
+    #[test]
+    fn successor_chain_lifecycle_visits_stay_linear() {
+        for links in [500usize, 1_000] {
+            let mut nodes: BTreeMap<String, Node> = BTreeMap::new();
+            let insert = |nodes: &mut BTreeMap<String, Node>,
+                          i: usize,
+                          issuer: &str,
+                          previous: Vec<String>,
+                          action: Value,
+                          kind: &str| {
+                let id = format!("jve1:{i:064x}");
+                nodes.insert(
+                    id.clone(),
+                    Node {
+                        id,
+                        issuer: issuer.into(),
+                        previous,
+                        action,
+                        kind: kind.into(),
+                        semantic: true,
+                        body_hash: None,
+                        body: None,
+                        body_label: "absent".into(),
+                    },
+                );
+            };
+            for i in 0..links {
+                let issuer = format!("ed25519:{i:064x}");
+                let next = format!("ed25519:{:064x}", i + 1);
+                if i == 0 {
+                    insert(
+                        &mut nodes,
+                        2 * i,
+                        &issuer,
+                        vec![],
+                        json!({"kind":"identity.transfer","successor":next}),
+                        "identity.transfer",
+                    );
+                } else {
+                    let accept_id = format!("jve1:{:064x}", 2 * i - 1);
+                    insert(
+                        &mut nodes,
+                        2 * i,
+                        &issuer,
+                        vec![accept_id],
+                        json!({"kind":"identity.transfer","successor":next}),
+                        "identity.transfer",
+                    );
+                }
+                let accept_at = 2 * i + 1;
+                insert(
+                    &mut nodes,
+                    accept_at,
+                    &next,
+                    vec![],
+                    json!({"kind":"identity.accept","transfer":format!("jve1:{:064x}", 2 * i)}),
+                    "identity.accept",
+                );
+            }
+            let records = nodes.len();
+            let before_visits = lifecycle_visits();
+            let before_work = audit_work();
+            let graph = Graph::new(nodes, &Limits::default());
+            assert!(!graph.resource.get());
+            assert_eq!(graph.lifecycle.successor.len(), links);
+            let visits = lifecycle_visits() - before_visits + (audit_work() - before_work);
+            assert!(
+                visits <= 8 * records,
+                "{visits} lifecycle visits for {records} records"
+            );
+        }
     }
 
     #[test]

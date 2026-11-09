@@ -458,10 +458,16 @@ fn publications_for(
     result: &mut Evaluation,
     only: Option<&BTreeSet<String>>,
 ) {
-    for (id, node) in &graph.nodes {
-        if only.is_some_and(|ids| !ids.contains(id)) {
-            continue;
-        }
+    // With a restricted set, visit only those records instead of
+    // scanning every record per append.
+    let restricted: Vec<(&String, &graph::Node)> = match only {
+        Some(ids) => ids
+            .iter()
+            .filter_map(|id| graph.nodes.get_key_value(id))
+            .collect(),
+        None => graph.nodes.iter().collect(),
+    };
+    for (id, node) in restricted {
         if !node.semantic || !matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish") {
             continue;
         }
@@ -849,10 +855,11 @@ fn action_targets(graph: &graph::Graph, result: &mut Evaluation) {
     action_targets_for(graph, result, None);
 }
 fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Option<&str>) {
-    for (id, node) in &graph.nodes {
-        if only.is_some_and(|only| id != only) {
-            continue;
-        }
+    let restricted: Vec<(&String, &graph::Node)> = match only {
+        Some(id) => graph.nodes.get_key_value(id).into_iter().collect(),
+        None => graph.nodes.iter().collect(),
+    };
+    for (id, node) in restricted {
         if !node.semantic {
             continue;
         }

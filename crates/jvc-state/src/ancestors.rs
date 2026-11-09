@@ -191,6 +191,10 @@ impl Ranges {
 pub(crate) struct Space {
     index: BTreeMap<String, u32>,
     ids: Vec<String>,
+    /// Layout position bounds of each issuer's block. Blocks are
+    /// contiguous and ordered by issuer, so this also answers the
+    /// first block after any issuer.
+    blocks: BTreeMap<String, (u32, u32)>,
 }
 
 impl Space {
@@ -204,7 +208,8 @@ impl Space {
         }
         let mut index: BTreeMap<String, u32> = BTreeMap::new();
         let mut ids: Vec<String> = Vec::with_capacity(nodes.len());
-        for (_, members) in by_issuer {
+        let mut blocks: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+        for (issuer, members) in by_issuer {
             let member_set: BTreeSet<&str> = members.iter().copied().collect();
             let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
             let mut waiting: BTreeMap<&str, usize> = BTreeMap::new();
@@ -241,19 +246,37 @@ impl Space {
                     ordered.push(id);
                 }
             }
+            let first = ids.len() as u32;
             for id in ordered {
                 index.insert(id.to_string(), ids.len() as u32);
                 ids.push(id.to_string());
             }
+            blocks.insert(issuer.to_string(), (first, ids.len() as u32 - 1));
         }
-        Rc::new(Self { index, ids })
+        Rc::new(Self { index, ids, blocks })
     }
 
     pub fn empty() -> Rc<Self> {
         Rc::new(Self {
             index: BTreeMap::new(),
             ids: Vec::new(),
+            blocks: BTreeMap::new(),
         })
+    }
+
+    /// Layout bounds of one issuer's block, if it has records.
+    pub(crate) fn block(&self, issuer: &str) -> Option<(u32, u32)> {
+        self.blocks.get(issuer).copied()
+    }
+
+    /// First layout position of any block after the given issuer.
+    pub(crate) fn next_block_start(&self, issuer: &str) -> u32 {
+        use std::ops::Bound;
+        self.blocks
+            .range::<str, _>((Bound::Excluded(issuer), Bound::Unbounded))
+            .next()
+            .map(|(_, &(first, _))| first)
+            .unwrap_or_else(|| self.ids.len() as u32)
     }
 
     pub(crate) fn position(&self, id: &str) -> Option<u32> {
@@ -429,8 +452,35 @@ impl IdSet {
         self.ranges.as_slice().len()
     }
 
+    /// Number of member records, positioned and appended.
+    pub fn member_count(&self) -> usize {
+        self.ranges
+            .as_slice()
+            .iter()
+            .map(|range| (range.last - range.first + 1) as usize)
+            .sum::<usize>()
+            + self.extra.len()
+    }
+
+    /// Whether any positioned member lies in `[first, last]`.
+    pub fn intersects_positions(&self, first: u32, last: u32) -> bool {
+        let ranges = self.ranges.as_slice();
+        let index = ranges.partition_point(|range| range.last < first);
+        ranges.get(index).is_some_and(|range| range.first <= last)
+    }
+
+    /// Union without a budget charge. The caller bounds the work
+    /// itself (for example `Graph::maxima`, whose inputs are stored
+    /// closures whose ranges the ancestry cap already bounds).
+    pub fn union_uncharged(&mut self, other: &IdSet) {
+        self.ranges = Ranges::combine(&self.ranges, &other.ranges, None);
+        self.extra.extend(other.extra.iter().cloned());
+        self.fresh_ranges = self.range_count();
+    }
+
     /// Members in layout order, produced one at a time. Callers that
     /// only test membership or stop at a match pay for what they scan.
+    #[cfg(test)]
     pub fn iter_unordered(&self) -> impl Iterator<Item = String> + '_ {
         self.ranges
             .as_slice()

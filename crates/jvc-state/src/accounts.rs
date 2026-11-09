@@ -418,20 +418,28 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             return;
         }
         let mut local_missing = BTreeMap::new();
+        let mut missing_by_issuer: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for id in chains.keys() {
             if let Some(n) = graph.nodes.get(id) {
                 if !graph.local_complete(&n.issuer, id) {
-                    let keys = graph.downstream(&n.issuer);
-                    let missing = graph
-                        .nodes
-                        .values()
-                        .filter(|n| {
-                            keys.contains(&n.issuer)
-                                && (!graph.lifecycle.successor.contains_key(&n.issuer)
-                                    || graph.retained(&n.id))
+                    // The per-issuer retained missing unions are
+                    // indexed at graph build; claims of one issuer
+                    // share one answer instead of rescanning every
+                    // record per claim.
+                    #[cfg(test)]
+                    crate::graph::count_work(1);
+                    let missing = missing_by_issuer
+                        .entry(n.issuer.clone())
+                        .or_insert_with(|| {
+                            graph
+                                .downstream(&n.issuer)
+                                .iter()
+                                .filter_map(|key| graph.issuer_missing.get(key))
+                                .flatten()
+                                .cloned()
+                                .collect()
                         })
-                        .flat_map(|n| graph.own[&n.id].missing.clone())
-                        .collect::<BTreeSet<_>>();
+                        .clone();
                     local_missing.insert(id.clone(), missing);
                 }
             }
@@ -741,17 +749,14 @@ fn command_authority(graph: &Graph, claim: &str, a: &AccountKey) -> bool {
     }) {
         return false;
     }
-    let ids = graph
-        .nodes
-        .values()
-        .filter(|e| {
-            e.semantic
-                && e.kind == "account.set"
-                && same_account(e, a)
-                && keys.contains(&e.issuer)
-                && graph.retained(&e.id)
-        })
-        .map(|e| e.id.clone())
+    let candidates = graph.account_sets.get(&a.token());
+    #[cfg(test)]
+    crate::graph::count_work(candidates.map_or(0, Vec::len));
+    let ids = candidates
+        .into_iter()
+        .flatten()
+        .filter(|id| keys.contains(&graph.nodes[*id].issuer) && graph.retained(id))
+        .cloned()
         .collect();
     let maxima = graph.maxima(ids, false);
     maxima.len() == 1 && maxima.contains(claim)
@@ -772,16 +777,17 @@ fn authorized_record(
         return false;
     }
     let past = &graph.structural[&n.id];
-    let ids = past
-        .ids
-        .iter_unordered()
-        .filter(|id| id != &n.id)
+    #[cfg(test)]
+    crate::graph::count_work(graph.account_sets.get(&a.token()).map_or(0, Vec::len));
+    let ids = graph
+        .account_sets
+        .get(&a.token())
+        .into_iter()
+        .flatten()
+        .filter(|id| *id != &n.id && past.ids.contains(id))
         .filter(|id| boundary.is_none_or(|b| b.ids.contains(id)))
-        .filter(|id| {
-            let e = &graph.nodes[id];
-            e.semantic && e.kind == "account.set" && same_account(e, a)
-        })
-        .collect();
+        .cloned()
+        .collect::<BTreeSet<String>>();
     let maxima = graph.maxima(ids, true);
     maxima.len() == 1 && maxima.contains(claim)
 }
