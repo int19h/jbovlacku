@@ -339,6 +339,30 @@ impl EvaluatedState {
                 self.graph = Some(graph);
             }
         }
+        // A judgment-only advance that rebuilds only because the
+        // fast path declined on layout grounds still reports the keys
+        // it changed, read from the rebuilt evaluation below. State
+        // patches are built from those keys. Resource and lifecycle
+        // rebuilds report none, as before.
+        let added_judgments: Vec<(String, String, String)> = if removed.is_empty() {
+            added
+                .values()
+                .filter(|node| node.kind == "judgment.set")
+                .map(|node| {
+                    (
+                        node.id.clone(),
+                        node.issuer.clone(),
+                        node.action["target"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let judgment_only = !added_judgments.is_empty() && added_judgments.len() == added.len();
         while rebuild_reason.is_none() && !added.is_empty() {
             // Prefer dependencies from this same batch before their consumers.
             let next = next_ready_id(&added);
@@ -361,11 +385,42 @@ impl EvaluatedState {
             }
         }
         if let Some(reason) = rebuild_reason {
+            let layout_rebuild = reason == "layout_split";
             self.prepared.nodes.extend(added);
             self.rebuild();
             self.statistics.rebuilt = true;
             self.statistics.reason = Some(reason);
             self.statistics.incremental_records = 0;
+            if judgment_only && layout_rebuild && self.evaluation.available {
+                let mut changes = JudgmentChanges::default();
+                for (id, issuer, target) in &added_judgments {
+                    if self.evaluation.receipts.contains_key(id) {
+                        changes.receipts.insert(id.clone());
+                    }
+                    let key = format!("{issuer}|judgment|{target}");
+                    if self.evaluation.registers.contains_key(&key) {
+                        changes.registers.insert(key);
+                    }
+                    if self
+                        .evaluation
+                        .judgments
+                        .get(target)
+                        .is_some_and(|actors| actors.contains_key(issuer))
+                    {
+                        changes
+                            .judgments
+                            .entry(target.clone())
+                            .or_default()
+                            .insert(issuer.clone());
+                    }
+                    if self.evaluation.lifecycle.key_actor.contains_key(issuer)
+                        && self.evaluation.lifecycle.groups.contains_key(issuer)
+                    {
+                        changes.actors.insert(issuer.clone());
+                    }
+                }
+                self.judgment_changes = Some(changes);
+            }
         }
         self
     }
@@ -427,91 +482,85 @@ impl EvaluatedState {
                 return Err("target_unresolved");
             }
         }
-        // The fast-path invariant: the new record's exact fresh-layout
-        // position comes from simulating its issuer block's layout,
-        // charged like layout construction (one unit per member record
-        // and predecessor edge). Appended records carry that rank, so
-        // the modeled order of this state's records is exactly a fresh
-        // build's order, and every existing closure keeps the range
-        // count a fresh build gives it — provided the insertion splits
-        // no stored range. A split range would change that closure's
-        // count, and with it the combine and evaluation charges a full
-        // build bases on the count. When the invariant holds, the
-        // append's own combines run through the same code a full build
-        // uses for this record, so the totals equal a full evaluation
-        // exactly. The checks are charged against the graph budget;
-        // their cost is not part of the append price below.
+        // The fast-path invariant: the new record goes last in its
+        // issuer block in a fresh layout. Then every existing closure
+        // is unchanged, the new closures are exactly what a fresh
+        // build computes, and the price below (the full build's own
+        // charge formula for one record) makes the totals equal a
+        // full evaluation exactly.
+        //
+        // Last in block is shown by coverage: the parents' combined
+        // own-closure holds every record of the issuer, positioned
+        // and appended alike. Every block record is then an ancestor
+        // of the new record, so the layout emits it before the new
+        // record, whatever the new record's ID. The one case coverage
+        // does not settle is an ancestor that reaches a parent only
+        // through another issuer: it can sit after the latest parent
+        // in the block and still emit after the new record unless the
+        // new ID sorts after it, because the layout emits ready
+        // records in lexical order. The scan below rebuilds unless
+        // the new ID is last among those records. No check here
+        // clones an ID: coverage reads range bounds, and the scan
+        // compares borrowed layout IDs. On the real 63,245-record
+        // chain the parent is the chain tip, so coverage reads one
+        // stored range and the scan reads none.
+        //
+        // The boundary span scan stays: a closure holding the block's
+        // last record and the next block's first would split when the
+        // new record inserts between them.
         let parents: Vec<&graph::Closure> = node.previous.iter().map(|id| &graph.own[id]).collect();
-        let block = graph.issuer_block(&node.issuer);
-        let block_end = match block {
-            Some((_, last)) => last + 1,
-            None => graph.next_block_start(&node.issuer),
-        };
-        // When the parents' combined closure holds every record of
-        // the issuer, positioned and appended alike, a fresh layout
-        // emits the new record last in its block: no simulation is
-        // needed, and only the boundary span matters. The coverage
-        // sweep is charged like the span scan below.
-        let covered = match block {
-            Some((first, last)) => {
-                let sweep_bound: usize = parents
-                    .iter()
-                    .map(|closure| closure.ids.range_count())
-                    .sum::<usize>()
-                    .saturating_mul(node.previous.len().max(1));
-                if !graph.charge(sweep_bound) {
-                    return Err("work_budget");
-                }
-                let parent_sets: Vec<&graph::IdSet> =
-                    parents.iter().map(|closure| &closure.ids).collect();
-                graph::IdSet::union_covers(&parent_sets, first, last)
-                    && graph
-                        .appended_ids
-                        .iter()
-                        .filter(|id| graph.nodes[id.as_str()].issuer == node.issuer)
-                        .all(|id| parents.iter().any(|closure| closure.ids.contains(id)))
-            }
-            None => true,
-        };
-        if covered {
-            spanning_check(graph, block_end)?;
-        } else {
-            // Learn the exact insertion point from a simulation of
-            // the block's fresh layout, charged one unit per member
-            // and edge through a refundable check charge.
-            let saved = graph.budget.get();
-            if !graph.charge_check(graph.rank_cost(node)) {
-                graph.budget.set(saved);
+        if let Some((first, last)) = graph.issuer_block(&node.issuer) {
+            let sweep_bound: usize = parents
+                .iter()
+                .map(|closure| closure.ids.range_count())
+                .sum::<usize>()
+                .saturating_mul(node.previous.len().max(1));
+            if !graph.charge(sweep_bound) {
                 return Err("work_budget");
             }
-            let (insert_at, _) = graph.simulate_rank(node);
-            if insert_at >= block_end {
-                graph.budget.set(saved);
-                spanning_check(graph, block_end)?;
-            } else {
-                // An interior insertion can split a range in any
-                // stored closure. Test them all, one charged unit
-                // each, restoring the check charges on the way out.
-                let mut seen: Vec<usize> = Vec::new();
-                for cache in [&graph.own, &graph.structural, &graph.accepted] {
-                    let pointer = std::rc::Rc::as_ptr(cache) as usize;
-                    if seen.contains(&pointer) {
-                        continue;
+            let parent_sets: Vec<&graph::IdSet> =
+                parents.iter().map(|closure| &closure.ids).collect();
+            if !graph::IdSet::union_covers(&parent_sets, first, last) {
+                return Err("layout_split");
+            }
+            for id in graph
+                .appended_ids
+                .iter()
+                .filter(|id| graph.nodes[id.as_str()].issuer == node.issuer)
+            {
+                if !parents.iter().any(|closure| closure.ids.contains(id)) {
+                    return Err("layout_split");
+                }
+            }
+            let latest_parent = node
+                .previous
+                .iter()
+                .filter_map(|id| graph.space.position(id))
+                .max();
+            if let Some(latest) = latest_parent {
+                for position in latest + 1..=last {
+                    if !graph.charge(1) {
+                        return Err("work_budget");
                     }
-                    seen.push(pointer);
-                    for record in graph.nodes.values() {
-                        if !graph.charge_check(1) {
-                            graph.budget.set(saved);
-                            return Err("work_budget");
-                        }
-                        if cache[&record.id].ids.spans(insert_at) {
-                            graph.budget.set(saved);
-                            return Err("layout_split");
-                        }
+                    if node.id.as_str() < graph.space.id_ref(position) {
+                        return Err("layout_split");
                     }
                 }
-                graph.budget.set(saved);
             }
+            spanning_check(graph, last + 1)?;
+        } else {
+            // No positioned records for this issuer: any appended ones
+            // must still all be ancestors of the new record.
+            for id in graph
+                .appended_ids
+                .iter()
+                .filter(|id| graph.nodes[id.as_str()].issuer == node.issuer)
+            {
+                if !parents.iter().any(|closure| closure.ids.contains(id)) {
+                    return Err("layout_split");
+                }
+            }
+            spanning_check(graph, graph.next_block_start(&node.issuer))?;
         }
         // The full build's charge for one more record, per cache:
         // setup (one per record and predecessor) plus construction
@@ -1363,14 +1412,24 @@ mod rebuild_tests {
                         status_id.clone(),
                         &issuers[0],
                         vec![claim_id.clone()],
-                        json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":claim_id,"carry":[]}),
+                        json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":claim_id,"carry":[claim_id]}),
                     ));
-                    tips.insert(issuers[0].clone(), status_id);
+                    let carried_id = fresh_id(&mut counter);
+                    prepared.add_host_verified_record(host(
+                        carried_id.clone(),
+                        &issuers[0],
+                        vec![status_id.clone()],
+                        json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":status_id,"carry":[status_id]}),
+                    ));
+                    tips.insert(issuers[0].clone(), carried_id);
                 }
             }
+            let base_tips = tips.clone();
+            let mut extras: std::collections::BTreeMap<String, Vec<String>> =
+                std::collections::BTreeMap::new();
             let mut state = prepared.clone().into_state();
             for step in 0..6u64 {
-                let kind = rng.below(10);
+                let kind = rng.below(13);
                 if kind == 7 {
                     // Fork: both siblings advance differently; each
                     // must match its own full evaluation.
@@ -1441,6 +1500,59 @@ mod rebuild_tests {
                             json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
                         )
                     }
+                    9 => {
+                        // Append to an earlier appended record, not
+                        // the current tip, in either ID order.
+                        let Some(list) = extras.get(issuer) else {
+                            continue;
+                        };
+                        if list.is_empty() {
+                            continue;
+                        }
+                        let parent = list[rng.below(list.len() as u64) as usize].clone();
+                        let id = if step % 2 == 0 {
+                            fresh_id(&mut counter)
+                        } else {
+                            rev_counter -= 1;
+                            format!("jve1:{rev_counter:064x}")
+                        };
+                        host(
+                            id,
+                            issuer,
+                            vec![parent],
+                            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+                        )
+                    }
+                    10 => {
+                        // Append to the base chain tip after appended
+                        // records exist: the parents leave the extras
+                        // out, so this rebuilds.
+                        let Some(tip) = base_tips.get(issuer) else {
+                            continue;
+                        };
+                        host(
+                            fresh_id(&mut counter),
+                            issuer,
+                            vec![tip.clone()],
+                            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+                        )
+                    }
+                    11 => {
+                        // An account record carrying an appended head.
+                        let Some(tip) = tips.get(issuer) else {
+                            continue;
+                        };
+                        let carry = extras
+                            .get(issuer)
+                            .and_then(|list| list.last().cloned())
+                            .unwrap_or_else(|| tip.clone());
+                        host(
+                            fresh_id(&mut counter),
+                            issuer,
+                            vec![tip.clone()],
+                            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":tip,"carry":[carry]}),
+                        )
+                    }
                     _ => {
                         let word = jvc_core::word_id(
                             &json!({"language":"jbo","spelling":format!("sel{seed}x{step}")}),
@@ -1455,6 +1567,10 @@ mod rebuild_tests {
                     }
                 };
                 let record_id = record.node.id.clone();
+                extras
+                    .entry(issuer.clone())
+                    .or_default()
+                    .push(record_id.clone());
                 tips.insert(issuer.clone(), record_id);
                 prepared.add_host_verified_record(record.clone());
                 let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
@@ -1469,6 +1585,66 @@ mod rebuild_tests {
         }
         assert!(comparisons > 400, "only {comparisons} comparisons ran");
         assert!(fast_appends > 50, "only {fast_appends} fast appends ran");
+    }
+
+    /// Kimi round 4 probe: three judgments on a two-record chain.
+    /// The first covers the chain and appends. The second has the
+    /// same parent but leaves out the first appended record, so it
+    /// rebuilds. The third builds on the first appended record, whose
+    /// closure still leaves out the second, so it rebuilds too. Every
+    /// step matches a fresh full evaluation exactly.
+    #[test]
+    fn kimi_appended_extra_left_out_of_parents_rebuilds() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let issuer = identity_from_seed(&[7u8; 32]);
+        let first_chain = format!("jve1:{:064x}", 1000usize);
+        let tip = format!("jve1:{:064x}", 1001usize);
+        prepared.add_host_verified_record(host(
+            first_chain.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        prepared.add_host_verified_record(host(
+            tip.clone(),
+            &issuer,
+            vec![first_chain],
+            json!({"kind":"identity.merge"}),
+        ));
+        let append = |prepared: &PreparedEvaluationInput,
+                      state: EvaluatedState,
+                      id: usize,
+                      previous: Vec<String>| {
+            let record = host(
+                format!("jve1:{id:064x}"),
+                &issuer,
+                previous,
+                json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+            );
+            let mut full = prepared.clone();
+            full.add_host_verified_record(record.clone());
+            let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+            delta.add_host_verified_record(record);
+            let state = state.advance(delta, &[]);
+            assert_matches_full(&state, &full);
+            (full, state)
+        };
+        let state = prepared.clone().into_state();
+        let (prepared, state) = append(&prepared, state, 2000, vec![tip.clone()]);
+        assert!(!state.statistics().rebuilt);
+        let (prepared, state) = append(&prepared, state, 1500, vec![tip.clone()]);
+        assert!(state.statistics().rebuilt);
+        let (prepared, state) = append(
+            &prepared,
+            state,
+            2500,
+            vec![format!("jve1:{:064x}", 2000usize)],
+        );
+        assert!(state.statistics().rebuilt);
+        let _ = prepared;
     }
 
     /// Two sibling forks appending on the same chain tip keep
@@ -1541,12 +1717,12 @@ mod rebuild_tests {
         }
     }
 
-    /// A root judgment whose issuer already has records takes the
-    /// fast path when its simulated insertion splits no stored range,
-    /// and the advance still reports the judgment keys it changed, so
-    /// state patches keep working.
+    /// A root judgment whose issuer already has records is not
+    /// covered by its parents, so it rebuilds. The advance still
+    /// reports the judgment keys it changed, read from the rebuilt
+    /// evaluation, so state patches keep working.
     #[test]
-    fn root_judgment_appends_and_still_reports_judgment_changes() {
+    fn root_judgment_rebuild_still_reports_judgment_changes() {
         let mut prepared = base();
         let (publication, body) = publication();
         let publication_id = publication.id().to_string();
@@ -1569,8 +1745,9 @@ mod rebuild_tests {
         let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
         delta.add_host_verified_record(judgment.clone());
         let state = prepared.clone().into_state().advance(delta, &[]);
-        assert!(!state.statistics().rebuilt);
-        assert_eq!(state.statistics().incremental_records, 1);
+        assert!(state.statistics().rebuilt);
+        assert_eq!(state.statistics().reason.as_deref(), Some("layout_split"));
+        assert_eq!(state.statistics().incremental_records, 0);
         let changes = state.judgment_changes().expect("judgment changes");
         assert!(changes.receipts.contains(judgment.node.id.as_str()));
         assert!(

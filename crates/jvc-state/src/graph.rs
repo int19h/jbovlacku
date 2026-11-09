@@ -136,10 +136,9 @@ pub(crate) struct Graph {
     /// sibling's appends never appear here.
     pub appended_ids: Vec<String>,
     /// Fresh-layout rank of each appended record: the layout position
-    /// it is inserted before, and its order among appended records
-    /// inserted at that same position. Ranks come from simulating the
-    /// issuer block's fresh layout order, so the modeled order of a
-    /// state's records is exactly a fresh build's order.
+    /// it is inserted before (always the end of its issuer block, the
+    /// only place the fast path appends), and its order among appended
+    /// records inserted at that same position.
     pub appended_rank: BTreeMap<String, (u32, u32)>,
     pub budget: Cell<usize>,
     pub resource: Cell<bool>,
@@ -233,17 +232,6 @@ impl Graph {
             resource: false,
         }
     }
-    /// Deduct a refundable check charge. Unlike `charge`, failure
-    /// marks nothing: the caller restores the cell and rebuilds.
-    pub(crate) fn charge_check(&self, amount: usize) -> bool {
-        if amount > self.budget.get() {
-            false
-        } else {
-            self.budget.set(self.budget.get() - amount);
-            true
-        }
-    }
-
     pub(crate) fn charge(&self, amount: usize) -> bool {
         if amount > self.budget.get() {
             self.resource.set(true);
@@ -548,119 +536,10 @@ impl Graph {
             }
         }
     }
-    /// The fresh-layout rank of a record appended to this state: the
-    /// layout position it is inserted before, and its order among
-    /// appended records inserted at that same position. This replays
-    /// the layout construction (`Space::new`) over the one issuer
-    /// block the record belongs to, with the state's appended records
-    /// as members, so the rank is exactly where a fresh build of the
-    /// same records puts the record relative to the positioned ones.
-    /// Whether the record goes before or after its block's appended
-    /// records follows from that same order.
-    pub fn simulate_rank(&self, node: &Node) -> (u32, u32) {
-        let issuer = &node.issuer;
-        let mut members: Vec<String> = Vec::new();
-        let mut positioned: BTreeSet<String> = BTreeSet::new();
-        if let Some((first, last)) = self.issuer_block(issuer) {
-            for position in first..=last {
-                let id = self.space.id_at(position);
-                positioned.insert(id.clone());
-                members.push(id);
-            }
-        }
-        for id in &self.appended_ids {
-            if self.nodes[id].issuer == *issuer {
-                members.push(id.clone());
-            }
-        }
-        members.push(node.id.clone());
-        let member_set: BTreeSet<&str> = members.iter().map(String::as_str).collect();
-        let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        let mut waiting: BTreeMap<&str, usize> = BTreeMap::new();
-        let mut ready: BTreeSet<&str> = BTreeSet::new();
-        for id in &members {
-            let previous: &[String] = if *id == node.id {
-                &node.previous
-            } else {
-                &self.nodes[id.as_str()].previous
-            };
-            let mut count = 0;
-            for prior in previous {
-                if member_set.contains(prior.as_str()) {
-                    children
-                        .entry(prior.as_str())
-                        .or_default()
-                        .push(id.as_str());
-                    count += 1;
-                }
-            }
-            waiting.insert(id.as_str(), count);
-            if count == 0 {
-                ready.insert(id.as_str());
-            }
-        }
-        let mut ordered: Vec<&str> = Vec::with_capacity(members.len());
-        while let Some(id) = ready.pop_first() {
-            ordered.push(id);
-            for child in children.get(id).into_iter().flatten() {
-                let count = waiting.get_mut(child).unwrap();
-                *count -= 1;
-                if *count == 0 {
-                    ready.insert(child);
-                }
-            }
-        }
-        // Records in or below a cycle keep lexical order at the block end.
-        let placed: BTreeSet<&str> = ordered.iter().copied().collect();
-        let mut lexical = members.clone();
-        lexical.sort();
-        for id in &lexical {
-            if !placed.contains(id.as_str()) {
-                ordered.push(id.as_str());
-            }
-        }
-        let origin = match self.issuer_block(issuer) {
-            Some((first, _)) => first,
-            None => self.next_block_start(issuer),
-        };
-        let mut positioned_before = 0u32;
-        let mut appended_before = 0u32;
-        for id in &ordered {
-            if *id == node.id {
-                break;
-            }
-            if positioned.contains(*id) {
-                positioned_before += 1;
-                appended_before = 0;
-            } else {
-                appended_before += 1;
-            }
-        }
-        (origin + positioned_before, appended_before)
-    }
-
-    /// Charge for one block-layout simulation like the one above:
-    /// one unit per member record and per predecessor edge scanned.
-    pub fn rank_cost(&self, node: &Node) -> usize {
-        let mut cost = 1 + node.previous.len();
-        if let Some((first, last)) = self.issuer_block(&node.issuer) {
-            for position in first..=last {
-                let id = self.space.id_at(position);
-                cost += 1 + self.nodes[&id].previous.len();
-            }
-        }
-        for id in &self.appended_ids {
-            if self.nodes[id].issuer == node.issuer {
-                cost += 1 + self.nodes[id].previous.len();
-            }
-        }
-        cost
-    }
-
     /// Range count of a set in a fresh layout. Positioned records keep
     /// their relative order, and appended records sit at their
-    /// simulated ranks, so the modeled fresh order is a fresh build's
-    /// order. The count is the stored range count, minus one for each
+    /// block-end ranks in append order, which is a fresh build's order
+    /// for the appends the fast path admits. The count is the stored range count, minus one for each
     /// stored range whose first member's fresh predecessor is an
     /// appended member of the set, plus one for each appended member
     /// whose fresh predecessor is not itself a member.
@@ -813,20 +692,22 @@ impl Graph {
             }
         }
         // Register the record before counting fresh-layout ranges.
-        // Its rank is its exact position in a fresh layout, from the
-        // block simulation; appended records of the same issuer that
-        // follow it at the same insertion position shift their order.
-        let rank = self.simulate_rank(&node);
-        self.appended_rank.insert(node.id.clone(), rank);
-        for (id, existing) in self.appended_rank.iter_mut() {
-            if id != &node.id
-                && existing.0 == rank.0
-                && existing.1 >= rank.1
-                && self.nodes[id].issuer == node.issuer
-            {
-                existing.1 += 1;
-            }
-        }
+        // Appends only happen at the end of the issuer block (the
+        // fast path requires the parents to cover the whole block),
+        // so the rank is that block-end position and the count of
+        // this issuer's records already appended there.
+        let position = match self.issuer_block(&node.issuer) {
+            Some((_, last)) => last + 1,
+            None => self.next_block_start(&node.issuer),
+        };
+        let sub = self
+            .appended_rank
+            .iter()
+            .filter(|(id, rank)| {
+                rank.0 == position && self.nodes[id.as_str()].issuer == node.issuer
+            })
+            .count() as u32;
+        self.appended_rank.insert(node.id.clone(), (position, sub));
         self.appended_ids.push(node.id.clone());
         self.nodes.insert(node.id.clone(), node.clone());
         own.ids.fresh_ranges = self.fresh_range_count(&own.ids);

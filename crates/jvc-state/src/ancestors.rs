@@ -245,6 +245,10 @@ impl Space {
     pub(crate) fn id_at(&self, position: u32) -> String {
         self.ids[position as usize].clone()
     }
+
+    pub(crate) fn id_ref(&self, position: u32) -> &str {
+        &self.ids[position as usize]
+    }
 }
 
 /// A set of record IDs stored as layout ranges, plus an `extra` set
@@ -367,15 +371,6 @@ impl IdSet {
     /// First position of each stored range, in layout order.
     pub fn range_starts(&self) -> impl Iterator<Item = u32> + '_ {
         self.ranges.as_slice().iter().map(|range| range.first)
-    }
-
-    /// True when a range strictly spans the insertion point: it holds
-    /// members on both sides, so inserting there would split it.
-    pub fn spans(&self, point: u32) -> bool {
-        self.ranges
-            .as_slice()
-            .iter()
-            .any(|range| range.first < point && range.last >= point)
     }
 
     /// Members in lexical order.

@@ -202,13 +202,20 @@ fn mixed_writes_reuse_local_state_and_rebuild_global_changes() {
     assert_eq!(state.statistics().incremental_records, 1);
     let second = f.judgment(vec![], "curse");
     state = f.advance(state, std::slice::from_ref(&second), &[]);
-    assert_eq!(state.statistics().incremental_records, 1);
+    // A root judgment does not cover the record appended before it,
+    // so it rebuilds. The judgment keys it changed are still reported
+    // (checked through the evaluation equality in f.advance).
+    assert_eq!(state.statistics().incremental_records, 0);
+    assert!(state.statistics().rebuilt);
     let clear = f.judgment(vec![first, second], "clear");
     state = f.advance(state, std::slice::from_ref(&clear), &[]);
     assert_eq!(state.statistics().incremental_records, 1);
     let publication = f.publication();
     state = f.advance(state, &[publication], &[]);
-    assert_eq!(state.statistics().incremental_records, 1);
+    // A root publication is not a judgment and its parents cover
+    // nothing, so it rebuilds.
+    assert_eq!(state.statistics().incremental_records, 0);
+    assert!(state.statistics().rebuilt);
     let trust = f.event(1, vec![clear], json!({"kind":"trust.set","subject":key(2),"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}), None);
     state = f.advance(state, &[trust], &[]);
     assert_eq!(state.statistics().reason.as_deref(), Some("global_action"));
@@ -248,7 +255,9 @@ fn a_native_publication_reopens_an_inactive_rafsi_word_gate() {
     );
     let publication = f.publication();
     let state = f.advance(state, &[publication], &[]);
-    assert_eq!(state.statistics().incremental_records, 1);
+    // A root publication on an issuer with existing records is not
+    // covered by any parents, so it rebuilds.
+    assert!(state.statistics().rebuilt);
     assert_eq!(
         state.evaluation().publications[&claim].eligible,
         jvc_state::Eligibility::Eligible
