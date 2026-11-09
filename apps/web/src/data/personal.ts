@@ -285,8 +285,9 @@ export class PersonalCalculator {
       if (event.data.type === "error") {
         const error = new Error(event.data.message);
         if (
-          event.data.session_valid === false &&
-          entry.operation !== "other" &&
+          (event.data.fatal ||
+            (event.data.session_valid === false &&
+              entry.operation !== "other")) &&
           this.worker === worker
         )
           this.retireWorker(error);
@@ -661,7 +662,7 @@ export class PersonalCalculator {
       sent.events,
       sent.eventSet,
     );
-    if (!addedIds) return null;
+    if (!addedIds || addedIds.length === 0) return null;
     const addedSet = new Set(addedIds);
     const events = records.events.filter((_, index) =>
       addedSet.has(inventory.events[index]),

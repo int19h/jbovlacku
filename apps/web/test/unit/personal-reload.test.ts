@@ -42,6 +42,9 @@ class RecordingWorker {
   events = 0;
   failAdvance = false;
   crashAdvance = false;
+  fatalActors = false;
+  fatalAdvance = false;
+  fatalRank = false;
   rankError = false;
   holdAdvance: Promise<void> | null = null;
   holdRank: Promise<void> | null = null;
@@ -65,6 +68,32 @@ class RecordingWorker {
         this.rankStarted?.();
         await held;
       }
+      if (message.type === "actors" && this.fatalActors) {
+        this.fatalActors = false;
+        this.onmessage?.({
+          data: {
+            type: "error",
+            id: message.id,
+            message: "WebAssembly trap",
+            session_valid: true,
+            fatal: true,
+          },
+        } as MessageEvent);
+        return;
+      }
+      if (message.type === "advance" && this.fatalAdvance) {
+        this.fatalAdvance = false;
+        this.onmessage?.({
+          data: {
+            type: "error",
+            id: message.id,
+            message: "WebAssembly trap",
+            session_valid: true,
+            fatal: true,
+          },
+        } as MessageEvent);
+        return;
+      }
       if (message.type === "advance" && this.failAdvance) {
         this.failAdvance = false;
         this.onmessage?.({
@@ -80,6 +109,19 @@ class RecordingWorker {
       if (message.type === "advance" && this.crashAdvance) {
         this.crashAdvance = false;
         this.crash("The advance worker crashed.");
+        return;
+      }
+      if (message.type === "rank" && this.fatalRank) {
+        this.fatalRank = false;
+        this.onmessage?.({
+          data: {
+            type: "error",
+            id: message.id,
+            message: "WebAssembly trap",
+            session_valid: true,
+            fatal: true,
+          },
+        } as MessageEvent);
         return;
       }
       if (message.type === "rank" && this.rankError) {
@@ -561,5 +603,71 @@ test("a calculation waiting behind a retired worker settles through a replacemen
   assert.equal(ready.state, "ready");
   assert.equal(h.workers.length, 2);
   assert.equal(lastLoad(h).input.events.length, 3);
+  h.calculator.cancel();
+});
+
+test("a fatal actors error retires the worker and the next calculation uses a replacement", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  const failed = h.worker;
+  failed.fatalActors = true;
+  h.setInventory(inventory([view, other], snapshot("b")));
+  assert.equal((await h.calculator.ensure()).state, "failed");
+  assert.equal(failed.terminateCalls, 1);
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  assert.equal(h.workers.length, 2);
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["actors", "load"],
+  );
+  h.calculator.cancel();
+});
+
+test("a fatal ranking error retires the worker and the next rank uses a replacement", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  const failed = h.worker;
+  failed.fatalRank = true;
+  await assert.rejects(
+    h.calculator.rankWord("jvw1:" + "a".repeat(64)),
+    /WebAssembly trap/,
+  );
+  assert.equal(failed.terminateCalls, 1);
+  const ranking = await h.calculator.rankWord("jvw1:" + "b".repeat(64));
+  assert.deepEqual(ranking.scores, []);
+  assert.equal(h.workers.length, 2);
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load", "rank"],
+  );
+  h.calculator.cancel();
+});
+
+test("a fatal fork error retries the full load on a replacement worker", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  appendRecord(h);
+  const failed = h.worker;
+  failed.fatalAdvance = true;
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  assert.equal(h.workers.length, 2);
+  assert.equal(failed.terminateCalls, 1);
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load"],
+  );
+  assert.equal(lastLoad(h).input.events.length, 3);
+  h.calculator.cancel();
+});
+
+test("a snapshot with no new IDs uses a full load instead of an empty advance", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  h.setInventory(inventory([view, other], snapshot("b")));
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  assert.equal(lastLoad(h).input.events.length, 2);
   h.calculator.cancel();
 });

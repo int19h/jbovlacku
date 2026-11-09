@@ -521,3 +521,11 @@ test("an unchanged overlay keeps a judgment advance on the fast path", async () 
     expected.free();
   }
 });
+
+test("a WebAssembly RuntimeError is fatal and an ordinary Error is not", async () => {
+  const { workerErrorResponse } = await import("../../src/workers/evaluate.ts");
+  const fatal = workerErrorResponse(1, new WebAssembly.RuntimeError("trap"));
+  assert.equal(fatal.type, "error");
+  assert.equal(fatal.fatal, true);
+  assert.equal(workerErrorResponse(2, new Error("ordinary")).fatal, false);
+});

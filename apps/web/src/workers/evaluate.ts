@@ -41,7 +41,13 @@ export type WorkerResponse =
       events: number;
     }
   | { type: "ranked"; id: number; session: string; result: unknown }
-  | { type: "error"; id: number; message: string; session_valid: boolean };
+  | {
+      type: "error";
+      id: number;
+      message: string;
+      session_valid: boolean;
+      fatal: boolean;
+    };
 
 type LoadedResponse = Extract<WorkerResponse, { type: "loaded" }>;
 type RankedResponse = Extract<WorkerResponse, { type: "ranked" }>;
@@ -123,7 +129,20 @@ export class EvaluationWorker {
   }
 }
 
-const evaluation = new EvaluationWorker();
+export function workerErrorResponse(
+  id: number,
+  error: unknown,
+): Extract<WorkerResponse, { type: "error" }> {
+  return {
+    type: "error",
+    id,
+    message: error instanceof Error ? error.message : String(error),
+    session_valid: evaluation.currentSession !== null,
+    fatal: error instanceof WebAssembly.RuntimeError,
+  };
+}
+
+export const evaluation = new EvaluationWorker();
 const ready = initializeCore();
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const message = event.data;
@@ -144,11 +163,6 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       reply(evaluation.rank(message));
     }
   } catch (error) {
-    reply({
-      type: "error",
-      id: message.id,
-      message: error instanceof Error ? error.message : String(error),
-      session_valid: evaluation.currentSession !== null,
-    });
+    reply(workerErrorResponse(message.id, error));
   }
 };
