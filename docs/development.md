@@ -1,6 +1,6 @@
 # Development
 
-The prototype runs locally. The [README](../README.md) distinguishes implemented features from the full target specifications.
+The prototype runs locally. The [implemented scope](implemented-scope.md) distinguishes implemented features from the full target specifications.
 The commands below use paths relative to a repository checkout or directories selected through environment variables.
 Keep unrelated projects and services available throughout the work.
 

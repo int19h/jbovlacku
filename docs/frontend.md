@@ -1,7 +1,7 @@
 # Jbovlacku web frontend
 
 This specification defines target behavior for the web app and Node server.
-The [README](../README.md) describes the implemented scope.
+The [implemented scope](implemented-scope.md) describes what the prototype does today.
 The [repository specification](format.md) defines signed events, structured content, identity continuity, and ranking.
 Its field names and authority rules take precedence over illustrative interface copy here.
 The [UI design](ui-design.md) defines the visual system and twelve screen layouts.
