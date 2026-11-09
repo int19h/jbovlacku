@@ -585,9 +585,10 @@ fn record_growth_keeps_tight_resource_outcomes_with_control_history() {
                 std::slice::from_ref(&id),
                 &[],
             );
-            // Ranges have no width boundary at 64 records: every
-            // control history takes the fast path when the budget
-            // suffices, and rebuilds only when it does not.
+            // The judgment's issuer has no records, so the fast path
+            // holds and charges the full-build price: it appends at
+            // the measured minimum and rebuilds one unit below it.
+            // Availability and the full evaluation match at both.
             assert_eq!(state.statistics().rebuilt, budget < after_min);
             assert_eq!(state.evaluation(), &evaluate(&f.input));
         }

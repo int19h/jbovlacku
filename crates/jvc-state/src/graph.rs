@@ -132,6 +132,15 @@ pub(crate) struct Graph {
     pub pending_cutoffs: BTreeSet<String>,
     pub space: Rc<super::ancestors::Space>,
     pub ancestry: super::ancestors::AncestryBudget,
+    /// Records appended to this state, in append order. Per state: a
+    /// sibling's appends never appear here.
+    pub appended_ids: Vec<String>,
+    /// Fresh-layout rank of each appended record: the layout position
+    /// it is inserted before, and its order among appended records
+    /// inserted at that same position. Ranks come from simulating the
+    /// issuer block's fresh layout order, so the modeled order of a
+    /// state's records is exactly a fresh build's order.
+    pub appended_rank: BTreeMap<String, (u32, u32)>,
     pub budget: Cell<usize>,
     pub resource: Cell<bool>,
     pub appended: usize,
@@ -148,6 +157,8 @@ impl Graph {
             nodes,
             space: super::ancestors::Space::empty(),
             ancestry: super::ancestors::AncestryBudget::new(),
+            appended_ids: Vec::new(),
+            appended_rank: BTreeMap::new(),
             own: Rc::default(),
             structural: Rc::default(),
             accepted: Rc::default(),
@@ -222,6 +233,17 @@ impl Graph {
             resource: false,
         }
     }
+    /// Deduct a refundable check charge. Unlike `charge`, failure
+    /// marks nothing: the caller restores the cell and rebuilds.
+    pub(crate) fn charge_check(&self, amount: usize) -> bool {
+        if amount > self.budget.get() {
+            false
+        } else {
+            self.budget.set(self.budget.get() - amount);
+            true
+        }
+    }
+
     pub(crate) fn charge(&self, amount: usize) -> bool {
         if amount > self.budget.get() {
             self.resource.set(true);
@@ -365,6 +387,7 @@ impl Graph {
                 break;
             }
             result.ids.union(&self.ancestry, &c.ids);
+            result.ids.fresh_ranges = self.fresh_range_count(&result.ids);
             if self.ancestry.failed() {
                 result.resource = true;
                 self.resource.set(true);
@@ -417,6 +440,12 @@ impl Graph {
                         return;
                     }
                     cutoff.ids.extend(&self.ancestry, c.ids);
+                    cutoff.ids.fresh_ranges = Self::fresh_count(
+                        &self.space,
+                        &self.appended_rank,
+                        &self.nodes,
+                        &cutoff.ids,
+                    );
                     if self.ancestry.failed() {
                         cutoff.resource = true;
                     }
@@ -519,6 +548,216 @@ impl Graph {
             }
         }
     }
+    /// The fresh-layout rank of a record appended to this state: the
+    /// layout position it is inserted before, and its order among
+    /// appended records inserted at that same position. This replays
+    /// the layout construction (`Space::new`) over the one issuer
+    /// block the record belongs to, with the state's appended records
+    /// as members, so the rank is exactly where a fresh build of the
+    /// same records puts the record relative to the positioned ones.
+    /// Whether the record goes before or after its block's appended
+    /// records follows from that same order.
+    pub fn simulate_rank(&self, node: &Node) -> (u32, u32) {
+        let issuer = &node.issuer;
+        let mut members: Vec<String> = Vec::new();
+        let mut positioned: BTreeSet<String> = BTreeSet::new();
+        if let Some((first, last)) = self.issuer_block(issuer) {
+            for position in first..=last {
+                let id = self.space.id_at(position);
+                positioned.insert(id.clone());
+                members.push(id);
+            }
+        }
+        for id in &self.appended_ids {
+            if self.nodes[id].issuer == *issuer {
+                members.push(id.clone());
+            }
+        }
+        members.push(node.id.clone());
+        let member_set: BTreeSet<&str> = members.iter().map(String::as_str).collect();
+        let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        let mut waiting: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut ready: BTreeSet<&str> = BTreeSet::new();
+        for id in &members {
+            let previous: &[String] = if *id == node.id {
+                &node.previous
+            } else {
+                &self.nodes[id.as_str()].previous
+            };
+            let mut count = 0;
+            for prior in previous {
+                if member_set.contains(prior.as_str()) {
+                    children
+                        .entry(prior.as_str())
+                        .or_default()
+                        .push(id.as_str());
+                    count += 1;
+                }
+            }
+            waiting.insert(id.as_str(), count);
+            if count == 0 {
+                ready.insert(id.as_str());
+            }
+        }
+        let mut ordered: Vec<&str> = Vec::with_capacity(members.len());
+        while let Some(id) = ready.pop_first() {
+            ordered.push(id);
+            for child in children.get(id).into_iter().flatten() {
+                let count = waiting.get_mut(child).unwrap();
+                *count -= 1;
+                if *count == 0 {
+                    ready.insert(child);
+                }
+            }
+        }
+        // Records in or below a cycle keep lexical order at the block end.
+        let placed: BTreeSet<&str> = ordered.iter().copied().collect();
+        let mut lexical = members.clone();
+        lexical.sort();
+        for id in &lexical {
+            if !placed.contains(id.as_str()) {
+                ordered.push(id.as_str());
+            }
+        }
+        let origin = match self.issuer_block(issuer) {
+            Some((first, _)) => first,
+            None => self.next_block_start(issuer),
+        };
+        let mut positioned_before = 0u32;
+        let mut appended_before = 0u32;
+        for id in &ordered {
+            if *id == node.id {
+                break;
+            }
+            if positioned.contains(*id) {
+                positioned_before += 1;
+                appended_before = 0;
+            } else {
+                appended_before += 1;
+            }
+        }
+        (origin + positioned_before, appended_before)
+    }
+
+    /// Charge for one block-layout simulation like the one above:
+    /// one unit per member record and per predecessor edge scanned.
+    pub fn rank_cost(&self, node: &Node) -> usize {
+        let mut cost = 1 + node.previous.len();
+        if let Some((first, last)) = self.issuer_block(&node.issuer) {
+            for position in first..=last {
+                let id = self.space.id_at(position);
+                cost += 1 + self.nodes[&id].previous.len();
+            }
+        }
+        for id in &self.appended_ids {
+            if self.nodes[id].issuer == node.issuer {
+                cost += 1 + self.nodes[id].previous.len();
+            }
+        }
+        cost
+    }
+
+    /// Range count of a set in a fresh layout. Positioned records keep
+    /// their relative order, and appended records sit at their
+    /// simulated ranks, so the modeled fresh order is a fresh build's
+    /// order. The count is the stored range count, minus one for each
+    /// stored range whose first member's fresh predecessor is an
+    /// appended member of the set, plus one for each appended member
+    /// whose fresh predecessor is not itself a member.
+    pub fn fresh_range_count(&self, set: &IdSet) -> usize {
+        Self::fresh_count(&self.space, &self.appended_rank, &self.nodes, set)
+    }
+
+    fn fresh_count(
+        space: &super::ancestors::Space,
+        appended_rank: &BTreeMap<String, (u32, u32)>,
+        nodes: &BTreeMap<String, Node>,
+        set: &IdSet,
+    ) -> usize {
+        let mut count = set.range_count();
+        if set.extra.is_empty() {
+            return count;
+        }
+        // Index appended records by rank: by full rank for predecessor
+        // lookups, and the last one at each insertion position.
+        let mut by_rank: BTreeMap<(u32, String, u32), &String> = BTreeMap::new();
+        let mut last_at: BTreeMap<u32, &String> = BTreeMap::new();
+        for (id, &(position, sub)) in appended_rank {
+            let issuer = &nodes[id].issuer;
+            by_rank.insert((position, issuer.clone(), sub), id);
+            let replace = match last_at.get(&position) {
+                None => true,
+                Some(current) => {
+                    let current_issuer = &nodes[*current].issuer;
+                    (issuer.as_str(), sub) > (current_issuer.as_str(), appended_rank[*current].1)
+                }
+            };
+            if replace {
+                last_at.insert(position, id);
+            }
+        }
+        // A stored range does not start a fresh run when the appended
+        // record inserted right before its first member is a member.
+        for start in set.range_starts() {
+            if start == 0 {
+                continue;
+            }
+            if let Some(id) = last_at.get(&start) {
+                if set.contains(id) {
+                    count -= 1;
+                }
+            }
+        }
+        for id in &set.extra {
+            let Some(&(position, sub)) = appended_rank.get(id) else {
+                count += 1;
+                continue;
+            };
+            let issuer = &nodes[id].issuer;
+            let predecessor: Option<String> = if sub > 0 {
+                by_rank
+                    .get(&(position, issuer.clone(), sub - 1))
+                    .map(|prior| (*prior).clone())
+            } else {
+                by_rank
+                    .range(..(position, issuer.clone(), 0))
+                    .next_back()
+                    .filter(|((at, _, _), _)| *at == position)
+                    .map(|(_, prior)| (*prior).clone())
+                    .or_else(|| (position > 0).then(|| space.id_at(position - 1)))
+            };
+            if predecessor.is_none_or(|prior| !set.contains(&prior)) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Position bounds of one issuer's block in the layout, if any of
+    /// its records are positioned.
+    pub fn issuer_block(&self, issuer: &str) -> Option<(u32, u32)> {
+        let mut bounds: Option<(u32, u32)> = None;
+        for node in self.nodes.values().filter(|n| n.issuer == issuer) {
+            if let Some(position) = self.space.position(&node.id) {
+                bounds = Some(match bounds {
+                    None => (position, position),
+                    Some((first, last)) => (first.min(position), last.max(position)),
+                });
+            }
+        }
+        bounds
+    }
+
+    /// First layout position of any issuer block after the given one.
+    pub fn next_block_start(&self, issuer: &str) -> u32 {
+        self.nodes
+            .values()
+            .filter(|n| n.issuer.as_str() > issuer)
+            .filter_map(|n| self.space.position(&n.id))
+            .min()
+            .unwrap_or_else(|| self.space.len() as u32)
+    }
+
     pub fn actor(&self, key: &str) -> String {
         self.lifecycle
             .key_actor
@@ -529,16 +768,19 @@ impl Graph {
     /// Append a complete ordinary event without changing any existing links.
     /// New IDs register at the end of the layout until the next rebuild.
     pub fn append_ordinary(&mut self, node: Node) {
+        // Unions first, then the record itself: the same combine order
+        // a full build uses for this record, so cap charges match.
         let closure = |cache: &BTreeMap<String, Closure>| {
             let mut result = self.empty_closure();
-            result.ids.insert(&self.ancestry, &node.id);
             for previous in &node.previous {
                 let prior = &cache[previous];
                 result.ids.union(&self.ancestry, &prior.ids);
+                result.ids.fresh_ranges = self.fresh_range_count(&result.ids);
                 result.missing.extend(prior.missing.iter().cloned());
                 result.invalid |= prior.invalid;
                 result.resource |= prior.resource;
             }
+            result.ids.insert(&self.ancestry, &node.id);
             if self.ancestry.failed() {
                 result.resource = true;
             }
@@ -547,16 +789,11 @@ impl Graph {
         let own = closure(&self.own);
         let shared =
             Rc::ptr_eq(&self.own, &self.structural) && Rc::ptr_eq(&self.own, &self.accepted);
-        if shared {
-            Rc::make_mut(&mut self.own).insert(node.id.clone(), own);
-            self.structural = self.own.clone();
-            self.accepted = self.own.clone();
-        } else {
-            let structural = closure(&self.structural);
-            let accepted = closure(&self.accepted);
-            Rc::make_mut(&mut self.own).insert(node.id.clone(), own);
-            Rc::make_mut(&mut self.structural).insert(node.id.clone(), structural);
-            Rc::make_mut(&mut self.accepted).insert(node.id.clone(), accepted);
+        let mut own = own;
+        let mut others: Vec<Closure> = Vec::new();
+        if !shared {
+            others.push(closure(&self.structural));
+            others.push(closure(&self.accepted));
         }
         self.lifecycle
             .key_actor
@@ -570,19 +807,44 @@ impl Graph {
         if self.ancestry.failed() {
             self.resource.set(true);
             // No closure stored for this record may read as complete.
-            let mut marked: Vec<usize> = Vec::new();
-            for cache in [&mut self.own, &mut self.structural, &mut self.accepted] {
-                let pointer = Rc::as_ptr(cache) as usize;
-                if marked.contains(&pointer) {
-                    continue;
-                }
-                marked.push(pointer);
-                if let Some(closure) = Rc::make_mut(cache).get_mut(&node.id) {
-                    closure.resource = true;
-                }
+            own.resource = true;
+            for closure in &mut others {
+                closure.resource = true;
             }
         }
-        self.nodes.insert(node.id.clone(), node);
+        // Register the record before counting fresh-layout ranges.
+        // Its rank is its exact position in a fresh layout, from the
+        // block simulation; appended records of the same issuer that
+        // follow it at the same insertion position shift their order.
+        let rank = self.simulate_rank(&node);
+        self.appended_rank.insert(node.id.clone(), rank);
+        for (id, existing) in self.appended_rank.iter_mut() {
+            if id != &node.id
+                && existing.0 == rank.0
+                && existing.1 >= rank.1
+                && self.nodes[id].issuer == node.issuer
+            {
+                existing.1 += 1;
+            }
+        }
+        self.appended_ids.push(node.id.clone());
+        self.nodes.insert(node.id.clone(), node.clone());
+        own.ids.fresh_ranges = self.fresh_range_count(&own.ids);
+        for closure in &mut others {
+            closure.ids.fresh_ranges = self.fresh_range_count(&closure.ids);
+        }
+        // Insert without splitting a shared cache afterwards: mutating
+        // a cache that its siblings still point at would copy it and
+        // silently unshare the three modes.
+        Rc::make_mut(&mut self.own).insert(node.id.clone(), own);
+        if shared {
+            self.structural = self.own.clone();
+            self.accepted = self.own.clone();
+        } else {
+            let mut others = others.into_iter();
+            Rc::make_mut(&mut self.structural).insert(node.id.clone(), others.next().unwrap());
+            Rc::make_mut(&mut self.accepted).insert(node.id.clone(), others.next().unwrap());
+        }
         self.appended += 1;
     }
     pub fn own_complete(&self, id: &str) -> bool {

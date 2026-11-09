@@ -1910,8 +1910,9 @@ fn incremental_record_growth_with_carried_account_history_keeps_resource_results
             .unwrap();
         delta.add_record(event, None);
         let state = state.advance(delta, &[]);
-        // Ranges have no width boundary at 64 records: a sufficient
-        // budget takes the fast path, an insufficient one rebuilds.
+        // The judgment's issuer has no positioned records, so the
+        // fast path holds: it appends when the budget covers the
+        // full-build price and rebuilds one unit below it.
         assert_eq!(state.statistics().rebuilt, budget < low);
         assert_eq!(state.evaluation(), &evaluate(&f.input));
     }

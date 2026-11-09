@@ -9,7 +9,7 @@
 //! record count.
 
 use super::graph::Node;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
@@ -41,7 +41,7 @@ impl AncestryBudget {
         Self::default()
     }
 
-    fn charge(&self, bytes: usize) -> bool {
+    pub fn charge(&self, bytes: usize) -> bool {
         if self.failed.get() || bytes > MAX_ANCESTOR_BYTES.saturating_sub(self.bytes.get()) {
             self.failed.set(true);
             false
@@ -87,18 +87,9 @@ impl Ranges {
     }
 
     /// Merge two sorted range lists and one optional extra position.
-    /// The caller charges the logical budget; this charges the ancestry
-    /// byte cap before allocating, and yields no ranges past the cap.
-    fn combine(
-        budget: &AncestryBudget,
-        left: &Ranges,
-        right: &Ranges,
-        extra: Option<u32>,
-    ) -> Ranges {
+    /// Callers charge the ancestry byte cap before calling this.
+    fn combine(left: &Ranges, right: &Ranges, extra: Option<u32>) -> Ranges {
         let (a, b) = (left.as_slice(), right.as_slice());
-        if budget.failed() {
-            return Ranges::Empty;
-        }
         if a.is_empty() && b.is_empty() {
             return match extra {
                 Some(position) => Ranges::One(Range {
@@ -107,10 +98,6 @@ impl Ranges {
                 }),
                 None => Ranges::Empty,
             };
-        }
-        let inputs = a.len() + b.len() + usize::from(extra.is_some());
-        if !budget.charge(inputs * std::mem::size_of::<Range>() + 64) {
-            return Ranges::Empty;
         }
         let mut merged: Vec<Range> = Vec::with_capacity(a.len() + b.len() + 1);
         let (mut i, mut j) = (0, 0);
@@ -174,11 +161,14 @@ impl Ranges {
     }
 }
 
-/// Shared layout for every closure in one graph. Appended records register
-/// at the end, after all of their predecessors, until the next rebuild.
+/// Immutable layout shared by every closure in one graph. It is built
+/// once per graph construction and never changes afterwards. Records
+/// appended to a state live in that state's own extension (the `extra`
+/// set on each closure), never in this shared layout, so a sibling
+/// fork's appends are invisible here.
 pub(crate) struct Space {
-    index: RefCell<BTreeMap<String, u32>>,
-    ids: RefCell<Vec<String>>,
+    index: BTreeMap<String, u32>,
+    ids: Vec<String>,
 }
 
 impl Space {
@@ -234,45 +224,40 @@ impl Space {
                 ids.push(id.to_string());
             }
         }
-        Rc::new(Self {
-            index: RefCell::new(index),
-            ids: RefCell::new(ids),
-        })
+        Rc::new(Self { index, ids })
     }
 
     pub fn empty() -> Rc<Self> {
         Rc::new(Self {
-            index: RefCell::new(BTreeMap::new()),
-            ids: RefCell::new(Vec::new()),
+            index: BTreeMap::new(),
+            ids: Vec::new(),
         })
     }
 
     pub(crate) fn position(&self, id: &str) -> Option<u32> {
-        self.index.borrow().get(id).copied()
+        self.index.get(id).copied()
     }
 
-    fn register(&self, id: &str) -> u32 {
-        if let Some(position) = self.position(id) {
-            return position;
-        }
-        let mut index = self.index.borrow_mut();
-        let mut ids = self.ids.borrow_mut();
-        let position = ids.len() as u32;
-        index.insert(id.to_string(), position);
-        ids.push(id.to_string());
-        position
+    pub fn len(&self) -> usize {
+        self.ids.len()
     }
 
-    fn id_at(&self, position: u32) -> String {
-        self.ids.borrow()[position as usize].clone()
+    pub(crate) fn id_at(&self, position: u32) -> String {
+        self.ids[position as usize].clone()
     }
 }
 
-/// A set of record IDs stored as layout ranges.
+/// A set of record IDs stored as layout ranges, plus an `extra` set
+/// for records appended to this state (they have no shared-layout
+/// position). `fresh_ranges` is the range count this set's members
+/// would have in a fresh layout; the graph maintains it after every
+/// construction so cap charges match a full build exactly.
 #[derive(Clone)]
 pub(crate) struct IdSet {
     space: Rc<Space>,
     ranges: Ranges,
+    pub extra: BTreeSet<String>,
+    pub fresh_ranges: usize,
 }
 
 impl IdSet {
@@ -280,42 +265,117 @@ impl IdSet {
         Self {
             space,
             ranges: Ranges::Empty,
+            extra: BTreeSet::new(),
+            fresh_ranges: 0,
         }
     }
 
     /// Union of the given sets plus one optional record, in one merge.
+    /// A record with no layout position joins the `extra` set instead.
     pub fn combined(
         space: Rc<Space>,
         budget: &AncestryBudget,
         sets: &[&IdSet],
         own: Option<&str>,
     ) -> Self {
-        let mut ranges = Ranges::Empty;
+        let mut result = Self::empty(space);
         for set in sets {
-            ranges = Ranges::combine(budget, &ranges, &set.ranges, None);
+            result.union(budget, set);
         }
-        let extra = own.map(|id| space.register(id));
-        ranges = Ranges::combine(budget, &ranges, &Ranges::Empty, extra);
-        Self { space, ranges }
+        if let Some(id) = own {
+            result.insert(budget, id);
+        }
+        result
     }
 
     pub fn contains(&self, id: &str) -> bool {
-        self.space
-            .position(id)
-            .is_some_and(|position| self.ranges.contains(position))
+        self.extra.contains(id)
+            || self
+                .space
+                .position(id)
+                .is_some_and(|position| self.ranges.contains(position))
+    }
+
+    /// Charge for one combine over these inputs, at fresh-layout
+    /// range counts, plus one allocation overhead.
+    fn combine_charge(fresh_left: usize, fresh_right: usize, own: bool) -> usize {
+        (fresh_left + fresh_right + usize::from(own)) * std::mem::size_of::<Range>() + 64
     }
 
     pub fn insert(&mut self, budget: &AncestryBudget, id: &str) {
-        let position = self.space.register(id);
-        self.ranges = Ranges::combine(budget, &self.ranges, &Ranges::Empty, Some(position));
+        if budget.failed() || !budget.charge(Self::combine_charge(self.fresh_ranges, 0, true)) {
+            self.ranges = Ranges::Empty;
+            self.fresh_ranges = 0;
+            return;
+        }
+        match self.space.position(id) {
+            Some(position) => {
+                self.ranges = Ranges::combine(&self.ranges, &Ranges::Empty, Some(position));
+            }
+            None => {
+                self.extra.insert(id.to_string());
+            }
+        }
+        self.fresh_ranges = self.range_count();
     }
 
     pub fn union(&mut self, budget: &AncestryBudget, other: &IdSet) {
-        self.ranges = Ranges::combine(budget, &self.ranges, &other.ranges, None);
+        if budget.failed()
+            || !budget.charge(Self::combine_charge(
+                self.fresh_ranges,
+                other.fresh_ranges,
+                false,
+            ))
+        {
+            self.ranges = Ranges::Empty;
+            self.fresh_ranges = 0;
+            self.extra.extend(other.extra.iter().cloned());
+            return;
+        }
+        self.ranges = Ranges::combine(&self.ranges, &other.ranges, None);
+        self.extra.extend(other.extra.iter().cloned());
+        self.fresh_ranges = self.range_count();
     }
 
     pub fn extend(&mut self, budget: &AncestryBudget, other: IdSet) {
         self.union(budget, &other);
+    }
+
+    /// True when the union of the given sets covers every position in
+    /// `[first, last]`. No allocation; callers charge a bound first.
+    pub fn union_covers(sets: &[&IdSet], first: u32, last: u32) -> bool {
+        let mut current = first;
+        loop {
+            let mut advanced = false;
+            for set in sets {
+                for range in set.ranges.as_slice() {
+                    if range.first <= current && range.last >= current {
+                        current = range.last.saturating_add(1);
+                        advanced = true;
+                    }
+                }
+            }
+            if current > last {
+                return true;
+            }
+            if !advanced {
+                return false;
+            }
+        }
+    }
+
+    /// First position of each stored range, in layout order.
+    pub fn range_starts(&self) -> impl Iterator<Item = u32> + '_ {
+        self.ranges.as_slice().iter().map(|range| range.first)
+    }
+
+    /// True when a range strictly spans the insertion point: it holds
+    /// members on both sides, so inserting there would split it.
+    pub fn spans(&self, point: u32) -> bool {
+        self.ranges
+            .as_slice()
+            .iter()
+            .any(|range| range.first < point && range.last >= point)
     }
 
     /// Members in lexical order.
@@ -327,6 +387,7 @@ impl IdSet {
                 members.push(self.space.id_at(position));
             }
         }
+        members.extend(self.extra.iter().cloned());
         members.sort_unstable();
         members
     }
@@ -343,6 +404,7 @@ impl IdSet {
             .iter()
             .flat_map(|range| range.first..=range.last)
             .map(|position| self.space.id_at(position))
+            .chain(self.extra.iter().cloned())
     }
 }
 
@@ -351,12 +413,28 @@ mod tests {
     use super::*;
 
     fn space_for(ids: &[&str]) -> Rc<Space> {
-        // Build a layout directly from positions in the given order.
-        let space = Space::empty();
-        for id in ids {
-            space.register(id);
-        }
-        space
+        // All records share one issuer, so the layout order is the
+        // lexical order of the given (sorted) ids.
+        let nodes: BTreeMap<String, Node> = ids
+            .iter()
+            .map(|id| {
+                (
+                    id.to_string(),
+                    Node {
+                        id: id.to_string(),
+                        issuer: "issuer".into(),
+                        previous: Vec::new(),
+                        action: serde_json::json!({"kind":"identity.merge"}),
+                        kind: "identity.merge".into(),
+                        semantic: true,
+                        body_hash: None,
+                        body: None,
+                        body_label: "absent".into(),
+                    },
+                )
+            })
+            .collect();
+        Space::new(&nodes)
     }
 
     fn set(space: &Rc<Space>, ids: &[&str]) -> IdSet {
