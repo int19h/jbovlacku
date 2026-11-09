@@ -1166,7 +1166,8 @@ try {
       )
     )
       throw Error("The measurement requires an exact-profile view.");
-    if (!lifecycle.cancelled) await startProductServer();
+    if (!lifecycle.cancelled && !args["product-reload"])
+      await startProductServer();
     global.gc?.();
   }
   const modes = {

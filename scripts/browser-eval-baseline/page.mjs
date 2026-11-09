@@ -2,6 +2,8 @@ import {
   initializeCore,
   identityFromSeed,
   createEvent,
+  canonicalize,
+  contentHash,
   utf8,
 } from "../../packages/core/src/browser.ts";
 import {
@@ -10,7 +12,6 @@ import {
   selectAddedEventIds,
 } from "../../apps/web/src/data/personal.ts";
 import { LocalStore, emptyOverlay } from "../../apps/web/src/data/store.ts";
-import { RECORD_LIMITS } from "../../apps/web/src/data/records.ts";
 import { setPreferredView } from "../../apps/web/src/data/api.ts";
 
 const seed = new Uint8Array(32).fill(173);
@@ -22,8 +23,8 @@ let input = null,
   mainWasm = null,
   productCalculator = null,
   productStore = null,
+  productInput = null,
   productWorkerBytes = 0,
-  productRecordLimits = null,
   productSnapshot = null,
   NativeWorker = null;
 const pending = new Map();
@@ -36,6 +37,60 @@ const signedJudgment = (target) =>
     { kind: "judgment.set", target, value: "bless" },
     null,
   );
+const hashJson = (value) =>
+  contentHash(utf8(canonicalize(utf8(JSON.stringify(value)))));
+const productInventory = (value) => {
+  const events = value.events.map((envelope) => JSON.parse(envelope).id);
+  const bodies = [
+    ...new Set(
+      value.events
+        .map((envelope) => JSON.parse(envelope).header.content?.hash)
+        .filter(Boolean),
+    ),
+  ].sort();
+  const selections = Object.keys(value.import_selections).sort();
+  const manifest = {
+    events: {
+      count: events.length,
+      hash: contentHash(utf8(value.events.join("\n") + "\n")),
+    },
+    bodies: { count: bodies.length, hash: hashJson(bodies) },
+    import_selections: { count: selections.length, hash: hashJson(selections) },
+  };
+  return {
+    snapshot: hashJson(manifest),
+    logical_inventory: hashJson({
+      events,
+      bodies,
+      import_selections: selections,
+    }),
+    view: value.selected_view,
+    events,
+    bodies,
+    selections,
+  };
+};
+const seedProduct = async (store, value) => {
+  for (const envelope of value.events) {
+    const { id, header } = JSON.parse(envelope);
+    const body = value.bodies[id];
+    await store.put("records", id, {
+      id,
+      envelope,
+      body: body ?? null,
+      bodyStatus:
+        body !== undefined ? "present" : header.content ? "missing" : "none",
+      bodyHash: header.content?.hash ?? null,
+    });
+  }
+  for (const [hash, selection] of Object.entries(value.import_selections))
+    await store.put("selections", hash, JSON.stringify(selection));
+  const inventory = productInventory(value);
+  await store.put("inventory", inventory.snapshot, inventory);
+  await store.put("inventory", "latest", inventory);
+  productSnapshot = inventory.snapshot;
+  return inventory;
+};
 const request = (message) =>
   new Promise((resolve, reject) => {
     const id = ++sequence;
@@ -54,9 +109,6 @@ window.bench = {
     setPreferredView(view);
     if (keep) {
       NativeWorker = globalThis.Worker;
-      productRecordLimits = { ...RECORD_LIMITS };
-      RECORD_LIMITS.events = 200000;
-      RECORD_LIMITS.bytes = 1024 * 1024 * 1024;
       productWorkerBytes = 0;
       globalThis.Worker = class extends NativeWorker {
         postMessage(message) {
@@ -66,12 +118,21 @@ window.bench = {
       };
     }
     const store = new LocalStore(`measurement-${crypto.randomUUID()}`);
+    if (keep) {
+      productInput = await (
+        await fetch("/input.json", { cache: "no-store" })
+      ).json();
+      await seedProduct(store, productInput);
+    }
     const calculator = new PersonalCalculator(store, async () => ({
       identity: identityFromSeed(seed),
     }));
     const statuses = [];
     calculator.subscribe((s) => statuses.push(s));
-    const result = await calculator.ensure({ mode: "personal", refresh: true });
+    const result = await calculator.ensure({
+      mode: "personal",
+      ...(!keep ? { refresh: true } : {}),
+    });
     const ms = performance.now() - start;
     if (keep) {
       productCalculator = calculator;
@@ -85,48 +146,37 @@ window.bench = {
   async productSubmission(target) {
     const start = performance.now();
     const event = signedJudgment(target);
-    const response = await fetch("/api/v1/events", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(event),
+    const serialized = JSON.stringify(event.envelope);
+    const found = productInput.events.findIndex(
+      (envelope) => JSON.parse(envelope).id > event.envelope.id,
+    );
+    const index = found < 0 ? productInput.events.length : found;
+    productInput.events.splice(index, 0, serialized);
+    await productStore.put("records", event.envelope.id, {
+      id: event.envelope.id,
+      envelope: serialized,
+      body: null,
+      bodyStatus: "none",
+      bodyHash: null,
     });
-    if (!response.ok)
-      throw new Error(
-        `Product judgment admission failed ${response.status}: ${await response.text()}`,
-      );
-    const previous = productCalculator.status.snapshot;
-    const events = productCalculator.status.events;
-    for (let i = 0; i < 6000; i++) {
-      const manifest = await (
-        await fetch("/api/v1/manifest", { cache: "no-store" })
-      ).json();
-      if (
-        manifest.snapshot !== previous &&
-        manifest.manifest.events.count > events
-      ) {
-        productSnapshot = manifest.snapshot;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    if (!productSnapshot)
-      throw new Error("The product judgment did not materialize.");
+    const inventory = productInventory(productInput);
+    await productStore.put("inventory", inventory.snapshot, inventory);
+    await productStore.put("inventory", "latest", inventory);
+    productSnapshot = inventory.snapshot;
     return {
       ms: performance.now() - start,
       id: event.envelope.id,
       identity: identityFromSeed(seed),
       target,
       snapshot: productSnapshot,
-      bytes: utf8(JSON.stringify(event.envelope)).length,
+      inventory_index: index,
+      bytes: utf8(serialized).length,
     };
   },
   async productReload() {
     const start = performance.now();
     const before = productWorkerBytes;
-    const result = await productCalculator.ensure({
-      mode: "personal",
-      refresh: true,
-    });
+    const result = await productCalculator.ensure({ mode: "personal" });
     if (result.state !== "ready" || result.snapshot !== productSnapshot)
       throw new Error(
         "The product reload did not reach the submitted snapshot.",
@@ -145,8 +195,7 @@ window.bench = {
     if (productStore) (await productStore.database).close();
     productCalculator = null;
     productStore = null;
-    if (productRecordLimits) Object.assign(RECORD_LIMITS, productRecordLimits);
-    productRecordLimits = null;
+    productInput = null;
     productSnapshot = null;
     if (NativeWorker) globalThis.Worker = NativeWorker;
     NativeWorker = null;
