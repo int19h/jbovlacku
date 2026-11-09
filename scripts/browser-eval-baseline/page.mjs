@@ -24,6 +24,7 @@ let input = null,
   productStore = null,
   productWorkerBytes = 0,
   productRecordLimits = null,
+  productSnapshot = null,
   NativeWorker = null;
 const pending = new Map();
 let lastResult = null;
@@ -93,11 +94,29 @@ window.bench = {
       throw new Error(
         `Product judgment admission failed ${response.status}: ${await response.text()}`,
       );
+    const previous = productCalculator.status.snapshot;
+    const events = productCalculator.status.events;
+    for (let i = 0; i < 6000; i++) {
+      const manifest = await (
+        await fetch("/api/v1/manifest", { cache: "no-store" })
+      ).json();
+      if (
+        manifest.snapshot !== previous &&
+        manifest.manifest.events.count > events
+      ) {
+        productSnapshot = manifest.snapshot;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!productSnapshot)
+      throw new Error("The product judgment did not materialize.");
     return {
       ms: performance.now() - start,
       id: event.envelope.id,
       identity: identityFromSeed(seed),
       target,
+      snapshot: productSnapshot,
       bytes: utf8(JSON.stringify(event.envelope)).length,
     };
   },
@@ -108,6 +127,10 @@ window.bench = {
       mode: "personal",
       refresh: true,
     });
+    if (result.state !== "ready" || result.snapshot !== productSnapshot)
+      throw new Error(
+        "The product reload did not reach the submitted snapshot.",
+      );
     return {
       ms: performance.now() - start,
       result,
@@ -124,6 +147,7 @@ window.bench = {
     productStore = null;
     if (productRecordLimits) Object.assign(RECORD_LIMITS, productRecordLimits);
     productRecordLimits = null;
+    productSnapshot = null;
     if (NativeWorker) globalThis.Worker = NativeWorker;
     NativeWorker = null;
   },
