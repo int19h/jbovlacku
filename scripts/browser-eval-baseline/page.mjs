@@ -18,9 +18,21 @@ let input = null,
   sequence = 0,
   sentEventIds = [],
   savedOverlay = null,
-  mainWasm = null;
+  mainWasm = null,
+  productCalculator = null,
+  productStore = null,
+  productWorkerBytes = 0,
+  NativeWorker = null;
 const pending = new Map();
 let lastResult = null;
+const signedJudgment = (target) =>
+  createEvent(
+    seed,
+    [],
+    "b37b0000000000000000000000000001",
+    { kind: "judgment.set", target, value: "bless" },
+    null,
+  );
 const request = (message) =>
   new Promise((resolve, reject) => {
     const id = ++sequence;
@@ -33,10 +45,20 @@ const request = (message) =>
     worker.postMessage(payload);
   });
 window.bench = {
-  async gate(view) {
+  async gate(view, keep = false) {
     const start = performance.now();
     mainWasm = await initializeCore();
     setPreferredView(view);
+    if (keep) {
+      NativeWorker = globalThis.Worker;
+      productWorkerBytes = 0;
+      globalThis.Worker = class extends NativeWorker {
+        postMessage(message) {
+          productWorkerBytes += utf8(JSON.stringify(message)).length;
+          super.postMessage(message);
+        }
+      };
+    }
     const store = new LocalStore(`measurement-${crypto.randomUUID()}`);
     const calculator = new PersonalCalculator(store, async () => ({
       identity: identityFromSeed(seed),
@@ -45,9 +67,58 @@ window.bench = {
     calculator.subscribe((s) => statuses.push(s));
     const result = await calculator.ensure({ mode: "personal", refresh: true });
     const ms = performance.now() - start;
-    calculator.cancel();
-    (await store.database).close();
+    if (keep) {
+      productCalculator = calculator;
+      productStore = store;
+    } else {
+      calculator.cancel();
+      (await store.database).close();
+    }
     return { ms, result, statuses };
+  },
+  async productSubmission(target) {
+    const start = performance.now();
+    const event = signedJudgment(target);
+    const response = await fetch("/api/v1/events", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(event),
+    });
+    if (!response.ok)
+      throw new Error(
+        `Product judgment admission failed ${response.status}: ${await response.text()}`,
+      );
+    return {
+      ms: performance.now() - start,
+      id: event.envelope.id,
+      identity: identityFromSeed(seed),
+      target,
+      bytes: utf8(JSON.stringify(event.envelope)).length,
+    };
+  },
+  async productReload() {
+    const start = performance.now();
+    const before = productWorkerBytes;
+    const result = await productCalculator.ensure({
+      mode: "personal",
+      refresh: true,
+    });
+    return {
+      ms: performance.now() - start,
+      result,
+      request_bytes: productWorkerBytes - before,
+    };
+  },
+  async productRank(word) {
+    return { result: await productCalculator.rankWord(word) };
+  },
+  async productFinish() {
+    productCalculator?.cancel();
+    if (productStore) (await productStore.database).close();
+    productCalculator = null;
+    productStore = null;
+    if (NativeWorker) globalThis.Worker = NativeWorker;
+    NativeWorker = null;
   },
   mainMemory() {
     return { wasm_bytes: mainWasm?.memory.buffer.byteLength ?? 0 };
@@ -197,13 +268,7 @@ window.bench = {
   async submission(target) {
     const start = performance.now();
     await initializeCore();
-    const event = createEvent(
-      seed,
-      [],
-      "b37b0000000000000000000000000001",
-      { kind: "judgment.set", target, value: "bless" },
-      null,
-    );
+    const event = signedJudgment(target);
     const serialized = JSON.stringify(event.envelope);
     const found = input.events.findIndex(
       (envelope) => JSON.parse(envelope).id > event.envelope.id,

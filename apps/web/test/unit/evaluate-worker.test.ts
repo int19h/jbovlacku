@@ -91,7 +91,7 @@ async function fixture() {
     selected_view: v.envelope.id,
     import_selections: {},
   };
-  return { input, word, target: d.envelope.id };
+  return { input, word, target: d.envelope.id, previous: j.envelope.id };
 }
 
 function delta(input: EvaluationRequest, envelope: unknown): EvaluationRequest {
@@ -124,10 +124,10 @@ before(async () => {
 });
 
 test("a judgment advance equals full evaluation and replaces the session key", async () => {
-  const { input, word, target } = await fixture();
+  const { input, word, target, previous } = await fixture();
   const added = createEvent(
     seed(2),
-    [],
+    [previous],
     "5".repeat(32),
     { kind: "judgment.set", target, value: "curse" },
     null,
@@ -467,7 +467,7 @@ test("a failure after release leaves no session and a full load recovers", async
 });
 
 test("an unchanged overlay keeps a judgment advance on the fast path", async () => {
-  const { input, word, target } = await fixture();
+  const { input, word, target, previous } = await fixture();
   const overlay = {
     version: 2 as const,
     public_shun_issuer: null,
@@ -480,7 +480,7 @@ test("an unchanged overlay keeps a judgment advance on the fast path", async () 
   const baseInput = { ...input, overlay };
   const added = createEvent(
     seed(2),
-    [],
+    [previous],
     "c".repeat(32),
     { kind: "judgment.set", target, value: "curse" },
     null,

@@ -80,6 +80,21 @@ const capture = (command, argv) => {
 };
 const assets = join(out, "assets");
 await mkdir(assets, { recursive: true });
+const measurementSessionGetter = {
+  name: "measurement-session-getter",
+  setup(b) {
+    b.onLoad(
+      { filter: /apps\/web\/src\/workers\/evaluate\.ts$/ },
+      async ({ path }) => ({
+        loader: "ts",
+        contents:
+          (await readFile(path, "utf8")) +
+          "\nself.__measurementSession = () => evaluation.currentSession;\n" +
+          "self.measurement = async () => ({wasm_bytes: (await initializeCore()).memory.buffer.byteLength, statistics: self.__measurementSession()?.updateStatistics?.(), available: self.__measurementSession()?.state.available, reasons: self.__measurementSession()?.state.reasons});\n",
+      }),
+    );
+  },
+};
 await build({
   entryPoints: [join(root, "scripts/browser-eval-baseline/page.mjs")],
   bundle: true,
@@ -95,6 +110,7 @@ await build({
   platform: "browser",
   outfile: join(assets, "product-worker.js"),
   logLevel: "error",
+  plugins: [measurementSessionGetter],
 });
 await build({
   entryPoints: [join(root, "scripts/browser-eval-baseline/worker.mjs")],
@@ -103,22 +119,7 @@ await build({
   platform: "browser",
   outfile: join(assets, "worker.js"),
   logLevel: "error",
-  plugins: [
-    {
-      name: "measurement-session-getter",
-      setup(b) {
-        b.onLoad(
-          { filter: /apps\/web\/src\/workers\/evaluate\.ts$/ },
-          async ({ path }) => ({
-            loader: "ts",
-            contents:
-              (await readFile(path, "utf8")) +
-              "\nself.__measurementSession = () => evaluation.currentSession;\n",
-          }),
-        );
-      },
-    },
-  ],
+  plugins: [measurementSessionGetter],
 });
 const wasmPath = join(root, "packages/core/generated/jvc_runtime_bg.wasm");
 const manifest = {
@@ -588,6 +589,7 @@ async function record(v) {
 async function trial(condition, rep, profile = false) {
   let browser = null,
     workerCDP = null,
+    productWorkerCDP = null,
     rootCDP = null,
     pageCDP = null,
     page = null,
@@ -839,9 +841,70 @@ async function trial(condition, rep, profile = false) {
       condition: condition.name,
       ms: performance.now() - navigationStart,
     });
+    const offset = (rep % 3) * 20;
+    const sample = [
+      ...dataset.sample.slice(offset),
+      ...dataset.sample.slice(0, offset),
+    ].map((w) =>
+      args["stress-only"] && w.cohort === "common_manual"
+        ? { ...w, cohort: "synthetic_reviewed_common" }
+        : w,
+    );
+    const targetWord = dataset.sample.find(
+      (w) =>
+        w.cohort === "heavily_judged" ||
+        w.cohort === "many_definitions_no_judgments",
+    );
     if (!args.probe) {
       await operation("actual-personal-gate", () =>
-        page.evaluate((view) => window.bench.gate(view), dataset.view),
+        page.evaluate(({ view, keep }) => window.bench.gate(view, keep), {
+          view: dataset.view,
+          keep: Boolean(args["product-reload"]),
+        }),
+      );
+    }
+    if (args["product-reload"]) {
+      let target;
+      for (let i = 0; i < 50; i++) {
+        lifecycle.assertActive();
+        target = (await rootCDP.send("Target.getTargets")).targetInfos.find(
+          (t) => t.type === "worker" && t.url.endsWith("/workers/evaluate.ts"),
+        );
+        if (target) break;
+        await delay(20);
+      }
+      if (!target) throw Error("No personal-calculator worker target.");
+      const attached = await setup(() =>
+        rootCDP.send("Target.attachToTarget", {
+          targetId: target.targetId,
+          flatten: false,
+        }),
+      );
+      productWorkerCDP = new WorkerCDP(rootCDP, attached.sessionId, {
+        browser,
+        lifecycle,
+      });
+      await setup(() => productWorkerCDP.send("Runtime.enable"));
+      await operation("product-signed-submission", () =>
+        page.evaluate(
+          (target) => window.bench.productSubmission(target),
+          targetWord.targets[0],
+        ),
+      );
+      await operation("product-reload", async () => {
+        const value = await page.evaluate(() => window.bench.productReload());
+        const measurement =
+          await productWorkerCDP.evaluate("self.measurement()");
+        return { ...value, measurement };
+      });
+      for (const [i, w] of sample.entries())
+        await operation(
+          "product-rank",
+          () => page.evaluate((word) => window.bench.productRank(word), w.word),
+          { ...w, sample_index: i, first_word: i === 0 },
+        );
+      await operation("product-finish", () =>
+        page.evaluate(() => window.bench.productFinish()),
       );
     }
     // Page-only CDP throttling does not slow dedicated workers. The diagnostic
@@ -945,15 +1008,6 @@ async function trial(condition, rep, profile = false) {
     await calibrate();
     if (context.pages().length !== 1 || page.workers().length !== 1)
       throw Error("Measurement requires one page and one worker.");
-    const offset = (rep % 3) * 20;
-    const sample = [
-      ...dataset.sample.slice(offset),
-      ...dataset.sample.slice(0, offset),
-    ].map((w) =>
-      args["stress-only"] && w.cohort === "common_manual"
-        ? { ...w, cohort: "synthetic_reviewed_common" }
-        : w,
-    );
     const rankOne = async (w, label, session) => {
       try {
         await operation(
@@ -1018,11 +1072,6 @@ async function trial(condition, rep, profile = false) {
     }
     await operation("increment-input-reconstruction", () =>
       page.evaluate(() => window.bench.fetchInput()),
-    );
-    const targetWord = dataset.sample.find(
-      (w) =>
-        w.cohort === "heavily_judged" ||
-        w.cohort === "many_definitions_no_judgments",
     );
     await operation("local-signed-submission", () =>
       page.evaluate(

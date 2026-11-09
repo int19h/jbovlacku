@@ -85,8 +85,7 @@ node --import tsx scripts/browser-eval-baseline/run.mjs \
 The matrix rotates condition order across three repetitions.
 Word order rotates the three cohorts, so each cohort supplies the first word once.
 Each successful base trial ranks 60 distinct real words, adds one signed local judgment, reloads, and ranks the same words again.
-The new judgment exists only in diagnostic input and is never delivered to a peer.
-It uses a fixed, publicly known disposable seed.
+The new judgment uses a fixed, publicly known disposable seed and never leaves the disposable copy.
 
 ```sh
 /usr/bin/time -v node --expose-gc --max-old-space-size=6144 --import tsx \
@@ -97,7 +96,9 @@ It uses a fixed, publicly known disposable seed.
 
 Use `--conditions` to select a subset and `--repeats` to select one through ten repetitions.
 Use `--product-reload` to run `increment-actors` and then `increment-advance`. This is the personal-view sequence after a delivered judgment. The two operation records contain the request bytes and worker time for each step.
+This mode also retains the product gate's `PersonalCalculator`, admits the same judgment to the disposable server, and runs `PersonalCalculator.ensure({refresh:true})`. The `product-reload` operation records the total refresh time, worker request bytes, Wasm capacity, and session statistics. Sixty `product-rank` operations then rank through that calculator before `product-finish` closes it.
 Use `--delta-reload` to reuse the base actor map and advance the loaded session with only the new local judgment. This diagnostic skips `increment-actors` and matches the site-view reload path. The default retains the full `increment-actors` and `increment-load` sequence. Both advance modes insert the judgment at its sorted inventory position and use the calculator's ordered-subset selection.
+The diagnostic advance does not apply the calculator's view, overlay, mode, import-selection, or earlier-body guards. Its measurement therefore applies only when those inputs remain unchanged, as in this judgment trial. The separate `product-reload` operation applies all product guards through the calculator.
 Use `--verify-full-reload` to add a full `oracle-load` of the same appended input and 60 `oracle-rank` operations. Rank records contain the complete core result. An external comparison can make sure that the incremental and full results are identical byte for byte.
 Use `--api-port` and `--port` to select other unused local ports.
 Use `--timeout-ms` to change the per-operation timeout, whose default is 600,000 ms.
@@ -126,7 +127,7 @@ node --expose-gc --max-old-space-size=6144 --import tsx \
 ## Boundaries and constraints
 
 The product measurement calls `PersonalCalculator.ensure` from a blank measurement page.
-Its uninstrumented product worker is separate from the diagnostic worker wrapper.
+Its product worker uses the normal request protocol and a read-only measurement getter. It is separate from the diagnostic worker wrapper.
 
 It retains the normal inventory, byte, and evaluation limits.
 The page does not render the dictionary application or measure paint, search, layout, or accessibility.

@@ -225,6 +225,16 @@ function harness(): Harness {
       if (name === "selections") return selections.get(id);
       throw new Error(`Unexpected read: ${name}/${id}`);
     },
+    keys: async (name: string) => {
+      if (name === "selections") return [...selections.keys()];
+      return [];
+    },
+    put: async (name: string, id: string, value: unknown) => {
+      if (name === "inventory" && id === "latest")
+        currentInventory = value as SnapshotInventory;
+      else if (name === "records") records.set(id, value);
+      else if (name === "selections") selections.set(id, value as string);
+    },
     overlay: async () => currentOverlay,
   } as unknown as LocalStore;
   const workers: RecordingWorker[] = [];
@@ -265,6 +275,68 @@ function putEmptyRecord(h: Harness, id: string) {
 function appendRecord(h: Harness) {
   putEmptyRecord(h, added);
   h.setInventory(inventory([view, other, added], snapshot("b")));
+}
+
+function serveRefresh(h: Harness, eventIds: string[]) {
+  const hash = (value: unknown) =>
+    core.contentHash(
+      core.utf8(core.canonicalize(core.utf8(JSON.stringify(value)))),
+    );
+  const bodies = [bodyHash];
+  const manifest = {
+    events: {
+      count: eventIds.length,
+      hash: core.contentHash(
+        core.utf8(
+          eventIds
+            .map(
+              (id) =>
+                (h.records.get(id) as { envelope: string }).envelope + "\n",
+            )
+            .join(""),
+        ),
+      ),
+    },
+    bodies: { count: bodies.length, hash: hash(bodies) },
+    import_selections: { count: 0, hash: hash([]) },
+  };
+  const snapshot = hash(manifest);
+  const logicalInventory = hash({
+    events: eventIds,
+    bodies,
+    import_selections: [],
+  });
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = new URL(
+      input instanceof Request ? input.url : String(input),
+      "http://peer.test",
+    );
+    let value: unknown;
+    if (url.pathname.endsWith("/manifest"))
+      value = {
+        snapshot,
+        logical_inventory: logicalInventory,
+        manifest,
+        packages: [],
+        view,
+      };
+    else if (url.pathname.endsWith("/inventory")) {
+      const kind = url.searchParams.get("kind")!;
+      value = {
+        snapshot,
+        kind,
+        ids: {
+          events: eventIds,
+          bodies,
+          import_selections: [],
+        }[kind],
+        next: null,
+      };
+    } else throw new Error(`Unexpected refresh read: ${url.pathname}`);
+    return new Response(JSON.stringify(value), {
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
 }
 
 function privateOverlay(): Overlay {
@@ -542,6 +614,130 @@ test("invalidation during an advance makes the next calculation use a full load"
   const ready = await h.calculator.ensure();
   assert.equal(ready.state, "ready");
   assert.equal(lastLoad(h).input.events.length, 3);
+  h.calculator.cancel();
+});
+
+test("cancel during an advance terminates the worker and an explicit refresh reloads", async () => {
+  const h = harness();
+  const otherEvent = "jve1:" + "e".repeat(64);
+  const addedEvent = "jve1:" + "f".repeat(64);
+  putEmptyRecord(h, otherEvent);
+  putEmptyRecord(h, addedEvent);
+  h.setInventory(inventory([view, otherEvent], snapshot("a")));
+  await h.calculator.ensure();
+  h.setInventory(inventory([view, otherEvent, addedEvent], snapshot("b")));
+  let release = () => {};
+  const failed = h.worker;
+  failed.holdAdvance = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    failed.advanceStarted = resolve;
+  });
+  const interrupted = h.calculator.ensure();
+  await started;
+  h.calculator.cancel();
+  release();
+  const cancelled = await interrupted;
+  assert.equal(cancelled.state, "failed");
+  if (cancelled.state === "failed") assert.equal(cancelled.kind, "cancelled");
+  assert.equal(failed.terminateCalls, 1);
+  assert.equal((await h.calculator.ensure()).state, "failed");
+  assert.equal(h.workers.length, 1);
+  const originalFetch = globalThis.fetch;
+  try {
+    serveRefresh(h, [view, otherEvent, addedEvent]);
+    const ready = await h.calculator.ensure({ refresh: true });
+    assert.equal(ready.state, "ready", JSON.stringify(ready));
+    assert.equal(h.workers.length, 2);
+    assert.deepEqual(
+      h.worker.messages.map((message) => message.type),
+      ["actors", "load"],
+    );
+    assert.equal(lastLoad(h).input.events.length, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    h.calculator.cancel();
+  }
+});
+
+test("an inventory change during an advance starts the next delta from the completed inventory", async () => {
+  const h = harness();
+  const later = "jvr1:" + "g".repeat(64);
+  await h.calculator.ensure();
+  appendRecord(h);
+  let release = () => {};
+  h.worker.holdAdvance = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    h.worker.advanceStarted = resolve;
+  });
+  const pending = h.calculator.ensure();
+  await started;
+  putEmptyRecord(h, later);
+  h.setInventory(inventory([view, other, added, later], snapshot("c")));
+  release();
+  const first = await pending;
+  assert.equal(first.state, "ready");
+  if (first.state === "ready") {
+    assert.equal(first.snapshot, snapshot("b"));
+    assert.equal(first.events, 3);
+  }
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  const advance = h.worker.messages.at(-1);
+  assert.equal(advance?.type, "advance");
+  if (advance?.type === "advance")
+    assert.deepEqual(advance.input.events, [envelope(later)]);
+  assert.equal(h.workers.length, 1);
+  h.calculator.cancel();
+});
+
+test("an earlier body that becomes absent uses a full load", async () => {
+  const h = harness();
+  const earlierHash = "sha256:" + "7".repeat(64);
+  h.records.set(other, {
+    id: other,
+    envelope: envelope(other),
+    body: JSON.stringify({ present: true }),
+    bodyStatus: "present",
+    bodyHash: earlierHash,
+  });
+  h.setInventory({
+    ...inventory([view, other], snapshot("a")),
+    bodies: [bodyHash, earlierHash],
+  });
+  await h.calculator.ensure();
+  h.records.set(other, {
+    id: other,
+    envelope: envelope(other),
+    body: null,
+    bodyStatus: "none",
+    bodyHash: null,
+  });
+  h.setInventory(inventory([view, other], snapshot("b")));
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  assert.equal(lastLoad(h).input.bodies[other], undefined);
+  assert.equal(
+    h.worker.messages.filter((message) => message.type === "advance").length,
+    0,
+  );
+  h.calculator.cancel();
+});
+
+test("a reorder-only snapshot uses a full load", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  h.setInventory(inventory([other, view], snapshot("b")));
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  assert.deepEqual(lastLoad(h).input.events, [envelope(other), envelope(view)]);
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["actors", "load", "actors", "load"],
+  );
   h.calculator.cancel();
 });
 
