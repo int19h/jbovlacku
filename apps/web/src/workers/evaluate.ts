@@ -51,6 +51,7 @@ export class EvaluationWorker {
   private sessionKey: string | null = null;
   private events = 0;
 
+  /** Test and measurement access to the current browser-safe session. */
   get currentSession() {
     return this.session;
   }

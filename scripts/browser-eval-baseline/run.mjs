@@ -35,6 +35,8 @@ if (!args.out || (!args.data && !args.probe))
   throw Error(
     "Use --out=SCRATCH --data=DISPOSABLE_COPY, or --out=SCRATCH --probe.",
   );
+if (args["delta-reload"] && args["product-reload"])
+  throw Error("Choose only one of --delta-reload and --product-reload.");
 const out = resolve(String(args.out));
 await mkdir(out, { recursive: true });
 const data = args.data ? await realpath(String(args.data)) : null;
@@ -1028,19 +1030,22 @@ async function trial(condition, rep, profile = false) {
         targetWord.targets[0],
       ),
     );
+    const advanceReload = Boolean(
+      args["delta-reload"] || args["product-reload"],
+    );
     if (!args["delta-reload"])
       await operation("increment-actors", () =>
         page.evaluate((limits) => window.bench.actors(limits), dataset.limits),
       );
     const updated = await operation(
-      args["delta-reload"] ? "increment-advance" : "increment-load",
+      advanceReload ? "increment-advance" : "increment-load",
       () =>
         page.evaluate(
           ({ limits, delta }) =>
             delta
               ? window.bench.advance(limits, "after")
               : window.bench.load(limits, "after"),
-          { limits: dataset.limits, delta: Boolean(args["delta-reload"]) },
+          { limits: dataset.limits, delta: advanceReload },
         ),
     );
     if (!updated.available)

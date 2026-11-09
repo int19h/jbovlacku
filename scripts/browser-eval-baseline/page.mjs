@@ -89,6 +89,7 @@ window.bench = {
     return {
       ms: performance.now() - start,
       measurement: response.measurement,
+      request_bytes: response.request_bytes,
       actors: Object.keys(response.actors).length,
     };
   },

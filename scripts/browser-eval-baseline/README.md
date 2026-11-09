@@ -96,7 +96,8 @@ It uses a fixed, publicly known disposable seed.
 ```
 
 Use `--conditions` to select a subset and `--repeats` to select one through ten repetitions.
-Use `--delta-reload` to reuse the base actor map and advance the loaded session with only the appended local judgment. This mode skips `increment-actors` and labels the update `increment-advance`. The default retains the full `increment-actors` and `increment-load` sequence.
+Use `--product-reload` to run `increment-actors` and then `increment-advance`. This is the personal-view sequence after a delivered judgment. The two operation records contain the request bytes and worker time for each step.
+Use `--delta-reload` to reuse the base actor map and advance the loaded session with only the appended local judgment. This diagnostic skips `increment-actors` and matches the site-view reload path. The default retains the full `increment-actors` and `increment-load` sequence.
 Use `--verify-full-reload` to add a full `oracle-load` of the same appended input and 60 `oracle-rank` operations. Rank records contain the complete core result. An external comparison can make sure that the incremental and full results are identical byte for byte.
 Use `--api-port` and `--port` to select other unused local ports.
 Use `--timeout-ms` to change the per-operation timeout, whose default is 600,000 ms.

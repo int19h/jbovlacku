@@ -39,7 +39,7 @@ test("the browser exposes no host ports and rejects unknown request fields befor
       selected_view: "jve1:" + "0".repeat(64),
       import_selections: {},
     });
-    const unsafeBuilderPorts = ["addHostVerifiedRecord"].filter(
+    const unsafeBuilderPorts = ["addHostVerifiedRecord", "removeRecord"].filter(
       (name) => typeof builder[name] !== "undefined",
     );
     builder.free();

@@ -41,17 +41,32 @@ class RecordingWorker {
   messages: WorkerRequest[] = [];
   events = 0;
   failAdvance = false;
+  crashAdvance = false;
+  holdAdvance: Promise<void> | null = null;
+  advanceStarted: (() => void) | null = null;
+  terminateCalls = 0;
 
   postMessage(message: WorkerRequest) {
     this.messages.push(structuredClone(message));
     if (message.type === "load") this.events = message.input.events.length;
     if (message.type === "advance") this.events += message.input.events.length;
-    queueMicrotask(() => {
+    queueMicrotask(async () => {
+      if (message.type === "advance" && this.holdAdvance) {
+        const held = this.holdAdvance;
+        this.holdAdvance = null;
+        this.advanceStarted?.();
+        await held;
+      }
       if (message.type === "advance" && this.failAdvance) {
         this.failAdvance = false;
         this.onmessage?.({
           data: { type: "error", id: message.id, message: "advance failed" },
         } as MessageEvent);
+        return;
+      }
+      if (message.type === "advance" && this.crashAdvance) {
+        this.crashAdvance = false;
+        this.crash("The advance worker crashed.");
         return;
       }
       if (message.type === "actors") {
@@ -75,13 +90,21 @@ class RecordingWorker {
     });
   }
 
-  terminate() {}
+  crash(message = "The evaluation worker crashed.") {
+    this.onerror?.({ message } as ErrorEvent);
+  }
+
+  terminate() {
+    this.terminateCalls++;
+  }
 }
 
 type Harness = {
   calculator: InstanceType<typeof PersonalCalculator>;
-  worker: RecordingWorker;
+  workers: RecordingWorker[];
+  readonly worker: RecordingWorker;
   records: Map<string, unknown>;
+  selections: Map<string, string>;
   setInventory: (value: SnapshotInventory) => void;
   setOverlay: (value: Overlay) => void;
 };
@@ -111,24 +134,32 @@ function harness(): Harness {
       },
     ],
   ]);
+  const selections = new Map<string, string>();
   const store = {
     get: async (name: string, id: string) => {
       if (name === "inventory" && id === "latest") return currentInventory;
       if (name === "records") return records.get(id);
+      if (name === "selections") return selections.get(id);
       throw new Error(`Unexpected read: ${name}/${id}`);
     },
     overlay: async () => currentOverlay,
   } as unknown as LocalStore;
-  const worker = new RecordingWorker();
+  const workers: RecordingWorker[] = [];
   (globalThis as { Worker?: unknown }).Worker = class {
     constructor() {
+      const worker = new RecordingWorker();
+      workers.push(worker);
       return worker;
     }
   };
   return {
     calculator: new PersonalCalculator(store, async () => ({ identity: null })),
-    worker,
+    workers,
+    get worker() {
+      return workers.at(-1)!;
+    },
     records,
+    selections,
     setInventory: (value) => {
       currentInventory = value;
     },
@@ -147,6 +178,24 @@ function appendRecord(h: Harness) {
     bodyHash: null,
   });
   h.setInventory(inventory([view, other, added], snapshot("b")));
+}
+
+function privateOverlay(): Overlay {
+  return {
+    ...emptyOverlay(),
+    blocked: [
+      {
+        identity: "ed25519:" + "1".repeat(64),
+        scope: { kind: "*", word: "*", language: "*" },
+      },
+    ],
+  };
+}
+
+function lastLoad(h: Harness) {
+  const message = h.worker.messages.at(-1);
+  assert.equal(message?.type, "load");
+  return message as Extract<WorkerRequest, { type: "load" }>;
 }
 
 before(async () => {
@@ -184,48 +233,177 @@ test("a pure snapshot append advances with only the new record", async () => {
   assert.deepEqual(advance.input.events, [envelope(added)]);
   assert.deepEqual(advance.input.bodies, {});
   assert.equal(advance.input.selected_view, view);
+  assert.equal(
+    (advance.input.overlay as { version: number } | undefined)?.version,
+    2,
+  );
   h.calculator.cancel();
 });
 
-test("a non-append snapshot and an overlay change use a full load", async () => {
+test("a non-append snapshot uses a full load", async () => {
   const h = harness();
   await h.calculator.ensure();
   appendRecord(h);
   await h.calculator.ensure();
   h.setInventory(inventory([view, added], snapshot("c")));
   await h.calculator.ensure();
-  assert.equal(h.worker.messages.at(-1)?.type, "load");
-  const replaced = h.worker.messages.at(-1);
-  assert.equal(replaced?.type, "load");
-  if (replaced?.type === "load")
-    assert.deepEqual(replaced.input.events, [envelope(view), envelope(added)]);
-
-  h.setOverlay({
-    ...emptyOverlay(),
-    blocked: [
-      {
-        identity: "ed25519:" + "1".repeat(64),
-        scope: { kind: "*", word: "*", language: "*" },
-      },
-    ],
-  });
-  h.calculator.invalidate();
-  await h.calculator.ensure();
-  assert.equal(h.worker.messages.at(-1)?.type, "load");
+  const replaced = lastLoad(h);
+  assert.deepEqual(replaced.input.events, [envelope(view), envelope(added)]);
   h.calculator.cancel();
 });
 
-test("sent records are cleared when an advance fails", async () => {
+test("an overlay change alone uses a full load without invalidation", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  h.setOverlay(privateOverlay());
+  await h.calculator.ensure();
+  const loaded = lastLoad(h);
+  assert.equal(
+    (loaded.input.overlay as { blocked: unknown[] } | undefined)?.blocked
+      .length,
+    1,
+  );
+  h.calculator.cancel();
+});
+
+test("a view change alone uses a full load", async () => {
+  const h = harness();
+  const nextView = "jve1:" + "a".repeat(64);
+  const nextBodyHash = "sha256:" + "b".repeat(64);
+  h.records.set(nextView, {
+    id: nextView,
+    envelope: envelope(nextView),
+    body: JSON.stringify({ roots: [] }),
+    bodyStatus: "present",
+    bodyHash: nextBodyHash,
+  });
+  await h.calculator.ensure();
+  h.setInventory({
+    ...inventory([view, other, nextView], snapshot("b")),
+    view: nextView,
+    bodies: [bodyHash, nextBodyHash],
+  });
+  await h.calculator.ensure();
+  assert.equal(lastLoad(h).input.selected_view, nextView);
+  h.calculator.cancel();
+});
+
+test("a mode change alone uses a full load", async () => {
+  const h = harness();
+  await h.calculator.ensure({ mode: "personal" });
+  await h.calculator.ensure({ mode: "site" });
+  assert.equal(lastLoad(h).input.overlay, undefined);
+  h.calculator.cancel();
+});
+
+test("an import selection change alone uses a full load", async () => {
+  const h = harness();
+  const selection = "sha256:" + "9".repeat(64);
+  h.selections.set(selection, JSON.stringify([other]));
+  await h.calculator.ensure();
+  h.setInventory({
+    ...inventory([view, other], snapshot("b")),
+    selections: [selection],
+  });
+  await h.calculator.ensure();
+  assert.deepEqual(lastLoad(h).input.import_selections, {
+    [selection]: [other],
+  });
+  h.calculator.cancel();
+});
+
+test("a changed body on an earlier event uses a full load", async () => {
+  const h = harness();
+  const changedHash = "sha256:" + "8".repeat(64);
+  await h.calculator.ensure();
+  appendRecord(h);
+  h.records.set(other, {
+    id: other,
+    envelope: envelope(other),
+    body: JSON.stringify({ changed: true }),
+    bodyStatus: "present",
+    bodyHash: changedHash,
+  });
+  h.setInventory({
+    ...inventory([view, other, added], snapshot("b")),
+    bodies: [bodyHash, changedHash],
+  });
+  await h.calculator.ensure();
+  assert.equal(
+    lastLoad(h).input.bodies[other],
+    JSON.stringify({ changed: true }),
+  );
+  h.calculator.cancel();
+});
+
+test("a failed advance retries with one full load on a replacement worker", async () => {
   const h = harness();
   await h.calculator.ensure();
   appendRecord(h);
-  h.worker.failAdvance = true;
-  assert.equal((await h.calculator.ensure()).state, "failed");
-  const retry = await h.calculator.ensure();
-  assert.equal(retry.state, "ready");
-  assert.equal(h.worker.messages.at(-1)?.type, "load");
-  const loaded = h.worker.messages.at(-1);
-  assert.equal(loaded?.type, "load");
-  if (loaded?.type === "load") assert.equal(loaded.input.events.length, 3);
+  const failed = h.worker;
+  failed.failAdvance = true;
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  assert.equal(h.workers.length, 2);
+  assert.equal(failed.terminateCalls, 1);
+  assert.equal(lastLoad(h).input.events.length, 3);
+  h.calculator.cancel();
+});
+
+test("a crash during advance retries on a replacement worker in the same run", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  appendRecord(h);
+  const failed = h.worker;
+  failed.crashAdvance = true;
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  assert.equal(h.workers.length, 2);
+  assert.equal(failed.terminateCalls, 1);
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load"],
+  );
+  assert.equal(lastLoad(h).input.events.length, 3);
+  h.calculator.cancel();
+});
+
+test("a crash while idle clears ready state and the next calculation replaces the worker", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  const failed = h.worker;
+  failed.crash();
+  assert.equal(failed.terminateCalls, 1);
+  assert.equal(h.calculator.status.state, "idle");
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  assert.equal(h.workers.length, 2);
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load"],
+  );
+  assert.equal(lastLoad(h).input.events.length, 2);
+  h.calculator.cancel();
+});
+
+test("invalidation during an advance makes the next calculation use a full load", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  appendRecord(h);
+  let release = () => {};
+  h.worker.holdAdvance = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    h.worker.advanceStarted = resolve;
+  });
+  const interrupted = h.calculator.ensure();
+  await started;
+  h.calculator.invalidate();
+  release();
+  assert.equal((await interrupted).state, "ready");
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  assert.equal(lastLoad(h).input.events.length, 3);
   h.calculator.cancel();
 });

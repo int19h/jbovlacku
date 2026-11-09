@@ -243,6 +243,15 @@ export class PersonalCalculator {
     this.status = status;
     for (const listener of this.listeners) listener(status);
   }
+  private retireWorker() {
+    const worker = this.worker;
+    this.worker = null;
+    worker?.terminate();
+    this.loadedKey = null;
+    this.sent = null;
+    this.rankCache.clear();
+    if (this.status.state === "ready") this.set({ state: "idle" });
+  }
   private ensureWorker(): Worker {
     if (this.worker) return this.worker;
     const worker = new Worker(
@@ -253,15 +262,17 @@ export class PersonalCalculator {
       const entry = this.pending.get(event.data.id);
       if (!entry) return;
       this.pending.delete(event.data.id);
-      if (event.data.type === "error")
+      if (event.data.type === "error") {
+        if (this.worker === worker) this.retireWorker();
         entry.reject(new Error(event.data.message));
-      else entry.resolve(event.data);
+      } else entry.resolve(event.data);
     };
     worker.onerror = (event) => {
+      if (this.worker !== worker) return;
+      this.retireWorker();
+      const message = event.message || "The evaluation worker failed.";
       for (const entry of this.pending.values())
-        entry.reject(
-          new Error(event.message || "The evaluation worker failed."),
-        );
+        entry.reject(new Error(message));
       this.pending.clear();
     };
     this.worker = worker;
@@ -275,7 +286,13 @@ export class PersonalCalculator {
     const worker = this.ensureWorker();
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      worker.postMessage({ ...message, id });
+      try {
+        worker.postMessage({ ...message, id });
+      } catch (error) {
+        this.pending.delete(id);
+        if (this.worker === worker) this.retireWorker();
+        reject(error);
+      }
     });
   }
   /** True while a download or evaluation is in progress. */
@@ -498,24 +515,38 @@ export class PersonalCalculator {
         mode,
         events: inventory.events.length,
       });
-      const loaded = advance
-        ? await this.request(run, {
+      const input: EvaluationRequest = {
+        events: records.events,
+        bodies: records.bodies,
+        selected_view: inventory.view,
+        import_selections: records.selections,
+        ...(overlay ? { overlay } : {}),
+      };
+      let loaded: WorkerResponse;
+      if (advance) {
+        try {
+          loaded = await this.request(run, {
             type: "advance",
             base: advance.base,
             session: key,
             input: advance.input,
-          })
-        : await this.request(run, {
+          });
+        } catch (error) {
+          this.retireWorker();
+          live();
+          loaded = await this.request(run, {
             type: "load",
             session: key,
-            input: {
-              events: records.events,
-              bodies: records.bodies,
-              selected_view: inventory.view,
-              import_selections: records.selections,
-              ...(overlay ? { overlay } : {}),
-            },
+            input,
           });
+        }
+      } else {
+        loaded = await this.request(run, {
+          type: "load",
+          session: key,
+          input,
+        });
+      }
       live();
       if (loaded.type !== "loaded" || loaded.session !== key)
         throw new Error("Unexpected worker reply.");
@@ -565,8 +596,7 @@ export class PersonalCalculator {
         message: describe(error),
         kind,
       };
-      this.loadedKey = null;
-      this.sent = null;
+      this.retireWorker();
       this.set(status);
       return status;
     } finally {
@@ -756,7 +786,13 @@ export class PersonalCalculator {
         },
         reject,
       });
-      worker.postMessage({ type: "rank", id, session, word, reviewers });
+      try {
+        worker.postMessage({ type: "rank", id, session, word, reviewers });
+      } catch (error) {
+        this.pending.delete(id);
+        if (this.worker === worker) this.retireWorker();
+        reject(error);
+      }
     });
   }
   /**

@@ -81,7 +81,6 @@ import {
 function wrapBrowserBuilder(builder: EvaluationBuilder) {
   return {
     addRecord: builder.addRecord,
-    removeRecord: builder.removeRecord,
     finish: () => wrapBrowserSession(builder.finish()),
     free: builder.free,
   };
