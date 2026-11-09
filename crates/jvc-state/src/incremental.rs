@@ -1450,15 +1450,21 @@ mod rebuild_tests {
                         status_id.clone(),
                         &issuers[0],
                         vec![claim_id.clone()],
-                        json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":claim_id,"carry":[claim_id]}),
+                        json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":claim_id,"carry":[claim_id]}),
                     ));
                     let carried_id = fresh_id(&mut counter);
                     prepared.add_host_verified_record(host(
                         carried_id.clone(),
                         &issuers[0],
                         vec![status_id.clone()],
-                        json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":status_id,"carry":[status_id]}),
+                        json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":status_id,"carry":[status_id]}),
                     ));
+                    assert!(
+                        [&claim_id, &status_id, &carried_id]
+                            .iter()
+                            .all(|id| prepared.nodes[*id].semantic),
+                        "account fixture records must be semantically valid"
+                    );
                     tips.insert(issuers[0].clone(), carried_id);
                 }
             }
@@ -1643,7 +1649,7 @@ mod rebuild_tests {
                             fresh_id(&mut counter),
                             issuer,
                             vec![tip.clone()],
-                            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":tip,"carry":[carry]}),
+                            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":tip,"carry":[carry]}),
                         )
                     }
                     _ => {
@@ -1659,6 +1665,12 @@ mod rebuild_tests {
                         )
                     }
                 };
+                if record.node.kind == "account.set" {
+                    assert!(
+                        record.node.semantic,
+                        "generated account record is not semantically valid"
+                    );
+                }
                 let record_id = record.node.id.clone();
                 extras
                     .entry(issuer.clone())
@@ -2044,49 +2056,95 @@ mod rebuild_tests {
     /// A restored state counts ancestry bytes exactly as a full
     /// evaluation does, including the evaluation-time account carry
     /// unions: the checkpoint saves the byte total and the first
-    /// advance seeds the rebuilt graph with it.
+    /// advance seeds the rebuilt graph with it. The fixture carries
+    /// a certified account claim, so account evaluation really runs
+    /// the carry unions this test covers.
     #[test]
     fn restored_state_keeps_full_ancestry_bytes() {
-        let mut prepared = base();
+        let (view, view_body) = event(
+            1,
+            77,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(
+                json!({"name":"fixture","description":[],"roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],"rafsi_threshold":{"numerator":1,"denominator":1},"H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},"excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,"import_sets":[],"account_witnesses":[identity_from_seed(&[10;32]),identity_from_seed(&[11;32])],"account_authority":true,"notes":[]}),
+            ),
+        );
+        let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::new(),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        prepared.add_record(&view, view_body.as_deref());
         let (publication, body) = publication();
         let publication_id = publication.id().to_string();
         prepared.add_record(&publication, body.as_deref());
-        let issuer = identity_from_seed(&[8u8; 32]);
-        let root = format!("jve1:{:064x}", 700_001usize);
-        let claim_id = format!("jve1:{:064x}", 700_010usize);
-        let status_id = format!("jve1:{:064x}", 700_020usize);
-        let third_id = format!("jve1:{:064x}", 700_030usize);
+        // A root from another issuer, carried by the claim below.
+        let (carried, _) = event(8, 1, json!({"kind":"identity.merge"}), None);
+        let carried_id = carried.id().to_string();
+        prepared.add_record(&carried, None);
+        // A certified replacement claim with a non-empty carry: the
+        // first claim is initial (empty carry), the second carries
+        // the first.
+        let first_claim_id = format!("jve1:{:064x}", 700_010usize);
+        let claim_id = format!("jve1:{:064x}", 700_020usize);
         prepared.add_host_verified_record(host(
-            root.clone(),
-            &issuer,
+            first_claim_id.clone(),
+            &identity_from_seed(&[1u8; 32]),
             vec![],
-            json!({"kind":"identity.merge"}),
-        ));
-        prepared.add_host_verified_record(host(
-            claim_id.clone(),
-            &issuer,
-            vec![root],
             json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
         ));
         prepared.add_host_verified_record(host(
-            status_id.clone(),
-            &issuer,
-            vec![claim_id.clone()],
-            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":claim_id,"carry":[claim_id]}),
+            claim_id.clone(),
+            &identity_from_seed(&[1u8; 32]),
+            vec![first_claim_id.clone()],
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":first_claim_id,"carry":[first_claim_id]}),
         ));
-        prepared.add_host_verified_record(host(
-            third_id.clone(),
-            &issuer,
-            vec![status_id.clone()],
-            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":status_id,"carry":[status_id]}),
-        ));
+        for (seed, nonce) in [(10u8, 1u8), (11, 1)] {
+            let (observation, observation_body) = event(
+                seed,
+                nonce,
+                json!({"kind":"account.observe","origin":"https://source.example","account":41,"claim":claim_id,"result":"present"}),
+                Some(
+                    json!({"origin":"https://source.example","account":41,"username":"author","field_hash":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","markers":[claim_id],"method":"lensisku-public-profile-v1","observed_at":"2026-10-11T00:00:00Z"}),
+                ),
+            );
+            prepared.add_record(&observation, observation_body.as_deref());
+        }
+        assert!(
+            prepared
+                .nodes
+                .values()
+                .filter(|node| node.kind == "account.set")
+                .all(|node| node.semantic),
+            "restored-state account records must be semantically valid"
+        );
         let base_state = prepared.clone().into_state();
+        assert!(base_state.evaluation().available);
+        // The carry unions run during evaluation, so the evaluated
+        // byte total exceeds the graph-construction total. Without
+        // this gap the checkpoint assertions below could not catch a
+        // missing restoration seed.
+        let construction_bytes =
+            graph::Graph::new(prepared.nodes.clone(), &prepared.options.limits)
+                .ancestry
+                .bytes();
+        assert!(
+            cap_bytes(&base_state) > construction_bytes,
+            "evaluated {} bytes, construction {construction_bytes}",
+            cap_bytes(&base_state)
+        );
         let saved = base_state.checkpoint("host-checked").unwrap();
+        let saved_value: Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(
+            saved_value["ancestry_bytes"].as_u64().unwrap() as usize,
+            cap_bytes(&base_state)
+        );
         let restored = EvaluatedState::restore_host_checkpoint(&saved, "host-checked").unwrap();
         let judgment = host(
             format!("jve1:{:064x}", 700_040usize),
-            &issuer,
-            vec![third_id],
+            &identity_from_seed(&[8u8; 32]),
+            vec![carried_id],
             json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
         );
         let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
@@ -2246,8 +2304,8 @@ mod rebuild_tests {
     }
 
     /// Carry-split probe: a judgment inserted between an account
-    /// claim and its status record splits the status closure that a
-    /// later account record carries. The append must match a full
+    /// claim and its successor claim splits the carried closure that
+    /// a later account record carries. The append must match a full
     /// evaluation at the exact budget and one below.
     #[test]
     fn carry_split_append_matches_full_at_tight_budgets() {
@@ -2269,16 +2327,24 @@ mod rebuild_tests {
             status_id.clone(),
             &issuer,
             vec![claim_id.clone()],
-            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":claim_id,"carry":[claim_id]}),
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":claim_id,"carry":[claim_id]}),
         ));
         prepared.add_host_verified_record(host(
             third_id,
             &issuer,
             vec![status_id.clone()],
-            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":status_id,"carry":[status_id]}),
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":status_id,"carry":[status_id]}),
         ));
-        // The ID sorts between the claim and the status record, so a
-        // fresh layout splits the carried status closure.
+        assert!(
+            prepared
+                .nodes
+                .values()
+                .filter(|node| node.kind == "account.set")
+                .all(|node| node.semantic),
+            "carry-split account records must be semantically valid"
+        );
+        // The ID sorts between the two claims, so a fresh layout
+        // splits the carried closure.
         let judgment = host(
             format!("jve1:{:064x}", 700_015usize),
             &issuer,

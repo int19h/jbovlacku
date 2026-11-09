@@ -10,6 +10,17 @@ thread_local! {
 pub(super) fn construction_count() -> usize {
     CONSTRUCTIONS.with(Cell::get)
 }
+#[cfg(test)]
+thread_local! {
+    /// Records visited by lifecycle root indexing and successor
+    /// root lookups. A per-transfer scan of all records would make
+    /// this grow with the square of the record count.
+    static LIFECYCLE_VISITS: Cell<usize> = const { Cell::new(0) };
+}
+#[cfg(test)]
+pub(super) fn lifecycle_visits() -> usize {
+    LIFECYCLE_VISITS.with(Cell::get)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -177,6 +188,10 @@ pub(crate) struct Graph {
     pub space: Rc<super::ancestors::Space>,
     pub ancestry: super::ancestors::AncestryBudget,
     pub boundary: BoundaryCrossings,
+    /// Whether every record of an issuer is complete for
+    /// `local_complete`, computed in one pass at lifecycle build and
+    /// kept current by appends.
+    pub issuer_complete: BTreeMap<String, bool>,
     /// Records appended to this state, in append order. Per state: a
     /// sibling's appends never appear here.
     pub appended_ids: Vec<String>,
@@ -202,6 +217,7 @@ impl Graph {
             space: super::ancestors::Space::empty(),
             ancestry: super::ancestors::AncestryBudget::new(),
             boundary: BoundaryCrossings::default(),
+            issuer_complete: BTreeMap::new(),
             appended_ids: Vec::new(),
             appended_rank: BTreeMap::new(),
             own: Rc::default(),
@@ -454,9 +470,22 @@ impl Graph {
         result
     }
     fn build_lifecycle(&mut self) {
-        for node in self.nodes.values().filter(|n| n.semantic) {
+        // One charged pass over every record: semantic processing,
+        // plus an index of each issuer's root records. The transfer
+        // loop below looks a successor's roots up in this index
+        // instead of scanning all records for every transfer.
+        let mut roots: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
+        for node in self.nodes.values() {
             if !self.charge(1) {
                 return;
+            }
+            #[cfg(test)]
+            LIFECYCLE_VISITS.with(|count| count.set(count.get() + 1));
+            if node.previous.is_empty() {
+                roots.entry(node.issuer.as_str()).or_default().push(node);
+            }
+            if !node.semantic {
+                continue;
             }
             if node.kind == "identity.transfer" && self.own_complete(&node.id) {
                 self.transfers
@@ -538,11 +567,9 @@ impl Graph {
             }
             let transfer = &self.nodes[&transfers[0]];
             let successor = transfer.action["successor"].as_str().unwrap_or_default();
-            let first: Vec<_> = self
-                .nodes
-                .values()
-                .filter(|n| n.issuer == successor && n.previous.is_empty())
-                .collect();
+            #[cfg(test)]
+            LIFECYCLE_VISITS.with(|count| count.set(count.get() + 1));
+            let first: &[&Node] = roots.get(successor).map(Vec::as_slice).unwrap_or_default();
             if first.len() != 1 {
                 continue;
             }
@@ -558,39 +585,91 @@ impl Graph {
                     .insert(key.clone(), successor.into());
             }
         }
-        // Remove every cycle and any path that enters one.
+        // Remove every cycle and any path that enters one. Each
+        // record's verdict (its path enters a cycle or not) is
+        // computed once and reused, so the walks stay linear in the
+        // number of successor links.
         let edges = self.lifecycle.successor.clone();
+        let mut enters_cycle: BTreeMap<&str, bool> = BTreeMap::new();
         for key in edges.keys() {
-            let mut seen = BTreeSet::new();
-            let mut at = key;
-            while let Some(next) = edges.get(at) {
-                if !seen.insert(at.clone()) {
-                    for item in seen {
-                        self.lifecycle.successor.remove(&item);
-                    }
-                    break;
+            let mut path: Vec<&str> = Vec::new();
+            let mut at = key.as_str();
+            let result = loop {
+                if let Some(&known) = enters_cycle.get(at) {
+                    break known;
                 }
-                at = next;
+                if path.contains(&at) {
+                    break true;
+                }
+                let Some(next) = edges.get(at) else {
+                    break false;
+                };
+                path.push(at);
+                at = next.as_str();
+            };
+            for item in path {
+                enters_cycle.insert(item, result);
+                if result {
+                    self.lifecycle.successor.remove(item);
+                }
             }
         }
         let keys: BTreeSet<_> = self.nodes.values().map(|n| n.issuer.clone()).collect();
+        // The predecessor of a key is the smallest issuer whose
+        // successor it is (map order, as a scan would find first).
+        // Resolved actors are memoized, so resolving every key stays
+        // linear in the number of successor links.
+        let mut predecessor: BTreeMap<&str, &str> = BTreeMap::new();
+        for (key, successor) in &self.lifecycle.successor {
+            predecessor
+                .entry(successor.as_str())
+                .or_insert(key.as_str());
+        }
+        let mut resolved: BTreeMap<&str, &str> = BTreeMap::new();
         for key in &keys {
-            let mut actor = key.clone();
-            let mut seen = BTreeSet::new();
-            while let Some((parent, _)) =
-                self.lifecycle.successor.iter().find(|(_, v)| *v == &actor)
-            {
-                if !seen.insert(actor.clone()) {
-                    break;
+            let mut path: Vec<&str> = Vec::new();
+            let mut at = key.as_str();
+            let actor = loop {
+                if let Some(&done) = resolved.get(at) {
+                    break done;
                 }
-                actor = parent.clone();
+                if path.contains(&at) {
+                    break at;
+                }
+                match predecessor.get(at) {
+                    Some(parent) => {
+                        path.push(at);
+                        at = parent;
+                    }
+                    None => break at,
+                }
+            };
+            for item in path {
+                resolved.insert(item, actor);
             }
-            self.lifecycle.key_actor.insert(key.clone(), actor.clone());
+            resolved.insert(key.as_str(), actor);
+            self.lifecycle
+                .key_actor
+                .insert(key.clone(), actor.to_string());
             self.lifecycle
                 .groups
-                .entry(actor)
+                .entry(actor.to_string())
                 .or_default()
                 .insert(key.clone());
+        }
+        // Per-issuer completeness for `local_complete`, in one pass
+        // over the records instead of one scan per claim.
+        for (id, node) in &self.nodes {
+            let complete =
+                if self.lifecycle.successor.contains_key(&node.issuer) && !self.retained(id) {
+                    true
+                } else {
+                    self.own_complete(id)
+                };
+            *self
+                .issuer_complete
+                .entry(node.issuer.clone())
+                .or_insert(true) &= complete;
         }
         for (id, node) in &self.nodes {
             if !self.own_complete(id) || self.pending_cutoffs.contains(&node.issuer) {
@@ -800,6 +879,16 @@ impl Graph {
         for (first, last) in new_ranges {
             self.boundary.extend_range(first, last);
         }
+        let complete =
+            if self.lifecycle.successor.contains_key(&node.issuer) && !self.retained(&node.id) {
+                true
+            } else {
+                self.own_complete(&node.id)
+            };
+        *self
+            .issuer_complete
+            .entry(node.issuer.clone())
+            .or_insert(true) &= complete;
         self.appended += 1;
     }
     pub fn own_complete(&self, id: &str) -> bool {
@@ -884,17 +973,9 @@ impl Graph {
     pub fn local_complete(&self, root: &str, _claim: &str) -> bool {
         let keys = self.downstream(root);
         !keys.iter().any(|key| self.pending_cutoffs.contains(key))
-            && self
-                .nodes
-                .values()
-                .filter(|n| keys.contains(&n.issuer))
-                .all(|n| {
-                    // An old-key branch outside an accepted transfer has no imported authority.
-                    if self.lifecycle.successor.contains_key(&n.issuer) && !self.retained(&n.id) {
-                        return true;
-                    }
-                    self.own_complete(&n.id)
-                })
+            && keys
+                .iter()
+                .all(|key| self.issuer_complete.get(key).copied().unwrap_or(true))
     }
 }
 
@@ -941,6 +1022,44 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// Many independent transfers to an absent successor: the
+    /// lifecycle pass indexes each issuer's roots once, so the
+    /// records it visits grow linearly, not with the square of the
+    /// record count. A per-transfer scan of all records would visit
+    /// about `count * count` records here.
+    #[test]
+    fn many_independent_transfers_use_indexed_successor_lookup() {
+        let count = 2_000usize;
+        let nodes: BTreeMap<String, Node> = (0..count)
+            .map(|i| {
+                let id = format!("jve1:{i:064x}");
+                (
+                    id.clone(),
+                    Node {
+                        id,
+                        issuer: format!("issuer{i:05}"),
+                        previous: Vec::new(),
+                        action: json!({"kind":"identity.transfer","successor":"ed25519:absent"}),
+                        kind: "identity.transfer".into(),
+                        semantic: true,
+                        body_hash: None,
+                        body: None,
+                        body_label: "absent".into(),
+                    },
+                )
+            })
+            .collect();
+        let before = lifecycle_visits();
+        let graph = Graph::new(nodes, &Limits::default());
+        assert!(!graph.resource.get());
+        assert!(graph.lifecycle.successor.is_empty());
+        let visits = lifecycle_visits() - before;
+        assert!(
+            visits <= 3 * count,
+            "{visits} lifecycle visits for {count} records"
+        );
     }
 
     #[test]
