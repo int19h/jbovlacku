@@ -436,7 +436,7 @@ impl Graph {
                 result.missing.insert(id.clone());
                 continue;
             };
-            if !self.charge(1 + c.missing.len() + c.ids.range_count()) {
+            if !self.charge(1 + c.missing.len() + c.ids.fresh_ranges) {
                 result.resource = true;
                 break;
             }
@@ -490,7 +490,7 @@ impl Graph {
                     if c.resource || !self.charge(1 + c.missing.len()) {
                         return;
                     }
-                    if !self.charge(1 + c.ids.range_count()) {
+                    if !self.charge(1 + c.ids.fresh_ranges) {
                         return;
                     }
                     cutoff.ids.extend(&self.ancestry, c.ids);
@@ -711,7 +711,8 @@ impl Graph {
             .unwrap_or_else(|| key.into())
     }
     /// Append a complete ordinary event without changing any existing links.
-    /// New IDs register at the end of the layout until the next rebuild.
+    /// Appended IDs never enter the shared layout. They get a rank at
+    /// the end of their issuer block in this state's own rank map.
     pub fn append_ordinary(&mut self, node: Node) {
         // Unions first, then the record itself: the same combine order
         // a full build uses for this record, so cap charges match.

@@ -70,9 +70,17 @@ impl AncestryBudget {
         self.failed.get()
     }
 
-    #[cfg(test)]
     pub fn bytes(&self) -> usize {
         self.bytes.get()
+    }
+
+    /// Restore a saved byte total, as after a checkpoint. A total
+    /// past the cap is a failure, exactly as if the charges had run.
+    pub fn restore_bytes(&self, bytes: usize) {
+        self.bytes.set(bytes);
+        if bytes > MAX_ANCESTOR_BYTES {
+            self.failed.set(true);
+        }
     }
 }
 
@@ -152,9 +160,8 @@ impl Ranges {
             // The extra position must enter in sorted order, not last.
             let next = match (next, pending) {
                 (Some(range), Some(single)) if single.first < range.first => {
-                    // Requeue the range by stepping back is complex; handle by
-                    // inserting the single first and processing range next.
-                    // Instead, merge the single now and keep the range.
+                    // The single sorts before the range: merge it now
+                    // and keep the range for the next step.
                     push(single, &mut merged);
                     pending = None;
                     Some(range)
@@ -259,10 +266,6 @@ impl Space {
 
     pub(crate) fn id_at(&self, position: u32) -> String {
         self.ids[position as usize].clone()
-    }
-
-    pub(crate) fn id_ref(&self, position: u32) -> &str {
-        &self.ids[position as usize]
     }
 }
 
@@ -396,7 +399,6 @@ impl IdSet {
         frontier > last
     }
 
-    /// First position of each stored range, in layout order.
     /// Stored ranges as (first, last) position pairs, in layout order.
     pub fn ranges(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         self.ranges

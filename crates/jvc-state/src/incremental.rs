@@ -28,6 +28,15 @@ pub struct EvaluatedState {
     graph: Option<Graph>,
     unresolved: BTreeSet<String>,
     remaining_work: usize,
+    /// Ancestry bytes spent by the evaluation this state carries,
+    /// saved across a checkpoint. A restored state has no graph, so
+    /// the first advance seeds the rebuilt graph's cap counter with
+    /// this total; without it the counter would miss the
+    /// evaluation-time unions and could pass the cap where a full
+    /// evaluation fails it. `None` on an old checkpoint forces a
+    /// rebuild on the first advance instead.
+    saved_ancestry_bytes: Option<usize>,
+    checkpoint_restored: bool,
     statistics: UpdateStatistics,
     judgment_changes: Option<JudgmentChanges>,
     ranking_index: std::cell::RefCell<Option<policy::ApproximateContextIndex>>,
@@ -55,6 +64,8 @@ impl Clone for EvaluatedState {
             graph: self.graph.clone(),
             unresolved: self.unresolved.clone(),
             remaining_work: self.remaining_work,
+            saved_ancestry_bytes: self.saved_ancestry_bytes,
+            checkpoint_restored: self.checkpoint_restored,
             statistics: self.statistics.clone(),
             judgment_changes: self.judgment_changes.clone(),
             ranking_index: Default::default(),
@@ -82,6 +93,8 @@ impl EvaluatedState {
             graph: None,
             unresolved: BTreeSet::new(),
             remaining_work: 0,
+            saved_ancestry_bytes: None,
+            checkpoint_restored: false,
             statistics: UpdateStatistics::default(),
             judgment_changes: None,
             ranking_index: Default::default(),
@@ -273,6 +286,7 @@ impl EvaluatedState {
             return;
         }
         // Discard this state's old ancestry before allocating its replacement.
+        self.saved_ancestry_bytes = None;
         self.graph = None;
         let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
         self.evaluation = evaluate_graph(&self.prepared.options, &graph);
@@ -332,37 +346,33 @@ impl EvaluatedState {
         }
         if rebuild_reason.is_none() && self.graph.is_none() {
             let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
-            if graph.resource.get() {
+            match self.saved_ancestry_bytes.take() {
+                Some(bytes) => graph.ancestry.restore_bytes(bytes),
+                // An old checkpoint without the byte total cannot be
+                // priced exactly; rebuild so the first advance runs a
+                // full evaluation, as it would have originally.
+                None if self.checkpoint_restored => {
+                    rebuild_reason = Some("checkpoint_ancestry_unknown".into())
+                }
+                None => {}
+            }
+            if graph.resource.get() || graph.ancestry.failed() {
                 rebuild_reason = Some("history_resource_unavailable".into());
-            } else {
+            } else if rebuild_reason.is_none() {
                 graph.budget.set(self.remaining_work);
                 self.graph = Some(graph);
             }
         }
         // A judgment-only advance that rebuilds only because the
-        // fast path declined on layout grounds still reports the keys
-        // it changed, read from the rebuilt evaluation below. State
-        // patches are built from those keys. Resource and lifecycle
-        // rebuilds report none, as before.
-        let added_judgments: Vec<(String, String, String)> = if removed.is_empty() {
-            added
-                .values()
-                .filter(|node| node.kind == "judgment.set")
-                .map(|node| {
-                    (
-                        node.id.clone(),
-                        node.issuer.clone(),
-                        node.action["target"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string(),
-                    )
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let judgment_only = !added_judgments.is_empty() && added_judgments.len() == added.len();
+        // fast path declined on layout grounds can still report the
+        // keys it changed, but only a complete set (see
+        // `judgment_diff`). A partial patch is never reported:
+        // consumers would apply it and keep stale state. Resource
+        // and lifecycle rebuilds report none, as before.
+        let judgment_only = removed.is_empty()
+            && !added.is_empty()
+            && added.values().all(|node| node.kind == "judgment.set");
+        let mut appended_any = false;
         while rebuild_reason.is_none() && !added.is_empty() {
             // Prefer dependencies from this same batch before their consumers.
             let next = next_ready_id(&added);
@@ -374,6 +384,7 @@ impl EvaluatedState {
             match self.fast_work(node) {
                 Ok(work) => {
                     let node = added.remove(&id).unwrap();
+                    appended_any = true;
                     self.append(node, work);
                     self.statistics.incremental_records += 1;
                     if self.graph.as_ref().is_some_and(|g| g.resource.get()) {
@@ -386,40 +397,17 @@ impl EvaluatedState {
         }
         if let Some(reason) = rebuild_reason {
             let layout_rebuild = reason == "layout_split";
+            // The base evaluation is only intact when no append of
+            // this batch has run yet. Later refusals report no patch.
+            let base_evaluation =
+                (judgment_only && layout_rebuild && !appended_any).then(|| self.evaluation.clone());
             self.prepared.nodes.extend(added);
             self.rebuild();
             self.statistics.rebuilt = true;
             self.statistics.reason = Some(reason);
             self.statistics.incremental_records = 0;
-            if judgment_only && layout_rebuild && self.evaluation.available {
-                let mut changes = JudgmentChanges::default();
-                for (id, issuer, target) in &added_judgments {
-                    if self.evaluation.receipts.contains_key(id) {
-                        changes.receipts.insert(id.clone());
-                    }
-                    let key = format!("{issuer}|judgment|{target}");
-                    if self.evaluation.registers.contains_key(&key) {
-                        changes.registers.insert(key);
-                    }
-                    if self
-                        .evaluation
-                        .judgments
-                        .get(target)
-                        .is_some_and(|actors| actors.contains_key(issuer))
-                    {
-                        changes
-                            .judgments
-                            .entry(target.clone())
-                            .or_default()
-                            .insert(issuer.clone());
-                    }
-                    if self.evaluation.lifecycle.key_actor.contains_key(issuer)
-                        && self.evaluation.lifecycle.groups.contains_key(issuer)
-                    {
-                        changes.actors.insert(issuer.clone());
-                    }
-                }
-                self.judgment_changes = Some(changes);
+            if let Some(base) = base_evaluation {
+                self.judgment_changes = judgment_diff(&base, &self.evaluation);
             }
         }
         self
@@ -491,25 +479,22 @@ impl EvaluatedState {
         //
         // Last in block is shown by coverage: the parents' combined
         // own-closure holds every record of the issuer, positioned
-        // and appended alike. Every block record is then an ancestor
-        // of the new record, so the layout emits it before the new
-        // record, whatever the new record's ID. The one case coverage
-        // does not settle is an ancestor that reaches a parent only
-        // through another issuer: it can sit after the latest parent
-        // in the block and still emit after the new record unless the
-        // new ID sorts after it, because the layout emits ready
-        // records in lexical order. The scan below rebuilds unless
-        // the new ID is last among those records. No check here
-        // clones an ID: coverage reads range bounds, and the scan
-        // compares borrowed layout IDs. On the real 63,245-record
-        // chain the parent is the chain tip, so coverage reads one
-        // stored range and the scan reads none.
+        // and appended alike. Own-mode dependencies are only the
+        // same-issuer predecessor edges, and the layout orders each
+        // block by those same edges, so every covered block record
+        // is a same-issuer ancestor of the new record and the layout
+        // emits it first, whatever the new record's ID. (A parent in
+        // or below a cycle is invalid, so its closure is never
+        // complete and the checks above already declined.) The test
+        // reads range bounds and borrowed layout IDs only; it clones
+        // no ID. On the real 63,245-record chain the parent is the
+        // chain tip, so coverage reads one stored range.
         //
-        // The boundary crossing count stays: a closure holding the
-        // block's last record and the next block's first would split
-        // when the new record inserts between them. The count is kept
-        // as closures are built and extended, so reading it here is
-        // one charged unit and a logarithmic prefix sum.
+        // The boundary crossing count also matters: a closure holding
+        // the block's last record and the next block's first would
+        // split when the new record inserts between them. The count
+        // is kept as closures are built and extended, so reading it
+        // here is one charged unit and a logarithmic prefix sum.
         let parents: Vec<&graph::Closure> = node.previous.iter().map(|id| &graph.own[id]).collect();
         if let Some((first, last)) = graph.issuer_block(&node.issuer) {
             let sweep_bound: usize = parents
@@ -532,21 +517,6 @@ impl EvaluatedState {
             {
                 if !parents.iter().any(|closure| closure.ids.contains(id)) {
                     return Err("layout_split");
-                }
-            }
-            let latest_parent = node
-                .previous
-                .iter()
-                .filter_map(|id| graph.space.position(id))
-                .max();
-            if let Some(latest) = latest_parent {
-                for position in latest + 1..=last {
-                    if !graph.charge(1) {
-                        return Err("work_budget");
-                    }
-                    if node.id.as_str() < graph.space.id_ref(position) {
-                        return Err("layout_split");
-                    }
                 }
             }
             if !graph.charge(1) {
@@ -739,6 +709,8 @@ impl EvaluatedState {
             evaluation: &'a Evaluation,
             event_limit_exceeded: bool,
             remaining_work: usize,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            ancestry_bytes: Option<usize>,
         }
         serde_json::to_vec(&Saved {
             version: if results_only {
@@ -752,6 +724,11 @@ impl EvaluatedState {
             evaluation: &self.evaluation,
             event_limit_exceeded: self.prepared.event_limit_exceeded,
             remaining_work: self.remaining_work,
+            ancestry_bytes: self
+                .graph
+                .as_ref()
+                .map(|graph| graph.ancestry.bytes())
+                .or(self.saved_ancestry_bytes),
         })
         .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))
     }
@@ -784,6 +761,8 @@ impl EvaluatedState {
             evaluation: Evaluation,
             event_limit_exceeded: bool,
             remaining_work: usize,
+            #[serde(default)]
+            ancestry_bytes: Option<usize>,
         }
         let saved: Saved = serde_json::from_slice(bytes)
             .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
@@ -828,11 +807,115 @@ impl EvaluatedState {
             evaluation: saved.evaluation,
             graph: None,
             remaining_work: saved.remaining_work,
+            saved_ancestry_bytes: saved.ancestry_bytes,
+            checkpoint_restored: true,
             statistics: UpdateStatistics::default(),
             judgment_changes: None,
             ranking_index: Default::default(),
         })
     }
+}
+
+/// The complete set of keys a state patch may name, between the base
+/// and rebuilt evaluations of a judgment-only advance. The patch can
+/// only set entries of receipts, registers, judgments, and the
+/// lifecycle key-actor and group maps, taken from the new evaluation.
+/// Anything else that differs, and any removed entry, makes the
+/// patch unsafe: return `None` and let the consumer refresh fully.
+fn judgment_diff(before: &Evaluation, after: &Evaluation) -> Option<JudgmentChanges> {
+    if !after.available
+        || before.selected_view != after.selected_view
+        || before.reasons != after.reasons
+        || before.publications != after.publications
+        || before.accounts != after.accounts
+        || before.policy != after.policy
+        || before.overlay != after.overlay
+        || before.policies != after.policies
+        || before.policy_history != after.policy_history
+        || before.selections != after.selections
+        || before.trust != after.trust
+        || before.lifecycle.successor != after.lifecycle.successor
+        || before.lifecycle.suspended != after.lifecycle.suspended
+        || before.lifecycle.retired != after.lifecycle.retired
+        || before.lifecycle.compromised != after.lifecycle.compromised
+    {
+        return None;
+    }
+    let mut changes = JudgmentChanges::default();
+    for (id, receipt) in &after.receipts {
+        if before.receipts.get(id) != Some(receipt) {
+            changes.receipts.insert(id.clone());
+        }
+    }
+    if before
+        .receipts
+        .keys()
+        .any(|id| !after.receipts.contains_key(id))
+    {
+        return None;
+    }
+    for (key, register) in &after.registers {
+        if before.registers.get(key) != Some(register) {
+            changes.registers.insert(key.clone());
+        }
+    }
+    if before
+        .registers
+        .keys()
+        .any(|key| !after.registers.contains_key(key))
+    {
+        return None;
+    }
+    for (target, actors) in &after.judgments {
+        for (actor, judgment) in actors {
+            if before
+                .judgments
+                .get(target)
+                .and_then(|prior| prior.get(actor))
+                != Some(judgment)
+            {
+                changes
+                    .judgments
+                    .entry(target.clone())
+                    .or_default()
+                    .insert(actor.clone());
+            }
+        }
+    }
+    if before.judgments.iter().any(|(target, actors)| {
+        actors.keys().any(|actor| {
+            !after
+                .judgments
+                .get(target)
+                .is_some_and(|next| next.contains_key(actor))
+        })
+    }) {
+        return None;
+    }
+    for (key, actor) in &after.lifecycle.key_actor {
+        if before.lifecycle.key_actor.get(key) != Some(actor) {
+            changes.actors.insert(key.clone());
+        }
+    }
+    for (key, group) in &after.lifecycle.groups {
+        if before.lifecycle.groups.get(key) != Some(group) {
+            changes.actors.insert(key.clone());
+        }
+    }
+    if before
+        .lifecycle
+        .key_actor
+        .keys()
+        .any(|key| !after.lifecycle.key_actor.contains_key(key))
+        || before
+            .lifecycle
+            .groups
+            .keys()
+            .any(|key| !after.lifecycle.groups.contains_key(key))
+    {
+        return None;
+    }
+    Some(changes)
 }
 
 fn supports_local_update(node: &Node) -> bool {
@@ -1589,14 +1672,14 @@ mod rebuild_tests {
         assert!(fast_appends > 50, "only {fast_appends} fast appends ran");
     }
 
-    /// Grok round 4 probe: the structural closure of an issuer's tip
+    /// Boundary-crossing probe: the structural closure of an issuer's tip
     /// reaches through an acceptance to a transfer that is the first
     /// record of the next issuer, so one stored range crosses the
     /// block boundary. A judgment on the tip would land between them
     /// and split that range. It must rebuild, at the exact budget and
     /// one below.
     #[test]
-    fn grok_boundary_crossing_append_rebuilds_and_matches_full() {
+    fn boundary_crossing_append_rebuilds_and_matches_full() {
         let mut prepared = base();
         let (publication, body) = publication();
         let publication_id = publication.id().to_string();
@@ -1661,14 +1744,14 @@ mod rebuild_tests {
         assert_eq!(state.statistics().reason.as_deref(), Some("layout_split"));
     }
 
-    /// Kimi round 4 probe: three judgments on a two-record chain.
+    /// Appended-extra probe: three judgments on a two-record chain.
     /// The first covers the chain and appends. The second has the
     /// same parent but leaves out the first appended record, so it
     /// rebuilds. The third builds on the first appended record, whose
     /// closure still leaves out the second, so it rebuilds too. Every
     /// step matches a fresh full evaluation exactly.
     #[test]
-    fn kimi_appended_extra_left_out_of_parents_rebuilds() {
+    fn appended_extra_left_out_of_parents_rebuilds() {
         let mut prepared = base();
         let (publication, body) = publication();
         let publication_id = publication.id().to_string();
@@ -1725,7 +1808,7 @@ mod rebuild_tests {
     /// independent layouts: each matches its own full evaluation in
     /// evaluation, remaining units, and cap bytes.
     #[test]
-    fn kimi_sibling_order_appends_match_their_full_evaluations() {
+    fn sibling_order_appends_match_their_full_evaluations() {
         let mut prepared = base();
         let (publication, body) = publication();
         let publication_id = publication.id().to_string();
@@ -1791,6 +1874,267 @@ mod rebuild_tests {
         }
     }
 
+    /// A judgment-only batch that rebuilds on layout grounds must
+    /// never report a partial patch. When a later judgment in the
+    /// batch would suspend its issuer (a missing parent), the rebuilt
+    /// evaluation differs outside the patchable keys, so the report
+    /// is absent and the consumer refreshes fully. Both ID orders.
+    #[test]
+    fn layout_rebuild_batch_with_a_suspension_reports_no_patch() {
+        for swap in [false, true] {
+            let mut prepared = base();
+            let (publication, body) = publication();
+            let publication_id = publication.id().to_string();
+            prepared.add_record(&publication, body.as_deref());
+            let a = identity_from_seed(&[7u8; 32]);
+            let b = identity_from_seed(&[8u8; 32]);
+            let a0 = format!("jve1:{:064x}", 500usize);
+            let a1 = format!("jve1:{:064x}", 501usize);
+            prepared.add_host_verified_record(host(
+                a0.clone(),
+                &a,
+                vec![],
+                json!({"kind":"identity.merge"}),
+            ));
+            prepared.add_host_verified_record(host(
+                a1,
+                &a,
+                vec![a0],
+                json!({"kind":"identity.merge"}),
+            ));
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 600usize),
+                &b,
+                vec![],
+                json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+            ));
+            let state = prepared.clone().into_state();
+            let (low, high) = if swap {
+                (2usize, 1usize)
+            } else {
+                (1usize, 2usize)
+            };
+            let j1 = host(
+                format!("jve1:{:064x}", low),
+                &a,
+                vec![],
+                json!({"kind":"judgment.set","target":publication_id,"value":"curse"}),
+            );
+            let j2 = host(
+                format!("jve1:f{:063x}", high),
+                &b,
+                vec![format!("jve1:e{:063x}", 3usize)],
+                json!({"kind":"judgment.set","target":publication_id,"value":"curse"}),
+            );
+            let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+            delta.add_host_verified_record(j1.clone());
+            delta.add_host_verified_record(j2.clone());
+            let advanced = state.clone().advance(delta, &[]);
+            let mut full = prepared.clone();
+            full.add_host_verified_record(j1);
+            full.add_host_verified_record(j2);
+            let full = full.into_state();
+            assert_eq!(advanced.evaluation(), full.evaluation());
+            assert!(advanced.statistics().rebuilt);
+            assert!(
+                advanced.judgment_changes().is_none(),
+                "swap={swap}: a partial patch would omit the suspension"
+            );
+        }
+    }
+
+    /// Registers are keyed by actor, not issuer. In a batch whose
+    /// first judgment refuses on layout grounds and whose second is
+    /// by a successor key, the complete patch names the original
+    /// issuer's register key, read from the rebuilt evaluation.
+    #[test]
+    fn layout_rebuild_patch_names_the_actor_register_key() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let a = identity_from_seed(&[7u8; 32]);
+        let b = identity_from_seed(&[8u8; 32]);
+        let c = identity_from_seed(&[9u8; 32]);
+        let a0 = format!("jve1:{:064x}", 500usize);
+        prepared.add_host_verified_record(host(
+            a0.clone(),
+            &a,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        prepared.add_host_verified_record(host(
+            format!("jve1:{:064x}", 501usize),
+            &a,
+            vec![a0],
+            json!({"kind":"identity.merge"}),
+        ));
+        let b_root = format!("jve1:{:064x}", 600usize);
+        let transfer_id = format!("jve1:{:064x}", 601usize);
+        prepared.add_host_verified_record(host(
+            b_root.clone(),
+            &b,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        prepared.add_host_verified_record(host(
+            transfer_id.clone(),
+            &b,
+            vec![b_root],
+            json!({"kind":"identity.transfer","successor":c}),
+        ));
+        let accept_id = format!("jve1:{:064x}", 602usize);
+        prepared.add_host_verified_record(host(
+            accept_id.clone(),
+            &c,
+            vec![],
+            json!({"kind":"identity.accept","transfer":transfer_id}),
+        ));
+        prepared.add_host_verified_record(host(
+            format!("jve1:{:064x}", 603usize),
+            &c,
+            vec![accept_id],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        ));
+        let state = prepared.clone().into_state();
+        let actor_key = format!("{b}|judgment|{publication_id}");
+        assert!(state.evaluation().registers.contains_key(&actor_key));
+        // The first judgment (lowest ID) refuses on layout grounds;
+        // the second is by the successor key.
+        let j1 = host(
+            format!("jve1:{:064x}", 1usize),
+            &a,
+            vec![],
+            json!({"kind":"judgment.set","target":publication_id,"value":"curse"}),
+        );
+        let j2 = host(
+            format!("jve1:{:064x}", 604usize),
+            &c,
+            vec![format!("jve1:{:064x}", 603usize)],
+            json!({"kind":"judgment.set","target":publication_id,"value":"curse"}),
+        );
+        let mut full = prepared.clone();
+        full.add_host_verified_record(j1.clone());
+        full.add_host_verified_record(j2.clone());
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(j1);
+        delta.add_host_verified_record(j2.clone());
+        let advanced = state.clone().advance(delta, &[]);
+        assert!(advanced.statistics().rebuilt);
+        assert_eq!(
+            advanced.statistics().reason.as_deref(),
+            Some("layout_split")
+        );
+        assert_matches_full(&advanced, &full);
+        let changes = advanced
+            .judgment_changes()
+            .expect("a complete patch is reported");
+        assert!(changes.registers.contains(&actor_key));
+        assert!(changes.receipts.contains(j2.node.id.as_str()));
+    }
+
+    /// A restored state counts ancestry bytes exactly as a full
+    /// evaluation does, including the evaluation-time account carry
+    /// unions: the checkpoint saves the byte total and the first
+    /// advance seeds the rebuilt graph with it.
+    #[test]
+    fn restored_state_keeps_full_ancestry_bytes() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let issuer = identity_from_seed(&[8u8; 32]);
+        let root = format!("jve1:{:064x}", 700_001usize);
+        let claim_id = format!("jve1:{:064x}", 700_010usize);
+        let status_id = format!("jve1:{:064x}", 700_020usize);
+        let third_id = format!("jve1:{:064x}", 700_030usize);
+        prepared.add_host_verified_record(host(
+            root.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        prepared.add_host_verified_record(host(
+            claim_id.clone(),
+            &issuer,
+            vec![root],
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+        ));
+        prepared.add_host_verified_record(host(
+            status_id.clone(),
+            &issuer,
+            vec![claim_id.clone()],
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":claim_id,"carry":[claim_id]}),
+        ));
+        prepared.add_host_verified_record(host(
+            third_id.clone(),
+            &issuer,
+            vec![status_id.clone()],
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"active","previous":status_id,"carry":[status_id]}),
+        ));
+        let base_state = prepared.clone().into_state();
+        let saved = base_state.checkpoint("host-checked").unwrap();
+        let restored = EvaluatedState::restore_host_checkpoint(&saved, "host-checked").unwrap();
+        let judgment = host(
+            format!("jve1:{:064x}", 700_040usize),
+            &issuer,
+            vec![third_id],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(judgment.clone());
+        let advanced = restored.advance(delta.clone(), &[]);
+        let direct = base_state.clone().advance(delta, &[]);
+        let mut full = prepared.clone();
+        full.add_host_verified_record(judgment);
+        let full_state = full.into_state();
+        assert_eq!(advanced.evaluation(), full_state.evaluation());
+        assert_eq!(cap_bytes(&direct), cap_bytes(&full_state), "direct");
+        assert_eq!(cap_bytes(&advanced), cap_bytes(&full_state), "restored");
+    }
+
+    /// A checkpoint written before the byte total was saved has no
+    /// total to seed. Its first advance rebuilds instead of guessing,
+    /// and still matches a full evaluation.
+    #[test]
+    fn restored_checkpoint_without_ancestry_bytes_rebuilds() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let issuer = identity_from_seed(&[8u8; 32]);
+        let root = format!("jve1:{:064x}", 800_001usize);
+        prepared.add_host_verified_record(host(
+            root.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        let base_state = prepared.clone().into_state();
+        let saved = base_state.checkpoint("host-checked").unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        value.as_object_mut().unwrap().remove("ancestry_bytes");
+        let stripped = serde_json::to_vec(&value).unwrap();
+        let restored = EvaluatedState::restore_host_checkpoint(&stripped, "host-checked").unwrap();
+        let judgment = host(
+            format!("jve1:{:064x}", 800_002usize),
+            &issuer,
+            vec![root],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(judgment.clone());
+        let advanced = restored.advance(delta, &[]);
+        assert!(advanced.statistics().rebuilt);
+        assert_eq!(
+            advanced.statistics().reason.as_deref(),
+            Some("checkpoint_ancestry_unknown")
+        );
+        let mut full = prepared.clone();
+        full.add_host_verified_record(judgment);
+        assert_matches_full(&advanced, &full);
+    }
+
     /// A root judgment whose issuer already has records is not
     /// covered by its parents, so it rebuilds. The advance still
     /// reports the judgment keys it changed, read from the rebuilt
@@ -1833,13 +2177,13 @@ mod rebuild_tests {
         assert_matches_full(&state, &full);
     }
 
-    /// Grok round 3 probe: an interleaved chain transferred to a
+    /// Interleaved-transfer probe: an interleaved chain transferred to a
     /// successor whose lifecycle link is blocked by a second root. The
     /// structural cache of the acceptance holds many more ranges than
     /// its own closure. A judgment on the acceptance must cost exactly
     /// what a full evaluation costs, at the exact budget and one below.
     #[test]
-    fn grok_transfer_append_matches_full_at_tight_budgets() {
+    fn transfer_append_matches_full_at_tight_budgets() {
         let mut prepared = base();
         let (publication, body) = publication();
         let publication_id = publication.id().to_string();
@@ -1893,12 +2237,12 @@ mod rebuild_tests {
         assert_tight_budgets_match(&prepared, &judgment, &full);
     }
 
-    /// Kimi round 3 probe: a judgment inserted between an account
+    /// Carry-split probe: a judgment inserted between an account
     /// claim and its status record splits the status closure that a
     /// later account record carries. The append must match a full
     /// evaluation at the exact budget and one below.
     #[test]
-    fn kimi_carry_split_append_matches_full_at_tight_budgets() {
+    fn carry_split_append_matches_full_at_tight_budgets() {
         let mut prepared = base();
         let (publication, body) = publication();
         let publication_id = publication.id().to_string();

@@ -352,7 +352,7 @@ fn missing_publication_targets_and_parents_force_reference_rebuilds() {
 
 #[test]
 fn append_landing_between_chain_records_rebuilds_and_matches_full() {
-    // Grok's shape: a record whose fresh layout position lands between
+    // Interior-insert shape: a record whose fresh layout position lands between
     // a and b splits the ranges that b's descendants copy. The fast
     // path must rebuild; availability and every receipt (inside the
     // compared evaluation) still match a full evaluation.
