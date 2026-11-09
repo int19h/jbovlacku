@@ -13,6 +13,21 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+#[cfg(test)]
+thread_local! {
+    static UNION_COVER_VISITS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn union_cover_visits() -> usize {
+    UNION_COVER_VISITS.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn reset_union_cover_visits() {
+    UNION_COVER_VISITS.with(|count| count.set(0));
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Range {
     first: u32,
@@ -346,26 +361,39 @@ impl IdSet {
     }
 
     /// True when the union of the given sets covers every position in
-    /// `[first, last]`. No allocation; callers charge a bound first.
+    /// `[first, last]`. One merge pass over the parents' sorted range
+    /// lists: each range is examined once, so the work is linear in
+    /// the total range count. Callers charge that bound first.
     pub fn union_covers(sets: &[&IdSet], first: u32, last: u32) -> bool {
-        let mut current = first;
-        loop {
-            let mut advanced = false;
-            for set in sets {
-                for range in set.ranges.as_slice() {
-                    if range.first <= current && range.last >= current {
-                        current = range.last.saturating_add(1);
-                        advanced = true;
-                    }
-                }
-            }
-            if current > last {
-                return true;
-            }
-            if !advanced {
-                return false;
+        if first > last {
+            return true;
+        }
+        // Heads of the range lists, smallest first position on top.
+        let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(u32, u32, usize, usize)>> =
+            std::collections::BinaryHeap::new();
+        for (index, set) in sets.iter().enumerate() {
+            if let Some(range) = set.ranges.as_slice().first() {
+                heap.push(std::cmp::Reverse((range.first, range.last, index, 0)));
             }
         }
+        let mut frontier = first;
+        while let Some(std::cmp::Reverse((range_first, range_last, index, at))) = heap.pop() {
+            #[cfg(test)]
+            UNION_COVER_VISITS.with(|count| count.set(count.get() + 1));
+            if range_first > frontier {
+                return false;
+            }
+            frontier = frontier.max(range_last.saturating_add(1));
+            if frontier > last {
+                return true;
+            }
+            let ranges = sets[index].ranges.as_slice();
+            if at + 1 < ranges.len() {
+                let next = &ranges[at + 1];
+                heap.push(std::cmp::Reverse((next.first, next.last, index, at + 1)));
+            }
+        }
+        frontier > last
     }
 
     /// First position of each stored range, in layout order.
@@ -447,6 +475,45 @@ mod tests {
             result.insert(&budget, id);
         }
         result
+    }
+
+    /// Two fragmented parents with alternating segments: one holds
+    /// the even positions, the other the odd ones, 1,000 segments
+    /// each. The merge must cover the whole interval, and the charged
+    /// bound for it is the total range count times the parent count.
+    /// The old rescan visited over 2,000,000 ranges on this shape;
+    /// the merge examines each range once.
+    #[test]
+    fn union_covers_merges_fragmented_parents_in_one_pass() {
+        let names: Vec<String> = (0..2_000).map(|i| format!("id{i:04}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let space = space_for(&refs);
+        let even: Vec<&str> = refs.iter().step_by(2).copied().collect();
+        let odd: Vec<&str> = refs.iter().skip(1).step_by(2).copied().collect();
+        let left = set(&space, &even);
+        let right = set(&space, &odd);
+        assert_eq!(left.range_count(), 1_000);
+        assert_eq!(right.range_count(), 1_000);
+        let charged_bound = (left.range_count() + right.range_count()) * 2;
+        reset_union_cover_visits();
+        assert!(IdSet::union_covers(&[&left, &right], 0, 1_999));
+        let visits = union_cover_visits();
+        assert!(
+            visits <= charged_bound,
+            "merge visited {visits} ranges, charged bound is {charged_bound}"
+        );
+        assert!(visits <= left.range_count() + right.range_count());
+        // A gap in either parity breaks the cover, in one pass too.
+        let holed: Vec<&str> = odd.iter().copied().filter(|id| *id != "id0999").collect();
+        let holed = set(&space, &holed);
+        reset_union_cover_visits();
+        assert!(!IdSet::union_covers(&[&left, &holed], 0, 1_999));
+        assert!(union_cover_visits() <= charged_bound);
+        // One set alone does not cover, and an empty parent list
+        // covers only an empty interval.
+        assert!(!IdSet::union_covers(&[&left], 0, 1_999));
+        assert!(IdSet::union_covers(&[], 5, 4));
+        assert!(!IdSet::union_covers(&[], 0, 1_999));
     }
 
     #[test]
