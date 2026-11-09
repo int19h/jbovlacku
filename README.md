@@ -14,13 +14,13 @@ The browser app covers reading, contributing, and personal ranking:
 
 - Anonymous lookup through server search or downloaded language packages, with Lojban morphology, compound cmavo matching, and glob and regular-expression patterns.
 - Word pages that show every definition under the selected view, with revision comparisons, source evidence, rafsi pairs, and reviewer details.
-- Local keys with encrypted backups, signed delivery with per-server receipts, and planned key handover and compromise records.
+- Local keys with encrypted backups, signed delivery with per-server receipts, and flows that hand a key over to a successor or mark it as compromised.
 - A guided authoring wizard and a full editor with accessible rich-text fields, a lujvo builder, and a gismu generator.
 - A personal view that verifies the snapshot records in a Web Worker and ranks words locally with the reader's private trust choices.
 
 The importer turns pinned Lensisku JSON captures and SQL snapshots into signed proposals and keeps their source evidence. Optional AI assistance suggests types, components, places, glosses, and existing words, and it can run meaning search over embeddings. It is off by default, the server operator controls it, and the browser asks for consent before it sends draft text.
 
-Some target features have no implementation yet. The status and transfer editors, wizard meaning search, and Lensisku cross-posting are among them. So are model-assisted import conversion, offline meaning search in the browser, and the full `jvc` command catalog. Performance on real community data is not established.
+Some target features have no implementation yet. The status and transfer editors, wizard meaning search, and Lensisku cross-posting are among them. So are model-assisted import conversion, offline meaning search in the browser, and the full `jvc` command catalog. The measurements so far establish neither ranking performance on real community trust graphs nor a latency guarantee.
 
 [Implemented scope](docs/implemented-scope.md) records the exact behavior of each area, its limits, and the current measurements.
 

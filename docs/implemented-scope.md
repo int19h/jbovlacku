@@ -1,8 +1,8 @@
 # Implemented scope
 
-This document records what the prototype implements today. The [format specification](format.md) and the [frontend specification](frontend.md) define the full target product. A behavior belongs here only after its tests pass.
+This document records what the prototype implements today. The specifications, starting with the [format specification](format.md) and the [frontend specification](frontend.md), define the target product. A behavior belongs here only after its tests pass.
 
-Each section describes the implemented behavior of one area, with its known limits. Unfinished target features appear in the section for their area and in the last section.
+Each section describes the implemented behavior of one area, with its known limits and unfinished parts. The last section collects the remaining target features that have no implementation.
 
 ## Shared core and records
 
@@ -155,13 +155,10 @@ A download keeps its requested language even when the language selector changes 
 
 ## Reading pages
 
-The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
 After an HTTP 503 read failure, word and search pages offer Retry reading with the same URL and selected view.
 A failed retry shows its retry number and announces the current error reason, including HTTP 500 and connection failures.
-Rich-text fields use accessible ProseMirror editors. Places and operands appear as named inline chips. Code and links keep separate inline nodes. Untouched fields retain their exact stored values.
-Word-link and derivation spelling advice never blocks a format-valid reference. Invalid references show plain error sentences.
 Revision comparisons group changes by readable fields and numbered places, with rich text and complete place and source details.
 They align inserted and removed list items and keep exact structured values in closed disclosures.
 Import evidence changes use a short presence or absence line. Comparisons still detect every change in the interpreted body.
@@ -176,6 +173,7 @@ Reads pinned to an earlier retained snapshot use that snapshot's state. Word pag
 
 ## Keys, identities, and delivery
 
+The browser supports anonymous lookup, verified definition pages, encrypted key backups with a recovery test, and signed delivery with per-server receipts.
 Public identity pages show the signed profile, counts, and activity. Trust actions offer a private rule or a public signed record.
 Private trust and Ignore controls apply each addition or removal in one storage transaction, so concurrent unrelated choices remain saved.
 The local key edits its public profile, with a signed preview of the name, biography, and HTTPS links under the format limits. A rafsi pair link opens the pair's word and rafsi from the local search packages.
@@ -242,7 +240,7 @@ The Lojban quotation guard preserves nested quotes and quoted closing markers.
 Mathematical expressions stay literal when the [finite operator guards](format.md#placeholder-conversion-during-import) recognize them.
 New SQL and REST publications omit derived vectors and caches with explicit source limitations.
 REST publications also omit viewer-specific values.
-The current importer records unknown rights. The source-notice convention below remains a target change.
+The current importer records unknown rights. The [source-notice convention](../README.md#rights-and-release) remains a target change.
 
 The committed Node adapter test uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
 
@@ -280,6 +278,9 @@ Meaning treats only a backslash before a circled numeral as an escape. It preser
 The Places step and the full editor offer hideable advice above three declared places, with firmer text above five.
 A repeating tail counts once. The advice applies to every word type and never blocks publication or enters signed records.
 Revise copies a publication into a new draft with its exact parent and keeps every field: links, code, operands, literal circled characters, every gloss with its language and sense, every derivation, and the frame role. The page names the only changes a native revision makes. A revision of imported text cites the imported publication and copies the source-rights reference once.
+
+Rich-text fields use accessible ProseMirror editors. Places and operands appear as named inline chips. Code and links keep separate inline nodes. Untouched fields retain their exact stored values.
+Word-link and derivation spelling advice never blocks a format-valid reference. Invalid references show plain error sentences.
 
 Editor dialogs use surface colors, rounded corners, a soft shadow, and a visible backdrop in both themes.
 Cancel sits to the left of the primary action, including at 360px.
