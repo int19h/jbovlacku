@@ -774,8 +774,7 @@ fn authorized_record(
     let past = &graph.structural[&n.id];
     let ids = past
         .ids
-        .iter()
-        .into_iter()
+        .iter_unordered()
         .filter(|id| id != &n.id)
         .filter(|id| boundary.is_none_or(|b| b.ids.contains(id)))
         .filter(|id| {

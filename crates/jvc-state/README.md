@@ -26,10 +26,11 @@ Exclusions and local blocks remove shares after normalization. They do not incre
 `publication_status` and `account_control` expose the frontend status and certificate fields directly.
 
 The ancestry cache uses exact intervals over a topological layout. Records of one issuer occupy a contiguous block of layout positions, parents before children, and each closure is a sorted list of disjoint position ranges.
-Its global work budget counts logical work: one unit per record, per dependency edge, and per missing ID propagated, for each of the three link modes, plus lifecycle and closure charges on the same terms.
+Its global work budget counts logical work: one unit per record, per dependency edge, per missing ID propagated, and per range a union copies. A layout pass, a dependency setup pass, and a closure construction pass charge those units for each of the three link modes, plus lifecycle and closure charges on the same terms.
 The count does not depend on the storage representation, so a limit means the same thing in every build.
 Construction stops as soon as the budget runs out. The evaluator does not publish confident partial state from that construction.
-The default budget is 10,000,000 units. A flat history costs seven units per record, and a single-parent chain costs thirteen units per record except for six units saved at the root, before evaluation-time closure charges.
+Range metadata has a hard cap of 64 MiB, counted cumulatively over every range vector a union copies or allocates, including discarded temporaries. A history past the cap returns `resource_unavailable` at any budget.
+The default budget is 10,000,000 units. A flat history costs eight units per record, and a single-parent chain costs eighteen units per record except for ten units saved across the roots, before evaluation-time closure charges.
 Exceeding the budget makes the entire evaluation unavailable, including other accounts and native publications, with reason `resource_unavailable`.
 A signed chain of 2,429 imported definitions with four certified account periods passes the default budget.
 Witness groups are cached per policy. Claim chains and carry boundaries are cached per account candidate.

@@ -422,12 +422,28 @@ impl EvaluatedState {
                 return Err("target_unresolved");
             }
         }
-        // Logical work for one appended record: setup plus closure
-        // construction in each of the three caches, and lifecycle
-        // bookkeeping. Ranges have no width, so no width growth exists.
-        // This bounds the corresponding full rebuild increment.
-        let work = 3usize
-            .saturating_mul(2usize.saturating_mul(1 + node.previous.len()))
+        // Logical work for one appended record, equal to the marginal
+        // cost of the same record in a full evaluation: the layout
+        // charge (one per record and predecessor), setup plus closure
+        // construction in each of the three caches (including the
+        // ranges each parent closure copies), one lifecycle unit, and
+        // one per-record evaluation scan unit. Parents are complete on
+        // this path, so no missing IDs propagate. Charging the true
+        // marginal keeps tight-budget outcomes equal to a full rebuild.
+        let parent_ranges: usize = node
+            .previous
+            .iter()
+            .map(|id| {
+                graph
+                    .own
+                    .get(id)
+                    .map_or(0, |closure| closure.ids.fresh_range_count())
+            })
+            .sum();
+        let per_cache = (1 + node.previous.len())
+            + (1 + node.previous.iter().map(|_| 1).sum::<usize>() + parent_ranges);
+        let work = (1 + node.previous.len())
+            .saturating_add(3usize.saturating_mul(per_cache))
             .saturating_add(2);
         if work > self.remaining_work {
             return Err("work_budget");

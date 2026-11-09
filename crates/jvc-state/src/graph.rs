@@ -139,10 +139,13 @@ impl Graph {
     pub fn new(nodes: BTreeMap<String, Node>, limits: &Limits) -> Self {
         #[cfg(test)]
         CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
-        let space = super::ancestors::Space::new(&nodes);
+        // The layout scan costs one unit per record and per predecessor
+        // edge. Charge it before the scan runs, so a tiny budget refuses
+        // before any layout allocation.
+        let layout_work = nodes.len() + nodes.values().map(|n| n.previous.len()).sum::<usize>();
         let mut graph = Self {
             nodes,
-            space,
+            space: super::ancestors::Space::empty(),
             own: Rc::default(),
             structural: Rc::default(),
             accepted: Rc::default(),
@@ -161,9 +164,14 @@ impl Graph {
             resource: Cell::new(false),
             appended: 0,
         };
+        if !graph.charge(layout_work) {
+            return graph;
+        }
+        graph.space = super::ancestors::Space::new(&graph.nodes);
         let before = graph.budget.get();
         graph.own = Rc::new(graph.build_cache(0));
-        if graph.resource.get() {
+        if graph.resource.get() || graph.space.ancestor_failed() {
+            graph.resource.set(true);
             return graph;
         }
         let own_work = before - graph.budget.get();
@@ -183,8 +191,13 @@ impl Graph {
         if graph.resource.get() {
             return graph;
         }
+        if graph.space.ancestor_failed() {
+            graph.resource.set(true);
+            return graph;
+        }
         graph.build_lifecycle();
-        if graph.resource.get() {
+        if graph.resource.get() || graph.space.ancestor_failed() {
+            graph.resource.set(true);
             return graph;
         }
         if same_links {
@@ -274,7 +287,7 @@ impl Graph {
             let (deps, missing, invalid) = &dependencies[&id];
             let mut work = 1 + missing.len();
             for dep in deps {
-                work += 1 + cache[dep].missing.len();
+                work += 1 + cache[dep].missing.len() + cache[dep].ids.range_count();
             }
             if !self.charge(work) {
                 return cache;
@@ -336,11 +349,15 @@ impl Graph {
                 result.missing.insert(id.clone());
                 continue;
             };
-            if !self.charge(1 + c.missing.len()) {
+            if !self.charge(1 + c.missing.len() + c.ids.range_count()) {
                 result.resource = true;
                 break;
             }
             result.ids.union(&c.ids);
+            if self.space.ancestor_failed() {
+                result.resource = true;
+                break;
+            }
             result.missing.extend(c.missing.iter().cloned());
             result.invalid |= c.invalid;
             result.resource |= c.resource;
@@ -382,6 +399,9 @@ impl Graph {
                 for id in safe {
                     let c = self.closure(&[id], 0);
                     if c.resource || !self.charge(1 + c.missing.len()) {
+                        return;
+                    }
+                    if !self.charge(1 + c.ids.range_count()) {
                         return;
                     }
                     cutoff.ids.extend(c.ids);
@@ -529,6 +549,9 @@ impl Graph {
             .entry(node.issuer.clone())
             .or_default()
             .insert(node.issuer.clone());
+        if self.space.ancestor_failed() {
+            self.resource.set(true);
+        }
         self.nodes.insert(node.id.clone(), node);
         self.appended += 1;
     }
@@ -594,9 +617,11 @@ impl Graph {
         if root == issuer {
             return true;
         }
-        self.structural
-            .get(event)
-            .is_some_and(|c| c.ids.iter().iter().any(|id| self.nodes[id].issuer == root))
+        self.structural.get(event).is_some_and(|c| {
+            c.ids
+                .iter_unordered()
+                .any(|id| self.nodes[id.as_str()].issuer == root)
+        })
     }
     pub fn downstream(&self, root: &str) -> BTreeSet<String> {
         let mut keys = BTreeSet::new();
@@ -674,9 +699,10 @@ mod tests {
     #[test]
     fn flat_histories_share_caches_and_keep_the_logical_work_charge() {
         let count: usize = 4096;
-        // Per cache: setup N + construction N. Three caches are charged
-        // (storage is shared), plus one lifecycle unit per record.
-        let work = 7 * count;
+        // Layout N, plus per cache setup N + construction N. Three
+        // caches are charged (storage is shared), plus one lifecycle
+        // unit per record: 8N in total.
+        let work = 8 * count;
         let limits = Limits {
             traversal: work,
             ..Limits::default()
@@ -697,9 +723,11 @@ mod tests {
     #[test]
     fn linear_histories_keep_the_logical_work_charge() {
         let count: usize = 4096;
-        // Per cache: setup (2N-1) + construction (2N-1), three caches
-        // charged, plus one lifecycle unit per record.
-        let work = 13 * count - 6;
+        // Layout (2N-1). Per cache: setup (2N-1) + construction
+        // (1 + 3 per chained record, including one copied range per
+        // parent). Three caches charged, plus one lifecycle unit per
+        // record: 18N - 10 in total.
+        let work = 18 * count - 10;
         let limits = Limits {
             traversal: work,
             ..Limits::default()
@@ -790,9 +818,14 @@ mod tests {
             for (id, closure) in cache.iter() {
                 let (ids, missing, invalid) = &expected[id];
                 assert_eq!(
-                    closure.ids.iter().into_iter().collect::<BTreeSet<_>>(),
+                    closure.ids.iter(),
+                    ids.iter().cloned().collect::<Vec<_>>(),
+                    "ids in lexical order, mode {mode} record {id}"
+                );
+                assert_eq!(
+                    closure.ids.iter_unordered().collect::<BTreeSet<_>>(),
                     *ids,
-                    "ids mode {mode} record {id}"
+                    "unordered ids mode {mode} record {id}"
                 );
                 assert_eq!(&closure.missing, missing, "missing mode {mode} record {id}");
                 assert_eq!(closure.invalid, *invalid, "invalid mode {mode} record {id}");
@@ -888,5 +921,184 @@ mod tests {
         assert_eq!(graph.cutoffs["one"].len(), 1);
         assert!(graph.cutoffs["one"][0].ids.contains("jve1:a"));
         assert!(!graph.cutoffs["one"][0].ids.contains("jve1:b"));
+    }
+
+    #[test]
+    fn oracle_layout_that_is_not_lexical_still_iterates_lexically() {
+        // Issuer "alpha" holds the lexically last IDs and issuer "zeta"
+        // the first, so layout order and lexical order differ.
+        let mut map = BTreeMap::new();
+        for n in [
+            node("jve1:z1", "alpha", &[], "identity.merge"),
+            node("jve1:z2", "alpha", &["jve1:z1"], "identity.merge"),
+            node("jve1:a1", "zeta", &[], "identity.merge"),
+            node("jve1:a2", "zeta", &["jve1:a1"], "identity.merge"),
+            node("jve1:a3", "zeta", &["jve1:a2"], "identity.merge"),
+        ] {
+            map.insert(n.id.clone(), n);
+        }
+        assert_graph_matches_oracle(map);
+    }
+
+    #[test]
+    fn appends_match_oracle_including_an_old_branch() {
+        let mut map = BTreeMap::new();
+        for n in [
+            node("jve1:a", "one", &[], "identity.merge"),
+            node("jve1:b", "one", &["jve1:a"], "identity.merge"),
+            node("jve1:c", "one", &["jve1:a"], "identity.merge"),
+            node("jve1:d", "one", &["jve1:b", "jve1:c"], "identity.merge"),
+        ] {
+            map.insert(n.id.clone(), n);
+        }
+        let limits = Limits {
+            traversal: 100_000_000,
+            ..Limits::default()
+        };
+        let mut graph = Graph::new(map.clone(), &limits);
+        // Append to an old branch (jve1:b already has a child), not a tip.
+        graph.append_ordinary(node("jve1:e", "one", &["jve1:b"], "identity.merge"));
+        let closure = &graph.own["jve1:e"];
+        assert_eq!(
+            closure.ids.iter(),
+            vec![
+                "jve1:a".to_string(),
+                "jve1:b".to_string(),
+                "jve1:e".to_string()
+            ]
+        );
+        assert!(closure.complete());
+        // Append a chain tip on top of the branch append.
+        graph.append_ordinary(node("jve1:f", "one", &["jve1:e"], "identity.merge"));
+        let closure = &graph.own["jve1:f"];
+        assert_eq!(
+            closure.ids.iter(),
+            vec![
+                "jve1:a".to_string(),
+                "jve1:b".to_string(),
+                "jve1:e".to_string(),
+                "jve1:f".to_string()
+            ]
+        );
+        // A fresh full build of the same records agrees exactly.
+        for n in [
+            node("jve1:e", "one", &["jve1:b"], "identity.merge"),
+            node("jve1:f", "one", &["jve1:e"], "identity.merge"),
+        ] {
+            map.insert(n.id.clone(), n);
+        }
+        let rebuilt = Graph::new(map, &limits);
+        for (id, closure) in graph.own.iter() {
+            let fresh = &rebuilt.own[id];
+            assert_eq!(closure.ids.iter(), fresh.ids.iter(), "append {id}");
+            assert_eq!(closure.missing, fresh.missing, "append missing {id}");
+            assert_eq!(closure.invalid, fresh.invalid, "append invalid {id}");
+        }
+    }
+
+    fn two_interleaved_chains(count: usize) -> BTreeMap<String, Node> {
+        (0..count)
+            .map(|i| {
+                let id = format!("jve1:{i:064x}");
+                let previous = (i >= 2).then(|| format!("jve1:{:064x}", i - 2));
+                (
+                    id.clone(),
+                    Node {
+                        id,
+                        issuer: "issuer".into(),
+                        previous: previous.into_iter().collect(),
+                        action: json!({"kind":"identity.merge"}),
+                        kind: "identity.merge".into(),
+                        semantic: true,
+                        body_hash: None,
+                        body: None,
+                        body_label: "absent".into(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn spine_and_leaves(spine: usize) -> BTreeMap<String, Node> {
+        (0..spine)
+            .flat_map(|i| {
+                let s = format!("jve1:s{i:05}");
+                let g = format!("jve1:g{i:05}");
+                let spine_node = Node {
+                    id: s.clone(),
+                    issuer: "issuer".into(),
+                    previous: (i > 0)
+                        .then(|| format!("jve1:s{:05}", i - 1))
+                        .into_iter()
+                        .collect(),
+                    action: json!({"kind":"identity.merge"}),
+                    kind: "identity.merge".into(),
+                    semantic: true,
+                    body_hash: None,
+                    body: None,
+                    body_label: "absent".into(),
+                };
+                let leaf_node = Node {
+                    id: g.clone(),
+                    issuer: "issuer".into(),
+                    previous: vec![s.clone()],
+                    action: json!({"kind":"identity.merge"}),
+                    kind: "identity.merge".into(),
+                    semantic: true,
+                    body_hash: None,
+                    body: None,
+                    body_label: "absent".into(),
+                };
+                [(s, spine_node), (g, leaf_node)]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_interleaved_chains_refuse_deterministically() {
+        // Each tip closure holds about count/2 singleton ranges, so
+        // retained range storage would grow with the square of the
+        // record count. Both the logical budget (default) and the hard
+        // ancestry byte cap (any budget) must refuse.
+        let nodes = two_interleaved_chains(8_000);
+        let graph = Graph::new(nodes.clone(), &Limits::default());
+        assert!(graph.resource.get());
+        let limits = Limits {
+            traversal: 1_000_000_000,
+            ..Limits::default()
+        };
+        let graph = Graph::new(nodes, &limits);
+        assert!(graph.resource.get());
+        assert!(graph.space.ancestor_failed());
+        assert!(graph.space.ancestor_bytes() <= crate::ancestors::MAX_ANCESTOR_BYTES);
+    }
+
+    #[test]
+    fn spine_with_a_leaf_per_step_refuses_deterministically() {
+        // Leaves sort between spine records, so spine closures gain one
+        // range per step. Same requirement as the interleaved chains.
+        let nodes = spine_and_leaves(6_000);
+        assert_eq!(nodes.len(), 12_000);
+        let graph = Graph::new(nodes.clone(), &Limits::default());
+        assert!(graph.resource.get());
+        let limits = Limits {
+            traversal: 1_000_000_000,
+            ..Limits::default()
+        };
+        let graph = Graph::new(nodes, &limits);
+        assert!(graph.resource.get());
+        assert!(graph.space.ancestor_failed());
+        assert!(graph.space.ancestor_bytes() <= crate::ancestors::MAX_ANCESTOR_BYTES);
+    }
+
+    #[test]
+    fn zero_budget_refuses_before_layout() {
+        let limits = Limits {
+            traversal: 0,
+            ..Limits::default()
+        };
+        let graph = Graph::new(nodes(64, true), &limits);
+        assert!(graph.resource.get());
+        assert!(graph.own.is_empty());
     }
 }

@@ -9,7 +9,7 @@
 //! record count.
 
 use super::graph::Node;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
@@ -18,6 +18,14 @@ struct Range {
     first: u32,
     last: u32,
 }
+
+/// Hard cap on ancestry range metadata, counted cumulatively over every
+/// range vector a union copies or allocates, including discarded
+/// temporaries. The same value applies in native and Wasm builds. The
+/// real dictionary plus synthetic data uses an estimated 10 to 20 MB by
+/// this count; adversarial layouts reach the cap and refuse instead of
+/// exhausting memory.
+pub(crate) const MAX_ANCESTOR_BYTES: usize = 64 * 1024 * 1024;
 
 /// Sorted disjoint ranges. One range is stored inline; more share an `Rc`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,7 +53,9 @@ impl Ranges {
     }
 
     /// Merge two sorted range lists and one optional extra position.
-    fn combine(left: &Ranges, right: &Ranges, extra: Option<u32>) -> Ranges {
+    /// The caller charges the logical budget; this charges the ancestry
+    /// byte cap before allocating, and yields no ranges past the cap.
+    fn combine(space: &Space, left: &Ranges, right: &Ranges, extra: Option<u32>) -> Ranges {
         let (a, b) = (left.as_slice(), right.as_slice());
         if a.is_empty() && b.is_empty() {
             return match extra {
@@ -55,6 +65,10 @@ impl Ranges {
                 }),
                 None => Ranges::Empty,
             };
+        }
+        let inputs = a.len() + b.len() + usize::from(extra.is_some());
+        if !space.charge_ancestor_bytes(inputs * std::mem::size_of::<Range>() + 64) {
+            return Ranges::Empty;
         }
         let mut merged: Vec<Range> = Vec::with_capacity(a.len() + b.len() + 1);
         let (mut i, mut j) = (0, 0);
@@ -123,6 +137,11 @@ impl Ranges {
 pub(crate) struct Space {
     index: RefCell<BTreeMap<String, u32>>,
     ids: RefCell<Vec<String>>,
+    ancestor_bytes: Cell<usize>,
+    ancestor_failed: Cell<bool>,
+    /// Layout positions present at construction. Appended records take
+    /// later positions as one extra segment.
+    base_len: u32,
 }
 
 impl Space {
@@ -178,10 +197,45 @@ impl Space {
                 ids.push(id.to_string());
             }
         }
+        let base_len = ids.len() as u32;
         Rc::new(Self {
             index: RefCell::new(index),
             ids: RefCell::new(ids),
+            ancestor_bytes: Cell::new(0),
+            ancestor_failed: Cell::new(false),
+            base_len,
         })
+    }
+
+    pub fn empty() -> Rc<Self> {
+        Rc::new(Self {
+            index: RefCell::new(BTreeMap::new()),
+            ids: RefCell::new(Vec::new()),
+            ancestor_bytes: Cell::new(0),
+            ancestor_failed: Cell::new(false),
+            base_len: 0,
+        })
+    }
+
+    fn charge_ancestor_bytes(&self, bytes: usize) -> bool {
+        if self.ancestor_failed.get()
+            || bytes > MAX_ANCESTOR_BYTES.saturating_sub(self.ancestor_bytes.get())
+        {
+            self.ancestor_failed.set(true);
+            false
+        } else {
+            self.ancestor_bytes.set(self.ancestor_bytes.get() + bytes);
+            true
+        }
+    }
+
+    pub fn ancestor_failed(&self) -> bool {
+        self.ancestor_failed.get()
+    }
+
+    #[cfg(test)]
+    pub fn ancestor_bytes(&self) -> usize {
+        self.ancestor_bytes.get()
     }
 
     fn position(&self, id: &str) -> Option<u32> {
@@ -224,10 +278,10 @@ impl IdSet {
     pub fn combined(space: Rc<Space>, sets: &[&IdSet], own: Option<&str>) -> Self {
         let mut ranges = Ranges::Empty;
         for set in sets {
-            ranges = Ranges::combine(&ranges, &set.ranges, None);
+            ranges = Ranges::combine(&space, &ranges, &set.ranges, None);
         }
         let extra = own.map(|id| space.register(id));
-        ranges = Ranges::combine(&ranges, &Ranges::Empty, extra);
+        ranges = Ranges::combine(&space, &ranges, &Ranges::Empty, extra);
         Self { space, ranges }
     }
 
@@ -239,11 +293,11 @@ impl IdSet {
 
     pub fn insert(&mut self, id: &str) {
         let position = self.space.register(id);
-        self.ranges = Ranges::combine(&self.ranges, &Ranges::Empty, Some(position));
+        self.ranges = Ranges::combine(&self.space, &self.ranges, &Ranges::Empty, Some(position));
     }
 
     pub fn union(&mut self, other: &IdSet) {
-        self.ranges = Ranges::combine(&self.ranges, &other.ranges, None);
+        self.ranges = Ranges::combine(&self.space, &self.ranges, &other.ranges, None);
     }
 
     pub fn extend(&mut self, other: IdSet) {
@@ -251,6 +305,7 @@ impl IdSet {
     }
 
     /// Members in lexical order.
+    #[cfg(test)]
     pub fn iter(&self) -> Vec<String> {
         let mut members: Vec<String> = Vec::new();
         for range in self.ranges.as_slice() {
@@ -262,9 +317,35 @@ impl IdSet {
         members
     }
 
-    #[cfg(test)]
     pub fn range_count(&self) -> usize {
         self.ranges.as_slice().len()
+    }
+
+    /// Range count this set would have in a fresh layout. Appended
+    /// records form one extra segment at the end, which a fresh layout
+    /// merges into their issuer block, so it is not counted.
+    pub fn fresh_range_count(&self) -> usize {
+        let ranges = self.ranges.as_slice();
+        if ranges.len() >= 2
+            && ranges
+                .last()
+                .is_some_and(|last| last.first >= self.space.base_len)
+        {
+            ranges.len() - 1
+        } else {
+            ranges.len()
+        }
+    }
+
+    /// Members in layout order, produced one at a time. Callers that
+    /// only test membership or stop at a match pay for what they scan.
+    pub fn iter_unordered(&self) -> impl Iterator<Item = String> {
+        let ranges: Vec<Range> = self.ranges.as_slice().to_vec();
+        let space = self.space.clone();
+        ranges
+            .into_iter()
+            .flat_map(|range| range.first..=range.last)
+            .map(move |position| space.id_at(position))
     }
 }
 
@@ -274,10 +355,7 @@ mod tests {
 
     fn space_for(ids: &[&str]) -> Rc<Space> {
         // Build a layout directly from positions in the given order.
-        let space = Rc::new(Space {
-            index: RefCell::new(BTreeMap::new()),
-            ids: RefCell::new(Vec::new()),
-        });
+        let space = Space::empty();
         for id in ids {
             space.register(id);
         }
