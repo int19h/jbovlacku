@@ -83,7 +83,6 @@ After a crash, the adapter can restore an older valid checkpoint and evaluate th
 If the checkpoint predates the stored materialized snapshot, interpreted reads wait for catch-up.
 Recovery does not expose that older checkpoint as the current public snapshot.
 The [development guide](development.md#initial-lensisku-data) describes state reuse, checkpoint costs, and the measurement limits.
-A larger traversal budget does not remove memory limits.
 
 ## Search
 
@@ -240,7 +239,7 @@ The Lojban quotation guard preserves nested quotes and quoted closing markers.
 Mathematical expressions stay literal when the [finite operator guards](format.md#placeholder-conversion-during-import) recognize them.
 New SQL and REST publications omit derived vectors and caches with explicit source limitations.
 REST publications also omit viewer-specific values.
-The current importer records unknown rights. The [source-notice convention](../README.md#rights-and-release) remains a target change.
+The current importer records unknown rights. The [source-notice convention](format.md#remaining-body-fields) remains a target change.
 
 The committed Node adapter test uses one signed profile event. Importer tests include a two-row fixture derived from a pinned 2,429-row API capture.
 
@@ -499,6 +498,14 @@ The codecs encode unit vectors as little-endian float32.
 They reject invalid dimensions, nonfinite values, incorrect byte lengths, and vectors outside the unit norm tolerance.
 Only provider output receives normalization.
 
+A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
+The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
+Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
+Every output limit stays at or below 20,480 tokens, including explicit limits and decision reports.
+
+Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
+The [development guide](development.md#optional-ai-assistance) gives the configuration and retention limits.
+
 ### Meaning search host
 
 The Node host stores vectors and exact event, envelope, body, input, and extraction bindings in a separate SQLite database.
@@ -575,15 +582,18 @@ Cancellation stops the caller's wait. Admitted embedding work still settles and 
 
 Offline browser meaning search remains unfinished. An unconfigured host reports meaning search as unavailable.
 
-A discarded result returns a clear status. Spending failures distinguish pending costs, timed limits, and requests that cannot fit.
-The default spending share admits every enabled operation at each reasoning effort, with decision reports enabled or disabled.
-Each task uses an output cap based on recorded prompt tests. An explicit operator limit replaces the automatic caps.
-Every output limit stays at or below 20,480 tokens, including explicit limits and decision reports.
-
-Mocked providers cover the request and correction loop. These tests do not establish live model accuracy.
-The [development guide](development.md#optional-ai-assistance) gives the configuration and retention limits.
-
 ## Ranking and views
+
+The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID.
+A signed view names `simple-routes-bounds-v1`, `simple-routes-shun-v1`, or `simple-routes-shun-f64-v1` as its calculation profile.
+The float profile supports admission, row preparation, propagation, decisions, and owned session word results in Rust.
+Its [current limits](#f64-profile-limits) describe synchronous calls and owned tasks.
+The pages name the profile of each supported result and its route rule. An unknown profile leaves scores unavailable.
+Site calculation metadata uses the digest of canonical JSON null for its absent overlay. An explicit empty overlay keeps its own digest.
+The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
+It adds the current identity with allocation 1 only when its continuity group has no allocation or private root change.
+Zero allocations and removals also prevent that addition. It applies private blocks and public shuns as local blocks.
+A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.
 
 <a id="f64-profile-limits"></a>
 
@@ -612,17 +622,6 @@ Resolved cutoffs and transfers keep their publication exclusions when another cu
 Otherwise, pending compromise cutoffs suspend definition and rafsi receipts. Suspended publications do not prove an inactive rafsi assignment.
 When evaluation reaches a resource limit, the manifest keeps raw synchronization and signed view inspection available and marks package downloads unavailable.
 The browser does not load or save an unconfigured server view as a signed policy.
-
-The site view is the server's selected signed view, and the Trust page can use another retained signed view by its event ID.
-A signed view names `simple-routes-bounds-v1`, `simple-routes-shun-v1`, or `simple-routes-shun-f64-v1` as its calculation profile.
-The float profile supports admission, row preparation, propagation, decisions, and owned session word results in Rust.
-Its [current limits](#f64-profile-limits) describe synchronous calls and owned tasks.
-The pages name the profile of each supported result and its route rule. An unknown profile leaves scores unavailable.
-Site calculation metadata uses the digest of canonical JSON null for its absent overlay. An explicit empty overlay keeps its own digest.
-The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
-It adds the current identity with allocation 1 only when its continuity group has no allocation or private root change.
-Zero allocations and removals also prevent that addition. It applies private blocks and public shuns as local blocks.
-A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.
 
 ## Interface design and accessibility
 
@@ -667,6 +666,7 @@ The expansion budget does not bound total CPU time. These measurements do not es
 The current default state work budget can run out at roughly 4,500 events in a flat history.
 This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
 The Node loader can retain a larger explicit traversal budget for a local import.
+A larger traversal budget does not remove memory limits.
 
 The server, worker, and Wasm artifacts at `fedfec3` match the earlier measurement at `b6c0354`.
 That run restored its checkpoint in 22.68 seconds. A later restart took 29.33 seconds.

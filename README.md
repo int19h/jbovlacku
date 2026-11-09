@@ -22,7 +22,7 @@ The importer turns pinned Lensisku JSON captures and SQL snapshots into signed p
 
 Some target features have no implementation yet. The status and transfer editors, wizard meaning search, and Lensisku cross-posting are among them. So are model-assisted import conversion, offline meaning search in the browser, and the full `jvc` command catalog. The measurements so far establish neither ranking performance on real community trust graphs nor a latency guarantee.
 
-[Implemented scope](docs/implemented-scope.md) records the exact behavior of each area, its limits, and the current measurements.
+[Implemented scope](docs/implemented-scope.md) records the behavior of each area, its limits, and the current measurements.
 
 ## Local setup
 
@@ -53,6 +53,6 @@ The standalone app listens at [http://127.0.0.1:8789](http://127.0.0.1:8789). A 
 
 In the target contribution flow, new native definitions use CC0 1.0. The client shows the [CC0 notice](https://creativecommons.org/publicdomain/zero/1.0/) before publication, and selecting Publish is explicit agreement. There is no separate box to tick. The [format specification](docs/format.md#remaining-body-fields) defines the fixed fields and the convention for imported source rights.
 
-Under that convention, imported Lensisku dictionary text keeps its public-domain source claim, its original attribution, and its pinned notice evidence. It does not become a historical CC0 submission. Existing signed imports stay unchanged. A contributor who revises imported text releases only their own contribution under CC0, and the revision keeps the source evidence. Imports whose rights are not established stay marked as unknown, and third-party images need their own rights evidence.
+Under that target convention, imported Lensisku dictionary text keeps its public-domain source claim, its original attribution, and its pinned notice evidence. It does not become a historical CC0 submission. Existing signed imports stay unchanged. A contributor who revises imported text releases only their own contribution under CC0, and the revision keeps the source evidence. Imports whose rights are not established stay marked as unknown, and third-party images need their own rights evidence.
 
 The software license is still a prelaunch decision, and this repository does not imply one. The [third-party notices](docs/third-party-notices.md) preserve the licenses of dependencies and bundled fonts. A public launch must also state its trust roots, account witnesses, accepted imports, retention rules, and optional inference policies.
