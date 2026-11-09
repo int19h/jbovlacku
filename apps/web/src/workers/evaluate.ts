@@ -16,6 +16,13 @@ export type WorkerRequest =
   | { type: "actors"; id: number; input: EvaluationRequest }
   | { type: "load"; id: number; session: string; input: EvaluationRequest }
   | {
+      type: "advance";
+      id: number;
+      base: string;
+      session: string;
+      input: EvaluationRequest;
+    }
+  | {
       type: "rank";
       id: number;
       session: string;
@@ -36,8 +43,86 @@ export type WorkerResponse =
   | { type: "ranked"; id: number; session: string; result: unknown }
   | { type: "error"; id: number; message: string };
 
-let session: ReturnType<typeof evaluateSession> | null = null;
-let sessionKey: string | null = null;
+type LoadedResponse = Extract<WorkerResponse, { type: "loaded" }>;
+type RankedResponse = Extract<WorkerResponse, { type: "ranked" }>;
+
+export class EvaluationWorker {
+  private session: ReturnType<typeof evaluateSession> | null = null;
+  private sessionKey: string | null = null;
+  private events = 0;
+
+  get currentSession() {
+    return this.session;
+  }
+
+  private release() {
+    this.session?.free();
+    this.session = null;
+    this.sessionKey = null;
+    this.events = 0;
+  }
+
+  private loaded(id: number, key: string): LoadedResponse {
+    if (!this.session) throw new Error("The evaluation session is not loaded.");
+    return {
+      type: "loaded",
+      id,
+      session: key,
+      available: this.session.state.available,
+      reasons: this.session.state.reasons,
+      events: this.events,
+    };
+  }
+
+  load(message: Extract<WorkerRequest, { type: "load" }>): LoadedResponse {
+    this.release();
+    this.session = evaluateSession(message.input);
+    this.sessionKey = message.session;
+    this.events = message.input.events.length;
+    return this.loaded(message.id, message.session);
+  }
+
+  advance(
+    message: Extract<WorkerRequest, { type: "advance" }>,
+  ): LoadedResponse {
+    if (!this.session || this.sessionKey !== message.base)
+      throw new Error("The base evaluation session is not loaded.");
+    const { events, bodies, ...options } = message.input;
+    const builder = this.session.fork(options);
+    const previousEvents = this.events;
+    this.release();
+    try {
+      for (const envelope of events) {
+        const { id } = JSON.parse(envelope) as { id: string };
+        builder.addRecord(
+          new TextEncoder().encode(envelope),
+          bodies[id] === undefined
+            ? undefined
+            : new TextEncoder().encode(bodies[id]),
+        );
+      }
+      this.session = builder.finish();
+      this.sessionKey = message.session;
+      this.events = previousEvents + events.length;
+      return this.loaded(message.id, message.session);
+    } finally {
+      builder.free();
+    }
+  }
+
+  rank(message: Extract<WorkerRequest, { type: "rank" }>): RankedResponse {
+    if (!this.session || this.sessionKey !== message.session)
+      throw new Error("The requested evaluation session is not loaded.");
+    return {
+      type: "ranked",
+      id: message.id,
+      session: message.session,
+      result: this.session.rankWord(message.word, message.reviewers),
+    };
+  }
+}
+
+const evaluation = new EvaluationWorker();
 const ready = initializeCore();
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const message = event.data;
@@ -51,28 +136,11 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       };
       reply({ type: "actors", id: message.id, actors: lifecycle.key_actor });
     } else if (message.type === "load") {
-      session?.free();
-      session = null;
-      sessionKey = null;
-      session = evaluateSession(message.input);
-      sessionKey = message.session;
-      reply({
-        type: "loaded",
-        id: message.id,
-        session: message.session,
-        available: session.state.available,
-        reasons: session.state.reasons,
-        events: message.input.events.length,
-      });
+      reply(evaluation.load(message));
+    } else if (message.type === "advance") {
+      reply(evaluation.advance(message));
     } else if (message.type === "rank") {
-      if (!session || sessionKey !== message.session)
-        throw new Error("The requested evaluation session is not loaded.");
-      reply({
-        type: "ranked",
-        id: message.id,
-        session: message.session,
-        result: session.rankWord(message.word, message.reviewers),
-      });
+      reply(evaluation.rank(message));
     }
   } catch (error) {
     reply({

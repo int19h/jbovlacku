@@ -7,6 +7,7 @@ import {
   canonicalize,
   contentHash,
   utf8,
+  type EvaluationRequest,
 } from "../../../../packages/core/src/browser.ts";
 import type { LocalStore, Overlay } from "./store.ts";
 import {
@@ -164,6 +165,15 @@ type Message = WorkerRequest extends infer R
 const CANCELLED = "Cancelled.";
 /** Reviewer details per local score, the same bound as the server applies. */
 const REVIEWER_LIMIT = 64;
+type LoadedRecords = Awaited<ReturnType<typeof loadRecords>>;
+type SentRecords = {
+  events: string[];
+  bodies: string[];
+  view: string;
+  overlay: string;
+  mode: CalculationMode;
+  selections: string;
+};
 export class PersonalCalculator {
   private worker: Worker | null = null;
   private sequence = 0;
@@ -186,6 +196,8 @@ export class PersonalCalculator {
     view: string;
     actors: Record<string, string>;
   } | null = null;
+  /** IDs already authenticated by the worker. The envelopes and bodies stay in local storage. */
+  private sent: SentRecords | null = null;
   /**
    * True after Cancel until the user asks for a calculation again. An
    * automatic call from a page never restarts a cancelled calculation.
@@ -285,6 +297,7 @@ export class PersonalCalculator {
       entry.reject(new Error(CANCELLED));
     this.pending.clear();
     this.loadedKey = null;
+    this.sent = null;
     this.loading = null;
     this.rankCache.clear();
     this.cancelled = true;
@@ -471,6 +484,13 @@ export class PersonalCalculator {
       const key = `${inventory.snapshot}|${inventory.view}|${digest}|${mode}`;
       if (this.loadedKey === key && this.status.state === "ready")
         return this.status;
+      const advance = this.advanceInput(
+        inventory,
+        records,
+        overlay,
+        digest,
+        mode,
+      );
       this.loadedKey = null;
       this.rankCache.clear();
       this.set({
@@ -478,22 +498,29 @@ export class PersonalCalculator {
         mode,
         events: inventory.events.length,
       });
-      const input = {
-        events: records.events,
-        bodies: records.bodies,
-        selected_view: inventory.view,
-        import_selections: records.selections,
-        ...(overlay ? { overlay } : {}),
-      };
-      const loaded = await this.request(run, {
-        type: "load",
-        session: key,
-        input,
-      });
+      const loaded = advance
+        ? await this.request(run, {
+            type: "advance",
+            base: advance.base,
+            session: key,
+            input: advance.input,
+          })
+        : await this.request(run, {
+            type: "load",
+            session: key,
+            input: {
+              events: records.events,
+              bodies: records.bodies,
+              selected_view: inventory.view,
+              import_selections: records.selections,
+              ...(overlay ? { overlay } : {}),
+            },
+          });
       live();
       if (loaded.type !== "loaded" || loaded.session !== key)
         throw new Error("Unexpected worker reply.");
       this.loadedKey = key;
+      this.rememberSent(inventory, records, digest, mode);
       const status: PersonalStatus = {
         state: "ready",
         mode,
@@ -539,11 +566,71 @@ export class PersonalCalculator {
         kind,
       };
       this.loadedKey = null;
+      this.sent = null;
       this.set(status);
       return status;
     } finally {
       if (this.current === run) this.current = null;
     }
+  }
+  private advanceInput(
+    inventory: SnapshotInventory,
+    records: LoadedRecords,
+    overlay: EffectiveOverlay | null,
+    digest: string,
+    mode: CalculationMode,
+  ): { base: string; input: EvaluationRequest } | null {
+    const sent = this.sent;
+    if (
+      !this.loadedKey ||
+      !sent ||
+      sent.view !== inventory.view ||
+      sent.overlay !== digest ||
+      sent.mode !== mode ||
+      sent.selections !==
+        canonicalize(utf8(JSON.stringify(records.selections))) ||
+      sent.events.length > inventory.events.length
+    )
+      return null;
+    let previousBodies = 0;
+    for (const [index, id] of sent.events.entries()) {
+      if (inventory.events[index] !== id) return null;
+      if (records.bodies[id] !== undefined) previousBodies++;
+    }
+    if (
+      previousBodies !== sent.bodies.length ||
+      sent.bodies.some((id) => records.bodies[id] === undefined)
+    )
+      return null;
+    const events = records.events.slice(sent.events.length);
+    const bodies: Record<string, string> = {};
+    for (const id of inventory.events.slice(sent.events.length))
+      if (records.bodies[id] !== undefined) bodies[id] = records.bodies[id];
+    return {
+      base: this.loadedKey,
+      input: {
+        events,
+        bodies,
+        selected_view: inventory.view,
+        import_selections: records.selections,
+        ...(overlay ? { overlay } : {}),
+      },
+    };
+  }
+  private rememberSent(
+    inventory: SnapshotInventory,
+    records: LoadedRecords,
+    digest: string,
+    mode: CalculationMode,
+  ) {
+    this.sent = {
+      events: [...inventory.events],
+      bodies: Object.keys(records.bodies).sort(),
+      view: inventory.view,
+      overlay: digest,
+      mode,
+      selections: canonicalize(utf8(JSON.stringify(records.selections))),
+    };
   }
   private async effective(
     inventory: SnapshotInventory,
@@ -688,6 +775,7 @@ export class PersonalCalculator {
     this.current?.abort.abort(new Error(CANCELLED));
     this.current = null;
     this.loadedKey = null;
+    this.sent = null;
     this.rankCache.clear();
     if (this.status.state !== "failed") this.set({ state: "idle" });
   }

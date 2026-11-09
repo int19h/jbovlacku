@@ -111,7 +111,7 @@ await build({
             loader: "ts",
             contents:
               (await readFile(path, "utf8")) +
-              "\nself.__measurementSession = () => session;\n",
+              "\nself.__measurementSession = () => evaluation.currentSession;\n",
           }),
         );
       },
@@ -659,7 +659,7 @@ async function trial(condition, rep, profile = false) {
           if (
             profile &&
             workerCDP &&
-            /^(actors|load|increment-actors|increment-load|stress-actors|stress-load)$/.test(
+            /^(actors|load|increment-actors|increment-load|increment-advance|stress-actors|stress-load)$/.test(
               label,
             )
           ) {
@@ -692,7 +692,7 @@ async function trial(condition, rep, profile = false) {
           if (
             profile &&
             workerCDP &&
-            /^(actors|load|increment-actors|increment-load|stress-actors|stress-load)$/.test(
+            /^(actors|load|increment-actors|increment-load|increment-advance|stress-actors|stress-load)$/.test(
               label,
             )
           ) {
@@ -1028,14 +1028,20 @@ async function trial(condition, rep, profile = false) {
         targetWord.targets[0],
       ),
     );
-    await operation("increment-actors", () =>
-      page.evaluate((limits) => window.bench.actors(limits), dataset.limits),
-    );
-    const updated = await operation("increment-load", () =>
-      page.evaluate(
-        (limits) => window.bench.load(limits, "after"),
-        dataset.limits,
-      ),
+    if (!args["delta-reload"])
+      await operation("increment-actors", () =>
+        page.evaluate((limits) => window.bench.actors(limits), dataset.limits),
+      );
+    const updated = await operation(
+      args["delta-reload"] ? "increment-advance" : "increment-load",
+      () =>
+        page.evaluate(
+          ({ limits, delta }) =>
+            delta
+              ? window.bench.advance(limits, "after")
+              : window.bench.load(limits, "after"),
+          { limits: dataset.limits, delta: Boolean(args["delta-reload"]) },
+        ),
     );
     if (!updated.available)
       throw Error(`Updated evaluation unavailable: ${updated.reasons}`);
@@ -1046,6 +1052,30 @@ async function trial(condition, rep, profile = false) {
         "increment-rank",
         "after",
       );
+    if (args["verify-full-reload"]) {
+      await operation("oracle-input-reconstruction", () =>
+        page.evaluate(() => window.bench.fetchInput()),
+      );
+      await operation("oracle-signed-submission", () =>
+        page.evaluate(
+          (target) => window.bench.submission(target),
+          targetWord.targets[0],
+        ),
+      );
+      await operation("oracle-load", () =>
+        page.evaluate(
+          (limits) => window.bench.load(limits, "oracle"),
+          dataset.limits,
+        ),
+      );
+      await setup(() => page.evaluate(() => window.bench.releaseInput()));
+      for (const [i, w] of sample.entries())
+        await rankOne(
+          { ...w, sample_index: i, first_word: i === 0 },
+          "oracle-rank",
+          "oracle",
+        );
+    }
     await record({
       type: "trial-complete",
       trial: caseId,
@@ -1131,6 +1161,9 @@ try {
             "load",
             "increment-actors",
             "increment-load",
+            "increment-advance",
+            "oracle-rank",
+            "oracle-load",
           ].map((phase) => [
             phase,
             workerTimings(

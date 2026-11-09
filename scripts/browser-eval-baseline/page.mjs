@@ -15,14 +15,21 @@ const seed = new Uint8Array(32).fill(173);
 let input = null,
   worker = null,
   sequence = 0,
+  sentEvents = 0,
+  savedOverlay = null,
   mainWasm = null;
 const pending = new Map();
 let lastResult = null;
 const request = (message) =>
   new Promise((resolve, reject) => {
     const id = ++sequence;
-    pending.set(id, { resolve, reject });
-    worker.postMessage({ ...message, id });
+    const payload = { ...message, id };
+    pending.set(id, {
+      resolve,
+      reject,
+      requestBytes: utf8(JSON.stringify(payload)).length,
+    });
+    worker.postMessage(payload);
   });
 window.bench = {
   async gate(view) {
@@ -45,13 +52,14 @@ window.bench = {
     return { wasm_bytes: mainWasm?.memory.buffer.byteLength ?? 0 };
   },
   start() {
+    sentEvents = 0;
     worker = new Worker("/worker.js", { type: "module" });
     worker.onmessage = ({ data }) => {
       const p = pending.get(data.id);
       if (!p) return;
       pending.delete(data.id);
       if (data.type === "error") p.reject(new Error(data.message));
-      else p.resolve(data);
+      else p.resolve({ ...data, request_bytes: p.requestBytes });
     };
     worker.onerror = (e) => {
       for (const p of pending.values()) p.reject(new Error(e.message));
@@ -61,6 +69,7 @@ window.bench = {
   async fetchInput() {
     const start = performance.now();
     input = await (await fetch("/input.json", { cache: "no-store" })).json();
+    if (savedOverlay) input.overlay = savedOverlay;
     return { ms: performance.now() - start, events: input.events.length };
   },
   async actors(limits) {
@@ -70,12 +79,13 @@ window.bench = {
       input: { ...input, limits },
     });
     const body = JSON.parse(input.bodies[input.selected_view]);
-    input.overlay = effectiveOverlay(
+    savedOverlay = effectiveOverlay(
       emptyOverlay(),
       input.selected_view,
       { identity: identityFromSeed(seed), actors: response.actors },
       body.roots.map((r) => r.identity),
     );
+    input.overlay = savedOverlay;
     return {
       ms: performance.now() - start,
       measurement: response.measurement,
@@ -89,6 +99,24 @@ window.bench = {
       session: label,
       input: { ...input, limits },
     });
+    sentEvents = input.events.length;
+    return { ms: performance.now() - start, ...response };
+  },
+  async advance(limits, label) {
+    const start = performance.now();
+    const events = input.events.slice(sentEvents);
+    const bodies = {};
+    for (const envelope of events) {
+      const id = JSON.parse(envelope).id;
+      if (input.bodies[id] !== undefined) bodies[id] = input.bodies[id];
+    }
+    const response = await request({
+      type: "advance",
+      base: "base",
+      session: label,
+      input: { ...input, events, bodies, limits },
+    });
+    sentEvents = input.events.length;
     return { ms: performance.now() - start, ...response };
   },
   releaseInput() {
@@ -106,6 +134,7 @@ window.bench = {
     return {
       ms: performance.now() - start,
       measurement: response.measurement,
+      result: response.result,
       score_count: response.result.scores?.length,
       max_direct_reviewers: Math.max(
         0,

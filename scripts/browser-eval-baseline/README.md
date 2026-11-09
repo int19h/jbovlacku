@@ -96,6 +96,8 @@ It uses a fixed, publicly known disposable seed.
 ```
 
 Use `--conditions` to select a subset and `--repeats` to select one through ten repetitions.
+Use `--delta-reload` to reuse the base actor map and advance the loaded session with only the appended local judgment. This mode skips `increment-actors` and labels the update `increment-advance`. The default retains the full `increment-actors` and `increment-load` sequence.
+Use `--verify-full-reload` to add a full `oracle-load` of the same appended input and 60 `oracle-rank` operations. Rank records contain the complete core result. An external comparison can make sure that the incremental and full results are identical byte for byte.
 Use `--api-port` and `--port` to select other unused local ports.
 Use `--timeout-ms` to change the per-operation timeout, whose default is 600,000 ms.
 A timeout, resource refusal, renderer crash, or memory stop remains a measured failure.
@@ -209,6 +211,7 @@ Inspect `operation_errors` and each distribution's `n` before treating a trial a
 An ordinary complete base trial needs 60 successful word observations in each ranking phase.
 Worker distributions use only finite worker timings and count missing timings in `missing_worker_timings`.
 Parent round-trip timings remain separate in the raw operation records.
+`request_bytes` is the UTF-8 size of the JSON representation of the worker request, including its message fields and record strings. It measures the protocol payload, not the browser's internal structured-clone encoding.
 
 Heap metrics describe each V8 isolate at the query time.
 Wasm capacity is `memory.buffer.byteLength`, including reusable allocator space and its high-water growth.

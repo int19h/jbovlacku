@@ -593,6 +593,7 @@ Site calculation metadata uses the digest of canonical JSON null for its absent 
 The personal view downloads the snapshot records, verifies each envelope and body in a Web Worker, and ranks words locally with the private overlay.
 It adds the current identity with allocation 1 only when its continuity group has no allocation or private root change.
 Zero allocations and removals also prevent that addition. It applies private blocks and public shuns as local blocks.
+The calculator remembers the event and body IDs already sent to the worker. When a snapshot is a pure append and the view, import selections, and overlay are unchanged, it sends only the new records. The worker forks the loaded session, releases the old session, authenticates the new records, and advances the fork. Other snapshot or configuration changes release the old session before a full load. The separate continuity pass still evaluates the full input when the snapshot or view changes.
 A cancelled or incomplete local calculation keeps personal scores unavailable and offers the site view. "Recompute from records" compares a local site-view calculation with the server scores.
 
 <a id="f64-profile-limits"></a>
