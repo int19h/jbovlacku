@@ -120,6 +120,50 @@ impl Closure {
         self.missing.is_empty() && !self.invalid && !self.resource
     }
 }
+/// Count of stored closures whose ranges cross each layout boundary,
+/// kept as a difference array over insertion coordinates. A closure
+/// crosses the boundary at coordinate `p` when one of its ranges
+/// holds members on both sides (`first < p <= last`). The fast path
+/// reads one count per append: a crossing at its block boundary
+/// means its insertion would split that range, so it rebuilds.
+/// Building and extending cost one update per stored range; a query
+/// is a prefix sum, logarithmic in the layout size.
+#[derive(Clone, Default)]
+pub(crate) struct BoundaryCrossings {
+    tree: Vec<i64>,
+}
+
+impl BoundaryCrossings {
+    fn with_len(len: usize) -> Self {
+        Self {
+            tree: vec![0; len + 2],
+        }
+    }
+
+    fn add(&mut self, coordinate: u32, delta: i64) {
+        let mut index = coordinate as usize + 1;
+        while index < self.tree.len() {
+            self.tree[index] += delta;
+            index += index & index.wrapping_neg();
+        }
+    }
+
+    fn extend_range(&mut self, first: u32, last: u32) {
+        self.add(first + 1, 1);
+        self.add(last + 1, -1);
+    }
+
+    fn crossing(&self, coordinate: u32) -> i64 {
+        let mut index = coordinate as usize + 1;
+        let mut total = 0;
+        while index > 0 {
+            total += self.tree.get(index).copied().unwrap_or(0);
+            index -= index & index.wrapping_neg();
+        }
+        total
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Graph {
     pub nodes: BTreeMap<String, Node>,
@@ -132,6 +176,7 @@ pub(crate) struct Graph {
     pub pending_cutoffs: BTreeSet<String>,
     pub space: Rc<super::ancestors::Space>,
     pub ancestry: super::ancestors::AncestryBudget,
+    pub boundary: BoundaryCrossings,
     /// Records appended to this state, in append order. Per state: a
     /// sibling's appends never appear here.
     pub appended_ids: Vec<String>,
@@ -156,6 +201,7 @@ impl Graph {
             nodes,
             space: super::ancestors::Space::empty(),
             ancestry: super::ancestors::AncestryBudget::new(),
+            boundary: BoundaryCrossings::default(),
             appended_ids: Vec::new(),
             appended_rank: BTreeMap::new(),
             own: Rc::default(),
@@ -222,7 +268,27 @@ impl Graph {
         if graph.ancestry.failed() {
             graph.resource.set(true);
         }
+        graph.boundary = BoundaryCrossings::with_len(graph.space.len());
+        let mut seen: Vec<usize> = Vec::new();
+        for cache in [&graph.own, &graph.structural, &graph.accepted] {
+            let pointer = Rc::as_ptr(cache) as usize;
+            if seen.contains(&pointer) {
+                continue;
+            }
+            seen.push(pointer);
+            for closure in cache.values() {
+                for (first, last) in closure.ids.ranges() {
+                    graph.boundary.extend_range(first, last);
+                }
+            }
+        }
         graph
+    }
+
+    /// Stored closures whose ranges cross the given insertion
+    /// coordinate, across every distinct cache.
+    pub fn boundary_crossing(&self, coordinate: u32) -> i64 {
+        self.boundary.crossing(coordinate)
     }
     fn empty_closure(&self) -> Closure {
         Closure {
@@ -717,6 +783,10 @@ impl Graph {
         // Insert without splitting a shared cache afterwards: mutating
         // a cache that its siblings still point at would copy it and
         // silently unshare the three modes.
+        let mut new_ranges: Vec<(u32, u32)> = own.ids.ranges().collect();
+        for closure in &others {
+            new_ranges.extend(closure.ids.ranges());
+        }
         Rc::make_mut(&mut self.own).insert(node.id.clone(), own);
         if shared {
             self.structural = self.own.clone();
@@ -725,6 +795,9 @@ impl Graph {
             let mut others = others.into_iter();
             Rc::make_mut(&mut self.structural).insert(node.id.clone(), others.next().unwrap());
             Rc::make_mut(&mut self.accepted).insert(node.id.clone(), others.next().unwrap());
+        }
+        for (first, last) in new_ranges {
+            self.boundary.extend_range(first, last);
         }
         self.appended += 1;
     }

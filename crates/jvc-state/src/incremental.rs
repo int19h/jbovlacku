@@ -505,9 +505,11 @@ impl EvaluatedState {
         // chain the parent is the chain tip, so coverage reads one
         // stored range and the scan reads none.
         //
-        // The boundary span scan stays: a closure holding the block's
-        // last record and the next block's first would split when the
-        // new record inserts between them.
+        // The boundary crossing count stays: a closure holding the
+        // block's last record and the next block's first would split
+        // when the new record inserts between them. The count is kept
+        // as closures are built and extended, so reading it here is
+        // one charged unit and a logarithmic prefix sum.
         let parents: Vec<&graph::Closure> = node.previous.iter().map(|id| &graph.own[id]).collect();
         if let Some((first, last)) = graph.issuer_block(&node.issuer) {
             let sweep_bound: usize = parents
@@ -547,7 +549,12 @@ impl EvaluatedState {
                     }
                 }
             }
-            spanning_check(graph, last + 1)?;
+            if !graph.charge(1) {
+                return Err("work_budget");
+            }
+            if graph.boundary_crossing(last + 1) > 0 {
+                return Err("layout_split");
+            }
         } else {
             // No positioned records for this issuer: any appended ones
             // must still all be ancestors of the new record.
@@ -560,16 +567,19 @@ impl EvaluatedState {
                     return Err("layout_split");
                 }
             }
-            spanning_check(graph, graph.next_block_start(&node.issuer))?;
+            if !graph.charge(1) {
+                return Err("work_budget");
+            }
+            if graph.boundary_crossing(graph.next_block_start(&node.issuer)) > 0 {
+                return Err("layout_split");
+            }
         }
         // The full build's charge for one more record, per cache:
         // setup (one per record and predecessor) plus construction
         // (one, plus one per predecessor for its missing set and its
         // fresh-layout range count). Three caches are charged when
         // they share storage, as in a full build. The layout pass
-        // charges one per record and predecessor; lifecycle charges
-        // one for this semantic record; account evaluation charges one
-        // per record for its history scan.
+        // charges one per record and predecessor.
         let per_cache = |cache: &BTreeMap<String, graph::Closure>| {
             (1 + node.previous.len())
                 + (1 + node
@@ -585,7 +595,13 @@ impl EvaluatedState {
         } else {
             per_cache(&graph.own) + per_cache(&graph.structural) + per_cache(&graph.accepted)
         };
-        let work = (1 + node.previous.len()) + construction + 1 + 1;
+        // The last two units are the lifecycle record and the account
+        // history scan. A full evaluation skips the scan when no
+        // policy is selected, so the append charges it only then too.
+        let work = (1 + node.previous.len())
+            + construction
+            + 1
+            + usize::from(self.evaluation.policy.is_some());
         if work > self.remaining_work {
             return Err("work_budget");
         }
@@ -817,75 +833,6 @@ impl EvaluatedState {
             ranking_index: Default::default(),
         })
     }
-}
-
-/// True when no existing closure has a range spanning the insertion
-/// point. A spanning closure contains both records adjacent to the
-/// point. Only an acceptance crosses issuer blocks, so the candidates
-/// are the acceptance records themselves and the records of the next
-/// issuer block that follow an acceptance in that block (plus that
-/// block's appended records). Each tested closure is charged against
-/// the graph budget and restored on success; the charge is never part
-/// of the append price.
-fn spanning_check(graph: &Graph, point: u32) -> std::result::Result<(), &'static str> {
-    if point == 0 || point as usize >= graph.space.len() {
-        return Ok(());
-    }
-    let tip = graph.space.id_at(point - 1);
-    let next = graph.space.id_at(point);
-    let next_issuer = graph.nodes[next.as_str()].issuer.clone();
-    let first_accept = graph
-        .nodes
-        .values()
-        .filter(|record| record.issuer == next_issuer && record.kind == "identity.accept")
-        .filter_map(|record| graph.space.position(&record.id))
-        .min();
-    let saved = graph.budget.get();
-    let mut seen: Vec<usize> = Vec::new();
-    for cache in [&graph.own, &graph.structural, &graph.accepted] {
-        let pointer = std::rc::Rc::as_ptr(cache) as usize;
-        if seen.contains(&pointer) {
-            continue;
-        }
-        seen.push(pointer);
-        let test = |record_id: &str| -> std::result::Result<bool, &'static str> {
-            if !graph.charge(1) {
-                return Err("work_budget");
-            }
-            Ok(cache
-                .get(record_id)
-                .is_some_and(|closure| closure.ids.contains(&tip) && closure.ids.contains(&next)))
-        };
-        for record in graph
-            .nodes
-            .values()
-            .filter(|record| record.kind == "identity.accept")
-        {
-            if test(&record.id)? {
-                graph.budget.set(saved);
-                return Err("layout_split");
-            }
-        }
-        for record in graph
-            .nodes
-            .values()
-            .filter(|record| record.issuer == next_issuer)
-        {
-            let appended = graph.space.position(&record.id).is_none();
-            if !appended {
-                let position = graph.space.position(&record.id).unwrap();
-                if record.id != next && first_accept.is_none_or(|first| position <= first) {
-                    continue;
-                }
-            }
-            if test(&record.id)? {
-                graph.budget.set(saved);
-                return Err("layout_split");
-            }
-        }
-    }
-    graph.budget.set(saved);
-    Ok(())
 }
 
 fn supports_local_update(node: &Node) -> bool {
@@ -1338,7 +1285,7 @@ mod rebuild_tests {
     /// evaluation, remaining logical units, and cap bytes.
     #[test]
     fn property_appends_forks_and_siblings_match_full_evaluation() {
-        let issuers: Vec<String> = [7u8, 8, 9]
+        let mut issuers: Vec<String> = [7u8, 8, 9]
             .iter()
             .map(|seed| identity_from_seed(&[*seed; 32]))
             .collect();
@@ -1424,6 +1371,61 @@ mod rebuild_tests {
                     tips.insert(issuers[0].clone(), carried_id);
                 }
             }
+            if seed % 5 == 0 {
+                // A boundary-crossing pair: one issuer's chain runs
+                // through an acceptance to a transfer that is the
+                // first record of the next issuer, so its structural
+                // closure crosses the block boundary. Judgments on
+                // that tip must rebuild.
+                let fixture_issuer = identity_from_seed(&[1u8; 32]);
+                let mut identities: Vec<String> = (21u8..60)
+                    .map(|seed| identity_from_seed(&[seed; 32]))
+                    .collect();
+                identities.push(fixture_issuer.clone());
+                identities.extend(issuers.iter().cloned());
+                identities.sort();
+                let (cross_issuer, next_issuer) = identities
+                    .windows(2)
+                    .find(|pair| {
+                        pair[0] != fixture_issuer
+                            && pair[1] != fixture_issuer
+                            && !issuers.contains(&pair[0])
+                            && !issuers.contains(&pair[1])
+                    })
+                    .map(|pair| (pair[0].clone(), pair[1].clone()))
+                    .unwrap();
+                let cross_root = fresh_id(&mut counter);
+                prepared.add_host_verified_record(host(
+                    cross_root.clone(),
+                    &cross_issuer,
+                    vec![],
+                    json!({"kind":"identity.merge"}),
+                ));
+                let cross_transfer = fresh_id(&mut counter);
+                let cross_accept = fresh_id(&mut counter);
+                prepared.add_host_verified_record(host(
+                    cross_accept.clone(),
+                    &cross_issuer,
+                    vec![cross_root.clone()],
+                    json!({"kind":"identity.accept","transfer":cross_transfer}),
+                ));
+                let cross_tip = fresh_id(&mut counter);
+                prepared.add_host_verified_record(host(
+                    cross_tip.clone(),
+                    &cross_issuer,
+                    vec![cross_accept],
+                    json!({"kind":"identity.merge"}),
+                ));
+                prepared.add_host_verified_record(host(
+                    cross_transfer,
+                    &next_issuer,
+                    vec![],
+                    json!({"kind":"identity.transfer","successor":cross_issuer}),
+                ));
+                firsts.insert(cross_issuer.clone(), cross_root);
+                tips.insert(cross_issuer.clone(), cross_tip);
+                issuers.push(cross_issuer);
+            }
             let base_tips = tips.clone();
             let mut extras: std::collections::BTreeMap<String, Vec<String>> =
                 std::collections::BTreeMap::new();
@@ -1433,7 +1435,7 @@ mod rebuild_tests {
                 if kind == 7 {
                     // Fork: both siblings advance differently; each
                     // must match its own full evaluation.
-                    let issuer = &issuers[rng.below(3) as usize];
+                    let issuer = &issuers[rng.below(issuers.len() as u64) as usize];
                     let Some(tip) = tips.get(issuer).cloned() else {
                         continue;
                     };
@@ -1452,7 +1454,7 @@ mod rebuild_tests {
                     comparisons += 1;
                     continue;
                 }
-                let issuer = &issuers[rng.below(3) as usize].clone();
+                let issuer = &issuers[rng.below(issuers.len() as u64) as usize].clone();
                 let record = match kind {
                     0..=3 => {
                         let Some(tip) = tips.get(issuer) else {
@@ -1489,7 +1491,7 @@ mod rebuild_tests {
                         json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
                     ),
                     8 => {
-                        let other = &issuers[(rng.below(2) + 1) as usize % 3];
+                        let other = &issuers[(rng.below(2) + 1) as usize % issuers.len()];
                         let Some(tip) = tips.get(other) else {
                             continue;
                         };
@@ -1585,6 +1587,78 @@ mod rebuild_tests {
         }
         assert!(comparisons > 400, "only {comparisons} comparisons ran");
         assert!(fast_appends > 50, "only {fast_appends} fast appends ran");
+    }
+
+    /// Grok round 4 probe: the structural closure of an issuer's tip
+    /// reaches through an acceptance to a transfer that is the first
+    /// record of the next issuer, so one stored range crosses the
+    /// block boundary. A judgment on the tip would land between them
+    /// and split that range. It must rebuild, at the exact budget and
+    /// one below.
+    #[test]
+    fn grok_boundary_crossing_append_rebuilds_and_matches_full() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        // The two issuers must be adjacent in layout order, with no
+        // other issuer of this fixture between them.
+        let fixture_issuer = identity_from_seed(&[1u8; 32]);
+        let mut identities: Vec<String> = (2u8..40)
+            .map(|seed| identity_from_seed(&[seed; 32]))
+            .collect();
+        identities.push(fixture_issuer.clone());
+        identities.sort();
+        let (issuer, next_issuer) = identities
+            .windows(2)
+            .find(|pair| pair[0] != fixture_issuer && pair[1] != fixture_issuer)
+            .map(|pair| (pair[0].clone(), pair[1].clone()))
+            .unwrap();
+        let root_id = format!("jve1:{:064x}", 10usize);
+        let accept_id = format!("jve1:{:064x}", 11usize);
+        let tip_id = format!("jve1:{:064x}", 12usize);
+        let transfer_id = format!("jve1:{:064x}", 20usize);
+        prepared.add_host_verified_record(host(
+            root_id.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        prepared.add_host_verified_record(host(
+            accept_id.clone(),
+            &issuer,
+            vec![root_id],
+            json!({"kind":"identity.accept","transfer":transfer_id}),
+        ));
+        prepared.add_host_verified_record(host(
+            tip_id.clone(),
+            &issuer,
+            vec![accept_id.clone()],
+            json!({"kind":"identity.merge"}),
+        ));
+        // The transfer is the first record of the next issuer. The
+        // acceptance is not the successor's only root, so no lifecycle
+        // link forms and the fast path stays open on that front.
+        prepared.add_host_verified_record(host(
+            transfer_id.clone(),
+            &next_issuer,
+            vec![],
+            json!({"kind":"identity.transfer","successor":issuer}),
+        ));
+        let judgment = host(
+            format!("jve1:{:064x}", 30usize),
+            &issuer,
+            vec![tip_id],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        let mut full = prepared.clone();
+        full.add_host_verified_record(judgment.clone());
+        assert_tight_budgets_match(&prepared, &judgment, &full);
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(judgment.clone());
+        let state = prepared.clone().into_state().advance(delta, &[]);
+        assert!(state.statistics().rebuilt);
+        assert_eq!(state.statistics().reason.as_deref(), Some("layout_split"));
     }
 
     /// Kimi round 4 probe: three judgments on a two-record chain.

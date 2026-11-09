@@ -369,6 +369,14 @@ impl IdSet {
     }
 
     /// First position of each stored range, in layout order.
+    /// Stored ranges as (first, last) position pairs, in layout order.
+    pub fn ranges(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.ranges
+            .as_slice()
+            .iter()
+            .map(|range| (range.first, range.last))
+    }
+
     pub fn range_starts(&self) -> impl Iterator<Item = u32> + '_ {
         self.ranges.as_slice().iter().map(|range| range.first)
     }
