@@ -2,7 +2,7 @@
 
 Use the [development guide](docs/development.md) for workspace, tooling, tests, and review requirements.
 The [format specification](docs/format.md) and [frontend specification](docs/frontend.md) define target behavior.
-The [README](README.md) describes the implemented scope. Do not claim that a target feature exists before its tests pass.
+The [implemented scope](docs/implemented-scope.md) describes what the prototype does today. Do not claim that a target feature exists before its tests pass.
 
 ## Scope and shared files
 

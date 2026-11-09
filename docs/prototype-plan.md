@@ -1,6 +1,6 @@
 # Jbovlacku prototype plan
 
-This plan defines the target prototype stages. The [README](../README.md) describes the implemented scope.
+This plan defines the target prototype stages. The [implemented scope](implemented-scope.md) describes what the prototype does today.
 The [format specification](format.md) and [frontend specification](frontend.md) define the intended behavior.
 
 ## Scope and location
@@ -14,7 +14,7 @@ Expressly authorized private GitHub issues and pull requests remain development 
 
 Each stage produces an executable result, fixture inputs, expected outputs, and a short account of failures and limits.
 Record the exact specification hashes with every result. Mark experimental records as disposable rather than promising permanent compatibility.
-The command name is `jvc`. Commands in the specifications describe target interfaces. The [README](../README.md) identifies commands available in the prototype.
+The command name is `jvc`. Commands in the specifications describe target interfaces. The [implemented scope](implemented-scope.md) identifies commands available in the prototype.
 
 ## Stage 1: Records and signatures
 

@@ -1,7 +1,7 @@
 # Jbovlacku repository format and tooling
 
 This specification defines target behavior for format version 1. It does not claim that every requirement exists in the prototype.
-The [frontend specification](frontend.md) defines the web app. The [README](../README.md) describes the implemented scope.
+The [frontend specification](frontend.md) defines the web app. The [implemented scope](implemented-scope.md) describes what the prototype does today.
 
 ## 1. Scope and authority
 
@@ -509,7 +509,7 @@ An empty etymology object is valid. An empty formation object is invalid because
 
 The [frontend specification](frontend.md#5-add-a-definition) applies these rules to drafts, revisions, and publication.
 The format still permits an explicit empty `text` value. The reference client requires definition text before publication.
-The [README](../README.md) states whether the implementation accepts omitted fields.
+The [implemented scope](implemented-scope.md#shared-core-and-records) states whether the implementation accepts omitted fields.
 
 ### Rich text
 
@@ -2406,7 +2406,7 @@ The target CLI exposes these commands:
 | `jvc import-sync SOURCE --ledger PATH` | Prepare a repeat import batch with explicit additions, revisions, omissions, and conflicts. |
 | `jvc sign FILE --identity KEY` | Sign a prepared event with a local key or an explicitly configured local SSH signer. |
 
-These are target interface requirements. The [README](../README.md) identifies commands available in the prototype.
+These are target interface requirements. The [implemented scope](implemented-scope.md) identifies commands available in the prototype.
 Ordinary sign rejects lifecycle events and directs the user to the dedicated handover or compromise flow.
 Handover stores both events and the new encrypted key before it releases either event for upload.
 Before signing, it searches configured peers and local history for existing transfer or acceptance records. Retries never mint replacement nonces.

@@ -4,7 +4,7 @@ This document alone defines the target visual system and twelve screen layouts.
 An implementation needs no access to the optional design canvas to follow these requirements.
 The [frontend specification](frontend.md) defines behavior, storage, accessibility, and acceptance scenarios.
 The [format specification](format.md) defines field shapes, signatures, authority, and ranking.
-The [README](../README.md) describes the implemented scope. These layouts do not establish that a feature exists.
+The [implemented scope](implemented-scope.md) describes what the prototype does today. These layouts do not establish that a feature exists.
 
 ## Design principles
 
