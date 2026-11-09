@@ -345,22 +345,23 @@ impl EvaluatedState {
             }
         }
         if rebuild_reason.is_none() && self.graph.is_none() {
-            let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
-            match self.saved_ancestry_bytes.take() {
-                Some(bytes) => graph.ancestry.restore_bytes(bytes),
-                // An old checkpoint without the byte total cannot be
-                // priced exactly; rebuild so the first advance runs a
-                // full evaluation, as it would have originally.
-                None if self.checkpoint_restored => {
-                    rebuild_reason = Some("checkpoint_ancestry_unknown".into())
+            // An old checkpoint without the byte total cannot be priced
+            // exactly; rebuild so the first advance runs a full
+            // evaluation, as it would have originally. Check before
+            // building a graph the rebuild would discard.
+            if self.checkpoint_restored && self.saved_ancestry_bytes.is_none() {
+                rebuild_reason = Some("checkpoint_ancestry_unknown".into());
+            } else {
+                let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
+                if let Some(bytes) = self.saved_ancestry_bytes.take() {
+                    graph.ancestry.restore_bytes(bytes);
                 }
-                None => {}
-            }
-            if graph.resource.get() || graph.ancestry.failed() {
-                rebuild_reason = Some("history_resource_unavailable".into());
-            } else if rebuild_reason.is_none() {
-                graph.budget.set(self.remaining_work);
-                self.graph = Some(graph);
+                if graph.resource.get() || graph.ancestry.failed() {
+                    rebuild_reason = Some("history_resource_unavailable".into());
+                } else {
+                    graph.budget.set(self.remaining_work);
+                    self.graph = Some(graph);
+                }
             }
         }
         // A judgment-only advance that rebuilds only because the
@@ -399,8 +400,15 @@ impl EvaluatedState {
             let layout_rebuild = reason == "layout_split";
             // The base evaluation is only intact when no append of
             // this batch has run yet. Later refusals report no patch.
-            let base_evaluation =
-                (judgment_only && layout_rebuild && !appended_any).then(|| self.evaluation.clone());
+            // Move the base evaluation out instead of copying it:
+            // `rebuild` overwrites it without reading the old value,
+            // so a copy would hold one extra evaluation at the peak.
+            let base_evaluation = (judgment_only && layout_rebuild && !appended_any).then(|| {
+                std::mem::replace(
+                    &mut self.evaluation,
+                    empty_evaluation(&self.prepared.options),
+                )
+            });
             self.prepared.nodes.extend(added);
             self.rebuild();
             self.statistics.rebuilt = true;

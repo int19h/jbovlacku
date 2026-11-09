@@ -483,8 +483,7 @@ mod tests {
     /// the even positions, the other the odd ones, 1,000 segments
     /// each. The merge must cover the whole interval, and the charged
     /// bound for it is the total range count times the parent count.
-    /// The old rescan visited over 2,000,000 ranges on this shape;
-    /// the merge examines each range once.
+    /// The merge examines each range once.
     #[test]
     fn union_covers_merges_fragmented_parents_in_one_pass() {
         let names: Vec<String> = (0..2_000).map(|i| format!("id{i:04}")).collect();

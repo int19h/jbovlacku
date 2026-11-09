@@ -2,7 +2,7 @@
 use jvc_core::{Error, Result, canonical_value, inspect_body, parse_json, verify_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use wasm_bindgen::prelude::*;
 
 mod word_results;
@@ -245,6 +245,30 @@ impl std::io::Write for LimitedOutput {
         Ok(())
     }
 }
+/// The lifecycle entries a patch may name for the given actors. An
+/// actor key counts only when it is present in both lifecycle maps;
+/// a key in just one map is left out instead of panicking.
+fn lifecycle_patch<'a, 'b>(
+    evaluation: &'a jvc_state::Evaluation,
+    actors: &'b BTreeSet<String>,
+) -> (
+    BTreeMap<&'b String, &'a String>,
+    BTreeMap<&'b String, &'a BTreeSet<String>>,
+) {
+    let mut key_actor = BTreeMap::new();
+    let mut groups = BTreeMap::new();
+    for actor in actors {
+        if let (Some(key), Some(group)) = (
+            evaluation.lifecycle.key_actor.get(actor),
+            evaluation.lifecycle.groups.get(actor),
+        ) {
+            key_actor.insert(actor, key);
+            groups.insert(actor, group);
+        }
+    }
+    (key_actor, groups)
+}
+
 fn bounded_delta(value: impl Serialize) -> String {
     let mut writer = LimitedOutput(Vec::new());
     if serde_json::to_writer(&mut writer, &value).is_err() {
@@ -1110,6 +1134,7 @@ impl EvaluationSessionBuilder {
     }
 }
 #[wasm_bindgen]
+
 impl EvaluationSession {
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8]) -> std::result::Result<EvaluationSession, JsValue> {
@@ -1217,16 +1242,7 @@ impl EvaluationSession {
                 )
             })
             .collect();
-        let key_actor: BTreeMap<_, _> = changes
-            .actors
-            .iter()
-            .map(|k| (k, &e.lifecycle.key_actor[k]))
-            .collect();
-        let groups: BTreeMap<_, _> = changes
-            .actors
-            .iter()
-            .map(|k| (k, &e.lifecycle.groups[k]))
-            .collect();
+        let (key_actor, groups) = lifecycle_patch(e, &changes.actors);
         #[derive(Serialize)]
         struct Delta<'a, R: Serialize, G: Serialize, J: Serialize, L: Serialize> {
             version: u8,
@@ -1430,6 +1446,36 @@ mod state_output_tests {
                 .unwrap_err();
         assert_eq!(error, Error::new("signature", "Ed25519 equation failed"));
         assert_eq!(verifier.public_key_checks(), 2);
+    }
+
+    #[test]
+    fn lifecycle_patch_skips_an_actor_present_in_only_one_map() {
+        let mut evaluation = jvc_state::evaluate(
+            &evaluation_input(include_bytes!("../tests/invalid-overlay.json")).unwrap(),
+        );
+        evaluation
+            .lifecycle
+            .key_actor
+            .insert("key-only".into(), "actor".into());
+        evaluation
+            .lifecycle
+            .groups
+            .insert("group-only".into(), BTreeSet::from(["group".to_string()]));
+        evaluation
+            .lifecycle
+            .key_actor
+            .insert("both".into(), "actor".into());
+        evaluation
+            .lifecycle
+            .groups
+            .insert("both".into(), BTreeSet::from(["group".to_string()]));
+        let actors: BTreeSet<String> =
+            ["key-only".into(), "group-only".into(), "both".into()].into();
+        let (key_actor, groups) = lifecycle_patch(&evaluation, &actors);
+        assert_eq!(key_actor.len(), 1);
+        assert_eq!(groups.len(), 1);
+        assert!(key_actor.contains_key(&"both".to_string()));
+        assert!(groups.contains_key(&"both".to_string()));
     }
 
     #[test]
