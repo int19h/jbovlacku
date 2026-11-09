@@ -228,10 +228,6 @@ pub(crate) struct Graph {
     /// (`origin#account`), in record order. Account evaluation reads
     /// this index instead of scanning all records per claim.
     pub account_sets: BTreeMap<String, Vec<String>>,
-    /// Memoized downstream issuer sets. The successor map does not
-    /// change after build (appends never touch it), so a computed
-    /// set stays valid for the life of the graph.
-    pub downstream_cache: std::cell::RefCell<BTreeMap<String, BTreeSet<String>>>,
     /// Per issuer, the union of missing IDs over its retained
     /// records, for account evaluation's missing-history lookup.
     pub issuer_missing: BTreeMap<String, BTreeSet<String>>,
@@ -262,7 +258,6 @@ impl Graph {
             boundary: BoundaryCrossings::default(),
             issuer_complete: BTreeMap::new(),
             account_sets: BTreeMap::new(),
-            downstream_cache: std::cell::RefCell::new(BTreeMap::new()),
             issuer_missing: BTreeMap::new(),
             appended_ids: Vec::new(),
             appended_rank: BTreeMap::new(),
@@ -1028,6 +1023,30 @@ impl Graph {
     /// against. The work is linear in the stored ranges examined,
     /// not in the square of the member count.
     pub fn maxima(&self, ids: BTreeSet<String>, structural: bool) -> BTreeSet<String> {
+        let result = self.maxima_with(&ids, structural, &self.ancestry);
+        if self.ancestry.failed() {
+            self.resource.set(true);
+        }
+        result
+    }
+
+    /// What `maxima` would charge the ancestry cap for this set,
+    /// computed on cloned range payloads with a throwaway budget.
+    /// The incremental register update uses it to charge only the
+    /// difference from the set the base evaluation already charged
+    /// for, so an append's byte total equals a full evaluation's.
+    pub(crate) fn maxima_charge(&self, ids: &BTreeSet<String>, structural: bool) -> usize {
+        let budget = super::ancestors::AncestryBudget::new();
+        self.maxima_with(ids, structural, &budget);
+        budget.bytes()
+    }
+
+    fn maxima_with(
+        &self,
+        ids: &BTreeSet<String>,
+        structural: bool,
+        budget: &super::ancestors::AncestryBudget,
+    ) -> BTreeSet<String> {
         let cache = if structural {
             &self.structural
         } else {
@@ -1035,7 +1054,7 @@ impl Graph {
         };
         let mut unknown: BTreeSet<String> = BTreeSet::new();
         let mut groups: BTreeMap<usize, Vec<(&String, &Closure)>> = BTreeMap::new();
-        for id in &ids {
+        for id in ids {
             match cache.get(id) {
                 Some(closure) => groups
                     .entry(closure.ids.member_count())
@@ -1075,7 +1094,7 @@ impl Graph {
                     MAXIMA_RANGE_VISITS.with(|count| count.set(count.get() + examined));
                     count_work(examined);
                 }
-                larger.union_uncharged(&closure.ids);
+                larger.union(budget, &closure.ids);
             }
         }
         result
@@ -1098,9 +1117,9 @@ impl Graph {
         })
     }
     pub fn downstream(&self, root: &str) -> BTreeSet<String> {
-        if let Some(keys) = self.downstream_cache.borrow().get(root) {
-            return keys.clone();
-        }
+        // One temporary set per call, as on main. A retained memo
+        // would hold one suffix per issuer (quadratic memory on a
+        // successor chain), which this PR must not add.
         let mut keys = BTreeSet::new();
         let mut at = root;
         while keys.insert(at.into()) {
@@ -1109,9 +1128,8 @@ impl Graph {
                 None => break,
             }
         }
-        self.downstream_cache
-            .borrow_mut()
-            .insert(root.to_string(), keys.clone());
+        #[cfg(test)]
+        count_work(keys.len());
         keys
     }
     pub fn local_complete(&self, root: &str, _claim: &str) -> bool {
@@ -1305,6 +1323,129 @@ mod tests {
                 "{visits} lifecycle visits for {records} records"
             );
         }
+    }
+
+    /// Downstream sets are built per call and retained nowhere:
+    /// calling it for every issuer of a successor chain does
+    /// exactly the work main does (the sum of the suffix lengths)
+    /// and keeps no cache behind.
+    #[test]
+    fn downstream_work_matches_main_without_retention() {
+        let links = 200usize;
+        let mut nodes: BTreeMap<String, Node> = BTreeMap::new();
+        let insert = |nodes: &mut BTreeMap<String, Node>,
+                      i: usize,
+                      issuer: &str,
+                      previous: Vec<String>,
+                      action: Value,
+                      kind: &str| {
+            let id = format!("jve1:{i:064x}");
+            nodes.insert(
+                id.clone(),
+                Node {
+                    id,
+                    issuer: issuer.into(),
+                    previous,
+                    action,
+                    kind: kind.into(),
+                    semantic: true,
+                    body_hash: None,
+                    body: None,
+                    body_label: "absent".into(),
+                },
+            );
+        };
+        for i in 0..links {
+            let issuer = format!("ed25519:{i:064x}");
+            let next = format!("ed25519:{:064x}", i + 1);
+            if i == 0 {
+                insert(
+                    &mut nodes,
+                    0,
+                    &issuer,
+                    vec![],
+                    json!({"kind":"identity.transfer","successor":next}),
+                    "identity.transfer",
+                );
+            } else {
+                insert(
+                    &mut nodes,
+                    2 * i,
+                    &issuer,
+                    vec![format!("jve1:{:064x}", 2 * i - 1)],
+                    json!({"kind":"identity.transfer","successor":next}),
+                    "identity.transfer",
+                );
+            }
+            insert(
+                &mut nodes,
+                2 * i + 1,
+                &next,
+                vec![],
+                json!({"kind":"identity.accept","transfer":format!("jve1:{:064x}", 2 * i)}),
+                "identity.accept",
+            );
+        }
+        let graph = Graph::new(nodes, &Limits::default());
+        assert!(!graph.resource.get());
+        reset_audit_work();
+        let mut expected = 0usize;
+        for i in 0..links {
+            let issuer = format!("ed25519:{i:064x}");
+            let keys = graph.downstream(&issuer);
+            assert_eq!(keys.len(), links + 1 - i);
+            expected += keys.len();
+        }
+        // Exactly main's per-call work: every suffix built once,
+        // nothing retained between calls.
+        assert_eq!(audit_work(), expected);
+        assert_eq!(expected, (links + 1) * (links + 2) / 2 - 1);
+    }
+
+    /// The unions `maxima` merges are charged to the same ancestry
+    /// cap as every other range allocation: the counted bytes never
+    /// pass the cap, and a shape whose merges would pass it fails
+    /// as a resource failure instead.
+    #[test]
+    fn maxima_unions_charge_the_ancestry_cap() {
+        let build = |count: usize| {
+            let nodes: BTreeMap<String, Node> = (0..count)
+                .map(|i| {
+                    let id = format!("jve1:{i:064x}");
+                    (
+                        id.clone(),
+                        Node {
+                            id,
+                            issuer: "issuer".into(),
+                            previous: Vec::new(),
+                            action: json!({"kind":"identity.merge"}),
+                            kind: "identity.merge".into(),
+                            semantic: true,
+                            body_hash: None,
+                            body: None,
+                            body_label: "absent".into(),
+                        },
+                    )
+                })
+                .collect();
+            Graph::new(nodes, &Limits::default())
+        };
+        // Every second record: the accumulated union fragments into
+        // thousands of ranges, and each merge is charged.
+        let graph = build(6_000);
+        let before = graph.ancestry.bytes();
+        let ids: BTreeSet<String> = graph.nodes.keys().step_by(2).cloned().collect();
+        let heads = graph.maxima(ids, false);
+        assert_eq!(heads.len(), 3_000);
+        assert!(graph.ancestry.bytes() > before);
+        assert!(graph.ancestry.bytes() <= super::ancestors::MAX_ANCESTOR_BYTES);
+        // Ten thousand such members would merge past the cap.
+        let graph = build(20_000);
+        let ids: BTreeSet<String> = graph.nodes.keys().step_by(2).cloned().collect();
+        graph.maxima(ids, false);
+        assert!(graph.ancestry.failed());
+        assert!(graph.resource.get());
+        assert!(graph.ancestry.bytes() <= super::ancestors::MAX_ANCESTOR_BYTES);
     }
 
     #[test]

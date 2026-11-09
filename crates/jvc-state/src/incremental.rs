@@ -618,14 +618,43 @@ impl EvaluatedState {
                     .or_default()
                     .insert(node.issuer.clone());
             }
-            let mut heads = self
-                .evaluation
-                .registers
-                .get(&key)
-                .map(|r| r.heads.clone())
-                .unwrap_or_default();
-            heads.insert(node.id.clone());
-            let heads = graph.maxima(heads, false);
+            // Run maxima over the same member set a full evaluation
+            // uses for this register, so its (now cap-charged) union
+            // work and the resulting heads match a full build
+            // exactly. The heads are the maxima of that set, as
+            // before.
+            let members: BTreeSet<String> = graph
+                .nodes
+                .values()
+                .filter(|n| {
+                    n.kind == "judgment.set"
+                        && graph.actor(&n.issuer) == node.issuer
+                        && n.action["target"].as_str() == Some(target)
+                        && graph.retained(&n.id)
+                        && !graph.suspended(&n.issuer)
+                        && graph.own_complete(&n.id)
+                        && !self.evaluation.receipts[&n.id]
+                            .reasons
+                            .contains("invalid_target")
+                        && !self.evaluation.receipts[&n.id]
+                            .reasons
+                            .contains("target_pending")
+                        && !self.evaluation.receipts[&n.id]
+                            .reasons
+                            .contains("account_binding_unavailable")
+                })
+                .map(|n| n.id.clone())
+                .collect();
+            let previous_charge = graph.maxima_charge(
+                &members
+                    .iter()
+                    .filter(|id| *id != &node.id)
+                    .cloned()
+                    .collect(),
+                false,
+            );
+            let heads = graph.maxima(members, false);
+            graph.ancestry.refund(previous_charge);
             let values: BTreeSet<String> = heads
                 .iter()
                 .map(|id| graph.nodes[id].action["value"].as_str().unwrap().into())
@@ -2236,12 +2265,15 @@ mod rebuild_tests {
     #[test]
     fn import_status_authorization_scales_linearly() {
         let mut prepared = witnessed_view();
-        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"klama"})).unwrap();
+        // The action word must match the body fixture's word
+        // ("banli"), or the body does not bind and no account is
+        // attached to the publication.
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
         let mut body: Value = serde_json::from_str(include_str!(
             "../../jvc-core/tests/fixtures/definition.json"
         ))
         .unwrap();
-        body["legacy"] = json!({"source":"fixture","snapshot":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","extraction":"fixture-v1","record":{"kind":"definition","id":1},"locator":"fixture","original":{},"attribution":{"author":"author","editor":null,"author_account":{"origin":"https://source.example","account":41,"username":"author","evidence":{"kind":"source-id","source":{"label":"source author numeric field","url":null,"event":null,"locator":"author_id"}}},"dates":{}}});
+        body["legacy"] = json!({"source":"fixture","snapshot":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","extraction":"fixture-v1","record":{"kind":"definition","id":1},"locator":"fixture","original":{},"attribution":{"author":"author","editor":null,"author_account":{"origin":"https://source.example","account":41,"username":"author","evidence":{"kind":"source-id","source":{"label":"source author numeric field","url":null,"event":null,"locator":"author_id"}}},"dates":{}},"conversion":{"method":"literal","tool":"fixture","version":"1","model":null,"review":"unreviewed","mappings":[],"warnings":[]},"limitations":[]});
         let (publication, publication_body) = event(
             9,
             3,
@@ -2258,20 +2290,45 @@ mod rebuild_tests {
             vec![],
             json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
         ));
+        // Many further claims for the same account, and many status
+        // records whose history is only the original claim: the
+        // authorization walk must take the smaller side (the
+        // two-member history), as on main, not every claim.
         let mut previous = claim_id.clone();
         for i in 0..240usize {
-            let status_id = format!("jve1:{:064x}", 910_100 + i);
+            let extra_id = format!("jve1:{:064x}", 910_100 + i);
             prepared.add_host_verified_record(host(
-                status_id.clone(),
+                extra_id.clone(),
                 &issuer,
-                vec![previous],
+                vec![previous.clone()],
+                json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":previous,"carry":[previous]}),
+            ));
+            previous = extra_id;
+        }
+        let mut status_ids = Vec::new();
+        for i in 0..240usize {
+            let status_id = format!("jve1:{:064x}", 911_100 + i);
+            status_ids.push(status_id.clone());
+            prepared.add_host_verified_record(host(
+                status_id,
+                &issuer,
+                vec![claim_id.clone()],
                 json!({"kind":"import.status","target":publication_id,"claim":claim_id,"value":"active"}),
             ));
-            previous = status_id;
         }
         graph::reset_audit_work();
         let state = prepared.into_state();
         assert!(state.evaluation().available);
+        // Every status record really reaches authorization and is
+        // authorized: without the account binding above they would
+        // end inert instead, and this test would count no work.
+        for id in &status_ids {
+            assert_eq!(
+                state.evaluation().receipts[id].interpretation,
+                Interpretation::Effective,
+                "status {id} did not reach authorization"
+            );
+        }
         let used = 10_000_000 - remaining_work(&state);
         let work = graph::audit_work();
         assert!(

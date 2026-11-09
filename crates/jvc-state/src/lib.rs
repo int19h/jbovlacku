@@ -417,6 +417,10 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
     native_status(graph, &mut result);
     action_targets(graph, &mut result);
     registers(graph, &mut result);
+    if graph.resource.get() || graph.ancestry.failed() {
+        resource_unavailable(&mut result);
+        return result;
+    }
     rafsi_gate(&mut result);
     result
 }

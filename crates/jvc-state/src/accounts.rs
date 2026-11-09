@@ -777,17 +777,35 @@ fn authorized_record(
         return false;
     }
     let past = &graph.structural[&n.id];
+    let candidates = graph.account_sets.get(&a.token());
+    // Iterate whichever is smaller, the record's history or the
+    // account's claims: on main this walked the history, so the
+    // candidate walk must never make a small history more
+    // expensive than main. Both sides apply the same filter.
     #[cfg(test)]
-    crate::graph::count_work(graph.account_sets.get(&a.token()).map_or(0, Vec::len));
-    let ids = graph
-        .account_sets
-        .get(&a.token())
-        .into_iter()
-        .flatten()
-        .filter(|id| *id != &n.id && past.ids.contains(id))
-        .filter(|id| boundary.is_none_or(|b| b.ids.contains(id)))
-        .cloned()
-        .collect::<BTreeSet<String>>();
+    crate::graph::count_work(std::cmp::min(
+        past.ids.member_count(),
+        candidates.map_or(0, Vec::len),
+    ));
+    let ids: BTreeSet<String> = if past.ids.member_count() <= candidates.map_or(0, Vec::len) {
+        past.ids
+            .iter_unordered()
+            .filter(|id| id != &n.id)
+            .filter(|id| boundary.is_none_or(|b| b.ids.contains(id)))
+            .filter(|id| {
+                let e = &graph.nodes[id];
+                e.semantic && e.kind == "account.set" && same_account(e, a)
+            })
+            .collect()
+    } else {
+        candidates
+            .into_iter()
+            .flatten()
+            .filter(|id| *id != &n.id && past.ids.contains(id))
+            .filter(|id| boundary.is_none_or(|b| b.ids.contains(id)))
+            .cloned()
+            .collect()
+    };
     let maxima = graph.maxima(ids, true);
     maxima.len() == 1 && maxima.contains(claim)
 }

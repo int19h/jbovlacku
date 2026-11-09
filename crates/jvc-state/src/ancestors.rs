@@ -74,6 +74,14 @@ impl AncestryBudget {
         self.bytes.get()
     }
 
+    /// Subtract bytes charged earlier for the same work, when a
+    /// caller recomputes a result a previous evaluation already
+    /// charged for (the incremental register update). Never clears
+    /// a failure.
+    pub fn refund(&self, bytes: usize) {
+        self.bytes.set(self.bytes.get().saturating_sub(bytes));
+    }
+
     /// Restore a saved byte total, as after a checkpoint. A total
     /// past the cap is a failure, exactly as if the charges had run.
     pub fn restore_bytes(&self, bytes: usize) {
@@ -469,18 +477,8 @@ impl IdSet {
         ranges.get(index).is_some_and(|range| range.first <= last)
     }
 
-    /// Union without a budget charge. The caller bounds the work
-    /// itself (for example `Graph::maxima`, whose inputs are stored
-    /// closures whose ranges the ancestry cap already bounds).
-    pub fn union_uncharged(&mut self, other: &IdSet) {
-        self.ranges = Ranges::combine(&self.ranges, &other.ranges, None);
-        self.extra.extend(other.extra.iter().cloned());
-        self.fresh_ranges = self.range_count();
-    }
-
     /// Members in layout order, produced one at a time. Callers that
     /// only test membership or stop at a match pay for what they scan.
-    #[cfg(test)]
     pub fn iter_unordered(&self) -> impl Iterator<Item = String> + '_ {
         self.ranges
             .as_slice()
