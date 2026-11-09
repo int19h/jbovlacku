@@ -856,12 +856,14 @@ async function trial(condition, rep, profile = false) {
         w.cohort === "many_definitions_no_judgments",
     );
     if (!args.probe) {
-      await operation("actual-personal-gate", () =>
+      const gated = await operation("actual-personal-gate", () =>
         page.evaluate(({ view, keep }) => window.bench.gate(view, keep), {
           view: dataset.view,
           keep: Boolean(args["product-reload"]),
         }),
       );
+      if (args["product-reload"] && gated.result.state !== "ready")
+        throw Error(`Personal gate failed: ${gated.result.message}`);
     }
     if (args["product-reload"]) {
       let target;

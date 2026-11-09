@@ -10,6 +10,7 @@ import {
   selectAddedEventIds,
 } from "../../apps/web/src/data/personal.ts";
 import { LocalStore, emptyOverlay } from "../../apps/web/src/data/store.ts";
+import { RECORD_LIMITS } from "../../apps/web/src/data/records.ts";
 import { setPreferredView } from "../../apps/web/src/data/api.ts";
 
 const seed = new Uint8Array(32).fill(173);
@@ -22,6 +23,7 @@ let input = null,
   productCalculator = null,
   productStore = null,
   productWorkerBytes = 0,
+  productRecordLimits = null,
   NativeWorker = null;
 const pending = new Map();
 let lastResult = null;
@@ -51,6 +53,9 @@ window.bench = {
     setPreferredView(view);
     if (keep) {
       NativeWorker = globalThis.Worker;
+      productRecordLimits = { ...RECORD_LIMITS };
+      RECORD_LIMITS.events = 200000;
+      RECORD_LIMITS.bytes = 1024 * 1024 * 1024;
       productWorkerBytes = 0;
       globalThis.Worker = class extends NativeWorker {
         postMessage(message) {
@@ -117,6 +122,8 @@ window.bench = {
     if (productStore) (await productStore.database).close();
     productCalculator = null;
     productStore = null;
+    if (productRecordLimits) Object.assign(RECORD_LIMITS, productRecordLimits);
+    productRecordLimits = null;
     if (NativeWorker) globalThis.Worker = NativeWorker;
     NativeWorker = null;
   },
