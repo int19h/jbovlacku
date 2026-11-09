@@ -7,6 +7,7 @@ import {
 import {
   PersonalCalculator,
   effectiveOverlay,
+  selectAddedEventIds,
 } from "../../apps/web/src/data/personal.ts";
 import { LocalStore, emptyOverlay } from "../../apps/web/src/data/store.ts";
 import { setPreferredView } from "../../apps/web/src/data/api.ts";
@@ -15,7 +16,7 @@ const seed = new Uint8Array(32).fill(173);
 let input = null,
   worker = null,
   sequence = 0,
-  sentEvents = 0,
+  sentEventIds = [],
   savedOverlay = null,
   mainWasm = null;
 const pending = new Map();
@@ -52,7 +53,7 @@ window.bench = {
     return { wasm_bytes: mainWasm?.memory.buffer.byteLength ?? 0 };
   },
   start() {
-    sentEvents = 0;
+    sentEventIds = [];
     worker = new Worker("/worker.js", { type: "module" });
     worker.onmessage = ({ data }) => {
       const p = pending.get(data.id);
@@ -100,12 +101,21 @@ window.bench = {
       session: label,
       input: { ...input, limits },
     });
-    sentEvents = input.events.length;
+    sentEventIds = input.events.map((envelope) => JSON.parse(envelope).id);
     return { ms: performance.now() - start, ...response };
   },
   async advance(limits, label) {
     const start = performance.now();
-    const events = input.events.slice(sentEvents);
+    const inventoryIds = input.events.map(
+      (envelope) => JSON.parse(envelope).id,
+    );
+    const addedIds = selectAddedEventIds(inventoryIds, sentEventIds);
+    if (!addedIds)
+      throw new Error("The diagnostic base is not an ordered subset.");
+    const addedSet = new Set(addedIds);
+    const events = input.events.filter((_, index) =>
+      addedSet.has(inventoryIds[index]),
+    );
     const bodies = {};
     for (const envelope of events) {
       const id = JSON.parse(envelope).id;
@@ -117,7 +127,7 @@ window.bench = {
       session: label,
       input: { ...input, events, bodies, limits },
     });
-    sentEvents = input.events.length;
+    sentEventIds = input.events.map((envelope) => JSON.parse(envelope).id);
     return { ms: performance.now() - start, ...response };
   },
   releaseInput() {
@@ -194,13 +204,19 @@ window.bench = {
       { kind: "judgment.set", target, value: "bless" },
       null,
     );
-    input.events.push(JSON.stringify(event.envelope));
+    const serialized = JSON.stringify(event.envelope);
+    const found = input.events.findIndex(
+      (envelope) => JSON.parse(envelope).id > event.envelope.id,
+    );
+    const index = found < 0 ? input.events.length : found;
+    input.events.splice(index, 0, serialized);
     return {
       signing_ms: performance.now() - start,
       id: event.envelope.id,
       identity: identityFromSeed(seed),
       target,
-      bytes: utf8(JSON.stringify(event.envelope)).length,
+      inventory_index: index,
+      bytes: utf8(serialized).length,
     };
   },
 };

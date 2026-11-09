@@ -168,12 +168,29 @@ const REVIEWER_LIMIT = 64;
 type LoadedRecords = Awaited<ReturnType<typeof loadRecords>>;
 type SentRecords = {
   events: string[];
+  eventSet: Set<string>;
   bodies: string[];
   view: string;
   overlay: string;
   mode: CalculationMode;
   selections: string;
 };
+export function selectAddedEventIds(
+  inventoryEvents: string[],
+  sentEvents: readonly string[],
+  sentIds: ReadonlySet<string> = new Set(sentEvents),
+): string[] | null {
+  if (sentEvents.length > inventoryEvents.length) return null;
+  const added: string[] = [];
+  let previous = 0;
+  for (const id of inventoryEvents) {
+    if (sentIds.has(id)) {
+      if (sentEvents[previous] !== id) return null;
+      previous++;
+    } else added.push(id);
+  }
+  return previous === sentEvents.length ? added : null;
+}
 export class PersonalCalculator {
   private worker: Worker | null = null;
   private sequence = 0;
@@ -617,24 +634,29 @@ export class PersonalCalculator {
       sent.view !== inventory.view ||
       sent.overlay !== digest ||
       sent.mode !== mode ||
-      sent.selections !==
-        canonicalize(utf8(JSON.stringify(records.selections))) ||
-      sent.events.length > inventory.events.length
+      sent.selections !== canonicalize(utf8(JSON.stringify(records.selections)))
     )
       return null;
     let previousBodies = 0;
-    for (const [index, id] of sent.events.entries()) {
-      if (inventory.events[index] !== id) return null;
+    for (const id of sent.events)
       if (records.bodies[id] !== undefined) previousBodies++;
-    }
     if (
       previousBodies !== sent.bodies.length ||
       sent.bodies.some((id) => records.bodies[id] === undefined)
     )
       return null;
-    const events = records.events.slice(sent.events.length);
+    const addedIds = selectAddedEventIds(
+      inventory.events,
+      sent.events,
+      sent.eventSet,
+    );
+    if (!addedIds) return null;
+    const addedSet = new Set(addedIds);
+    const events = records.events.filter((_, index) =>
+      addedSet.has(inventory.events[index]),
+    );
     const bodies: Record<string, string> = {};
-    for (const id of inventory.events.slice(sent.events.length))
+    for (const id of addedIds)
       if (records.bodies[id] !== undefined) bodies[id] = records.bodies[id];
     return {
       base: this.loadedKey,
@@ -655,6 +677,7 @@ export class PersonalCalculator {
   ) {
     this.sent = {
       events: [...inventory.events],
+      eventSet: new Set(inventory.events),
       bodies: Object.keys(records.bodies).sort(),
       view: inventory.view,
       overlay: digest,

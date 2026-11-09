@@ -169,14 +169,18 @@ function harness(): Harness {
   };
 }
 
-function appendRecord(h: Harness) {
-  h.records.set(added, {
-    id: added,
-    envelope: envelope(added),
+function putEmptyRecord(h: Harness, id: string) {
+  h.records.set(id, {
+    id,
+    envelope: envelope(id),
     body: null,
     bodyStatus: "none",
     bodyHash: null,
   });
+}
+
+function appendRecord(h: Harness) {
+  putEmptyRecord(h, added);
   h.setInventory(inventory([view, other, added], snapshot("b")));
 }
 
@@ -237,6 +241,56 @@ test("a pure snapshot append advances with only the new record", async () => {
     (advance.input.overlay as { version: number } | undefined)?.version,
     2,
   );
+  h.calculator.cancel();
+});
+
+test("a new ID that sorts between loaded IDs advances with only that envelope", async () => {
+  const h = harness();
+  const inserted = "jve1:" + "d".repeat(64);
+  await h.calculator.ensure();
+  putEmptyRecord(h, inserted);
+  h.setInventory(inventory([view, inserted, other], snapshot("b")));
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  const advance = h.worker.messages.at(-1);
+  assert.equal(advance?.type, "advance");
+  if (advance?.type === "advance")
+    assert.deepEqual(advance.input.events, [envelope(inserted)]);
+  h.calculator.cancel();
+});
+
+test("several new IDs at different positions advance in inventory order", async () => {
+  const h = harness();
+  const before = "jve1:" + "a".repeat(64);
+  const middle = "jve1:" + "d".repeat(64);
+  await h.calculator.ensure();
+  for (const id of [before, middle, added]) putEmptyRecord(h, id);
+  h.setInventory(
+    inventory([before, view, middle, other, added], snapshot("b")),
+  );
+  await h.calculator.ensure();
+  const advance = h.worker.messages.at(-1);
+  assert.equal(advance?.type, "advance");
+  if (advance?.type === "advance")
+    assert.deepEqual(advance.input.events, [
+      envelope(before),
+      envelope(middle),
+      envelope(added),
+    ]);
+  h.calculator.cancel();
+});
+
+test("a new ID combined with a removal uses a full load", async () => {
+  const h = harness();
+  const inserted = "jve1:" + "d".repeat(64);
+  await h.calculator.ensure();
+  putEmptyRecord(h, inserted);
+  h.setInventory(inventory([view, inserted], snapshot("b")));
+  await h.calculator.ensure();
+  assert.deepEqual(lastLoad(h).input.events, [
+    envelope(view),
+    envelope(inserted),
+  ]);
   h.calculator.cancel();
 });
 
