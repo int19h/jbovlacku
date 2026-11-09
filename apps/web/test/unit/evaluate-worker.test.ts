@@ -178,6 +178,64 @@ test("a judgment advance equals full evaluation and replaces the session key", a
   }
 });
 
+test("a layout-split advance refreshes the full state and ranking without a delta", async () => {
+  const { input, word, target } = await fixture();
+  const added = createEvent(
+    seed(2),
+    [],
+    "d".repeat(32),
+    { kind: "judgment.set", target, value: "curse" },
+    null,
+  );
+  const fullInput = {
+    ...input,
+    events: [...input.events, JSON.stringify(added.envelope)],
+  };
+  const expected = evaluateSession(fullInput);
+  const actual = await worker();
+  try {
+    actual.load({ type: "load", id: 1, session: "before", input });
+    const previousState = actual.currentSession?.state;
+    const previousRank = actual.rank({
+      type: "rank",
+      id: 2,
+      session: "before",
+      word,
+      reviewers: 64,
+    }).result;
+    actual.advance({
+      type: "advance",
+      id: 3,
+      base: "before",
+      session: "after",
+      input: delta(input, added.envelope),
+    });
+    assert.deepEqual(actual.currentSession?.updateStatistics(), {
+      incremental_records: 0,
+      rebuilt: true,
+      reason: "layout_split",
+    });
+    assert.notEqual(actual.currentSession?.state, previousState);
+    assert.deepEqual(actual.currentSession?.state, expected.state);
+    assert.deepEqual(
+      actual.currentSession?.state.receipts,
+      expected.state.receipts,
+    );
+    const refreshedRank = actual.rank({
+      type: "rank",
+      id: 4,
+      session: "after",
+      word,
+      reviewers: 64,
+    }).result;
+    assert.deepEqual(refreshedRank, expected.rankWord(word, 64));
+    assert.notDeepEqual(refreshedRank, previousRank);
+  } finally {
+    actual.currentSession?.free();
+    expected.free();
+  }
+});
+
 test("a global action rebuilds through advance with full state and ranking parity", async () => {
   const { input, word } = await fixture();
   const added = createEvent(
