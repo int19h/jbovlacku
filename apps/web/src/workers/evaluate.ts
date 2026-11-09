@@ -41,7 +41,7 @@ export type WorkerResponse =
       events: number;
     }
   | { type: "ranked"; id: number; session: string; result: unknown }
-  | { type: "error"; id: number; message: string };
+  | { type: "error"; id: number; message: string; session_valid: boolean };
 
 type LoadedResponse = Extract<WorkerResponse, { type: "loaded" }>;
 type RankedResponse = Extract<WorkerResponse, { type: "ranked" }>;
@@ -148,6 +148,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       type: "error",
       id: message.id,
       message: error instanceof Error ? error.message : String(error),
+      session_valid: evaluation.currentSession !== null,
     });
   }
 };

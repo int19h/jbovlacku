@@ -465,3 +465,59 @@ test("a failure after release leaves no session and a full load recovers", async
     expected.free();
   }
 });
+
+test("an unchanged overlay keeps a judgment advance on the fast path", async () => {
+  const { input, word, target } = await fixture();
+  const overlay = {
+    version: 2 as const,
+    public_shun_issuer: null,
+    base_view: input.selected_view,
+    root_changes: [],
+    trust: [],
+    blocked: [],
+    work: 1000,
+  };
+  const baseInput = { ...input, overlay };
+  const added = createEvent(
+    seed(2),
+    [],
+    "c".repeat(32),
+    { kind: "judgment.set", target, value: "curse" },
+    null,
+  );
+  const fullInput = {
+    ...baseInput,
+    events: [...baseInput.events, JSON.stringify(added.envelope)],
+  };
+  const expected = evaluateSession(fullInput);
+  const actual = await worker();
+  try {
+    actual.load({ type: "load", id: 1, session: "before", input: baseInput });
+    actual.advance({
+      type: "advance",
+      id: 2,
+      base: "before",
+      session: "after",
+      input: { ...delta(baseInput, added.envelope), overlay },
+    });
+    assert.deepEqual(actual.currentSession?.updateStatistics(), {
+      incremental_records: 1,
+      rebuilt: false,
+      reason: null,
+    });
+    assert.deepEqual(actual.currentSession?.state, expected.state);
+    assert.deepEqual(
+      actual.rank({
+        type: "rank",
+        id: 3,
+        session: "after",
+        word,
+        reviewers: 64,
+      }).result,
+      expected.rankWord(word, 64),
+    );
+  } finally {
+    actual.currentSession?.free();
+    expected.free();
+  }
+});

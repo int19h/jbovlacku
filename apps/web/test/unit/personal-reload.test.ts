@@ -42,8 +42,11 @@ class RecordingWorker {
   events = 0;
   failAdvance = false;
   crashAdvance = false;
+  rankError = false;
   holdAdvance: Promise<void> | null = null;
+  holdRank: Promise<void> | null = null;
   advanceStarted: (() => void) | null = null;
+  rankStarted: (() => void) | null = null;
   terminateCalls = 0;
 
   postMessage(message: WorkerRequest) {
@@ -57,16 +60,54 @@ class RecordingWorker {
         this.advanceStarted?.();
         await held;
       }
+      if (message.type === "rank" && this.holdRank) {
+        const held = this.holdRank;
+        this.rankStarted?.();
+        await held;
+      }
       if (message.type === "advance" && this.failAdvance) {
         this.failAdvance = false;
         this.onmessage?.({
-          data: { type: "error", id: message.id, message: "advance failed" },
+          data: {
+            type: "error",
+            id: message.id,
+            message: "advance failed",
+            session_valid: false,
+          },
         } as MessageEvent);
         return;
       }
       if (message.type === "advance" && this.crashAdvance) {
         this.crashAdvance = false;
         this.crash("The advance worker crashed.");
+        return;
+      }
+      if (message.type === "rank" && this.rankError) {
+        this.rankError = false;
+        this.onmessage?.({
+          data: {
+            type: "error",
+            id: message.id,
+            message: "view calculation profile is unsupported",
+            session_valid: true,
+          },
+        } as MessageEvent);
+        return;
+      }
+      if (message.type === "rank") {
+        this.onmessage?.({
+          data: {
+            type: "ranked",
+            id: message.id,
+            session: message.session,
+            result: {
+              calculation: null,
+              scores: [],
+              layers: [],
+              unavailable_scores: [],
+            },
+          },
+        } as MessageEvent);
         return;
       }
       if (message.type === "actors") {
@@ -458,6 +499,67 @@ test("invalidation during an advance makes the next calculation use a full load"
   assert.equal((await interrupted).state, "ready");
   const ready = await h.calculator.ensure();
   assert.equal(ready.state, "ready");
+  assert.equal(lastLoad(h).input.events.length, 3);
+  h.calculator.cancel();
+});
+
+test("a ranking error keeps the worker and loaded session for the next rank", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  h.worker.rankError = true;
+  await assert.rejects(
+    h.calculator.rankWord("jvw1:" + "a".repeat(64)),
+    /unsupported_calculation|unsupported/,
+  );
+  const ranking = await h.calculator.rankWord("jvw1:" + "b".repeat(64));
+  assert.deepEqual(ranking.scores, []);
+  assert.equal(h.workers.length, 1);
+  assert.equal(h.worker.terminateCalls, 0);
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["actors", "load", "rank", "rank"],
+  );
+  h.calculator.cancel();
+});
+
+test("two rankings in flight both reject when the worker is retired", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  h.worker.holdRank = new Promise<void>(() => {});
+  let started = 0;
+  const bothStarted = new Promise<void>((resolve) => {
+    h.worker.rankStarted = () => {
+      started++;
+      if (started === 2) resolve();
+    };
+  });
+  const first = h.calculator.rankWord("jvw1:" + "a".repeat(64));
+  const second = h.calculator.rankWord("jvw1:" + "b".repeat(64));
+  await bothStarted;
+  h.worker.crash();
+  const results = await Promise.allSettled([first, second]);
+  assert.deepEqual(
+    results.map((result) => result.status),
+    ["rejected", "rejected"],
+  );
+  assert.equal(h.worker.terminateCalls, 1);
+  h.calculator.cancel();
+});
+
+test("a calculation waiting behind a retired worker settles through a replacement", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  appendRecord(h);
+  h.worker.holdAdvance = new Promise<void>(() => {});
+  const started = new Promise<void>((resolve) => {
+    h.worker.advanceStarted = resolve;
+  });
+  const pending = h.calculator.ensure();
+  await started;
+  h.worker.crash();
+  const ready = await pending;
+  assert.equal(ready.state, "ready");
+  assert.equal(h.workers.length, 2);
   assert.equal(lastLoad(h).input.events.length, 3);
   h.calculator.cancel();
 });

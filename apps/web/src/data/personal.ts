@@ -149,6 +149,7 @@ export function overlayDigest(
 type Pending = {
   resolve: (value: WorkerResponse) => void;
   reject: (error: Error) => void;
+  operation: "load" | "advance" | "other";
 };
 /** One calculation run. Every asynchronous step checks that its run is still the current one. */
 interface Run {
@@ -260,13 +261,15 @@ export class PersonalCalculator {
     this.status = status;
     for (const listener of this.listeners) listener(status);
   }
-  private retireWorker() {
+  private retireWorker(error: Error) {
     const worker = this.worker;
     this.worker = null;
     worker?.terminate();
     this.loadedKey = null;
     this.sent = null;
     this.rankCache.clear();
+    for (const entry of this.pending.values()) entry.reject(error);
+    this.pending.clear();
     if (this.status.state === "ready") this.set({ state: "idle" });
   }
   private ensureWorker(): Worker {
@@ -280,17 +283,21 @@ export class PersonalCalculator {
       if (!entry) return;
       this.pending.delete(event.data.id);
       if (event.data.type === "error") {
-        if (this.worker === worker) this.retireWorker();
-        entry.reject(new Error(event.data.message));
+        const error = new Error(event.data.message);
+        if (
+          event.data.session_valid === false &&
+          entry.operation !== "other" &&
+          this.worker === worker
+        )
+          this.retireWorker(error);
+        entry.reject(error);
       } else entry.resolve(event.data);
     };
     worker.onerror = (event) => {
       if (this.worker !== worker) return;
-      this.retireWorker();
-      const message = event.message || "The evaluation worker failed.";
-      for (const entry of this.pending.values())
-        entry.reject(new Error(message));
-      this.pending.clear();
+      this.retireWorker(
+        new Error(event.message || "The evaluation worker failed."),
+      );
     };
     this.worker = worker;
     return worker;
@@ -302,12 +309,18 @@ export class PersonalCalculator {
     const id = ++this.sequence;
     const worker = this.ensureWorker();
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, {
+        resolve,
+        reject,
+        operation:
+          message.type === "load" || message.type === "advance"
+            ? message.type
+            : "other",
+      });
       try {
         worker.postMessage({ ...message, id });
       } catch (error) {
         this.pending.delete(id);
-        if (this.worker === worker) this.retireWorker();
         reject(error);
       }
     });
@@ -548,8 +561,7 @@ export class PersonalCalculator {
             session: key,
             input: advance.input,
           });
-        } catch (error) {
-          this.retireWorker();
+        } catch {
           live();
           loaded = await this.request(run, {
             type: "load",
@@ -613,7 +625,6 @@ export class PersonalCalculator {
         message: describe(error),
         kind,
       };
-      this.retireWorker();
       this.set(status);
       return status;
     } finally {
@@ -808,12 +819,12 @@ export class PersonalCalculator {
           else resolve(reply);
         },
         reject,
+        operation: "other",
       });
       try {
         worker.postMessage({ type: "rank", id, session, word, reviewers });
       } catch (error) {
         this.pending.delete(id);
-        if (this.worker === worker) this.retireWorker();
         reject(error);
       }
     });
