@@ -2,7 +2,7 @@
 
 This document records what the prototype implements today. The specifications, starting with the [format specification](format.md) and the [frontend specification](frontend.md), define the target product. A behavior belongs here only after its tests pass.
 
-Each section describes the implemented behavior of one area, with its known limits and unfinished parts. The last section collects the remaining target features that have no implementation.
+Each section describes the implemented behavior of one area, with its known limits and unfinished parts. The last section lists further target features that have no implementation and are not named elsewhere in this document.
 
 ## Shared core and records
 
