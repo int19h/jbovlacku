@@ -129,6 +129,7 @@ export class EvaluationWorker {
   }
 }
 
+let initializationFailed = false;
 export function workerErrorResponse(
   id: number,
   error: unknown,
@@ -138,12 +139,15 @@ export function workerErrorResponse(
     id,
     message: error instanceof Error ? error.message : String(error),
     session_valid: evaluation.currentSession !== null,
-    fatal: error instanceof WebAssembly.RuntimeError,
+    fatal: initializationFailed || error instanceof WebAssembly.RuntimeError,
   };
 }
 
 export const evaluation = new EvaluationWorker();
-const ready = initializeCore();
+const ready = initializeCore().catch((error) => {
+  initializationFailed = true;
+  throw error;
+});
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const message = event.data;
   const reply = (response: WorkerResponse) => self.postMessage(response);

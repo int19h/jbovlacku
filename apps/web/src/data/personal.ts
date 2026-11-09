@@ -201,6 +201,9 @@ export class PersonalCalculator {
   status: PersonalStatus = { state: "idle" };
   /** The session key of the loaded evaluation, or null. */
   private loadedKey: string | null = null;
+  /** The ready status for loadedKey, retained across ordinary run failures. */
+  private loadedStatus: Extract<PersonalStatus, { state: "ready" }> | null =
+    null;
   /** The run that owns the loaded worker session. */
   private current: Run | null = null;
   private loading: Promise<PersonalStatus> | null = null;
@@ -261,11 +264,15 @@ export class PersonalCalculator {
     this.status = status;
     for (const listener of this.listeners) listener(status);
   }
+  private clearLoadedSession() {
+    this.loadedKey = null;
+    this.loadedStatus = null;
+  }
   private retireWorker(error: Error) {
     const worker = this.worker;
     this.worker = null;
     worker?.terminate();
-    this.loadedKey = null;
+    this.clearLoadedSession();
     this.sent = null;
     this.rankCache.clear();
     for (const entry of this.pending.values()) entry.reject(error);
@@ -344,7 +351,7 @@ export class PersonalCalculator {
     for (const entry of this.pending.values())
       entry.reject(new Error(CANCELLED));
     this.pending.clear();
-    this.loadedKey = null;
+    this.clearLoadedSession();
     this.sent = null;
     this.loading = null;
     this.rankCache.clear();
@@ -530,8 +537,11 @@ export class PersonalCalculator {
       live();
       const digest = overlay ? overlayDigest(overlay) : nullOverlayDigest();
       const key = `${inventory.snapshot}|${inventory.view}|${digest}|${mode}`;
-      if (this.loadedKey === key && this.status.state === "ready")
-        return this.status;
+      const loadedStatus = this.loadedStatus;
+      if (this.loadedKey === key && loadedStatus) {
+        this.set(loadedStatus);
+        return loadedStatus;
+      }
       const advance = this.advanceInput(
         inventory,
         records,
@@ -539,7 +549,7 @@ export class PersonalCalculator {
         digest,
         mode,
       );
-      this.loadedKey = null;
+      this.clearLoadedSession();
       this.rankCache.clear();
       this.set({
         state: "evaluating",
@@ -580,9 +590,8 @@ export class PersonalCalculator {
       live();
       if (loaded.type !== "loaded" || loaded.session !== key)
         throw new Error("Unexpected worker reply.");
-      this.loadedKey = key;
       this.rememberSent(inventory, records, digest, mode);
-      const status: PersonalStatus = {
+      const status: Extract<PersonalStatus, { state: "ready" }> = {
         state: "ready",
         mode,
         snapshot: inventory.snapshot,
@@ -592,6 +601,8 @@ export class PersonalCalculator {
         available: loaded.available,
         reasons: loaded.reasons,
       };
+      this.loadedKey = key;
+      this.loadedStatus = status;
       this.set(status);
       return status;
     } catch (error) {
@@ -845,7 +856,7 @@ export class PersonalCalculator {
     this.generation++;
     this.current?.abort.abort(new Error(CANCELLED));
     this.current = null;
-    this.loadedKey = null;
+    this.clearLoadedSession();
     this.sent = null;
     this.rankCache.clear();
     if (this.status.state !== "failed") this.set({ state: "idle" });

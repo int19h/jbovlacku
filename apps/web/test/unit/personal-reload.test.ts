@@ -662,12 +662,41 @@ test("a fatal fork error retries the full load on a replacement worker", async (
   h.calculator.cancel();
 });
 
-test("a snapshot with no new IDs uses a full load instead of an empty advance", async () => {
+test("the same key after an ordinary failure restores the ready session without a worker message", async () => {
+  const h = harness();
+  const first = await h.calculator.ensure();
+  assert.equal(first.state, "ready");
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => {
+      throw new Error("network down");
+    };
+    const failed = await h.calculator.ensure({ refresh: true });
+    assert.equal(failed.state, "failed");
+    if (failed.state === "failed") assert.equal(failed.kind, "network");
+    const worker = h.worker;
+    const messages = worker.messages.length;
+    const ready = await h.calculator.ensure();
+    assert.deepEqual(ready, first);
+    assert.equal(h.worker, worker);
+    assert.equal(h.workers.length, 1);
+    assert.equal(worker.messages.length, messages);
+  } finally {
+    globalThis.fetch = originalFetch;
+    h.calculator.cancel();
+  }
+});
+
+test("an empty delta under a different key uses a full load", async () => {
   const h = harness();
   await h.calculator.ensure();
   h.setInventory(inventory([view, other], snapshot("b")));
   const ready = await h.calculator.ensure();
   assert.equal(ready.state, "ready");
   assert.equal(lastLoad(h).input.events.length, 2);
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["actors", "load", "actors", "load"],
+  );
   h.calculator.cancel();
 });

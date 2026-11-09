@@ -144,6 +144,8 @@ test("the browser exposes authenticated preparation without host restore or inse
         "wordResultProgress",
         "takeWordResult",
         "cancelWordResults",
+        "fork",
+        "updateStatistics",
         "free",
       ].sort(),
     );
