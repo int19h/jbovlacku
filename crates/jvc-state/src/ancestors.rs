@@ -27,6 +27,40 @@ struct Range {
 /// exhausting memory.
 pub(crate) const MAX_ANCESTOR_BYTES: usize = 64 * 1024 * 1024;
 
+/// Per-state cap accounting. Each evaluated state owns one budget.
+/// Cloning a state copies the counters by value, so work in one fork
+/// or sibling never consumes another state's cap or sets its failure.
+#[derive(Clone, Default)]
+pub(crate) struct AncestryBudget {
+    bytes: Cell<usize>,
+    failed: Cell<bool>,
+}
+
+impl AncestryBudget {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn charge(&self, bytes: usize) -> bool {
+        if self.failed.get() || bytes > MAX_ANCESTOR_BYTES.saturating_sub(self.bytes.get()) {
+            self.failed.set(true);
+            false
+        } else {
+            self.bytes.set(self.bytes.get() + bytes);
+            true
+        }
+    }
+
+    pub fn failed(&self) -> bool {
+        self.failed.get()
+    }
+
+    #[cfg(test)]
+    pub fn bytes(&self) -> usize {
+        self.bytes.get()
+    }
+}
+
 /// Sorted disjoint ranges. One range is stored inline; more share an `Rc`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Ranges {
@@ -55,8 +89,16 @@ impl Ranges {
     /// Merge two sorted range lists and one optional extra position.
     /// The caller charges the logical budget; this charges the ancestry
     /// byte cap before allocating, and yields no ranges past the cap.
-    fn combine(space: &Space, left: &Ranges, right: &Ranges, extra: Option<u32>) -> Ranges {
+    fn combine(
+        budget: &AncestryBudget,
+        left: &Ranges,
+        right: &Ranges,
+        extra: Option<u32>,
+    ) -> Ranges {
         let (a, b) = (left.as_slice(), right.as_slice());
+        if budget.failed() {
+            return Ranges::Empty;
+        }
         if a.is_empty() && b.is_empty() {
             return match extra {
                 Some(position) => Ranges::One(Range {
@@ -67,7 +109,7 @@ impl Ranges {
             };
         }
         let inputs = a.len() + b.len() + usize::from(extra.is_some());
-        if !space.charge_ancestor_bytes(inputs * std::mem::size_of::<Range>() + 64) {
+        if !budget.charge(inputs * std::mem::size_of::<Range>() + 64) {
             return Ranges::Empty;
         }
         let mut merged: Vec<Range> = Vec::with_capacity(a.len() + b.len() + 1);
@@ -137,11 +179,6 @@ impl Ranges {
 pub(crate) struct Space {
     index: RefCell<BTreeMap<String, u32>>,
     ids: RefCell<Vec<String>>,
-    ancestor_bytes: Cell<usize>,
-    ancestor_failed: Cell<bool>,
-    /// Layout positions present at construction. Appended records take
-    /// later positions as one extra segment.
-    base_len: u32,
 }
 
 impl Space {
@@ -197,13 +234,9 @@ impl Space {
                 ids.push(id.to_string());
             }
         }
-        let base_len = ids.len() as u32;
         Rc::new(Self {
             index: RefCell::new(index),
             ids: RefCell::new(ids),
-            ancestor_bytes: Cell::new(0),
-            ancestor_failed: Cell::new(false),
-            base_len,
         })
     }
 
@@ -211,34 +244,10 @@ impl Space {
         Rc::new(Self {
             index: RefCell::new(BTreeMap::new()),
             ids: RefCell::new(Vec::new()),
-            ancestor_bytes: Cell::new(0),
-            ancestor_failed: Cell::new(false),
-            base_len: 0,
         })
     }
 
-    fn charge_ancestor_bytes(&self, bytes: usize) -> bool {
-        if self.ancestor_failed.get()
-            || bytes > MAX_ANCESTOR_BYTES.saturating_sub(self.ancestor_bytes.get())
-        {
-            self.ancestor_failed.set(true);
-            false
-        } else {
-            self.ancestor_bytes.set(self.ancestor_bytes.get() + bytes);
-            true
-        }
-    }
-
-    pub fn ancestor_failed(&self) -> bool {
-        self.ancestor_failed.get()
-    }
-
-    #[cfg(test)]
-    pub fn ancestor_bytes(&self) -> usize {
-        self.ancestor_bytes.get()
-    }
-
-    fn position(&self, id: &str) -> Option<u32> {
+    pub(crate) fn position(&self, id: &str) -> Option<u32> {
         self.index.borrow().get(id).copied()
     }
 
@@ -275,13 +284,18 @@ impl IdSet {
     }
 
     /// Union of the given sets plus one optional record, in one merge.
-    pub fn combined(space: Rc<Space>, sets: &[&IdSet], own: Option<&str>) -> Self {
+    pub fn combined(
+        space: Rc<Space>,
+        budget: &AncestryBudget,
+        sets: &[&IdSet],
+        own: Option<&str>,
+    ) -> Self {
         let mut ranges = Ranges::Empty;
         for set in sets {
-            ranges = Ranges::combine(&space, &ranges, &set.ranges, None);
+            ranges = Ranges::combine(budget, &ranges, &set.ranges, None);
         }
         let extra = own.map(|id| space.register(id));
-        ranges = Ranges::combine(&space, &ranges, &Ranges::Empty, extra);
+        ranges = Ranges::combine(budget, &ranges, &Ranges::Empty, extra);
         Self { space, ranges }
     }
 
@@ -291,17 +305,17 @@ impl IdSet {
             .is_some_and(|position| self.ranges.contains(position))
     }
 
-    pub fn insert(&mut self, id: &str) {
+    pub fn insert(&mut self, budget: &AncestryBudget, id: &str) {
         let position = self.space.register(id);
-        self.ranges = Ranges::combine(&self.space, &self.ranges, &Ranges::Empty, Some(position));
+        self.ranges = Ranges::combine(budget, &self.ranges, &Ranges::Empty, Some(position));
     }
 
-    pub fn union(&mut self, other: &IdSet) {
-        self.ranges = Ranges::combine(&self.space, &self.ranges, &other.ranges, None);
+    pub fn union(&mut self, budget: &AncestryBudget, other: &IdSet) {
+        self.ranges = Ranges::combine(budget, &self.ranges, &other.ranges, None);
     }
 
-    pub fn extend(&mut self, other: IdSet) {
-        self.union(&other);
+    pub fn extend(&mut self, budget: &AncestryBudget, other: IdSet) {
+        self.union(budget, &other);
     }
 
     /// Members in lexical order.
@@ -321,31 +335,14 @@ impl IdSet {
         self.ranges.as_slice().len()
     }
 
-    /// Range count this set would have in a fresh layout. Appended
-    /// records form one extra segment at the end, which a fresh layout
-    /// merges into their issuer block, so it is not counted.
-    pub fn fresh_range_count(&self) -> usize {
-        let ranges = self.ranges.as_slice();
-        if ranges.len() >= 2
-            && ranges
-                .last()
-                .is_some_and(|last| last.first >= self.space.base_len)
-        {
-            ranges.len() - 1
-        } else {
-            ranges.len()
-        }
-    }
-
     /// Members in layout order, produced one at a time. Callers that
     /// only test membership or stop at a match pay for what they scan.
-    pub fn iter_unordered(&self) -> impl Iterator<Item = String> {
-        let ranges: Vec<Range> = self.ranges.as_slice().to_vec();
-        let space = self.space.clone();
-        ranges
-            .into_iter()
+    pub fn iter_unordered(&self) -> impl Iterator<Item = String> + '_ {
+        self.ranges
+            .as_slice()
+            .iter()
             .flat_map(|range| range.first..=range.last)
-            .map(move |position| space.id_at(position))
+            .map(|position| self.space.id_at(position))
     }
 }
 
@@ -363,9 +360,10 @@ mod tests {
     }
 
     fn set(space: &Rc<Space>, ids: &[&str]) -> IdSet {
+        let budget = AncestryBudget::new();
         let mut result = IdSet::empty(space.clone());
         for id in ids {
-            result.insert(id);
+            result.insert(&budget, id);
         }
         result
     }
@@ -383,8 +381,9 @@ mod tests {
         ];
         for left in &cases {
             for right in &cases {
+                let budget = AncestryBudget::new();
                 let mut combined = set(&space, left);
-                combined.union(&set(&space, right));
+                combined.union(&budget, &set(&space, right));
                 let expected: BTreeSet<&str> = left.iter().chain(right).copied().collect();
                 assert_eq!(
                     combined.iter(),
@@ -396,6 +395,24 @@ mod tests {
                 assert!(!combined.contains("absent"));
             }
         }
+    }
+
+    #[test]
+    fn ancestry_budget_boundary_is_exact() {
+        let budget = AncestryBudget::new();
+        assert!(budget.charge(MAX_ANCESTOR_BYTES - 1));
+        assert!(!budget.failed());
+        assert!(budget.charge(1));
+        assert_eq!(budget.bytes(), MAX_ANCESTOR_BYTES);
+        assert!(!budget.failed());
+        assert!(!budget.charge(1));
+        assert!(budget.failed());
+        // A combine past the cap allocates nothing and yields no ranges.
+        let space = Space::empty();
+        let mut set = IdSet::empty(space.clone());
+        set.insert(&budget, "jve1:a");
+        assert_eq!(set.range_count(), 0);
+        assert!(!set.contains("jve1:a"));
     }
 
     #[test]

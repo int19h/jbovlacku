@@ -214,7 +214,13 @@ fn mixed_writes_reuse_local_state_and_rebuild_global_changes() {
     assert_eq!(state.statistics().reason.as_deref(), Some("global_action"));
     let judgment = f.judgment(vec![], "bless");
     state = f.advance(state, &[judgment], &[]);
-    assert_eq!(state.statistics().incremental_records, 1);
+    // A fresh layout places this root between the two earlier roots and
+    // splits the clear closure that the trust record copies, so the
+    // fast path rebuilds instead of charging a different amount than a
+    // full evaluation. The evaluation itself is unchanged (checked by
+    // f.advance above).
+    assert!(state.statistics().rebuilt);
+    assert_eq!(state.statistics().reason.as_deref(), Some("layout_split"));
     f.view();
     let view = f.input.selected_view.clone();
     state = f.advance(state, &[view], &[]);
@@ -333,6 +339,48 @@ fn missing_publication_targets_and_parents_force_reference_rebuilds() {
             );
         }
     }
+}
+
+#[test]
+fn append_landing_between_chain_records_rebuilds_and_matches_full() {
+    // Grok's shape: a record whose fresh layout position lands between
+    // a and b splits the ranges that b's descendants copy. The fast
+    // path must rebuild; availability and every receipt (inside the
+    // compared evaluation) still match a full evaluation.
+    let mut f = Fixture::new();
+    let a = f.event(5, vec![], json!({"kind":"identity.merge"}), None);
+    let b = f.event(5, vec![a.clone()], json!({"kind":"identity.merge"}), None);
+    let mut last = b.clone();
+    for _ in 0..3 {
+        last = f.event(5, vec![last], json!({"kind":"identity.merge"}), None);
+    }
+    let mut state = EvaluatedState::from_input(&f.input);
+    assert!(state.evaluation().available);
+    let mut nonce = 5000;
+    let judgment = loop {
+        nonce += 1;
+        let signed = sign_header(
+            &[5u8; 32],
+            Header {
+                version: 1,
+                issuer: identity_from_seed(&[5u8; 32]),
+                previous: vec![a.clone()],
+                nonce: format!("{nonce:032x}"),
+                action: json!({"kind":"judgment.set","target":f.definition,"value":"bless"}),
+                content: None,
+            },
+        )
+        .unwrap();
+        let event = jvc_core::verify_envelope(&signed.canonical_envelope().unwrap()).unwrap();
+        let id = event.id().to_string();
+        if a.as_str() < id.as_str() && id.as_str() < b.as_str() {
+            f.input.events.push(event);
+            break id;
+        }
+    };
+    state = f.advance(state, &[judgment], &[]);
+    assert!(state.statistics().rebuilt);
+    assert_eq!(state.statistics().reason.as_deref(), Some("layout_split"));
 }
 
 #[test]

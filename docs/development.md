@@ -1195,7 +1195,7 @@ Resource errors must expose unavailable results instead of fabricated zero score
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits before public deployment.
 
 The state evaluator also has a work budget for history traversal and ancestor sets.
-The budget counts logical units: one per record, per dependency edge, per propagated missing ID, and per range a union copies. A layout pass, a dependency setup pass, and a closure construction pass each charge those units for the three link modes, and lifecycle work charges the same terms. It does not depend on how ancestry is stored.
+The budget counts logical units: one per record, per dependency edge, per propagated missing ID, and per range a union copies. A layout pass, a dependency setup pass, and a closure construction pass each charge those units for the three link modes, and lifecycle work charges the same terms. The charge counts the exact interval layout - its records, edges, and ranges - and no bitset words or pointer sizes, so the same input charges the same total in native and Wasm builds.
 The default budget is 10,000,000 units. A flat history costs eight units per record and a single-parent chain costs eighteen units per record, before evaluation-time charges.
 Ancestry range metadata also has a hard cap of 64 MiB, counted over every range vector a union copies or allocates. A history whose ranges pass the cap fails with `resource_unavailable` at any budget.
 Histories with more edges can reach it sooner, and the requested state also affects the work.

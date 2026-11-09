@@ -131,6 +131,7 @@ pub(crate) struct Graph {
     pub transfers: BTreeMap<String, Vec<String>>,
     pub pending_cutoffs: BTreeSet<String>,
     pub space: Rc<super::ancestors::Space>,
+    pub ancestry: super::ancestors::AncestryBudget,
     pub budget: Cell<usize>,
     pub resource: Cell<bool>,
     pub appended: usize,
@@ -146,6 +147,7 @@ impl Graph {
         let mut graph = Self {
             nodes,
             space: super::ancestors::Space::empty(),
+            ancestry: super::ancestors::AncestryBudget::new(),
             own: Rc::default(),
             structural: Rc::default(),
             accepted: Rc::default(),
@@ -170,7 +172,7 @@ impl Graph {
         graph.space = super::ancestors::Space::new(&graph.nodes);
         let before = graph.budget.get();
         graph.own = Rc::new(graph.build_cache(0));
-        if graph.resource.get() || graph.space.ancestor_failed() {
+        if graph.resource.get() || graph.ancestry.failed() {
             graph.resource.set(true);
             return graph;
         }
@@ -191,12 +193,12 @@ impl Graph {
         if graph.resource.get() {
             return graph;
         }
-        if graph.space.ancestor_failed() {
+        if graph.ancestry.failed() {
             graph.resource.set(true);
             return graph;
         }
         graph.build_lifecycle();
-        if graph.resource.get() || graph.space.ancestor_failed() {
+        if graph.resource.get() || graph.ancestry.failed() {
             graph.resource.set(true);
             return graph;
         }
@@ -206,6 +208,9 @@ impl Graph {
             }
         } else {
             graph.accepted = Rc::new(graph.build_cache(2));
+        }
+        if graph.ancestry.failed() {
+            graph.resource.set(true);
         }
         graph
     }
@@ -294,7 +299,7 @@ impl Graph {
             }
             let sets: Vec<&IdSet> = deps.iter().map(|dep| &cache[dep].ids).collect();
             let mut c = Closure {
-                ids: IdSet::combined(self.space.clone(), &sets, Some(&id)),
+                ids: IdSet::combined(self.space.clone(), &self.ancestry, &sets, Some(&id)),
                 missing: missing.clone(),
                 invalid: *invalid,
                 resource: false,
@@ -304,6 +309,9 @@ impl Graph {
                 c.missing.extend(p.missing.iter().cloned());
                 c.invalid |= p.invalid;
                 c.resource |= p.resource;
+            }
+            if self.ancestry.failed() {
+                c.resource = true;
             }
             cache.insert(id.clone(), c);
             for child in children.get(&id).into_iter().flatten() {
@@ -326,8 +334,11 @@ impl Graph {
             if !self.charge(1) {
                 return cache;
             }
-            c.ids.insert(&id);
+            c.ids.insert(&self.ancestry, &id);
             c.invalid = true;
+            if self.ancestry.failed() {
+                c.resource = true;
+            }
             cache.insert(id, c);
         }
         cache
@@ -353,9 +364,10 @@ impl Graph {
                 result.resource = true;
                 break;
             }
-            result.ids.union(&c.ids);
-            if self.space.ancestor_failed() {
+            result.ids.union(&self.ancestry, &c.ids);
+            if self.ancestry.failed() {
                 result.resource = true;
+                self.resource.set(true);
                 break;
             }
             result.missing.extend(c.missing.iter().cloned());
@@ -404,7 +416,10 @@ impl Graph {
                     if !self.charge(1 + c.ids.range_count()) {
                         return;
                     }
-                    cutoff.ids.extend(c.ids);
+                    cutoff.ids.extend(&self.ancestry, c.ids);
+                    if self.ancestry.failed() {
+                        cutoff.resource = true;
+                    }
                     cutoff.missing.extend(c.missing);
                     cutoff.invalid |= c.invalid;
                     cutoff.resource |= c.resource;
@@ -516,13 +531,16 @@ impl Graph {
     pub fn append_ordinary(&mut self, node: Node) {
         let closure = |cache: &BTreeMap<String, Closure>| {
             let mut result = self.empty_closure();
-            result.ids.insert(&node.id);
+            result.ids.insert(&self.ancestry, &node.id);
             for previous in &node.previous {
                 let prior = &cache[previous];
-                result.ids.union(&prior.ids);
+                result.ids.union(&self.ancestry, &prior.ids);
                 result.missing.extend(prior.missing.iter().cloned());
                 result.invalid |= prior.invalid;
                 result.resource |= prior.resource;
+            }
+            if self.ancestry.failed() {
+                result.resource = true;
             }
             result
         };
@@ -549,8 +567,20 @@ impl Graph {
             .entry(node.issuer.clone())
             .or_default()
             .insert(node.issuer.clone());
-        if self.space.ancestor_failed() {
+        if self.ancestry.failed() {
             self.resource.set(true);
+            // No closure stored for this record may read as complete.
+            let mut marked: Vec<usize> = Vec::new();
+            for cache in [&mut self.own, &mut self.structural, &mut self.accepted] {
+                let pointer = Rc::as_ptr(cache) as usize;
+                if marked.contains(&pointer) {
+                    continue;
+                }
+                marked.push(pointer);
+                if let Some(closure) = Rc::make_mut(cache).get_mut(&node.id) {
+                    closure.resource = true;
+                }
+            }
         }
         self.nodes.insert(node.id.clone(), node);
         self.appended += 1;
@@ -1069,8 +1099,8 @@ mod tests {
         };
         let graph = Graph::new(nodes, &limits);
         assert!(graph.resource.get());
-        assert!(graph.space.ancestor_failed());
-        assert!(graph.space.ancestor_bytes() <= crate::ancestors::MAX_ANCESTOR_BYTES);
+        assert!(graph.ancestry.failed());
+        assert!(graph.ancestry.bytes() <= crate::ancestors::MAX_ANCESTOR_BYTES);
     }
 
     #[test]
@@ -1087,8 +1117,90 @@ mod tests {
         };
         let graph = Graph::new(nodes, &limits);
         assert!(graph.resource.get());
-        assert!(graph.space.ancestor_failed());
-        assert!(graph.space.ancestor_bytes() <= crate::ancestors::MAX_ANCESTOR_BYTES);
+        assert!(graph.ancestry.failed());
+        assert!(graph.ancestry.bytes() <= crate::ancestors::MAX_ANCESTOR_BYTES);
+    }
+
+    fn interleaved_with_acceptance(count: usize) -> BTreeMap<String, Node> {
+        let mut map = two_interleaved_chains(count);
+        let mut transfer = node("jve1:transfer", "one", &[], "identity.transfer");
+        transfer.action = json!({"kind":"identity.transfer","successor":"two"});
+        let mut accept = node("jve1:accept", "two", &[], "identity.accept");
+        accept.action = json!({"kind":"identity.accept","transfer":"jve1:transfer"});
+        map.insert(transfer.id.clone(), transfer);
+        map.insert(accept.id.clone(), accept);
+        map
+    }
+
+    #[test]
+    fn cap_failure_in_the_accepted_cache_is_a_resource_failure() {
+        // Three real caches (an acceptance exists) multiply range
+        // copies. At this size the accepted cache crosses the byte cap;
+        // the graph must report resource exhaustion, and no accepted
+        // closure built after the failed charge may be complete.
+        let limits = Limits {
+            traversal: 1_000_000_000,
+            ..Limits::default()
+        };
+        let graph = Graph::new(interleaved_with_acceptance(2_880), &limits);
+        assert!(graph.ancestry.failed());
+        assert!(graph.resource.get());
+        let graph = Graph::new(interleaved_with_acceptance(1_500), &limits);
+        assert!(!graph.ancestry.failed());
+        assert!(!graph.resource.get());
+    }
+
+    #[test]
+    fn append_past_the_cap_marks_the_graph_and_closure_unavailable() {
+        let limits = Limits {
+            traversal: 1_000_000_000,
+            ..Limits::default()
+        };
+        let mut graph = Graph::new(interleaved_with_acceptance(2_348), &limits);
+        assert!(!graph.resource.get());
+        // The two chain tips carry about 1,174 ranges each. Appending a
+        // record on both crosses the remaining cap headroom.
+        let tip_a = format!("jve1:{:064x}", 2_346usize);
+        let tip_b = format!("jve1:{:064x}", 2_347usize);
+        graph.append_ordinary(node(
+            "jve1:appended",
+            "issuer",
+            &[&tip_a, &tip_b],
+            "judgment.set",
+        ));
+        assert!(graph.ancestry.failed());
+        assert!(graph.resource.get());
+        assert!(!graph.own["jve1:appended"].complete());
+    }
+
+    #[test]
+    fn sibling_clones_have_independent_cap_accounting() {
+        let limits = Limits {
+            traversal: 1_000_000_000,
+            ..Limits::default()
+        };
+        let graph = Graph::new(interleaved_with_acceptance(2_348), &limits);
+        assert!(!graph.resource.get());
+        let mut fork_a = graph.clone();
+        let fork_b = graph.clone();
+        let tip_a = format!("jve1:{:064x}", 2_346usize);
+        let tip_b = format!("jve1:{:064x}", 2_347usize);
+        fork_a.append_ordinary(node(
+            "jve1:appended",
+            "issuer",
+            &[&tip_a, &tip_b],
+            "judgment.set",
+        ));
+        assert!(fork_a.resource.get());
+        // The sibling and the parent keep their own accounting and
+        // their closures stay correct.
+        assert!(!fork_b.resource.get());
+        assert!(!fork_b.ancestry.failed());
+        assert!(!graph.ancestry.failed());
+        let last = format!("jve1:{:064x}", 2_347usize);
+        let first = format!("jve1:{:064x}", 1usize);
+        assert!(fork_b.own[&last].ids.contains(&first));
+        assert!(fork_b.own[&last].complete());
     }
 
     #[test]

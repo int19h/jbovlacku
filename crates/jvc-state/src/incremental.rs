@@ -352,6 +352,10 @@ impl EvaluatedState {
                     let node = added.remove(&id).unwrap();
                     self.append(node, work);
                     self.statistics.incremental_records += 1;
+                    if self.graph.as_ref().is_some_and(|g| g.resource.get()) {
+                        rebuild_reason = Some("history_resource_unavailable".into());
+                        break;
+                    }
                 }
                 Err(reason) => rebuild_reason = Some(reason.into()),
             }
@@ -422,6 +426,33 @@ impl EvaluatedState {
                 return Err("target_unresolved");
             }
         }
+        let (order, positions) = fresh_positions(graph, node);
+        let index = order
+            .iter()
+            .position(|id| id == &node.id)
+            .unwrap_or(usize::MAX);
+        if index != usize::MAX && index > 0 && index + 1 < order.len() {
+            let (before, after) = (&order[index - 1], &order[index + 1]);
+            let mut copied: BTreeSet<&str> = BTreeSet::new();
+            for record in graph.nodes.values() {
+                copied.extend(record.previous.iter().map(String::as_str));
+                if record.kind == "identity.accept" {
+                    if let Some(transfer) = record.action["transfer"].as_str() {
+                        copied.insert(transfer);
+                    }
+                }
+            }
+            copied.extend(node.previous.iter().map(String::as_str));
+            for cache in [&graph.own, &graph.structural, &graph.accepted] {
+                for id in &copied {
+                    if let Some(closure) = cache.get(*id) {
+                        if closure.ids.contains(before) && closure.ids.contains(after) {
+                            return Err("layout_split");
+                        }
+                    }
+                }
+            }
+        }
         // Logical work for one appended record, equal to the marginal
         // cost of the same record in a full evaluation: the layout
         // charge (one per record and predecessor), setup plus closure
@@ -433,12 +464,7 @@ impl EvaluatedState {
         let parent_ranges: usize = node
             .previous
             .iter()
-            .map(|id| {
-                graph
-                    .own
-                    .get(id)
-                    .map_or(0, |closure| closure.ids.fresh_range_count())
-            })
+            .map(|id| fresh_range_count(graph, &positions, id))
             .sum();
         let per_cache = (1 + node.previous.len())
             + (1 + node.previous.iter().map(|_| 1).sum::<usize>() + parent_ranges);
@@ -662,6 +688,97 @@ impl EvaluatedState {
             ranking_index: Default::default(),
         })
     }
+}
+
+/// Fresh layout positions for every current record plus the new one,
+/// using the same per-issuer Kahn order as the layout construction.
+fn fresh_positions(graph: &Graph, node: &Node) -> (Vec<String>, BTreeMap<String, u32>) {
+    let mut by_issuer: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for record in graph.nodes.values() {
+        by_issuer
+            .entry(record.issuer.as_str())
+            .or_default()
+            .push(record.id.as_str());
+    }
+    by_issuer
+        .entry(node.issuer.as_str())
+        .or_default()
+        .push(node.id.as_str());
+    let previous_of = |id: &str| -> Vec<&str> {
+        if id == node.id {
+            node.previous.iter().map(String::as_str).collect()
+        } else {
+            graph.nodes[id]
+                .previous
+                .iter()
+                .map(String::as_str)
+                .collect()
+        }
+    };
+    let mut order: Vec<String> = Vec::with_capacity(graph.nodes.len() + 1);
+    for (_, members) in by_issuer {
+        let member_set: BTreeSet<&str> = members.iter().copied().collect();
+        let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        let mut waiting: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut ready: BTreeSet<&str> = BTreeSet::new();
+        for &id in &members {
+            let mut count = 0;
+            for previous in previous_of(id) {
+                if member_set.contains(previous)
+                    && (graph.nodes.contains_key(previous) || previous == node.id)
+                {
+                    children.entry(previous).or_default().push(id);
+                    count += 1;
+                }
+            }
+            waiting.insert(id, count);
+            if count == 0 {
+                ready.insert(id);
+            }
+        }
+        let mut placed: Vec<&str> = Vec::with_capacity(members.len());
+        while let Some(id) = ready.pop_first() {
+            placed.push(id);
+            for child in children.get(id).into_iter().flatten() {
+                let count = waiting.get_mut(child).unwrap();
+                *count -= 1;
+                if *count == 0 {
+                    ready.insert(child);
+                }
+            }
+        }
+        let placed_set: BTreeSet<&str> = placed.iter().copied().collect();
+        for &id in &members {
+            if !placed_set.contains(id) {
+                placed.push(id);
+            }
+        }
+        order.extend(placed.iter().map(|id| id.to_string()));
+    }
+    let positions: BTreeMap<String, u32> = order
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (id.clone(), index as u32))
+        .collect();
+    (order, positions)
+}
+
+/// Range count of one closure in the fresh layout, from its members.
+fn fresh_range_count(graph: &Graph, positions: &BTreeMap<String, u32>, id: &str) -> usize {
+    let Some(closure) = graph.own.get(id) else {
+        return 0;
+    };
+    let mut member_positions: Vec<u32> = closure
+        .ids
+        .iter_unordered()
+        .map(|member| positions[member.as_str()])
+        .collect();
+    member_positions.sort_unstable();
+    member_positions
+        .windows(2)
+        .filter(|pair| pair[1] != pair[0] + 1)
+        .count()
+        + usize::from(!member_positions.is_empty())
 }
 
 fn supports_local_update(node: &Node) -> bool {
@@ -971,6 +1088,142 @@ mod rebuild_tests {
             assert_eq!(state.evaluation(), &complete.evaluate());
         }
     }
+    fn signed(
+        seed: u8,
+        nonce: u32,
+        previous: Vec<String>,
+        action: Value,
+    ) -> (VerifiedEnvelope, Option<Vec<u8>>) {
+        let mut previous = previous;
+        previous.sort();
+        previous.dedup();
+        let signed = sign_header(
+            &[seed; 32],
+            Header {
+                version: 1,
+                issuer: identity_from_seed(&[seed; 32]),
+                previous,
+                nonce: format!("{nonce:032x}"),
+                action,
+                content: None,
+            },
+        )
+        .unwrap();
+        (
+            verify_envelope(&signed.canonical_envelope().unwrap()).unwrap(),
+            None,
+        )
+    }
+
+    /// Interleaved chains plus a resolved acceptance, sized so the three
+    /// ancestry caches together sit just below the byte cap.
+    fn cap_boundary_prepared() -> (PreparedEvaluationInput, String, Vec<String>) {
+        let mut input = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        input.add_record(&publication, body.as_deref());
+        // Interleaved chains plus a resolved acceptance, sized so the
+        // three ancestry caches sit just below the byte cap (the same
+        // shape as the graph-level cap tests, built here through host
+        // records so no signing is needed for the chain records).
+        let chain_issuer = identity_from_seed(&[7u8; 32]);
+        let host = |input: &mut PreparedEvaluationInput,
+                    id: String,
+                    issuer: &str,
+                    previous: Vec<String>,
+                    action: Value| {
+            let header = Header {
+                version: 1,
+                issuer: issuer.to_string(),
+                previous,
+                nonce: "00".repeat(16),
+                action,
+                content: None,
+            };
+            let (record, _) =
+                HostVerifiedRecord::extract_with(&id, &header, BodyAvailability::Absent, |_| ());
+            input.add_host_verified_record(record);
+        };
+        let mut ids: Vec<String> = Vec::new();
+        for i in 0..2_348usize {
+            let id = format!("jve1:{i:064x}");
+            let previous = (i >= 2)
+                .then(|| format!("jve1:{:064x}", i - 2))
+                .into_iter()
+                .collect();
+            host(
+                &mut input,
+                id.clone(),
+                &chain_issuer,
+                previous,
+                json!({"kind":"identity.merge"}),
+            );
+            ids.push(id);
+        }
+        let transfer_id = format!("jve1:{:064x}", 900_001usize);
+        host(
+            &mut input,
+            transfer_id.clone(),
+            &chain_issuer,
+            vec![],
+            json!({"kind":"identity.transfer","successor":identity_from_seed(&[2u8;32])}),
+        );
+        let accept_id = format!("jve1:{:064x}", 900_002usize);
+        host(
+            &mut input,
+            accept_id,
+            &identity_from_seed(&[2u8; 32]),
+            vec![],
+            json!({"kind":"identity.accept","transfer":transfer_id}),
+        );
+        (input, publication_id, ids)
+    }
+
+    #[test]
+    fn sibling_forks_near_the_cap_each_match_their_full_evaluation() {
+        let (prepared, publication_id, ids) = cap_boundary_prepared();
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+        let options = EvaluationOptions {
+            selected_view: state.evaluation().selected_view.clone(),
+            import_selections: BTreeMap::new(),
+            overlay: None,
+            limits: Limits::default(),
+        };
+        // Fork A appends on both heavy chain tips and crosses the cap.
+        // It must rebuild and return the full (unavailable) result.
+        let (judgment_a, _) = signed(
+            7,
+            9500,
+            vec![ids[2_346].clone(), ids[2_347].clone()],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        let mut delta = PreparedEvaluationInput::new(options.clone());
+        delta.add_record(&judgment_a, None);
+        let fork_a = state.clone().advance(delta, &[]);
+        assert!(fork_a.statistics().rebuilt);
+        let mut full = prepared.clone();
+        full.add_record(&judgment_a, None);
+        assert_eq!(fork_a.evaluation(), &full.evaluate());
+        assert!(!fork_a.evaluation().available);
+        // Fork B, cloned from the same parent, is unaffected by fork
+        // A's cap failure and matches its own full evaluation.
+        let (judgment_b, _) = signed(
+            7,
+            9501,
+            vec![],
+            json!({"kind":"judgment.set","target":publication_id,"value":"curse"}),
+        );
+        let mut delta = PreparedEvaluationInput::new(options);
+        delta.add_record(&judgment_b, None);
+        let fork_b = state.clone().advance(delta, &[]);
+        let mut full = prepared.clone();
+        full.add_record(&judgment_b, None);
+        assert_eq!(fork_b.evaluation(), &full.evaluate());
+        assert!(fork_b.evaluation().available);
+        assert!(state.evaluation().available);
+    }
+
     #[test]
     fn ranking_indexes_are_once_per_state_and_never_enter_checkpoints_or_forks() {
         let mut prepared = base();
