@@ -18,7 +18,7 @@ A separate case with 401 accounts sharing witnesses finishes evaluation and expo
 These timings come from single runs on the development machine. They do not guarantee performance on another host.
 A separate 5,000-event history reaches an explicit smaller budget without recursive traversal.
 The default event admission limit does not promise support for every history shape at that size.
-The default 1,000,000-word work budget runs out at roughly 4,500 events in a flat history.
+The default 10,000,000-unit work budget counts records, dependency edges, and propagated missing IDs. A flat history costs seven units per record and a single-parent chain costs thirteen units per record, before evaluation-time closure charges.
 Histories with more edges can reach the limit sooner. Exhaustion makes the entire evaluation unavailable, including unrelated accounts and native results.
 
 The crate passes native and standalone wasm32-unknown-unknown build checks.

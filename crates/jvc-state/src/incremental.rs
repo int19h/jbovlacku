@@ -422,34 +422,12 @@ impl EvaluatedState {
                 return Err("target_unresolved");
             }
         }
-        let count = graph.nodes.len();
-        let words = count.saturating_add(1).div_ceil(64);
-        let growth = words - count.div_ceil(64);
-        if growth > 0
-            && graph.nodes.values().any(|n| {
-                n.semantic
-                    && matches!(
-                        n.kind.as_str(),
-                        "identity.accept"
-                            | "identity.compromise"
-                            | "account.set"
-                            | "account.observe"
-                            | "import.status"
-                    )
-            })
-        {
-            return Err("width_sensitive_history");
-        }
-        let edges: usize = graph.nodes.values().map(|n| n.previous.len()).sum();
-        // This bounds the corresponding full rebuild, not the cached work.
-        // Existing missing sets and account decisions do not change here.
+        // Logical work for one appended record: setup plus closure
+        // construction in each of the three caches, and lifecycle
+        // bookkeeping. Ranges have no width, so no width growth exists.
+        // This bounds the corresponding full rebuild increment.
         let work = 3usize
-            .saturating_mul(
-                growth
-                    .saturating_mul(count.saturating_add(edges))
-                    .saturating_add(1 + node.previous.len())
-                    .saturating_add(words.saturating_mul(1 + node.previous.len())),
-            )
+            .saturating_mul(2usize.saturating_mul(1 + node.previous.len()))
             .saturating_add(2);
         if work > self.remaining_work {
             return Err("work_budget");

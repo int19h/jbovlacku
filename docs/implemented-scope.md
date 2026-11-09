@@ -663,8 +663,8 @@ The [ranking measurements](../crates/jvc-rank/README.md) cover eleven synthetic 
 The weighted sixteen-actor case takes 8.119 seconds in WebAssembly despite zero completed expansion work.
 The expansion budget does not bound total CPU time. These measurements do not establish performance for real community graphs.
 
-The current default state work budget can run out at roughly 4,500 events in a flat history.
-This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
+The default state work budget is 10,000,000 logical units. One unit stands for one record, one dependency edge, or one propagated missing ID, charged for each link mode and for evaluation-time closure work.
+A flat history costs seven units per record and a single-parent chain costs thirteen units per record, before evaluation-time charges. Histories with more edges reach the limit sooner, and the requested state also affects the work.
 The Node loader can retain a larger explicit traversal budget for a local import.
 A larger traversal budget does not remove memory limits.
 

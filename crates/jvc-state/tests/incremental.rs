@@ -508,7 +508,7 @@ fn minimum_budget(input: &EvaluationInput) -> usize {
 }
 
 #[test]
-fn bitset_width_growth_keeps_tight_resource_outcomes_with_control_history() {
+fn record_growth_keeps_tight_resource_outcomes_with_control_history() {
     for control in ["plain", "compromise", "account"] {
         let mut f = Fixture::new();
         if control == "compromise" {
@@ -537,9 +537,11 @@ fn bitset_width_growth_keeps_tight_resource_outcomes_with_control_history() {
                 std::slice::from_ref(&id),
                 &[],
             );
-            if control != "plain" && base.limits.traversal >= minimum_budget(&base) {
-                assert!(state.statistics().rebuilt);
-            }
+            // Ranges have no width boundary at 64 records: every
+            // control history takes the fast path when the budget
+            // suffices, and rebuilds only when it does not.
+            assert_eq!(state.statistics().rebuilt, budget < after_min);
+            assert_eq!(state.evaluation(), &evaluate(&f.input));
         }
     }
 }

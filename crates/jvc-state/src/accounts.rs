@@ -775,13 +775,13 @@ fn authorized_record(
     let ids = past
         .ids
         .iter()
-        .filter(|id| *id != &n.id)
+        .into_iter()
+        .filter(|id| id != &n.id)
         .filter(|id| boundary.is_none_or(|b| b.ids.contains(id)))
         .filter(|id| {
-            let e = &graph.nodes[*id];
+            let e = &graph.nodes[id];
             e.semantic && e.kind == "account.set" && same_account(e, a)
         })
-        .cloned()
         .collect();
     let maxima = graph.maxima(ids, true);
     maxima.len() == 1 && maxima.contains(claim)

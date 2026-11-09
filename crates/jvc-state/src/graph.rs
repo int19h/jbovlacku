@@ -106,137 +106,8 @@ impl Node {
         )
     }
 }
-#[derive(Clone)]
-pub(crate) struct IdSet {
-    names: Rc<Vec<String>>,
-    index: Rc<BTreeMap<String, usize>>,
-    entries: IdEntries,
-    extra: BTreeSet<String>,
-}
-#[derive(Clone)]
-enum IdEntries {
-    Sparse(Rc<Vec<usize>>),
-    Dense(Rc<Vec<u64>>),
-}
-impl IdSet {
-    fn new(names: Rc<Vec<String>>, index: Rc<BTreeMap<String, usize>>) -> Self {
-        Self {
-            entries: IdEntries::Sparse(Rc::default()),
-            extra: BTreeSet::new(),
-            names,
-            index,
-        }
-    }
-    pub fn contains(&self, id: &str) -> bool {
-        self.extra.contains(id)
-            || self.index.get(id).is_some_and(|i| match &self.entries {
-                IdEntries::Sparse(ids) => ids.binary_search(i).is_ok(),
-                IdEntries::Dense(bits) => bits[i / 64] & (1u64 << (i % 64)) != 0,
-            })
-    }
-    fn insert(&mut self, id: &str) {
-        if let Some(i) = self.index.get(id) {
-            match &mut self.entries {
-                IdEntries::Sparse(ids) => {
-                    if let Err(at) = ids.binary_search(i) {
-                        Rc::make_mut(ids).insert(at, *i);
-                    }
-                }
-                IdEntries::Dense(bits) => Rc::make_mut(bits)[i / 64] |= 1u64 << (i % 64),
-            }
-            self.make_dense_if_needed();
-        } else {
-            self.extra.insert(id.into());
-        }
-    }
-    pub fn iter(&self) -> impl Iterator<Item = &String> {
-        let (sparse, dense) = match &self.entries {
-            IdEntries::Sparse(ids) => (ids.as_slice(), [].as_slice()),
-            IdEntries::Dense(bits) => ([].as_slice(), bits.as_slice()),
-        };
-        let mut ordinary = sparse
-            .iter()
-            .map(|i| &self.names[*i])
-            .chain(dense.iter().enumerate().flat_map(move |(word, bits)| {
-                let mut remaining = *bits;
-                std::iter::from_fn(move || {
-                    if remaining == 0 {
-                        return None;
-                    }
-                    let bit = remaining.trailing_zeros() as usize;
-                    remaining &= remaining - 1;
-                    self.names.get(word * 64 + bit)
-                })
-            }))
-            .peekable();
-        let mut extra = self.extra.iter().peekable();
-        std::iter::from_fn(move || match (ordinary.peek(), extra.peek()) {
-            (Some(a), Some(b)) if a < b => ordinary.next(),
-            (Some(_), Some(_)) => extra.next(),
-            (Some(_), None) => ordinary.next(),
-            (None, Some(_)) => extra.next(),
-            (None, None) => None,
-        })
-    }
-    pub fn extend(&mut self, other: IdSet) {
-        self.union(&other);
-    }
-    fn union(&mut self, other: &IdSet) {
-        self.extra.extend(other.extra.iter().cloned());
-        if let IdEntries::Dense(_) = &other.entries {
-            self.make_dense();
-        }
-        match (&mut self.entries, &other.entries) {
-            (IdEntries::Dense(a), IdEntries::Dense(b)) => {
-                for (a, b) in Rc::make_mut(a).iter_mut().zip(b.iter()) {
-                    *a |= b;
-                }
-            }
-            (IdEntries::Dense(bits), IdEntries::Sparse(ids)) => {
-                let bits = Rc::make_mut(bits);
-                for i in ids.iter() {
-                    bits[i / 64] |= 1u64 << (i % 64);
-                }
-            }
-            (IdEntries::Sparse(a), IdEntries::Sparse(b)) => {
-                let mut merged = Vec::with_capacity(a.len() + b.len());
-                let (mut left, mut right) = (0, 0);
-                while left < a.len() && right < b.len() {
-                    if a[left] < b[right] {
-                        merged.push(a[left]);
-                        left += 1;
-                    } else {
-                        merged.push(b[right]);
-                        if a[left] == b[right] {
-                            left += 1;
-                        }
-                        right += 1;
-                    }
-                }
-                merged.extend_from_slice(&a[left..]);
-                merged.extend_from_slice(&b[right..]);
-                *a = Rc::new(merged);
-            }
-            (IdEntries::Sparse(_), IdEntries::Dense(_)) => unreachable!(),
-        }
-        self.make_dense_if_needed();
-    }
-    fn make_dense_if_needed(&mut self) {
-        if matches!(&self.entries, IdEntries::Sparse(ids) if ids.len() * std::mem::size_of::<usize>() > self.names.len().div_ceil(64) * std::mem::size_of::<u64>())
-        {
-            self.make_dense();
-        }
-    }
-    fn make_dense(&mut self) {
-        if let IdEntries::Sparse(ids) = &self.entries {
-            let mut bits = vec![0; self.names.len().div_ceil(64)];
-            for i in ids.iter() {
-                bits[i / 64] |= 1u64 << (i % 64);
-            }
-            self.entries = IdEntries::Dense(Rc::new(bits));
-        }
-    }
-}
+pub(crate) use super::ancestors::IdSet;
+
 #[derive(Clone)]
 pub(crate) struct Closure {
     pub ids: IdSet,
@@ -259,8 +130,7 @@ pub(crate) struct Graph {
     pub cutoffs: BTreeMap<String, Vec<Closure>>,
     pub transfers: BTreeMap<String, Vec<String>>,
     pub pending_cutoffs: BTreeSet<String>,
-    pub names: Rc<Vec<String>>,
-    pub index: Rc<BTreeMap<String, usize>>,
+    pub space: Rc<super::ancestors::Space>,
     pub budget: Cell<usize>,
     pub resource: Cell<bool>,
     pub appended: usize,
@@ -269,18 +139,10 @@ impl Graph {
     pub fn new(nodes: BTreeMap<String, Node>, limits: &Limits) -> Self {
         #[cfg(test)]
         CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
-        let names = Rc::new(nodes.keys().cloned().collect::<Vec<_>>());
-        let index = Rc::new(
-            names
-                .iter()
-                .enumerate()
-                .map(|(i, id)| (id.clone(), i))
-                .collect(),
-        );
+        let space = super::ancestors::Space::new(&nodes);
         let mut graph = Self {
             nodes,
-            names,
-            index,
+            space,
             own: Rc::default(),
             structural: Rc::default(),
             accepted: Rc::default(),
@@ -336,7 +198,7 @@ impl Graph {
     }
     fn empty_closure(&self) -> Closure {
         Closure {
-            ids: IdSet::new(self.names.clone(), self.index.clone()),
+            ids: IdSet::empty(self.space.clone()),
             missing: BTreeSet::new(),
             invalid: false,
             resource: false,
@@ -385,7 +247,9 @@ impl Graph {
         }
         (ids, missing, invalid)
     }
-    /// Topological bitset unions keep ordinary linear histories compact.
+    /// Topological range unions keep ordinary linear histories compact.
+    /// Charges are logical: one unit per record, per dependency edge, and
+    /// per missing ID propagated, in every representation.
     fn build_cache(&self, mode: u8) -> BTreeMap<String, Closure> {
         let mut dependencies = BTreeMap::new();
         let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -408,19 +272,22 @@ impl Graph {
         let mut cache: BTreeMap<String, Closure> = BTreeMap::new();
         while let Some(id) = ready.pop_first() {
             let (deps, missing, invalid) = &dependencies[&id];
-            let mut c = self.empty_closure();
-            if !self.charge(self.names.len().div_ceil(64) + missing.len()) {
+            let mut work = 1 + missing.len();
+            for dep in deps {
+                work += 1 + cache[dep].missing.len();
+            }
+            if !self.charge(work) {
                 return cache;
             }
-            c.missing = missing.clone();
-            c.invalid = *invalid;
-            c.ids.insert(&id);
+            let sets: Vec<&IdSet> = deps.iter().map(|dep| &cache[dep].ids).collect();
+            let mut c = Closure {
+                ids: IdSet::combined(self.space.clone(), &sets, Some(&id)),
+                missing: missing.clone(),
+                invalid: *invalid,
+                resource: false,
+            };
             for dep in deps {
                 let p = &cache[dep];
-                if !self.charge(self.names.len().div_ceil(64) + p.missing.len()) {
-                    return cache;
-                }
-                c.ids.union(&p.ids);
                 c.missing.extend(p.missing.iter().cloned());
                 c.invalid |= p.invalid;
                 c.resource |= p.resource;
@@ -443,7 +310,7 @@ impl Graph {
             .collect::<Vec<_>>()
         {
             let mut c = self.empty_closure();
-            if !self.charge(self.names.len().div_ceil(64)) {
+            if !self.charge(1) {
                 return cache;
             }
             c.ids.insert(&id);
@@ -469,7 +336,7 @@ impl Graph {
                 result.missing.insert(id.clone());
                 continue;
             };
-            if !self.charge(self.names.len().div_ceil(64) + c.missing.len()) {
+            if !self.charge(1 + c.missing.len()) {
                 result.resource = true;
                 break;
             }
@@ -514,7 +381,7 @@ impl Graph {
                 }
                 for id in safe {
                     let c = self.closure(&[id], 0);
-                    if c.resource || !self.charge(self.names.len().div_ceil(64) + c.missing.len()) {
+                    if c.resource || !self.charge(1 + c.missing.len()) {
                         return;
                     }
                     cutoff.ids.extend(c.ids);
@@ -625,7 +492,7 @@ impl Graph {
             .unwrap_or_else(|| key.into())
     }
     /// Append a complete ordinary event without changing any existing links.
-    /// New IDs stay outside the fixed bitset universe until the next rebuild.
+    /// New IDs register at the end of the layout until the next rebuild.
     pub fn append_ordinary(&mut self, node: Node) {
         let closure = |cache: &BTreeMap<String, Closure>| {
             let mut result = self.empty_closure();
@@ -729,7 +596,7 @@ impl Graph {
         }
         self.structural
             .get(event)
-            .is_some_and(|c| c.ids.iter().any(|id| self.nodes[id].issuer == root))
+            .is_some_and(|c| c.ids.iter().iter().any(|id| self.nodes[id].issuer == root))
     }
     pub fn downstream(&self, root: &str) -> BTreeSet<String> {
         let mut keys = BTreeSet::new();
@@ -764,45 +631,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn set(names: Rc<Vec<String>>, values: &[usize]) -> IdSet {
-        let index = Rc::new(
-            names
-                .iter()
-                .enumerate()
-                .map(|(i, id)| (id.clone(), i))
-                .collect(),
-        );
-        let mut result = IdSet::new(names.clone(), index);
-        for i in values {
-            result.insert(&names[*i]);
-        }
-        result
-    }
-
-    #[test]
-    fn sparse_and_dense_unions_match_ordered_sets() {
-        let names = Rc::new((0..4096).map(|i| format!("{i:04}")).collect::<Vec<_>>());
-        let cases = [
-            Vec::new(),
-            vec![0, 63, 64, 4095],
-            (0..4096).step_by(3).collect(),
-            (0..4096).collect(),
-        ];
-        for left in &cases {
-            for right in &cases {
-                let mut combined = set(names.clone(), left);
-                let other = set(names.clone(), right);
-                combined.union(&other);
-                let expected: BTreeSet<_> = left.iter().chain(right).map(|i| &names[*i]).collect();
-                assert_eq!(
-                    combined.iter().collect::<Vec<_>>(),
-                    expected.iter().copied().collect::<Vec<_>>()
-                );
-                for name in names.iter() {
-                    assert_eq!(combined.contains(name), expected.contains(name));
-                }
-                assert!(!combined.contains("absent"));
-            }
+    fn node(id: &str, issuer: &str, previous: &[&str], kind: &str) -> Node {
+        Node {
+            id: id.into(),
+            issuer: issuer.into(),
+            previous: previous.iter().map(|s| s.to_string()).collect(),
+            action: json!({"kind": kind}),
+            kind: kind.into(),
+            semantic: true,
+            body_hash: None,
+            body: None,
+            body_label: "absent".into(),
         }
     }
 
@@ -833,9 +672,11 @@ mod tests {
     }
 
     #[test]
-    fn flat_histories_share_compact_caches_and_keep_the_original_work_charge() {
+    fn flat_histories_share_caches_and_keep_the_logical_work_charge() {
         let count: usize = 4096;
-        let work = count * (3 * (1 + count.div_ceil(64)) + 1);
+        // Per cache: setup N + construction N. Three caches are charged
+        // (storage is shared), plus one lifecycle unit per record.
+        let work = 7 * count;
         let limits = Limits {
             traversal: work,
             ..Limits::default()
@@ -845,12 +686,7 @@ mod tests {
         assert_eq!(graph.budget.get(), 0);
         assert!(Rc::ptr_eq(&graph.own, &graph.structural));
         assert!(Rc::ptr_eq(&graph.own, &graph.accepted));
-        assert!(
-            graph
-                .own
-                .values()
-                .all(|c| matches!(&c.ids.entries, IdEntries::Sparse(ids) if ids.len() == 1))
-        );
+        assert!(graph.own.values().all(|c| c.ids.range_count() == 1));
         let limits = Limits {
             traversal: work - 1,
             ..limits
@@ -859,13 +695,198 @@ mod tests {
     }
 
     #[test]
-    fn linear_histories_keep_dense_ancestry_when_it_uses_less_storage() {
-        let count = 1024;
-        let graph = Graph::new(nodes(count, true), &Limits::default());
+    fn linear_histories_keep_the_logical_work_charge() {
+        let count: usize = 4096;
+        // Per cache: setup (2N-1) + construction (2N-1), three caches
+        // charged, plus one lifecycle unit per record.
+        let work = 13 * count - 6;
+        let limits = Limits {
+            traversal: work,
+            ..Limits::default()
+        };
+        let graph = Graph::new(nodes(count, true), &limits);
+        assert!(!graph.resource.get());
+        assert_eq!(graph.budget.get(), 0);
+        let limits = Limits {
+            traversal: work - 1,
+            ..limits
+        };
+        assert!(Graph::new(nodes(count, true), &limits).resource.get());
+    }
+
+    #[test]
+    fn linear_histories_use_one_range_past_the_old_dense_threshold() {
+        let count = 70_000;
+        let limits = Limits {
+            traversal: 100_000_000,
+            ..Limits::default()
+        };
+        let graph = Graph::new(nodes(count, true), &limits);
         assert!(!graph.resource.get());
         let last = graph.own.last_key_value().unwrap().1;
-        assert!(matches!(&last.ids.entries, IdEntries::Dense(_)));
-        assert_eq!(last.ids.iter().count(), count);
+        assert_eq!(last.ids.range_count(), 1);
+        assert_eq!(last.ids.iter().len(), count);
         assert!(graph.nodes.keys().all(|id| last.ids.contains(id)));
+    }
+
+    /// Naive ancestor oracle: plain set transitive closure over the same
+    /// dependency rules, with no ranges involved.
+    fn naive(
+        nodes: &BTreeMap<String, Node>,
+        graph: &Graph,
+        mode: u8,
+    ) -> BTreeMap<String, (BTreeSet<String>, BTreeSet<String>, bool)> {
+        // Dependency edges exactly as the graph defines them.
+        let deps = |node: &Node| graph.dependencies(node, mode);
+        // Topologically processable records, as in construction.
+        let mut done: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>, bool)> =
+            BTreeMap::new();
+        loop {
+            let mut progressed = false;
+            for (id, node) in nodes {
+                if done.contains_key(id) {
+                    continue;
+                }
+                let (edges, missing, invalid) = deps(node);
+                if edges.iter().all(|dep| done.contains_key(dep)) {
+                    let mut ids = BTreeSet::from([id.clone()]);
+                    let mut all_missing = missing;
+                    let mut all_invalid = invalid;
+                    for dep in &edges {
+                        let (pids, pmissing, pinvalid) = &done[dep];
+                        ids.extend(pids.iter().cloned());
+                        all_missing.extend(pmissing.iter().cloned());
+                        all_invalid |= *pinvalid;
+                    }
+                    done.insert(id.clone(), (ids, all_missing, all_invalid));
+                    progressed = true;
+                }
+            }
+            if !progressed {
+                break;
+            }
+        }
+        for id in nodes.keys() {
+            done.entry(id.clone())
+                .or_insert_with(|| (BTreeSet::from([id.clone()]), BTreeSet::new(), true));
+        }
+        done
+    }
+
+    fn assert_graph_matches_oracle(nodes: BTreeMap<String, Node>) {
+        let limits = Limits {
+            traversal: 100_000_000,
+            ..Limits::default()
+        };
+        let graph = Graph::new(nodes.clone(), &limits);
+        assert!(!graph.resource.get());
+        for (mode, cache) in [
+            (0u8, &graph.own),
+            (1, &graph.structural),
+            (2, &graph.accepted),
+        ] {
+            let expected = naive(&nodes, &graph, mode);
+            assert_eq!(cache.len(), expected.len(), "mode {mode}");
+            for (id, closure) in cache.iter() {
+                let (ids, missing, invalid) = &expected[id];
+                assert_eq!(
+                    closure.ids.iter().into_iter().collect::<BTreeSet<_>>(),
+                    *ids,
+                    "ids mode {mode} record {id}"
+                );
+                assert_eq!(&closure.missing, missing, "missing mode {mode} record {id}");
+                assert_eq!(closure.invalid, *invalid, "invalid mode {mode} record {id}");
+                for member in ids {
+                    assert!(closure.ids.contains(member));
+                }
+                assert!(!closure.ids.contains("jve1:absent"));
+            }
+        }
+    }
+
+    #[test]
+    fn oracle_chains_branches_and_merges() {
+        let mut map = BTreeMap::new();
+        for n in [
+            node("jve1:a", "one", &[], "identity.merge"),
+            node("jve1:b", "one", &["jve1:a"], "identity.merge"),
+            node("jve1:c", "one", &["jve1:a"], "identity.merge"),
+            node("jve1:d", "one", &["jve1:b", "jve1:c"], "identity.merge"),
+            node("jve1:e", "two", &[], "identity.merge"),
+            node("jve1:f", "two", &["jve1:e"], "identity.merge"),
+        ] {
+            map.insert(n.id.clone(), n);
+        }
+        assert_graph_matches_oracle(map);
+    }
+
+    #[test]
+    fn oracle_missing_and_cross_issuer_predecessors() {
+        let mut map = BTreeMap::new();
+        for n in [
+            node("jve1:a", "one", &["jve1:gone"], "identity.merge"),
+            node("jve1:b", "one", &["jve1:a"], "identity.merge"),
+            node("jve1:c", "two", &["jve1:b"], "identity.merge"),
+            node("jve1:d", "two", &["jve1:c"], "identity.merge"),
+        ] {
+            map.insert(n.id.clone(), n);
+        }
+        assert_graph_matches_oracle(map);
+    }
+
+    #[test]
+    fn oracle_cycles() {
+        let mut map = BTreeMap::new();
+        for n in [
+            node("jve1:a", "one", &["jve1:b"], "identity.merge"),
+            node("jve1:b", "one", &["jve1:a"], "identity.merge"),
+            node("jve1:c", "one", &["jve1:a"], "identity.merge"),
+            node("jve1:d", "one", &[], "identity.merge"),
+        ] {
+            map.insert(n.id.clone(), n);
+        }
+        assert_graph_matches_oracle(map);
+    }
+
+    #[test]
+    fn oracle_transfer_and_acceptance() {
+        let mut transfer = node("jve1:t", "one", &["jve1:a"], "identity.transfer");
+        transfer.action = json!({"kind":"identity.transfer","successor":"two"});
+        let mut accept = node("jve1:x", "two", &[], "identity.accept");
+        accept.action = json!({"kind":"identity.accept","transfer":"jve1:t"});
+        let mut map = BTreeMap::new();
+        for n in [
+            node("jve1:a", "one", &[], "identity.merge"),
+            transfer,
+            accept,
+            node("jve1:y", "two", &["jve1:x"], "identity.merge"),
+        ] {
+            map.insert(n.id.clone(), n);
+        }
+        assert_graph_matches_oracle(map);
+    }
+
+    #[test]
+    fn oracle_compromise_cutoffs_are_complete_or_pending_as_before() {
+        let mut compromise = node("jve1:k", "one", &["jve1:b"], "identity.compromise");
+        compromise.action = json!({"kind":"identity.compromise","safe":["jve1:a"]});
+        let mut map = BTreeMap::new();
+        for n in [
+            node("jve1:a", "one", &[], "definition.publish"),
+            node("jve1:b", "one", &["jve1:a"], "definition.publish"),
+            compromise,
+        ] {
+            map.insert(n.id.clone(), n);
+        }
+        assert_graph_matches_oracle(map.clone());
+        let limits = Limits {
+            traversal: 100_000_000,
+            ..Limits::default()
+        };
+        let graph = Graph::new(map, &limits);
+        assert!(graph.lifecycle.compromised.contains("one"));
+        assert_eq!(graph.cutoffs["one"].len(), 1);
+        assert!(graph.cutoffs["one"][0].ids.contains("jve1:a"));
+        assert!(!graph.cutoffs["one"][0].ids.contains("jve1:b"));
     }
 }

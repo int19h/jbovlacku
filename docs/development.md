@@ -1195,8 +1195,9 @@ Resource errors must expose unavailable results instead of fabricated zero score
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits before public deployment.
 
 The state evaluator also has a work budget for history traversal and ancestor sets.
-The current default budget can run out at roughly 4,500 events in a flat history.
-This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
+The budget counts logical units: one per record, per dependency edge, and per propagated missing ID. It does not depend on how ancestry is stored.
+The default budget is 10,000,000 units. A flat history costs seven units per record and a single-parent chain costs thirteen units per record, before evaluation-time charges.
+Histories with more edges can reach it sooner, and the requested state also affects the work.
 The configured event-count limit does not guarantee successful evaluation of every history below that count.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.
 Use the [state validation guide](../crates/jvc-state/VALIDATION.md) for its tested corpus and limits.

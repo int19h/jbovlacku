@@ -25,13 +25,12 @@ Publication membership stays separate from eligibility and status.
 Exclusions and local blocks remove shares after normalization. They do not increase surviving shares.
 `publication_status` and `account_control` expose the frontend status and certificate fields directly.
 
-The ancestry cache uses indexed bitsets and topological unions. Its global work budget counts bitset allocation, union words, dependency indexing, and missing-ID propagation.
+The ancestry cache uses exact intervals over a topological layout. Records of one issuer occupy a contiguous block of layout positions, parents before children, and each closure is a sorted list of disjoint position ranges.
+Its global work budget counts logical work: one unit per record, per dependency edge, and per missing ID propagated, for each of the three link modes, plus lifecycle and closure charges on the same terms.
+The count does not depend on the storage representation, so a limit means the same thing in every build.
 Construction stops as soon as the budget runs out. The evaluator does not publish confident partial state from that construction.
-The default budget is 1,000,000 words. Each of the three caches allocates a full indexed bitset for each event.
-Even unrelated events therefore cost about `3 * N * ceil(N / 64)` words. The default budget supports roughly 4,500 unrelated events.
-Dependencies and carry unions reduce that ceiling. This is a prototype limit, not a production scale target.
+The default budget is 10,000,000 units. A flat history costs seven units per record, and a single-parent chain costs thirteen units per record except for six units saved at the root, before evaluation-time closure charges.
 Exceeding the budget makes the entire evaluation unavailable, including other accounts and native publications, with reason `resource_unavailable`.
-A party that supplies a few thousand admitted events can therefore exhaust the default budget. The 200,000-event admission limit does not promise evaluation support at that size.
 A signed chain of 2,429 imported definitions with four certified account periods passes the default budget.
 Witness groups are cached per policy. Claim chains and carry boundaries are cached per account candidate.
 A 5,000-event chain with a smaller budget returns unavailable without recursive traversal.

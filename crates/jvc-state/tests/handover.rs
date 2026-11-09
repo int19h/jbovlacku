@@ -1868,7 +1868,7 @@ fn evaluate_observed(input: &EvaluationInput) -> Evaluation {
 }
 
 #[test]
-fn incremental_width_growth_with_carried_account_history_keeps_resource_results() {
+fn incremental_record_growth_with_carried_account_history_keeps_resource_results() {
     let mut f = Fixture::new();
     f.handover("deprecated");
     while f.input.events.len() < 64 {
@@ -1910,7 +1910,9 @@ fn incremental_width_growth_with_carried_account_history_keeps_resource_results(
             .unwrap();
         delta.add_record(event, None);
         let state = state.advance(delta, &[]);
-        assert!(state.statistics().rebuilt);
+        // Ranges have no width boundary at 64 records: a sufficient
+        // budget takes the fast path, an insufficient one rebuilds.
+        assert_eq!(state.statistics().rebuilt, budget < low);
         assert_eq!(state.evaluation(), &evaluate(&f.input));
     }
 }

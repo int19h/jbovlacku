@@ -1,6 +1,7 @@
 //! Rebuild editorial state from authenticated records and explicitly selected policy.
 //! Missing inputs remain visible. Record delivery order does not select a winner.
 mod accounts;
+mod ancestors;
 mod api;
 mod graph;
 mod incremental;
@@ -132,7 +133,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             events: 200_000,
-            traversal: 1_000_000,
+            traversal: 10_000_000,
             claim_depth: 1024,
         }
     }
