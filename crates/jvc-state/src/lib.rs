@@ -373,7 +373,7 @@ fn apply_overlay(result: &mut Evaluation, suspended: &impl Fn(&str) -> bool) {
         .overlay
         .as_ref()
         .and_then(|overlay| overlay["public_shun_issuer"].as_str())
-        .is_some_and(|issuer| suspended(issuer))
+        .is_some_and(suspended)
     {
         result.available = false;
         result
