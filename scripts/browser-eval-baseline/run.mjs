@@ -14,6 +14,7 @@ import {
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { canonicalize, utf8 } from "../../packages/core/src/index.ts";
 import { spawn, execFileSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
 import { deserialize } from "node:v8";
@@ -73,7 +74,7 @@ const head = execFileSync("git", ["rev-parse", "HEAD"], {
 }).trim();
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const hashId = (bytes) => `sha256:${sha(bytes)}`;
-const hashJson = (value) => hashId(JSON.stringify(value));
+const hashJson = (value) => hashId(canonicalize(utf8(JSON.stringify(value))));
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 function submittedInventory(input, envelope) {
   const events = input.events.map((value) => JSON.parse(value).id);
