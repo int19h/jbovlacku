@@ -146,7 +146,12 @@ window.bench = {
   },
   async productReload(inventory) {
     const start = performance.now();
-    await productStore.commitInventory(inventory);
+    if (typeof productStore.commitInventory === "function")
+      await productStore.commitInventory(inventory);
+    else {
+      await productStore.put("inventory", inventory.snapshot, inventory);
+      await productStore.put("inventory", "latest", inventory);
+    }
     productSnapshot = inventory.snapshot;
     const before = productWorkerBytes;
     const result = await productCalculator.ensure({ mode: "personal" });
