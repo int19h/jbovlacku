@@ -413,7 +413,9 @@ impl EvaluatedState {
                 )
             });
             self.graph = None;
-            std::rc::Rc::make_mut(&mut self.prepared.nodes).extend(added);
+            if !added.is_empty() {
+                std::rc::Rc::make_mut(&mut self.prepared.nodes).extend(added);
+            }
             self.rebuild();
             self.statistics.rebuilt = true;
             self.statistics.reason = Some(reason);
@@ -1913,6 +1915,113 @@ mod rebuild_tests {
             child.checkpoint("projection").unwrap(),
             full.into_state().checkpoint("projection").unwrap()
         );
+    }
+
+    #[test]
+    fn configuration_only_fork_rebuild_shares_projection() {
+        let (prepared, _, _) = projection_fixture();
+        let options = prepared.options.clone();
+        let parent = prepared.into_state();
+        let parent_checkpoint = parent.checkpoint("projection").unwrap();
+        let original = std::rc::Rc::as_ptr(&parent.prepared.nodes);
+        let overlay = json!({
+            "version":2,
+            "trust":[],
+            "blocked":[],
+            "root_changes":[],
+            "public_shun_issuer":null
+        });
+        let mut delta = PreparedEvaluationInput::new(options);
+        delta.options.overlay = Some(overlay.clone());
+        let child = parent.clone().advance(delta, &[]);
+        assert!(child.statistics().rebuilt);
+        assert_eq!(
+            child.statistics().reason.as_deref(),
+            Some("configuration_changed")
+        );
+        assert!(std::rc::Rc::ptr_eq(
+            &parent.prepared.nodes,
+            &child.prepared.nodes
+        ));
+        assert_eq!(std::rc::Rc::as_ptr(&child.prepared.nodes), original);
+        assert_shared_projection(&parent);
+        assert_shared_projection(&child);
+        assert_eq!(parent.checkpoint("projection").unwrap(), parent_checkpoint);
+
+        let (mut full, _, _) = projection_fixture();
+        full.options.overlay = Some(overlay);
+        assert_matches_full(&child, &full);
+    }
+
+    #[test]
+    fn unique_removal_rebuild_reuses_projection() {
+        let (prepared, _, target) = projection_fixture();
+        let options = prepared.options.clone();
+        let state = prepared.into_state();
+        let original = std::rc::Rc::as_ptr(&state.prepared.nodes);
+        let delta = PreparedEvaluationInput::new(options);
+        let state = state.advance(delta, std::slice::from_ref(&target));
+        assert!(state.statistics().rebuilt);
+        assert_eq!(state.statistics().reason.as_deref(), Some("record_removed"));
+        assert_eq!(std::rc::Rc::as_ptr(&state.prepared.nodes), original);
+        assert!(!state.prepared.nodes.contains_key(&target));
+        assert_shared_projection(&state);
+        assert_matches_full(&state, &base());
+    }
+
+    #[test]
+    fn fork_removal_leaves_parent_projection_unchanged() {
+        let (prepared, _, target) = projection_fixture();
+        let options = prepared.options.clone();
+        let parent = prepared.into_state();
+        let parent_checkpoint = parent.checkpoint("projection").unwrap();
+        let original = std::rc::Rc::as_ptr(&parent.prepared.nodes);
+        let delta = PreparedEvaluationInput::new(options);
+        let child = parent.clone().advance(delta, std::slice::from_ref(&target));
+        assert!(child.statistics().rebuilt);
+        assert_eq!(child.statistics().reason.as_deref(), Some("record_removed"));
+        assert_ne!(std::rc::Rc::as_ptr(&child.prepared.nodes), original);
+        assert!(parent.prepared.nodes.contains_key(&target));
+        assert!(!child.prepared.nodes.contains_key(&target));
+        assert_shared_projection(&parent);
+        assert_shared_projection(&child);
+        assert_eq!(parent.checkpoint("projection").unwrap(), parent_checkpoint);
+        assert_matches_full(&child, &base());
+    }
+
+    #[test]
+    fn fork_replacement_leaves_parent_projection_unchanged() {
+        let (prepared, _, target) = projection_fixture();
+        let options = prepared.options.clone();
+        let parent = prepared.into_state();
+        let parent_checkpoint = parent.checkpoint("projection").unwrap();
+        let original = std::rc::Rc::as_ptr(&parent.prepared.nodes);
+        let replacement = host(
+            target.clone(),
+            &identity_from_seed(&[1u8; 32]),
+            vec![],
+            json!({"kind":"identity.merge"}),
+        );
+        let mut delta = PreparedEvaluationInput::new(options);
+        delta.add_host_verified_record(replacement.clone());
+        let child = parent.clone().advance(delta, &[]);
+        assert!(child.statistics().rebuilt);
+        assert_eq!(
+            child.statistics().reason.as_deref(),
+            Some("record_replaced")
+        );
+        assert_ne!(std::rc::Rc::as_ptr(&child.prepared.nodes), original);
+        assert_ne!(
+            parent.prepared.nodes[&target],
+            child.prepared.nodes[&target]
+        );
+        assert_shared_projection(&parent);
+        assert_shared_projection(&child);
+        assert_eq!(parent.checkpoint("projection").unwrap(), parent_checkpoint);
+
+        let (mut full, _, _) = projection_fixture();
+        std::rc::Rc::make_mut(&mut full.nodes).insert(target, replacement.node);
+        assert_matches_full(&child, &full);
     }
 
     /// Boundary-crossing probe: the structural closure of an issuer's tip
