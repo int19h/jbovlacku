@@ -1,15 +1,15 @@
 import { LocalStore } from "../../apps/web/src/data/store.ts";
-import { initializeCore } from "../../packages/core/src/browser.ts";
-import { seedProduct } from "./seed.mjs";
+import { seedProductStream } from "./seed.mjs";
 
 self.onmessage = async (event) => {
   try {
-    await initializeCore();
     const store = new LocalStore(event.data.database);
-    const input = await (
-      await fetch(event.data.input, { cache: "no-store" })
-    ).json();
-    const inventory = await seedProduct(store, input);
+    const inventory = await seedProductStream(
+      store,
+      event.data.fixture,
+      event.data.records,
+    );
+    console.error("seed worker: records committed");
     (await store.database).close();
     self.postMessage({ inventory });
   } catch (error) {

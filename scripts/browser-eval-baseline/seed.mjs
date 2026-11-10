@@ -54,6 +54,7 @@ const writeBatch = async (database, name, rows) => {
 export const seedProduct = async (store, value) => {
   const database = await store.database;
   for (let start = 0; start < value.events.length; start += 256) {
+    if (start % 16384 === 0) console.error(`seed worker: record ${start}`);
     const records = value.events.slice(start, start + 256).map((envelope) => {
       const { id, header } = JSON.parse(envelope);
       const body = value.bodies[id];
@@ -87,4 +88,49 @@ export const seedProduct = async (store, value) => {
   await store.put("inventory", inventory.snapshot, inventory);
   await store.put("inventory", "latest", inventory);
   return inventory;
+};
+
+export const seedProductStream = async (store, fixtureUrl, recordsUrl) => {
+  const fixture = await (await fetch(fixtureUrl)).json();
+  const response = await fetch(recordsUrl);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const database = await store.database;
+  let text = "";
+  let rows = [];
+  const flush = async () => {
+    if (rows.length === 0) return;
+    await writeBatch(database, "records", rows);
+    rows = [];
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    text += decoder.decode(value, { stream: !done });
+    let end;
+    while ((end = text.indexOf("\n")) >= 0) {
+      const line = text.slice(0, end);
+      text = text.slice(end + 1);
+      if (!line) continue;
+      const row = JSON.parse(line);
+      rows.push([row.id, row]);
+      if (rows.length === 256) await flush();
+    }
+    if (done) break;
+  }
+  if (text) {
+    const row = JSON.parse(text);
+    rows.push([row.id, row]);
+  }
+  await flush();
+  await writeBatch(
+    database,
+    "selections",
+    Object.entries(fixture.import_selections).map(([hash, selection]) => [
+      hash,
+      JSON.stringify(selection),
+    ]),
+  );
+  await store.put("inventory", fixture.inventory.snapshot, fixture.inventory);
+  await store.put("inventory", "latest", fixture.inventory);
+  return fixture.inventory;
 };

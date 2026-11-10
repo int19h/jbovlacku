@@ -76,12 +76,14 @@ const hashId = (bytes) => `sha256:${sha(bytes)}`;
 const hashJson = (value) => hashId(JSON.stringify(value));
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 function submittedInventory(input, envelope) {
-  const id = JSON.parse(envelope).id;
   const events = input.events.map((value) => JSON.parse(value).id);
-  const index = events.findIndex((event) => event > id);
-  events.splice(index < 0 ? events.length : index, 0, id);
   const envelopes = [...input.events];
-  envelopes.splice(index < 0 ? envelopes.length : index, 0, envelope);
+  if (envelope) {
+    const id = JSON.parse(envelope).id;
+    const index = events.findIndex((event) => event > id);
+    events.splice(index < 0 ? events.length : index, 0, id);
+    envelopes.splice(index < 0 ? envelopes.length : index, 0, envelope);
+  }
   const bodies = [
     ...new Set(
       envelopes
@@ -431,6 +433,38 @@ async function prepare() {
   }
 }
 
+async function prepareFixture() {
+  const input = JSON.parse(await readFile(join(out, "input.json"), "utf8"));
+  const inventory = submittedInventory(input, null);
+  await writeFile(
+    join(out, "fixture.json"),
+    JSON.stringify({
+      inventory,
+      import_selections: input.import_selections,
+    }),
+  );
+  const stream = createWriteStream(join(out, "records.jsonl"));
+  for (const envelope of input.events) {
+    const { id, header } = JSON.parse(envelope);
+    const body = input.bodies[id];
+    const row = {
+      id,
+      envelope,
+      body: body ?? null,
+      bodyStatus:
+        body !== undefined ? "present" : header.content ? "missing" : "none",
+      bodyHash: header.content?.hash ?? null,
+    };
+    if (!stream.write(JSON.stringify(row) + "\n"))
+      await new Promise((resolve) => stream.once("drain", resolve));
+  }
+  stream.end();
+  await new Promise((resolve, reject) => {
+    stream.once("finish", resolve);
+    stream.once("error", reject);
+  });
+}
+
 let serverProcess = null,
   activeCleanup = null,
   outputFailure = null;
@@ -584,6 +618,8 @@ const http = createServer(async (req, res) => {
     "/jvc_runtime_bg.wasm": [wasmPath, "application/wasm"],
     "/workers/jvc_runtime_bg.wasm": [wasmPath, "application/wasm"],
     "/input.json": [join(out, "input.json"), "application/json"],
+    "/fixture.json": [join(out, "fixture.json"), "application/json"],
+    "/records.jsonl": [join(out, "records.jsonl"), "application/x-ndjson"],
   };
   const entry = map[req.url];
   if (!entry) {
@@ -1259,6 +1295,7 @@ try {
       )
     )
       throw Error("The measurement requires an exact-profile view.");
+    await prepareFixture();
     if (!lifecycle.cancelled && !args["product-reload"])
       await startProductServer();
     global.gc?.();
