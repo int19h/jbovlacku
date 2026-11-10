@@ -53,22 +53,28 @@ const writeBatch = async (database, name, rows) => {
 };
 export const seedProduct = async (store, value) => {
   const database = await store.database;
-  const records = value.events.map((envelope) => {
-    const { id, header } = JSON.parse(envelope);
-    const body = value.bodies[id];
-    return [
-      id,
-      {
+  for (let start = 0; start < value.events.length; start += 256) {
+    const records = value.events.slice(start, start + 256).map((envelope) => {
+      const { id, header } = JSON.parse(envelope);
+      const body = value.bodies[id];
+      return [
         id,
-        envelope,
-        body: body ?? null,
-        bodyStatus:
-          body !== undefined ? "present" : header.content ? "missing" : "none",
-        bodyHash: header.content?.hash ?? null,
-      },
-    ];
-  });
-  await writeBatch(database, "records", records);
+        {
+          id,
+          envelope,
+          body: body ?? null,
+          bodyStatus:
+            body !== undefined
+              ? "present"
+              : header.content
+                ? "missing"
+                : "none",
+          bodyHash: header.content?.hash ?? null,
+        },
+      ];
+    });
+    await writeBatch(database, "records", records);
+  }
   await writeBatch(
     database,
     "selections",
