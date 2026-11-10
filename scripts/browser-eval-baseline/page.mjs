@@ -4,11 +4,8 @@ import {
   createEvent,
   utf8,
 } from "../../packages/core/src/browser.ts";
-import {
-  PersonalCalculator,
-  effectiveOverlay,
-  selectAddedEventIds,
-} from "../../apps/web/src/data/personal.ts";
+import * as personal from "../../apps/web/src/data/personal.ts";
+const { PersonalCalculator, effectiveOverlay } = personal;
 import { LocalStore, emptyOverlay } from "../../apps/web/src/data/store.ts";
 import { setPreferredView } from "../../apps/web/src/data/api.ts";
 import { seedProduct } from "./seed.mjs";
@@ -256,7 +253,7 @@ window.bench = {
     const inventoryIds = input.events.map(
       (envelope) => JSON.parse(envelope).id,
     );
-    const addedIds = selectAddedEventIds(inventoryIds, sentEventIds);
+    const addedIds = personal.selectAddedEventIds(inventoryIds, sentEventIds);
     if (!addedIds)
       throw new Error("The diagnostic base is not an ordered subset.");
     const addedSet = new Set(addedIds);
