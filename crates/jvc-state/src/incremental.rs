@@ -1,7 +1,7 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v2";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v3";
 const APPENDS_BEFORE_REBASE: usize = 64;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -37,11 +37,6 @@ pub struct EvaluatedState {
     /// rebuild on the first advance instead.
     saved_ancestry_bytes: Option<usize>,
     checkpoint_restored: bool,
-    /// Last maxima charge per register, from the latest full
-    /// evaluation or append. Saved in checkpoints so a restored
-    /// state prices its next register update without replaying the
-    /// previous unions.
-    register_charges: BTreeMap<String, usize>,
     statistics: UpdateStatistics,
     judgment_changes: Option<JudgmentChanges>,
     ranking_index: std::cell::RefCell<Option<policy::ApproximateContextIndex>>,
@@ -71,7 +66,6 @@ impl Clone for EvaluatedState {
             remaining_work: self.remaining_work,
             saved_ancestry_bytes: self.saved_ancestry_bytes,
             checkpoint_restored: self.checkpoint_restored,
-            register_charges: self.register_charges.clone(),
             statistics: self.statistics.clone(),
             judgment_changes: self.judgment_changes.clone(),
             ranking_index: Default::default(),
@@ -101,7 +95,6 @@ impl EvaluatedState {
             remaining_work: 0,
             saved_ancestry_bytes: None,
             checkpoint_restored: false,
-            register_charges: BTreeMap::new(),
             statistics: UpdateStatistics::default(),
             judgment_changes: None,
             ranking_index: Default::default(),
@@ -297,7 +290,6 @@ impl EvaluatedState {
         self.graph = None;
         let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
         self.evaluation = evaluate_graph(&self.prepared.options, &graph);
-        self.register_charges = self.evaluation.register_maxima_charges.clone();
         self.remaining_work = graph.budget.get();
         self.graph = Some(graph);
         self.unresolved = unresolved(&self.prepared);
@@ -658,15 +650,16 @@ impl EvaluatedState {
             // evaluation already paid for the previous member set,
             // so refund exactly that and keep the new charge. No
             // unions are replayed to recover the old charge.
-            let previous_charge = self.register_charges.get(&key).copied().unwrap_or(0);
+            let previous_charge = self
+                .evaluation
+                .registers
+                .get(&key)
+                .map(|register| register.maxima_charge)
+                .unwrap_or(0);
             let charge_before = graph.ancestry.bytes();
             let heads = graph.maxima(members, false);
             let new_charge = graph.ancestry.bytes() - charge_before;
             graph.ancestry.refund(previous_charge);
-            self.register_charges.insert(key.clone(), new_charge);
-            self.evaluation
-                .register_maxima_charges
-                .insert(key.clone(), new_charge);
             let values: BTreeSet<String> = heads
                 .iter()
                 .map(|id| graph.nodes[id].action["value"].as_str().unwrap().into())
@@ -693,6 +686,7 @@ impl EvaluatedState {
                     heads,
                     conflicted: values.len() > 1,
                     values,
+                    maxima_charge: new_charge,
                 },
             );
         } else {
@@ -760,11 +754,13 @@ impl EvaluatedState {
             remaining_work: usize,
             #[serde(skip_serializing_if = "Option::is_none")]
             ancestry_bytes: Option<usize>,
-            register_charges: BTreeMap<String, usize>,
+            /// Maxima charge per register, in `evaluation.registers`
+            /// order at save time.
+            register_maxima_charges: Vec<usize>,
         }
         serde_json::to_vec(&Saved {
             version: if results_only {
-                "jvc-evaluation-results-v2"
+                "jvc-evaluation-results-v3"
             } else {
                 CHECKPOINT_VERSION
             },
@@ -779,7 +775,12 @@ impl EvaluatedState {
                 .as_ref()
                 .map(|graph| graph.ancestry.bytes())
                 .or(self.saved_ancestry_bytes),
-            register_charges: self.register_charges.clone(),
+            register_maxima_charges: self
+                .evaluation
+                .registers
+                .values()
+                .map(|register| register.maxima_charge)
+                .collect(),
         })
         .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))
     }
@@ -815,12 +816,12 @@ impl EvaluatedState {
             #[serde(default)]
             ancestry_bytes: Option<usize>,
             #[serde(default)]
-            register_charges: BTreeMap<String, usize>,
+            register_maxima_charges: Vec<usize>,
         }
         let saved: Saved = serde_json::from_slice(bytes)
             .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
         let expected_version = if records.is_some() {
-            "jvc-evaluation-results-v2"
+            "jvc-evaluation-results-v3"
         } else {
             CHECKPOINT_VERSION
         };
@@ -854,10 +855,19 @@ impl EvaluatedState {
             nodes,
             event_limit_exceeded: saved.event_limit_exceeded,
         };
-        // The evaluation's charge map is not serialized with it;
-        // the checkpoint's state-level copy restores it.
+        // The registers' charge fields are not serialized with
+        // them; the checkpoint's array restores them in register
+        // order.
         let mut evaluation = saved.evaluation;
-        evaluation.register_maxima_charges = saved.register_charges.clone();
+        if evaluation.registers.len() == saved.register_maxima_charges.len() {
+            for (register, charge) in evaluation
+                .registers
+                .values_mut()
+                .zip(saved.register_maxima_charges.iter())
+            {
+                register.maxima_charge = *charge;
+            }
+        }
         Ok(Self {
             unresolved: unresolved(&prepared),
             prepared,
@@ -866,7 +876,6 @@ impl EvaluatedState {
             remaining_work: saved.remaining_work,
             saved_ancestry_bytes: saved.ancestry_bytes,
             checkpoint_restored: true,
-            register_charges: saved.register_charges,
             statistics: UpdateStatistics::default(),
             judgment_changes: None,
             ranking_index: Default::default(),
@@ -2588,6 +2597,98 @@ mod rebuild_tests {
             visits <= 16 * count,
             "{visits} maxima range visits for {count} old judgments"
         );
+    }
+
+    /// Checkpoints written before the register charges were stored
+    /// carry the old version and are rejected; the caller rebuilds
+    /// from the records, and the rebuilt state matches a full
+    /// evaluation.
+    #[test]
+    fn old_version_checkpoint_is_rejected_and_rebuild_matches() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let issuer = identity_from_seed(&[8u8; 32]);
+        let root = format!("jve1:{:064x}", 980_000usize);
+        prepared.add_host_verified_record(host(
+            root.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        let state = prepared.clone().into_state();
+        let saved = state.checkpoint("host-checked").unwrap();
+        let mut value: Value = serde_json::from_slice(&saved).unwrap();
+        value["version"] = "jvc-evaluation-checkpoint-v2".into();
+        let old = serde_json::to_vec(&value).unwrap();
+        assert!(EvaluatedState::restore_host_checkpoint(&old, "host-checked").is_err());
+        // Rebuild from the records and append: the result matches a
+        // full evaluation.
+        let judgment = host(
+            format!("jve1:{:064x}", 980_001usize),
+            &issuer,
+            vec![root],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        prepared.add_host_verified_record(judgment.clone());
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(judgment);
+        let rebuilt = state.advance(delta, &[]);
+        assert_matches_full(&rebuilt, &prepared);
+    }
+
+    /// After 63 earlier appends on one chain, the 64th append's
+    /// register pricing must not rebuild the appended-rank index
+    /// per member: the counted rank-index and range work stays
+    /// linear in the record count.
+    #[test]
+    fn register_pricing_after_64_chained_appends_stays_linear() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let issuer = identity_from_seed(&[8u8; 32]);
+        let base_count = 500usize;
+        let mut tip = String::new();
+        for i in 0..base_count {
+            let id = format!("jve1:{:064x}", 990_000 + i);
+            prepared.add_host_verified_record(host(
+                id.clone(),
+                &issuer,
+                if tip.is_empty() { vec![] } else { vec![tip] },
+                json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+            ));
+            tip = id;
+        }
+        let mut state = prepared.clone().into_state();
+        for step in 0..64usize {
+            let id = format!("jve1:{:064x}", 991_000 + step);
+            let record = host(
+                id.clone(),
+                &issuer,
+                vec![tip.clone()],
+                json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+            );
+            prepared.add_host_verified_record(record.clone());
+            let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+            delta.add_host_verified_record(record);
+            if step == 63 {
+                graph::reset_audit_work();
+                graph::reset_maxima_range_visits();
+            }
+            state = state.advance(delta, &[]);
+            tip = id;
+            if step == 63 {
+                assert!(!state.statistics().rebuilt);
+                let work = graph::audit_work();
+                assert!(
+                    work <= 32 * (base_count + 64),
+                    "{work} audited work on the 64th append"
+                );
+            }
+        }
+        assert_matches_full(&state, &prepared);
     }
 
     /// A checkpoint written before the byte total was saved has no

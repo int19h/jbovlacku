@@ -224,6 +224,17 @@ pub(crate) struct Graph {
     /// `local_complete`, computed in one pass at lifecycle build and
     /// kept current by appends.
     pub issuer_complete: BTreeMap<String, bool>,
+    /// Appended-rank index for fresh range counts, built once per
+    /// appended-record count and reused. Rebuilding it per maxima
+    /// merge made one append after many earlier appends rebuild it
+    /// once per register member.
+    pub rank_index: std::cell::RefCell<
+        Option<(
+            usize,
+            BTreeMap<(u32, String, u32), String>,
+            BTreeMap<u32, String>,
+        )>,
+    >,
     /// Semantic `account.set` record IDs by account token
     /// (`origin#account`), in record order. Account evaluation reads
     /// this index instead of scanning all records per claim.
@@ -257,6 +268,7 @@ impl Graph {
             ancestry: super::ancestors::AncestryBudget::new(),
             boundary: BoundaryCrossings::default(),
             issuer_complete: BTreeMap::new(),
+            rank_index: std::cell::RefCell::new(None),
             account_sets: BTreeMap::new(),
             issuer_missing: BTreeMap::new(),
             appended_ids: Vec::new(),
@@ -564,12 +576,7 @@ impl Graph {
                         return;
                     }
                     cutoff.ids.extend(&self.ancestry, c.ids);
-                    cutoff.ids.fresh_ranges = Self::fresh_count(
-                        &self.space,
-                        &self.appended_rank,
-                        &self.nodes,
-                        &cutoff.ids,
-                    );
+                    cutoff.ids.fresh_ranges = self.fresh_range_count(&cutoff.ids);
                     if self.ancestry.failed() {
                         cutoff.resource = true;
                     }
@@ -755,37 +762,58 @@ impl Graph {
     /// appended member of the set, plus one for each appended member
     /// whose fresh predecessor is not itself a member.
     pub fn fresh_range_count(&self, set: &IdSet) -> usize {
-        Self::fresh_count(&self.space, &self.appended_rank, &self.nodes, set)
+        if set.extra.is_empty() {
+            return set.range_count();
+        }
+        // Index appended records by rank once per state: by full
+        // rank for predecessor lookups, and the last one at each
+        // insertion position. The index is rebuilt only when the
+        // appended-record count changes, not per merge.
+        let mut cache = self.rank_index.borrow_mut();
+        if cache.as_ref().map(|(len, _, _)| *len) != Some(self.appended_rank.len()) {
+            #[cfg(test)]
+            count_work(self.appended_rank.len());
+            let mut by_rank: BTreeMap<(u32, String, u32), String> = BTreeMap::new();
+            let mut last_at: BTreeMap<u32, String> = BTreeMap::new();
+            for (id, &(position, sub)) in &self.appended_rank {
+                let issuer = self.nodes[id].issuer.clone();
+                by_rank.insert((position, issuer.clone(), sub), id.clone());
+                let replace = match last_at.get(&position) {
+                    None => true,
+                    Some(current) => {
+                        let current_issuer = &self.nodes[current.as_str()].issuer;
+                        (issuer.as_str(), sub)
+                            > (current_issuer.as_str(), self.appended_rank[current].1)
+                    }
+                };
+                if replace {
+                    last_at.insert(position, id.clone());
+                }
+            }
+            *cache = Some((self.appended_rank.len(), by_rank, last_at));
+        }
+        let (_, by_rank, last_at) = cache.as_ref().unwrap();
+        #[cfg(test)]
+        count_work(set.range_count() + set.extra.len());
+        Self::fresh_count(
+            &self.space,
+            &self.appended_rank,
+            by_rank,
+            last_at,
+            &self.nodes,
+            set,
+        )
     }
 
     fn fresh_count(
         space: &super::ancestors::Space,
         appended_rank: &BTreeMap<String, (u32, u32)>,
+        by_rank: &BTreeMap<(u32, String, u32), String>,
+        last_at: &BTreeMap<u32, String>,
         nodes: &BTreeMap<String, Node>,
         set: &IdSet,
     ) -> usize {
         let mut count = set.range_count();
-        if set.extra.is_empty() {
-            return count;
-        }
-        // Index appended records by rank: by full rank for predecessor
-        // lookups, and the last one at each insertion position.
-        let mut by_rank: BTreeMap<(u32, String, u32), &String> = BTreeMap::new();
-        let mut last_at: BTreeMap<u32, &String> = BTreeMap::new();
-        for (id, &(position, sub)) in appended_rank {
-            let issuer = &nodes[id].issuer;
-            by_rank.insert((position, issuer.clone(), sub), id);
-            let replace = match last_at.get(&position) {
-                None => true,
-                Some(current) => {
-                    let current_issuer = &nodes[*current].issuer;
-                    (issuer.as_str(), sub) > (current_issuer.as_str(), appended_rank[*current].1)
-                }
-            };
-            if replace {
-                last_at.insert(position, id);
-            }
-        }
         // A stored range does not start a fresh run when the appended
         // record inserted right before its first member is a member.
         for start in set.range_starts() {
@@ -1082,6 +1110,12 @@ impl Graph {
                     let examined = larger.range_count() + closure.ids.range_count();
                     MAXIMA_RANGE_VISITS.with(|count| count.set(count.get() + examined));
                     count_work(examined);
+                }
+                // A member already inside the accumulator changes
+                // nothing: skip its merge (and its charge) instead
+                // of recounting an unchanged accumulator.
+                if closure.ids.subset_of(&larger) {
+                    continue;
                 }
                 larger.union(budget, &closure.ids);
                 // The accumulator's charge for the next merge must

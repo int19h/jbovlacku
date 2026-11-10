@@ -394,6 +394,27 @@ impl IdSet {
         self.union(budget, &other);
     }
 
+    /// True when every member of this set is also a member of
+    /// `other`. Ranges are merge-scanned once; appended members go
+    /// through membership tests.
+    pub fn subset_of(&self, other: &IdSet) -> bool {
+        let mine = self.ranges.as_slice();
+        let theirs = other.ranges.as_slice();
+        let mut index = 0;
+        for range in mine {
+            while index < theirs.len() && theirs[index].last < range.first {
+                index += 1;
+            }
+            if index >= theirs.len()
+                || theirs[index].first > range.first
+                || theirs[index].last < range.last
+            {
+                return false;
+            }
+        }
+        self.extra.iter().all(|id| other.contains(id))
+    }
+
     /// True when the union of the given sets covers every position in
     /// `[first, last]`. One merge pass over the parents' sorted range
     /// lists: each range is examined once, so the work is linear in
