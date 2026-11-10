@@ -14,7 +14,11 @@ import {
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { canonicalize, initializeCore, utf8 } from "../../packages/core/src/index.ts";
+import {
+  canonicalize,
+  initializeCore,
+  utf8,
+} from "../../packages/core/src/index.ts";
 import { spawn, execFileSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
 import { deserialize } from "node:v8";
