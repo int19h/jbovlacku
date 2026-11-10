@@ -54,7 +54,6 @@ const writeBatch = async (database, name, rows) => {
 export const seedProduct = async (store, value) => {
   const database = await store.database;
   for (let start = 0; start < value.events.length; start += 256) {
-    if (start % 16384 === 0) console.error(`seed worker: record ${start}`);
     const records = value.events.slice(start, start + 256).map((envelope) => {
       const { id, header } = JSON.parse(envelope);
       const body = value.bodies[id];

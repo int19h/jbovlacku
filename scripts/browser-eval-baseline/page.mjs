@@ -51,7 +51,6 @@ const request = (message) =>
   });
 window.bench = {
   async prepareProduct(view) {
-    console.error("product setup: start");
     setPreferredView(view);
     const database = `measurement-${crypto.randomUUID()}`;
     const inventory = await new Promise((resolve, reject) => {
@@ -71,9 +70,7 @@ window.bench = {
         records: "/records.jsonl",
       });
     });
-    console.error("product setup: seed complete");
     mainWasm = await initializeCore();
-    console.error("product setup: core ready");
     NativeWorker = globalThis.Worker;
     productWorkerBytes = 0;
     globalThis.Worker = class extends NativeWorker {
@@ -89,7 +86,6 @@ window.bench = {
       }
     };
     productStore = new LocalStore(database);
-    console.error("product setup: store open");
     productCalculator = new PersonalCalculator(productStore, async () => ({
       identity: identityFromSeed(seed),
     }));

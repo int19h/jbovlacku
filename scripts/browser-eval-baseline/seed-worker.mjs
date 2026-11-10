@@ -9,7 +9,6 @@ self.onmessage = async (event) => {
       event.data.fixture,
       event.data.records,
     );
-    console.error("seed worker: records committed");
     (await store.database).close();
     self.postMessage({ inventory });
   } catch (error) {
