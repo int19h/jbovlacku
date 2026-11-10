@@ -14,7 +14,7 @@ import {
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { canonicalize, utf8 } from "../../packages/core/src/index.ts";
+import { canonicalize, initializeCore, utf8 } from "../../packages/core/src/index.ts";
 import { spawn, execFileSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
 import { deserialize } from "node:v8";
@@ -435,6 +435,7 @@ async function prepare() {
 }
 
 async function prepareFixture() {
+  await initializeCore(await readFile(wasmPath));
   const input = JSON.parse(await readFile(join(out, "input.json"), "utf8"));
   const inventory = submittedInventory(input, null);
   await writeFile(
