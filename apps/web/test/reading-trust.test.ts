@@ -477,17 +477,37 @@ test("personal roots use accepted continuity from the cached snapshot, including
         });
       let revision = 1;
       const inventory = async (items: any[]) => {
-        await store.put("inventory", "latest", {
-          snapshot: "sha256:" + String(revision++).padStart(64, "0"),
+        const snapshot = "sha256:" + String(revision++).padStart(64, "0");
+        const ids = items.map((i) => i.envelope.id).sort();
+        const inventory = {
+          snapshot,
           logical_inventory: "sha256:" + "a".repeat(64),
+          events_digest: core.contentHash(
+            core.utf8(
+              ids
+                .map(
+                  (id) =>
+                    core.canonicalize(
+                      core.utf8(
+                        JSON.stringify(
+                          items.find((item) => item.envelope.id === id)
+                            .envelope,
+                        ),
+                      ),
+                    ) + "\n",
+                )
+                .join(""),
+            ),
+          ),
           view: view.envelope.id,
-          events: items.map((i) => i.envelope.id).sort(),
+          events: ids,
           bodies: items
             .filter((i) => i.body)
             .map((i) => i.envelope.header.content.hash)
             .sort(),
           selections: [],
-        });
+        };
+        await store.commitInventory(inventory);
       };
       await inventory(records);
       const calculator = new PersonalCalculator(store, async () => ({
