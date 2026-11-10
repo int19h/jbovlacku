@@ -894,19 +894,23 @@ async function trial(condition, rep, profile = false) {
       ms: performance.now() - navigationStart,
     });
     const offset = (rep % 3) * 20;
-    const sample = [
-      ...dataset.sample.slice(offset),
-      ...dataset.sample.slice(0, offset),
-    ].map((w) =>
-      args["stress-only"] && w.cohort === "common_manual"
-        ? { ...w, cohort: "synthetic_reviewed_common" }
-        : w,
-    );
-    const targetWord = dataset.sample.find(
-      (w) =>
-        w.cohort === "heavily_judged" ||
-        w.cohort === "many_definitions_no_judgments",
-    );
+    const sample = args.probe
+      ? []
+      : [
+          ...dataset.sample.slice(offset),
+          ...dataset.sample.slice(0, offset),
+        ].map((w) =>
+          args["stress-only"] && w.cohort === "common_manual"
+            ? { ...w, cohort: "synthetic_reviewed_common" }
+            : w,
+        );
+    const targetWord = args.probe
+      ? null
+      : dataset.sample.find(
+          (w) =>
+            w.cohort === "heavily_judged" ||
+            w.cohort === "many_definitions_no_judgments",
+        );
     if (!args.probe) {
       if (args["product-reload"]) {
         setupBudgetPause = true;
