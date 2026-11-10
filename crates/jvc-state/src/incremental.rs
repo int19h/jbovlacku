@@ -37,6 +37,11 @@ pub struct EvaluatedState {
     /// rebuild on the first advance instead.
     saved_ancestry_bytes: Option<usize>,
     checkpoint_restored: bool,
+    /// Last maxima charge per register, from the latest full
+    /// evaluation or append. Saved in checkpoints so a restored
+    /// state prices its next register update without replaying the
+    /// previous unions.
+    register_charges: BTreeMap<String, usize>,
     statistics: UpdateStatistics,
     judgment_changes: Option<JudgmentChanges>,
     ranking_index: std::cell::RefCell<Option<policy::ApproximateContextIndex>>,
@@ -66,6 +71,7 @@ impl Clone for EvaluatedState {
             remaining_work: self.remaining_work,
             saved_ancestry_bytes: self.saved_ancestry_bytes,
             checkpoint_restored: self.checkpoint_restored,
+            register_charges: self.register_charges.clone(),
             statistics: self.statistics.clone(),
             judgment_changes: self.judgment_changes.clone(),
             ranking_index: Default::default(),
@@ -95,6 +101,7 @@ impl EvaluatedState {
             remaining_work: 0,
             saved_ancestry_bytes: None,
             checkpoint_restored: false,
+            register_charges: BTreeMap::new(),
             statistics: UpdateStatistics::default(),
             judgment_changes: None,
             ranking_index: Default::default(),
@@ -290,6 +297,7 @@ impl EvaluatedState {
         self.graph = None;
         let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
         self.evaluation = evaluate_graph(&self.prepared.options, &graph);
+        self.register_charges = self.evaluation.register_maxima_charges.clone();
         self.remaining_work = graph.budget.get();
         self.graph = Some(graph);
         self.unresolved = unresolved(&self.prepared);
@@ -627,7 +635,8 @@ impl EvaluatedState {
                 .nodes
                 .values()
                 .filter(|n| {
-                    n.kind == "judgment.set"
+                    n.semantic
+                        && n.kind == "judgment.set"
                         && graph.actor(&n.issuer) == node.issuer
                         && n.action["target"].as_str() == Some(target)
                         && graph.retained(&n.id)
@@ -645,16 +654,19 @@ impl EvaluatedState {
                 })
                 .map(|n| n.id.clone())
                 .collect();
-            let previous_charge = graph.maxima_charge(
-                &members
-                    .iter()
-                    .filter(|id| *id != &node.id)
-                    .cloned()
-                    .collect(),
-                false,
-            );
+            // Price the register from its stored charge: the base
+            // evaluation already paid for the previous member set,
+            // so refund exactly that and keep the new charge. No
+            // unions are replayed to recover the old charge.
+            let previous_charge = self.register_charges.get(&key).copied().unwrap_or(0);
+            let charge_before = graph.ancestry.bytes();
             let heads = graph.maxima(members, false);
+            let new_charge = graph.ancestry.bytes() - charge_before;
             graph.ancestry.refund(previous_charge);
+            self.register_charges.insert(key.clone(), new_charge);
+            self.evaluation
+                .register_maxima_charges
+                .insert(key.clone(), new_charge);
             let values: BTreeSet<String> = heads
                 .iter()
                 .map(|id| graph.nodes[id].action["value"].as_str().unwrap().into())
@@ -748,6 +760,7 @@ impl EvaluatedState {
             remaining_work: usize,
             #[serde(skip_serializing_if = "Option::is_none")]
             ancestry_bytes: Option<usize>,
+            register_charges: BTreeMap<String, usize>,
         }
         serde_json::to_vec(&Saved {
             version: if results_only {
@@ -766,6 +779,7 @@ impl EvaluatedState {
                 .as_ref()
                 .map(|graph| graph.ancestry.bytes())
                 .or(self.saved_ancestry_bytes),
+            register_charges: self.register_charges.clone(),
         })
         .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))
     }
@@ -800,6 +814,8 @@ impl EvaluatedState {
             remaining_work: usize,
             #[serde(default)]
             ancestry_bytes: Option<usize>,
+            #[serde(default)]
+            register_charges: BTreeMap<String, usize>,
         }
         let saved: Saved = serde_json::from_slice(bytes)
             .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
@@ -838,14 +854,19 @@ impl EvaluatedState {
             nodes,
             event_limit_exceeded: saved.event_limit_exceeded,
         };
+        // The evaluation's charge map is not serialized with it;
+        // the checkpoint's state-level copy restores it.
+        let mut evaluation = saved.evaluation;
+        evaluation.register_maxima_charges = saved.register_charges.clone();
         Ok(Self {
             unresolved: unresolved(&prepared),
             prepared,
-            evaluation: saved.evaluation,
+            evaluation,
             graph: None,
             remaining_work: saved.remaining_work,
             saved_ancestry_bytes: saved.ancestry_bytes,
             checkpoint_restored: true,
+            register_charges: saved.register_charges,
             statistics: UpdateStatistics::default(),
             judgment_changes: None,
             ranking_index: Default::default(),
@@ -2377,6 +2398,196 @@ mod rebuild_tests {
                 "{name}: {work} audited work for {used} charged units"
             );
         }
+    }
+
+    /// Two consecutive judgments from an issuer absent from the
+    /// original layout: its records live only in appended `extra`
+    /// sets, whose fresh-layout range counts must charge exactly
+    /// as in a full evaluation, by direct append and by checkpoint
+    /// restore before any rebuild.
+    #[test]
+    fn new_issuer_judgments_match_full_bytes_directly_and_restored() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let issuer = identity_from_seed(&[8u8; 32]);
+        let first = host(
+            format!("jve1:{:064x}", 950_001usize),
+            &issuer,
+            vec![],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        let second = host(
+            format!("jve1:{:064x}", 950_002usize),
+            &issuer,
+            vec![first.node.id.clone()],
+            json!({"kind":"judgment.set","target":publication_id,"value":"curse"}),
+        );
+        let mut state = prepared.clone().into_state();
+        for record in [first, second] {
+            let restored = EvaluatedState::restore_host_checkpoint(
+                &state.checkpoint("host-checked").unwrap(),
+                "host-checked",
+            )
+            .unwrap();
+            prepared.add_host_verified_record(record.clone());
+            let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+            delta.add_host_verified_record(record.clone());
+            let direct = state.clone().advance(delta.clone(), &[]);
+            let restored = restored.advance(delta, &[]);
+            assert_matches_full(&direct, &prepared);
+            assert_matches_full(&restored, &prepared);
+            state = direct;
+        }
+    }
+
+    /// A non-semantic judgment in the register group must not enter
+    /// the incremental member set: `registers` skips it, so the
+    /// append's charged unions and refund match a full evaluation
+    /// even with fragmented (interleaved-chain) closures.
+    #[test]
+    fn nonsemantic_judgment_stays_out_of_the_register_member_set() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let issuer = identity_from_seed(&[8u8; 32]);
+        let mut add = |prepared: &mut PreparedEvaluationInput,
+                       id: usize,
+                       previous: Vec<String>,
+                       action: Value| {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{id:064x}"),
+                &issuer,
+                previous,
+                action,
+            ));
+        };
+        // Two interleaved chains of one issuer.
+        add(
+            &mut prepared,
+            970_001,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        );
+        add(
+            &mut prepared,
+            970_002,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        );
+        add(
+            &mut prepared,
+            970_003,
+            vec![format!("jve1:{:064x}", 970_001usize)],
+            json!({"kind":"identity.merge"}),
+        );
+        add(
+            &mut prepared,
+            970_004,
+            vec![format!("jve1:{:064x}", 970_002usize)],
+            json!({"kind":"identity.merge"}),
+        );
+        add(
+            &mut prepared,
+            970_005,
+            vec![format!("jve1:{:064x}", 970_003usize)],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        add(
+            &mut prepared,
+            970_006,
+            vec![format!("jve1:{:064x}", 970_004usize)],
+            json!({"kind":"judgment.set","target":publication_id,"value":5}),
+        );
+        add(
+            &mut prepared,
+            970_007,
+            vec![
+                format!("jve1:{:064x}", 970_005usize),
+                format!("jve1:{:064x}", 970_006usize),
+            ],
+            json!({"kind":"identity.merge"}),
+        );
+        assert!(
+            !prepared.nodes[&format!("jve1:{:064x}", 970_006usize)].semantic,
+            "the invalid judgment must be non-semantic"
+        );
+        let state = prepared.clone().into_state();
+        let judgment = host(
+            format!("jve1:{:064x}", 970_008usize),
+            &issuer,
+            vec![format!("jve1:{:064x}", 970_007usize)],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        prepared.add_host_verified_record(judgment.clone());
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(judgment);
+        let advanced = state.advance(delta, &[]);
+        assert!(!advanced.statistics().rebuilt);
+        assert_matches_full(&advanced, &prepared);
+    }
+
+    /// Register pricing on append must not replay the old register's
+    /// unions: with N unrelated old judgments interleaved with other
+    /// records and a covering parent, the maxima range visits of one
+    /// append stay linear in N (main's formula is 2N+1 predecessor
+    /// tests), not N(N+1)/2.
+    #[test]
+    fn register_pricing_on_append_does_not_replay_old_unions() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let issuer = identity_from_seed(&[8u8; 32]);
+        let count = 60usize;
+        let mut all: Vec<String> = Vec::new();
+        for i in 0..count {
+            let judgment_id = format!("jve1:{:064x}", 960_000 + 2 * i);
+            let merge_id = format!("jve1:{:064x}", 960_001 + 2 * i);
+            prepared.add_host_verified_record(host(
+                judgment_id.clone(),
+                &issuer,
+                vec![],
+                json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+            ));
+            prepared.add_host_verified_record(host(
+                merge_id.clone(),
+                &issuer,
+                vec![],
+                json!({"kind":"identity.merge"}),
+            ));
+            all.push(judgment_id);
+            all.push(merge_id);
+        }
+        let tip = format!("jve1:{:064x}", 961_000usize);
+        prepared.add_host_verified_record(host(
+            tip.clone(),
+            &issuer,
+            all,
+            json!({"kind":"identity.merge"}),
+        ));
+        let state = prepared.clone().into_state();
+        // The new judgment sorts first and follows the covering tip.
+        let judgment = host(
+            format!("jve1:{:064x}", 1usize),
+            &issuer,
+            vec![tip],
+            json!({"kind":"judgment.set","target":publication_id,"value":"curse"}),
+        );
+        prepared.add_host_verified_record(judgment.clone());
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(judgment);
+        graph::reset_maxima_range_visits();
+        let advanced = state.advance(delta, &[]);
+        assert!(!advanced.statistics().rebuilt);
+        assert_matches_full(&advanced, &prepared);
+        let visits = graph::maxima_range_visits();
+        assert!(
+            visits <= 16 * count,
+            "{visits} maxima range visits for {count} old judgments"
+        );
     }
 
     /// A checkpoint written before the byte total was saved has no

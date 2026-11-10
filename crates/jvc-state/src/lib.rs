@@ -268,6 +268,12 @@ pub struct Evaluation {
     pub(crate) policy_history: BTreeMap<String, Value>,
     pub(crate) selections: BTreeMap<String, BTreeSet<String>>,
     pub(crate) trust: Vec<TrustRule>,
+    /// Ancestry bytes the register maxima merges charged for each
+    /// register in this evaluation. The incremental update prices
+    /// its register from this stored charge instead of replaying
+    /// the unions. Not serialized: checkpoints carry it separately.
+    #[serde(skip)]
+    pub(crate) register_maxima_charges: BTreeMap<String, usize>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct TrustRule {
@@ -325,6 +331,7 @@ fn empty_evaluation(input: &EvaluationOptions) -> Evaluation {
         policy_history: BTreeMap::new(),
         selections: BTreeMap::new(),
         trust: Vec::new(),
+        register_maxima_charges: BTreeMap::new(),
     }
 }
 fn event_limit_evaluation(input: &EvaluationOptions) -> Evaluation {
@@ -693,7 +700,11 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
             .push(id.clone());
     }
     for (key, ids) in groups {
+        let charge_before = graph.ancestry.bytes();
         let heads = graph.maxima(ids.into_iter().collect(), false);
+        result
+            .register_maxima_charges
+            .insert(key.clone(), graph.ancestry.bytes() - charge_before);
         let node = &graph.nodes[heads.iter().next().unwrap()];
         let actor = graph.actor(&node.issuer);
         let values: BTreeSet<String> = heads

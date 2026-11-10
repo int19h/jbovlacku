@@ -1030,17 +1030,6 @@ impl Graph {
         result
     }
 
-    /// What `maxima` would charge the ancestry cap for this set,
-    /// computed on cloned range payloads with a throwaway budget.
-    /// The incremental register update uses it to charge only the
-    /// difference from the set the base evaluation already charged
-    /// for, so an append's byte total equals a full evaluation's.
-    pub(crate) fn maxima_charge(&self, ids: &BTreeSet<String>, structural: bool) -> usize {
-        let budget = super::ancestors::AncestryBudget::new();
-        self.maxima_with(ids, structural, &budget);
-        budget.bytes()
-    }
-
     fn maxima_with(
         &self,
         ids: &BTreeSet<String>,
@@ -1095,6 +1084,12 @@ impl Graph {
                     count_work(examined);
                 }
                 larger.union(budget, &closure.ids);
+                // The accumulator's charge for the next merge must
+                // use fresh-layout range counts, as in
+                // `append_ordinary` and `closure`: appended members
+                // live in `extra` with no stored ranges, but a fresh
+                // layout gives them ranges.
+                larger.fresh_ranges = self.fresh_range_count(&larger);
             }
         }
         result

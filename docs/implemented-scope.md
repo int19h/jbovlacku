@@ -665,6 +665,7 @@ The expansion budget does not bound total CPU time. These measurements do not es
 
 The default state work budget is 10,000,000 logical units. One unit stands for one record, one dependency edge, one propagated missing ID, or one range a union copies. One layout pass charges those units once. A dependency setup pass and a closure construction pass charge for each of the three link modes, and evaluation-time closure work charges the same terms.
 A flat history costs eight units per record and a single-parent chain costs eighteen units per record, before evaluation-time charges. Ancestry range metadata is also capped at 64 MiB over every copied or allocated range vector, and a history past the cap fails with `resource_unavailable` at any budget. Histories with more edges reach the limit sooner, and the requested state also affects the work.
+Each stored range costs 8 bytes. A fragmented history (for example interleaved chains of one issuer) can therefore use more ancestry memory than the old bitset representation, and an input past the cap returns `resource_unavailable` where the old representation still evaluated it. Results are unchanged for every input under the cap.
 The Node loader can retain a larger explicit traversal budget for a local import.
 A larger traversal budget does not remove memory limits.
 
