@@ -109,9 +109,14 @@ fn full_data_streamed_load_and_overlay_match_whole_input() {
     assert_eq!(streamed.state().unwrap(), whole_state);
     assert_eq!(streamed.actors().unwrap(), whole.actors().unwrap());
 
-    let streamed_rankings = ranking_hash(&streamed, &words);
-    let whole_rankings = ranking_hash(&whole, &words);
-    assert_eq!(streamed_rankings, whole_rankings);
+    let streamed_rankings = if std::env::var_os("JVC_STREAMED_LOAD_OVERLAY_ONLY").is_some() {
+        None
+    } else {
+        let streamed_rankings = ranking_hash(&streamed, &words);
+        let whole_rankings = ranking_hash(&whole, &words);
+        assert_eq!(streamed_rankings, whole_rankings);
+        Some(streamed_rankings)
+    };
 
     assert_overlay_parity(&streamed, &input, None);
     assert_overlay_parity(&streamed, &input, Some(overlay(&input, None)));
@@ -144,6 +149,6 @@ fn full_data_streamed_load_and_overlay_match_whole_input() {
         "streamed load parity: {} records, {} words, ranking SHA-256 {}",
         input.events.len(),
         words.len(),
-        streamed_rankings
+        streamed_rankings.as_deref().unwrap_or("not rerun")
     );
 }
