@@ -2,8 +2,6 @@ import {
   initializeCore,
   identityFromSeed,
   createEvent,
-  canonicalize,
-  contentHash,
   utf8,
 } from "../../packages/core/src/browser.ts";
 import {
@@ -13,6 +11,7 @@ import {
 } from "../../apps/web/src/data/personal.ts";
 import { LocalStore, emptyOverlay } from "../../apps/web/src/data/store.ts";
 import { setPreferredView } from "../../apps/web/src/data/api.ts";
+import { seedProduct } from "./seed.mjs";
 
 const seed = new Uint8Array(32).fill(173);
 let input = null,
@@ -39,61 +38,6 @@ const signedJudgment = (target) =>
     { kind: "judgment.set", target, value: "bless" },
     null,
   );
-const hashJson = (value) =>
-  contentHash(utf8(canonicalize(utf8(JSON.stringify(value)))));
-const productInventory = (value) => {
-  const events = value.events.map((envelope) => JSON.parse(envelope).id);
-  const bodies = [
-    ...new Set(
-      value.events
-        .map((envelope) => JSON.parse(envelope).header.content?.hash)
-        .filter(Boolean),
-    ),
-  ].sort();
-  const selections = Object.keys(value.import_selections).sort();
-  const manifest = {
-    events: {
-      count: events.length,
-      hash: contentHash(utf8(value.events.join("\n") + "\n")),
-    },
-    bodies: { count: bodies.length, hash: hashJson(bodies) },
-    import_selections: { count: selections.length, hash: hashJson(selections) },
-  };
-  return {
-    snapshot: hashJson(manifest),
-    logical_inventory: hashJson({
-      events,
-      bodies,
-      import_selections: selections,
-    }),
-    events_digest: manifest.events.hash,
-    view: value.selected_view,
-    events,
-    bodies,
-    selections,
-  };
-};
-const seedProduct = async (store, value) => {
-  for (const envelope of value.events) {
-    const { id, header } = JSON.parse(envelope);
-    const body = value.bodies[id];
-    await store.put("records", id, {
-      id,
-      envelope,
-      body: body ?? null,
-      bodyStatus:
-        body !== undefined ? "present" : header.content ? "missing" : "none",
-      bodyHash: header.content?.hash ?? null,
-    });
-  }
-  for (const [hash, selection] of Object.entries(value.import_selections))
-    await store.put("selections", hash, JSON.stringify(selection));
-  const inventory = productInventory(value);
-  await store.put("inventory", inventory.snapshot, inventory);
-  await store.put("inventory", "latest", inventory);
-  productSnapshot = inventory.snapshot;
-  return inventory;
-};
 const request = (message) =>
   new Promise((resolve, reject) => {
     const id = ++sequence;
@@ -107,8 +51,21 @@ const request = (message) =>
   });
 window.bench = {
   async prepareProduct(view) {
-    mainWasm = await initializeCore();
     setPreferredView(view);
+    const database = `measurement-${crypto.randomUUID()}`;
+    const inventory = await new Promise((resolve, reject) => {
+      const seedWorker = new Worker("/seed-worker.js", { type: "module" });
+      seedWorker.onmessage = ({ data }) => {
+        if (data.error) reject(new Error(data.error));
+        else resolve(data.inventory);
+        seedWorker.terminate();
+      };
+      seedWorker.onerror = (event) => {
+        reject(new Error(event.message));
+        seedWorker.terminate();
+      };
+      seedWorker.postMessage({ database, input: "/input.json" });
+    });
     NativeWorker = globalThis.Worker;
     productWorkerBytes = 0;
     globalThis.Worker = class extends NativeWorker {
@@ -123,20 +80,15 @@ window.bench = {
         super.postMessage(message);
       }
     };
-    const store = new LocalStore(`measurement-${crypto.randomUUID()}`);
-    const value = await (
-      await fetch("/input.json", { cache: "no-store" })
-    ).json();
-    await seedProduct(store, value);
-    productStore = store;
-    productCalculator = new PersonalCalculator(store, async () => ({
+    productStore = new LocalStore(database);
+    productCalculator = new PersonalCalculator(productStore, async () => ({
       identity: identityFromSeed(seed),
     }));
-    return { events: value.events.length };
+    return { events: inventory.events.length };
   },
   async gate(view, keep = false) {
     const start = performance.now();
-    mainWasm = await initializeCore();
+    if (!keep) mainWasm = await initializeCore();
     setPreferredView(view);
     if (keep && !productCalculator) await window.bench.prepareProduct(view);
     const store = keep
@@ -162,6 +114,7 @@ window.bench = {
   },
   async productSubmission(target) {
     const start = performance.now();
+    mainWasm = await initializeCore();
     const event = signedJudgment(target);
     const serialized = JSON.stringify(event.envelope);
     await productStore.put("records", event.envelope.id, {

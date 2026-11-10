@@ -145,6 +145,14 @@ await build({
   logLevel: "error",
 });
 await build({
+  entryPoints: [join(root, "scripts/browser-eval-baseline/seed-worker.mjs")],
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  outfile: join(assets, "seed-worker.js"),
+  logLevel: "error",
+});
+await build({
   entryPoints: [join(root, "apps/web/src/workers/evaluate.ts")],
   bundle: true,
   format: "esm",
@@ -172,6 +180,7 @@ const manifest = {
   memory: capture("free", ["-b"]),
   wasm_sha256: sha(await readFile(wasmPath)),
   worker_sha256: sha(await readFile(join(assets, "worker.js"))),
+  seed_worker_sha256: sha(await readFile(join(assets, "seed-worker.js"))),
   product_worker_sha256: sha(await readFile(join(assets, "product-worker.js"))),
   page_sha256: sha(await readFile(join(assets, "page.js"))),
   config: args,
@@ -567,6 +576,7 @@ const http = createServer(async (req, res) => {
     "/": [null, "text/html"],
     "/page.js": [join(assets, "page.js"), "text/javascript"],
     "/worker.js": [join(assets, "worker.js"), "text/javascript"],
+    "/seed-worker.js": [join(assets, "seed-worker.js"), "text/javascript"],
     "/workers/evaluate.ts": [
       join(assets, "product-worker.js"),
       "text/javascript",
