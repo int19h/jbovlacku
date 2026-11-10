@@ -130,7 +130,7 @@ const measurementSessionGetter = {
         loader: "ts",
         contents:
           (await readFile(path, "utf8")) +
-          "\nself.__measurementSession = () => evaluation.currentSession;\n" +
+          "\nself.__measurementSession = () => typeof evaluation !== 'undefined' ? evaluation.currentSession : session;\n" +
           "self.measurement = async () => { const session = self.__measurementSession(); const summary = session?.summary?.(); return {wasm_bytes: (await initializeCore()).memory.buffer.byteLength, statistics: session?.updateStatistics?.(), available: summary ? summary.available : session?.state.available, reasons: summary ? summary.reasons : session?.state.reasons}; };\n",
       }),
     );
