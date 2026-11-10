@@ -663,10 +663,13 @@ The [ranking measurements](../crates/jvc-rank/README.md) cover eleven synthetic 
 The weighted sixteen-actor case takes 8.119 seconds in WebAssembly despite zero completed expansion work.
 The expansion budget does not bound total CPU time. These measurements do not establish performance for real community graphs.
 
-The current default state work budget can run out at roughly 4,500 events in a flat history.
-This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
+The default state work budget is 10,000,000 logical units. One unit stands for one record, one dependency edge, one propagated missing ID, or one range a union copies. One layout pass charges those units once. A dependency setup pass and a closure construction pass charge for each of the three link modes, and evaluation-time closure work charges the same terms.
+A flat history costs eight units per record and a single-parent chain costs eighteen units per record, before evaluation-time charges. Ancestry range metadata is also capped at 64 MiB over every copied or allocated range vector, and a history past the cap fails with `resource_unavailable` at any budget. Histories with more edges reach the limit sooner, and the requested state also affects the work.
+Each stored range costs 8 bytes. A fragmented history (for example interleaved chains of one issuer) can therefore use more ancestry memory than the old bitset representation, and an input past the cap returns `resource_unavailable` where the old representation still evaluated it. Results are unchanged for every input under the cap.
 The Node loader can retain a larger explicit traversal budget for a local import.
 A larger traversal budget does not remove memory limits.
+
+Evaluation work is not yet bounded by the traversal budget on every path. The budget bounds ancestry construction and the charges named above. Some register, retention, account, certificate, and downstream paths can still do work that grows faster than the charged units on large histories. A follow-up change adds a work meter that charges those inner loops, so that a large input refuses deterministically instead of running long.
 
 The server, worker, and Wasm artifacts at `fedfec3` match the earlier measurement at `b6c0354`.
 That run restored its checkpoint in 22.68 seconds. A later restart took 29.33 seconds.
@@ -687,7 +690,7 @@ Between its first write and final visible result, 89 of 90 health probes succeed
 
 These runs differ in inventory and concurrent work. They do not isolate the effect of one fix.
 Admission, package construction, and enclosing checkpoint serialization still use the main thread.
-Dense ancestry and overlapping runtimes still require several GiB. These measurements do not establish a latency guarantee.
+Interval ancestry stores a complete history chain as one range per record, with range metadata capped at 64 MiB. Overlapping runtimes still require several GiB. These measurements do not establish a latency guarantee.
 
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.

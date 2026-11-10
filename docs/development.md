@@ -385,7 +385,7 @@ Storage damage is outside this trust model. Restore private records and original
 The persistent checkpoint stores evaluated results separately from these private records.
 Checkpoint restoration loads record inputs from the compact store. A core or view change discards results and keeps those records.
 A transient worker fork still transfers its complete private runtime state between threads. This transfer is not the persistent checkpoint.
-Sessions retain evaluated state instead of all source bodies. Small ancestor sets use sparse storage.
+Sessions retain evaluated state instead of all source bodies. Ancestor sets use interval storage over a topological layout, under a 64 MiB ancestry metadata cap.
 Identical history caches share storage when the snapshot contains no acceptance events. Work charges stay unchanged.
 
 When the event limit is exceeded, the core returns `resource_unavailable` before it builds ancestry caches.
@@ -487,7 +487,7 @@ Admission, package construction, enclosing checkpoint serialization, and state p
 The checkpoint interval limits capture frequency, not the duration of these operations.
 
 These runs differ in inventory, filesystem state, and concurrent work. They do not isolate the effect of one fix.
-Dense ancestry still uses quadratic bitset storage for a complete history chain.
+Ancestry uses interval storage, so a complete history chain costs one range per record and range metadata is capped at 64 MiB.
 Overlapping evaluation runtimes still require several GiB, and individual requests can reach their deadlines.
 The measurements do not establish performance on another host.
 An explicit traversal limit or a larger Node heap does not remove the WebAssembly memory limit.
@@ -1195,8 +1195,10 @@ Resource errors must expose unavailable results instead of fabricated zero score
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits before public deployment.
 
 The state evaluator also has a work budget for history traversal and ancestor sets.
-The current default budget can run out at roughly 4,500 events in a flat history.
-This is an approximate limit. Histories with more edges can reach it sooner, and the requested state also affects the work.
+The budget counts logical units: one per record, per dependency edge, per propagated missing ID, and per range a union copies. One layout pass charges those units once. A dependency setup pass and a closure construction pass each charge for the three link modes, and lifecycle work charges the same terms. The charge counts the exact interval layout - its records, edges, and ranges - and no bitset words or pointer sizes, so the same input charges the same total in native and Wasm builds.
+The default budget is 10,000,000 units. A flat history costs eight units per record and a single-parent chain costs eighteen units per record, before evaluation-time charges.
+Ancestry range metadata also has a hard cap of 64 MiB, counted over every range vector a union copies or allocates. A history whose ranges pass the cap fails with `resource_unavailable` at any budget.
+Histories with more edges can reach it sooner, and the requested state also affects the work.
 The configured event-count limit does not guarantee successful evaluation of every history below that count.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.
 Use the [state validation guide](../crates/jvc-state/VALIDATION.md) for its tested corpus and limits.

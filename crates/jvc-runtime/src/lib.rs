@@ -2,7 +2,7 @@
 use jvc_core::{Error, Result, canonical_value, inspect_body, parse_json, verify_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use wasm_bindgen::prelude::*;
 
 mod word_results;
@@ -245,6 +245,39 @@ impl std::io::Write for LimitedOutput {
         Ok(())
     }
 }
+/// The lifecycle entries a patch may name for the given actors. The
+/// two maps are patched independently: an actor key may be present
+/// in only one of them (a successor key is in `key_actor` without a
+/// `groups` entry), and its entry still belongs in the patch. A key
+/// present in neither map contradicts the change set, so there is
+/// no patch: the caller returns `null` and refreshes fully.
+type LifecyclePatch<'a, 'b> = (
+    BTreeMap<&'b String, &'a String>,
+    BTreeMap<&'b String, &'a BTreeSet<String>>,
+);
+
+fn lifecycle_patch<'a, 'b>(
+    evaluation: &'a jvc_state::Evaluation,
+    actors: &'b BTreeSet<String>,
+) -> Option<LifecyclePatch<'a, 'b>> {
+    let mut key_actor = BTreeMap::new();
+    let mut groups = BTreeMap::new();
+    for actor in actors {
+        let key = evaluation.lifecycle.key_actor.get(actor);
+        let group = evaluation.lifecycle.groups.get(actor);
+        if key.is_none() && group.is_none() {
+            return None;
+        }
+        if let Some(key) = key {
+            key_actor.insert(actor, key);
+        }
+        if let Some(group) = group {
+            groups.insert(actor, group);
+        }
+    }
+    Some((key_actor, groups))
+}
+
 fn bounded_delta(value: impl Serialize) -> String {
     let mut writer = LimitedOutput(Vec::new());
     if serde_json::to_writer(&mut writer, &value).is_err() {
@@ -1110,6 +1143,7 @@ impl EvaluationSessionBuilder {
     }
 }
 #[wasm_bindgen]
+
 impl EvaluationSession {
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8]) -> std::result::Result<EvaluationSession, JsValue> {
@@ -1217,16 +1251,9 @@ impl EvaluationSession {
                 )
             })
             .collect();
-        let key_actor: BTreeMap<_, _> = changes
-            .actors
-            .iter()
-            .map(|k| (k, &e.lifecycle.key_actor[k]))
-            .collect();
-        let groups: BTreeMap<_, _> = changes
-            .actors
-            .iter()
-            .map(|k| (k, &e.lifecycle.groups[k]))
-            .collect();
+        let Some((key_actor, groups)) = lifecycle_patch(e, &changes.actors) else {
+            return "null".into();
+        };
         #[derive(Serialize)]
         struct Delta<'a, R: Serialize, G: Serialize, J: Serialize, L: Serialize> {
             version: u8,
@@ -1430,6 +1457,38 @@ mod state_output_tests {
                 .unwrap_err();
         assert_eq!(error, Error::new("signature", "Ed25519 equation failed"));
         assert_eq!(verifier.public_key_checks(), 2);
+    }
+
+    #[test]
+    fn lifecycle_patch_includes_an_actor_present_in_only_one_map() {
+        let mut evaluation = jvc_state::evaluate(
+            &evaluation_input(include_bytes!("../tests/invalid-overlay.json")).unwrap(),
+        );
+        // A successor key: in `key_actor`, with no `groups` entry.
+        evaluation
+            .lifecycle
+            .key_actor
+            .insert("key-only".into(), "actor".into());
+        evaluation
+            .lifecycle
+            .groups
+            .insert("group-only".into(), BTreeSet::from(["group".to_string()]));
+        let actors: BTreeSet<String> = ["key-only".into(), "group-only".into()].into();
+        let (key_actor, groups) =
+            lifecycle_patch(&evaluation, &actors).expect("actors present in one map still patch");
+        assert_eq!(key_actor.len(), 1);
+        assert!(key_actor.contains_key(&"key-only".to_string()));
+        assert_eq!(groups.len(), 1);
+        assert!(groups.contains_key(&"group-only".to_string()));
+    }
+
+    #[test]
+    fn lifecycle_patch_refuses_an_actor_present_in_neither_map() {
+        let evaluation = jvc_state::evaluate(
+            &evaluation_input(include_bytes!("../tests/invalid-overlay.json")).unwrap(),
+        );
+        let actors: BTreeSet<String> = ["absent".into()].into();
+        assert!(lifecycle_patch(&evaluation, &actors).is_none());
     }
 
     #[test]

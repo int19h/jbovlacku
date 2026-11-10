@@ -202,19 +202,32 @@ fn mixed_writes_reuse_local_state_and_rebuild_global_changes() {
     assert_eq!(state.statistics().incremental_records, 1);
     let second = f.judgment(vec![], "curse");
     state = f.advance(state, std::slice::from_ref(&second), &[]);
-    assert_eq!(state.statistics().incremental_records, 1);
+    // A root judgment does not cover the record appended before it,
+    // so it rebuilds. The judgment keys it changed are still reported
+    // (checked through the evaluation equality in f.advance).
+    assert_eq!(state.statistics().incremental_records, 0);
+    assert!(state.statistics().rebuilt);
     let clear = f.judgment(vec![first, second], "clear");
     state = f.advance(state, std::slice::from_ref(&clear), &[]);
     assert_eq!(state.statistics().incremental_records, 1);
     let publication = f.publication();
     state = f.advance(state, &[publication], &[]);
-    assert_eq!(state.statistics().incremental_records, 1);
+    // A root publication is not a judgment and its parents cover
+    // nothing, so it rebuilds.
+    assert_eq!(state.statistics().incremental_records, 0);
+    assert!(state.statistics().rebuilt);
     let trust = f.event(1, vec![clear], json!({"kind":"trust.set","subject":key(2),"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}), None);
     state = f.advance(state, &[trust], &[]);
     assert_eq!(state.statistics().reason.as_deref(), Some("global_action"));
     let judgment = f.judgment(vec![], "bless");
     state = f.advance(state, &[judgment], &[]);
-    assert_eq!(state.statistics().incremental_records, 1);
+    // A fresh layout places this root between the two earlier roots and
+    // splits the clear closure that the trust record copies, so the
+    // fast path rebuilds instead of charging a different amount than a
+    // full evaluation. The evaluation itself is unchanged (checked by
+    // f.advance above).
+    assert!(state.statistics().rebuilt);
+    assert_eq!(state.statistics().reason.as_deref(), Some("layout_split"));
     f.view();
     let view = f.input.selected_view.clone();
     state = f.advance(state, &[view], &[]);
@@ -242,7 +255,9 @@ fn a_native_publication_reopens_an_inactive_rafsi_word_gate() {
     );
     let publication = f.publication();
     let state = f.advance(state, &[publication], &[]);
-    assert_eq!(state.statistics().incremental_records, 1);
+    // A root publication on an issuer with existing records is not
+    // covered by any parents, so it rebuilds.
+    assert!(state.statistics().rebuilt);
     assert_eq!(
         state.evaluation().publications[&claim].eligible,
         jvc_state::Eligibility::Eligible
@@ -333,6 +348,48 @@ fn missing_publication_targets_and_parents_force_reference_rebuilds() {
             );
         }
     }
+}
+
+#[test]
+fn append_landing_between_chain_records_rebuilds_and_matches_full() {
+    // Interior-insert shape: a record whose fresh layout position lands between
+    // a and b splits the ranges that b's descendants copy. The fast
+    // path must rebuild; availability and every receipt (inside the
+    // compared evaluation) still match a full evaluation.
+    let mut f = Fixture::new();
+    let a = f.event(5, vec![], json!({"kind":"identity.merge"}), None);
+    let b = f.event(5, vec![a.clone()], json!({"kind":"identity.merge"}), None);
+    let mut last = b.clone();
+    for _ in 0..3 {
+        last = f.event(5, vec![last], json!({"kind":"identity.merge"}), None);
+    }
+    let mut state = EvaluatedState::from_input(&f.input);
+    assert!(state.evaluation().available);
+    let mut nonce = 5000;
+    let judgment = loop {
+        nonce += 1;
+        let signed = sign_header(
+            &[5u8; 32],
+            Header {
+                version: 1,
+                issuer: identity_from_seed(&[5u8; 32]),
+                previous: vec![a.clone()],
+                nonce: format!("{nonce:032x}"),
+                action: json!({"kind":"judgment.set","target":f.definition,"value":"bless"}),
+                content: None,
+            },
+        )
+        .unwrap();
+        let event = jvc_core::verify_envelope(&signed.canonical_envelope().unwrap()).unwrap();
+        let id = event.id().to_string();
+        if a.as_str() < id.as_str() && id.as_str() < b.as_str() {
+            f.input.events.push(event);
+            break id;
+        }
+    };
+    state = f.advance(state, &[judgment], &[]);
+    assert!(state.statistics().rebuilt);
+    assert_eq!(state.statistics().reason.as_deref(), Some("layout_split"));
 }
 
 #[test]
@@ -508,7 +565,7 @@ fn minimum_budget(input: &EvaluationInput) -> usize {
 }
 
 #[test]
-fn bitset_width_growth_keeps_tight_resource_outcomes_with_control_history() {
+fn record_growth_keeps_tight_resource_outcomes_with_control_history() {
     for control in ["plain", "compromise", "account"] {
         let mut f = Fixture::new();
         if control == "compromise" {
@@ -537,9 +594,12 @@ fn bitset_width_growth_keeps_tight_resource_outcomes_with_control_history() {
                 std::slice::from_ref(&id),
                 &[],
             );
-            if control != "plain" && base.limits.traversal >= minimum_budget(&base) {
-                assert!(state.statistics().rebuilt);
-            }
+            // The judgment's issuer has no records, so the fast path
+            // holds and charges the full-build price: it appends at
+            // the measured minimum and rebuilds one unit below it.
+            // Availability and the full evaluation match at both.
+            assert_eq!(state.statistics().rebuilt, budget < after_min);
+            assert_eq!(state.evaluation(), &evaluate(&f.input));
         }
     }
 }

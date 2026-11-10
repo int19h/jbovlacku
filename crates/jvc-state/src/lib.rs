@@ -1,6 +1,7 @@
 //! Rebuild editorial state from authenticated records and explicitly selected policy.
 //! Missing inputs remain visible. Record delivery order does not select a winner.
 mod accounts;
+mod ancestors;
 mod api;
 mod graph;
 mod incremental;
@@ -132,7 +133,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             events: 200_000,
-            traversal: 1_000_000,
+            traversal: 10_000_000,
             claim_depth: 1024,
         }
     }
@@ -240,6 +241,13 @@ pub struct Register {
     pub heads: BTreeSet<String>,
     pub values: BTreeSet<String>,
     pub conflicted: bool,
+    /// Ancestry bytes the register's maxima merges charged in this
+    /// evaluation. The incremental update prices its register from
+    /// this stored charge instead of replaying the unions. Skipped
+    /// in serialization; checkpoints carry the charges as one array
+    /// in register order.
+    #[serde(skip)]
+    pub(crate) maxima_charge: usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Lifecycle {
@@ -416,6 +424,10 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
     native_status(graph, &mut result);
     action_targets(graph, &mut result);
     registers(graph, &mut result);
+    if graph.resource.get() || graph.ancestry.failed() {
+        resource_unavailable(&mut result);
+        return result;
+    }
     rafsi_gate(&mut result);
     result
 }
@@ -457,10 +469,16 @@ fn publications_for(
     result: &mut Evaluation,
     only: Option<&BTreeSet<String>>,
 ) {
-    for (id, node) in &graph.nodes {
-        if only.is_some_and(|ids| !ids.contains(id)) {
-            continue;
-        }
+    // With a restricted set, visit only those records instead of
+    // scanning every record per append.
+    let restricted: Vec<(&String, &graph::Node)> = match only {
+        Some(ids) => ids
+            .iter()
+            .filter_map(|id| graph.nodes.get_key_value(id))
+            .collect(),
+        None => graph.nodes.iter().collect(),
+    };
+    for (id, node) in restricted {
         if !node.semantic || !matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish") {
             continue;
         }
@@ -682,7 +700,9 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
             .push(id.clone());
     }
     for (key, ids) in groups {
+        let charge_before = graph.ancestry.bytes();
         let heads = graph.maxima(ids.into_iter().collect(), false);
+        let maxima_charge = graph.ancestry.bytes() - charge_before;
         let node = &graph.nodes[heads.iter().next().unwrap()];
         let actor = graph.actor(&node.issuer);
         let values: BTreeSet<String> = heads
@@ -732,6 +752,7 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
                 heads,
                 conflicted: values.len() > 1,
                 values,
+                maxima_charge,
             },
         );
     }
@@ -848,10 +869,11 @@ fn action_targets(graph: &graph::Graph, result: &mut Evaluation) {
     action_targets_for(graph, result, None);
 }
 fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Option<&str>) {
-    for (id, node) in &graph.nodes {
-        if only.is_some_and(|only| id != only) {
-            continue;
-        }
+    let restricted: Vec<(&String, &graph::Node)> = match only {
+        Some(id) => graph.nodes.get_key_value(id).into_iter().collect(),
+        None => graph.nodes.iter().collect(),
+    };
+    for (id, node) in restricted {
         if !node.semantic {
             continue;
         }

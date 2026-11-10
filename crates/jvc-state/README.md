@@ -25,13 +25,15 @@ Publication membership stays separate from eligibility and status.
 Exclusions and local blocks remove shares after normalization. They do not increase surviving shares.
 `publication_status` and `account_control` expose the frontend status and certificate fields directly.
 
-The ancestry cache uses indexed bitsets and topological unions. Its global work budget counts bitset allocation, union words, dependency indexing, and missing-ID propagation.
+The ancestry cache uses exact intervals over a topological layout. Records of one issuer occupy a contiguous block of layout positions. Same-issuer parents come before their children, records in or below a cycle keep lexical order at the end of the block, and each closure is a sorted list of disjoint position ranges.
+Its global work budget counts logical work: one unit per record, per dependency edge, per missing ID propagated, and per range a union copies. One layout pass charges per record and per dependency edge once. A dependency setup pass and a closure construction pass charge those units for each of the three link modes, plus lifecycle and closure charges on the same terms.
+The count charges the exact interval layout: records, edges, and the ranges in it. It counts no bitset words or pointer sizes, so the same input charges the same total in native and Wasm builds.
 Construction stops as soon as the budget runs out. The evaluator does not publish confident partial state from that construction.
-The default budget is 1,000,000 words. Each of the three caches allocates a full indexed bitset for each event.
-Even unrelated events therefore cost about `3 * N * ceil(N / 64)` words. The default budget supports roughly 4,500 unrelated events.
-Dependencies and carry unions reduce that ceiling. This is a prototype limit, not a production scale target.
+Range metadata has a hard cap of 64 MiB, counted cumulatively over every range vector a union copies or allocates, including discarded temporaries. A history past the cap returns `resource_unavailable` at any budget.
+Each stored range costs 8 bytes. A fragmented history (for example interleaved chains of one issuer) can therefore use more ancestry memory than the old bitset representation, and an input past the cap returns `resource_unavailable` where the old representation still evaluated it. Results are unchanged for every input under the cap.
+The default budget is 10,000,000 units. A flat history costs eight units per record, and a single-parent chain costs eighteen units per record except for ten units saved across the roots, before evaluation-time closure charges.
 Exceeding the budget makes the entire evaluation unavailable, including other accounts and native publications, with reason `resource_unavailable`.
-A party that supplies a few thousand admitted events can therefore exhaust the default budget. The 200,000-event admission limit does not promise evaluation support at that size.
+Evaluation work is not yet bounded by this budget on every path. Some register, retention, account, certificate, and downstream paths can do work that grows faster than the charged units on large histories. A follow-up change adds a work meter for those inner loops.
 A signed chain of 2,429 imported definitions with four certified account periods passes the default budget.
 Witness groups are cached per policy. Claim chains and carry boundaries are cached per account candidate.
 A 5,000-event chain with a smaller budget returns unavailable without recursive traversal.
