@@ -73,11 +73,19 @@ export {
 } from "./index.ts";
 import {
   evaluateSession as verifiedSession,
+  type EvaluationBuilder,
   type EvaluationRequest,
+  type EvaluationSessionHandle,
+  type EvaluationSessionOptions,
 } from "./index.ts";
-/** Browser sessions expose rankings and results, without private restore or insertion ports. */
-export function evaluateSession(input: EvaluationRequest) {
-  const session = verifiedSession(input);
+function wrapBrowserBuilder(builder: EvaluationBuilder) {
+  return {
+    addRecord: builder.addRecord,
+    finish: () => wrapBrowserSession(builder.finish()),
+    free: builder.free,
+  };
+}
+function wrapBrowserSession(session: EvaluationSessionHandle) {
   return {
     state: session.state,
     rankWord: session.rankWord,
@@ -90,6 +98,13 @@ export function evaluateSession(input: EvaluationRequest) {
     wordResultProgress: session.wordResultProgress,
     takeWordResult: session.takeWordResult,
     cancelWordResults: session.cancelWordResults,
+    fork: (options: EvaluationSessionOptions) =>
+      wrapBrowserBuilder(session.fork(options)),
+    updateStatistics: session.updateStatistics,
     free: session.free,
   };
+}
+/** Browser sessions expose rankings and results, without private restore or insertion ports. */
+export function evaluateSession(input: EvaluationRequest) {
+  return wrapBrowserSession(verifiedSession(input));
 }

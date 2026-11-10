@@ -35,6 +35,8 @@ if (!args.out || (!args.data && !args.probe))
   throw Error(
     "Use --out=SCRATCH --data=DISPOSABLE_COPY, or --out=SCRATCH --probe.",
   );
+if (args["delta-reload"] && args["product-reload"])
+  throw Error("Choose only one of --delta-reload and --product-reload.");
 const out = resolve(String(args.out));
 await mkdir(out, { recursive: true });
 const data = args.data ? await realpath(String(args.data)) : null;
@@ -78,6 +80,21 @@ const capture = (command, argv) => {
 };
 const assets = join(out, "assets");
 await mkdir(assets, { recursive: true });
+const measurementSessionGetter = {
+  name: "measurement-session-getter",
+  setup(b) {
+    b.onLoad(
+      { filter: /apps\/web\/src\/workers\/evaluate\.ts$/ },
+      async ({ path }) => ({
+        loader: "ts",
+        contents:
+          (await readFile(path, "utf8")) +
+          "\nself.__measurementSession = () => evaluation.currentSession;\n" +
+          "self.measurement = async () => ({wasm_bytes: (await initializeCore()).memory.buffer.byteLength, statistics: self.__measurementSession()?.updateStatistics?.(), available: self.__measurementSession()?.state.available, reasons: self.__measurementSession()?.state.reasons});\n",
+      }),
+    );
+  },
+};
 await build({
   entryPoints: [join(root, "scripts/browser-eval-baseline/page.mjs")],
   bundle: true,
@@ -93,6 +110,7 @@ await build({
   platform: "browser",
   outfile: join(assets, "product-worker.js"),
   logLevel: "error",
+  plugins: [measurementSessionGetter],
 });
 await build({
   entryPoints: [join(root, "scripts/browser-eval-baseline/worker.mjs")],
@@ -101,22 +119,7 @@ await build({
   platform: "browser",
   outfile: join(assets, "worker.js"),
   logLevel: "error",
-  plugins: [
-    {
-      name: "measurement-session-getter",
-      setup(b) {
-        b.onLoad(
-          { filter: /apps\/web\/src\/workers\/evaluate\.ts$/ },
-          async ({ path }) => ({
-            loader: "ts",
-            contents:
-              (await readFile(path, "utf8")) +
-              "\nself.__measurementSession = () => session;\n",
-          }),
-        );
-      },
-    },
-  ],
+  plugins: [measurementSessionGetter],
 });
 const wasmPath = join(root, "packages/core/generated/jvc_runtime_bg.wasm");
 const manifest = {
@@ -586,6 +589,7 @@ async function record(v) {
 async function trial(condition, rep, profile = false) {
   let browser = null,
     workerCDP = null,
+    productWorkerCDP = null,
     rootCDP = null,
     pageCDP = null,
     page = null,
@@ -659,7 +663,7 @@ async function trial(condition, rep, profile = false) {
           if (
             profile &&
             workerCDP &&
-            /^(actors|load|increment-actors|increment-load|stress-actors|stress-load)$/.test(
+            /^(actors|load|increment-actors|increment-load|increment-advance|stress-actors|stress-load)$/.test(
               label,
             )
           ) {
@@ -692,7 +696,7 @@ async function trial(condition, rep, profile = false) {
           if (
             profile &&
             workerCDP &&
-            /^(actors|load|increment-actors|increment-load|stress-actors|stress-load)$/.test(
+            /^(actors|load|increment-actors|increment-load|increment-advance|stress-actors|stress-load)$/.test(
               label,
             )
           ) {
@@ -837,9 +841,72 @@ async function trial(condition, rep, profile = false) {
       condition: condition.name,
       ms: performance.now() - navigationStart,
     });
+    const offset = (rep % 3) * 20;
+    const sample = [
+      ...dataset.sample.slice(offset),
+      ...dataset.sample.slice(0, offset),
+    ].map((w) =>
+      args["stress-only"] && w.cohort === "common_manual"
+        ? { ...w, cohort: "synthetic_reviewed_common" }
+        : w,
+    );
+    const targetWord = dataset.sample.find(
+      (w) =>
+        w.cohort === "heavily_judged" ||
+        w.cohort === "many_definitions_no_judgments",
+    );
     if (!args.probe) {
-      await operation("actual-personal-gate", () =>
-        page.evaluate((view) => window.bench.gate(view), dataset.view),
+      const gated = await operation("actual-personal-gate", () =>
+        page.evaluate(({ view, keep }) => window.bench.gate(view, keep), {
+          view: dataset.view,
+          keep: Boolean(args["product-reload"]),
+        }),
+      );
+      if (args["product-reload"] && gated.result.state !== "ready")
+        throw Error(`Personal gate failed: ${gated.result.message}`);
+    }
+    if (args["product-reload"]) {
+      let target;
+      for (let i = 0; i < 50; i++) {
+        lifecycle.assertActive();
+        target = (await rootCDP.send("Target.getTargets")).targetInfos.find(
+          (t) => t.type === "worker" && t.url.endsWith("/workers/evaluate.ts"),
+        );
+        if (target) break;
+        await delay(20);
+      }
+      if (!target) throw Error("No personal-calculator worker target.");
+      const attached = await setup(() =>
+        rootCDP.send("Target.attachToTarget", {
+          targetId: target.targetId,
+          flatten: false,
+        }),
+      );
+      productWorkerCDP = new WorkerCDP(rootCDP, attached.sessionId, {
+        browser,
+        lifecycle,
+      });
+      await setup(() => productWorkerCDP.send("Runtime.enable"));
+      await operation("product-signed-submission", () =>
+        page.evaluate(
+          (target) => window.bench.productSubmission(target),
+          targetWord.targets[0],
+        ),
+      );
+      await operation("product-reload", async () => {
+        const value = await page.evaluate(() => window.bench.productReload());
+        const measurement =
+          await productWorkerCDP.evaluate("self.measurement()");
+        return { ...value, measurement };
+      });
+      for (const [i, w] of sample.entries())
+        await operation(
+          "product-rank",
+          () => page.evaluate((word) => window.bench.productRank(word), w.word),
+          { ...w, sample_index: i, first_word: i === 0 },
+        );
+      await operation("product-finish", () =>
+        page.evaluate(() => window.bench.productFinish()),
       );
     }
     // Page-only CDP throttling does not slow dedicated workers. The diagnostic
@@ -943,15 +1010,6 @@ async function trial(condition, rep, profile = false) {
     await calibrate();
     if (context.pages().length !== 1 || page.workers().length !== 1)
       throw Error("Measurement requires one page and one worker.");
-    const offset = (rep % 3) * 20;
-    const sample = [
-      ...dataset.sample.slice(offset),
-      ...dataset.sample.slice(0, offset),
-    ].map((w) =>
-      args["stress-only"] && w.cohort === "common_manual"
-        ? { ...w, cohort: "synthetic_reviewed_common" }
-        : w,
-    );
     const rankOne = async (w, label, session) => {
       try {
         await operation(
@@ -1017,25 +1075,29 @@ async function trial(condition, rep, profile = false) {
     await operation("increment-input-reconstruction", () =>
       page.evaluate(() => window.bench.fetchInput()),
     );
-    const targetWord = dataset.sample.find(
-      (w) =>
-        w.cohort === "heavily_judged" ||
-        w.cohort === "many_definitions_no_judgments",
-    );
     await operation("local-signed-submission", () =>
       page.evaluate(
         (target) => window.bench.submission(target),
         targetWord.targets[0],
       ),
     );
-    await operation("increment-actors", () =>
-      page.evaluate((limits) => window.bench.actors(limits), dataset.limits),
+    const advanceReload = Boolean(
+      args["delta-reload"] || args["product-reload"],
     );
-    const updated = await operation("increment-load", () =>
-      page.evaluate(
-        (limits) => window.bench.load(limits, "after"),
-        dataset.limits,
-      ),
+    if (!args["delta-reload"])
+      await operation("increment-actors", () =>
+        page.evaluate((limits) => window.bench.actors(limits), dataset.limits),
+      );
+    const updated = await operation(
+      advanceReload ? "increment-advance" : "increment-load",
+      () =>
+        page.evaluate(
+          ({ limits, delta }) =>
+            delta
+              ? window.bench.advance(limits, "after")
+              : window.bench.load(limits, "after"),
+          { limits: dataset.limits, delta: advanceReload },
+        ),
     );
     if (!updated.available)
       throw Error(`Updated evaluation unavailable: ${updated.reasons}`);
@@ -1046,6 +1108,30 @@ async function trial(condition, rep, profile = false) {
         "increment-rank",
         "after",
       );
+    if (args["verify-full-reload"]) {
+      await operation("oracle-input-reconstruction", () =>
+        page.evaluate(() => window.bench.fetchInput()),
+      );
+      await operation("oracle-signed-submission", () =>
+        page.evaluate(
+          (target) => window.bench.submission(target),
+          targetWord.targets[0],
+        ),
+      );
+      await operation("oracle-load", () =>
+        page.evaluate(
+          (limits) => window.bench.load(limits, "oracle"),
+          dataset.limits,
+        ),
+      );
+      await setup(() => page.evaluate(() => window.bench.releaseInput()));
+      for (const [i, w] of sample.entries())
+        await rankOne(
+          { ...w, sample_index: i, first_word: i === 0 },
+          "oracle-rank",
+          "oracle",
+        );
+    }
     await record({
       type: "trial-complete",
       trial: caseId,
@@ -1080,7 +1166,8 @@ try {
       )
     )
       throw Error("The measurement requires an exact-profile view.");
-    if (!lifecycle.cancelled) await startProductServer();
+    if (!lifecycle.cancelled && !args["product-reload"])
+      await startProductServer();
     global.gc?.();
   }
   const modes = {
@@ -1131,6 +1218,9 @@ try {
             "load",
             "increment-actors",
             "increment-load",
+            "increment-advance",
+            "oracle-rank",
+            "oracle-load",
           ].map((phase) => [
             phase,
             workerTimings(

@@ -85,8 +85,7 @@ node --import tsx scripts/browser-eval-baseline/run.mjs \
 The matrix rotates condition order across three repetitions.
 Word order rotates the three cohorts, so each cohort supplies the first word once.
 Each successful base trial ranks 60 distinct real words, adds one signed local judgment, reloads, and ranks the same words again.
-The new judgment exists only in diagnostic input and is never delivered to a peer.
-It uses a fixed, publicly known disposable seed.
+The new judgment uses a fixed, publicly known disposable seed and never leaves the disposable copy.
 
 ```sh
 /usr/bin/time -v node --expose-gc --max-old-space-size=6144 --import tsx \
@@ -96,6 +95,12 @@ It uses a fixed, publicly known disposable seed.
 ```
 
 Use `--conditions` to select a subset and `--repeats` to select one through ten repetitions.
+Use `--product-reload` to run `increment-actors` and then `increment-advance`. This is the personal-view sequence after a delivered judgment. The two operation records contain the request bytes and worker time for each step.
+This mode also seeds a fresh product `LocalStore` with the exact diagnostic input, loads `PersonalCalculator` without a network request, inserts the same judgment at its sorted inventory position, and runs `PersonalCalculator.ensure()` again. The reload must reach the new snapshot. This isolates the calculator's reload logic from download and server-materialization time and leaves the data copy unchanged. The product server is not started in this mode.
+The `product-reload` operation records total calculator time, worker request bytes, Wasm capacity, and session statistics. Sixty `product-rank` operations then rank through that calculator before `product-finish` closes it.
+Use `--delta-reload` to reuse the base actor map and advance the loaded session with only the new local judgment. This diagnostic skips `increment-actors` and matches the site-view reload path. The default retains the full `increment-actors` and `increment-load` sequence. Both advance modes insert the judgment at its sorted inventory position and use the calculator's ordered-subset selection.
+The diagnostic advance does not apply the calculator's view, overlay, mode, import-selection, or earlier-body guards. Its measurement therefore applies only when those inputs remain unchanged, as in this judgment trial. The separate `product-reload` operation applies all product guards through the calculator.
+Use `--verify-full-reload` to add a full `oracle-load` of the same appended input and 60 `oracle-rank` operations. Rank records contain the complete core result. An external comparison can make sure that the incremental and full results are identical byte for byte.
 Use `--api-port` and `--port` to select other unused local ports.
 Use `--timeout-ms` to change the per-operation timeout, whose default is 600,000 ms.
 A timeout, resource refusal, renderer crash, or memory stop remains a measured failure.
@@ -123,7 +128,7 @@ node --expose-gc --max-old-space-size=6144 --import tsx \
 ## Boundaries and constraints
 
 The product measurement calls `PersonalCalculator.ensure` from a blank measurement page.
-Its uninstrumented product worker is separate from the diagnostic worker wrapper.
+Its product worker uses the normal request protocol and a read-only measurement getter. It is separate from the diagnostic worker wrapper.
 
 It retains the normal inventory, byte, and evaluation limits.
 The page does not render the dictionary application or measure paint, search, layout, or accessibility.
@@ -209,6 +214,7 @@ Inspect `operation_errors` and each distribution's `n` before treating a trial a
 An ordinary complete base trial needs 60 successful word observations in each ranking phase.
 Worker distributions use only finite worker timings and count missing timings in `missing_worker_timings`.
 Parent round-trip timings remain separate in the raw operation records.
+`request_bytes` is the UTF-8 size of the JSON representation of the worker request, including its message fields and record strings. It measures the protocol payload, not the browser's internal structured-clone encoding.
 
 Heap metrics describe each V8 isolate at the query time.
 Wasm capacity is `memory.buffer.byteLength`, including reusable allocator space and its high-water growth.
