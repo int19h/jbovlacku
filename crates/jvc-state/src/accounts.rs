@@ -288,7 +288,7 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             p.status = Status::Unavailable;
             p.reasons.insert("view_unavailable".into());
         }
-        for (id, n) in &graph.nodes {
+        for (id, n) in graph.nodes.as_ref() {
             if n.semantic && n.kind == "import.status" {
                 let r = result.receipts.get_mut(id).unwrap();
                 r.interpretation = Interpretation::Unavailable;
@@ -299,7 +299,7 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
     };
     let status_authority = policy["account_authority"] == true;
     if !status_authority {
-        for (id, n) in &graph.nodes {
+        for (id, n) in graph.nodes.as_ref() {
             if n.semantic && n.kind == "import.status" {
                 let r = result.receipts.get_mut(id).unwrap();
                 r.interpretation = Interpretation::Inert;
@@ -717,7 +717,7 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
         }
         result.accounts.insert(token, state);
     }
-    for (id, n) in &graph.nodes {
+    for (id, n) in graph.nodes.as_ref() {
         if !status_authority || !n.semantic || n.kind != "import.status" {
             continue;
         }

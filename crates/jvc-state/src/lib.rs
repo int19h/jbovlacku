@@ -72,14 +72,14 @@ impl HostVerifiedRecord {
 #[derive(Clone)]
 pub struct PreparedEvaluationInput {
     options: EvaluationOptions,
-    nodes: BTreeMap<String, graph::Node>,
+    nodes: std::rc::Rc<BTreeMap<String, graph::Node>>,
     event_limit_exceeded: bool,
 }
 impl PreparedEvaluationInput {
     pub fn new(options: EvaluationOptions) -> Self {
         Self {
             options,
-            nodes: BTreeMap::new(),
+            nodes: std::rc::Rc::new(BTreeMap::new()),
             event_limit_exceeded: false,
         }
     }
@@ -101,7 +101,7 @@ impl PreparedEvaluationInput {
             if self.nodes.len() >= self.options.limits.events {
                 self.event_limit_exceeded = true;
             }
-            self.nodes.insert(event.id().into(), node);
+            std::rc::Rc::make_mut(&mut self.nodes).insert(event.id().into(), node);
         }
         content
     }
@@ -112,7 +112,7 @@ impl PreparedEvaluationInput {
             if self.nodes.len() >= self.options.limits.events {
                 self.event_limit_exceeded = true;
             }
-            self.nodes.insert(id, record.node);
+            std::rc::Rc::make_mut(&mut self.nodes).insert(id, record.node);
         }
     }
     pub fn evaluate(self) -> Evaluation {
@@ -350,7 +350,7 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
     if !result.lifecycle.suspended.is_empty() {
         result.reasons.insert("conditional_on_suspension".into());
     }
-    for (id, node) in &graph.nodes {
+    for (id, node) in graph.nodes.as_ref() {
         let mut reasons = BTreeSet::new();
         let interpretation = if !node.semantic {
             reasons.insert("invalid_action".into());
@@ -660,7 +660,7 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
 }
 fn registers(graph: &graph::Graph, result: &mut Evaluation) {
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (id, n) in &graph.nodes {
+    for (id, n) in graph.nodes.as_ref() {
         if !n.semantic
             || !graph.retained(id)
             || graph.suspended(&n.issuer)

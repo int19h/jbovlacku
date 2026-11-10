@@ -218,7 +218,7 @@ type RankIndex = (
 
 #[derive(Clone)]
 pub(crate) struct Graph {
-    pub nodes: BTreeMap<String, Node>,
+    pub nodes: Rc<BTreeMap<String, Node>>,
     pub own: Rc<BTreeMap<String, Closure>>,
     pub structural: Rc<BTreeMap<String, Closure>>,
     pub accepted: Rc<BTreeMap<String, Closure>>,
@@ -258,7 +258,8 @@ pub(crate) struct Graph {
     pub appended: usize,
 }
 impl Graph {
-    pub fn new(nodes: BTreeMap<String, Node>, limits: &Limits) -> Self {
+    pub fn new(nodes: impl Into<Rc<BTreeMap<String, Node>>>, limits: &Limits) -> Self {
+        let nodes = nodes.into();
         #[cfg(test)]
         CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
         // The layout scan costs one unit per record and per predecessor
@@ -421,7 +422,7 @@ impl Graph {
         let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut waiting = BTreeMap::new();
         let mut ready = BTreeSet::new();
-        for (id, node) in &self.nodes {
+        for (id, node) in self.nodes.as_ref() {
             let (deps, missing, invalid) = self.dependencies(node, mode);
             if !self.charge(1 + deps.len() + missing.len()) {
                 return BTreeMap::new();
@@ -718,7 +719,7 @@ impl Graph {
         }
         // Per-issuer completeness for `local_complete`, in one pass
         // over the records instead of one scan per claim.
-        for (id, node) in &self.nodes {
+        for (id, node) in self.nodes.as_ref() {
             let complete =
                 if self.lifecycle.successor.contains_key(&node.issuer) && !self.retained(id) {
                     true
@@ -747,7 +748,7 @@ impl Graph {
                     .extend(self.own[id].missing.iter().cloned());
             }
         }
-        for (id, node) in &self.nodes {
+        for (id, node) in self.nodes.as_ref() {
             if !self.own_complete(id) || self.pending_cutoffs.contains(&node.issuer) {
                 self.lifecycle
                     .suspended
@@ -939,7 +940,7 @@ impl Graph {
             .count() as u32;
         self.appended_rank.insert(node.id.clone(), (position, sub));
         self.appended_ids.push(node.id.clone());
-        self.nodes.insert(node.id.clone(), node.clone());
+        Rc::make_mut(&mut self.nodes).insert(node.id.clone(), node.clone());
         own.ids.fresh_ranges = self.fresh_range_count(&own.ids);
         for closure in &mut others {
             closure.ids.fresh_ranges = self.fresh_range_count(&closure.ids);
