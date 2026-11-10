@@ -66,6 +66,7 @@ window.bench = {
       };
       seedWorker.postMessage({ database, input: "/input.json" });
     });
+    mainWasm = await initializeCore();
     NativeWorker = globalThis.Worker;
     productWorkerBytes = 0;
     globalThis.Worker = class extends NativeWorker {
