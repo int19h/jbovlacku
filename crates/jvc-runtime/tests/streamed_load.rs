@@ -136,7 +136,9 @@ fn full_data_streamed_load_and_overlay_match_whole_input() {
     {
         assert_overlay_parity(&streamed, &input, Some(overlay(&input, Some(issuer))));
     } else {
-        println!("the full-data fixture has no suspended issuer; the small fixture covers that case");
+        println!(
+            "the full-data fixture has no suspended issuer; the small fixture covers that case"
+        );
     }
     println!(
         "streamed load parity: {} records, {} words, ranking SHA-256 {}",
