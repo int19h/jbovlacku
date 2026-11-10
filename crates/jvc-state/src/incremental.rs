@@ -618,34 +618,6 @@ impl EvaluatedState {
                     .or_default()
                     .insert(node.issuer.clone());
             }
-            // Run maxima over the same member set a full evaluation
-            // uses for this register, so its (now cap-charged) union
-            // work and the resulting heads match a full build
-            // exactly. The heads are the maxima of that set, as
-            // before.
-            let members: BTreeSet<String> = graph
-                .nodes
-                .values()
-                .filter(|n| {
-                    n.semantic
-                        && n.kind == "judgment.set"
-                        && graph.actor(&n.issuer) == node.issuer
-                        && n.action["target"].as_str() == Some(target)
-                        && graph.retained(&n.id)
-                        && !graph.suspended(&n.issuer)
-                        && graph.own_complete(&n.id)
-                        && !self.evaluation.receipts[&n.id]
-                            .reasons
-                            .contains("invalid_target")
-                        && !self.evaluation.receipts[&n.id]
-                            .reasons
-                            .contains("target_pending")
-                        && !self.evaluation.receipts[&n.id]
-                            .reasons
-                            .contains("account_binding_unavailable")
-                })
-                .map(|n| n.id.clone())
-                .collect();
             // Price the register from its stored charge: the base
             // evaluation already paid for the previous member set,
             // so refund exactly that and keep the new charge. No
@@ -656,10 +628,70 @@ impl EvaluatedState {
                 .get(&key)
                 .map(|register| register.maxima_charge)
                 .unwrap_or(0);
-            let charge_before = graph.ancestry.bytes();
-            let heads = graph.maxima(members, false);
-            let new_charge = graph.ancestry.bytes() - charge_before;
             graph.ancestry.refund(previous_charge);
+            // Closed form, when it applies: the fast path's parents
+            // cover the issuer's whole block, so every same-issuer
+            // member is an ancestor of the new record. If every
+            // current head also lies in the new record's closure,
+            // no other member can be a head (a non-head member sits
+            // inside some head's closure, which sits inside the new
+            // record's), the new record is the only head, and a full
+            // evaluation's maxima charge for the register is one
+            // merge of its closure into an empty accumulator:
+            // fresh ranges times 8, plus 64. A register with a head
+            // outside the new closure (for example a member from
+            // another issuer whose actor is this issuer) keeps the
+            // general member-set path below.
+            let new_closure = &graph.accepted[&node.id];
+            let sole_head = self
+                .evaluation
+                .registers
+                .get(&key)
+                .map(|register| {
+                    register
+                        .heads
+                        .iter()
+                        .all(|head| new_closure.ids.contains(head))
+                })
+                .unwrap_or(true);
+            let (heads, new_charge) = if sole_head {
+                let amount = new_closure.ids.fresh_ranges * 8 + 64;
+                if !graph.ancestry.charge(amount) {
+                    graph.resource.set(true);
+                }
+                (BTreeSet::from([node.id.clone()]), amount)
+            } else {
+                // General path: run maxima over the same member set
+                // a full evaluation uses for this register, so its
+                // (now cap-charged) union work and the resulting
+                // heads match a full build exactly.
+                let members: BTreeSet<String> = graph
+                    .nodes
+                    .values()
+                    .filter(|n| {
+                        n.semantic
+                            && n.kind == "judgment.set"
+                            && graph.actor(&n.issuer) == node.issuer
+                            && n.action["target"].as_str() == Some(target)
+                            && graph.retained(&n.id)
+                            && !graph.suspended(&n.issuer)
+                            && graph.own_complete(&n.id)
+                            && !self.evaluation.receipts[&n.id]
+                                .reasons
+                                .contains("invalid_target")
+                            && !self.evaluation.receipts[&n.id]
+                                .reasons
+                                .contains("target_pending")
+                            && !self.evaluation.receipts[&n.id]
+                                .reasons
+                                .contains("account_binding_unavailable")
+                    })
+                    .map(|n| n.id.clone())
+                    .collect();
+                let charge_before = graph.ancestry.bytes();
+                let heads = graph.maxima(members, false);
+                (heads, graph.ancestry.bytes() - charge_before)
+            };
             let values: BTreeSet<String> = heads
                 .iter()
                 .map(|id| graph.nodes[id].action["value"].as_str().unwrap().into())
@@ -815,7 +847,6 @@ impl EvaluatedState {
             remaining_work: usize,
             #[serde(default)]
             ancestry_bytes: Option<usize>,
-            #[serde(default)]
             register_maxima_charges: Vec<usize>,
         }
         let saved: Saved = serde_json::from_slice(bytes)
@@ -859,14 +890,18 @@ impl EvaluatedState {
         // them; the checkpoint's array restores them in register
         // order.
         let mut evaluation = saved.evaluation;
-        if evaluation.registers.len() == saved.register_maxima_charges.len() {
-            for (register, charge) in evaluation
-                .registers
-                .values_mut()
-                .zip(saved.register_maxima_charges.iter())
-            {
-                register.maxima_charge = *charge;
-            }
+        if evaluation.registers.len() != saved.register_maxima_charges.len() {
+            return Err(jvc_core::Error::new(
+                "checkpoint",
+                "checkpoint version or binding does not match",
+            ));
+        }
+        for (register, charge) in evaluation
+            .registers
+            .values_mut()
+            .zip(saved.register_maxima_charges.iter())
+        {
+            register.maxima_charge = *charge;
         }
         Ok(Self {
             unresolved: unresolved(&prepared),
@@ -2689,6 +2724,166 @@ mod rebuild_tests {
             }
         }
         assert_matches_full(&state, &prepared);
+    }
+
+    /// A current-version checkpoint whose register charge array is
+    /// missing, short, or long is rejected, never restored with
+    /// zero charges; the caller rebuilds, and the rebuild matches a
+    /// full evaluation.
+    #[test]
+    fn malformed_charge_array_checkpoint_is_rejected_and_rebuild_matches() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let issuer = identity_from_seed(&[8u8; 32]);
+        let root = format!("jve1:{:064x}", 975_000usize);
+        prepared.add_host_verified_record(host(
+            root.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        let judgment = host(
+            format!("jve1:{:064x}", 975_001usize),
+            &issuer,
+            vec![root.clone()],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        prepared.add_host_verified_record(judgment.clone());
+        let state = prepared.clone().into_state();
+        assert!(!state.evaluation().registers.is_empty());
+        let saved = state.checkpoint("host-checked").unwrap();
+        for mutate in ["missing", "short", "long"] {
+            let mut value: Value = serde_json::from_slice(&saved).unwrap();
+            match mutate {
+                "missing" => {
+                    value
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("register_maxima_charges");
+                }
+                "short" => {
+                    let array = value["register_maxima_charges"].as_array_mut().unwrap();
+                    array.pop();
+                }
+                _ => {
+                    value["register_maxima_charges"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(0.into());
+                }
+            }
+            let broken = serde_json::to_vec(&value).unwrap();
+            assert!(
+                EvaluatedState::restore_host_checkpoint(&broken, "host-checked").is_err(),
+                "{mutate} charge array must be rejected"
+            );
+        }
+        // Rebuild from the records and append: the result matches a
+        // full evaluation.
+        let rebuilt = prepared.clone().into_state();
+        let next = host(
+            format!("jve1:{:064x}", 975_002usize),
+            &issuer,
+            vec![judgment.node.id.clone()],
+            json!({"kind":"judgment.set","target":publication_id,"value":"curse"}),
+        );
+        prepared.add_host_verified_record(next.clone());
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(next);
+        let advanced = rebuilt.advance(delta, &[]);
+        assert_matches_full(&advanced, &prepared);
+    }
+
+    /// A register head from another issuer whose actor is this
+    /// issuer (a judgment by the successor key) is not an ancestor
+    /// of the new record, so the append keeps the general
+    /// member-set path and both heads survive.
+    #[test]
+    fn other_issuer_head_rebuilds_and_matches_full() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let a = identity_from_seed(&[8u8; 32]);
+        let c = identity_from_seed(&[9u8; 32]);
+        // A: root, a judgment, then a transfer to C.
+        let a_root = format!("jve1:{:064x}", 976_000usize);
+        let a_judgment = format!("jve1:{:064x}", 976_001usize);
+        let a_transfer = format!("jve1:{:064x}", 976_002usize);
+        prepared.add_host_verified_record(host(
+            a_root.clone(),
+            &a,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        prepared.add_host_verified_record(host(
+            a_judgment.clone(),
+            &a,
+            vec![a_root],
+            json!({"kind":"judgment.set","target":publication_id,"value":"curse"}),
+        ));
+        prepared.add_host_verified_record(host(
+            a_transfer.clone(),
+            &a,
+            vec![a_judgment.clone()],
+            json!({"kind":"identity.transfer","successor":c}),
+        ));
+        // An unrelated issuer whose block sits between A's and C's,
+        // so C's accepted history does not span A's block boundary.
+        prepared.add_host_verified_record(host(
+            format!("jve1:{:064x}", 976_006usize),
+            &identity_from_seed(&[20u8; 32]),
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        // C: the acceptance is its only root; then its own judgment,
+        // which registers under A, its actor.
+        let c_accept = format!("jve1:{:064x}", 976_003usize);
+        let c_judgment = format!("jve1:{:064x}", 976_004usize);
+        prepared.add_host_verified_record(host(
+            c_accept.clone(),
+            &c,
+            vec![],
+            json!({"kind":"identity.accept","transfer":a_transfer}),
+        ));
+        prepared.add_host_verified_record(host(
+            c_judgment.clone(),
+            &c,
+            vec![c_accept],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        ));
+        let state = prepared.clone().into_state();
+        let key = format!("{a}|judgment|{publication_id}");
+        // Before the append the only head is C's judgment: A's own
+        // judgment sits inside its accepted history through the
+        // transfer link.
+        assert_eq!(state.evaluation().registers[&key].heads.len(), 1);
+        let judgment = host(
+            format!("jve1:{:064x}", 976_005usize),
+            &a,
+            vec![a_transfer],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        prepared.add_host_verified_record(judgment.clone());
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(judgment);
+        let advanced = state.advance(delta, &[]);
+        // The actor's lifecycle group has two keys, so the fast
+        // path declines on lifecycle grounds and the state rebuilds:
+        // the closed form is never asked to price this shape. The
+        // general member-set path remains in `append` for any head
+        // outside the new record's closure.
+        assert!(advanced.statistics().rebuilt);
+        assert_eq!(
+            advanced.statistics().reason.as_deref(),
+            Some("issuer_lifecycle")
+        );
+        // The old key's post-transfer judgment is not retained, so
+        // the register keeps only the successor's head.
+        assert_eq!(advanced.evaluation().registers[&key].heads.len(), 1);
+        assert_matches_full(&advanced, &prepared);
     }
 
     /// A checkpoint written before the byte total was saved has no
