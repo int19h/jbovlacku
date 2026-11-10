@@ -21,7 +21,7 @@ pub struct JudgmentChanges {
 }
 
 /// Retained authenticated input and its evaluated state.
-/// A fork owns its result and shares only immutable ancestor payloads.
+/// A fork owns its result and shares the record projection and immutable ancestor payloads.
 pub struct EvaluatedState {
     prepared: PreparedEvaluationInput,
     evaluation: Evaluation,
@@ -164,7 +164,7 @@ impl EvaluatedState {
             &mut writer,
             &(
                 &self.prepared.options,
-                &self.prepared.nodes,
+                self.prepared.nodes.as_ref(),
                 self.prepared.event_limit_exceeded,
                 &self.evaluation,
             ),
@@ -304,15 +304,18 @@ impl EvaluatedState {
         self.prepared.options = delta.options;
         let mut added = BTreeMap::new();
         for id in removed {
-            if self.prepared.nodes.remove(id).is_some() {
+            if self.prepared.nodes.contains_key(id) {
+                self.graph = None;
+                std::rc::Rc::make_mut(&mut self.prepared.nodes).remove(id);
                 rebuild_reason = Some("record_removed".into());
             }
         }
-        for (id, node) in delta.nodes {
+        for (id, node) in std::rc::Rc::unwrap_or_clone(delta.nodes) {
             match self.prepared.nodes.get(&id) {
                 Some(previous) if previous == &node => {}
                 Some(_) => {
-                    self.prepared.nodes.insert(id, node);
+                    self.graph = None;
+                    std::rc::Rc::make_mut(&mut self.prepared.nodes).insert(id, node);
                     rebuild_reason = Some("record_replaced".into());
                 }
                 None => {
@@ -409,7 +412,10 @@ impl EvaluatedState {
                     empty_evaluation(&self.prepared.options),
                 )
             });
-            self.prepared.nodes.extend(added);
+            self.graph = None;
+            if !added.is_empty() {
+                std::rc::Rc::make_mut(&mut self.prepared.nodes).extend(added);
+            }
             self.rebuild();
             self.statistics.rebuilt = true;
             self.statistics.reason = Some(reason);
@@ -588,7 +594,11 @@ impl EvaluatedState {
 
     fn append(&mut self, node: Node, work: usize) {
         let graph = self.graph.as_mut().unwrap();
+        let prepared_nodes = std::mem::take(&mut self.prepared.nodes);
+        debug_assert!(std::rc::Rc::ptr_eq(&graph.nodes, &prepared_nodes));
+        drop(prepared_nodes);
         graph.append_ordinary(node.clone());
+        self.prepared.nodes = graph.nodes.clone();
         // `work` already holds the graph-construction and history-scan
         // charges. The scoped evaluation updates below run the same
         // code a full evaluation runs for this record, and their own
@@ -761,7 +771,6 @@ impl EvaluatedState {
         }
         self.remaining_work = graph.budget.get();
         add_node_references(&node, &mut self.unresolved);
-        self.prepared.nodes.insert(node.id.clone(), node);
         self.unresolved
             .retain(|id| !self.prepared.nodes.contains_key(id));
     }
@@ -883,7 +892,7 @@ impl EvaluatedState {
         }
         let prepared = PreparedEvaluationInput {
             options: saved.options,
-            nodes,
+            nodes: std::rc::Rc::new(nodes),
             event_limit_exceeded: saved.event_limit_exceeded,
         };
         // The registers' charge fields are not serialized with
@@ -1440,11 +1449,23 @@ mod rebuild_tests {
         state.graph.as_ref().unwrap().ancestry.bytes()
     }
 
+    fn assert_shared_projection(state: &EvaluatedState) {
+        let graph = state.graph.as_ref().unwrap();
+        assert!(std::rc::Rc::ptr_eq(&state.prepared.nodes, &graph.nodes));
+        assert_eq!(state.prepared.nodes, graph.nodes);
+    }
+
     fn assert_matches_full(state: &EvaluatedState, prepared: &PreparedEvaluationInput) {
         let full = prepared.clone().into_state();
+        assert_shared_projection(state);
+        assert_shared_projection(&full);
         assert_eq!(state.evaluation(), full.evaluation());
         assert_eq!(remaining_work(state), remaining_work(&full));
         assert_eq!(cap_bytes(state), cap_bytes(&full));
+        assert_eq!(
+            state.checkpoint("property").unwrap(),
+            full.checkpoint("property").unwrap()
+        );
     }
 
     struct Rng(u64);
@@ -1788,6 +1809,219 @@ mod rebuild_tests {
         }
         assert!(comparisons > 400, "only {comparisons} comparisons ran");
         assert!(fast_appends > 50, "only {fast_appends} fast appends ran");
+    }
+
+    fn projection_fixture() -> (PreparedEvaluationInput, String, String) {
+        let mut prepared = base();
+        let view = prepared.options.selected_view.clone();
+        let (publication, body) = publication();
+        let target = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        (prepared, view, target)
+    }
+
+    fn projection_judgment(id: u64, previous: Vec<String>, target: &str) -> HostVerifiedRecord {
+        host(
+            format!("jve1:{id:064x}"),
+            &identity_from_seed(&[1u8; 32]),
+            previous,
+            json!({"kind":"judgment.set","target":target,"value":"bless"}),
+        )
+    }
+
+    #[test]
+    fn unique_appends_reuse_projection_through_checkpoint_restore() {
+        let (prepared, view, target) = projection_fixture();
+        let options = prepared.options.clone();
+        let first = projection_judgment(800_001, vec![view.clone(), target.clone()], &target);
+        let second = projection_judgment(
+            800_002,
+            vec![view, target.clone(), first.id().to_string()],
+            &target,
+        );
+        let state = prepared.into_state();
+        let original = std::rc::Rc::as_ptr(&state.prepared.nodes);
+        assert_shared_projection(&state);
+        assert_eq!(std::rc::Rc::strong_count(&state.prepared.nodes), 2);
+
+        let mut delta = PreparedEvaluationInput::new(options.clone());
+        delta.add_host_verified_record(first.clone());
+        let direct = state.advance(delta, &[]);
+        assert!(!direct.statistics().rebuilt);
+        assert_eq!(std::rc::Rc::as_ptr(&direct.prepared.nodes), original);
+        assert_shared_projection(&direct);
+        assert_eq!(std::rc::Rc::strong_count(&direct.prepared.nodes), 2);
+
+        let restored = EvaluatedState::restore_host_checkpoint(
+            &direct.checkpoint("projection").unwrap(),
+            "projection",
+        )
+        .unwrap();
+        let append_second = |state: EvaluatedState| {
+            let mut delta = PreparedEvaluationInput::new(options.clone());
+            delta.add_host_verified_record(second.clone());
+            state.advance(delta, &[])
+        };
+        let direct = append_second(direct);
+        let restored = append_second(restored);
+        assert!(!direct.statistics().rebuilt);
+        assert!(!restored.statistics().rebuilt);
+        assert_eq!(std::rc::Rc::as_ptr(&direct.prepared.nodes), original);
+        assert_shared_projection(&direct);
+        assert_shared_projection(&restored);
+        assert_eq!(direct.evaluation(), restored.evaluation());
+        assert_eq!(
+            direct.checkpoint("projection").unwrap(),
+            restored.checkpoint("projection").unwrap()
+        );
+
+        let (mut full, _, _) = projection_fixture();
+        full.add_host_verified_record(first);
+        full.add_host_verified_record(second);
+        let full = full.into_state();
+        assert_eq!(
+            direct.checkpoint("projection").unwrap(),
+            full.checkpoint("projection").unwrap()
+        );
+    }
+
+    #[test]
+    fn fork_shares_projection_until_its_first_append() {
+        let (prepared, view, target) = projection_fixture();
+        let options = prepared.options.clone();
+        let parent = prepared.into_state();
+        let parent_checkpoint = parent.checkpoint("projection").unwrap();
+        let original = std::rc::Rc::as_ptr(&parent.prepared.nodes);
+        let fork = parent.clone();
+        assert_eq!(std::rc::Rc::as_ptr(&fork.prepared.nodes), original);
+        assert_eq!(std::rc::Rc::strong_count(&parent.prepared.nodes), 4);
+
+        let record = projection_judgment(800_003, vec![view, target.clone()], &target);
+        let mut delta = PreparedEvaluationInput::new(options);
+        delta.add_host_verified_record(record.clone());
+        let child = fork.advance(delta, &[]);
+        assert!(!child.statistics().rebuilt);
+        assert_ne!(std::rc::Rc::as_ptr(&child.prepared.nodes), original);
+        assert_eq!(std::rc::Rc::as_ptr(&parent.prepared.nodes), original);
+        assert_shared_projection(&parent);
+        assert_shared_projection(&child);
+        assert!(!parent.prepared.nodes.contains_key(record.id()));
+        assert!(child.prepared.nodes.contains_key(record.id()));
+        assert_eq!(parent.checkpoint("projection").unwrap(), parent_checkpoint);
+
+        let (mut full, _, _) = projection_fixture();
+        full.add_host_verified_record(record);
+        assert_eq!(
+            child.checkpoint("projection").unwrap(),
+            full.into_state().checkpoint("projection").unwrap()
+        );
+    }
+
+    #[test]
+    fn configuration_only_fork_rebuild_shares_projection() {
+        let (prepared, _, _) = projection_fixture();
+        let options = prepared.options.clone();
+        let parent = prepared.into_state();
+        let parent_checkpoint = parent.checkpoint("projection").unwrap();
+        let original = std::rc::Rc::as_ptr(&parent.prepared.nodes);
+        let overlay = json!({
+            "version":2,
+            "trust":[],
+            "blocked":[],
+            "root_changes":[],
+            "public_shun_issuer":null
+        });
+        let mut delta = PreparedEvaluationInput::new(options);
+        delta.options.overlay = Some(overlay.clone());
+        let child = parent.clone().advance(delta, &[]);
+        assert!(child.statistics().rebuilt);
+        assert_eq!(
+            child.statistics().reason.as_deref(),
+            Some("configuration_changed")
+        );
+        assert!(std::rc::Rc::ptr_eq(
+            &parent.prepared.nodes,
+            &child.prepared.nodes
+        ));
+        assert_eq!(std::rc::Rc::as_ptr(&child.prepared.nodes), original);
+        assert_shared_projection(&parent);
+        assert_shared_projection(&child);
+        assert_eq!(parent.checkpoint("projection").unwrap(), parent_checkpoint);
+
+        let (mut full, _, _) = projection_fixture();
+        full.options.overlay = Some(overlay);
+        assert_matches_full(&child, &full);
+    }
+
+    #[test]
+    fn unique_removal_rebuild_reuses_projection() {
+        let (prepared, _, target) = projection_fixture();
+        let options = prepared.options.clone();
+        let state = prepared.into_state();
+        let original = std::rc::Rc::as_ptr(&state.prepared.nodes);
+        let delta = PreparedEvaluationInput::new(options);
+        let state = state.advance(delta, std::slice::from_ref(&target));
+        assert!(state.statistics().rebuilt);
+        assert_eq!(state.statistics().reason.as_deref(), Some("record_removed"));
+        assert_eq!(std::rc::Rc::as_ptr(&state.prepared.nodes), original);
+        assert!(!state.prepared.nodes.contains_key(&target));
+        assert_shared_projection(&state);
+        assert_matches_full(&state, &base());
+    }
+
+    #[test]
+    fn fork_removal_leaves_parent_projection_unchanged() {
+        let (prepared, _, target) = projection_fixture();
+        let options = prepared.options.clone();
+        let parent = prepared.into_state();
+        let parent_checkpoint = parent.checkpoint("projection").unwrap();
+        let original = std::rc::Rc::as_ptr(&parent.prepared.nodes);
+        let delta = PreparedEvaluationInput::new(options);
+        let child = parent.clone().advance(delta, std::slice::from_ref(&target));
+        assert!(child.statistics().rebuilt);
+        assert_eq!(child.statistics().reason.as_deref(), Some("record_removed"));
+        assert_ne!(std::rc::Rc::as_ptr(&child.prepared.nodes), original);
+        assert!(parent.prepared.nodes.contains_key(&target));
+        assert!(!child.prepared.nodes.contains_key(&target));
+        assert_shared_projection(&parent);
+        assert_shared_projection(&child);
+        assert_eq!(parent.checkpoint("projection").unwrap(), parent_checkpoint);
+        assert_matches_full(&child, &base());
+    }
+
+    #[test]
+    fn fork_replacement_leaves_parent_projection_unchanged() {
+        let (prepared, _, target) = projection_fixture();
+        let options = prepared.options.clone();
+        let parent = prepared.into_state();
+        let parent_checkpoint = parent.checkpoint("projection").unwrap();
+        let original = std::rc::Rc::as_ptr(&parent.prepared.nodes);
+        let replacement = host(
+            target.clone(),
+            &identity_from_seed(&[1u8; 32]),
+            vec![],
+            json!({"kind":"identity.merge"}),
+        );
+        let mut delta = PreparedEvaluationInput::new(options);
+        delta.add_host_verified_record(replacement.clone());
+        let child = parent.clone().advance(delta, &[]);
+        assert!(child.statistics().rebuilt);
+        assert_eq!(
+            child.statistics().reason.as_deref(),
+            Some("record_replaced")
+        );
+        assert_ne!(std::rc::Rc::as_ptr(&child.prepared.nodes), original);
+        assert_ne!(
+            parent.prepared.nodes[&target],
+            child.prepared.nodes[&target]
+        );
+        assert_shared_projection(&parent);
+        assert_shared_projection(&child);
+        assert_eq!(parent.checkpoint("projection").unwrap(), parent_checkpoint);
+
+        let (mut full, _, _) = projection_fixture();
+        std::rc::Rc::make_mut(&mut full.nodes).insert(target, replacement.node);
+        assert_matches_full(&child, &full);
     }
 
     /// Boundary-crossing probe: the structural closure of an issuer's tip
@@ -3195,7 +3429,7 @@ mod rebuild_tests {
         let state = base().into_state();
         let bytes = serde_json::to_vec(&(
             &state.prepared.options,
-            &state.prepared.nodes,
+            state.prepared.nodes.as_ref(),
             state.prepared.event_limit_exceeded,
             &state.evaluation,
         ))
