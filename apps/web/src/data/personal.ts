@@ -7,6 +7,7 @@ import {
   canonicalize,
   contentHash,
   utf8,
+  type EvaluationRequest,
 } from "../../../../packages/core/src/browser.ts";
 import type { LocalStore, Overlay } from "./store.ts";
 import {
@@ -148,6 +149,7 @@ export function overlayDigest(
 type Pending = {
   resolve: (value: WorkerResponse) => void;
   reject: (error: Error) => void;
+  operation: "load" | "advance" | "other";
 };
 /** One calculation run. Every asynchronous step checks that its run is still the current one. */
 interface Run {
@@ -164,6 +166,32 @@ type Message = WorkerRequest extends infer R
 const CANCELLED = "Cancelled.";
 /** Reviewer details per local score, the same bound as the server applies. */
 const REVIEWER_LIMIT = 64;
+type LoadedRecords = Awaited<ReturnType<typeof loadRecords>>;
+type SentRecords = {
+  events: string[];
+  eventSet: Set<string>;
+  bodies: string[];
+  view: string;
+  overlay: string;
+  mode: CalculationMode;
+  selections: string;
+};
+export function selectAddedEventIds(
+  inventoryEvents: string[],
+  sentEvents: readonly string[],
+  sentIds: ReadonlySet<string> = new Set(sentEvents),
+): string[] | null {
+  if (sentEvents.length > inventoryEvents.length) return null;
+  const added: string[] = [];
+  let previous = 0;
+  for (const id of inventoryEvents) {
+    if (sentIds.has(id)) {
+      if (sentEvents[previous] !== id) return null;
+      previous++;
+    } else added.push(id);
+  }
+  return previous === sentEvents.length ? added : null;
+}
 export class PersonalCalculator {
   private worker: Worker | null = null;
   private sequence = 0;
@@ -173,6 +201,9 @@ export class PersonalCalculator {
   status: PersonalStatus = { state: "idle" };
   /** The session key of the loaded evaluation, or null. */
   private loadedKey: string | null = null;
+  /** The ready status for loadedKey, retained across ordinary run failures. */
+  private loadedStatus: Extract<PersonalStatus, { state: "ready" }> | null =
+    null;
   /** The run that owns the loaded worker session. */
   private current: Run | null = null;
   private loading: Promise<PersonalStatus> | null = null;
@@ -186,6 +217,8 @@ export class PersonalCalculator {
     view: string;
     actors: Record<string, string>;
   } | null = null;
+  /** IDs already authenticated by the worker. The envelopes and bodies stay in local storage. */
+  private sent: SentRecords | null = null;
   /**
    * True after Cancel until the user asks for a calculation again. An
    * automatic call from a page never restarts a cancelled calculation.
@@ -231,6 +264,21 @@ export class PersonalCalculator {
     this.status = status;
     for (const listener of this.listeners) listener(status);
   }
+  private clearLoadedSession() {
+    this.loadedKey = null;
+    this.loadedStatus = null;
+  }
+  private retireWorker(error: Error) {
+    const worker = this.worker;
+    this.worker = null;
+    worker?.terminate();
+    this.clearLoadedSession();
+    this.sent = null;
+    this.rankCache.clear();
+    for (const entry of this.pending.values()) entry.reject(error);
+    this.pending.clear();
+    if (this.status.state === "ready") this.set({ state: "idle" });
+  }
   private ensureWorker(): Worker {
     if (this.worker) return this.worker;
     const worker = new Worker(
@@ -241,16 +289,23 @@ export class PersonalCalculator {
       const entry = this.pending.get(event.data.id);
       if (!entry) return;
       this.pending.delete(event.data.id);
-      if (event.data.type === "error")
-        entry.reject(new Error(event.data.message));
-      else entry.resolve(event.data);
+      if (event.data.type === "error") {
+        const error = new Error(event.data.message);
+        if (
+          (event.data.fatal ||
+            (event.data.session_valid === false &&
+              entry.operation !== "other")) &&
+          this.worker === worker
+        )
+          this.retireWorker(error);
+        entry.reject(error);
+      } else entry.resolve(event.data);
     };
     worker.onerror = (event) => {
-      for (const entry of this.pending.values())
-        entry.reject(
-          new Error(event.message || "The evaluation worker failed."),
-        );
-      this.pending.clear();
+      if (this.worker !== worker) return;
+      this.retireWorker(
+        new Error(event.message || "The evaluation worker failed."),
+      );
     };
     this.worker = worker;
     return worker;
@@ -262,8 +317,20 @@ export class PersonalCalculator {
     const id = ++this.sequence;
     const worker = this.ensureWorker();
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      worker.postMessage({ ...message, id });
+      this.pending.set(id, {
+        resolve,
+        reject,
+        operation:
+          message.type === "load" || message.type === "advance"
+            ? message.type
+            : "other",
+      });
+      try {
+        worker.postMessage({ ...message, id });
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
   /** True while a download or evaluation is in progress. */
@@ -284,7 +351,8 @@ export class PersonalCalculator {
     for (const entry of this.pending.values())
       entry.reject(new Error(CANCELLED));
     this.pending.clear();
-    this.loadedKey = null;
+    this.clearLoadedSession();
+    this.sent = null;
     this.loading = null;
     this.rankCache.clear();
     this.cancelled = true;
@@ -469,32 +537,61 @@ export class PersonalCalculator {
       live();
       const digest = overlay ? overlayDigest(overlay) : nullOverlayDigest();
       const key = `${inventory.snapshot}|${inventory.view}|${digest}|${mode}`;
-      if (this.loadedKey === key && this.status.state === "ready")
-        return this.status;
-      this.loadedKey = null;
+      const loadedStatus = this.loadedStatus;
+      if (this.loadedKey === key && loadedStatus) {
+        this.set(loadedStatus);
+        return loadedStatus;
+      }
+      const advance = this.advanceInput(
+        inventory,
+        records,
+        overlay,
+        digest,
+        mode,
+      );
+      this.clearLoadedSession();
       this.rankCache.clear();
       this.set({
         state: "evaluating",
         mode,
         events: inventory.events.length,
       });
-      const input = {
+      const input: EvaluationRequest = {
         events: records.events,
         bodies: records.bodies,
         selected_view: inventory.view,
         import_selections: records.selections,
         ...(overlay ? { overlay } : {}),
       };
-      const loaded = await this.request(run, {
-        type: "load",
-        session: key,
-        input,
-      });
+      let loaded: WorkerResponse;
+      if (advance) {
+        try {
+          loaded = await this.request(run, {
+            type: "advance",
+            base: advance.base,
+            session: key,
+            input: advance.input,
+          });
+        } catch {
+          live();
+          loaded = await this.request(run, {
+            type: "load",
+            session: key,
+            input,
+          });
+        }
+      } else {
+        loaded = await this.request(run, {
+          type: "load",
+          session: key,
+          input,
+        });
+      }
       live();
       if (loaded.type !== "loaded" || loaded.session !== key)
         throw new Error("Unexpected worker reply.");
-      this.loadedKey = key;
-      const status: PersonalStatus = {
+      this.rememberSent(inventory, records, digest, mode);
+      const status: Extract<PersonalStatus, { state: "ready" }> = {
         state: "ready",
         mode,
         snapshot: inventory.snapshot,
@@ -504,6 +601,8 @@ export class PersonalCalculator {
         available: loaded.available,
         reasons: loaded.reasons,
       };
+      this.loadedKey = key;
+      this.loadedStatus = status;
       this.set(status);
       return status;
     } catch (error) {
@@ -538,12 +637,76 @@ export class PersonalCalculator {
         message: describe(error),
         kind,
       };
-      this.loadedKey = null;
       this.set(status);
       return status;
     } finally {
       if (this.current === run) this.current = null;
     }
+  }
+  private advanceInput(
+    inventory: SnapshotInventory,
+    records: LoadedRecords,
+    overlay: EffectiveOverlay | null,
+    digest: string,
+    mode: CalculationMode,
+  ): { base: string; input: EvaluationRequest } | null {
+    const sent = this.sent;
+    if (
+      !this.loadedKey ||
+      !sent ||
+      sent.view !== inventory.view ||
+      sent.overlay !== digest ||
+      sent.mode !== mode ||
+      sent.selections !== canonicalize(utf8(JSON.stringify(records.selections)))
+    )
+      return null;
+    let previousBodies = 0;
+    for (const id of sent.events)
+      if (records.bodies[id] !== undefined) previousBodies++;
+    if (
+      previousBodies !== sent.bodies.length ||
+      sent.bodies.some((id) => records.bodies[id] === undefined)
+    )
+      return null;
+    const addedIds = selectAddedEventIds(
+      inventory.events,
+      sent.events,
+      sent.eventSet,
+    );
+    if (!addedIds || addedIds.length === 0) return null;
+    const addedSet = new Set(addedIds);
+    const events = records.events.filter((_, index) =>
+      addedSet.has(inventory.events[index]),
+    );
+    const bodies: Record<string, string> = {};
+    for (const id of addedIds)
+      if (records.bodies[id] !== undefined) bodies[id] = records.bodies[id];
+    return {
+      base: this.loadedKey,
+      input: {
+        events,
+        bodies,
+        selected_view: inventory.view,
+        import_selections: records.selections,
+        ...(overlay ? { overlay } : {}),
+      },
+    };
+  }
+  private rememberSent(
+    inventory: SnapshotInventory,
+    records: LoadedRecords,
+    digest: string,
+    mode: CalculationMode,
+  ) {
+    this.sent = {
+      events: [...inventory.events],
+      eventSet: new Set(inventory.events),
+      bodies: Object.keys(records.bodies).sort(),
+      view: inventory.view,
+      overlay: digest,
+      mode,
+      selections: canonicalize(utf8(JSON.stringify(records.selections))),
+    };
   }
   private async effective(
     inventory: SnapshotInventory,
@@ -668,8 +831,14 @@ export class PersonalCalculator {
           else resolve(reply);
         },
         reject,
+        operation: "other",
       });
-      worker.postMessage({ type: "rank", id, session, word, reviewers });
+      try {
+        worker.postMessage({ type: "rank", id, session, word, reviewers });
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
   /**
@@ -687,7 +856,8 @@ export class PersonalCalculator {
     this.generation++;
     this.current?.abort.abort(new Error(CANCELLED));
     this.current = null;
-    this.loadedKey = null;
+    this.clearLoadedSession();
+    this.sent = null;
     this.rankCache.clear();
     if (this.status.state !== "failed") this.set({ state: "idle" });
   }

@@ -437,8 +437,11 @@ function wrapEvaluationSession(
         : (JSON.parse(session.state()) as Evaluation),
     );
   } catch (error) {
-    session.free();
-    throw error;
+    try {
+      session.free();
+    } finally {
+      throw error;
+    }
   }
   return {
     get state() {

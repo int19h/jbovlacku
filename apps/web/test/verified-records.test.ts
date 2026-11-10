@@ -32,11 +32,17 @@ test("the browser exposes no host ports and rejects unknown request fields befor
       selected_view: "jve1:" + "0".repeat(64),
       import_selections: {},
     });
-    const unsafeSessionPorts = [
-      "fork",
-      "checkpoint",
-      "addHostVerifiedRecord",
-    ].filter((name) => typeof session[name] !== "undefined");
+    const unsafeSessionPorts = ["checkpoint", "addHostVerifiedRecord"].filter(
+      (name) => typeof session[name] !== "undefined",
+    );
+    const builder = session.fork({
+      selected_view: "jve1:" + "0".repeat(64),
+      import_selections: {},
+    });
+    const unsafeBuilderPorts = ["addHostVerifiedRecord", "removeRecord"].filter(
+      (name) => typeof builder[name] !== "undefined",
+    );
+    builder.free();
     session.free();
     const worker = new Worker(
       new URL("/src/workers/evaluate.ts", location.href),
@@ -86,7 +92,7 @@ test("the browser exposes no host ports and rejects unknown request fields befor
         claimed,
         ordinary,
         exportedHostPorts,
-        unsafeSessionPorts,
+        unsafeSessionPorts: [...unsafeSessionPorts, ...unsafeBuilderPorts],
       };
     } finally {
       worker.terminate();
