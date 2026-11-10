@@ -3,6 +3,7 @@ import { before, test } from "node:test";
 import { readFile } from "node:fs/promises";
 import {
   canonicalize,
+  createEvaluationSession,
   createEvent,
   evaluateSession,
   identityFromSeed,
@@ -10,6 +11,7 @@ import {
   utf8,
   wordId,
   type EvaluationRequest,
+  type EvaluationSessionOptions,
 } from "../../../../packages/core/src/index.ts";
 import type { EvaluationWorker } from "../../src/workers/evaluate.ts";
 
@@ -106,6 +108,29 @@ function delta(input: EvaluationRequest, envelope: unknown): EvaluationRequest {
 type TestWorker = EvaluationWorker & {
   load(message: any): Promise<any>;
 };
+function eagerNativeSession(session: ReturnType<typeof evaluateSession>) {
+  return {
+    ...session,
+    fork: (options: EvaluationSessionOptions) => {
+      const builder = session.fork(options);
+      return {
+        ...builder,
+        finish: () => {
+          const next = builder.finish();
+          void next.state;
+          return next;
+        },
+      };
+    },
+  };
+}
+function nativeFactory(options: EvaluationSessionOptions) {
+  const builder = createEvaluationSession(options);
+  return {
+    ...builder,
+    finish: () => eagerNativeSession(builder.finish()),
+  };
+}
 let loading: EvaluationRequest | null = null;
 async function worker(): Promise<TestWorker> {
   const { EvaluationWorker } = await import("../../src/workers/evaluate.ts");
@@ -114,7 +139,7 @@ async function worker(): Promise<TestWorker> {
     for (const envelope of input.events)
       builder.addRecordText(envelope, input.bodies[JSON.parse(envelope).id]);
     return input.events.length;
-  });
+  }, nativeFactory);
   return new Proxy(actual, {
     get(target, property, receiver) {
       if (property === "load")
@@ -142,6 +167,10 @@ function assertSession(
   actual: EvaluationWorker,
   expected: ReturnType<typeof evaluateSession>,
 ) {
+  assert.deepEqual(
+    (actual.currentSession as unknown as { state: unknown } | undefined)?.state,
+    expected.state,
+  );
   assert.deepEqual(actual.currentSession?.summary(), {
     available: expected.state.available,
     reasons: expected.state.reasons,

@@ -171,7 +171,6 @@ type SentRecords = {
   logical_inventory: string;
   events_digest: string;
   count: number;
-  added: Set<string>;
   view: string;
   overlay: EffectiveOverlay | null;
   overlayDigest: string;
@@ -516,7 +515,6 @@ export class PersonalCalculator {
         this.sent.view === inventory.view &&
         this.sent.selections === selectionBinding,
       );
-      let additions: string[] | null = sameBase ? [] : null;
       if (!sameBase) {
         const advance = await this.advanceInput(inventory, selections);
         live();
@@ -552,10 +550,8 @@ export class PersonalCalculator {
               session: intermediate,
               input: advance.input,
             });
-            additions = advance.added;
           } catch {
             live();
-            additions = null;
             loaded = await fullLoad();
           }
         } else {
@@ -606,14 +602,7 @@ export class PersonalCalculator {
       live();
       if (loaded.type !== "loaded" || loaded.session !== key)
         throw new Error("Unexpected worker reply.");
-      this.rememberSent(
-        inventory,
-        selections,
-        overlay,
-        digest,
-        mode,
-        additions,
-      );
+      this.rememberSent(inventory, selections, overlay, digest, mode);
       const status: Extract<PersonalStatus, { state: "ready" }> = {
         state: "ready",
         mode,
@@ -669,11 +658,7 @@ export class PersonalCalculator {
   private async advanceInput(
     inventory: SnapshotInventory,
     selections: Record<string, string[]>,
-  ): Promise<{
-    base: string;
-    added: string[];
-    input: EvaluationRequest;
-  } | null> {
+  ): Promise<{ base: string; input: EvaluationRequest } | null> {
     const sent = this.sent;
     if (
       !this.loadedKey ||
@@ -687,20 +672,27 @@ export class PersonalCalculator {
       "inventory",
       sent.snapshot,
     );
+    const retained = new Set(inventory.bodies);
     if (
       !previous ||
       previous.logical_inventory !== sent.logical_inventory ||
       previous.events_digest !== sent.events_digest ||
       previous.events.length !== sent.count ||
-      previous.bodies.length !== inventory.bodies.length ||
-      previous.bodies.some((hash, index) => hash !== inventory.bodies[index])
+      !Array.isArray(previous.unretained_bodies) ||
+      previous.bodies.some((hash) => !retained.has(hash))
     )
       return null;
     const added = selectAddedEventIds(inventory.events, previous.events);
     if (!added || added.length === 0) return null;
+    const previousBodies = new Set(previous.bodies);
+    const previouslyUnretained = new Set(previous.unretained_bodies);
+    const newBodies = inventory.bodies.filter(
+      (hash) => !previousBodies.has(hash),
+    );
+    if (newBodies.some((hash) => previouslyUnretained.has(hash))) return null;
     const events: string[] = [];
     const bodies: Record<string, string> = {};
-    const retained = new Set(inventory.bodies);
+    const addedBodies = new Set<string>();
     for (const id of added) {
       const record = await this.store.get<{
         envelope: string;
@@ -716,11 +708,12 @@ export class PersonalCalculator {
             "missing",
           );
         bodies[id] = record.body;
+        addedBodies.add(record.bodyHash);
       }
     }
+    if (newBodies.some((hash) => !addedBodies.has(hash))) return null;
     return {
       base: this.loadedKey,
-      added,
       input: {
         events,
         bodies,
@@ -736,17 +729,12 @@ export class PersonalCalculator {
     overlay: EffectiveOverlay | null,
     digest: string,
     mode: CalculationMode,
-    additions: string[] | null,
   ) {
     this.sent = {
       snapshot: inventory.snapshot,
       logical_inventory: inventory.logical_inventory,
       events_digest: inventory.events_digest,
       count: inventory.events.length,
-      added:
-        additions === null
-          ? new Set()
-          : new Set([...(this.sent?.added ?? []), ...additions]),
       view: inventory.view,
       overlay,
       overlayDigest: digest,

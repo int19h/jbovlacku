@@ -134,7 +134,7 @@ async function readStoredRecords(source: LoadSource, builder: Builder) {
           (index > 0 && id <= stored.events[index - 1]),
       )
     )
-      throw new Error("The cached inventory is not in order.");
+      throw new Error("The inventory is not in order.");
     const bodies = new Set(stored.bodies);
     let index = 0;
     let after: string | undefined;
@@ -147,8 +147,13 @@ async function readStoredRecords(source: LoadSource, builder: Builder) {
       if (batch.length === 0) break;
       for (const record of batch) {
         const expected = stored.events[index];
-        if (expected === undefined || record.id !== expected)
-          throw missingRecord(expected ?? record.id);
+        if (record.id !== expected) {
+          if (expected === undefined || record.id < expected) {
+            after = record.id;
+            continue;
+          }
+          throw missingRecord(expected);
+        }
         if (record.bodyHash && bodies.has(record.bodyHash) && !record.body)
           throw new Error(
             `The body of ${record.id} is retained by the snapshot but not cached. Download the records again.`,
@@ -177,7 +182,10 @@ export class EvaluationWorker {
   private sessionKey: string | null = null;
   private events = 0;
 
-  constructor(private readonly loadSource: SourceLoader = readStoredRecords) {}
+  constructor(
+    private readonly loadSource: SourceLoader = readStoredRecords,
+    private readonly createSession = createEvaluationSession,
+  ) {}
 
   /** Test and measurement access to the current browser-safe session. */
   get currentSession() {
@@ -206,7 +214,7 @@ export class EvaluationWorker {
     message: Extract<WorkerRequest, { type: "load" }>,
   ): Promise<LoadedResponse> {
     this.release();
-    const builder = createEvaluationSession(message.options);
+    const builder = this.createSession(message.options);
     try {
       this.events = await this.loadSource(message.source, builder);
       this.session = builder.finish();

@@ -46,6 +46,8 @@ export interface SnapshotInventory {
   events: string[];
   /** Body hashes the snapshot reports as retained. */
   bodies: string[];
+  /** Required body hashes that the snapshot does not retain. */
+  unretained_bodies?: string[];
   selections: string[];
 }
 export interface RecordsProgress {
@@ -442,6 +444,16 @@ export async function syncRecords(
     view,
     events,
     bodies,
+    unretained_bodies: [
+      ...new Set(
+        events
+          .map((id) => cached.get(id)!.bodyHash)
+          .filter(
+            (hash): hash is string =>
+              typeof hash === "string" && !bodySet.has(hash),
+          ),
+      ),
+    ].sort(),
     selections,
   };
   if (typeof store.commitInventory === "function")

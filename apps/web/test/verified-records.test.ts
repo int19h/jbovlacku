@@ -140,8 +140,7 @@ test("the browser worker authenticates streamed records and checks the complete 
   expect(results.claimed.message).toContain("unknown field `host_records`");
   expect(results.missing.type).toBe("error");
   expect(results.missing.message).toContain("is not cached");
-  expect(results.extra.type).toBe("error");
-  expect(results.extra.message).toContain("is not cached");
+  expect(results.extra).toEqual(results.original);
   expect(results.ordinary.type).toBe("error");
 });
 

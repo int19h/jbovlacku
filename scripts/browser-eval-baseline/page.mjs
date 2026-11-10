@@ -22,6 +22,7 @@ let input = null,
   mainWasm = null,
   productCalculator = null,
   productStore = null,
+  productDatabase = null,
   productInput = null,
   productWorkerBytes = 0,
   productSnapshot = null,
@@ -50,9 +51,9 @@ const request = (message) =>
     worker.postMessage(payload);
   });
 window.bench = {
-  async prepareProduct(view) {
+  async seedProductProfile(view) {
     setPreferredView(view);
-    const database = `measurement-${crypto.randomUUID()}`;
+    productDatabase = `measurement-${crypto.randomUUID()}`;
     const inventory = await new Promise((resolve, reject) => {
       const seedWorker = new Worker("/seed-worker.js", { type: "module" });
       seedWorker.onmessage = ({ data }) => {
@@ -65,11 +66,17 @@ window.bench = {
         seedWorker.terminate();
       };
       seedWorker.postMessage({
-        database,
+        database: productDatabase,
         fixture: "/fixture.json",
         records: "/records.jsonl",
       });
     });
+    return { database: productDatabase, events: inventory.events.length };
+  },
+  async prepareProduct(view, database = productDatabase) {
+    if (!database) throw new Error("The product profile has not been seeded.");
+    productDatabase = database;
+    setPreferredView(view);
     mainWasm = await initializeCore();
     NativeWorker = globalThis.Worker;
     productWorkerBytes = 0;
@@ -89,7 +96,6 @@ window.bench = {
     productCalculator = new PersonalCalculator(productStore, async () => ({
       identity: identityFromSeed(seed),
     }));
-    return { events: inventory.events.length };
   },
   async gate(view, keep = false) {
     const start = performance.now();
@@ -140,8 +146,7 @@ window.bench = {
   },
   async productReload(inventory) {
     const start = performance.now();
-    await productStore.put("inventory", inventory.snapshot, inventory);
-    await productStore.put("inventory", "latest", inventory);
+    await productStore.commitInventory(inventory);
     productSnapshot = inventory.snapshot;
     const before = productWorkerBytes;
     const result = await productCalculator.ensure({ mode: "personal" });
@@ -163,6 +168,7 @@ window.bench = {
     if (productStore) (await productStore.database).close();
     productCalculator = null;
     productStore = null;
+    productDatabase = null;
     productInput = null;
     productSnapshot = null;
     if (NativeWorker) globalThis.Worker = NativeWorker;

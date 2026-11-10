@@ -4,7 +4,7 @@ This opt-in harness measures the current personal-calculation entrypoint and eva
 It does not change product code or run through the default browser test suite.
 It uses one browser page and one evaluation worker at a time.
 The Node server evaluates only the disposable copy and finishes startup before browser measurements start.
-Every browser trial starts a fresh Chromium process and context.
+Every measured trial starts a fresh Chromium process on a profile seeded by an earlier, closed browser.
 
 ## Prepare a disposable copy
 
@@ -37,7 +37,7 @@ Install the dependencies and pinned tools described in the [development guide](.
 Set the build and browser paths below for your environment.
 Build the normal core and standalone server before measurement.
 The harness builds only its measurement page and worker wrapper into scratch space.
-The compiled core remains the normal release artifact.
+The compiled core remains the normal release artifact. Its build metadata records the source revision and Wasm SHA-256. The harness refuses a missing, stale, or dirty-build artifact and records the same binding in its environment file.
 
 ```sh
 export CARGO_TARGET_DIR="<rust-target-dir>"
@@ -130,7 +130,7 @@ node --expose-gc --max-old-space-size=6144 --import tsx \
 The product measurement calls `PersonalCalculator.ensure` from a blank measurement page.
 Its product worker uses the normal request protocol and a read-only measurement getter. It is separate from the diagnostic worker wrapper.
 Use `--product-reload --product-only` to measure only the first product load, one signed local judgment, the incremental reload, and product rankings.
-Before that first load, a separate setup worker seeds IndexedDB and terminates. The page then requests garbage collection and resets the PSS peak. The page core initializes only after setup, for the calculator's overlay digest and later signing. Fixture construction is therefore outside the measured load and reload peaks. The PSS watchdog pauses only during this setup and resumes before the calculator starts.
+Before that first load, a separate setup worker seeds IndexedDB in a persistent browser profile and terminates. That browser closes, then a new browser opens the same profile for the measured load. Seeding processes and their residue are outside the measured browser. The new page core initializes during calculator setup, for the overlay digest and later signing. The PSS watchdog pauses only during this setup and resumes before the calculator starts.
 The reload inventory is computed outside the browser from the deterministic signed envelope. The browser stores that small inventory and calls the real calculator again.
 
 It retains the normal inventory, byte, and evaluation limits.

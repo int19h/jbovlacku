@@ -32,6 +32,7 @@ function inventory(events: string[], id: string): SnapshotInventory {
     view,
     events,
     bodies: [bodyHash],
+    unretained_bodies: [],
     selections: [],
   };
 }
@@ -412,6 +413,34 @@ test("a pure snapshot append advances with only the new record", async () => {
     (advance.input.overlay as { version: number } | undefined)?.version,
     2,
   );
+  h.calculator.cancel();
+});
+
+test("a new record with a retained body advances with that body", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  const addedBodyHash = "sha256:" + "9".repeat(64);
+  const body = JSON.stringify({ retained: true });
+  h.records.set(added, {
+    id: added,
+    envelope: envelope(added),
+    body,
+    bodyStatus: "present",
+    bodyHash: addedBodyHash,
+  });
+  h.setInventory({
+    ...inventory([view, other, added], snapshot("b")),
+    bodies: [bodyHash, addedBodyHash],
+  });
+  assert.equal((await h.calculator.ensure()).state, "ready");
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load", "overlay", "advance", "overlay"],
+  );
+  const advance = h.worker.messages[2];
+  assert.equal(advance.type, "advance");
+  if (advance.type === "advance")
+    assert.deepEqual(advance.input.bodies, { [added]: body });
   h.calculator.cancel();
 });
 

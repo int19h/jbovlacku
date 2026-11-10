@@ -108,18 +108,30 @@ impl EvaluatedState {
     }
 
     pub fn with_overlay(&self, overlay: Option<Value>) -> Self {
+        self.with_overlay_and_rebuild(overlay, |state| state.rebuild())
+    }
+
+    fn with_overlay_and_rebuild(
+        &self,
+        overlay: Option<Value>,
+        rebuild: impl FnOnce(&mut Self),
+    ) -> Self {
         let mut state = self.clone();
         state.prepared.options.overlay = overlay.clone();
-        state.evaluation = self.evaluation.with_overlay(overlay, |issuer| {
-            let lifecycle = &self.evaluation.lifecycle;
-            let actor = lifecycle
-                .key_actor
-                .get(issuer)
-                .cloned()
-                .unwrap_or_else(|| issuer.into());
-            lifecycle.suspended.contains_key(&actor)
-        });
-        state.statistics = UpdateStatistics::default();
+        if self.evaluation.reasons.contains("resource_unavailable") {
+            rebuild(&mut state);
+        } else {
+            state.evaluation = self.evaluation.with_overlay(overlay, |issuer| {
+                let lifecycle = &self.evaluation.lifecycle;
+                let actor = lifecycle
+                    .key_actor
+                    .get(issuer)
+                    .cloned()
+                    .unwrap_or_else(|| issuer.into());
+                lifecycle.suspended.contains_key(&actor)
+            });
+        }
+        state.statistics = self.statistics.clone();
         state.judgment_changes = None;
         state.ranking_index = Default::default();
         state
@@ -1937,6 +1949,50 @@ mod rebuild_tests {
             child.checkpoint("projection").unwrap(),
             full.into_state().checkpoint("projection").unwrap()
         );
+    }
+
+    #[test]
+    fn overlay_resource_rebuild_matches_policy_early_return_with_suspension() {
+        let prepared = base();
+        let mut graph = Graph::new(prepared.nodes.clone(), &Limits::default());
+        let issuer = identity_from_seed(&[1; 32]);
+        graph
+            .lifecycle
+            .suspended
+            .insert(issuer.clone(), BTreeSet::new());
+        let mut state = prepared.into_state();
+        state.prepared.options.limits.traversal = 0;
+        state.evaluation = evaluate_graph(&state.prepared.options, &graph);
+        state.graph = Some(graph);
+        assert!(state.evaluation.reasons.contains("resource_unavailable"));
+        assert!(state.evaluation.publications.is_empty());
+        assert!(state.evaluation.lifecycle.suspended.contains_key(&issuer));
+        let suspended = json!({
+            "version":2,
+            "base_view":state.prepared.options.selected_view,
+            "public_shun_issuer":issuer,
+            "root_changes":[],
+            "trust":[],
+            "blocked":[],
+            "work":null
+        });
+        for overlay in [json!({"invalid":true}), suspended] {
+            let actual = state.with_overlay_and_rebuild(Some(overlay.clone()), |next| {
+                next.evaluation =
+                    evaluate_graph(&next.prepared.options, next.graph.as_ref().unwrap());
+            });
+            let mut options = state.prepared.options.clone();
+            options.overlay = Some(overlay);
+            let expected = evaluate_graph(&options, state.graph.as_ref().unwrap());
+            assert_eq!(actual.evaluation(), &expected);
+            assert!(!actual.evaluation.reasons.contains("invalid_overlay"));
+            assert!(
+                !actual
+                    .evaluation
+                    .reasons
+                    .contains("public_shun_issuer_unavailable")
+            );
+        }
     }
 
     #[test]

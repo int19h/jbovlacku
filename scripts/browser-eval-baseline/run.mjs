@@ -116,6 +116,13 @@ function submittedInventory(input, envelope) {
     view: input.selected_view,
     events,
     bodies,
+    unretained_bodies: [
+      ...new Set(
+        envelopes
+          .map((value) => JSON.parse(value).header.content?.hash)
+          .filter((hash) => hash && !bodies.includes(hash)),
+      ),
+    ].sort(),
     selections,
   };
 }
@@ -178,14 +185,33 @@ await build({
   plugins: [measurementSessionGetter],
 });
 const wasmPath = join(root, "packages/core/generated/jvc_runtime_bg.wasm");
+const wasmBuild = JSON.parse(
+  await readFile(
+    join(root, "packages/core/generated/jvc_runtime_build.json"),
+    "utf8",
+  ),
+);
+const wasmSha256 = sha(await readFile(wasmPath));
+const dirty = capture("git", ["status", "--porcelain"]);
+if (
+  wasmBuild.schema !== 1 ||
+  wasmBuild.source_revision !== head ||
+  wasmBuild.wasm_sha256 !== wasmSha256
+)
+  throw Error(
+    "The generated Wasm does not match the checked-out source revision.",
+  );
+if (wasmBuild.source_dirty || dirty)
+  throw Error("Build and measure the Wasm from a clean source checkout.");
 const manifest = {
   head,
-  dirty: capture("git", ["status", "--porcelain"]),
+  dirty,
   node: process.version,
   kernel: capture("uname", ["-a"]),
   cpu: capture("lscpu", []),
   memory: capture("free", ["-b"]),
-  wasm_sha256: sha(await readFile(wasmPath)),
+  wasm_sha256: wasmSha256,
+  wasm_source_revision: wasmBuild.source_revision,
   worker_sha256: sha(await readFile(join(assets, "worker.js"))),
   seed_worker_sha256: sha(await readFile(join(assets, "seed-worker.js"))),
   product_worker_sha256: sha(await readFile(join(assets, "product-worker.js"))),
@@ -845,19 +871,54 @@ async function trial(condition, rep, profile = false) {
     ];
     if (condition.oldSpace)
       launchArgs.push(`--js-flags=--max-old-space-size=${condition.oldSpace}`);
-    browser = await chromium.launch({
+    const launchOptions = {
       headless: true,
       args: launchArgs,
       handleSIGINT: false,
       handleSIGTERM: false,
       handleSIGHUP: false,
-    });
+    };
+    const profileDirectory = join(out, "profiles", label, caseId);
+    let profileDatabase = null;
+    if (args["product-reload"]) {
+      const seedContext = await setup(() =>
+        chromium.launchPersistentContext(profileDirectory, launchOptions),
+      );
+      try {
+        const seedPage = await setup(() => seedContext.newPage());
+        await setup(() => seedPage.goto(`http://127.0.0.1:${port}`));
+        await setup(() => seedPage.waitForFunction(() => !!window.bench));
+        const seeded = await setup(() =>
+          seedPage.evaluate(
+            (view) => window.bench.seedProductProfile(view),
+            dataset.view,
+          ),
+        );
+        profileDatabase = seeded.database;
+        await record({
+          type: "product-profile-seeded",
+          trial: caseId,
+          condition: condition.name,
+          events: seeded.events,
+        });
+      } finally {
+        await seedContext.close();
+      }
+    }
+    const context = args["product-reload"]
+      ? await setup(() =>
+          chromium.launchPersistentContext(profileDirectory, launchOptions),
+        )
+      : await (async () => {
+          browser = await chromium.launch(launchOptions);
+          return browser.newContext();
+        })();
+    browser = context.browser();
     activeCleanup = closeBrowser;
     if (lifecycle.cancelled) return;
     manifest.chromium = browser.version();
     rootCDP = await setup(() => browser.newBrowserCDPSession());
-    const context = await setup(() => browser.newContext());
-    page = await setup(() => context.newPage());
+    page = await setup(() => context.pages()[0] ?? context.newPage());
     page.setDefaultTimeout(600000);
     context.on("requestfinished", async (request) => {
       const attribution = phase;
@@ -958,8 +1019,8 @@ async function trial(condition, rep, profile = false) {
         setupBudgetPause = true;
         await setup(() =>
           page.evaluate(
-            (view) => window.bench.prepareProduct(view),
-            dataset.view,
+            ({ view, database }) => window.bench.prepareProduct(view, database),
+            { view: dataset.view, database: profileDatabase },
           ),
         );
         await setup(() => pageCDP.send("HeapProfiler.collectGarbage"));

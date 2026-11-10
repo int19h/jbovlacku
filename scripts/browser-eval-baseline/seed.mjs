@@ -35,6 +35,13 @@ export const productInventory = (value) => {
     view: value.selected_view,
     events,
     bodies,
+    unretained_bodies: [
+      ...new Set(
+        value.events
+          .map((envelope) => JSON.parse(envelope).header.content?.hash)
+          .filter((hash) => hash && !bodies.includes(hash)),
+      ),
+    ].sort(),
     selections,
   };
 };
