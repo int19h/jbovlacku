@@ -2497,10 +2497,10 @@ mod rebuild_tests {
         let publication_id = publication.id().to_string();
         prepared.add_record(&publication, body.as_deref());
         let issuer = identity_from_seed(&[8u8; 32]);
-        let mut add = |prepared: &mut PreparedEvaluationInput,
-                       id: usize,
-                       previous: Vec<String>,
-                       action: Value| {
+        let add = |prepared: &mut PreparedEvaluationInput,
+                   id: usize,
+                   previous: Vec<String>,
+                   action: Value| {
             prepared.add_host_verified_record(host(
                 format!("jve1:{id:064x}"),
                 &issuer,

@@ -207,6 +207,15 @@ impl BoundaryCrossings {
     }
 }
 
+/// The appended-rank index cached on a graph: the appended-record
+/// count it was built for, appended records by full rank, and the
+/// last appended record at each insertion position.
+type RankIndex = (
+    usize,
+    BTreeMap<(u32, String, u32), String>,
+    BTreeMap<u32, String>,
+);
+
 #[derive(Clone)]
 pub(crate) struct Graph {
     pub nodes: BTreeMap<String, Node>,
@@ -228,13 +237,7 @@ pub(crate) struct Graph {
     /// appended-record count and reused. Rebuilding it per maxima
     /// merge made one append after many earlier appends rebuild it
     /// once per register member.
-    pub rank_index: std::cell::RefCell<
-        Option<(
-            usize,
-            BTreeMap<(u32, String, u32), String>,
-            BTreeMap<u32, String>,
-        )>,
-    >,
+    pub rank_index: std::cell::RefCell<Option<RankIndex>>,
     /// Semantic `account.set` record IDs by account token
     /// (`origin#account`), in record order. Account evaluation reads
     /// this index instead of scanning all records per claim.
