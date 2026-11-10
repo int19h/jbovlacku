@@ -73,6 +73,7 @@ export {
 } from "./index.ts";
 import {
   evaluateSession as verifiedSession,
+  createEvaluationSession as verifiedBuilder,
   type EvaluationBuilder,
   type EvaluationRequest,
   type EvaluationSessionHandle,
@@ -81,13 +82,17 @@ import {
 function wrapBrowserBuilder(builder: EvaluationBuilder) {
   return {
     addRecord: builder.addRecord,
+    addRecordText: builder.addRecordText,
     finish: () => wrapBrowserSession(builder.finish()),
     free: builder.free,
   };
 }
 function wrapBrowserSession(session: EvaluationSessionHandle) {
   return {
-    state: session.state,
+    summary: session.summary,
+    actors: session.actors,
+    withOverlay: (overlay?: unknown) =>
+      wrapBrowserSession(session.withOverlay(overlay)),
     rankWord: session.rankWord,
     rankingDescriptor: session.rankingDescriptor,
     prepareRanking: session.prepareRanking,
@@ -107,4 +112,7 @@ function wrapBrowserSession(session: EvaluationSessionHandle) {
 /** Browser sessions expose rankings and results, without private restore or insertion ports. */
 export function evaluateSession(input: EvaluationRequest) {
   return wrapBrowserSession(verifiedSession(input));
+}
+export function createEvaluationSession(options: EvaluationSessionOptions) {
+  return wrapBrowserBuilder(verifiedBuilder(options));
 }

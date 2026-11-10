@@ -21,9 +21,13 @@ self.onmessage = async (event) => {
   started = performance.now();
   return original.call(self, event);
 };
-self.measurement = async () => ({
-  wasm_bytes: (await initializeCore()).memory.buffer.byteLength,
-  statistics: self.__measurementSession()?.updateStatistics?.(),
-  available: self.__measurementSession()?.state.available,
-  reasons: self.__measurementSession()?.state.reasons,
-});
+self.measurement = async () => {
+  const session = self.__measurementSession();
+  const summary = session?.summary?.();
+  return {
+    wasm_bytes: (await initializeCore()).memory.buffer.byteLength,
+    statistics: session?.updateStatistics?.(),
+    available: summary ? summary.available : session?.state.available,
+    reasons: summary ? summary.reasons : session?.state.reasons,
+  };
+};

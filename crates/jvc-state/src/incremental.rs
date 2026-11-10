@@ -107,6 +107,28 @@ impl EvaluatedState {
         &self.evaluation
     }
 
+    pub fn with_overlay(&self, overlay: Option<Value>) -> Self {
+        let mut state = self.clone();
+        state.prepared.options.overlay = overlay.clone();
+        state.evaluation = self.evaluation.with_overlay(overlay, |issuer| {
+            let lifecycle = &self.evaluation.lifecycle;
+            let actor = lifecycle
+                .key_actor
+                .get(issuer)
+                .cloned()
+                .unwrap_or_else(|| issuer.into());
+            lifecycle.suspended.contains_key(&actor)
+        });
+        state.statistics = UpdateStatistics::default();
+        state.judgment_changes = None;
+        state.ranking_index = Default::default();
+        state
+    }
+
+    pub fn event_count(&self) -> usize {
+        self.prepared.nodes.len()
+    }
+
     pub fn statistics(&self) -> &UpdateStatistics {
         &self.statistics
     }
@@ -759,7 +781,7 @@ impl EvaluatedState {
                 raw.policy = self.evaluation.policy.clone();
                 raw.selections = self.evaluation.selections.clone();
                 publications_for(graph, &mut raw, Some(&claims));
-                for (id, publication) in raw.publications {
+                for (id, publication) in std::rc::Rc::unwrap_or_clone(raw.results).publications {
                     self.evaluation.publications.get_mut(&id).unwrap().eligible =
                         publication.eligible;
                 }

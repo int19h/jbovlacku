@@ -26,14 +26,16 @@ let input = null,
   productInput = null,
   productWorkerBytes = 0,
   productSnapshot = null,
-  NativeWorker = null;
+  NativeWorker = null,
+  diagnosticStore = null,
+  diagnosticInventory = null;
 const pending = new Map();
 let lastResult = null;
 const signedJudgment = (target) =>
   createEvent(
     seed,
     [],
-    "b37b0000000000000000000000000001",
+    "b37b0000000000000000000000000002",
     { kind: "judgment.set", target, value: "bless" },
     null,
   );
@@ -64,6 +66,7 @@ const productInventory = (value) => {
       bodies,
       import_selections: selections,
     }),
+    events_digest: manifest.events.hash,
     view: value.selected_view,
     events,
     bodies,
@@ -103,30 +106,47 @@ const request = (message) =>
     worker.postMessage(payload);
   });
 window.bench = {
+  async prepareProduct(view) {
+    mainWasm = await initializeCore();
+    setPreferredView(view);
+    NativeWorker = globalThis.Worker;
+    productWorkerBytes = 0;
+    globalThis.Worker = class extends NativeWorker {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener("message", (event) => {
+          productWorkerBytes += utf8(JSON.stringify(event.data)).length;
+        });
+      }
+      postMessage(message) {
+        productWorkerBytes += utf8(JSON.stringify(message)).length;
+        super.postMessage(message);
+      }
+    };
+    const store = new LocalStore(`measurement-${crypto.randomUUID()}`);
+    const value = await (
+      await fetch("/input.json", { cache: "no-store" })
+    ).json();
+    await seedProduct(store, value);
+    productStore = store;
+    productCalculator = new PersonalCalculator(store, async () => ({
+      identity: identityFromSeed(seed),
+    }));
+    return { events: value.events.length };
+  },
   async gate(view, keep = false) {
     const start = performance.now();
     mainWasm = await initializeCore();
     setPreferredView(view);
-    if (keep) {
-      NativeWorker = globalThis.Worker;
-      productWorkerBytes = 0;
-      globalThis.Worker = class extends NativeWorker {
-        postMessage(message) {
-          productWorkerBytes += utf8(JSON.stringify(message)).length;
-          super.postMessage(message);
-        }
-      };
-    }
-    const store = new LocalStore(`measurement-${crypto.randomUUID()}`);
-    if (keep) {
-      productInput = await (
-        await fetch("/input.json", { cache: "no-store" })
-      ).json();
-      await seedProduct(store, productInput);
-    }
-    const calculator = new PersonalCalculator(store, async () => ({
-      identity: identityFromSeed(seed),
-    }));
+    if (keep && !productCalculator) await window.bench.prepareProduct(view);
+    const store = keep
+      ? productStore
+      : new LocalStore(`measurement-${crypto.randomUUID()}`);
+    const calculator = keep
+      ? productCalculator
+      : new PersonalCalculator(store, async () => ({
+          identity: identityFromSeed(seed),
+        }));
     const statuses = [];
     calculator.subscribe((s) => statuses.push(s));
     const result = await calculator.ensure({
@@ -134,24 +154,16 @@ window.bench = {
       ...(!keep ? { refresh: true } : {}),
     });
     const ms = performance.now() - start;
-    if (keep) {
-      productCalculator = calculator;
-      productStore = store;
-    } else {
+    if (!keep) {
       calculator.cancel();
       (await store.database).close();
     }
-    return { ms, result, statuses };
+    return { ms, result, statuses, worker_bytes: productWorkerBytes };
   },
   async productSubmission(target) {
     const start = performance.now();
     const event = signedJudgment(target);
     const serialized = JSON.stringify(event.envelope);
-    const found = productInput.events.findIndex(
-      (envelope) => JSON.parse(envelope).id > event.envelope.id,
-    );
-    const index = found < 0 ? productInput.events.length : found;
-    productInput.events.splice(index, 0, serialized);
     await productStore.put("records", event.envelope.id, {
       id: event.envelope.id,
       envelope: serialized,
@@ -159,32 +171,30 @@ window.bench = {
       bodyStatus: "none",
       bodyHash: null,
     });
-    const inventory = productInventory(productInput);
-    await productStore.put("inventory", inventory.snapshot, inventory);
-    await productStore.put("inventory", "latest", inventory);
-    productSnapshot = inventory.snapshot;
     return {
       ms: performance.now() - start,
       id: event.envelope.id,
       identity: identityFromSeed(seed),
       target,
-      snapshot: productSnapshot,
-      inventory_index: index,
+      envelope: serialized,
       bytes: utf8(serialized).length,
     };
   },
-  async productReload() {
+  async productReload(inventory) {
     const start = performance.now();
+    await productStore.put("inventory", inventory.snapshot, inventory);
+    await productStore.put("inventory", "latest", inventory);
+    productSnapshot = inventory.snapshot;
     const before = productWorkerBytes;
     const result = await productCalculator.ensure({ mode: "personal" });
     if (result.state !== "ready" || result.snapshot !== productSnapshot)
       throw new Error(
-        "The product reload did not reach the submitted snapshot.",
+        `The product reload did not reach the submitted snapshot: ${JSON.stringify(result)}`,
       );
     return {
       ms: performance.now() - start,
       result,
-      request_bytes: productWorkerBytes - before,
+      worker_bytes: productWorkerBytes - before,
     };
   },
   async productRank(word) {
@@ -222,13 +232,23 @@ window.bench = {
     const start = performance.now();
     input = await (await fetch("/input.json", { cache: "no-store" })).json();
     if (savedOverlay) input.overlay = savedOverlay;
+    diagnosticStore ??= new LocalStore(`diagnostic-${crypto.randomUUID()}`);
+    diagnosticInventory = await seedProduct(diagnosticStore, input);
     return { ms: performance.now() - start, events: input.events.length };
   },
   async actors(limits) {
     const start = performance.now();
+    const { events, bodies, overlay, ...options } = input;
     const response = await request({
-      type: "actors",
-      input: { ...input, limits },
+      type: "load",
+      session: "actors",
+      source: {
+        database: diagnosticStore.name,
+        snapshot: diagnosticInventory.snapshot,
+        events_digest: diagnosticInventory.events_digest,
+        count: diagnosticInventory.events.length,
+      },
+      options: { ...options, limits },
     });
     const body = JSON.parse(input.bodies[input.selected_view]);
     savedOverlay = effectiveOverlay(
@@ -247,10 +267,17 @@ window.bench = {
   },
   async load(limits, label) {
     const start = performance.now();
+    const { events, bodies, ...options } = input;
     const response = await request({
       type: "load",
       session: label,
-      input: { ...input, limits },
+      source: {
+        database: diagnosticStore.name,
+        snapshot: diagnosticInventory.snapshot,
+        events_digest: diagnosticInventory.events_digest,
+        count: diagnosticInventory.events.length,
+      },
+      options: { ...options, limits },
     });
     sentEventIds = input.events.map((envelope) => JSON.parse(envelope).id);
     return { ms: performance.now() - start, ...response };
@@ -283,6 +310,9 @@ window.bench = {
   },
   releaseInput() {
     input = null;
+    diagnosticStore?.database.then((database) => database.close());
+    diagnosticStore = null;
+    diagnosticInventory = null;
   },
   async rank(word, label) {
     const start = performance.now();

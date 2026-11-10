@@ -133,7 +133,9 @@ test("the browser exposes authenticated preparation without host restore or inse
     assert.deepEqual(
       Object.keys(session).sort(),
       [
-        "state",
+        "summary",
+        "actors",
+        "withOverlay",
         "rankWord",
         "rankingDescriptor",
         "prepareRanking",
@@ -149,6 +151,8 @@ test("the browser exposes authenticated preparation without host restore or inse
         "free",
       ].sort(),
     );
+    assert.equal(session.summary().events, input.events.length);
+    assert.equal(session.summary().selected_view, input.selected_view);
     const d = session.rankingDescriptor(policy);
     const summary = session.prepareRanking({
       owner_session: d.owner_session,

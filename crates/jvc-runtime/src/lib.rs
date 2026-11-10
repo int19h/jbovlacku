@@ -1089,6 +1089,20 @@ fn decode_host_semantic_record(bytes: &[u8]) -> Result<HostSemanticRecord> {
     Ok(record)
 }
 
+fn add_original_record(
+    builder: &mut EvaluationSessionBuilder,
+    envelope: &[u8],
+    body: Option<&[u8]>,
+) -> std::result::Result<String, JsValue> {
+    let event = builder.verifier.verify(envelope).map_err(fail)?;
+    let content = builder
+        .prepared
+        .add_record_with(&event, body, |availability| {
+            search_projection(event.id(), event.header(), availability)
+        });
+    output(content)
+}
+
 #[wasm_bindgen]
 impl EvaluationSessionBuilder {
     #[wasm_bindgen(constructor)]
@@ -1108,13 +1122,18 @@ impl EvaluationSessionBuilder {
         envelope: &[u8],
         body: Option<Vec<u8>>,
     ) -> std::result::Result<String, JsValue> {
-        let event = self.verifier.verify(envelope).map_err(fail)?;
-        let content = self
-            .prepared
-            .add_record_with(&event, body.as_deref(), |availability| {
-                search_projection(event.id(), event.header(), availability)
-            });
-        output(content)
+        add_original_record(self, envelope, body.as_deref())
+    }
+    pub fn add_record_text(
+        &mut self,
+        envelope: &str,
+        body: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        add_original_record(
+            self,
+            envelope.as_bytes(),
+            body.as_ref().map(|body| body.as_bytes()),
+        )
     }
     /// The host must obtain this record from its private admission store.
     pub fn add_host_verified_record(
@@ -1214,6 +1233,45 @@ impl EvaluationSession {
             state: jvc_state::EvaluatedState::restore_host_checkpoint(bytes, binding)
                 .map_err(fail)?,
         })
+    }
+    pub fn with_overlay(
+        &self,
+        overlay: Option<Vec<u8>>,
+    ) -> std::result::Result<EvaluationSession, JsValue> {
+        let overlay = overlay
+            .map(|bytes| {
+                serde_json::from_value::<Option<Value>>(parse_json(&bytes).map_err(fail)?)
+                    .map_err(|e| fail(Error::new("evaluation", e.to_string())))
+            })
+            .transpose()?
+            .flatten();
+        Ok(Self {
+            state: self.state.with_overlay(overlay),
+            identity: session_identity(),
+            preparation: Default::default(),
+            preparation_generation: Default::default(),
+            word_results: Default::default(),
+            base_identity: None,
+        })
+    }
+    pub fn summary(&self) -> std::result::Result<String, JsValue> {
+        #[derive(Serialize)]
+        struct Summary<'a> {
+            available: bool,
+            reasons: &'a BTreeSet<String>,
+            selected_view: &'a str,
+            events: usize,
+        }
+        let evaluation = self.state.evaluation();
+        output(Summary {
+            available: evaluation.available,
+            reasons: &evaluation.reasons,
+            selected_view: &evaluation.selected_view,
+            events: self.state.event_count(),
+        })
+    }
+    pub fn actors(&self) -> std::result::Result<String, JsValue> {
+        output(&self.state.evaluation().lifecycle.key_actor)
     }
     pub fn update_statistics(&self) -> std::result::Result<String, JsValue> {
         output(self.state.statistics())

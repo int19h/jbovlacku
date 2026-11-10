@@ -851,6 +851,62 @@ fn personal_shun_unavailable_or_invalid_input_never_produces_fallback_scores() {
     );
 }
 
+fn assert_overlay_only_parity(f: &mut Fixture, overlay: Option<Value>) {
+    f.overlay = None;
+    let base = f.streamed_session();
+    let actual = base
+        .with_overlay(
+            overlay
+                .as_ref()
+                .map(|overlay| canonical_value(overlay).unwrap()),
+        )
+        .unwrap();
+    f.overlay = overlay;
+    let expected = jvc_runtime::EvaluationSession::new(&f.bytes()).unwrap();
+    assert_eq!(actual.state().unwrap(), expected.state().unwrap());
+    assert_eq!(
+        actual.rank(&f.word).unwrap(),
+        expected.rank(&f.word).unwrap()
+    );
+    assert_eq!(
+        actual.rank_with_reviewers(&f.word, 16).unwrap(),
+        expected.rank_with_reviewers(&f.word, 16).unwrap()
+    );
+    assert_eq!(actual.actors().unwrap(), expected.actors().unwrap());
+    let summary: Value = serde_json::from_str(&actual.summary().unwrap()).unwrap();
+    let state: Value = serde_json::from_str(&expected.state().unwrap()).unwrap();
+    assert_eq!(summary["available"], state["available"]);
+    assert_eq!(summary["reasons"], state["reasons"]);
+    assert_eq!(summary["selected_view"], state["selected_view"]);
+    assert_eq!(summary["events"], json!(f.events.len()));
+}
+
+#[test]
+fn overlay_only_matches_full_build_for_valid_invalid_and_suspended_issuers() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    f.bless(4, &target);
+    f.trust(6, 4, "heed", "*");
+    f.view("simple-routes-bounds-v1", &[1, 6], 1000);
+    assert_overlay_only_parity(&mut f, None);
+    let valid = local_overlay(
+        &f,
+        Some(6),
+        json!([{"issuer":key(6),"subject":key(4),"scope":{"kind":"definition","word":"*","language":"*"},"value":"heed","weight":null}]),
+        json!([{"identity":key(4),"scope":{"kind":"*","word":"*","language":"*"}}]),
+    );
+    assert_overlay_only_parity(&mut f, Some(valid));
+    let mut invalid = local_overlay(&f, Some(1), json!([]), json!([]));
+    invalid
+        .as_object_mut()
+        .unwrap()
+        .remove("public_shun_issuer");
+    assert_overlay_only_parity(&mut f, Some(invalid));
+    f.event_after(1,vec![format!("jve1:{}","f".repeat(64))],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    let suspended = local_overlay(&f, Some(1), json!([]), json!([]));
+    assert_overlay_only_parity(&mut f, Some(suspended));
+}
+
 #[test]
 fn personal_shun_reviewer_reasons_keep_existing_response_bounds() {
     let mut f = Fixture::new();

@@ -496,6 +496,7 @@ dependencies = [
 name = "jvc-runtime"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "jvc-carrier",
  "jvc-core",
  "jvc-rank",
@@ -506,6 +507,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
+ "sha2",
  "tempfile",
  "wasm-bindgen",
 ]

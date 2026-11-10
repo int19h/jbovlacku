@@ -129,6 +129,9 @@ node --expose-gc --max-old-space-size=6144 --import tsx \
 
 The product measurement calls `PersonalCalculator.ensure` from a blank measurement page.
 Its product worker uses the normal request protocol and a read-only measurement getter. It is separate from the diagnostic worker wrapper.
+Use `--product-reload --product-only` to measure only the first product load, one signed local judgment, the incremental reload, and product rankings.
+Before that first load, the harness seeds IndexedDB, releases the complete input, requests garbage collection, and resets the PSS peak. Fixture construction is therefore outside the measured load and reload peaks. The PSS watchdog pauses only during this setup and resumes before the calculator starts.
+The reload inventory is computed outside the browser from the deterministic signed envelope. The browser stores that small inventory and calls the real calculator again.
 
 It retains the normal inventory, byte, and evaluation limits.
 The page does not render the dictionary application or measure paint, search, layout, or accessibility.
@@ -214,7 +217,7 @@ Inspect `operation_errors` and each distribution's `n` before treating a trial a
 An ordinary complete base trial needs 60 successful word observations in each ranking phase.
 Worker distributions use only finite worker timings and count missing timings in `missing_worker_timings`.
 Parent round-trip timings remain separate in the raw operation records.
-`request_bytes` is the UTF-8 size of the JSON representation of the worker request, including its message fields and record strings. It measures the protocol payload, not the browser's internal structured-clone encoding.
+`request_bytes` is the UTF-8 size of the JSON representation of a diagnostic worker request, including its message fields and record strings. Product records use `worker_bytes`, which counts JSON representations in both directions. These metrics measure protocol payloads, not the browser's internal structured-clone encoding.
 
 Heap metrics describe each V8 isolate at the query time.
 Wasm capacity is `memory.buffer.byteLength`, including reusable allocator space and its high-water growth.

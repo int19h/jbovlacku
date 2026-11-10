@@ -13,6 +13,7 @@ import {
 } from "./outbox-graph.ts";
 import type { Envelope, Transport } from "../model/types.ts";
 import type { Draft } from "../model/draft.ts";
+import type { SnapshotInventory } from "./records.ts";
 
 /** Only authenticated, well-formed lifecycle actions can disable ordinary signing. */
 function lifecycleMarkers(identity: string, envelopes: Envelope[]) {
@@ -285,7 +286,7 @@ export class LocalStore {
     string,
     { revision: unknown; value: unknown }
   >();
-  constructor(name = "jbovlacku-browser-v1") {
+  constructor(readonly name = "jbovlacku-browser-v1") {
     this.database = new Promise((resolve, reject) => {
       const request = indexedDB.open(name, 4);
       request.onupgradeneeded = (event) => {
@@ -815,6 +816,31 @@ export class LocalStore {
       tx.onabort = () =>
         reject(
           tx.error ?? new Error("Local storage did not delete this record."),
+        );
+      tx.onerror = () => {};
+    });
+  }
+  /** Commits a complete inventory and removes only records outside it. */
+  async commitInventory(inventory: SnapshotInventory): Promise<void> {
+    const db = await this.database;
+    const events = new Set(inventory.events);
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(["records", "inventory"], "readwrite");
+      const records = tx.objectStore("records");
+      const cursor = records.openCursor();
+      cursor.onsuccess = () => {
+        const current = cursor.result;
+        if (!current) return;
+        if (!events.has(String(current.key))) current.delete();
+        current.continue();
+      };
+      const inventories = tx.objectStore("inventory");
+      inventories.put(inventory, inventory.snapshot);
+      inventories.put(inventory, "latest");
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          tx.error ?? new Error("Local storage did not commit this inventory."),
         );
       tx.onerror = () => {};
     });

@@ -37,6 +37,8 @@ if (!args.out || (!args.data && !args.probe))
   );
 if (args["delta-reload"] && args["product-reload"])
   throw Error("Choose only one of --delta-reload and --product-reload.");
+if (args["product-only"] && !args["product-reload"])
+  throw Error("--product-only requires --product-reload.");
 const out = resolve(String(args.out));
 await mkdir(out, { recursive: true });
 const data = args.data ? await realpath(String(args.data)) : null;
@@ -70,7 +72,46 @@ const head = execFileSync("git", ["rev-parse", "HEAD"], {
   encoding: "utf8",
 }).trim();
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const hashId = (bytes) => `sha256:${sha(bytes)}`;
+const hashJson = (value) => hashId(JSON.stringify(value));
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+function submittedInventory(input, envelope) {
+  const id = JSON.parse(envelope).id;
+  const events = input.events.map((value) => JSON.parse(value).id);
+  const index = events.findIndex((event) => event > id);
+  events.splice(index < 0 ? events.length : index, 0, id);
+  const envelopes = [...input.events];
+  envelopes.splice(index < 0 ? envelopes.length : index, 0, envelope);
+  const bodies = [
+    ...new Set(
+      envelopes
+        .map((value) => JSON.parse(value).header.content?.hash)
+        .filter(Boolean),
+    ),
+  ].sort();
+  const selections = Object.keys(input.import_selections).sort();
+  const manifest = {
+    events: {
+      count: events.length,
+      hash: hashId(envelopes.join("\n") + "\n"),
+    },
+    bodies: { count: bodies.length, hash: hashJson(bodies) },
+    import_selections: { count: selections.length, hash: hashJson(selections) },
+  };
+  return {
+    snapshot: hashJson(manifest),
+    logical_inventory: hashJson({
+      events,
+      bodies,
+      import_selections: selections,
+    }),
+    events_digest: manifest.events.hash,
+    view: input.selected_view,
+    events,
+    bodies,
+    selections,
+  };
+}
 const capture = (command, argv) => {
   try {
     return execFileSync(command, argv, { encoding: "utf8" }).trim();
@@ -90,7 +131,7 @@ const measurementSessionGetter = {
         contents:
           (await readFile(path, "utf8")) +
           "\nself.__measurementSession = () => evaluation.currentSession;\n" +
-          "self.measurement = async () => ({wasm_bytes: (await initializeCore()).memory.buffer.byteLength, statistics: self.__measurementSession()?.updateStatistics?.(), available: self.__measurementSession()?.state.available, reasons: self.__measurementSession()?.state.reasons});\n",
+          "self.measurement = async () => { const session = self.__measurementSession(); const summary = session?.summary?.(); return {wasm_bytes: (await initializeCore()).memory.buffer.byteLength, statistics: session?.updateStatistics?.(), available: summary ? summary.available : session?.state.available, reasons: summary ? summary.reasons : session?.state.reasons}; };\n",
       }),
     );
   },
@@ -790,7 +831,8 @@ async function trial(condition, rep, profile = false) {
         rate: condition.rate,
       }),
     );
-    let sampling = false;
+    let sampling = false,
+      setupBudgetPause = false;
     watcher = setInterval(async () => {
       if (sampling || lifecycle.cancelled || !browser?.isConnected()) return;
       sampling = true;
@@ -808,7 +850,7 @@ async function trial(condition, rep, profile = false) {
         lastPss = bytes;
         lastPssAt = performance.now();
         pssPeak = Math.max(pssPeak, bytes);
-        if (condition.pss && bytes > condition.pss) {
+        if (condition.pss && !setupBudgetPause && bytes > condition.pss) {
           budgetFailure = { budget: condition.pss, observed: bytes, phase };
           await browser.close();
         }
@@ -856,6 +898,19 @@ async function trial(condition, rep, profile = false) {
         w.cohort === "many_definitions_no_judgments",
     );
     if (!args.probe) {
+      if (args["product-reload"]) {
+        setupBudgetPause = true;
+        await setup(() =>
+          page.evaluate(
+            (view) => window.bench.prepareProduct(view),
+            dataset.view,
+          ),
+        );
+        await setup(() => pageCDP.send("HeapProfiler.collectGarbage"));
+        await delay(750);
+        setupBudgetPause = false;
+        pssPeak = lastPss;
+      }
       const gated = await operation("actual-personal-gate", () =>
         page.evaluate(({ view, keep }) => window.bench.gate(view, keep), {
           view: dataset.view,
@@ -887,18 +942,31 @@ async function trial(condition, rep, profile = false) {
         lifecycle,
       });
       await setup(() => productWorkerCDP.send("Runtime.enable"));
-      await operation("product-signed-submission", () =>
+      await operation("product-load-memory", () =>
+        productWorkerCDP.evaluate("self.measurement()"),
+      );
+      const submission = await operation("product-signed-submission", () =>
         page.evaluate(
           (target) => window.bench.productSubmission(target),
           targetWord.targets[0],
         ),
       );
+      const inventory = submittedInventory(
+        JSON.parse(await readFile(join(out, "input.json"), "utf8")),
+        submission.envelope,
+      );
+      const previousPeak = pssPeak;
+      pssPeak = lastPss;
       await operation("product-reload", async () => {
-        const value = await page.evaluate(() => window.bench.productReload());
+        const value = await page.evaluate(
+          (inventory) => window.bench.productReload(inventory),
+          inventory,
+        );
         const measurement =
           await productWorkerCDP.evaluate("self.measurement()");
-        return { ...value, measurement };
+        return { ...value, measurement, pss_peak: pssPeak };
       });
+      pssPeak = Math.max(previousPeak, pssPeak);
       for (const [i, w] of sample.entries())
         await operation(
           "product-rank",
@@ -908,6 +976,17 @@ async function trial(condition, rep, profile = false) {
       await operation("product-finish", () =>
         page.evaluate(() => window.bench.productFinish()),
       );
+      if (args["product-only"]) {
+        await record({
+          type: "trial-complete",
+          trial: caseId,
+          condition: condition.name,
+          mode: "product_only",
+          network,
+          pss_peak: pssPeak,
+        });
+        return;
+      }
     }
     // Page-only CDP throttling does not slow dedicated workers. The diagnostic
     // uses a separately labeled renderer duty cycle, without double-throttling.
@@ -1213,6 +1292,10 @@ try {
         Object.fromEntries(
           [
             "rank",
+            "actual-personal-gate",
+            "product-load-memory",
+            "product-reload",
+            "product-rank",
             "increment-rank",
             "actors",
             "load",

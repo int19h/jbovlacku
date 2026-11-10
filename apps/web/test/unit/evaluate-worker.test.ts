@@ -10,7 +10,7 @@ import {
   utf8,
   wordId,
   type EvaluationRequest,
-} from "../../../../packages/core/src/browser.ts";
+} from "../../../../packages/core/src/index.ts";
 import type { EvaluationWorker } from "../../src/workers/evaluate.ts";
 
 const seed = (n: number) => new Uint8Array(32).fill(n);
@@ -103,9 +103,56 @@ function delta(input: EvaluationRequest, envelope: unknown): EvaluationRequest {
   };
 }
 
-async function worker(): Promise<EvaluationWorker> {
+type TestWorker = EvaluationWorker & {
+  load(message: any): Promise<any>;
+};
+let loading: EvaluationRequest | null = null;
+async function worker(): Promise<TestWorker> {
   const { EvaluationWorker } = await import("../../src/workers/evaluate.ts");
-  return new EvaluationWorker();
+  const actual = new EvaluationWorker(async (_source, builder) => {
+    const input = loading!;
+    for (const envelope of input.events)
+      builder.addRecordText(envelope, input.bodies[JSON.parse(envelope).id]);
+    return input.events.length;
+  });
+  return new Proxy(actual, {
+    get(target, property, receiver) {
+      if (property === "load")
+        return async (message: any) => {
+          const { events, bodies, ...options } =
+            message.input as EvaluationRequest;
+          loading = message.input;
+          return target.load({
+            ...message,
+            source: {
+              database: "test",
+              snapshot: message.session,
+              events_digest: "test",
+              count: events.length,
+            },
+            options,
+          });
+        };
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as TestWorker;
+}
+function assertSession(
+  actual: EvaluationWorker,
+  expected: ReturnType<typeof evaluateSession>,
+) {
+  assert.deepEqual(actual.currentSession?.summary(), {
+    available: expected.state.available,
+    reasons: expected.state.reasons,
+    selected_view: expected.state.selected_view,
+    events: expected.summary().events,
+  });
+  assert.deepEqual(
+    actual.currentSession?.actors(),
+    (expected.state.lifecycle as { key_actor: Record<string, string> })
+      .key_actor,
+  );
 }
 
 before(async () => {
@@ -139,7 +186,7 @@ test("a judgment advance equals full evaluation and replaces the session key", a
   const expected = evaluateSession(fullInput);
   const actual = await worker();
   try {
-    actual.load({ type: "load", id: 1, session: "before", input });
+    await actual.load({ type: "load", id: 1, session: "before", input });
     const loaded = actual.advance({
       type: "advance",
       id: 2,
@@ -148,11 +195,7 @@ test("a judgment advance equals full evaluation and replaces the session key", a
       input: delta(input, added.envelope),
     });
     assert.equal(loaded.events, fullInput.events.length);
-    assert.deepEqual(actual.currentSession?.state, expected.state);
-    assert.deepEqual(
-      actual.currentSession?.state.receipts,
-      expected.state.receipts,
-    );
+    assertSession(actual, expected);
     assert.deepEqual(actual.currentSession?.updateStatistics(), {
       incremental_records: 1,
       rebuilt: false,
@@ -194,8 +237,8 @@ test("a layout-split advance refreshes the full state and ranking without a delt
   const expected = evaluateSession(fullInput);
   const actual = await worker();
   try {
-    actual.load({ type: "load", id: 1, session: "before", input });
-    const previousState = actual.currentSession?.state;
+    await actual.load({ type: "load", id: 1, session: "before", input });
+    const previousSummary = actual.currentSession?.summary();
     const previousRank = actual.rank({
       type: "rank",
       id: 2,
@@ -215,12 +258,8 @@ test("a layout-split advance refreshes the full state and ranking without a delt
       rebuilt: true,
       reason: "layout_split",
     });
-    assert.notEqual(actual.currentSession?.state, previousState);
-    assert.deepEqual(actual.currentSession?.state, expected.state);
-    assert.deepEqual(
-      actual.currentSession?.state.receipts,
-      expected.state.receipts,
-    );
+    assert.notDeepEqual(actual.currentSession?.summary(), previousSummary);
+    assertSession(actual, expected);
     const refreshedRank = actual.rank({
       type: "rank",
       id: 4,
@@ -257,7 +296,7 @@ test("a global action rebuilds through advance with full state and ranking parit
   const expected = evaluateSession(fullInput);
   const actual = await worker();
   try {
-    actual.load({ type: "load", id: 1, session: "before", input });
+    await actual.load({ type: "load", id: 1, session: "before", input });
     actual.advance({
       type: "advance",
       id: 2,
@@ -270,7 +309,7 @@ test("a global action rebuilds through advance with full state and ranking parit
       actual.currentSession?.updateStatistics().reason,
       "global_action",
     );
-    assert.deepEqual(actual.currentSession?.state, expected.state);
+    assertSession(actual, expected);
     assert.deepEqual(
       actual.rank({
         type: "rank",
@@ -281,8 +320,13 @@ test("a global action rebuilds through advance with full state and ranking parit
       }).result,
       expected.rankWord(word, 64),
     );
-    actual.load({ type: "load", id: 4, session: "snapshot", input: fullInput });
-    assert.deepEqual(actual.currentSession?.state, expected.state);
+    await actual.load({
+      type: "load",
+      id: 4,
+      session: "snapshot",
+      input: fullInput,
+    });
+    assertSession(actual, expected);
     assert.throws(
       () => actual.rank({ type: "rank", id: 5, session: "after", word }),
       /requested evaluation session is not loaded/,
@@ -314,7 +358,7 @@ test("changed limits rebuild to the same unavailable result as full evaluation",
   const expected = evaluateSession(fullInput);
   const actual = await worker();
   try {
-    actual.load({ type: "load", id: 1, session: "before", input });
+    await actual.load({ type: "load", id: 1, session: "before", input });
     actual.advance({
       type: "advance",
       id: 2,
@@ -327,7 +371,7 @@ test("changed limits rebuild to the same unavailable result as full evaluation",
       actual.currentSession?.updateStatistics().reason,
       "configuration_changed",
     );
-    assert.deepEqual(actual.currentSession?.state, expected.state);
+    assertSession(actual, expected);
     assert.deepEqual(
       actual.rank({ type: "rank", id: 3, session: "limited", word }).result,
       expected.rankWord(word),
@@ -342,8 +386,8 @@ test("an advance with the wrong base keeps the loaded session", async () => {
   const { input, word } = await fixture();
   const actual = await worker();
   try {
-    actual.load({ type: "load", id: 1, session: "before", input });
-    const state = actual.currentSession?.state;
+    await actual.load({ type: "load", id: 1, session: "before", input });
+    const summary = actual.currentSession?.summary();
     assert.throws(
       () =>
         actual.advance({
@@ -355,7 +399,7 @@ test("an advance with the wrong base keeps the loaded session", async () => {
         }),
       /base evaluation session is not loaded/,
     );
-    assert.equal(actual.currentSession?.state, state);
+    assert.deepEqual(actual.currentSession?.summary(), summary);
     assert.equal(
       actual.rank({ type: "rank", id: 3, session: "before", word }).session,
       "before",
@@ -398,7 +442,7 @@ test("a body-bearing definition advance equals full evaluation", async () => {
   const expected = evaluateSession(fullInput);
   const actual = await worker();
   try {
-    actual.load({ type: "load", id: 1, session: "before", input });
+    await actual.load({ type: "load", id: 1, session: "before", input });
     actual.advance({
       type: "advance",
       id: 2,
@@ -410,7 +454,7 @@ test("a body-bearing definition advance equals full evaluation", async () => {
       },
     });
     assert.equal(actual.currentSession?.updateStatistics().rebuilt, false);
-    assert.deepEqual(actual.currentSession?.state, expected.state);
+    assertSession(actual, expected);
     assert.deepEqual(
       actual.rank({
         type: "rank",
@@ -453,7 +497,7 @@ test("an overlay delta rebuilds to the same state as full evaluation", async () 
   const expected = evaluateSession(fullInput);
   const actual = await worker();
   try {
-    actual.load({ type: "load", id: 1, session: "before", input });
+    await actual.load({ type: "load", id: 1, session: "before", input });
     actual.advance({
       type: "advance",
       id: 2,
@@ -465,7 +509,7 @@ test("an overlay delta rebuilds to the same state as full evaluation", async () 
       actual.currentSession?.updateStatistics().reason,
       "configuration_changed",
     );
-    assert.deepEqual(actual.currentSession?.state, expected.state);
+    assertSession(actual, expected);
     assert.deepEqual(
       actual.rank({
         type: "rank",
@@ -500,7 +544,7 @@ test("a failure after release leaves no session and a full load recovers", async
   const expected = evaluateSession(fullInput);
   const actual = await worker();
   try {
-    actual.load({ type: "load", id: 1, session: "before", input });
+    await actual.load({ type: "load", id: 1, session: "before", input });
     assert.throws(() =>
       actual.advance({
         type: "advance",
@@ -510,14 +554,14 @@ test("a failure after release leaves no session and a full load recovers", async
         input: delta(input, tampered),
       }),
     );
-    assert.equal(actual.currentSession?.state, undefined);
-    actual.load({
+    assert.equal(actual.currentSession, null);
+    await actual.load({
       type: "load",
       id: 3,
       session: "recovered",
       input: fullInput,
     });
-    assert.deepEqual(actual.currentSession?.state, expected.state);
+    assertSession(actual, expected);
   } finally {
     actual.currentSession?.free();
     expected.free();
@@ -550,7 +594,12 @@ test("an unchanged overlay keeps a judgment advance on the fast path", async () 
   const expected = evaluateSession(fullInput);
   const actual = await worker();
   try {
-    actual.load({ type: "load", id: 1, session: "before", input: baseInput });
+    await actual.load({
+      type: "load",
+      id: 1,
+      session: "before",
+      input: baseInput,
+    });
     actual.advance({
       type: "advance",
       id: 2,
@@ -563,7 +612,7 @@ test("an unchanged overlay keeps a judgment advance on the fast path", async () 
       rebuilt: false,
       reason: null,
     });
-    assert.deepEqual(actual.currentSession?.state, expected.state);
+    assertSession(actual, expected);
     assert.deepEqual(
       actual.rank({
         type: "rank",
