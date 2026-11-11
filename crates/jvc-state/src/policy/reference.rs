@@ -9,9 +9,14 @@ pub(super) fn evaluate_context_with_limit(
     let calculation = evaluation
         .policy
         .as_ref()
-        .and_then(|policy| policy["calculation"].as_str())
-        .unwrap_or_default()
-        .to_owned();
+        .and_then(|policy| {
+            policy
+                .view()
+                .index("calculation")
+                .as_str()
+                .map(str::to_owned)
+        })
+        .unwrap_or_default();
     if evaluation.reasons.contains("invalid_overlay") {
         return ContextGraph {
             calculation,
@@ -60,13 +65,27 @@ pub(super) fn evaluate_context_with_limit(
     let mut public_shun_blocked = BTreeSet::new();
     let mut private_blocked = BTreeSet::new();
     if let Some(policy) = &evaluation.policy {
-        for root in policy["roots"].as_array().into_iter().flatten() {
-            if let (Some(key), Some(q)) = (root["identity"].as_str(), rational(&root["q"])) {
+        for root in policy
+            .view()
+            .index("roots")
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let (Some(key), Some(q)) =
+                (root.index("identity").as_str(), rational(root.index("q")))
+            {
                 raw_roots.insert(key.into(), q);
             }
         }
-        for item in policy["excluded"].as_array().into_iter().flatten() {
-            if let Some(key) = item["identity"].as_str() {
+        for item in policy
+            .view()
+            .index("excluded")
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let Some(key) = item.index("identity").as_str() {
                 let actor = resolve(key);
                 blocked.insert(actor);
             }
@@ -94,13 +113,13 @@ pub(super) fn evaluate_context_with_limit(
             if let Some(key) = root["identity"].as_str() {
                 if root["q"].is_null() {
                     raw_roots.remove(key);
-                } else if let Some(q) = rational(&root["q"]) {
+                } else if let Some(q) = overlay_rational(&root["q"]) {
                     raw_roots.insert(key.into(), q);
                 }
             }
         }
         for item in overlay["blocked"].as_array().into_iter().flatten() {
-            if matches(&item["scope"], context) {
+            if overlay_matches(&item["scope"], context) {
                 if let Some(key) = item["identity"].as_str() {
                     let actor = resolve(key);
                     if overlay["version"] == 2 {
@@ -110,14 +129,14 @@ pub(super) fn evaluate_context_with_limit(
                 }
             }
         }
-        let mut private: BTreeMap<(String, String, String), (Value, BTreeSet<String>)> =
+        let mut private: BTreeMap<(String, String, String), (CompactValue, BTreeSet<String>)> =
             BTreeMap::new();
         for rule in overlay["trust"].as_array().into_iter().flatten() {
             let issuer = resolve(rule["issuer"].as_str().unwrap());
             let subject = resolve(rule["subject"].as_str().unwrap());
             let entry = private
                 .entry((issuer, subject, rule["scope"].to_string()))
-                .or_insert_with(|| (rule["scope"].clone(), BTreeSet::new()));
+                .or_insert_with(|| (CompactValue::from(rule["scope"].clone()), BTreeSet::new()));
             entry.1.insert(rule["value"].as_str().unwrap().into());
         }
         for ((issuer, subject, _), (scope, values)) in private {
@@ -141,7 +160,7 @@ pub(super) fn evaluate_context_with_limit(
     }
 
     for rule in &trust {
-        if matches(&rule.scope, context) && !rule.values.iter().all(|v| v == "clear") {
+        if matches(rule.scope.view(), context) && !rule.values.iter().all(|v| v == "clear") {
             actors.insert(rule.actor.clone());
             actors.insert(rule.subject.clone());
         }
@@ -187,10 +206,13 @@ pub(super) fn evaluate_context_with_limit(
             for r in overlay["trust"].as_array().into_iter().flatten() {
                 if r["issuer"].as_str().is_some_and(|a| resolve(a) == issuer)
                     && r["subject"].as_str().is_some_and(|a| resolve(a) == subject)
-                    && retained.iter().any(|rule| rule.scope == r["scope"])
+                    && retained
+                        .iter()
+                        .any(|rule| rule.scope == CompactValue::from(r["scope"].clone()))
                     && r["value"] == "heed"
                 {
-                    private_weights.insert(rational(&r["weight"]).unwrap_or_else(Rational::one));
+                    private_weights
+                        .insert(overlay_rational(&r["weight"]).unwrap_or_else(Rational::one));
                 }
             }
         }

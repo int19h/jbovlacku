@@ -13,7 +13,7 @@ struct AllocationWindow {
     live: isize,
     peak: usize,
     largest: usize,
-    nodes: [usize; 4],
+    nodes: [usize; 2],
 }
 thread_local! {
     // A test harness can allocate on another thread during a measurement.
@@ -32,7 +32,7 @@ fn acquired(n: usize) {
         w.live += n as isize;
         w.peak = w.peak.max(w.live.max(0) as usize);
         w.largest = w.largest.max(n);
-        for (i, size) in [280, 376, 1424, 1520].into_iter().enumerate() {
+        for (i, size) in [280, 376].into_iter().enumerate() {
             if n == size {
                 w.nodes[i] += 1;
             }
@@ -89,7 +89,7 @@ fn cpu() -> f64 {
         + r.ru_stime.tv_sec as f64
         + (r.ru_utime.tv_usec + r.ru_stime.tv_usec) as f64 / 1e6
 }
-fn measure(name: &str, state: EvaluatedState) -> [usize; 4] {
+fn measure(name: &str, state: EvaluatedState) -> [usize; 2] {
     let bound_start = Instant::now();
     let bound_cpu_start = cpu();
     let bound = state.ranking_index_bound().unwrap();
@@ -134,7 +134,7 @@ fn measure(name: &str, state: EvaluatedState) -> [usize; 4] {
     let hash_peak = end_window().peak;
     println!(
         "{}",
-        json!({"name":name,"largest_index_allocation":largest,"tree_nodes_280_376_1424_1520":allocations.nodes,"count_cpu_seconds":bound_cpu,"count_seconds":bound_seconds,"modeled_bytes":modeled_bytes,"modeled_units":modeled_units,"retained_heap_bytes":retained,"peak_heap_bytes":peak,
+        json!({"name":name,"largest_index_allocation":largest,"tree_nodes_280_376":allocations.nodes,"count_cpu_seconds":bound_cpu,"count_seconds":bound_seconds,"modeled_bytes":modeled_bytes,"modeled_units":modeled_units,"retained_heap_bytes":retained,"peak_heap_bytes":peak,
         "index_cpu_seconds":index_cpu,"index_seconds":index_seconds,"entries":entries,"bound":bound,
         "source_bytes":bytes,"source_binding":binding,"hash_cpu_seconds":hash_cpu,"hash_seconds":hash_seconds,
         "hash_peak_heap_bytes":hash_peak,"records":state.ranking_source_records().unwrap()})
@@ -192,7 +192,7 @@ fn synthetic(prototype: &Value, n: usize, grouped: bool, rules: bool) -> Evaluat
 #[derive(Default)]
 pub struct AllocationCoverage {
     pub cases: usize,
-    pub tree_nodes: [usize; 4],
+    pub tree_nodes: [usize; 2],
 }
 pub fn realloc_peak_regression() {
     let layout = Layout::from_size_align(64, 8).unwrap();

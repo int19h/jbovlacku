@@ -438,11 +438,13 @@ fn reviewer_details(
 fn interval_value(interval: &jvc_rank::Interval) -> Value {
     json!([ratio_value(&interval.lower), ratio_value(&interval.upper)])
 }
-fn configuration_ratio(value: &Value) -> Result<jvc_rank::Rational> {
-    let n = value["numerator"]
+fn configuration_ratio(value: jvc_state::ValueView) -> Result<jvc_rank::Rational> {
+    let n = value
+        .index("numerator")
         .as_i64()
         .ok_or_else(|| Error::new("ranking", "configuration numerator unavailable"))?;
-    let d = value["denominator"]
+    let d = value
+        .index("denominator")
         .as_i64()
         .filter(|n| *n > 0)
         .ok_or_else(|| Error::new("ranking", "configuration denominator unavailable"))?;
@@ -466,7 +468,8 @@ fn rank_word_state(
     if evaluation
         .policy
         .as_ref()
-        .and_then(|p| p["calculation"].as_str())
+        .and_then(|p| p.view().index("calculation").as_str().map(str::to_owned))
+        .as_deref()
         == Some(jvc_rank::approximate::ALGORITHM)
     {
         return Err(Error::new(
@@ -537,25 +540,31 @@ fn rank_word_state(
     let policy = evaluation.policy.as_ref();
     let profile = policy
         .map(|policy| {
-            jvc_rank::Profile::from_name(policy["calculation"].as_str().unwrap_or_default())
-                .ok_or_else(|| {
-                    Error::new(
-                        "unsupported_calculation",
-                        "view calculation profile is unsupported",
-                    )
-                })
+            jvc_rank::Profile::from_name(
+                policy
+                    .view()
+                    .index("calculation")
+                    .as_str()
+                    .unwrap_or_default(),
+            )
+            .ok_or_else(|| {
+                Error::new(
+                    "unsupported_calculation",
+                    "view calculation profile is unsupported",
+                )
+            })
         })
         .transpose()?;
     let params = policy
         .map(|p| {
             Ok(jvc_rank::Parameters {
-                h: configuration_ratio(&p["H"])?,
-                alpha: configuration_ratio(&p["alpha"])?,
+                h: configuration_ratio(p.view().index("H"))?,
+                alpha: configuration_ratio(p.view().index("alpha"))?,
                 work: evaluation
                     .overlay
                     .as_ref()
                     .and_then(|v| v["work"].as_u64())
-                    .unwrap_or_else(|| p["work"].as_u64().unwrap_or(0)),
+                    .unwrap_or_else(|| p.view().index("work").as_u64().unwrap_or(0)),
             })
         })
         .transpose()?;

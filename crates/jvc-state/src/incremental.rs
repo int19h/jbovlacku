@@ -503,7 +503,8 @@ impl EvaluatedState {
             return Err("history_changed");
         }
         if node.kind == "judgment.set" {
-            let target = node.action["target"].as_str().unwrap_or_default();
+            let target = node.action.view().index("target");
+            let target = target.as_str().unwrap_or_default();
             let known = if target.starts_with("jvr1:") {
                 self.evaluation
                     .publications
@@ -650,7 +651,8 @@ impl EvaluatedState {
             },
         );
         if node.kind == "judgment.set" {
-            let target = node.action["target"].as_str().unwrap();
+            let target = node.action.view().index("target");
+            let target = target.as_str().unwrap();
             let key = format!("{}|judgment|{target}", node.issuer);
             if let Some(changes) = &mut self.judgment_changes {
                 changes.receipts.insert(node.id.clone());
@@ -716,7 +718,7 @@ impl EvaluatedState {
                         n.semantic
                             && n.kind == "judgment.set"
                             && graph.actor(&n.issuer) == node.issuer
-                            && n.action["target"].as_str() == Some(target)
+                            && n.action.view().index("target").as_str() == Some(target)
                             && graph.retained(&n.id)
                             && !graph.suspended(&n.issuer)
                             && graph.own_complete(&n.id)
@@ -738,7 +740,15 @@ impl EvaluatedState {
             };
             let values: BTreeSet<String> = heads
                 .iter()
-                .map(|id| graph.nodes[id].action["value"].as_str().unwrap().into())
+                .map(|id| {
+                    graph.nodes[id]
+                        .action
+                        .view()
+                        .index("value")
+                        .as_str()
+                        .unwrap()
+                        .into()
+                })
                 .collect();
             let judgment = if values.len() > 1 {
                 Judgment::Conflicted
@@ -924,9 +934,15 @@ impl EvaluatedState {
                 "checkpoint version or binding does not match",
             ));
         }
+        let arena = std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default()));
+        let nodes = nodes
+            .into_iter()
+            .map(|(id, node)| (id, node.repack(&arena)))
+            .collect();
         let prepared = PreparedEvaluationInput {
             options: saved.options,
             nodes: std::rc::Rc::new(nodes),
+            arena,
             event_limit_exceeded: saved.event_limit_exceeded,
         };
         // The registers' charge fields are not serialized with
@@ -1066,7 +1082,7 @@ fn judgment_diff(before: &Evaluation, after: &Evaluation) -> Option<JudgmentChan
 fn supports_local_update(node: &Node) -> bool {
     node.semantic
         && (node.kind == "judgment.set"
-            || node.kind == "definition.publish" && node.action["origin"] == "native")
+            || node.kind == "definition.publish" && node.action.view().index("origin") == "native")
 }
 
 fn next_ready_id(added: &BTreeMap<String, Node>) -> Option<String> {
@@ -1074,10 +1090,16 @@ fn next_ready_id(added: &BTreeMap<String, Node>) -> Option<String> {
         .iter()
         .find(|(_, node)| {
             node.previous.iter().all(|id| !added.contains_key(id))
-                && node.action["target"]
+                && node
+                    .action
+                    .view()
+                    .index("target")
                     .as_str()
                     .is_none_or(|id| !added.contains_key(id))
-                && node.action["parents"]
+                && node
+                    .action
+                    .view()
+                    .index("parents")
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -1086,30 +1108,19 @@ fn next_ready_id(added: &BTreeMap<String, Node>) -> Option<String> {
         .map(|(id, _)| id.clone())
 }
 
-fn references(value: &Value, result: &mut BTreeSet<String>) {
-    match value {
-        Value::String(id) if jvc_core::valid_id(id, "jve1:") => {
-            result.insert(id.clone());
-        }
-        Value::Array(values) => {
-            for value in values {
-                references(value, result);
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values() {
-                references(value, result);
-            }
-        }
-        _ => {}
+fn references(value: ValueView, result: &mut BTreeSet<String>) {
+    if let Some(id) = value.as_str().filter(|id| jvc_core::valid_id(id, "jve1:")) {
+        result.insert(id.into());
+    } else {
+        value.for_each_child(|child| references(child, result));
     }
 }
 
 fn add_node_references(node: &Node, result: &mut BTreeSet<String>) {
     result.extend(node.previous.iter().cloned());
-    references(&node.action, result);
+    references(node.action.view(), result);
     if let Some(body) = &node.body {
-        references(body, result);
+        references(body.view(), result);
     }
 }
 
@@ -3458,8 +3469,9 @@ mod rebuild_tests {
         let (record, body) = publication();
         prepared.add_record(&record, body.as_deref());
         let mut state = prepared.into_state();
-        state.evaluation.policy.as_mut().unwrap()["calculation"] =
-            json!(jvc_rank::approximate::ALGORITHM);
+        let mut policy = serde_json::to_value(state.evaluation.policy.as_ref().unwrap()).unwrap();
+        policy["calculation"] = json!(jvc_rank::approximate::ALGORITHM);
+        state.evaluation.policy = Some(CompactValue::from(&policy));
         let before = state.checkpoint("index-test").unwrap();
         assert!(state.ranking_index.borrow().is_none());
         state.ensure_ranking_index().unwrap();
@@ -3544,7 +3556,7 @@ mod rebuild_tests {
             "resource_unavailable"
         );
         // Add a large unrelated field. The callback expires during the walk.
-        state.evaluation.policy = Some(json!({"padding":"x".repeat(1_000_000)}));
+        state.evaluation.policy = Some(json!({"padding":"x".repeat(1_000_000)}).into());
         let mut calls = 0;
         let failed = state.ranking_source_binding_checked(2_000_000, || {
             calls += 1;

@@ -526,7 +526,7 @@ mod tests {
                         id: id.to_string(),
                         issuer: "issuer".into(),
                         previous: Vec::new(),
-                        action: serde_json::json!({"kind":"identity.merge"}),
+                        action: serde_json::json!({"kind":"identity.merge"}).into(),
                         kind: "identity.merge".into(),
                         semantic: true,
                         body_hash: None,

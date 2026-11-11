@@ -79,15 +79,24 @@ pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &m
         result.policies.push(body.clone());
         result.policy_history.insert(id.clone(), body.clone());
         todo.extend(
-            n.action["parents"]
+            n.action
+                .view()
+                .index("parents")
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(|v| v.as_str().map(str::to_owned)),
         );
-        for entry in body["import_sets"].as_array().into_iter().flatten() {
+        for entry in body
+            .view()
+            .index("import_sets")
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
             if id == input.selected_view {
-                match entry["selection"]
+                match entry
+                    .index("selection")
                     .as_str()
                     .and_then(|id| valid_selection(input, id))
                 {
@@ -96,7 +105,7 @@ pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &m
                     }
                     Some(ids) => {
                         result.selections.insert(
-                            entry["selection"].as_str().unwrap().into(),
+                            entry.index("selection").as_str().unwrap().into(),
                             ids.iter().cloned().collect(),
                         );
                         if ids.iter().any(|id| !graph.nodes.contains_key(id)) {
@@ -110,7 +119,15 @@ pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &m
         }
     }
 }
-fn rational(v: &Value) -> Option<Rational> {
+fn rational(v: ValueView) -> Option<Rational> {
+    let n = v.index("numerator").as_i64()?;
+    let d = v.index("denominator").as_u64()?;
+    if d == 0 {
+        return None;
+    }
+    Some(Rational::new(BigInt::from(n), BigInt::from(d)))
+}
+fn overlay_rational(v: &Value) -> Option<Rational> {
     let n = v["numerator"].as_i64()?;
     let d = v["denominator"].as_u64()?;
     if d == 0 {
@@ -118,10 +135,7 @@ fn rational(v: &Value) -> Option<Rational> {
     }
     Some(Rational::new(BigInt::from(n), BigInt::from(d)))
 }
-fn matches(scope: &Value, context: &Context) -> bool {
-    let kind = scope["kind"].as_str().unwrap_or_default();
-    let word = scope["word"].as_str().unwrap_or_default();
-    let language = scope["language"].as_str().unwrap_or_default();
+fn matches_parts(kind: &str, word: &str, language: &str, context: &Context) -> bool {
     (kind == "*" || kind == context.kind)
         && (word == "*" || word == context.word)
         && match &context.language {
@@ -129,19 +143,39 @@ fn matches(scope: &Value, context: &Context) -> bool {
             None => language == "*",
         }
 }
-fn dimensions(scope: &Value) -> [String; 3] {
-    let mut kind = scope["kind"].as_str().unwrap_or_default().to_owned();
-    let language = scope["language"].as_str().unwrap_or_default().to_owned();
+fn matches(scope: ValueView, context: &Context) -> bool {
+    matches_parts(
+        scope.index("kind").as_str().unwrap_or_default(),
+        scope.index("word").as_str().unwrap_or_default(),
+        scope.index("language").as_str().unwrap_or_default(),
+        context,
+    )
+}
+fn overlay_matches(scope: &Value, context: &Context) -> bool {
+    matches_parts(
+        scope["kind"].as_str().unwrap_or_default(),
+        scope["word"].as_str().unwrap_or_default(),
+        scope["language"].as_str().unwrap_or_default(),
+        context,
+    )
+}
+fn dimensions(scope: ValueView) -> [String; 3] {
+    let mut kind = scope.index("kind").as_str().unwrap_or_default().to_owned();
+    let language = scope
+        .index("language")
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     if kind == "*" && language != "*" {
         kind = "definition".into();
     }
     [
         kind,
-        scope["word"].as_str().unwrap_or_default().into(),
+        scope.index("word").as_str().unwrap_or_default().into(),
         language,
     ]
 }
-fn narrower(a: &Value, b: &Value) -> bool {
+fn narrower(a: ValueView, b: ValueView) -> bool {
     let a = dimensions(a);
     let b = dimensions(b);
     a != b && a.iter().zip(b.iter()).all(|(a, b)| a == b || b == "*")
@@ -155,7 +189,7 @@ fn scoped_pairs<'a>(
     for rule in trust {
         if issuer.is_some_and(|actor| actor != rule.actor)
             || rule.actor == rule.subject
-            || !matches(&rule.scope, context)
+            || !matches(rule.scope.view(), context)
             || rule.values.iter().all(|value| value == "clear")
         {
             continue;
@@ -174,7 +208,7 @@ fn retained_rules<'a>(rules: &[&'a TrustRule]) -> Vec<&'a TrustRule> {
         .filter(|rule| {
             !rules
                 .iter()
-                .any(|other| narrower(&other.scope, &rule.scope))
+                .any(|other| narrower(other.scope.view(), rule.scope.view()))
         })
         .collect()
 }
@@ -295,7 +329,7 @@ fn evaluate_context_with_limit(
 ) -> ContextGraph {
     resolve_context::<ExactRows>(evaluation, context, max_refusals)
 }
-type PrivateWeights = BTreeMap<(String, String), Vec<(Value, Rational)>>;
+type PrivateWeights = BTreeMap<(String, String), Vec<(CompactValue, Rational)>>;
 fn private_trust(evaluation: &Evaluation) -> (Vec<TrustRule>, PrivateWeights) {
     let resolve = |key: &str| {
         evaluation
@@ -309,23 +343,32 @@ fn private_trust(evaluation: &Evaluation) -> (Vec<TrustRule>, PrivateWeights) {
     let mut private_weights_by_pair: PrivateWeights = BTreeMap::new();
     if !evaluation.reasons.contains("invalid_overlay") {
         if let Some(overlay) = &evaluation.overlay {
-            let mut private: BTreeMap<(String, String, String), (Value, BTreeSet<String>)> =
+            let mut private: BTreeMap<(String, String, String), (CompactValue, BTreeSet<String>)> =
                 BTreeMap::new();
+            let mut scope_arena = None;
             for rule in overlay["trust"].as_array().into_iter().flatten() {
                 let issuer = resolve(rule["issuer"].as_str().unwrap());
                 let subject = resolve(rule["subject"].as_str().unwrap());
+                let scope = CompactValue::from_arena(
+                    scope_arena
+                        .get_or_insert_with(|| {
+                            std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default()))
+                        })
+                        .clone(),
+                    &rule["scope"],
+                );
                 if rule["value"] == "heed" {
                     private_weights_by_pair
                         .entry((issuer.clone(), subject.clone()))
                         .or_default()
                         .push((
-                            rule["scope"].clone(),
-                            rational(&rule["weight"]).unwrap_or_else(Rational::one),
+                            scope.clone(),
+                            overlay_rational(&rule["weight"]).unwrap_or_else(Rational::one),
                         ));
                 }
                 let entry = private
                     .entry((issuer, subject, rule["scope"].to_string()))
-                    .or_insert_with(|| (rule["scope"].clone(), BTreeSet::new()));
+                    .or_insert_with(|| (scope, BTreeSet::new()));
                 entry.1.insert(rule["value"].as_str().unwrap().into());
             }
             // Remove replaced public registers once before adding private registers.
@@ -367,9 +410,24 @@ impl ScopedRuleIndex {
         let mut result = Self::default();
         for (id, rule) in trust.iter().enumerate() {
             let key = (
-                rule.scope["kind"].as_str().unwrap_or_default().into(),
-                rule.scope["word"].as_str().unwrap_or_default().into(),
-                rule.scope["language"].as_str().unwrap_or_default().into(),
+                rule.scope
+                    .view()
+                    .index("kind")
+                    .as_str()
+                    .unwrap_or_default()
+                    .into(),
+                rule.scope
+                    .view()
+                    .index("word")
+                    .as_str()
+                    .unwrap_or_default()
+                    .into(),
+                rule.scope
+                    .view()
+                    .index("language")
+                    .as_str()
+                    .unwrap_or_default()
+                    .into(),
             );
             result.0.entry(key).or_default().ids.push(id);
         }
@@ -522,7 +580,7 @@ pub(crate) fn ranking_index_bound(e: &Evaluation) -> jvc_core::Result<RankingInd
         add_bytes(
             8 * (r.actor.len() as u64
                 + r.subject.len() as u64
-                + value_strings(&r.scope)
+                + r.scope.view().string_bytes()
                 + r.values.iter().map(|v| v.len() as u64).sum::<u64>()),
         )?;
     }
@@ -660,7 +718,7 @@ impl ApproximateContextIndex {
                 .iter()
                 .map(|r| {
                     (r.actor.len() + r.subject.len()) as u64
-                        + value_strings(&r.scope)
+                        + r.scope.view().string_bytes()
                         + r.values.iter().map(|s| s.len() as u64).sum::<u64>()
                 })
                 .sum::<u64>()
@@ -674,7 +732,9 @@ impl ApproximateContextIndex {
                 .iter()
                 .map(|((a, b), v)| {
                     (a.len() + b.len()) as u64
-                        + v.iter().map(|(scope, _)| value_strings(scope)).sum::<u64>()
+                        + v.iter()
+                            .map(|(scope, _)| scope.view().string_bytes())
+                            .sum::<u64>()
                 })
                 .sum::<u64>();
         Ok(c)
@@ -712,11 +772,20 @@ impl ApproximateContextIndex {
         } else {
             (0, 0)
         };
-        let array_len = |value: Option<&Value>, field: &str| {
-            value.and_then(|v| v[field].as_array()).map_or(0, Vec::len) as u64
+        let array_len = |value: Option<&CompactValue>, field: &str| {
+            value
+                .and_then(|v| v.view().index(field).as_array())
+                .map_or(0, |v| v.len()) as u64
         };
         let roots = array_len(evaluation.policy.as_ref(), "roots");
-        let changes = array_len(evaluation.overlay.as_ref(), "root_changes");
+        let overlay_len = |field: &str| {
+            evaluation
+                .overlay
+                .as_ref()
+                .and_then(|v| v[field].as_array())
+                .map_or(0, Vec::len) as u64
+        };
+        let changes = overlay_len("root_changes");
         Ok(super::incremental::RankingContextBound {
             actors: judgments + roots + changes + 2 * rules,
             edges: rules,
@@ -728,9 +797,7 @@ impl ApproximateContextIndex {
             roots,
             exclusions: array_len(evaluation.policy.as_ref(), "excluded"),
             suspensions: evaluation.lifecycle.suspended.len() as u64,
-            overlay_entries: changes
-                + array_len(evaluation.overlay.as_ref(), "blocked")
-                + u64::from(shun),
+            overlay_entries: changes + overlay_len("blocked") + u64::from(shun),
             pairs_squared: merged_squares
                 .checked_add(public_squares)
                 .ok_or_else(count_overflow)?,
@@ -757,9 +824,14 @@ fn resolve_context_indexed<A: RowArithmetic>(
     let calculation = evaluation
         .policy
         .as_ref()
-        .and_then(|policy| policy["calculation"].as_str())
-        .unwrap_or_default()
-        .to_owned();
+        .and_then(|policy| {
+            policy
+                .view()
+                .index("calculation")
+                .as_str()
+                .map(str::to_owned)
+        })
+        .unwrap_or_default();
     if evaluation.reasons.contains("invalid_overlay") {
         return ContextGraph {
             calculation,
@@ -813,13 +885,27 @@ fn resolve_context_indexed<A: RowArithmetic>(
     let mut public_shun_blocked = BTreeSet::new();
     let mut private_blocked = BTreeSet::new();
     if let Some(policy) = &evaluation.policy {
-        for root in policy["roots"].as_array().into_iter().flatten() {
-            if let (Some(key), Some(q)) = (root["identity"].as_str(), rational(&root["q"])) {
+        for root in policy
+            .view()
+            .index("roots")
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let (Some(key), Some(q)) =
+                (root.index("identity").as_str(), rational(root.index("q")))
+            {
                 raw_roots.insert(key.into(), q);
             }
         }
-        for item in policy["excluded"].as_array().into_iter().flatten() {
-            if let Some(key) = item["identity"].as_str() {
+        for item in policy
+            .view()
+            .index("excluded")
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let Some(key) = item.index("identity").as_str() {
                 let actor = resolve(key);
                 blocked.insert(actor);
             }
@@ -860,13 +946,13 @@ fn resolve_context_indexed<A: RowArithmetic>(
             if let Some(key) = root["identity"].as_str() {
                 if root["q"].is_null() {
                     raw_roots.remove(key);
-                } else if let Some(q) = rational(&root["q"]) {
+                } else if let Some(q) = overlay_rational(&root["q"]) {
                     raw_roots.insert(key.into(), q);
                 }
             }
         }
         for item in overlay["blocked"].as_array().into_iter().flatten() {
-            if matches(&item["scope"], context) {
+            if overlay_matches(&item["scope"], context) {
                 if let Some(key) = item["identity"].as_str() {
                     let actor = resolve(key);
                     if overlay["version"] == 2 {
@@ -886,7 +972,7 @@ fn resolve_context_indexed<A: RowArithmetic>(
     }
 
     for rule in &trust {
-        if matches(&rule.scope, context) && !rule.values.iter().all(|v| v == "clear") {
+        if matches(rule.scope.view(), context) && !rule.values.iter().all(|v| v == "clear") {
             actors.insert(rule.actor.clone());
             actors.insert(rule.subject.clone());
         }
@@ -935,7 +1021,7 @@ fn resolve_context_indexed<A: RowArithmetic>(
         let mut private_weights = BTreeSet::new();
         if let Some(entries) = private_weights_by_pair.get(&(issuer.clone(), subject.clone())) {
             for (scope, weight) in entries {
-                if retained.iter().any(|rule| &rule.scope == scope) {
+                if retained.iter().any(|rule| rule.scope == *scope) {
                     private_weights.insert(weight.clone());
                 }
             }
@@ -1169,11 +1255,12 @@ mod tests {
         });
         evaluation.available = true;
         evaluation.reasons.clear();
-        evaluation.policy = Some(json!({"calculation":calculation,"roots":[],"excluded":[]}));
+        evaluation.policy =
+            Some(json!({"calculation":calculation,"roots":[],"excluded":[]}).into());
         evaluation.trust = vec![TrustRule {
             actor: "a".into(),
             subject: "b".into(),
-            scope: json!({"kind":"*","word":"*","language":"*"}),
+            scope: json!({"kind":"*","word":"*","language":"*"}).into(),
             values: BTreeSet::from(["heed".into()]),
         }];
         evaluation
@@ -1277,7 +1364,7 @@ mod tests {
         evaluation.reasons.clear();
         let issuer = jvc_core::identity_from_seed(&[1; 32]);
         evaluation.policy =
-            Some(json!({"calculation":"simple-routes-bounds-v1","roots":[],"excluded":[]}));
+            Some(json!({"calculation":"simple-routes-bounds-v1","roots":[],"excluded":[]}).into());
         evaluation.overlay = Some(
             json!({"version":2,"public_shun_issuer":issuer,"root_changes":[],"trust":[],"blocked":[]}),
         );
@@ -1286,7 +1373,7 @@ mod tests {
             .map(|seed| TrustRule {
                 actor: issuer.clone(),
                 subject: jvc_core::identity_from_seed(&[seed; 32]),
-                scope: json!({"kind":"*","word":"*","language":"*"}),
+                scope: json!({"kind":"*","word":"*","language":"*"}).into(),
                 values: BTreeSet::from(["shun".into()]),
             })
             .collect();
@@ -1300,7 +1387,8 @@ mod tests {
         assert_eq!(graph.public_shun_blocked.len(), 2);
         assert!(graph.refusals.is_empty());
         assert_eq!(graph.refusals.capacity(), 0);
-        evaluation.policy.as_mut().unwrap()["calculation"] = json!("simple-routes-shun-v1");
+        evaluation.policy =
+            Some(json!({"calculation":"simple-routes-shun-v1","roots":[],"excluded":[]}).into());
         assert!(!evaluate_context_with_limit(&evaluation, &context, 0).available);
     }
 
@@ -1318,13 +1406,13 @@ mod tests {
         evaluation.available = true;
         evaluation.reasons.clear();
         evaluation.policy =
-            Some(json!({"calculation":"simple-routes-shun-v1","roots":[],"excluded":[]}));
+            Some(json!({"calculation":"simple-routes-shun-v1","roots":[],"excluded":[]}).into());
         evaluation.trust = ["b", "c"]
             .into_iter()
             .map(|subject| TrustRule {
                 actor: "a".into(),
                 subject: subject.into(),
-                scope: json!({"kind":"*","word":"*","language":"*"}),
+                scope: json!({"kind":"*","word":"*","language":"*"}).into(),
                 values: BTreeSet::from(["shun".into()]),
             })
             .collect();
@@ -1340,7 +1428,8 @@ mod tests {
         assert!(!refused.available);
         assert!(refused.reasons.contains("resource_unavailable"));
         assert_eq!(refused.refusals.iter().map(Vec::len).sum::<usize>(), 1);
-        evaluation.policy.as_mut().unwrap()["calculation"] = json!("simple-routes-bounds-v1");
+        evaluation.policy =
+            Some(json!({"calculation":"simple-routes-bounds-v1","roots":[],"excluded":[]}).into());
         let old = evaluate_context_with_limit(&evaluation, &context, 0);
         assert!(old.available);
         assert!(old.refusals.is_empty());

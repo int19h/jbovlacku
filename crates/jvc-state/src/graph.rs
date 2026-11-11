@@ -60,20 +60,22 @@ pub(crate) struct Node {
     pub id: String,
     pub issuer: String,
     pub previous: Vec<String>,
-    pub action: Value,
+    pub action: CompactValue,
     pub kind: String,
     pub semantic: bool,
     pub body_hash: Option<String>,
-    pub body: Option<Value>,
+    pub body: Option<CompactValue>,
     pub body_label: String,
 }
 impl Node {
-    pub fn new_with<T>(
+    pub fn new_with_in<T>(
+        arena: arena::SharedArena,
         event: &VerifiedEnvelope,
         bytes: Option<&[u8]>,
         inspect: impl FnOnce(&BodyAvailability) -> T,
     ) -> (Self, T) {
-        Self::from_parts(
+        Self::from_parts_in(
+            arena,
             event.id(),
             event.header(),
             inspect_body(event, bytes),
@@ -81,6 +83,21 @@ impl Node {
         )
     }
     pub(super) fn from_parts<T>(
+        id: &str,
+        header: &jvc_core::Header,
+        availability: BodyAvailability,
+        inspect: impl FnOnce(&BodyAvailability) -> T,
+    ) -> (Self, T) {
+        Self::from_parts_in(
+            std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default())),
+            id,
+            header,
+            availability,
+            inspect,
+        )
+    }
+    fn from_parts_in<T>(
+        arena: arena::SharedArena,
         id: &str,
         header: &jvc_core::Header,
         availability: BodyAvailability,
@@ -138,15 +155,20 @@ impl Node {
                 id: id.into(),
                 issuer: header.issuer.clone(),
                 previous: header.previous.clone(),
-                action: header.action.clone(),
+                action: CompactValue::from_arena(arena.clone(), &header.action),
                 kind: kind.into(),
                 semantic: validate_action(header).is_ok(),
                 body_hash: header.content.as_ref().map(|c| c.hash.clone()),
-                body,
+                body: body.map(|body| CompactValue::from_arena(arena, &body)),
                 body_label,
             },
             content,
         )
+    }
+    pub(crate) fn repack(mut self, arena: &arena::SharedArena) -> Self {
+        self.action = self.action.repack(arena);
+        self.body = self.body.take().map(|body| body.repack(arena));
+        self
     }
 }
 pub(crate) use super::ancestors::IdSet;
@@ -395,7 +417,8 @@ impl Graph {
             }
         }
         if mode > 0 && node.semantic && node.kind == "identity.accept" {
-            let transfer = node.action["transfer"].as_str().unwrap_or_default();
+            let transfer = node.action.view().index("transfer");
+            let transfer = transfer.as_str().unwrap_or_default();
             match self.nodes.get(transfer) {
                 None => {
                     missing.insert(transfer.into());
@@ -403,7 +426,7 @@ impl Graph {
                 Some(t)
                     if t.semantic
                         && t.kind == "identity.transfer"
-                        && t.action["successor"].as_str() == Some(&node.issuer) =>
+                        && t.action.view().index("successor").as_str() == Some(&node.issuer) =>
                 {
                     if mode == 1 || self.lifecycle.successor.get(&t.issuer) == Some(&node.issuer) {
                         ids.push(transfer.into());
@@ -552,7 +575,10 @@ impl Graph {
             }
             if node.kind == "identity.compromise" {
                 let mut cutoff = self.empty_closure();
-                let safe: Vec<_> = node.action["safe"]
+                let safe: Vec<_> = node
+                    .action
+                    .view()
+                    .index("safe")
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -618,7 +644,8 @@ impl Graph {
                 continue;
             }
             let transfer = &self.nodes[&transfers[0]];
-            let successor = transfer.action["successor"].as_str().unwrap_or_default();
+            let successor = transfer.action.view().index("successor");
+            let successor = successor.as_str().unwrap_or_default();
             #[cfg(test)]
             LIFECYCLE_VISITS.with(|count| count.set(count.get() + 1));
             let first: &[&Node] = roots.get(successor).map(Vec::as_slice).unwrap_or_default();
@@ -628,7 +655,7 @@ impl Graph {
             let acceptance = first[0];
             if acceptance.semantic
                 && acceptance.kind == "identity.accept"
-                && acceptance.action["transfer"].as_str() == Some(&transfer.id)
+                && acceptance.action.view().index("transfer").as_str() == Some(&transfer.id)
                 && self.own_complete(&acceptance.id)
                 && key != successor
             {
@@ -732,8 +759,8 @@ impl Graph {
                 .or_insert(true) &= complete;
             if node.semantic && node.kind == "account.set" {
                 if let (Some(origin), Some(account)) = (
-                    node.action["origin"].as_str(),
-                    node.action["account"].as_u64(),
+                    node.action.view().index("origin").as_str(),
+                    node.action.view().index("account").as_u64(),
                 ) {
                     self.account_sets
                         .entry(format!("{origin}#{account}"))
@@ -976,8 +1003,8 @@ impl Graph {
             .or_insert(true) &= complete;
         if node.semantic && node.kind == "account.set" {
             if let (Some(origin), Some(account)) = (
-                node.action["origin"].as_str(),
-                node.action["account"].as_u64(),
+                node.action.view().index("origin").as_str(),
+                node.action.view().index("account").as_u64(),
             ) {
                 self.account_sets
                     .entry(format!("{origin}#{account}"))
@@ -1184,7 +1211,7 @@ mod tests {
             id: id.into(),
             issuer: issuer.into(),
             previous: previous.iter().map(|s| s.to_string()).collect(),
-            action: json!({"kind": kind}),
+            action: CompactValue::from(&json!({"kind": kind})),
             kind: kind.into(),
             semantic: true,
             body_hash: None,
@@ -1207,7 +1234,7 @@ mod tests {
                         } else {
                             Vec::new()
                         },
-                        action: json!({"kind":"identity.merge"}),
+                        action: CompactValue::from(&json!({"kind":"identity.merge"})),
                         kind: "identity.merge".into(),
                         semantic: true,
                         body_hash: None,
@@ -1236,7 +1263,9 @@ mod tests {
                         id,
                         issuer: format!("issuer{i:05}"),
                         previous: Vec::new(),
-                        action: json!({"kind":"identity.transfer","successor":"ed25519:absent"}),
+                        action: CompactValue::from(
+                            &json!({"kind":"identity.transfer","successor":"ed25519:absent"}),
+                        ),
                         kind: "identity.transfer".into(),
                         semantic: true,
                         body_hash: None,
@@ -1265,7 +1294,9 @@ mod tests {
         let count = 4_000usize;
         let mut nodes = nodes(count, false);
         for node in nodes.values_mut() {
-            node.action = json!({"kind":"judgment.set","target":"jve1:target","value":"bless"});
+            node.action = CompactValue::from(
+                &json!({"kind":"judgment.set","target":"jve1:target","value":"bless"}),
+            );
             node.kind = "judgment.set".into();
         }
         let graph = Graph::new(nodes, &Limits::default());
@@ -1302,7 +1333,7 @@ mod tests {
                         id,
                         issuer: issuer.into(),
                         previous,
-                        action,
+                        action: action.into(),
                         kind: kind.into(),
                         semantic: true,
                         body_hash: None,
@@ -1379,7 +1410,7 @@ mod tests {
                     id,
                     issuer: issuer.into(),
                     previous,
-                    action,
+                    action: action.into(),
                     kind: kind.into(),
                     semantic: true,
                     body_hash: None,
@@ -1451,7 +1482,7 @@ mod tests {
                             id,
                             issuer: "issuer".into(),
                             previous: Vec::new(),
-                            action: json!({"kind":"identity.merge"}),
+                            action: CompactValue::from(&json!({"kind":"identity.merge"})),
                             kind: "identity.merge".into(),
                             semantic: true,
                             body_hash: None,
@@ -1669,9 +1700,10 @@ mod tests {
     #[test]
     fn oracle_transfer_and_acceptance() {
         let mut transfer = node("jve1:t", "one", &["jve1:a"], "identity.transfer");
-        transfer.action = json!({"kind":"identity.transfer","successor":"two"});
+        transfer.action =
+            CompactValue::from(&json!({"kind":"identity.transfer","successor":"two"}));
         let mut accept = node("jve1:x", "two", &[], "identity.accept");
-        accept.action = json!({"kind":"identity.accept","transfer":"jve1:t"});
+        accept.action = CompactValue::from(&json!({"kind":"identity.accept","transfer":"jve1:t"}));
         let mut map = BTreeMap::new();
         for n in [
             node("jve1:a", "one", &[], "identity.merge"),
@@ -1687,7 +1719,8 @@ mod tests {
     #[test]
     fn oracle_compromise_cutoffs_are_complete_or_pending_as_before() {
         let mut compromise = node("jve1:k", "one", &["jve1:b"], "identity.compromise");
-        compromise.action = json!({"kind":"identity.compromise","safe":["jve1:a"]});
+        compromise.action =
+            CompactValue::from(&json!({"kind":"identity.compromise","safe":["jve1:a"]}));
         let mut map = BTreeMap::new();
         for n in [
             node("jve1:a", "one", &[], "definition.publish"),
@@ -1792,7 +1825,7 @@ mod tests {
                         id,
                         issuer: "issuer".into(),
                         previous: previous.into_iter().collect(),
-                        action: json!({"kind":"identity.merge"}),
+                        action: CompactValue::from(&json!({"kind":"identity.merge"})),
                         kind: "identity.merge".into(),
                         semantic: true,
                         body_hash: None,
@@ -1816,7 +1849,7 @@ mod tests {
                         .then(|| format!("jve1:s{:05}", i - 1))
                         .into_iter()
                         .collect(),
-                    action: json!({"kind":"identity.merge"}),
+                    action: CompactValue::from(&json!({"kind":"identity.merge"})),
                     kind: "identity.merge".into(),
                     semantic: true,
                     body_hash: None,
@@ -1827,7 +1860,7 @@ mod tests {
                     id: g.clone(),
                     issuer: "issuer".into(),
                     previous: vec![s.clone()],
-                    action: json!({"kind":"identity.merge"}),
+                    action: CompactValue::from(&json!({"kind":"identity.merge"})),
                     kind: "identity.merge".into(),
                     semantic: true,
                     body_hash: None,
@@ -1879,9 +1912,11 @@ mod tests {
     fn interleaved_with_acceptance(count: usize) -> BTreeMap<String, Node> {
         let mut map = two_interleaved_chains(count);
         let mut transfer = node("jve1:transfer", "one", &[], "identity.transfer");
-        transfer.action = json!({"kind":"identity.transfer","successor":"two"});
+        transfer.action =
+            CompactValue::from(&json!({"kind":"identity.transfer","successor":"two"}));
         let mut accept = node("jve1:accept", "two", &[], "identity.accept");
-        accept.action = json!({"kind":"identity.accept","transfer":"jve1:transfer"});
+        accept.action =
+            CompactValue::from(&json!({"kind":"identity.accept","transfer":"jve1:transfer"}));
         map.insert(transfer.id.clone(), transfer);
         map.insert(accept.id.clone(), accept);
         map

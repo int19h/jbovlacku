@@ -12,6 +12,10 @@ Full evaluation inputs and carrier imports reuse a bounded public-key cache.
 Every record still applies the complete signature profile and equation, with the same rejection errors.
 The [development guide](development.md#signature-verification) explains the cache and the verification cost example.
 
+Authenticated actions and retained bodies use a shared arena of flat buffers and 32-bit handles. The arena stores each distinct string once.
+Accessors preserve exact JSON values, including malformed actions, null fields, and every accepted number form.
+Evaluation and ranking read the compact values without reconstructing `serde_json::Value` trees. State, checkpoint, and host-record serialization keeps the existing JSON bytes.
+
 The definition validator accepts omitted [optional definition fields](format.md#absent-fields-and-compatibility) and their explicit default values.
 Readers and editors apply defaults to separate interpreted values. Stored bodies, exports, hashes, signatures, and event IDs retain the original signed content.
 New definitions omit optional fields with default values. Required fields and imported source evidence remain required.
