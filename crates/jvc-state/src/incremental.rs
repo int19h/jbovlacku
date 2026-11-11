@@ -100,11 +100,46 @@ impl EvaluatedState {
             ranking_index: Default::default(),
         };
         state.rebuild();
+        state.prepared.arena.borrow_mut().finish_load();
         state
     }
 
     pub fn evaluation(&self) -> &Evaluation {
         &self.evaluation
+    }
+
+    #[doc(hidden)]
+    pub fn allocation_stages(mut self, mut observe: impl FnMut(&str)) {
+        observe("state_loaded");
+        self.evaluation.publications.clear();
+        observe("publications_cleared");
+        self.evaluation.receipts.clear();
+        observe("receipts_cleared");
+        self.evaluation.lifecycle.key_actor.clear();
+        self.evaluation.lifecycle.groups.clear();
+        self.evaluation.lifecycle.successor.clear();
+        self.evaluation.lifecycle.suspended.clear();
+        self.evaluation.lifecycle.retired.clear();
+        self.evaluation.lifecycle.compromised.clear();
+        observe("lineage_cleared");
+        self.evaluation.accounts.clear();
+        observe("accounts_cleared");
+        self.evaluation.registers.clear();
+        observe("registers_cleared");
+        self.evaluation.judgments.clear();
+        observe("judgments_cleared");
+        self.evaluation.policy = None;
+        self.evaluation.policies.clear();
+        self.evaluation.policy_history.clear();
+        observe("policies_cleared");
+        self.evaluation.trust.clear();
+        self.evaluation.selections.clear();
+        self.evaluation.overlay = None;
+        observe("other_evaluation_cleared");
+        self.graph = None;
+        observe("graph_cleared");
+        self.unresolved.clear();
+        observe("unresolved_cleared");
     }
 
     pub fn with_overlay(&self, overlay: Option<Value>) -> Self {
@@ -312,6 +347,14 @@ impl EvaluatedState {
 
     fn rebuild(&mut self) {
         self.judgment_changes = None;
+        if self.prepared.arena.borrow().error().is_some() {
+            self.evaluation = empty_evaluation(&self.prepared.options);
+            resource_unavailable(&mut self.evaluation);
+            self.graph = None;
+            self.remaining_work = self.prepared.options.limits.traversal;
+            self.unresolved.clear();
+            return;
+        }
         if self.prepared.event_limit_exceeded {
             self.evaluation = event_limit_evaluation(&self.prepared.options);
             self.graph = None;
@@ -335,7 +378,11 @@ impl EvaluatedState {
         self.ranking_index = Default::default();
         let mut rebuild_reason =
             (self.prepared.options != delta.options).then(|| "configuration_changed".to_owned());
+        let arena_error = delta.arena.borrow().error();
         self.prepared.options = delta.options;
+        if let Some(error) = arena_error {
+            self.prepared.arena.borrow_mut().set_error(error);
+        }
         let mut added = BTreeMap::new();
         for id in removed {
             if self.prepared.nodes.contains_key(id) {
@@ -939,6 +986,10 @@ impl EvaluatedState {
             .into_iter()
             .map(|(id, node)| (id, node.repack(&arena)))
             .collect();
+        if let Some(error) = arena.borrow().error() {
+            return Err(jvc_core::Error::new("checkpoint", error.to_string()));
+        }
+        arena.borrow_mut().finish_load();
         let prepared = PreparedEvaluationInput {
             options: saved.options,
             nodes: std::rc::Rc::new(nodes),

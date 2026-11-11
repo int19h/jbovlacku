@@ -43,6 +43,20 @@ impl CompactNumber {
     }
 }
 
+impl PartialEq for CompactNumber {
+    fn eq(&self, other: &Self) -> bool {
+        match (*self, *other) {
+            (Self::Signed(a), Self::Signed(b)) => a == b,
+            (Self::Unsigned(a), Self::Unsigned(b)) => a == b,
+            (Self::Signed(a), Self::Unsigned(b)) | (Self::Unsigned(b), Self::Signed(a)) => {
+                a >= 0 && a as u64 == b
+            }
+            (Self::Float(a), Self::Float(b)) => f64::from_bits(a) == f64::from_bits(b),
+            _ => false,
+        }
+    }
+}
+
 impl Serialize for CompactNumber {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match *self {
@@ -69,6 +83,8 @@ struct StringSegment {
     len: u32,
 }
 
+/// No code may pack into an arena while a view of that arena is alive.
+/// `repack` checks arena identity before it takes a mutable borrow.
 pub(crate) type SharedArena = Rc<RefCell<RecordArena>>;
 
 #[derive(Debug)]
@@ -79,6 +95,7 @@ pub(crate) struct RecordArena {
     strings: Vec<StringSegment>,
     string_bytes: Vec<u8>,
     string_hashes: HashMap<u64, Vec<u32>>,
+    error: Option<jvc_core::Error>,
 }
 
 impl Default for RecordArena {
@@ -90,11 +107,39 @@ impl Default for RecordArena {
             strings: Vec::new(),
             string_bytes: Vec::new(),
             string_hashes: HashMap::new(),
+            error: None,
         }
     }
 }
 
 impl RecordArena {
+    pub(crate) fn error(&self) -> Option<jvc_core::Error> {
+        self.error.clone()
+    }
+
+    pub(crate) fn set_error(&mut self, error: jvc_core::Error) {
+        if self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
+
+    fn overflow(&mut self, what: &str) {
+        self.set_error(jvc_core::Error::new(
+            "resource_unavailable",
+            format!("record arena {what} exceeds the 32-bit limit"),
+        ));
+    }
+
+    fn checked_u32(&mut self, value: usize, what: &str) -> Option<u32> {
+        match u32::try_from(value) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                self.overflow(what);
+                None
+            }
+        }
+    }
+
     fn string(&self, handle: u32) -> &str {
         let segment = self.strings[handle as usize];
         let start = segment.start as usize;
@@ -103,6 +148,17 @@ impl RecordArena {
     }
 
     fn intern(&mut self, value: &str) -> u32 {
+        if self.error.is_some() {
+            return 0;
+        }
+        if self.string_hashes.is_empty() && !self.strings.is_empty() {
+            for handle in 0..self.strings.len() as u32 {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                self.string(handle).hash(&mut hasher);
+                let hash = hasher.finish();
+                self.string_hashes.entry(hash).or_default().push(handle);
+            }
+        }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         value.hash(&mut hasher);
         let hash = hasher.finish();
@@ -113,11 +169,15 @@ impl RecordArena {
                 }
             }
         }
-        let handle =
-            u32::try_from(self.strings.len()).expect("record arena string handle overflow");
-        let start =
-            u32::try_from(self.string_bytes.len()).expect("record arena string size overflow");
-        let len = u32::try_from(value.len()).expect("record arena string length overflow");
+        let Some(handle) = self.checked_u32(self.strings.len(), "string handle") else {
+            return 0;
+        };
+        let Some(start) = self.checked_u32(self.string_bytes.len(), "string byte offset") else {
+            return 0;
+        };
+        let Some(len) = self.checked_u32(value.len(), "string length") else {
+            return 0;
+        };
         self.string_bytes.extend_from_slice(value.as_bytes());
         self.strings.push(StringSegment { start, len });
         self.string_hashes.entry(hash).or_default().push(handle);
@@ -125,14 +185,53 @@ impl RecordArena {
     }
 
     fn push_value(&mut self, node: ValueNode) -> u32 {
-        let handle = u32::try_from(self.values.len()).expect("record arena value handle overflow");
+        if matches!(node, ValueNode::Null) {
+            return 0;
+        }
+        if self.error.is_some() {
+            return 0;
+        }
+        let Some(handle) = self.checked_u32(self.values.len(), "value handle") else {
+            return 0;
+        };
         self.values.push(node);
         handle
     }
 
+    fn push_array(&mut self, handles: Vec<u32>) -> u32 {
+        if self.error.is_some() {
+            return 0;
+        }
+        let Some(start) = self.checked_u32(self.array_values.len(), "array offset") else {
+            return 0;
+        };
+        let Some(len) = self.checked_u32(handles.len(), "array length") else {
+            return 0;
+        };
+        self.array_values.extend(handles);
+        self.push_value(ValueNode::Array { start, len })
+    }
+
+    fn push_object(&mut self, handles: Vec<(u32, u32)>) -> u32 {
+        if self.error.is_some() {
+            return 0;
+        }
+        let Some(start) = self.checked_u32(self.object_values.len(), "object offset") else {
+            return 0;
+        };
+        let Some(len) = self.checked_u32(handles.len(), "object length") else {
+            return 0;
+        };
+        self.object_values.extend(handles);
+        self.push_value(ValueNode::Object { start, len })
+    }
+
     fn pack_serde(&mut self, value: &Value) -> u32 {
+        if self.error.is_some() {
+            return 0;
+        }
         match value {
-            Value::Null => self.push_value(ValueNode::Null),
+            Value::Null => 0,
             Value::Bool(value) => self.push_value(ValueNode::Bool(*value)),
             Value::Number(number) => {
                 self.push_value(ValueNode::Number(CompactNumber::from_serde(number)))
@@ -146,11 +245,7 @@ impl RecordArena {
                     .iter()
                     .map(|value| self.pack_serde(value))
                     .collect::<Vec<_>>();
-                let start = u32::try_from(self.array_values.len())
-                    .expect("record arena array offset overflow");
-                let len = u32::try_from(handles.len()).expect("record arena array length overflow");
-                self.array_values.extend(handles);
-                self.push_value(ValueNode::Array { start, len })
+                self.push_array(handles)
             }
             Value::Object(values) => {
                 let handles = values
@@ -161,14 +256,19 @@ impl RecordArena {
                         (key, value)
                     })
                     .collect::<Vec<_>>();
-                let start = u32::try_from(self.object_values.len())
-                    .expect("record arena object offset overflow");
-                let len =
-                    u32::try_from(handles.len()).expect("record arena object length overflow");
-                self.object_values.extend(handles);
-                self.push_value(ValueNode::Object { start, len })
+                self.push_object(handles)
             }
         }
+    }
+
+    pub(crate) fn finish_load(&mut self) {
+        self.values.shrink_to_fit();
+        self.array_values.shrink_to_fit();
+        self.object_values.shrink_to_fit();
+        self.strings.shrink_to_fit();
+        self.string_bytes.shrink_to_fit();
+        self.string_hashes.clear();
+        self.string_hashes.shrink_to_fit();
     }
 
     fn allocated_bytes(&self) -> usize {
@@ -285,7 +385,7 @@ enum OwnedValue {
 impl OwnedValue {
     fn into_compact(self, arena: &Rc<RefCell<RecordArena>>) -> u32 {
         match self {
-            Self::Null => arena.borrow_mut().push_value(ValueNode::Null),
+            Self::Null => 0,
             Self::Bool(value) => arena.borrow_mut().push_value(ValueNode::Bool(value)),
             Self::Number(number) => arena.borrow_mut().push_value(ValueNode::Number(number)),
             Self::String(value) => {
@@ -297,12 +397,7 @@ impl OwnedValue {
                     .into_iter()
                     .map(|value| value.into_compact(arena))
                     .collect::<Vec<_>>();
-                let mut arena = arena.borrow_mut();
-                let start = u32::try_from(arena.array_values.len())
-                    .expect("record arena array offset overflow");
-                let len = u32::try_from(handles.len()).expect("record arena array length overflow");
-                arena.array_values.extend(handles);
-                arena.push_value(ValueNode::Array { start, len })
+                arena.borrow_mut().push_array(handles)
             }
             Self::Object(values) => {
                 let handles = values
@@ -313,13 +408,7 @@ impl OwnedValue {
                         (key, value)
                     })
                     .collect::<Vec<_>>();
-                let mut arena = arena.borrow_mut();
-                let start = u32::try_from(arena.object_values.len())
-                    .expect("record arena object offset overflow");
-                let len =
-                    u32::try_from(handles.len()).expect("record arena object length overflow");
-                arena.object_values.extend(handles);
-                arena.push_value(ValueNode::Object { start, len })
+                arena.borrow_mut().push_object(handles)
             }
         }
     }
@@ -399,6 +488,9 @@ impl<'de> Deserialize<'de> for CompactValue {
         let value = OwnedValue::deserialize(deserializer)?;
         let arena = Rc::new(RefCell::new(RecordArena::default()));
         let root = value.into_compact(&arena);
+        if let Some(error) = arena.borrow().error() {
+            return Err(serde::de::Error::custom(error.to_string()));
+        }
         Ok(Self { arena, root })
     }
 }
@@ -523,8 +615,12 @@ impl<'a> ValueView<'a> {
     }
 
     fn pack_into(&self, target: &Rc<RefCell<RecordArena>>) -> u32 {
+        if let Some(error) = self.arena.error() {
+            target.borrow_mut().set_error(error);
+            return 0;
+        }
         match *self.node() {
-            ValueNode::Null => target.borrow_mut().push_value(ValueNode::Null),
+            ValueNode::Null => 0,
             ValueNode::Bool(value) => target.borrow_mut().push_value(ValueNode::Bool(value)),
             ValueNode::Number(number) => target.borrow_mut().push_value(ValueNode::Number(number)),
             ValueNode::String(handle) => {
@@ -537,12 +633,7 @@ impl<'a> ValueView<'a> {
                     .unwrap()
                     .map(|value| value.pack_into(target))
                     .collect::<Vec<_>>();
-                let mut target = target.borrow_mut();
-                let start = u32::try_from(target.array_values.len())
-                    .expect("record arena array offset overflow");
-                let len = u32::try_from(handles.len()).expect("record arena array length overflow");
-                target.array_values.extend(handles);
-                target.push_value(ValueNode::Array { start, len })
+                target.borrow_mut().push_array(handles)
             }
             ValueNode::Object { start, len } => {
                 let start = start as usize;
@@ -558,13 +649,7 @@ impl<'a> ValueView<'a> {
                         (key, value)
                     })
                     .collect::<Vec<_>>();
-                let mut target = target.borrow_mut();
-                let start = u32::try_from(target.object_values.len())
-                    .expect("record arena object offset overflow");
-                let len =
-                    u32::try_from(handles.len()).expect("record arena object length overflow");
-                target.object_values.extend(handles);
-                target.push_value(ValueNode::Object { start, len })
+                target.borrow_mut().push_object(handles)
             }
         }
     }
@@ -594,9 +679,7 @@ impl PartialEq for ValueView<'_> {
         match (self.node(), other.node()) {
             (ValueNode::Null, ValueNode::Null) => true,
             (ValueNode::Bool(a), ValueNode::Bool(b)) => a == b,
-            (ValueNode::Number(a), ValueNode::Number(b)) => {
-                serde_json::to_string(a).unwrap() == serde_json::to_string(b).unwrap()
-            }
+            (ValueNode::Number(a), ValueNode::Number(b)) => a == b,
             (ValueNode::String(a), ValueNode::String(b)) => {
                 self.arena.string(*a) == other.arena.string(*b)
             }
@@ -642,6 +725,9 @@ impl PartialEq<ValueView<'_>> for &str {
 
 impl Serialize for ValueView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if let Some(error) = self.arena.error() {
+            return Err(serde::ser::Error::custom(error.to_string()));
+        }
         match *self.node() {
             ValueNode::Null => serializer.serialize_unit(),
             ValueNode::Bool(value) => serializer.serialize_bool(value),
@@ -737,6 +823,10 @@ mod tests {
             "100e-2",
             "0.0001e4",
             "-2.5e1",
+            "1E3",
+            "1e+3",
+            "-0.0",
+            "0e5",
         ] {
             let value = jvc_core::parse_json(token.as_bytes()).unwrap();
             round_trip(value);
@@ -852,5 +942,80 @@ mod tests {
             br#"{"value":1,"word":"same"}"#
         );
         assert!(first.allocated_bytes() > 0);
+    }
+
+    #[test]
+    fn number_equality_matches_serde_json_without_allocating() {
+        assert_eq!(CompactNumber::Signed(1), CompactNumber::Unsigned(1));
+        assert_eq!(CompactNumber::Unsigned(1), CompactNumber::Signed(1));
+        assert_eq!(
+            CompactNumber::Float(0.0f64.to_bits()),
+            CompactNumber::Float((-0.0f64).to_bits())
+        );
+        assert_ne!(
+            CompactNumber::Signed(0),
+            CompactNumber::Float(0.0f64.to_bits())
+        );
+        assert_ne!(CompactNumber::Signed(1), CompactNumber::Signed(-1));
+    }
+
+    #[test]
+    fn duplicate_keys_and_large_unsigned_values_match_owned_value_behavior() {
+        let input = br#"{"duplicate":1,"duplicate":2,"large":18446744073709551615}"#;
+        let expected: Value = serde_json::from_slice(input).unwrap();
+        let compact: CompactValue = serde_json::from_slice(input).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&compact).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
+        assert_eq!(compact.view().index("duplicate").as_u64(), Some(2));
+        assert_eq!(compact.view().index("large").as_u64(), Some(u64::MAX));
+    }
+
+    #[test]
+    fn null_uses_one_node_and_the_intern_index_rebuilds_after_load() {
+        let compact = CompactValue::from(&json!({"first":null,"second":null,"repeat":"same"}));
+        assert_eq!(
+            compact
+                .arena
+                .borrow()
+                .values
+                .iter()
+                .filter(|node| matches!(node, ValueNode::Null))
+                .count(),
+            1
+        );
+        compact.arena.borrow_mut().finish_load();
+        assert!(compact.arena.borrow().string_hashes.is_empty());
+        let added = CompactValue::from_arena(
+            compact.arena.clone(),
+            &json!({"repeat":"same","new":"value"}),
+        );
+        assert_eq!(added.view().index("repeat").as_str(), Some("same"));
+        assert_eq!(added.view().index("new").as_str(), Some("value"));
+        assert!(!compact.arena.borrow().string_hashes.is_empty());
+    }
+
+    #[test]
+    fn size_overflow_is_an_error_instead_of_a_panic() {
+        let mut arena = RecordArena::default();
+        assert_eq!(arena.checked_u32(usize::MAX, "test size"), None);
+        assert_eq!(arena.error().unwrap().code, "resource_unavailable");
+        let compact = CompactValue {
+            arena: Rc::new(RefCell::new(arena)),
+            root: 0,
+        };
+        assert!(serde_json::to_vec(&compact).is_err());
+    }
+
+    #[test]
+    fn signed_zero_from_the_record_parser_is_integer_zero() {
+        // Integral exponent forms and negative zero normalize before they reach the arena.
+        let value = jvc_core::parse_json(b"-0.0").unwrap();
+        assert_eq!(value, json!(0));
+        assert!(matches!(
+            CompactNumber::from_serde(value.as_number().unwrap()),
+            CompactNumber::Signed(0) | CompactNumber::Unsigned(0)
+        ));
     }
 }

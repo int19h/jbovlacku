@@ -12,7 +12,7 @@ Full evaluation inputs and carrier imports reuse a bounded public-key cache.
 Every record still applies the complete signature profile and equation, with the same rejection errors.
 The [development guide](development.md#signature-verification) explains the cache and the verification cost example.
 
-Authenticated actions and retained bodies use a shared arena of flat buffers and 32-bit handles. The arena stores each distinct string once.
+Each prepared input packs its authenticated actions and retained bodies into one arena of flat buffers and 32-bit handles. Each arena stores each distinct string once.
 Accessors preserve exact JSON values, including malformed actions, null fields, and every accepted number form.
 Evaluation and ranking read the compact values without reconstructing `serde_json::Value` trees. State, checkpoint, and host-record serialization keeps the existing JSON bytes.
 

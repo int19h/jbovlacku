@@ -130,6 +130,26 @@ impl PreparedEvaluationInput {
         }
         arenas.values().sum()
     }
+    #[doc(hidden)]
+    pub fn record_node_string_bytes(&self) -> usize {
+        self.nodes
+            .iter()
+            .map(|(key, node)| {
+                key.capacity()
+                    + node.id.capacity()
+                    + node.issuer.capacity()
+                    + node.previous.capacity() * size_of::<String>()
+                    + node.previous.iter().map(|id| id.capacity()).sum::<usize>()
+                    + node.kind.capacity()
+                    + node.body_hash.as_ref().map_or(0, String::capacity)
+                    + node.body_label.capacity()
+            })
+            .sum()
+    }
+    #[doc(hidden)]
+    pub fn finish_load(&self) {
+        self.arena.borrow_mut().finish_load();
+    }
     pub fn evaluate(self) -> Evaluation {
         evaluate_prepared(self)
     }
@@ -417,16 +437,24 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
     prepared.evaluate()
 }
 fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
+    if prepared.arena.borrow().error().is_some() {
+        let mut result = empty_evaluation(&prepared.options);
+        resource_unavailable(&mut result);
+        return result;
+    }
     if prepared.event_limit_exceeded {
         return event_limit_evaluation(&prepared.options);
     }
     let PreparedEvaluationInput {
         options: input,
         nodes,
+        arena,
         ..
     } = prepared;
     let graph = graph::Graph::new(nodes, &input.limits);
-    evaluate_graph(&input, &graph)
+    let result = evaluate_graph(&input, &graph);
+    arena.borrow_mut().finish_load();
+    result
 }
 fn empty_evaluation(input: &EvaluationOptions) -> Evaluation {
     Evaluation {
