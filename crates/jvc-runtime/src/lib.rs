@@ -1093,8 +1093,15 @@ fn add_original_record(
     builder: &mut EvaluationSessionBuilder,
     envelope: &[u8],
     body: Option<&[u8]>,
+    expected_id: Option<&str>,
 ) -> std::result::Result<String, JsValue> {
     let event = builder.verifier.verify(envelope).map_err(fail)?;
+    if expected_id.is_some_and(|expected| expected != event.id()) {
+        return Err(JsValue::from_str(&format!(
+            "Record {} is not cached. Download the records again.",
+            expected_id.unwrap()
+        )));
+    }
     let content = builder
         .prepared
         .add_record_with(&event, body, |availability| {
@@ -1122,17 +1129,19 @@ impl EvaluationSessionBuilder {
         envelope: &[u8],
         body: Option<Vec<u8>>,
     ) -> std::result::Result<String, JsValue> {
-        add_original_record(self, envelope, body.as_deref())
+        add_original_record(self, envelope, body.as_deref(), None)
     }
     pub fn add_record_text(
         &mut self,
         envelope: &str,
         body: Option<String>,
+        expected_id: Option<String>,
     ) -> std::result::Result<String, JsValue> {
         add_original_record(
             self,
             envelope.as_bytes(),
             body.as_ref().map(|body| body.as_bytes()),
+            expected_id.as_deref(),
         )
     }
     /// The host must obtain this record from its private admission store.

@@ -101,7 +101,7 @@ fn full_data_streamed_load_and_overlay_match_whole_input() {
     let mut builder = EvaluationSessionBuilder::new(&options).unwrap();
     for (id, envelope, _) in records {
         builder
-            .add_record_text(envelope, input.bodies.get(&id).cloned())
+            .add_record_text(envelope, input.bodies.get(&id).cloned(), None)
             .unwrap();
     }
     let streamed = builder.finish();

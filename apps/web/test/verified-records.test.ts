@@ -129,8 +129,8 @@ test("the browser worker authenticates streamed records and checks the complete 
       const between = low + (high - low) / 2n;
       const betweenId = "jve1:" + between.toString(16).padStart(64, "0");
       const afterId = "jve1:" + "f".repeat(64);
-      await store.put("records", betweenId, { ...stored, id: betweenId });
-      await store.put("records", afterId, { ...stored, id: afterId });
+      await store.put("records", betweenId, null);
+      await store.put("records", afterId, { id: afterId });
       const extra = await send(options);
       await store.delete("records", betweenId);
       await store.delete("records", afterId);

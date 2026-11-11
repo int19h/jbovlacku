@@ -432,6 +432,7 @@ export interface EvaluationBuilder {
   addRecordText(
     envelope: string,
     body?: string,
+    expectedId?: string,
   ): EvaluationPackageRecord | null;
   removeRecord(id: string): void;
   finish(): EvaluationSessionHandle;
@@ -559,10 +560,10 @@ function wrapEvaluationBuilder(
         builder.add_record(envelope, body),
       ) as EvaluationPackageRecord | null;
     },
-    addRecordText(envelope: string, body?: string) {
+    addRecordText(envelope: string, body?: string, expectedId?: string) {
       requireOpen();
       return JSON.parse(
-        builder.add_record_text(envelope, body),
+        builder.add_record_text(envelope, body, expectedId),
       ) as EvaluationPackageRecord | null;
     },
     removeRecord(id: string) {

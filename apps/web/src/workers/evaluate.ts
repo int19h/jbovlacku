@@ -96,29 +96,19 @@ function missingRecord(id: string): Error {
   return new Error(`Record ${id} is not cached. Download the records again.`);
 }
 const BATCH_SIZE = 256;
-function readBatch(recordStore: IDBObjectStore, after?: string) {
-  return new Promise<{ id: string; record: StoredRecord }[]>(
-    (resolve, reject) => {
-      const range =
-        after === undefined ? undefined : IDBKeyRange.lowerBound(after, true);
-      const reading = recordStore.openCursor(range);
-      const batch: { id: string; record: StoredRecord }[] = [];
-      reading.onsuccess = () => {
-        const cursor = reading.result;
-        if (!cursor) {
-          resolve(batch);
-          return;
-        }
-        batch.push({
-          id: String(cursor.key),
-          record: cursor.value as StoredRecord,
-        });
-        if (batch.length === BATCH_SIZE) resolve(batch);
-        else cursor.continue();
-      };
-      reading.onerror = () => reject(reading.error);
-    },
-  );
+async function readBatch(recordStore: IDBObjectStore, after?: string) {
+  const range =
+    after === undefined ? undefined : IDBKeyRange.lowerBound(after, true);
+  const [keys, records] = await Promise.all([
+    request(recordStore.getAllKeys(range, BATCH_SIZE)),
+    request(
+      recordStore.getAll(range, BATCH_SIZE) as IDBRequest<StoredRecord[]>,
+    ),
+  ]);
+  return keys.map((key, index) => ({
+    id: String(key),
+    record: records[index],
+  }));
 }
 async function readStoredRecords(source: LoadSource, builder: Builder) {
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -166,7 +156,6 @@ async function readStoredRecords(source: LoadSource, builder: Builder) {
       const batch = await readBatch(recordStore, after);
       if (batch.length === 0) break;
       for (const { id, record } of batch) {
-        if (record.id !== id) throw missingRecord(id);
         const expected = stored.events[index];
         if (id !== expected) {
           if (expected === undefined || id < expected) {
@@ -175,17 +164,17 @@ async function readStoredRecords(source: LoadSource, builder: Builder) {
           }
           throw missingRecord(expected);
         }
+        if (record.id !== id) throw missingRecord(id);
         if (record.bodyHash && bodies.has(record.bodyHash) && !record.body)
           throw new Error(
             `The body of ${id} is retained by the snapshot but not cached. Download the records again.`,
           );
-        const envelope = JSON.parse(record.envelope) as { id?: unknown };
-        if (envelope.id !== id) throw missingRecord(id);
         builder.addRecordText(
           record.envelope,
           record.body && record.bodyHash && bodies.has(record.bodyHash)
             ? record.body
             : undefined,
+          id,
         );
         index++;
         after = id;
