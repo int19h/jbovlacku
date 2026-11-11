@@ -853,8 +853,12 @@ fn personal_shun_unavailable_or_invalid_input_never_produces_fallback_scores() {
     );
 }
 
-fn assert_overlay_only_parity(f: &mut Fixture, overlay: Option<Value>) {
-    f.overlay = None;
+fn assert_overlay_transition_parity(
+    f: &mut Fixture,
+    base_overlay: Option<Value>,
+    overlay: Option<Value>,
+) {
+    f.overlay = base_overlay;
     let base = f.streamed_session();
     let actual = base
         .with_overlay(
@@ -883,6 +887,10 @@ fn assert_overlay_only_parity(f: &mut Fixture, overlay: Option<Value>) {
     assert_eq!(summary["events"], json!(f.events.len()));
 }
 
+fn assert_overlay_only_parity(f: &mut Fixture, overlay: Option<Value>) {
+    assert_overlay_transition_parity(f, None, overlay);
+}
+
 #[test]
 fn overlay_only_matches_full_build_for_valid_invalid_and_suspended_issuers() {
     let mut f = Fixture::new();
@@ -907,6 +915,32 @@ fn overlay_only_matches_full_build_for_valid_invalid_and_suspended_issuers() {
     f.event_after(1,vec![format!("jve1:{}","f".repeat(64))],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
     let suspended = local_overlay(&f, Some(1), json!([]), json!([]));
     assert_overlay_only_parity(&mut f, Some(suspended));
+}
+
+#[test]
+fn overlay_only_chains_from_none_valid_and_invalid_bases_match_full_build() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    f.bless(4, &target);
+    f.trust(6, 4, "heed", "*");
+    f.view("simple-routes-bounds-v1", &[1, 6], 1000);
+    let valid = local_overlay(
+        &f,
+        Some(6),
+        json!([{"issuer":key(6),"subject":key(4),"scope":{"kind":"definition","word":"*","language":"*"},"value":"heed","weight":null}]),
+        json!([{"identity":key(4),"scope":{"kind":"*","word":"*","language":"*"}}]),
+    );
+    let mut invalid = local_overlay(&f, Some(1), json!([]), json!([]));
+    invalid
+        .as_object_mut()
+        .unwrap()
+        .remove("public_shun_issuer");
+    let overlays = [None, Some(valid), Some(invalid)];
+    for base in &overlays {
+        for next in &overlays {
+            assert_overlay_transition_parity(&mut f, base.clone(), next.clone());
+        }
+    }
 }
 
 fn suspended_fixture() -> Fixture {

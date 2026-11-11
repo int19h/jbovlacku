@@ -6,6 +6,8 @@ jvc_revision=
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
   jvc_revision=$(git rev-parse HEAD)
   jvc_target_dir=$jvc_target_root/wasm-$jvc_revision
+else
+  rm -f -- packages/core/generated/jvc_runtime_build.json
 fi
 jvc_bindgen=${JVC_WASM_BINDGEN:-wasm-bindgen}
 if ! command -v "$jvc_bindgen" >/dev/null 2>&1; then
@@ -39,7 +41,8 @@ writeFileSync(
 );
 '
   for old_target in "$jvc_target_root"/wasm-*; do
-    if [[ -d $old_target && $old_target != "$jvc_target_dir" ]]; then
+    old_name=${old_target##*/}
+    if [[ -d $old_target && $old_target != "$jvc_target_dir" && $old_name =~ ^wasm-[0-9a-fA-F]{40}$ ]]; then
       rm -rf -- "$old_target"
     fi
   done

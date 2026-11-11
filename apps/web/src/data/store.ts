@@ -279,6 +279,13 @@ const packageRevision = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
+/** Binary searches require the strict order that inventoryIds establishes during sync. */
+export function isStrictlyIncreasing(values: readonly string[]): boolean {
+  return values.every(
+    (value, index) =>
+      typeof value === "string" && (index === 0 || values[index - 1] < value),
+  );
+}
 function hasSortedId(values: readonly string[], target: string): boolean {
   let low = 0;
   let high = values.length;
@@ -832,8 +839,10 @@ export class LocalStore {
   }
   /** Commits a complete inventory and removes only records outside it. */
   async commitInventory(inventory: SnapshotInventory): Promise<void> {
-    const db = await this.database;
     const events = inventory.events;
+    if (!isStrictlyIncreasing(events))
+      throw new Error("The inventory is not in order.");
+    const db = await this.database;
     return new Promise((resolve, reject) => {
       const tx = db.transaction(["records", "inventory"], "readwrite");
       const records = tx.objectStore("records");
