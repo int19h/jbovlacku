@@ -309,7 +309,7 @@ fn evaluation(profile: &str) -> Evaluation {
     e.available = true;
     e.reasons.clear();
     e.policy = Some(
-        json!({"calculation":profile,"roots":[{"identity":"a0","q":{"numerator":1,"denominator":1}}],"excluded":[]}),
+        json!({"calculation":profile,"roots":[{"identity":"a0","q":{"numerator":1,"denominator":1}}],"excluded":[]}).into(),
     );
     e
 }
@@ -317,7 +317,7 @@ fn trust(actor: &str, subject: &str, scope: Value, values: &[&str]) -> TrustRule
     TrustRule {
         actor: actor.into(),
         subject: subject.into(),
-        scope,
+        scope: scope.into(),
         values: values.iter().map(|v| (*v).into()).collect(),
     }
 }

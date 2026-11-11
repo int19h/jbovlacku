@@ -300,11 +300,13 @@ pub(crate) fn encoded(value: &impl Serialize, max: usize) -> Result<Vec<u8>> {
 fn digest(domain: &[u8], value: &impl Serialize, max: usize) -> Result<String> {
     Ok(jvc_core::hash_id("sha256:", domain, &encoded(value, max)?))
 }
-fn parameter(value: &Value) -> Result<FloatParameter> {
-    let n = value["numerator"]
+fn parameter(value: jvc_state::ValueView) -> Result<FloatParameter> {
+    let n = value
+        .index("numerator")
         .as_i64()
         .ok_or_else(|| Error::new("ranking", "signed numerator is unavailable"))?;
-    let d = value["denominator"]
+    let d = value
+        .index("denominator")
         .as_u64()
         .filter(|d| *d > 0)
         .ok_or_else(|| Error::new("ranking", "signed denominator is unavailable"))?;
@@ -330,13 +332,13 @@ fn parameters(e: &jvc_state::Evaluation) -> Result<PreparationParameters> {
         .overlay
         .as_ref()
         .and_then(|o| o["work"].as_u64())
-        .or_else(|| p["work"].as_u64())
+        .or_else(|| p.view().index("work").as_u64())
         .filter(|w| (1..=10_000_000).contains(w))
         .ok_or_else(|| Error::new("ranking", "signed work budget is unavailable"))?;
     Ok(PreparationParameters {
-        h: parameter(&p["H"])?,
-        alpha: parameter(&p["alpha"])?,
-        threshold: parameter(&p["rafsi_threshold"])?,
+        h: parameter(p.view().index("H"))?,
+        alpha: parameter(p.view().index("alpha"))?,
+        threshold: parameter(p.view().index("rafsi_threshold"))?,
         work,
     })
 }
@@ -348,8 +350,7 @@ impl SessionPreparation {
         let algorithm = e
             .policy
             .as_ref()
-            .and_then(|p| p["calculation"].as_str())
-            .map(str::to_owned);
+            .and_then(|p| p.view().index("calculation").as_str().map(str::to_owned));
         let mut reasons = e.reasons.clone();
         let unsupported = algorithm.as_deref().is_some_and(|a| a != a::ALGORITHM);
         if unsupported {

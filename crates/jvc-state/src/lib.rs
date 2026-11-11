@@ -3,12 +3,14 @@
 mod accounts;
 mod ancestors;
 mod api;
+mod arena;
 mod graph;
 mod incremental;
 mod policy;
 pub use api::{
     AccountControl, Authority, Certificate, PublicationStatus, account_control, publication_status,
 };
+pub use arena::{ArrayValues, CompactValue, ValueView};
 pub use incremental::{
     CHECKPOINT_VERSION, EvaluatedState, JudgmentChanges, RankingContextBound, UpdateStatistics,
 };
@@ -73,6 +75,7 @@ impl HostVerifiedRecord {
 pub struct PreparedEvaluationInput {
     options: EvaluationOptions,
     nodes: std::rc::Rc<BTreeMap<String, graph::Node>>,
+    arena: arena::SharedArena,
     event_limit_exceeded: bool,
 }
 impl PreparedEvaluationInput {
@@ -80,6 +83,7 @@ impl PreparedEvaluationInput {
         Self {
             options,
             nodes: std::rc::Rc::new(BTreeMap::new()),
+            arena: std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default())),
             event_limit_exceeded: false,
         }
     }
@@ -96,7 +100,7 @@ impl PreparedEvaluationInput {
         body: Option<&[u8]>,
         inspect: impl FnOnce(&BodyAvailability) -> T,
     ) -> T {
-        let (node, content) = graph::Node::new_with(event, body, inspect);
+        let (node, content) = graph::Node::new_with_in(self.arena.clone(), event, body, inspect);
         if !self.nodes.contains_key(event.id()) {
             if self.nodes.len() >= self.options.limits.events {
                 self.event_limit_exceeded = true;
@@ -107,13 +111,44 @@ impl PreparedEvaluationInput {
     }
     /// Only a trusted host can supply records from its private admission store.
     pub fn add_host_verified_record(&mut self, record: HostVerifiedRecord) {
-        let id = record.node.id.clone();
+        let node = record.node.repack(&self.arena);
+        let id = node.id.clone();
         if !self.nodes.contains_key(&id) {
             if self.nodes.len() >= self.options.limits.events {
                 self.event_limit_exceeded = true;
             }
-            std::rc::Rc::make_mut(&mut self.nodes).insert(id, record.node);
+            std::rc::Rc::make_mut(&mut self.nodes).insert(id, node);
         }
+    }
+    #[doc(hidden)]
+    pub fn record_arena_bytes(&self) -> usize {
+        let mut arenas = BTreeMap::new();
+        for node in self.nodes.values() {
+            arenas
+                .entry(node.action.arena_id())
+                .or_insert_with(|| node.action.allocated_bytes());
+        }
+        arenas.values().sum()
+    }
+    #[doc(hidden)]
+    pub fn record_node_string_bytes(&self) -> usize {
+        self.nodes
+            .iter()
+            .map(|(key, node)| {
+                key.capacity()
+                    + node.id.capacity()
+                    + node.issuer.capacity()
+                    + node.previous.capacity() * size_of::<String>()
+                    + node.previous.iter().map(|id| id.capacity()).sum::<usize>()
+                    + node.kind.capacity()
+                    + node.body_hash.as_ref().map_or(0, String::capacity)
+                    + node.body_label.capacity()
+            })
+            .sum()
+    }
+    #[doc(hidden)]
+    pub fn finish_load(&self) {
+        self.arena.borrow_mut().finish_load();
     }
     pub fn evaluate(self) -> Evaluation {
         evaluate_prepared(self)
@@ -274,9 +309,9 @@ pub struct EvaluationResults {
     pub accounts: BTreeMap<String, AccountState>,
     pub registers: BTreeMap<String, Register>,
     pub judgments: BTreeMap<String, BTreeMap<String, Judgment>>,
-    pub policy: Option<Value>,
-    pub(crate) policies: Vec<Value>,
-    pub(crate) policy_history: BTreeMap<String, Value>,
+    pub policy: Option<CompactValue>,
+    pub(crate) policies: Vec<CompactValue>,
+    pub(crate) policy_history: BTreeMap<String, CompactValue>,
     pub(crate) selections: BTreeMap<String, BTreeSet<String>>,
     pub(crate) trust: Vec<TrustRule>,
 }
@@ -385,7 +420,7 @@ fn apply_overlay(result: &mut Evaluation, suspended: &impl Fn(&str) -> bool) {
 pub(crate) struct TrustRule {
     pub actor: String,
     pub subject: String,
-    pub scope: Value,
+    pub scope: CompactValue,
     pub values: BTreeSet<String>,
 }
 
@@ -402,16 +437,24 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
     prepared.evaluate()
 }
 fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
+    if prepared.arena.borrow().error().is_some() {
+        let mut result = empty_evaluation(&prepared.options);
+        resource_unavailable(&mut result);
+        return result;
+    }
     if prepared.event_limit_exceeded {
         return event_limit_evaluation(&prepared.options);
     }
     let PreparedEvaluationInput {
         options: input,
         nodes,
+        arena,
         ..
     } = prepared;
     let graph = graph::Graph::new(nodes, &input.limits);
-    evaluate_graph(&input, &graph)
+    let result = evaluate_graph(&input, &graph);
+    arena.borrow_mut().finish_load();
+    result
 }
 fn empty_evaluation(input: &EvaluationOptions) -> Evaluation {
     Evaluation {
@@ -572,19 +615,23 @@ fn publications_for(
         if !node.semantic || !matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish") {
             continue;
         }
-        let imported = node.action["origin"] == "import";
-        let body = node.body.as_ref();
-        let legacy = body.and_then(|b| b.get("legacy"));
-        let source = legacy.and_then(|l| l["source"].as_str()).map(str::to_owned);
-        let source_record = legacy.and_then(|l| l["record"]["id"].as_u64());
-        let account = legacy.and_then(|l| {
-            let a = &l["attribution"]["author_account"];
-            if a["evidence"]["kind"] != "source-id" {
+        let imported = node.action.view().index("origin") == "import";
+        let body = node.body.as_ref().map(|body| body.view());
+        let legacy = body.as_ref().and_then(|body| body.get("legacy"));
+        let source = legacy
+            .as_ref()
+            .and_then(|legacy| legacy.index("source").as_str().map(str::to_owned));
+        let source_record = legacy
+            .as_ref()
+            .and_then(|legacy| legacy.index("record").index("id").as_u64());
+        let account = legacy.as_ref().and_then(|legacy| {
+            let a = legacy.index("attribution").index("author_account");
+            if a.index("evidence").index("kind") != "source-id" {
                 return None;
             }
             Some(AccountKey {
-                origin: a["origin"].as_str()?.into(),
-                account: a["account"].as_u64()?,
+                origin: a.index("origin").as_str()?.into(),
+                account: a.index("account").as_u64()?,
             })
         });
         let mut reasons = BTreeSet::new();
@@ -598,15 +645,22 @@ fn publications_for(
             let mut selected = false;
             let mut unknown = false;
             if let Some(policy) = &result.policy {
-                for entry in policy["import_sets"].as_array().into_iter().flatten() {
-                    if entry["importer"].as_str() != Some(&node.issuer)
+                for entry in policy
+                    .view()
+                    .index("import_sets")
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    if entry.index("importer").as_str() != Some(&node.issuer)
                         || source
                             .as_deref()
-                            .is_some_and(|s| Some(s) != entry["source"].as_str())
+                            .is_some_and(|s| Some(s) != entry.index("source").as_str())
                     {
                         continue;
                     }
-                    match entry["selection"]
+                    match entry
+                        .index("selection")
                         .as_str()
                         .and_then(|s| result.selections.get(s))
                     {
@@ -641,9 +695,25 @@ fn publications_for(
                 id: id.clone(),
                 issuer: node.issuer.clone(),
                 kind: node.kind.clone(),
-                word: node.action["word"].as_str().unwrap_or_default().into(),
-                language: node.action["language"].as_str().map(str::to_owned),
-                assignment: node.action["assignment"].as_str().map(str::to_owned),
+                word: node
+                    .action
+                    .view()
+                    .index("word")
+                    .as_str()
+                    .unwrap_or_default()
+                    .into(),
+                language: node
+                    .action
+                    .view()
+                    .index("language")
+                    .as_str()
+                    .map(str::to_owned),
+                assignment: node
+                    .action
+                    .view()
+                    .index("assignment")
+                    .as_str()
+                    .map(str::to_owned),
                 lineage: lineage(graph, node),
                 imported,
                 source,
@@ -675,13 +745,14 @@ fn native_status(graph: &graph::Graph, result: &mut Evaluation) {
     native_status_for(graph, result, None);
 }
 fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option<&str>) {
-    let mut status_records: BTreeMap<&str, Vec<&graph::Node>> = BTreeMap::new();
+    let mut status_records: BTreeMap<String, Vec<&graph::Node>> = BTreeMap::new();
     for node in graph
         .nodes
         .values()
         .filter(|n| n.semantic && n.kind == "status.set")
     {
-        if let Some(target) = node.action["target"].as_str() {
+        let target = node.action.view().index("target");
+        if let Some(target) = target.as_str().map(str::to_owned) {
             status_records.entry(target).or_default().push(node);
         }
     }
@@ -735,9 +806,17 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
                 .insert("contested_status_authority".into());
             continue;
         }
-        let values: BTreeSet<_> = frontier
+        let values: BTreeSet<String> = frontier
             .iter()
-            .map(|id| graph.nodes[id].action["value"].as_str().unwrap_or_default())
+            .map(|id| {
+                graph.nodes[id]
+                    .action
+                    .view()
+                    .index("value")
+                    .as_str()
+                    .unwrap_or_default()
+                    .into()
+            })
             .collect();
         publication.status = if values.len() > 1 {
             Status::Conflicted
@@ -767,21 +846,40 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
         let key = match n.kind.as_str() {
             "judgment.set" => format!(
                 "judgment|{}",
-                n.action["target"].as_str().unwrap_or_default()
+                n.action.view().index("target").as_str().unwrap_or_default()
             ),
             "trust.set" => format!(
                 "trust|{}|{}",
-                graph.actor(n.action["subject"].as_str().unwrap_or_default()),
-                n.action["scope"]
+                graph.actor(
+                    n.action
+                        .view()
+                        .index("subject")
+                        .as_str()
+                        .unwrap_or_default()
+                ),
+                n.action.view().index("scope")
             ),
             "identity.profile" => "profile".into(),
-            "report.set" => format!("report|{}|{}", n.action["subject"], n.action["category"]),
+            "report.set" => format!(
+                "report|{}|{}",
+                n.action.view().index("subject"),
+                n.action.view().index("category")
+            ),
             "bridge.set" => format!(
                 "bridge|{}|{}",
-                n.action["origin"], n.action["source_definition"]
+                n.action.view().index("origin"),
+                n.action.view().index("source_definition")
             ),
-            "account.set" => format!("account|{}|{}", n.action["origin"], n.action["account"]),
-            "account.observe" => format!("observe|{}|{}", n.action["origin"], n.action["account"]),
+            "account.set" => format!(
+                "account|{}|{}",
+                n.action.view().index("origin"),
+                n.action.view().index("account")
+            ),
+            "account.observe" => format!(
+                "observe|{}|{}",
+                n.action.view().index("origin"),
+                n.action.view().index("account")
+            ),
             _ => continue,
         };
         groups
@@ -801,12 +899,22 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
                 let n = &graph.nodes[id];
                 match n.kind.as_str() {
                     "identity.profile" => n.body_hash.clone().unwrap_or_default(),
-                    "bridge.set" if n.action["value"] == "managed" => {
-                        format!("managed|{}", n.action["target"])
+                    "bridge.set" if n.action.view().index("value") == "managed" => {
+                        format!("managed|{}", n.action.view().index("target"))
                     }
-                    "account.observe" => format!("{}|{}", n.action["result"], n.action["claim"]),
-                    "account.set" if n.action["value"] == "claim" => n.id.clone(),
-                    _ => n.action["value"].as_str().unwrap_or_default().into(),
+                    "account.observe" => format!(
+                        "{}|{}",
+                        n.action.view().index("result"),
+                        n.action.view().index("claim")
+                    ),
+                    "account.set" if n.action.view().index("value") == "claim" => n.id.clone(),
+                    _ => n
+                        .action
+                        .view()
+                        .index("value")
+                        .as_str()
+                        .unwrap_or_default()
+                        .into(),
                 }
             })
             .collect();
@@ -822,15 +930,28 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
             };
             result
                 .judgments
-                .entry(node.action["target"].as_str().unwrap_or_default().into())
+                .entry(
+                    node.action
+                        .view()
+                        .index("target")
+                        .as_str()
+                        .unwrap_or_default()
+                        .into(),
+                )
                 .or_default()
                 .insert(actor.clone(), judgment);
         }
         if node.kind == "trust.set" {
             result.trust.push(TrustRule {
                 actor: actor.clone(),
-                subject: graph.actor(node.action["subject"].as_str().unwrap_or_default()),
-                scope: node.action["scope"].clone(),
+                subject: graph.actor(
+                    node.action
+                        .view()
+                        .index("subject")
+                        .as_str()
+                        .unwrap_or_default(),
+                ),
+                scope: CompactValue::from(node.action.view().index("scope")),
                 values: values.clone(),
             });
         }
@@ -936,25 +1057,29 @@ fn rafsi_gate(result: &mut Evaluation) {
 }
 
 fn lineage(graph: &graph::Graph, node: &graph::Node) -> BTreeMap<String, String> {
-    node.action["parents"]
+    node.action
+        .view()
+        .index("parents")
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|v| v.as_str())
+        .filter_map(|v| v.as_str().map(str::to_owned))
         .map(|id| {
-            let state = match graph.nodes.get(id) {
+            let state = match graph.nodes.get(&id) {
                 None => "pending",
                 Some(parent)
                     if !parent.semantic
                         || parent.kind != "definition.publish"
-                        || parent.action["word"] != node.action["word"]
-                        || parent.action["language"] != node.action["language"] =>
+                        || parent.action.view().index("word")
+                            != node.action.view().index("word")
+                        || parent.action.view().index("language")
+                            != node.action.view().index("language") =>
                 {
                     "invalid"
                 }
                 Some(_) => "resolved",
             };
-            (id.to_owned(), state.into())
+            (id, state.into())
         })
         .collect()
 }
@@ -1005,7 +1130,8 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
         ) {
             continue;
         }
-        let target = node.action["target"].as_str().unwrap_or_default();
+        let target = node.action.view().index("target");
+        let target = target.as_str().unwrap_or_default();
         let mut pending = false;
         let mut invalid = false;
         if node.kind == "judgment.set" && target.starts_with("jvr1:") {
@@ -1020,19 +1146,21 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                     invalid = !n.semantic
                         || !matches!(n.kind.as_str(), "definition.publish" | "rafsi.publish");
                     if node.kind == "status.set" {
-                        invalid |= n.action["origin"] != "native"
+                        invalid |= n.action.view().index("origin") != "native"
                             || !graph.structurally_connected(&n.issuer, &node.issuer, id);
                     }
                     if node.kind == "import.status" {
-                        invalid |= n.kind != "definition.publish" || n.action["origin"] != "import";
+                        invalid |= n.kind != "definition.publish"
+                            || n.action.view().index("origin") != "import";
                     }
                     if node.kind == "bridge.set" {
                         invalid |= n.kind != "definition.publish"
-                            || n.action["origin"] != "native"
+                            || n.action.view().index("origin") != "native"
                             || graph.actor(&n.issuer) != graph.actor(&node.issuer);
-                        if !invalid && node.action["value"] == "managed" {
-                            let source_id = node.action["source_definition"].as_u64();
-                            let origin = node.action["origin"].as_str().unwrap_or_default();
+                        if !invalid && node.action.view().index("value") == "managed" {
+                            let source_id = node.action.view().index("source_definition").as_u64();
+                            let origin = node.action.view().index("origin");
+                            let origin = origin.as_str().unwrap_or_default();
                             let linked = result
                                 .publications
                                 .values()
@@ -1040,8 +1168,14 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                                     p.imported
                                         && p.kind == "definition.publish"
                                         && p.source_record == source_id
-                                        && p.word == n.action["word"].as_str().unwrap_or_default()
-                                        && p.language.as_deref() == n.action["language"].as_str()
+                                        && p.word
+                                            == n.action
+                                                .view()
+                                                .index("word")
+                                                .as_str()
+                                                .unwrap_or_default()
+                                        && p.language.as_deref()
+                                            == n.action.view().index("language").as_str()
                                 })
                                 .any(|p| {
                                     p.account

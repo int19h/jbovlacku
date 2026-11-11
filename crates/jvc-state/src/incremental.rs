@@ -100,11 +100,46 @@ impl EvaluatedState {
             ranking_index: Default::default(),
         };
         state.rebuild();
+        state.prepared.arena.borrow_mut().finish_load();
         state
     }
 
     pub fn evaluation(&self) -> &Evaluation {
         &self.evaluation
+    }
+
+    #[doc(hidden)]
+    pub fn allocation_stages(mut self, mut observe: impl FnMut(&str)) {
+        observe("state_loaded");
+        self.evaluation.publications.clear();
+        observe("publications_cleared");
+        self.evaluation.receipts.clear();
+        observe("receipts_cleared");
+        self.evaluation.lifecycle.key_actor.clear();
+        self.evaluation.lifecycle.groups.clear();
+        self.evaluation.lifecycle.successor.clear();
+        self.evaluation.lifecycle.suspended.clear();
+        self.evaluation.lifecycle.retired.clear();
+        self.evaluation.lifecycle.compromised.clear();
+        observe("lineage_cleared");
+        self.evaluation.accounts.clear();
+        observe("accounts_cleared");
+        self.evaluation.registers.clear();
+        observe("registers_cleared");
+        self.evaluation.judgments.clear();
+        observe("judgments_cleared");
+        self.evaluation.policy = None;
+        self.evaluation.policies.clear();
+        self.evaluation.policy_history.clear();
+        observe("policies_cleared");
+        self.evaluation.trust.clear();
+        self.evaluation.selections.clear();
+        self.evaluation.overlay = None;
+        observe("other_evaluation_cleared");
+        self.graph = None;
+        observe("graph_cleared");
+        self.unresolved.clear();
+        observe("unresolved_cleared");
     }
 
     pub fn with_overlay(&self, overlay: Option<Value>) -> Self {
@@ -312,6 +347,14 @@ impl EvaluatedState {
 
     fn rebuild(&mut self) {
         self.judgment_changes = None;
+        if self.prepared.arena.borrow().error().is_some() {
+            self.evaluation = empty_evaluation(&self.prepared.options);
+            resource_unavailable(&mut self.evaluation);
+            self.graph = None;
+            self.remaining_work = self.prepared.options.limits.traversal;
+            self.unresolved.clear();
+            return;
+        }
         if self.prepared.event_limit_exceeded {
             self.evaluation = event_limit_evaluation(&self.prepared.options);
             self.graph = None;
@@ -335,7 +378,11 @@ impl EvaluatedState {
         self.ranking_index = Default::default();
         let mut rebuild_reason =
             (self.prepared.options != delta.options).then(|| "configuration_changed".to_owned());
+        let arena_error = delta.arena.borrow().error();
         self.prepared.options = delta.options;
+        if let Some(error) = arena_error {
+            self.prepared.arena.borrow_mut().set_error(error);
+        }
         let mut added = BTreeMap::new();
         for id in removed {
             if self.prepared.nodes.contains_key(id) {
@@ -503,7 +550,8 @@ impl EvaluatedState {
             return Err("history_changed");
         }
         if node.kind == "judgment.set" {
-            let target = node.action["target"].as_str().unwrap_or_default();
+            let target = node.action.view().index("target");
+            let target = target.as_str().unwrap_or_default();
             let known = if target.starts_with("jvr1:") {
                 self.evaluation
                     .publications
@@ -650,7 +698,8 @@ impl EvaluatedState {
             },
         );
         if node.kind == "judgment.set" {
-            let target = node.action["target"].as_str().unwrap();
+            let target = node.action.view().index("target");
+            let target = target.as_str().unwrap();
             let key = format!("{}|judgment|{target}", node.issuer);
             if let Some(changes) = &mut self.judgment_changes {
                 changes.receipts.insert(node.id.clone());
@@ -716,7 +765,7 @@ impl EvaluatedState {
                         n.semantic
                             && n.kind == "judgment.set"
                             && graph.actor(&n.issuer) == node.issuer
-                            && n.action["target"].as_str() == Some(target)
+                            && n.action.view().index("target").as_str() == Some(target)
                             && graph.retained(&n.id)
                             && !graph.suspended(&n.issuer)
                             && graph.own_complete(&n.id)
@@ -738,7 +787,15 @@ impl EvaluatedState {
             };
             let values: BTreeSet<String> = heads
                 .iter()
-                .map(|id| graph.nodes[id].action["value"].as_str().unwrap().into())
+                .map(|id| {
+                    graph.nodes[id]
+                        .action
+                        .view()
+                        .index("value")
+                        .as_str()
+                        .unwrap()
+                        .into()
+                })
                 .collect();
             let judgment = if values.len() > 1 {
                 Judgment::Conflicted
@@ -924,9 +981,19 @@ impl EvaluatedState {
                 "checkpoint version or binding does not match",
             ));
         }
+        let arena = std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default()));
+        let nodes = nodes
+            .into_iter()
+            .map(|(id, node)| (id, node.repack(&arena)))
+            .collect();
+        if let Some(error) = arena.borrow().error() {
+            return Err(jvc_core::Error::new("checkpoint", error.to_string()));
+        }
+        arena.borrow_mut().finish_load();
         let prepared = PreparedEvaluationInput {
             options: saved.options,
             nodes: std::rc::Rc::new(nodes),
+            arena,
             event_limit_exceeded: saved.event_limit_exceeded,
         };
         // The registers' charge fields are not serialized with
@@ -1066,7 +1133,7 @@ fn judgment_diff(before: &Evaluation, after: &Evaluation) -> Option<JudgmentChan
 fn supports_local_update(node: &Node) -> bool {
     node.semantic
         && (node.kind == "judgment.set"
-            || node.kind == "definition.publish" && node.action["origin"] == "native")
+            || node.kind == "definition.publish" && node.action.view().index("origin") == "native")
 }
 
 fn next_ready_id(added: &BTreeMap<String, Node>) -> Option<String> {
@@ -1074,10 +1141,16 @@ fn next_ready_id(added: &BTreeMap<String, Node>) -> Option<String> {
         .iter()
         .find(|(_, node)| {
             node.previous.iter().all(|id| !added.contains_key(id))
-                && node.action["target"]
+                && node
+                    .action
+                    .view()
+                    .index("target")
                     .as_str()
                     .is_none_or(|id| !added.contains_key(id))
-                && node.action["parents"]
+                && node
+                    .action
+                    .view()
+                    .index("parents")
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -1086,30 +1159,19 @@ fn next_ready_id(added: &BTreeMap<String, Node>) -> Option<String> {
         .map(|(id, _)| id.clone())
 }
 
-fn references(value: &Value, result: &mut BTreeSet<String>) {
-    match value {
-        Value::String(id) if jvc_core::valid_id(id, "jve1:") => {
-            result.insert(id.clone());
-        }
-        Value::Array(values) => {
-            for value in values {
-                references(value, result);
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values() {
-                references(value, result);
-            }
-        }
-        _ => {}
+fn references(value: ValueView, result: &mut BTreeSet<String>) {
+    if let Some(id) = value.as_str().filter(|id| jvc_core::valid_id(id, "jve1:")) {
+        result.insert(id.into());
+    } else {
+        value.for_each_child(|child| references(child, result));
     }
 }
 
 fn add_node_references(node: &Node, result: &mut BTreeSet<String>) {
     result.extend(node.previous.iter().cloned());
-    references(&node.action, result);
+    references(node.action.view(), result);
     if let Some(body) = &node.body {
-        references(body, result);
+        references(body.view(), result);
     }
 }
 
@@ -3458,8 +3520,9 @@ mod rebuild_tests {
         let (record, body) = publication();
         prepared.add_record(&record, body.as_deref());
         let mut state = prepared.into_state();
-        state.evaluation.policy.as_mut().unwrap()["calculation"] =
-            json!(jvc_rank::approximate::ALGORITHM);
+        let mut policy = serde_json::to_value(state.evaluation.policy.as_ref().unwrap()).unwrap();
+        policy["calculation"] = json!(jvc_rank::approximate::ALGORITHM);
+        state.evaluation.policy = Some(CompactValue::from(&policy));
         let before = state.checkpoint("index-test").unwrap();
         assert!(state.ranking_index.borrow().is_none());
         state.ensure_ranking_index().unwrap();
@@ -3544,7 +3607,7 @@ mod rebuild_tests {
             "resource_unavailable"
         );
         // Add a large unrelated field. The callback expires during the walk.
-        state.evaluation.policy = Some(json!({"padding":"x".repeat(1_000_000)}));
+        state.evaluation.policy = Some(json!({"padding":"x".repeat(1_000_000)}).into());
         let mut calls = 0;
         let failed = state.ranking_source_binding_checked(2_000_000, || {
             calls += 1;

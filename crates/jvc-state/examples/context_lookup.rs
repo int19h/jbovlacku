@@ -35,7 +35,7 @@ fn main() {
         evaluation.available = true;
         evaluation.reasons.clear();
         evaluation.policy =
-            Some(json!({"calculation":"simple-routes-shun-v1","roots":[],"excluded":[]}));
+            Some(json!({"calculation":"simple-routes-shun-v1","roots":[],"excluded":[]}).into());
         for i in 0..n {
             let id = format!("jve1:{i:064x}");
             let publication: jvc_state::Publication = serde_json::from_value(json!({

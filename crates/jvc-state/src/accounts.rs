@@ -10,8 +10,8 @@ enum Chain {
 }
 fn account(node: &Node) -> Option<AccountKey> {
     Some(AccountKey {
-        origin: node.action["origin"].as_str()?.into(),
-        account: node.action["account"].as_u64()?,
+        origin: node.action.view().index("origin").as_str()?.into(),
+        account: node.action.view().index("account").as_u64()?,
     })
 }
 fn same_account(node: &Node, a: &AccountKey) -> bool {
@@ -33,23 +33,31 @@ fn chain(graph: &Graph, id: &str, a: &AccountKey, depth: usize) -> Chain {
         };
         if !node.semantic
             || node.kind != "account.set"
-            || node.action["value"] != "claim"
+            || node.action.view().index("value") != "claim"
             || !same_account(node, a)
         {
             return Chain::Invalid;
         }
         periods.push(id.clone());
-        at = node.action["previous"].as_str().map(str::to_owned);
+        at = node
+            .action
+            .view()
+            .index("previous")
+            .as_str()
+            .map(str::to_owned);
         if let Some(previous) = &at {
             if let Some(prior) = graph.nodes.get(previous) {
                 if !prior.semantic
                     || prior.kind != "account.set"
-                    || prior.action["value"] != "claim"
+                    || prior.action.view().index("value") != "claim"
                     || !same_account(prior, a)
                 {
                     return Chain::Invalid;
                 }
-                let carry: Vec<_> = node.action["carry"]
+                let carry: Vec<_> = node
+                    .action
+                    .view()
+                    .index("carry")
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -81,8 +89,10 @@ fn chain(graph: &Graph, id: &str, a: &AccountKey, depth: usize) -> Chain {
     }
     Chain::Valid(periods)
 }
-fn witnesses(policy: &Value) -> Vec<String> {
-    policy["account_witnesses"]
+fn witnesses(policy: &CompactValue) -> Vec<String> {
+    policy
+        .view()
+        .index("account_witnesses")
         .as_array()
         .into_iter()
         .flatten()
@@ -103,7 +113,10 @@ fn historical_ancestors(
         if !n.semantic || n.kind != "identity.accept" {
             continue;
         }
-        let Some(t) = n.action["transfer"]
+        let Some(t) = n
+            .action
+            .view()
+            .index("transfer")
             .as_str()
             .and_then(|id| graph.nodes.get(id))
         else {
@@ -111,7 +124,7 @@ fn historical_ancestors(
         };
         if t.semantic
             && t.kind == "identity.transfer"
-            && t.action["successor"].as_str() == Some(&n.issuer)
+            && t.action.view().index("successor").as_str() == Some(&n.issuer)
         {
             parents
                 .entry(n.issuer.clone())
@@ -230,7 +243,7 @@ fn certificates(graph: &Graph, observations: &[Vec<&Node>], historical: bool) ->
     };
     let claims: BTreeSet<_> = first
         .iter()
-        .filter_map(|n| n.action["claim"].as_str())
+        .filter_map(|n| n.action.view().index("claim").as_str().map(str::to_owned))
         .collect();
     for claim in claims {
         let mut missing = BTreeSet::new();
@@ -239,7 +252,7 @@ fn certificates(graph: &Graph, observations: &[Vec<&Node>], historical: bool) ->
             let evidence: Vec<_> = group
                 .iter()
                 .filter(|n| {
-                    n.action["claim"].as_str() == Some(claim)
+                    n.action.view().index("claim").as_str() == Some(claim.as_str())
                         && (n.body.is_some() || n.body_label == "missing")
                 })
                 .collect();
@@ -261,14 +274,14 @@ fn certificates(graph: &Graph, observations: &[Vec<&Node>], historical: bool) ->
             if missing.is_empty()
                 && observations.iter().all(|group| {
                     group.iter().any(|n| {
-                        n.action["claim"].as_str() == Some(claim)
+                        n.action.view().index("claim").as_str() == Some(claim.as_str())
                             && complete_observation(graph, n, historical)
                     })
                 })
             {
-                result.complete.insert(claim.into());
+                result.complete.insert(claim);
             } else {
-                result.pending.insert(claim.into(), missing);
+                result.pending.insert(claim, missing);
             }
         }
     }
@@ -297,7 +310,7 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
         }
         return;
     };
-    let status_authority = policy["account_authority"] == true;
+    let status_authority = policy.view().index("account_authority").as_bool() == Some(true);
     if !status_authority {
         for (id, n) in graph.nodes.as_ref() {
             if n.semantic && n.kind == "import.status" {
@@ -321,12 +334,12 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
     let mut account_observations: BTreeMap<String, Vec<&Node>> = BTreeMap::new();
     let mut status_records: BTreeMap<String, Vec<&Node>> = BTreeMap::new();
     for n in graph.nodes.values().filter(|n| n.semantic) {
-        if n.kind == "account.observe" && n.action["result"] == "present" {
+        if n.kind == "account.observe" && n.action.view().index("result") == "present" {
             if let Some(a) = account(n) {
                 account_observations.entry(a.token()).or_default().push(n);
             }
         } else if n.kind == "import.status" {
-            if let Some(target) = n.action["target"].as_str() {
+            if let Some(target) = n.action.view().index("target").as_str() {
                 status_records.entry(target.into()).or_default().push(n);
             }
         }
@@ -403,10 +416,12 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             if let Chain::Valid(ids) = value {
                 for id in ids {
                     carries.entry(id.clone()).or_insert_with(|| {
-                        let heads = graph.nodes[id].action["carry"]
+                        let heads = graph.nodes[id]
+                            .action
+                            .view()
+                            .index("carry")
                             .as_array()
                             .unwrap()
-                            .iter()
                             .filter_map(|v| v.as_str().map(str::to_owned))
                             .collect::<Vec<_>>();
                         graph.closure(&heads, 1)
@@ -485,7 +500,8 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             let ids: BTreeSet<_> = observations
                 .iter()
                 .filter(|n| {
-                    let id = n.action["claim"].as_str().unwrap_or_default();
+                    let id = n.action.view().index("claim");
+                    let id = id.as_str().unwrap_or_default();
                     (current.contains(id) || current_certificates.pending.contains_key(id))
                         && !closed.contains(id)
                 })
@@ -510,7 +526,14 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             observation_evidence.insert(graph.actor(group.iter().next().unwrap()), maxima.clone());
             let claims: BTreeSet<String> = maxima
                 .iter()
-                .filter_map(|id| graph.nodes[id].action["claim"].as_str().map(str::to_owned))
+                .filter_map(|id| {
+                    graph.nodes[id]
+                        .action
+                        .view()
+                        .index("claim")
+                        .as_str()
+                        .map(str::to_owned)
+                })
                 .collect();
             if claims.len() != 1 {
                 unanimous = false;
@@ -577,7 +600,7 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
                     let ids = group
                         .iter()
                         .filter(|n| {
-                            n.action["claim"].as_str() == Some(claim)
+                            n.action.view().index("claim").as_str() == Some(claim.as_str())
                                 && complete_observation(graph, n, true)
                         })
                         .map(|n| n.id.clone())
@@ -602,7 +625,7 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
                 let ids = group
                     .iter()
                     .filter(|n| {
-                        n.action["claim"].as_str() == Some(claim)
+                        n.action.view().index("claim").as_str() == Some(claim.as_str())
                             && complete_observation(graph, n, false)
                     })
                     .map(|n| n.id.clone())
@@ -721,9 +744,13 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
         if !status_authority || !n.semantic || n.kind != "import.status" {
             continue;
         }
-        let claim = n.action["claim"].as_str().unwrap_or_default();
+        let claim = n.action.view().index("claim");
+        let claim = claim.as_str().unwrap_or_default();
         let allowed = graph.nodes.get(claim).and_then(account).is_some_and(|a| {
-            let publication = n.action["target"]
+            let publication = n
+                .action
+                .view()
+                .index("target")
                 .as_str()
                 .and_then(|t| result.publications.get(t));
             publication.is_some_and(|p| {
@@ -869,7 +896,7 @@ fn period_chain_status(
             .iter()
             .copied()
             .filter(|n| {
-                n.action["claim"].as_str() == Some(period)
+                n.action.view().index("claim").as_str() == Some(period)
                     && boundary.is_none_or(|b| b.ids.contains(&n.id))
                     && authorized_record(graph, n, period, a, boundary)
             })
@@ -903,7 +930,14 @@ fn period_chain_status(
         }
         let values: BTreeSet<_> = maxima
             .iter()
-            .filter_map(|id| graph.nodes[id].action["value"].as_str())
+            .filter_map(|id| {
+                graph.nodes[id]
+                    .action
+                    .view()
+                    .index("value")
+                    .as_str()
+                    .map(str::to_owned)
+            })
             .collect();
         return Decision {
             status: if values.len() > 1 {
