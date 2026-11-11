@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-jvc_target_dir=${CARGO_TARGET_DIR:-target}/wasm-$(git rev-parse HEAD)
+jvc_target_root=${CARGO_TARGET_DIR:-target}
+jvc_target_dir=$jvc_target_root
+jvc_revision=
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  jvc_revision=$(git rev-parse HEAD)
+  jvc_target_dir=$jvc_target_root/wasm-$jvc_revision
+fi
 jvc_bindgen=${JVC_WASM_BINDGEN:-wasm-bindgen}
 if ! command -v "$jvc_bindgen" >/dev/null 2>&1; then
   echo 'Install wasm-bindgen-cli 0.2.105, or set JVC_WASM_BINDGEN to its executable path.' >&2
@@ -13,7 +19,8 @@ fi
 cargo build --release --locked --target wasm32-unknown-unknown --target-dir "$jvc_target_dir" -p jvc-runtime --lib --jobs 2
 "$jvc_bindgen" "$jvc_target_dir/wasm32-unknown-unknown/release/jvc_runtime.wasm" --target web --out-dir packages/core/generated --out-name jvc_runtime
 cp "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" packages/core/generated/rust-standard-library-notices.html
-node -e '
+if [[ -n $jvc_revision ]]; then
+  node -e '
 const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { readFileSync, writeFileSync } = require("node:fs");
@@ -31,3 +38,9 @@ writeFileSync(
   JSON.stringify(metadata, null, 2) + "\n",
 );
 '
+  for old_target in "$jvc_target_root"/wasm-*; do
+    if [[ -d $old_target && $old_target != "$jvc_target_dir" ]]; then
+      rm -rf -- "$old_target"
+    fi
+  done
+fi

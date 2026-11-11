@@ -28,6 +28,31 @@ let input = null,
   diagnosticStore = null,
   diagnosticInventory = null;
 const pending = new Map();
+const jsonBytes = (value) => {
+  if (value === null) return 4;
+  if (typeof value === "string" || typeof value === "number")
+    return utf8(JSON.stringify(value)).length;
+  if (typeof value === "boolean") return value ? 4 : 5;
+  if (value === undefined) return 0;
+  if (Array.isArray(value))
+    return (
+      2 +
+      value.reduce(
+        (total, item, index) => total + jsonBytes(item) + (index ? 1 : 0),
+        0,
+      )
+    );
+  return (
+    2 +
+    Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .reduce(
+        (total, [key, item], index) =>
+          total + jsonBytes(key) + 1 + jsonBytes(item) + (index ? 1 : 0),
+        0,
+      )
+  );
+};
 let lastResult = null;
 const signedJudgment = (target, previous, actorSeed) =>
   createEvent(
@@ -82,11 +107,11 @@ window.bench = {
       constructor(...args) {
         super(...args);
         this.addEventListener("message", (event) => {
-          productWorkerBytes += utf8(JSON.stringify(event.data)).length;
+          productWorkerBytes += jsonBytes(event.data);
         });
       }
       postMessage(message) {
-        productWorkerBytes += utf8(JSON.stringify(message)).length;
+        productWorkerBytes += jsonBytes(message);
         super.postMessage(message);
       }
     };

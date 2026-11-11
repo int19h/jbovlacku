@@ -58,7 +58,7 @@ export type WorkerResponse =
       reasons: string[];
       selected_view: string;
       events: number;
-      actors: Record<string, string>;
+      actors?: Record<string, string>;
     }
   | { type: "ranked"; id: number; session: string; result: unknown }
   | {
@@ -199,14 +199,18 @@ export class EvaluationWorker {
     this.events = 0;
   }
 
-  private loaded(id: number, key: string): LoadedResponse {
+  private loaded(
+    id: number,
+    key: string,
+    includeActors = true,
+  ): LoadedResponse {
     if (!this.session) throw new Error("The evaluation session is not loaded.");
     return {
       type: "loaded",
       id,
       session: key,
       ...this.session.summary(),
-      actors: this.session.actors(),
+      ...(includeActors ? { actors: this.session.actors() } : {}),
     };
   }
 
@@ -235,7 +239,7 @@ export class EvaluationWorker {
     this.session = next;
     this.sessionKey = message.session;
     this.events = next.summary().events;
-    return this.loaded(message.id, message.session);
+    return this.loaded(message.id, message.session, false);
   }
 
   advance(

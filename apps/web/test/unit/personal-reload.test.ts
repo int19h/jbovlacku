@@ -430,7 +430,7 @@ test("a new record with a retained body advances with that body", async () => {
   });
   h.setInventory({
     ...inventory([view, other, added], snapshot("b")),
-    bodies: [bodyHash, addedBodyHash],
+    bodies: [addedBodyHash, bodyHash],
   });
   assert.equal((await h.calculator.ensure()).state, "ready");
   assert.deepEqual(
@@ -464,7 +464,7 @@ async function assertBodyAdvanceFallsBack(
   });
   h.setInventory({
     ...inventory([view, other, added], snapshot("b")),
-    bodies: [bodyHash, addedBodyHash],
+    bodies: [addedBodyHash, bodyHash],
   });
   assert.equal((await h.calculator.ensure()).state, "ready");
   assert.deepEqual(

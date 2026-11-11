@@ -73,6 +73,16 @@ export interface EffectiveOverlay extends Omit<Overlay, "version"> {
 }
 /** The digest of canonical JSON null: the overlay digest of the site view. */
 export const nullOverlayDigest = () => contentHash(utf8("null"));
+function hasSortedValue(values: readonly string[], target: string): boolean {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (values[middle] < target) low = middle + 1;
+    else high = middle;
+  }
+  return values[low] === target;
+}
 function sortedUnique<T>(items: T[], key: (item: T) => string): T[] {
   const byKey = new Map<string, T>();
   for (const item of items) byKey.set(key(item), item);
@@ -180,13 +190,13 @@ type SentRecords = {
 export function selectAddedEventIds(
   inventoryEvents: string[],
   sentEvents: readonly string[],
-  sentIds: ReadonlySet<string> = new Set(sentEvents),
+  sentIds?: ReadonlySet<string>,
 ): string[] | null {
   if (sentEvents.length > inventoryEvents.length) return null;
   const added: string[] = [];
   let previous = 0;
   for (const id of inventoryEvents) {
-    if (sentIds.has(id)) {
+    if (sentIds ? sentIds.has(id) : hasSortedValue(sentEvents, id)) {
       if (sentEvents[previous] !== id) return null;
       previous++;
     } else added.push(id);
@@ -432,6 +442,7 @@ export class PersonalCalculator {
         continue;
       }
       if (this.cancelled && !refresh) return this.status;
+      let cachedInventory: SnapshotInventory | null = null;
       if (
         this.status.state === "ready" &&
         this.status.mode === mode &&
@@ -439,13 +450,13 @@ export class PersonalCalculator {
         this.loadedKey
       ) {
         // The overlay can change between calls. Compare before reusing the session.
-        const inventory = await latestInventory(this.store);
+        cachedInventory = await latestInventory(this.store);
         if (moved()) {
           if (this.cancels !== cancels) return cancelledStatus();
           continue;
         }
-        if (inventory) {
-          const key = await this.key(inventory, mode);
+        if (cachedInventory) {
+          const key = await this.key(cachedInventory, mode);
           if (moved()) {
             if (this.cancels !== cancels) return cancelledStatus();
             continue;
@@ -460,7 +471,7 @@ export class PersonalCalculator {
       };
       this.current?.abort.abort(new Error(CANCELLED));
       this.current = run;
-      const promise = this.run(run, mode, refresh);
+      const promise = this.run(run, mode, refresh, cachedInventory);
       this.loading = promise;
       this.loadingRequest = { mode, refresh };
       let result: PersonalStatus;
@@ -484,6 +495,7 @@ export class PersonalCalculator {
     run: Run,
     mode: CalculationMode,
     refresh: boolean,
+    cachedInventory: SnapshotInventory | null,
   ): Promise<PersonalStatus> {
     const live = () => {
       if (
@@ -496,7 +508,7 @@ export class PersonalCalculator {
     try {
       let inventory: SnapshotInventory;
       try {
-        inventory = await this.inventory(run, refresh);
+        inventory = cachedInventory ?? (await this.inventory(run, refresh));
       } catch (error) {
         live();
         if (refresh) throw error;
@@ -568,7 +580,7 @@ export class PersonalCalculator {
         this.continuity = {
           snapshot: inventory.snapshot,
           view: inventory.view,
-          actors: loaded.actors,
+          actors: loaded.actors ?? {},
         };
       }
       // One overlay per run. The digest is derived from the exact overlay
@@ -672,24 +684,27 @@ export class PersonalCalculator {
       "inventory",
       sent.snapshot,
     );
-    const retained = new Set(inventory.bodies);
+    const retained = inventory.bodies;
     if (
       !previous ||
       previous.logical_inventory !== sent.logical_inventory ||
       previous.events_digest !== sent.events_digest ||
       previous.events.length !== sent.count ||
       !Array.isArray(previous.unretained_bodies) ||
-      previous.bodies.some((hash) => !retained.has(hash))
+      previous.bodies.some((hash) => !hasSortedValue(retained, hash))
     )
       return null;
     const added = selectAddedEventIds(inventory.events, previous.events);
     if (!added || added.length === 0) return null;
-    const previousBodies = new Set(previous.bodies);
-    const previouslyUnretained = new Set(previous.unretained_bodies);
-    const newBodies = inventory.bodies.filter(
-      (hash) => !previousBodies.has(hash),
+    const newBodies = retained.filter(
+      (hash) => !hasSortedValue(previous.bodies, hash),
     );
-    if (newBodies.some((hash) => previouslyUnretained.has(hash))) return null;
+    if (
+      newBodies.some((hash) =>
+        hasSortedValue(previous.unretained_bodies!, hash),
+      )
+    )
+      return null;
     const events: string[] = [];
     const bodies: Record<string, string> = {};
     const addedBodies = new Set<string>();
@@ -701,7 +716,7 @@ export class PersonalCalculator {
       }>("records", id);
       if (!record) return null;
       events.push(record.envelope);
-      if (record.bodyHash && retained.has(record.bodyHash)) {
+      if (record.bodyHash && hasSortedValue(retained, record.bodyHash)) {
         if (!record.body)
           throw new RecordsError(
             `The body of ${id} is retained by the snapshot but not cached. Download the records again.`,

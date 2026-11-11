@@ -279,6 +279,16 @@ const packageRevision = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
+function hasSortedId(values: readonly string[], target: string): boolean {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (values[middle] < target) low = middle + 1;
+    else high = middle;
+  }
+  return values[low] === target;
+}
 export class LocalStore {
   /** The open database. Lifecycle transactions span several stores. */
   readonly database: Promise<IDBDatabase>;
@@ -823,7 +833,7 @@ export class LocalStore {
   /** Commits a complete inventory and removes only records outside it. */
   async commitInventory(inventory: SnapshotInventory): Promise<void> {
     const db = await this.database;
-    const events = new Set(inventory.events);
+    const events = inventory.events;
     return new Promise((resolve, reject) => {
       const tx = db.transaction(["records", "inventory"], "readwrite");
       const records = tx.objectStore("records");
@@ -831,7 +841,7 @@ export class LocalStore {
       cursor.onsuccess = () => {
         const current = cursor.result;
         if (!current) return;
-        if (!events.has(String(current.key)))
+        if (!hasSortedId(events, String(current.key)))
           records.delete(current.primaryKey);
         current.continue();
       };
