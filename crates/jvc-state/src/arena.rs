@@ -96,6 +96,8 @@ pub(crate) struct RecordArena {
     string_bytes: Vec<u8>,
     string_hashes: HashMap<u64, Vec<u32>>,
     error: Option<jvc_core::Error>,
+    #[cfg(test)]
+    test_limit: usize,
 }
 
 impl Default for RecordArena {
@@ -108,6 +110,8 @@ impl Default for RecordArena {
             string_bytes: Vec::new(),
             string_hashes: HashMap::new(),
             error: None,
+            #[cfg(test)]
+            test_limit: u32::MAX as usize,
         }
     }
 }
@@ -123,6 +127,11 @@ impl RecordArena {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_test_limit(&mut self, limit: usize) {
+        self.test_limit = limit;
+    }
+
     fn overflow(&mut self, what: &str) {
         self.set_error(jvc_core::Error::new(
             "resource_unavailable",
@@ -131,6 +140,11 @@ impl RecordArena {
     }
 
     fn checked_u32(&mut self, value: usize, what: &str) -> Option<u32> {
+        #[cfg(test)]
+        if value > self.test_limit {
+            self.overflow(what);
+            return None;
+        }
         match u32::try_from(value) {
             Ok(value) => Some(value),
             Err(_) => {
@@ -295,6 +309,11 @@ pub struct CompactValue {
 impl CompactValue {
     pub(crate) fn from_arena(arena: Rc<RefCell<RecordArena>>, value: &Value) -> Self {
         let root = arena.borrow_mut().pack_serde(value);
+        Self { arena, root }
+    }
+
+    pub(crate) fn from_view_in(arena: SharedArena, value: ValueView) -> Self {
+        let root = value.pack_into(&arena);
         Self { arena, root }
     }
 

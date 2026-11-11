@@ -151,10 +151,10 @@ fn main() {
         .map(|publication| publication["word"].as_str().unwrap().to_owned())
         .collect::<BTreeSet<_>>();
     let first_word = words.first().unwrap().clone();
-    let mut rankings = std::io::BufWriter::new(
-        std::fs::File::create(format!("{output}/rankings.ndjson")).unwrap(),
-    );
     if !bounds_only {
+        let mut rankings = std::io::BufWriter::new(
+            std::fs::File::create(format!("{output}/rankings.ndjson")).unwrap(),
+        );
         for word in &words {
             let result = session.rank(word).unwrap();
             rankings.write_all(word.as_bytes()).unwrap();
@@ -162,8 +162,8 @@ fn main() {
             rankings.write_all(result.as_bytes()).unwrap();
             rankings.write_all(b"\n").unwrap();
         }
+        rankings.flush().unwrap();
     }
-    rankings.flush().unwrap();
 
     let mut hosts = std::io::BufWriter::new(
         std::fs::File::create(format!("{output}/host-records.bin")).unwrap(),

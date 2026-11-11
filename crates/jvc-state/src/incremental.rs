@@ -99,8 +99,8 @@ impl EvaluatedState {
             judgment_changes: None,
             ranking_index: Default::default(),
         };
-        state.rebuild();
         state.prepared.arena.borrow_mut().finish_load();
+        state.rebuild();
         state
     }
 
@@ -347,7 +347,7 @@ impl EvaluatedState {
 
     fn rebuild(&mut self) {
         self.judgment_changes = None;
-        if self.prepared.arena.borrow().error().is_some() {
+        if self.prepared.arena_error().is_some() {
             self.evaluation = empty_evaluation(&self.prepared.options);
             resource_unavailable(&mut self.evaluation);
             self.graph = None;
@@ -378,10 +378,11 @@ impl EvaluatedState {
         self.ranking_index = Default::default();
         let mut rebuild_reason =
             (self.prepared.options != delta.options).then(|| "configuration_changed".to_owned());
-        let arena_error = delta.arena.borrow().error();
+        let arena_error = delta.arena_error();
         self.prepared.options = delta.options;
         if let Some(error) = arena_error {
-            self.prepared.arena.borrow_mut().set_error(error);
+            self.prepared.arena_error = Some(error);
+            rebuild_reason = Some("resource_unavailable".into());
         }
         let mut added = BTreeMap::new();
         for id in removed {
@@ -994,6 +995,7 @@ impl EvaluatedState {
             options: saved.options,
             nodes: std::rc::Rc::new(nodes),
             arena,
+            arena_error: None,
             event_limit_exceeded: saved.event_limit_exceeded,
         };
         // The registers' charge fields are not serialized with
@@ -1923,6 +1925,54 @@ mod rebuild_tests {
             previous,
             json!({"kind":"judgment.set","target":target,"value":"bless"}),
         )
+    }
+
+    #[test]
+    fn arena_overflow_forces_rebuild_without_poisoning_a_fork() {
+        let (prepared, view, target) = projection_fixture();
+        let parent = prepared.into_state();
+        let parent_checkpoint = parent.checkpoint("projection").unwrap();
+        let record = projection_judgment(800_000, vec![view, target], "damaged-target");
+        let mut delta = PreparedEvaluationInput::new(parent.prepared.options.clone());
+        delta.arena.borrow_mut().set_test_limit(8);
+        delta.add_host_verified_record(record);
+        assert_eq!(
+            delta.arena_error().unwrap().code,
+            "resource_unavailable",
+            "the fixture did not reach arena overflow"
+        );
+
+        let child = parent.clone().advance(delta, &[]);
+        assert!(child.statistics().rebuilt);
+        assert_eq!(
+            child.statistics().reason.as_deref(),
+            Some("resource_unavailable")
+        );
+        assert!(!child.evaluation().available);
+        assert!(child.evaluation().reasons.contains("resource_unavailable"));
+        assert!(parent.evaluation().available);
+        assert!(parent.prepared.arena_error().is_none());
+        assert_eq!(parent.checkpoint("projection").unwrap(), parent_checkpoint);
+    }
+
+    #[test]
+    fn retained_trust_scopes_share_one_arena() {
+        let mut prepared = base();
+        for (seed, nonce) in [(2, 20), (3, 21)] {
+            let (trust, body) = event(
+                seed,
+                nonce,
+                json!({"kind":"trust.set","subject":identity_from_seed(&[seed + 10;32]),"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}),
+                None,
+            );
+            prepared.add_record(&trust, body.as_deref());
+        }
+        let state = prepared.into_state();
+        assert_eq!(state.evaluation().trust.len(), 2);
+        assert_eq!(
+            state.evaluation().trust[0].scope.arena_id(),
+            state.evaluation().trust[1].scope.arena_id()
+        );
     }
 
     #[test]
