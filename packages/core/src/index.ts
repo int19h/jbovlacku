@@ -332,6 +332,7 @@ export interface EvaluationSessionHandle {
 interface SessionBasis {
   state: () => Evaluation;
   identity: string;
+  closed: () => boolean;
 }
 interface StateDelta {
   version: 1;
@@ -441,6 +442,7 @@ function wrapEvaluationSession(
   parent?: SessionBasis,
 ): EvaluationSessionHandle {
   let state: Evaluation | undefined;
+  let closed = false;
   let identity: string;
   try {
     identity = session.state_identity();
@@ -453,9 +455,10 @@ function wrapEvaluationSession(
   }
   const readState = () => {
     if (state) return state;
-    const delta = parent
-      ? (JSON.parse(session.state_delta()) as StateDelta | null)
-      : null;
+    const delta =
+      parent && !parent.closed()
+        ? (JSON.parse(session.state_delta()) as StateDelta | null)
+        : null;
     state = freezeState(
       delta?.version === 1 && delta.base_session === parent?.identity
         ? applyStateDelta(parent.state(), delta)
@@ -511,13 +514,17 @@ function wrapEvaluationSession(
       wrapEvaluationBuilder(session.fork(encodeEvaluationRequest(options)), {
         state: readState,
         identity,
+        closed: () => closed,
       }),
     checkpoint: (binding, resultsOnly = false) =>
       resultsOnly
         ? session.result_checkpoint(binding)
         : session.checkpoint(binding),
     updateStatistics: () => JSON.parse(session.update_statistics()),
-    free: () => session.free(),
+    free: () => {
+      closed = true;
+      session.free();
+    },
   };
 }
 export function evaluateSession(input: EvaluationRequest) {

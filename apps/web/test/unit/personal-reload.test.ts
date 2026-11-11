@@ -444,6 +444,52 @@ test("a new record with a retained body advances with that body", async () => {
   h.calculator.cancel();
 });
 
+async function assertBodyAdvanceFallsBack(
+  h: Harness,
+  previousUnretained: string[] | undefined,
+  addedHasBody: boolean,
+) {
+  await h.calculator.ensure();
+  const addedBodyHash = "sha256:" + "9".repeat(64);
+  h.records.set(added, {
+    id: added,
+    envelope: envelope(added),
+    body: addedHasBody ? JSON.stringify({ retained: true }) : null,
+    bodyStatus: addedHasBody ? "present" : "none",
+    bodyHash: addedHasBody ? addedBodyHash : null,
+  });
+  h.setInventory({
+    ...inventory([view, other], snapshot("a")),
+    unretained_bodies: previousUnretained,
+  });
+  h.setInventory({
+    ...inventory([view, other, added], snapshot("b")),
+    bodies: [bodyHash, addedBodyHash],
+  });
+  assert.equal((await h.calculator.ensure()).state, "ready");
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load", "overlay", "load", "overlay"],
+  );
+  assert.equal(lastLoad(h).source.count, 3);
+  h.calculator.cancel();
+}
+
+test("a body advance without previous body metadata uses a full load", async () => {
+  const h = harness();
+  await assertBodyAdvanceFallsBack(h, undefined, true);
+});
+
+test("a new body shared with an earlier unretained record uses a full load", async () => {
+  const h = harness();
+  await assertBodyAdvanceFallsBack(h, ["sha256:" + "9".repeat(64)], true);
+});
+
+test("a retained body that no added record carries uses a full load", async () => {
+  const h = harness();
+  await assertBodyAdvanceFallsBack(h, [], false);
+});
+
 test("a new ID that sorts between loaded IDs advances with only that envelope", async () => {
   const h = harness();
   const inserted = "jve1:" + "d".repeat(64);

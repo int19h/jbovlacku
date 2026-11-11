@@ -16,6 +16,13 @@ test("the browser worker authenticates streamed records and checks the complete 
       { kind: "identity.merge" },
       null,
     );
+    const other = core.createEvent(
+      new Uint8Array(32).fill(93),
+      [],
+      "2".repeat(32),
+      { kind: "identity.merge" },
+      null,
+    );
     const hostPorts = [
       "addHostVerifiedRecord",
       "extractHostVerifiedRecord",
@@ -56,13 +63,21 @@ test("the browser worker authenticates streamed records and checks the complete 
       bodyStatus: "none",
       bodyHash: null,
     };
+    const otherStored = {
+      id: other.envelope.id,
+      envelope: JSON.stringify(other.envelope),
+      body: null,
+      bodyStatus: "none",
+      bodyHash: null,
+    };
     await store.put("records", record.envelope.id, stored);
+    await store.put("records", other.envelope.id, otherStored);
     const inventory = {
       snapshot,
       logical_inventory: snapshot,
       events_digest: "digest",
       view: "jve1:" + "0".repeat(64),
-      events: [record.envelope.id],
+      events: [record.envelope.id, other.envelope.id].sort(),
       bodies: [],
       selections: [],
     };
@@ -94,7 +109,7 @@ test("the browser worker authenticates streamed records and checks the complete 
             database: store.name,
             snapshot,
             events_digest: "digest",
-            count: 1,
+            count: 2,
           },
           options,
         });
@@ -109,10 +124,16 @@ test("the browser worker authenticates streamed records and checks the complete 
       await store.delete("records", record.envelope.id);
       const missing = await send(options);
       await store.put("records", record.envelope.id, stored);
-      const extraId = "jve1:" + "f".repeat(64);
-      await store.put("records", extraId, { ...stored, id: extraId });
+      const low = BigInt("0x" + inventory.events[0].slice(5));
+      const high = BigInt("0x" + inventory.events[1].slice(5));
+      const between = low + (high - low) / 2n;
+      const betweenId = "jve1:" + between.toString(16).padStart(64, "0");
+      const afterId = "jve1:" + "f".repeat(64);
+      await store.put("records", betweenId, { ...stored, id: betweenId });
+      await store.put("records", afterId, { ...stored, id: afterId });
       const extra = await send(options);
-      await store.delete("records", extraId);
+      await store.delete("records", betweenId);
+      await store.delete("records", afterId);
       const forged = { ...record.envelope, signature: "invalid" };
       await store.put("records", record.envelope.id, {
         ...stored,
@@ -161,6 +182,23 @@ test("an inventory commit prunes stale record IDs and publishes the new pointer"
       bodies: [],
       selections: [],
     };
+    const cursorCounts = { key: 0, value: 0 };
+    const openKeyCursor = IDBObjectStore.prototype.openKeyCursor;
+    const openCursor = IDBObjectStore.prototype.openCursor;
+    IDBObjectStore.prototype.openKeyCursor = function (
+      this: IDBObjectStore,
+      ...args
+    ) {
+      cursorCounts.key++;
+      return openKeyCursor.apply(this, args);
+    } as typeof openKeyCursor;
+    IDBObjectStore.prototype.openCursor = function (
+      this: IDBObjectStore,
+      ...args
+    ) {
+      cursorCounts.value++;
+      return openCursor.apply(this, args);
+    } as typeof openCursor;
     try {
       await store.put("records", inventory.events[0], {
         id: inventory.events[0],
@@ -173,11 +211,15 @@ test("an inventory commit prunes stale record IDs and publishes the new pointer"
         keys: await store.keys("records"),
         latest: await store.get("inventory", "latest"),
         pinned: await store.get("inventory", snapshot),
+        cursorCounts,
       };
     } finally {
+      IDBObjectStore.prototype.openKeyCursor = openKeyCursor;
+      IDBObjectStore.prototype.openCursor = openCursor;
       (await store.database).close();
     }
   });
   expect(result.keys).toEqual(["jve1:" + "a".repeat(64)]);
   expect(result.latest).toEqual(result.pinned);
+  expect(result.cursorCounts).toEqual({ key: 1, value: 0 });
 });

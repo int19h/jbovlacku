@@ -465,3 +465,72 @@ test("judgment delta exports share immutable state without trusting caller chang
     builder.free();
   }
 });
+
+test("a child state stays readable after its parent is freed", async () => {
+  const sourceBytes = await readFile(
+    new URL("../../importer/fixtures/lensisku-sample.json", import.meta.url),
+  );
+  const manifest = JSON.parse(
+    await readFile(
+      new URL(
+        "../../importer/fixtures/lensisku-sample.manifest.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as CaptureManifest;
+  const reviewer = new Uint8Array(32).fill(73);
+  const imported = importCapture({
+    sourceBytes,
+    manifest,
+    seed: new Uint8Array(32).fill(72),
+    roots: [
+      {
+        identity: identityFromSeed(reviewer),
+        q: { numerator: 1, denominator: 1 },
+      },
+    ],
+  });
+  const input = request({
+    events: imported.carriers.map((carrier) => canonical(carrier.envelope)),
+    bodies: Object.fromEntries(
+      imported.carriers.map((carrier) => [
+        carrier.envelope.id,
+        canonical(carrier.body),
+      ]),
+    ),
+    selected_view: imported.view.envelope.id,
+    import_selections: { [imported.selection.hash]: imported.selection.ids },
+  });
+  const target = imported.carriers.find(
+    (carrier) => carrier.envelope.header.action.kind === "definition.publish",
+  )!.envelope.id;
+  const judgment = createEvent(
+    reviewer,
+    [],
+    "9".repeat(32),
+    { kind: "judgment.set", target, value: "bless" },
+    null,
+  );
+  const parent = evaluateSession(input);
+  const builder = parent.fork({
+    selected_view: input.selected_view,
+    import_selections: input.import_selections,
+  });
+  builder.addRecord(utf8(canonical(judgment.envelope)));
+  const child = builder.finish();
+  const full = evaluateSession({
+    ...input,
+    events: [...input.events, canonical(judgment.envelope)],
+  });
+  parent.free();
+  try {
+    assert.equal(child.updateStatistics().rebuilt, false);
+    assert.equal(child.updateStatistics().incremental_records, 1);
+    assert.deepEqual(child.state, full.state);
+  } finally {
+    child.free();
+    full.free();
+    builder.free();
+  }
+});

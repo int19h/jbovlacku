@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-jvc_target_dir=${CARGO_TARGET_DIR:-target}
+jvc_target_dir=${CARGO_TARGET_DIR:-target}/wasm-$(git rev-parse HEAD)
 jvc_bindgen=${JVC_WASM_BINDGEN:-wasm-bindgen}
 if ! command -v "$jvc_bindgen" >/dev/null 2>&1; then
   echo 'Install wasm-bindgen-cli 0.2.105, or set JVC_WASM_BINDGEN to its executable path.' >&2

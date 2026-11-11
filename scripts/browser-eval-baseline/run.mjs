@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import {
   canonicalize,
+  identityFromSeed,
   initializeCore,
   utf8,
 } from "../../packages/core/src/index.ts";
@@ -125,6 +126,19 @@ function submittedInventory(input, envelope) {
     ].sort(),
     selections,
   };
+}
+function identityPrevious(input, identity) {
+  const records = input.events
+    .map((envelope) => JSON.parse(envelope))
+    .filter((envelope) => envelope.header.issuer === identity);
+  const referenced = new Set(
+    records.flatMap((envelope) => envelope.header.previous),
+  );
+  const tips = records
+    .map((envelope) => envelope.id)
+    .filter((id) => !referenced.has(id))
+    .sort();
+  return tips.length > 0 ? [tips.at(-1)] : [];
 }
 const capture = (command, argv) => {
   try {
@@ -1062,28 +1076,62 @@ async function trial(condition, rep, profile = false) {
       await operation("product-load-memory", () =>
         productWorkerCDP.evaluate("self.measurement()"),
       );
-      const submission = await operation("product-signed-submission", () =>
-        page.evaluate(
-          (target) => window.bench.productSubmission(target),
-          targetWord.targets[0],
-        ),
+      let appendedInput = JSON.parse(
+        await readFile(join(out, "input.json"), "utf8"),
       );
-      const inventory = submittedInventory(
-        JSON.parse(await readFile(join(out, "input.json"), "utf8")),
-        submission.envelope,
+      const chainedPrevious = identityPrevious(
+        appendedInput,
+        identityFromSeed(new Uint8Array(32).fill(173)),
       );
-      const previousPeak = pssPeak;
-      pssPeak = lastPss;
-      await operation("product-reload", async () => {
-        const value = await page.evaluate(
-          (inventory) => window.bench.productReload(inventory),
-          inventory,
+      if (chainedPrevious.length !== 1)
+        throw Error("The measurement identity must have one head.");
+      for (const reloadCase of ["chained", "fresh_identity"]) {
+        const fresh = reloadCase === "fresh_identity";
+        const submission = await operation(
+          "product-signed-submission",
+          () =>
+            page.evaluate(
+              ({ target, previous, fresh }) =>
+                window.bench.productSubmission({ target, previous, fresh }),
+              {
+                target: targetWord.targets[0],
+                previous: fresh ? [] : chainedPrevious,
+                fresh,
+              },
+            ),
+          { reload_case: reloadCase },
         );
-        const measurement =
-          await productWorkerCDP.evaluate("self.measurement()");
-        return { ...value, measurement, pss_peak: pssPeak };
-      });
-      pssPeak = Math.max(previousPeak, pssPeak);
+        const inventory = submittedInventory(
+          appendedInput,
+          submission.envelope,
+        );
+        const previousPeak = pssPeak;
+        pssPeak = lastPss;
+        await operation(
+          "product-reload",
+          async () => {
+            const value = await page.evaluate(
+              (inventory) => window.bench.productReload(inventory),
+              inventory,
+            );
+            const measurement =
+              await productWorkerCDP.evaluate("self.measurement()");
+            return { ...value, measurement, pss_peak: pssPeak };
+          },
+          { reload_case: reloadCase },
+        );
+        pssPeak = Math.max(previousPeak, pssPeak);
+        const events = [...appendedInput.events];
+        const index = events.findIndex(
+          (envelope) => JSON.parse(envelope).id > submission.id,
+        );
+        events.splice(
+          index < 0 ? events.length : index,
+          0,
+          submission.envelope,
+        );
+        appendedInput = { ...appendedInput, events };
+      }
       for (const [i, w] of sample.entries())
         await operation(
           "product-rank",

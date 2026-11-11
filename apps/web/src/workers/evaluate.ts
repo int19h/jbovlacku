@@ -167,7 +167,7 @@ async function readStoredRecords(source: LoadSource, builder: Builder) {
         index++;
         after = record.id;
       }
-      if (batch.length < BATCH_SIZE) break;
+      if (index === stored.events.length || batch.length < BATCH_SIZE) break;
     }
     if (index !== stored.events.length)
       throw missingRecord(stored.events[index]);

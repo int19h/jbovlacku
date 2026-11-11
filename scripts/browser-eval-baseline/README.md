@@ -37,7 +37,7 @@ Install the dependencies and pinned tools described in the [development guide](.
 Set the build and browser paths below for your environment.
 Build the normal core and standalone server before measurement.
 The harness builds only its measurement page and worker wrapper into scratch space.
-The compiled core remains the normal release artifact. Its build metadata records the source revision and Wasm SHA-256. The harness refuses a missing, stale, or dirty-build artifact and records the same binding in its environment file.
+The compiled core remains the normal release artifact. The build uses a revision-specific subdirectory below `CARGO_TARGET_DIR`, so a shared parent target cannot supply another revision's Wasm. Build metadata records the source revision and Wasm SHA-256. The harness refuses a missing, stale, or dirty-build artifact and records the same binding in its environment file.
 
 ```sh
 export CARGO_TARGET_DIR="<rust-target-dir>"
@@ -84,8 +84,8 @@ node --import tsx scripts/browser-eval-baseline/run.mjs \
 
 The matrix rotates condition order across three repetitions.
 Word order rotates the three cohorts, so each cohort supplies the first word once.
-Each successful base trial ranks 60 distinct real words, adds one signed local judgment, reloads, and ranks the same words again.
-The new judgment uses a fixed, publicly known disposable seed and never leaves the disposable copy.
+Each successful base trial ranks 60 distinct real words, adds two signed local judgments with separate reloads, and ranks the same words again.
+The first judgment chains to the measurement identity's existing head. The second is the first judgment from a fresh identity. Fixed, publicly known disposable seeds never leave the disposable copy.
 
 ```sh
 /usr/bin/time -v node --expose-gc --max-old-space-size=6144 --import tsx \
@@ -96,8 +96,8 @@ The new judgment uses a fixed, publicly known disposable seed and never leaves t
 
 Use `--conditions` to select a subset and `--repeats` to select one through ten repetitions.
 Use `--product-reload` to run `increment-actors` and then `increment-advance`. This is the personal-view sequence after a delivered judgment. The two operation records contain the request bytes and worker time for each step.
-This mode also seeds a fresh product `LocalStore` with the exact diagnostic input, loads `PersonalCalculator` without a network request, inserts the same judgment at its sorted inventory position, and runs `PersonalCalculator.ensure()` again. The reload must reach the new snapshot. This isolates the calculator's reload logic from download and server-materialization time and leaves the data copy unchanged. The product server is not started in this mode.
-The `product-reload` operation records total calculator time, worker request bytes, Wasm capacity, and session statistics. Sixty `product-rank` operations then rank through that calculator before `product-finish` closes it.
+This mode also seeds a fresh product `LocalStore` with the exact diagnostic input, loads `PersonalCalculator` without a network request, and runs it again after each judgment. The first reload is `chained`; the second is `fresh_identity`. Each must reach its new snapshot. This isolates the calculator's reload logic from download and server-materialization time and leaves the data copy unchanged. The product server is not started in this mode.
+Each `product-reload` operation records its case, total calculator time, worker request bytes, Wasm capacity, and session statistics. Sixty `product-rank` operations then rank through that calculator before `product-finish` closes it.
 Use `--delta-reload` to reuse the base actor map and advance the loaded session with only the new local judgment. This diagnostic skips `increment-actors` and matches the site-view reload path. The default retains the full `increment-actors` and `increment-load` sequence. Both advance modes insert the judgment at its sorted inventory position and use the calculator's ordered-subset selection.
 The diagnostic advance does not apply the calculator's view, overlay, mode, import-selection, or earlier-body guards. Its measurement therefore applies only when those inputs remain unchanged, as in this judgment trial. The separate `product-reload` operation applies all product guards through the calculator.
 Use `--verify-full-reload` to add a full `oracle-load` of the same appended input and 60 `oracle-rank` operations. Rank records contain the complete core result. An external comparison can make sure that the incremental and full results are identical byte for byte.
@@ -129,9 +129,9 @@ node --expose-gc --max-old-space-size=6144 --import tsx \
 
 The product measurement calls `PersonalCalculator.ensure` from a blank measurement page.
 Its product worker uses the normal request protocol and a read-only measurement getter. It is separate from the diagnostic worker wrapper.
-Use `--product-reload --product-only` to measure only the first product load, one signed local judgment, the incremental reload, and product rankings.
+Use `--product-reload --product-only` to measure only the first product load, both signed local judgments and reloads, and product rankings.
 Before that first load, a separate setup worker seeds IndexedDB in a persistent browser profile and terminates. That browser closes, then a new browser opens the same profile for the measured load. Seeding processes and their residue are outside the measured browser. The new page core initializes during calculator setup, for the overlay digest and later signing. The PSS watchdog pauses only during this setup and resumes before the calculator starts.
-The reload inventory is computed outside the browser from the deterministic signed envelope. The browser stores that small inventory and calls the real calculator again.
+Each reload inventory is computed outside the browser from its deterministic signed envelope. The browser stores that small inventory and calls the real calculator again.
 
 It retains the normal inventory, byte, and evaluation limits.
 The page does not render the dictionary application or measure paint, search, layout, or accessibility.

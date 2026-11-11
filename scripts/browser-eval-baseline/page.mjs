@@ -11,6 +11,7 @@ import { setPreferredView } from "../../apps/web/src/data/api.ts";
 import { seedProduct } from "./seed.mjs";
 
 const seed = new Uint8Array(32).fill(173);
+const freshSeed = new Uint8Array(32).fill(174);
 let input = null,
   worker = null,
   sequence = 0,
@@ -28,10 +29,10 @@ let input = null,
   diagnosticInventory = null;
 const pending = new Map();
 let lastResult = null;
-const signedJudgment = (target) =>
+const signedJudgment = (target, previous, actorSeed) =>
   createEvent(
-    seed,
-    [],
+    actorSeed,
+    previous,
     "b37b0000000000000000000000000002",
     { kind: "judgment.set", target, value: "bless" },
     null,
@@ -120,10 +121,11 @@ window.bench = {
     }
     return { ms, result, statuses, worker_bytes: productWorkerBytes };
   },
-  async productSubmission(target) {
+  async productSubmission({ target, previous, fresh }) {
     const start = performance.now();
     mainWasm = await initializeCore();
-    const event = signedJudgment(target);
+    const actorSeed = fresh ? freshSeed : seed;
+    const event = signedJudgment(target, previous, actorSeed);
     const serialized = JSON.stringify(event.envelope);
     await productStore.put("records", event.envelope.id, {
       id: event.envelope.id,
@@ -135,7 +137,8 @@ window.bench = {
     return {
       ms: performance.now() - start,
       id: event.envelope.id,
-      identity: identityFromSeed(seed),
+      identity: identityFromSeed(actorSeed),
+      previous,
       target,
       envelope: serialized,
       bytes: utf8(serialized).length,

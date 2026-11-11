@@ -827,11 +827,12 @@ export class LocalStore {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(["records", "inventory"], "readwrite");
       const records = tx.objectStore("records");
-      const cursor = records.openCursor();
+      const cursor = records.openKeyCursor();
       cursor.onsuccess = () => {
         const current = cursor.result;
         if (!current) return;
-        if (!events.has(String(current.key))) current.delete();
+        if (!events.has(String(current.key)))
+          records.delete(current.primaryKey);
         current.continue();
       };
       const inventories = tx.objectStore("inventory");
