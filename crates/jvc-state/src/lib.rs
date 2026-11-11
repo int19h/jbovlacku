@@ -106,7 +106,10 @@ impl PreparedEvaluationInput {
             return inspect(&inspect_body(event, body));
         }
         let (node, content) = graph::Node::new_with_in(self.arena.clone(), event, body, inspect);
-        self.arena_error = self.arena.borrow().error();
+        let error = self.arena.borrow_mut().take_error();
+        if error.is_some() {
+            self.arena_error = error;
+        }
         if self.nodes.len() >= self.options.limits.events {
             self.event_limit_exceeded = true;
         }
@@ -120,16 +123,17 @@ impl PreparedEvaluationInput {
         }
         let node = record.node.repack(&self.arena);
         let id = node.id.clone();
-        self.arena_error = self.arena.borrow().error();
+        let error = self.arena.borrow_mut().take_error();
+        if error.is_some() {
+            self.arena_error = error;
+        }
         if self.nodes.len() >= self.options.limits.events {
             self.event_limit_exceeded = true;
         }
         std::rc::Rc::make_mut(&mut self.nodes).insert(id, node);
     }
     pub(crate) fn arena_error(&self) -> Option<jvc_core::Error> {
-        self.arena_error
-            .clone()
-            .or_else(|| self.arena.borrow().error())
+        self.arena_error.clone()
     }
     #[doc(hidden)]
     pub fn record_arena_bytes(&self) -> usize {

@@ -875,6 +875,9 @@ impl EvaluatedState {
         self.save_checkpoint(binding, true)
     }
     fn save_checkpoint(&self, binding: &str, results_only: bool) -> jvc_core::Result<Vec<u8>> {
+        if let Some(error) = self.prepared.arena_error() {
+            return Err(jvc_core::Error::new("checkpoint", error.to_string()));
+        }
         #[derive(Serialize)]
         struct Saved<'a> {
             version: &'static str,
@@ -1953,6 +1956,58 @@ mod rebuild_tests {
         assert!(parent.evaluation().available);
         assert!(parent.prepared.arena_error().is_none());
         assert_eq!(parent.checkpoint("projection").unwrap(), parent_checkpoint);
+    }
+
+    #[test]
+    fn review_shared_arena_overflow_preserves_parent_checkpoint() {
+        let (prepared, view, target) = projection_fixture();
+        let intact_input = prepared.clone();
+        let mut delta = prepared.clone();
+        let parent = prepared.into_state();
+        let before = parent.checkpoint("projection").unwrap();
+        let limit = parent.prepared.record_arena_bytes();
+        delta.arena.borrow_mut().set_test_limit(limit);
+        delta.add_host_verified_record(projection_judgment(
+            800_000,
+            vec![view, target],
+            &"x".repeat(limit + 1),
+        ));
+        assert!(delta.arena_error().is_some());
+        let child = parent.clone().advance(delta, &[]);
+        assert!(!child.evaluation().available);
+        assert!(child.evaluation().reasons.contains("resource_unavailable"));
+        assert!(child.checkpoint("projection").is_err());
+        assert!(parent.evaluation().available);
+        assert_eq!(parent.checkpoint("projection").unwrap(), before);
+        assert_eq!(&intact_input.evaluate(), parent.evaluation());
+    }
+
+    #[test]
+    fn review_shared_arena_overflow_preserves_parent_rebuild() {
+        let (prepared, view, target) = projection_fixture();
+        let mut delta = prepared.clone();
+        let parent = prepared.into_state();
+        let mut clean = PreparedEvaluationInput::new(parent.prepared.options.clone());
+        clean.options.limits.traversal += 1;
+        let expected = parent.clone().advance(clean.clone(), &[]);
+        assert!(expected.evaluation().available);
+        let expected_checkpoint = expected.checkpoint("projection").unwrap();
+        let limit = parent.prepared.record_arena_bytes();
+        delta.arena.borrow_mut().set_test_limit(limit);
+        delta.add_host_verified_record(projection_judgment(
+            800_000,
+            vec![view, target],
+            &"x".repeat(limit + 1),
+        ));
+        assert!(delta.arena_error().is_some());
+        drop(delta);
+        let rebuilt = parent.advance(clean, &[]);
+        assert!(rebuilt.evaluation().available);
+        assert_eq!(rebuilt.evaluation(), expected.evaluation());
+        assert_eq!(
+            rebuilt.checkpoint("projection").unwrap(),
+            expected_checkpoint
+        );
     }
 
     #[test]

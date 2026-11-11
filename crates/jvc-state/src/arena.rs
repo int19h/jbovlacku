@@ -121,6 +121,10 @@ impl RecordArena {
         self.error.clone()
     }
 
+    pub(crate) fn take_error(&mut self) -> Option<jvc_core::Error> {
+        self.error.take()
+    }
+
     pub(crate) fn set_error(&mut self, error: jvc_core::Error) {
         if self.error.is_none() {
             self.error = Some(error);
