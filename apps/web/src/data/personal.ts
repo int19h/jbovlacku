@@ -13,7 +13,7 @@ import type { LocalStore, Overlay } from "./store.ts";
 import {
   forgetInventory,
   latestInventory,
-  loadRecords,
+  loadSelections,
   RecordsError,
   syncRecords,
   type RecordsProgress,
@@ -73,6 +73,16 @@ export interface EffectiveOverlay extends Omit<Overlay, "version"> {
 }
 /** The digest of canonical JSON null: the overlay digest of the site view. */
 export const nullOverlayDigest = () => contentHash(utf8("null"));
+function hasSortedValue(values: readonly string[], target: string): boolean {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (values[middle] < target) low = middle + 1;
+    else high = middle;
+  }
+  return values[low] === target;
+}
 function sortedUnique<T>(items: T[], key: (item: T) => string): T[] {
   const byKey = new Map<string, T>();
   for (const item of items) byKey.set(key(item), item);
@@ -166,26 +176,27 @@ type Message = WorkerRequest extends infer R
 const CANCELLED = "Cancelled.";
 /** Reviewer details per local score, the same bound as the server applies. */
 const REVIEWER_LIMIT = 64;
-type LoadedRecords = Awaited<ReturnType<typeof loadRecords>>;
 type SentRecords = {
-  events: string[];
-  eventSet: Set<string>;
-  bodies: string[];
+  snapshot: string;
+  logical_inventory: string;
+  events_digest: string;
+  count: number;
   view: string;
-  overlay: string;
+  overlay: EffectiveOverlay | null;
+  overlayDigest: string;
   mode: CalculationMode;
   selections: string;
 };
 export function selectAddedEventIds(
   inventoryEvents: string[],
   sentEvents: readonly string[],
-  sentIds: ReadonlySet<string> = new Set(sentEvents),
+  sentIds?: ReadonlySet<string>,
 ): string[] | null {
   if (sentEvents.length > inventoryEvents.length) return null;
   const added: string[] = [];
   let previous = 0;
   for (const id of inventoryEvents) {
-    if (sentIds.has(id)) {
+    if (sentIds ? sentIds.has(id) : hasSortedValue(sentEvents, id)) {
       if (sentEvents[previous] !== id) return null;
       previous++;
     } else added.push(id);
@@ -431,6 +442,7 @@ export class PersonalCalculator {
         continue;
       }
       if (this.cancelled && !refresh) return this.status;
+      let cachedInventory: SnapshotInventory | null = null;
       if (
         this.status.state === "ready" &&
         this.status.mode === mode &&
@@ -438,13 +450,13 @@ export class PersonalCalculator {
         this.loadedKey
       ) {
         // The overlay can change between calls. Compare before reusing the session.
-        const inventory = await latestInventory(this.store);
+        cachedInventory = await latestInventory(this.store);
         if (moved()) {
           if (this.cancels !== cancels) return cancelledStatus();
           continue;
         }
-        if (inventory) {
-          const key = await this.key(inventory, mode);
+        if (cachedInventory) {
+          const key = await this.key(cachedInventory, mode);
           if (moved()) {
             if (this.cancels !== cancels) return cancelledStatus();
             continue;
@@ -459,7 +471,7 @@ export class PersonalCalculator {
       };
       this.current?.abort.abort(new Error(CANCELLED));
       this.current = run;
-      const promise = this.run(run, mode, refresh);
+      const promise = this.run(run, mode, refresh, cachedInventory);
       this.loading = promise;
       this.loadingRequest = { mode, refresh };
       let result: PersonalStatus;
@@ -483,6 +495,7 @@ export class PersonalCalculator {
     run: Run,
     mode: CalculationMode,
     refresh: boolean,
+    cachedInventory: SnapshotInventory | null,
   ): Promise<PersonalStatus> {
     const live = () => {
       if (
@@ -495,7 +508,7 @@ export class PersonalCalculator {
     try {
       let inventory: SnapshotInventory;
       try {
-        inventory = await this.inventory(run, refresh);
+        inventory = cachedInventory ?? (await this.inventory(run, refresh));
       } catch (error) {
         live();
         if (refresh) throw error;
@@ -504,31 +517,70 @@ export class PersonalCalculator {
         inventory = cached;
       }
       live();
-      const records = await loadRecords(this.store, inventory, {
+      const selections = await loadSelections(this.store, inventory, {
         signal: run.abort.signal,
       });
-      live();
-      if (
-        mode === "personal" &&
-        (this.continuity?.snapshot !== inventory.snapshot ||
-          this.continuity?.view !== inventory.view)
-      ) {
-        const response = await this.request(run, {
-          type: "actors",
-          input: {
-            events: records.events,
-            bodies: records.bodies,
-            selected_view: inventory.view,
-            import_selections: records.selections,
-          },
-        });
+      const selectionBinding = canonicalize(utf8(JSON.stringify(selections)));
+      const sameBase = Boolean(
+        this.loadedKey &&
+        this.sent?.snapshot === inventory.snapshot &&
+        this.sent.view === inventory.view &&
+        this.sent.selections === selectionBinding,
+      );
+      if (!sameBase) {
+        const advance = await this.advanceInput(inventory, selections);
         live();
-        if (response.type !== "actors")
+        const intermediate = `${inventory.snapshot}|${inventory.view}|${run.id}`;
+        this.clearLoadedSession();
+        this.rankCache.clear();
+        this.set({
+          state: "evaluating",
+          mode,
+          events: inventory.events.length,
+        });
+        const fullLoad = () =>
+          this.request(run, {
+            type: "load",
+            session: intermediate,
+            source: {
+              database: this.store.name,
+              snapshot: inventory.snapshot,
+              events_digest: inventory.events_digest,
+              count: inventory.events.length,
+            },
+            options: {
+              selected_view: inventory.view,
+              import_selections: selections,
+            },
+          });
+        let loaded: WorkerResponse;
+        if (advance) {
+          try {
+            loaded = await this.request(run, {
+              type: "advance",
+              base: advance.base,
+              session: intermediate,
+              input: advance.input,
+            });
+          } catch {
+            live();
+            loaded = await fullLoad();
+          }
+        } else {
+          loaded = await fullLoad();
+        }
+        live();
+        if (
+          loaded.type !== "loaded" ||
+          loaded.session !== intermediate ||
+          loaded.selected_view !== inventory.view
+        )
           throw new Error("Unexpected worker reply.");
+        this.loadedKey = intermediate;
         this.continuity = {
           snapshot: inventory.snapshot,
           view: inventory.view,
-          actors: response.actors,
+          actors: loaded.actors ?? {},
         };
       }
       // One overlay per run. The digest is derived from the exact overlay
@@ -542,61 +594,33 @@ export class PersonalCalculator {
         this.set(loadedStatus);
         return loadedStatus;
       }
-      const advance = this.advanceInput(
-        inventory,
-        records,
-        overlay,
-        digest,
-        mode,
-      );
-      this.clearLoadedSession();
-      this.rankCache.clear();
-      this.set({
-        state: "evaluating",
-        mode,
-        events: inventory.events.length,
-      });
-      const input: EvaluationRequest = {
-        events: records.events,
-        bodies: records.bodies,
-        selected_view: inventory.view,
-        import_selections: records.selections,
-        ...(overlay ? { overlay } : {}),
-      };
-      let loaded: WorkerResponse;
-      if (advance) {
-        try {
-          loaded = await this.request(run, {
-            type: "advance",
-            base: advance.base,
-            session: key,
-            input: advance.input,
-          });
-        } catch {
-          live();
-          loaded = await this.request(run, {
-            type: "load",
-            session: key,
-            input,
-          });
-        }
-      } else {
-        loaded = await this.request(run, {
-          type: "load",
-          session: key,
-          input,
+      const base = this.loadedKey;
+      if (!base) throw new Error("The base evaluation session is not loaded.");
+      if (sameBase) {
+        this.clearLoadedSession();
+        this.rankCache.clear();
+        this.set({
+          state: "evaluating",
+          mode,
+          events: inventory.events.length,
         });
       }
+      const loaded = await this.request(run, {
+        type: "overlay",
+        base,
+        session: key,
+        overlay,
+      });
       live();
       if (loaded.type !== "loaded" || loaded.session !== key)
         throw new Error("Unexpected worker reply.");
-      this.rememberSent(inventory, records, digest, mode);
+      this.rememberSent(inventory, selections, overlay, digest, mode);
       const status: Extract<PersonalStatus, { state: "ready" }> = {
         state: "ready",
         mode,
         snapshot: inventory.snapshot,
         view: inventory.view,
-        events: inventory.events.length,
+        events: loaded.events,
         overlay: digest,
         available: loaded.available,
         reasons: loaded.reasons,
@@ -643,69 +667,94 @@ export class PersonalCalculator {
       if (this.current === run) this.current = null;
     }
   }
-  private advanceInput(
+  private async advanceInput(
     inventory: SnapshotInventory,
-    records: LoadedRecords,
-    overlay: EffectiveOverlay | null,
-    digest: string,
-    mode: CalculationMode,
-  ): { base: string; input: EvaluationRequest } | null {
+    selections: Record<string, string[]>,
+  ): Promise<{ base: string; input: EvaluationRequest } | null> {
     const sent = this.sent;
     if (
       !this.loadedKey ||
       !sent ||
+      sent.snapshot === inventory.snapshot ||
       sent.view !== inventory.view ||
-      sent.overlay !== digest ||
-      sent.mode !== mode ||
-      sent.selections !== canonicalize(utf8(JSON.stringify(records.selections)))
+      sent.selections !== canonicalize(utf8(JSON.stringify(selections)))
     )
       return null;
-    let previousBodies = 0;
-    for (const id of sent.events)
-      if (records.bodies[id] !== undefined) previousBodies++;
+    const previous = await this.store.get<SnapshotInventory>(
+      "inventory",
+      sent.snapshot,
+    );
+    const retained = inventory.bodies;
     if (
-      previousBodies !== sent.bodies.length ||
-      sent.bodies.some((id) => records.bodies[id] === undefined)
+      !previous ||
+      previous.logical_inventory !== sent.logical_inventory ||
+      previous.events_digest !== sent.events_digest ||
+      previous.events.length !== sent.count ||
+      !Array.isArray(previous.unretained_bodies) ||
+      previous.bodies.some((hash) => !hasSortedValue(retained, hash))
     )
       return null;
-    const addedIds = selectAddedEventIds(
-      inventory.events,
-      sent.events,
-      sent.eventSet,
+    const added = selectAddedEventIds(inventory.events, previous.events);
+    if (!added || added.length === 0) return null;
+    const newBodies = retained.filter(
+      (hash) => !hasSortedValue(previous.bodies, hash),
     );
-    if (!addedIds || addedIds.length === 0) return null;
-    const addedSet = new Set(addedIds);
-    const events = records.events.filter((_, index) =>
-      addedSet.has(inventory.events[index]),
-    );
+    if (
+      newBodies.some((hash) =>
+        hasSortedValue(previous.unretained_bodies!, hash),
+      )
+    )
+      return null;
+    const events: string[] = [];
     const bodies: Record<string, string> = {};
-    for (const id of addedIds)
-      if (records.bodies[id] !== undefined) bodies[id] = records.bodies[id];
+    const addedBodies = new Set<string>();
+    for (const id of added) {
+      const record = await this.store.get<{
+        envelope: string;
+        body: string | null;
+        bodyHash: string | null;
+      }>("records", id);
+      if (!record) return null;
+      events.push(record.envelope);
+      if (record.bodyHash && hasSortedValue(retained, record.bodyHash)) {
+        if (!record.body)
+          throw new RecordsError(
+            `The body of ${id} is retained by the snapshot but not cached. Download the records again.`,
+            "missing",
+          );
+        bodies[id] = record.body;
+        addedBodies.add(record.bodyHash);
+      }
+    }
+    if (newBodies.some((hash) => !addedBodies.has(hash))) return null;
     return {
       base: this.loadedKey,
       input: {
         events,
         bodies,
         selected_view: inventory.view,
-        import_selections: records.selections,
-        ...(overlay ? { overlay } : {}),
+        import_selections: selections,
+        ...(sent.overlay ? { overlay: sent.overlay } : {}),
       },
     };
   }
   private rememberSent(
     inventory: SnapshotInventory,
-    records: LoadedRecords,
+    selections: Record<string, string[]>,
+    overlay: EffectiveOverlay | null,
     digest: string,
     mode: CalculationMode,
   ) {
     this.sent = {
-      events: [...inventory.events],
-      eventSet: new Set(inventory.events),
-      bodies: Object.keys(records.bodies).sort(),
+      snapshot: inventory.snapshot,
+      logical_inventory: inventory.logical_inventory,
+      events_digest: inventory.events_digest,
+      count: inventory.events.length,
       view: inventory.view,
-      overlay: digest,
+      overlay,
+      overlayDigest: digest,
       mode,
-      selections: canonicalize(utf8(JSON.stringify(records.selections))),
+      selections: canonicalize(utf8(JSON.stringify(selections))),
     };
   }
   private async effective(

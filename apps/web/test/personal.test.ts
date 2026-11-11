@@ -964,7 +964,8 @@ test("a calculation binds its digest to the one overlay it sends, and a choice c
     const RealWorker = window.Worker;
     class RecordingWorker extends RealWorker {
       postMessage(message: any, ...rest: any[]) {
-        if (message.type === "load") loads.push(structuredClone(message));
+        if (["load", "overlay"].includes(message.type))
+          loads.push(structuredClone(message));
         return super.postMessage(message, ...(rest as []));
       }
     }
@@ -990,7 +991,7 @@ test("a calculation binds its digest to the one overlay it sends, and a choice c
         reads,
         matches:
           first.state === "ready" &&
-          first.overlay === overlayDigest(firstLoad.input.overlay),
+          first.overlay === overlayDigest(firstLoad.overlay),
       };
       // Part two: the choices change while records load. The run is inert and the call recomputes.
       const originalGet = store.get.bind(store);
@@ -1021,10 +1022,10 @@ test("a calculation binds its digest to the one overlay it sends, and a choice c
         bound,
         result: result.state,
         loadsDuring: loads.length - loadsBefore,
-        usedWork: used.input.overlay.work,
+        usedWork: used.overlay.work,
         matchesUsed:
           result.state === "ready" &&
-          result.overlay === overlayDigest(used.input.overlay),
+          result.overlay === overlayDigest(used.overlay),
         finalState: calc.status.state,
       };
     } finally {
@@ -1034,7 +1035,7 @@ test("a calculation binds its digest to the one overlay it sends, and a choice c
   expect(outcome.bound.state).toBe("ready");
   expect(outcome.bound.matches).toBe(true);
   expect(outcome.result).toBe("ready");
-  expect(outcome.loadsDuring).toBe(1);
+  expect(outcome.loadsDuring).toBe(3);
   expect(outcome.usedWork).toBe(2000);
   expect(outcome.matchesUsed).toBe(true);
   expect(outcome.finalState).toBe("ready");
@@ -1131,7 +1132,8 @@ const calculatorHarness = `async (corePath) => {
   const RealWorker = window.Worker;
   class RecordingWorker extends RealWorker {
     postMessage(message, ...rest) {
-      if (message.type === "load") loads.push(structuredClone(message));
+      if (["load", "overlay"].includes(message.type))
+        loads.push(structuredClone(message));
       return super.postMessage(message, ...rest);
     }
   }
@@ -1197,10 +1199,10 @@ test("a private Ignore or an identity change during record loading reaches the w
           b: b.state,
           sameDigest: a.overlay === b.overlay,
           loadsDuring: h.loads.length - loadsBefore,
-          blockedInInput: used.input.overlay.blocked.some(
+          blockedInInput: used.overlay.blocked.some(
             (e: any) => e.identity === curator,
           ),
-          digestMatches: a.overlay === h.overlayDigest(used.input.overlay),
+          digestMatches: a.overlay === h.overlayDigest(used.overlay),
           oldDigestGone: a.overlay !== first.overlay,
           statusMatches: h.calc.status.overlay === a.overlay,
           score: await h.net(cuktaWord, cukta1),
@@ -1220,10 +1222,10 @@ test("a private Ignore or an identity change during record loading reaches the w
         const afterIdentity = {
           c: c.state,
           loadsDuring: h.loads.length - loadsBefore2,
-          rootInInput: used2.input.overlay.root_changes.some(
+          rootInInput: used2.overlay.root_changes.some(
             (r: any) => r.identity === identity && r.q.numerator === 1,
           ),
-          digestMatches: c.overlay === h.overlayDigest(used2.input.overlay),
+          digestMatches: c.overlay === h.overlayDigest(used2.overlay),
           differsFromIgnoreRun: c.overlay !== a.overlay,
           statusMatches: h.calc.status.overlay === c.overlay,
         };
@@ -1247,7 +1249,7 @@ test("a private Ignore or an identity change during record loading reaches the w
     a: "ready",
     b: "ready",
     sameDigest: true,
-    loadsDuring: 1,
+    loadsDuring: 2,
     blockedInInput: true,
     digestMatches: true,
     oldDigestGone: true,
@@ -1256,7 +1258,7 @@ test("a private Ignore or an identity change during record loading reaches the w
   });
   expect(outcome.afterIdentity).toEqual({
     c: "ready",
-    loadsDuring: 1,
+    loadsDuring: 2,
     rootInInput: true,
     digestMatches: true,
     differsFromIgnoreRun: true,

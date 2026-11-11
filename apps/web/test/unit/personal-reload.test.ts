@@ -28,9 +28,11 @@ function inventory(events: string[], id: string): SnapshotInventory {
   return {
     snapshot: id,
     logical_inventory: id,
+    events_digest: id,
     view,
     events,
     bodies: [bodyHash],
+    unretained_bodies: [],
     selections: [],
   };
 }
@@ -51,11 +53,18 @@ class RecordingWorker {
   advanceStarted: (() => void) | null = null;
   rankStarted: (() => void) | null = null;
   terminateCalls = 0;
+  selectedView = view;
 
   postMessage(message: WorkerRequest) {
     this.messages.push(structuredClone(message));
-    if (message.type === "load") this.events = message.input.events.length;
-    if (message.type === "advance") this.events += message.input.events.length;
+    if (message.type === "load") {
+      this.events = message.source.count;
+      this.selectedView = message.options.selected_view;
+    }
+    if (message.type === "advance") {
+      this.events += message.input.events.length;
+      this.selectedView = message.input.selected_view;
+    }
     queueMicrotask(async () => {
       if (message.type === "advance" && this.holdAdvance) {
         const held = this.holdAdvance;
@@ -68,7 +77,7 @@ class RecordingWorker {
         this.rankStarted?.();
         await held;
       }
-      if (message.type === "actors" && this.fatalActors) {
+      if (message.type === "load" && this.fatalActors) {
         this.fatalActors = false;
         this.onmessage?.({
           data: {
@@ -152,13 +161,11 @@ class RecordingWorker {
         } as MessageEvent);
         return;
       }
-      if (message.type === "actors") {
-        this.onmessage?.({
-          data: { type: "actors", id: message.id, actors: {} },
-        } as MessageEvent);
-        return;
-      }
-      if (message.type === "load" || message.type === "advance") {
+      if (
+        message.type === "load" ||
+        message.type === "advance" ||
+        message.type === "overlay"
+      ) {
         this.onmessage?.({
           data: {
             type: "loaded",
@@ -166,7 +173,9 @@ class RecordingWorker {
             session: message.session,
             available: true,
             reasons: [],
+            selected_view: this.selectedView,
             events: this.events,
+            actors: {},
           },
         } as MessageEvent);
       }
@@ -218,9 +227,13 @@ function harness(): Harness {
     ],
   ]);
   const selections = new Map<string, string>();
+  const inventories = new Map<string, SnapshotInventory>([
+    [currentInventory.snapshot, currentInventory],
+  ]);
   const store = {
     get: async (name: string, id: string) => {
       if (name === "inventory" && id === "latest") return currentInventory;
+      if (name === "inventory") return inventories.get(id);
       if (name === "records") return records.get(id);
       if (name === "selections") return selections.get(id);
       throw new Error(`Unexpected read: ${name}/${id}`);
@@ -232,6 +245,7 @@ function harness(): Harness {
     put: async (name: string, id: string, value: unknown) => {
       if (name === "inventory" && id === "latest")
         currentInventory = value as SnapshotInventory;
+      if (name === "inventory") inventories.set(id, value as SnapshotInventory);
       else if (name === "records") records.set(id, value);
       else if (name === "selections") selections.set(id, value as string);
     },
@@ -255,6 +269,7 @@ function harness(): Harness {
     selections,
     setInventory: (value) => {
       currentInventory = value;
+      inventories.set(value.snapshot, value);
     },
     setOverlay: (value) => {
       currentOverlay = value;
@@ -352,7 +367,9 @@ function privateOverlay(): Overlay {
 }
 
 function lastLoad(h: Harness) {
-  const message = h.worker.messages.at(-1);
+  const message = h.worker.messages.findLast(
+    (message) => message.type === "load",
+  );
   assert.equal(message?.type, "load");
   return message as Extract<WorkerRequest, { type: "load" }>;
 }
@@ -381,14 +398,14 @@ test("a pure snapshot append advances with only the new record", async () => {
   assert.equal(ready.events, 3);
   assert.deepEqual(
     h.worker.messages.map((message) => message.type),
-    ["actors", "load", "actors", "advance"],
+    ["load", "overlay", "advance", "overlay"],
   );
-  const first = h.worker.messages[1];
-  const advance = h.worker.messages[3];
+  const first = h.worker.messages[0];
+  const advance = h.worker.messages[2];
   assert.equal(first.type, "load");
   assert.equal(advance.type, "advance");
   if (first.type !== "load" || advance.type !== "advance") return;
-  assert.equal(advance.base, first.session);
+  assert.equal(advance.base, h.worker.messages[1].session);
   assert.deepEqual(advance.input.events, [envelope(added)]);
   assert.deepEqual(advance.input.bodies, {});
   assert.equal(advance.input.selected_view, view);
@@ -399,6 +416,80 @@ test("a pure snapshot append advances with only the new record", async () => {
   h.calculator.cancel();
 });
 
+test("a new record with a retained body advances with that body", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  const addedBodyHash = "sha256:" + "9".repeat(64);
+  const body = JSON.stringify({ retained: true });
+  h.records.set(added, {
+    id: added,
+    envelope: envelope(added),
+    body,
+    bodyStatus: "present",
+    bodyHash: addedBodyHash,
+  });
+  h.setInventory({
+    ...inventory([view, other, added], snapshot("b")),
+    bodies: [addedBodyHash, bodyHash],
+  });
+  assert.equal((await h.calculator.ensure()).state, "ready");
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load", "overlay", "advance", "overlay"],
+  );
+  const advance = h.worker.messages[2];
+  assert.equal(advance.type, "advance");
+  if (advance.type === "advance")
+    assert.deepEqual(advance.input.bodies, { [added]: body });
+  h.calculator.cancel();
+});
+
+async function assertBodyAdvanceFallsBack(
+  h: Harness,
+  previousUnretained: string[] | undefined,
+  addedHasBody: boolean,
+) {
+  await h.calculator.ensure();
+  const addedBodyHash = "sha256:" + "9".repeat(64);
+  h.records.set(added, {
+    id: added,
+    envelope: envelope(added),
+    body: addedHasBody ? JSON.stringify({ retained: true }) : null,
+    bodyStatus: addedHasBody ? "present" : "none",
+    bodyHash: addedHasBody ? addedBodyHash : null,
+  });
+  h.setInventory({
+    ...inventory([view, other], snapshot("a")),
+    unretained_bodies: previousUnretained,
+  });
+  h.setInventory({
+    ...inventory([view, other, added], snapshot("b")),
+    bodies: [addedBodyHash, bodyHash],
+  });
+  assert.equal((await h.calculator.ensure()).state, "ready");
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load", "overlay", "load", "overlay"],
+  );
+  assert.equal(lastLoad(h).source.count, 3);
+  h.calculator.cancel();
+}
+
+test("a body advance without previous body metadata uses a full load", async () => {
+  const h = harness();
+  await assertBodyAdvanceFallsBack(h, undefined, true);
+});
+
+test("a new body shared with an earlier unretained record uses a full load", async () => {
+  const h = harness();
+  await assertBodyAdvanceFallsBack(h, ["sha256:" + "9".repeat(64)], true);
+});
+
+test("a retained body that no added record carries uses a full load", async () => {
+  const h = harness();
+  await assertBodyAdvanceFallsBack(h, [], false);
+});
+
 test("a new ID that sorts between loaded IDs advances with only that envelope", async () => {
   const h = harness();
   const inserted = "jve1:" + "d".repeat(64);
@@ -407,7 +498,9 @@ test("a new ID that sorts between loaded IDs advances with only that envelope", 
   h.setInventory(inventory([view, inserted, other], snapshot("b")));
   const ready = await h.calculator.ensure();
   assert.equal(ready.state, "ready");
-  const advance = h.worker.messages.at(-1);
+  const advance = h.worker.messages.findLast(
+    (message) => message.type === "advance",
+  );
   assert.equal(advance?.type, "advance");
   if (advance?.type === "advance")
     assert.deepEqual(advance.input.events, [envelope(inserted)]);
@@ -424,7 +517,9 @@ test("several new IDs at different positions advance in inventory order", async 
     inventory([before, view, middle, other, added], snapshot("b")),
   );
   await h.calculator.ensure();
-  const advance = h.worker.messages.at(-1);
+  const advance = h.worker.messages.findLast(
+    (message) => message.type === "advance",
+  );
   assert.equal(advance?.type, "advance");
   if (advance?.type === "advance")
     assert.deepEqual(advance.input.events, [
@@ -442,10 +537,8 @@ test("a new ID combined with a removal uses a full load", async () => {
   putEmptyRecord(h, inserted);
   h.setInventory(inventory([view, inserted], snapshot("b")));
   await h.calculator.ensure();
-  assert.deepEqual(lastLoad(h).input.events, [
-    envelope(view),
-    envelope(inserted),
-  ]);
+  assert.equal(lastLoad(h).source.count, 2);
+  assert.equal(lastLoad(h).source.snapshot, snapshot("b"));
   h.calculator.cancel();
 });
 
@@ -457,21 +550,24 @@ test("a non-append snapshot uses a full load", async () => {
   h.setInventory(inventory([view, added], snapshot("c")));
   await h.calculator.ensure();
   const replaced = lastLoad(h);
-  assert.deepEqual(replaced.input.events, [envelope(view), envelope(added)]);
+  assert.equal(replaced.source.count, 2);
+  assert.equal(replaced.source.snapshot, snapshot("c"));
   h.calculator.cancel();
 });
 
-test("an overlay change alone uses a full load without invalidation", async () => {
+test("an overlay change alone keeps the graph without invalidation", async () => {
   const h = harness();
   await h.calculator.ensure();
   h.setOverlay(privateOverlay());
   await h.calculator.ensure();
-  const loaded = lastLoad(h);
-  assert.equal(
-    (loaded.input.overlay as { blocked: unknown[] } | undefined)?.blocked
-      .length,
-    1,
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load", "overlay", "overlay"],
   );
+  const loaded = h.worker.messages.at(-1);
+  assert.equal(loaded?.type, "overlay");
+  if (loaded?.type === "overlay")
+    assert.equal((loaded.overlay as { blocked: unknown[] }).blocked.length, 1);
   h.calculator.cancel();
 });
 
@@ -493,15 +589,21 @@ test("a view change alone uses a full load", async () => {
     bodies: [bodyHash, nextBodyHash],
   });
   await h.calculator.ensure();
-  assert.equal(lastLoad(h).input.selected_view, nextView);
+  assert.equal(lastLoad(h).options.selected_view, nextView);
   h.calculator.cancel();
 });
 
-test("a mode change alone uses a full load", async () => {
+test("a mode change alone applies a new overlay without a full load", async () => {
   const h = harness();
   await h.calculator.ensure({ mode: "personal" });
   await h.calculator.ensure({ mode: "site" });
-  assert.equal(lastLoad(h).input.overlay, undefined);
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load", "overlay", "overlay"],
+  );
+  const changed = h.worker.messages.at(-1);
+  assert.equal(changed?.type, "overlay");
+  if (changed?.type === "overlay") assert.equal(changed.overlay, null);
   h.calculator.cancel();
 });
 
@@ -515,7 +617,7 @@ test("an import selection change alone uses a full load", async () => {
     selections: [selection],
   });
   await h.calculator.ensure();
-  assert.deepEqual(lastLoad(h).input.import_selections, {
+  assert.deepEqual(lastLoad(h).options.import_selections, {
     [selection]: [other],
   });
   h.calculator.cancel();
@@ -538,10 +640,8 @@ test("a changed body on an earlier event uses a full load", async () => {
     bodies: [bodyHash, changedHash],
   });
   await h.calculator.ensure();
-  assert.equal(
-    lastLoad(h).input.bodies[other],
-    JSON.stringify({ changed: true }),
-  );
+  assert.equal(lastLoad(h).source.count, 3);
+  assert.equal(lastLoad(h).source.snapshot, snapshot("b"));
   h.calculator.cancel();
 });
 
@@ -555,7 +655,7 @@ test("a failed advance retries with one full load on a replacement worker", asyn
   assert.equal(ready.state, "ready");
   assert.equal(h.workers.length, 2);
   assert.equal(failed.terminateCalls, 1);
-  assert.equal(lastLoad(h).input.events.length, 3);
+  assert.equal(lastLoad(h).source.count, 3);
   h.calculator.cancel();
 });
 
@@ -571,9 +671,9 @@ test("a crash during advance retries on a replacement worker in the same run", a
   assert.equal(failed.terminateCalls, 1);
   assert.deepEqual(
     h.worker.messages.map((message) => message.type),
-    ["load"],
+    ["load", "overlay"],
   );
-  assert.equal(lastLoad(h).input.events.length, 3);
+  assert.equal(lastLoad(h).source.count, 3);
   h.calculator.cancel();
 });
 
@@ -589,9 +689,9 @@ test("a crash while idle clears ready state and the next calculation replaces th
   assert.equal(h.workers.length, 2);
   assert.deepEqual(
     h.worker.messages.map((message) => message.type),
-    ["load"],
+    ["load", "overlay"],
   );
-  assert.equal(lastLoad(h).input.events.length, 2);
+  assert.equal(lastLoad(h).source.count, 2);
   h.calculator.cancel();
 });
 
@@ -613,7 +713,7 @@ test("invalidation during an advance makes the next calculation use a full load"
   assert.equal((await interrupted).state, "ready");
   const ready = await h.calculator.ensure();
   assert.equal(ready.state, "ready");
-  assert.equal(lastLoad(h).input.events.length, 3);
+  assert.equal(lastLoad(h).source.count, 3);
   h.calculator.cancel();
 });
 
@@ -652,9 +752,9 @@ test("cancel during an advance terminates the worker and an explicit refresh rel
     assert.equal(h.workers.length, 2);
     assert.deepEqual(
       h.worker.messages.map((message) => message.type),
-      ["actors", "load"],
+      ["load", "overlay"],
     );
-    assert.equal(lastLoad(h).input.events.length, 3);
+    assert.equal(lastLoad(h).source.count, 3);
   } finally {
     globalThis.fetch = originalFetch;
     h.calculator.cancel();
@@ -686,7 +786,9 @@ test("an inventory change during an advance starts the next delta from the compl
   }
   const ready = await h.calculator.ensure();
   assert.equal(ready.state, "ready");
-  const advance = h.worker.messages.at(-1);
+  const advance = h.worker.messages.findLast(
+    (message) => message.type === "advance",
+  );
   assert.equal(advance?.type, "advance");
   if (advance?.type === "advance")
     assert.deepEqual(advance.input.events, [envelope(later)]);
@@ -719,7 +821,8 @@ test("an earlier body that becomes absent uses a full load", async () => {
   h.setInventory(inventory([view, other], snapshot("b")));
   const ready = await h.calculator.ensure();
   assert.equal(ready.state, "ready");
-  assert.equal(lastLoad(h).input.bodies[other], undefined);
+  assert.equal(lastLoad(h).source.count, 2);
+  assert.equal(lastLoad(h).source.snapshot, snapshot("b"));
   assert.equal(
     h.worker.messages.filter((message) => message.type === "advance").length,
     0,
@@ -733,10 +836,11 @@ test("a reorder-only snapshot uses a full load", async () => {
   h.setInventory(inventory([other, view], snapshot("b")));
   const ready = await h.calculator.ensure();
   assert.equal(ready.state, "ready");
-  assert.deepEqual(lastLoad(h).input.events, [envelope(other), envelope(view)]);
+  assert.equal(lastLoad(h).source.count, 2);
+  assert.equal(lastLoad(h).source.snapshot, snapshot("b"));
   assert.deepEqual(
     h.worker.messages.map((message) => message.type),
-    ["actors", "load", "actors", "load"],
+    ["load", "overlay", "load", "overlay"],
   );
   h.calculator.cancel();
 });
@@ -755,7 +859,7 @@ test("a ranking error keeps the worker and loaded session for the next rank", as
   assert.equal(h.worker.terminateCalls, 0);
   assert.deepEqual(
     h.worker.messages.map((message) => message.type),
-    ["actors", "load", "rank", "rank"],
+    ["load", "overlay", "rank", "rank"],
   );
   h.calculator.cancel();
 });
@@ -798,7 +902,7 @@ test("a calculation waiting behind a retired worker settles through a replacemen
   const ready = await pending;
   assert.equal(ready.state, "ready");
   assert.equal(h.workers.length, 2);
-  assert.equal(lastLoad(h).input.events.length, 3);
+  assert.equal(lastLoad(h).source.count, 3);
   h.calculator.cancel();
 });
 
@@ -815,7 +919,7 @@ test("a fatal actors error retires the worker and the next calculation uses a re
   assert.equal(h.workers.length, 2);
   assert.deepEqual(
     h.worker.messages.map((message) => message.type),
-    ["actors", "load"],
+    ["load", "overlay"],
   );
   h.calculator.cancel();
 });
@@ -835,7 +939,7 @@ test("a fatal ranking error retires the worker and the next rank uses a replacem
   assert.equal(h.workers.length, 2);
   assert.deepEqual(
     h.worker.messages.map((message) => message.type),
-    ["load", "rank"],
+    ["load", "overlay", "rank"],
   );
   h.calculator.cancel();
 });
@@ -852,9 +956,9 @@ test("a fatal fork error retries the full load on a replacement worker", async (
   assert.equal(failed.terminateCalls, 1);
   assert.deepEqual(
     h.worker.messages.map((message) => message.type),
-    ["load"],
+    ["load", "overlay"],
   );
-  assert.equal(lastLoad(h).input.events.length, 3);
+  assert.equal(lastLoad(h).source.count, 3);
   h.calculator.cancel();
 });
 
@@ -889,10 +993,10 @@ test("an empty delta under a different key uses a full load", async () => {
   h.setInventory(inventory([view, other], snapshot("b")));
   const ready = await h.calculator.ensure();
   assert.equal(ready.state, "ready");
-  assert.equal(lastLoad(h).input.events.length, 2);
+  assert.equal(lastLoad(h).source.count, 2);
   assert.deepEqual(
     h.worker.messages.map((message) => message.type),
-    ["actors", "load", "actors", "load"],
+    ["load", "overlay", "load", "overlay"],
   );
   h.calculator.cancel();
 });

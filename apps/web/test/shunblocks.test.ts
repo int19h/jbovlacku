@@ -91,7 +91,8 @@ test("every personal calculation sends a version 2 overlay with the session iden
       const RealWorker = window.Worker;
       class RecordingWorker extends RealWorker {
         postMessage(message: any, ...rest: any[]) {
-          if (message.type === "load") loads.push(structuredClone(message));
+          if (["load", "overlay"].includes(message.type))
+            loads.push(structuredClone(message));
           return super.postMessage(message, ...(rest as []));
         }
       }
@@ -102,16 +103,16 @@ test("every personal calculation sends a version 2 overlay with the session iden
           ...context,
         }));
         await calc.ensure({ mode: "personal" });
-        const mine = loads.at(-1).input.overlay;
+        const mine = loads.at(-1).overlay;
         // The same browser as another identity, and as nobody.
         context.identity = other;
         calc.invalidate();
         await calc.ensure({ mode: "personal" });
-        const theirs = loads.at(-1).input.overlay;
+        const theirs = loads.at(-1).overlay;
         context.identity = null;
         calc.invalidate();
         await calc.ensure({ mode: "personal" });
-        const nobody = loads.at(-1).input.overlay;
+        const nobody = loads.at(-1).overlay;
         const saved = await store.overlay();
         return {
           identity,
@@ -120,7 +121,9 @@ test("every personal calculation sends a version 2 overlay with the session iden
           nobodyIssuer: nobody.public_shun_issuer,
           digests: [mine, theirs, nobody].map((o) => overlayDigest(o)),
           saved,
-          siteLoads: loads.filter((l) => l.input.overlay === null).length,
+          siteLoads: loads.filter(
+            (l) => l.type === "overlay" && l.overlay === null,
+          ).length,
         };
       } finally {
         window.Worker = RealWorker;
@@ -225,9 +228,9 @@ async function recomputeForSnapshot(page: Page, path: string) {
   await page.goto(path);
   const response = await wordResponse;
   expect(response.status()).toBe(200);
-  await expect(
-    page.locator("main p", { hasText: /^Snapshot / }),
-  ).toContainText(snapshot.slice(7, 19));
+  await expect(page.locator("main p", { hasText: /^Snapshot / })).toContainText(
+    snapshot.slice(7, 19),
+  );
   await page
     .getByRole("button", { name: "Recompute for this snapshot" })
     .click();

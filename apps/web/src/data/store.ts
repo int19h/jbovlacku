@@ -13,6 +13,7 @@ import {
 } from "./outbox-graph.ts";
 import type { Envelope, Transport } from "../model/types.ts";
 import type { Draft } from "../model/draft.ts";
+import type { SnapshotInventory } from "./records.ts";
 
 /** Only authenticated, well-formed lifecycle actions can disable ordinary signing. */
 function lifecycleMarkers(identity: string, envelopes: Envelope[]) {
@@ -278,6 +279,16 @@ const packageRevision = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
+function hasSortedId(values: readonly string[], target: string): boolean {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (values[middle] < target) low = middle + 1;
+    else high = middle;
+  }
+  return values[low] === target;
+}
 export class LocalStore {
   /** The open database. Lifecycle transactions span several stores. */
   readonly database: Promise<IDBDatabase>;
@@ -285,7 +296,7 @@ export class LocalStore {
     string,
     { revision: unknown; value: unknown }
   >();
-  constructor(name = "jbovlacku-browser-v1") {
+  constructor(readonly name = "jbovlacku-browser-v1") {
     this.database = new Promise((resolve, reject) => {
       const request = indexedDB.open(name, 4);
       request.onupgradeneeded = (event) => {
@@ -815,6 +826,32 @@ export class LocalStore {
       tx.onabort = () =>
         reject(
           tx.error ?? new Error("Local storage did not delete this record."),
+        );
+      tx.onerror = () => {};
+    });
+  }
+  /** Commits a complete inventory and removes only records outside it. */
+  async commitInventory(inventory: SnapshotInventory): Promise<void> {
+    const db = await this.database;
+    const events = inventory.events;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(["records", "inventory"], "readwrite");
+      const records = tx.objectStore("records");
+      const cursor = records.openKeyCursor();
+      cursor.onsuccess = () => {
+        const current = cursor.result;
+        if (!current) return;
+        if (!hasSortedId(events, String(current.key)))
+          records.delete(current.primaryKey);
+        current.continue();
+      };
+      const inventories = tx.objectStore("inventory");
+      inventories.put(inventory, inventory.snapshot);
+      inventories.put(inventory, "latest");
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          tx.error ?? new Error("Local storage did not commit this inventory."),
         );
       tx.onerror = () => {};
     });

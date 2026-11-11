@@ -106,6 +106,7 @@ test("browser core and personal scores keep an effective definition in the first
       import_selections: {},
     };
     const site = core.rankWord(input, wordId);
+    const full = core.evaluate(input);
     const session = core.evaluateSession({
       ...input,
       overlay: {
@@ -140,7 +141,7 @@ test("browser core and personal scores keep an effective definition in the first
       return {
         visible: visible.envelope.id,
         hidden: hidden.envelope.id,
-        receipt: session.state.receipts[hidden.envelope.id],
+        receipt: full.receipts[hidden.envelope.id],
         site,
         personal,
       };

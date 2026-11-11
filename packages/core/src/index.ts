@@ -1,5 +1,8 @@
 import type { WordResultPolicy } from "./word-policy.ts";
-export { wordResultPolicyBinding, type WordResultPolicy } from "./word-policy.ts";
+export {
+  wordResultPolicyBinding,
+  type WordResultPolicy,
+} from "./word-policy.ts";
 import init, * as wasm from "../generated/jvc_runtime.js";
 import { encodeEvaluationRequest } from "./evaluation-request.ts";
 const encoder = new TextEncoder();
@@ -294,8 +297,17 @@ export interface RankingPreparationProgress {
   retained_graphs: number;
 }
 
+export interface EvaluationSessionSummary {
+  available: boolean;
+  reasons: string[];
+  selected_view: string;
+  events: number;
+}
 export interface EvaluationSessionHandle {
   readonly state: Evaluation;
+  summary(): EvaluationSessionSummary;
+  actors(): Record<string, string>;
+  withOverlay(overlay?: unknown): EvaluationSessionHandle;
   rankWord(word: string, reviewers?: number): any;
   rankingDescriptor(
     policy: RankingPreparationPolicy,
@@ -318,8 +330,9 @@ export interface EvaluationSessionHandle {
   free(): void;
 }
 interface SessionBasis {
-  state: Evaluation;
+  state: () => Evaluation;
   identity: string;
+  closed: () => boolean;
 }
 interface StateDelta {
   version: 1;
@@ -416,6 +429,10 @@ export interface EvaluationBuilder {
     envelope: Uint8Array,
     body?: Uint8Array,
   ): EvaluationPackageRecord | null;
+  addRecordText(
+    envelope: string,
+    body?: string,
+  ): EvaluationPackageRecord | null;
   removeRecord(id: string): void;
   finish(): EvaluationSessionHandle;
   free(): void;
@@ -424,18 +441,11 @@ function wrapEvaluationSession(
   session: wasm.EvaluationSession,
   parent?: SessionBasis,
 ): EvaluationSessionHandle {
-  let state: Evaluation;
+  let state: Evaluation | undefined;
+  let closed = false;
   let identity: string;
   try {
     identity = session.state_identity();
-    const delta = parent
-      ? (JSON.parse(session.state_delta()) as StateDelta | null)
-      : null;
-    state = freezeState(
-      delta?.version === 1 && delta.base_session === parent?.identity
-        ? applyStateDelta(parent.state, delta)
-        : (JSON.parse(session.state()) as Evaluation),
-    );
   } catch (error) {
     try {
       session.free();
@@ -443,10 +453,31 @@ function wrapEvaluationSession(
       throw error;
     }
   }
+  const readState = () => {
+    if (state) return state;
+    const delta =
+      parent && !parent.closed()
+        ? (JSON.parse(session.state_delta()) as StateDelta | null)
+        : null;
+    state = freezeState(
+      delta?.version === 1 && delta.base_session === parent?.identity
+        ? applyStateDelta(parent.state(), delta)
+        : (JSON.parse(session.state()) as Evaluation),
+    );
+    return state;
+  };
   return {
     get state() {
-      return state;
+      return readState();
     },
+    summary: () => JSON.parse(session.summary()) as EvaluationSessionSummary,
+    actors: () => JSON.parse(session.actors()) as Record<string, string>,
+    withOverlay: (overlay?: unknown) =>
+      wrapEvaluationSession(
+        session.with_overlay(
+          overlay === undefined ? undefined : utf8(JSON.stringify(overlay)),
+        ),
+      ),
     /**
      * Ranks one word. `reviewers` asks for at most that many reviewer details
      * per score, bounded inside the core. Without it the aggregate lookup does
@@ -481,15 +512,19 @@ function wrapEvaluationSession(
       JSON.parse(session.cancel_word_results(token)),
     fork: (options) =>
       wrapEvaluationBuilder(session.fork(encodeEvaluationRequest(options)), {
-        state,
+        state: readState,
         identity,
+        closed: () => closed,
       }),
     checkpoint: (binding, resultsOnly = false) =>
       resultsOnly
         ? session.result_checkpoint(binding)
         : session.checkpoint(binding),
     updateStatistics: () => JSON.parse(session.update_statistics()),
-    free: () => session.free(),
+    free: () => {
+      closed = true;
+      session.free();
+    },
   };
 }
 export function evaluateSession(input: EvaluationRequest) {
@@ -522,6 +557,12 @@ function wrapEvaluationBuilder(
       requireOpen();
       return JSON.parse(
         builder.add_record(envelope, body),
+      ) as EvaluationPackageRecord | null;
+    },
+    addRecordText(envelope: string, body?: string) {
+      requireOpen();
+      return JSON.parse(
+        builder.add_record_text(envelope, body),
       ) as EvaluationPackageRecord | null;
     },
     removeRecord(id: string) {

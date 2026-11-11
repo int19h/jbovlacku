@@ -2,19 +2,16 @@ import {
   initializeCore,
   identityFromSeed,
   createEvent,
-  canonicalize,
-  contentHash,
   utf8,
 } from "../../packages/core/src/browser.ts";
-import {
-  PersonalCalculator,
-  effectiveOverlay,
-  selectAddedEventIds,
-} from "../../apps/web/src/data/personal.ts";
+import * as personal from "../../apps/web/src/data/personal.ts";
+const { PersonalCalculator, effectiveOverlay } = personal;
 import { LocalStore, emptyOverlay } from "../../apps/web/src/data/store.ts";
 import { setPreferredView } from "../../apps/web/src/data/api.ts";
+import { seedProduct } from "./seed.mjs";
 
 const seed = new Uint8Array(32).fill(173);
+const freshSeed = new Uint8Array(32).fill(174);
 let input = null,
   worker = null,
   sequence = 0,
@@ -23,74 +20,48 @@ let input = null,
   mainWasm = null,
   productCalculator = null,
   productStore = null,
+  productDatabase = null,
   productInput = null,
   productWorkerBytes = 0,
   productSnapshot = null,
-  NativeWorker = null;
+  NativeWorker = null,
+  diagnosticStore = null,
+  diagnosticInventory = null;
 const pending = new Map();
+const jsonBytes = (value) => {
+  if (value === null) return 4;
+  if (typeof value === "string" || typeof value === "number")
+    return utf8(JSON.stringify(value)).length;
+  if (typeof value === "boolean") return value ? 4 : 5;
+  if (value === undefined) return 0;
+  if (Array.isArray(value))
+    return (
+      2 +
+      value.reduce(
+        (total, item, index) => total + jsonBytes(item) + (index ? 1 : 0),
+        0,
+      )
+    );
+  return (
+    2 +
+    Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .reduce(
+        (total, [key, item], index) =>
+          total + jsonBytes(key) + 1 + jsonBytes(item) + (index ? 1 : 0),
+        0,
+      )
+  );
+};
 let lastResult = null;
-const signedJudgment = (target) =>
+const signedJudgment = (target, previous, actorSeed) =>
   createEvent(
-    seed,
-    [],
-    "b37b0000000000000000000000000001",
+    actorSeed,
+    previous,
+    "b37b0000000000000000000000000002",
     { kind: "judgment.set", target, value: "bless" },
     null,
   );
-const hashJson = (value) =>
-  contentHash(utf8(canonicalize(utf8(JSON.stringify(value)))));
-const productInventory = (value) => {
-  const events = value.events.map((envelope) => JSON.parse(envelope).id);
-  const bodies = [
-    ...new Set(
-      value.events
-        .map((envelope) => JSON.parse(envelope).header.content?.hash)
-        .filter(Boolean),
-    ),
-  ].sort();
-  const selections = Object.keys(value.import_selections).sort();
-  const manifest = {
-    events: {
-      count: events.length,
-      hash: contentHash(utf8(value.events.join("\n") + "\n")),
-    },
-    bodies: { count: bodies.length, hash: hashJson(bodies) },
-    import_selections: { count: selections.length, hash: hashJson(selections) },
-  };
-  return {
-    snapshot: hashJson(manifest),
-    logical_inventory: hashJson({
-      events,
-      bodies,
-      import_selections: selections,
-    }),
-    view: value.selected_view,
-    events,
-    bodies,
-    selections,
-  };
-};
-const seedProduct = async (store, value) => {
-  for (const envelope of value.events) {
-    const { id, header } = JSON.parse(envelope);
-    const body = value.bodies[id];
-    await store.put("records", id, {
-      id,
-      envelope,
-      body: body ?? null,
-      bodyStatus:
-        body !== undefined ? "present" : header.content ? "missing" : "none",
-      bodyHash: header.content?.hash ?? null,
-    });
-  }
-  for (const [hash, selection] of Object.entries(value.import_selections))
-    await store.put("selections", hash, JSON.stringify(selection));
-  const inventory = productInventory(value);
-  await store.put("inventory", inventory.snapshot, inventory);
-  await store.put("inventory", "latest", inventory);
-  productSnapshot = inventory.snapshot;
-  return inventory;
-};
 const request = (message) =>
   new Promise((resolve, reject) => {
     const id = ++sequence;
@@ -103,30 +74,65 @@ const request = (message) =>
     worker.postMessage(payload);
   });
 window.bench = {
-  async gate(view, keep = false) {
-    const start = performance.now();
-    mainWasm = await initializeCore();
+  async seedProductProfile(view) {
     setPreferredView(view);
-    if (keep) {
-      NativeWorker = globalThis.Worker;
-      productWorkerBytes = 0;
-      globalThis.Worker = class extends NativeWorker {
-        postMessage(message) {
-          productWorkerBytes += utf8(JSON.stringify(message)).length;
-          super.postMessage(message);
-        }
+    productDatabase = `measurement-${crypto.randomUUID()}`;
+    const inventory = await new Promise((resolve, reject) => {
+      const seedWorker = new Worker("/seed-worker.js", { type: "module" });
+      seedWorker.onmessage = ({ data }) => {
+        if (data.error) reject(new Error(data.error));
+        else resolve(data.inventory);
+        seedWorker.terminate();
       };
-    }
-    const store = new LocalStore(`measurement-${crypto.randomUUID()}`);
-    if (keep) {
-      productInput = await (
-        await fetch("/input.json", { cache: "no-store" })
-      ).json();
-      await seedProduct(store, productInput);
-    }
-    const calculator = new PersonalCalculator(store, async () => ({
+      seedWorker.onerror = (event) => {
+        reject(new Error(event.message));
+        seedWorker.terminate();
+      };
+      seedWorker.postMessage({
+        database: productDatabase,
+        fixture: "/fixture.json",
+        records: "/records.jsonl",
+      });
+    });
+    return { database: productDatabase, events: inventory.events.length };
+  },
+  async prepareProduct(view, database = productDatabase) {
+    if (!database) throw new Error("The product profile has not been seeded.");
+    productDatabase = database;
+    setPreferredView(view);
+    mainWasm = await initializeCore();
+    NativeWorker = globalThis.Worker;
+    productWorkerBytes = 0;
+    globalThis.Worker = class extends NativeWorker {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener("message", (event) => {
+          productWorkerBytes += jsonBytes(event.data);
+        });
+      }
+      postMessage(message) {
+        productWorkerBytes += jsonBytes(message);
+        super.postMessage(message);
+      }
+    };
+    productStore = new LocalStore(database);
+    productCalculator = new PersonalCalculator(productStore, async () => ({
       identity: identityFromSeed(seed),
     }));
+  },
+  async gate(view, keep = false) {
+    const start = performance.now();
+    if (!keep) mainWasm = await initializeCore();
+    setPreferredView(view);
+    if (keep && !productCalculator) await window.bench.prepareProduct(view);
+    const store = keep
+      ? productStore
+      : new LocalStore(`measurement-${crypto.randomUUID()}`);
+    const calculator = keep
+      ? productCalculator
+      : new PersonalCalculator(store, async () => ({
+          identity: identityFromSeed(seed),
+        }));
     const statuses = [];
     calculator.subscribe((s) => statuses.push(s));
     const result = await calculator.ensure({
@@ -134,24 +140,18 @@ window.bench = {
       ...(!keep ? { refresh: true } : {}),
     });
     const ms = performance.now() - start;
-    if (keep) {
-      productCalculator = calculator;
-      productStore = store;
-    } else {
+    if (!keep) {
       calculator.cancel();
       (await store.database).close();
     }
-    return { ms, result, statuses };
+    return { ms, result, statuses, worker_bytes: productWorkerBytes };
   },
-  async productSubmission(target) {
+  async productSubmission({ target, previous, fresh }) {
     const start = performance.now();
-    const event = signedJudgment(target);
+    mainWasm = await initializeCore();
+    const actorSeed = fresh ? freshSeed : seed;
+    const event = signedJudgment(target, previous, actorSeed);
     const serialized = JSON.stringify(event.envelope);
-    const found = productInput.events.findIndex(
-      (envelope) => JSON.parse(envelope).id > event.envelope.id,
-    );
-    const index = found < 0 ? productInput.events.length : found;
-    productInput.events.splice(index, 0, serialized);
     await productStore.put("records", event.envelope.id, {
       id: event.envelope.id,
       envelope: serialized,
@@ -159,32 +159,35 @@ window.bench = {
       bodyStatus: "none",
       bodyHash: null,
     });
-    const inventory = productInventory(productInput);
-    await productStore.put("inventory", inventory.snapshot, inventory);
-    await productStore.put("inventory", "latest", inventory);
-    productSnapshot = inventory.snapshot;
     return {
       ms: performance.now() - start,
       id: event.envelope.id,
-      identity: identityFromSeed(seed),
+      identity: identityFromSeed(actorSeed),
+      previous,
       target,
-      snapshot: productSnapshot,
-      inventory_index: index,
+      envelope: serialized,
       bytes: utf8(serialized).length,
     };
   },
-  async productReload() {
+  async productReload(inventory) {
     const start = performance.now();
+    if (typeof productStore.commitInventory === "function")
+      await productStore.commitInventory(inventory);
+    else {
+      await productStore.put("inventory", inventory.snapshot, inventory);
+      await productStore.put("inventory", "latest", inventory);
+    }
+    productSnapshot = inventory.snapshot;
     const before = productWorkerBytes;
     const result = await productCalculator.ensure({ mode: "personal" });
     if (result.state !== "ready" || result.snapshot !== productSnapshot)
       throw new Error(
-        "The product reload did not reach the submitted snapshot.",
+        `The product reload did not reach the submitted snapshot: ${JSON.stringify(result)}`,
       );
     return {
       ms: performance.now() - start,
       result,
-      request_bytes: productWorkerBytes - before,
+      worker_bytes: productWorkerBytes - before,
     };
   },
   async productRank(word) {
@@ -195,6 +198,7 @@ window.bench = {
     if (productStore) (await productStore.database).close();
     productCalculator = null;
     productStore = null;
+    productDatabase = null;
     productInput = null;
     productSnapshot = null;
     if (NativeWorker) globalThis.Worker = NativeWorker;
@@ -222,13 +226,23 @@ window.bench = {
     const start = performance.now();
     input = await (await fetch("/input.json", { cache: "no-store" })).json();
     if (savedOverlay) input.overlay = savedOverlay;
+    diagnosticStore ??= new LocalStore(`diagnostic-${crypto.randomUUID()}`);
+    diagnosticInventory = await seedProduct(diagnosticStore, input);
     return { ms: performance.now() - start, events: input.events.length };
   },
   async actors(limits) {
     const start = performance.now();
+    const { events, bodies, overlay, ...options } = input;
     const response = await request({
-      type: "actors",
-      input: { ...input, limits },
+      type: "load",
+      session: "actors",
+      source: {
+        database: diagnosticStore.name,
+        snapshot: diagnosticInventory.snapshot,
+        events_digest: diagnosticInventory.events_digest,
+        count: diagnosticInventory.events.length,
+      },
+      options: { ...options, limits },
     });
     const body = JSON.parse(input.bodies[input.selected_view]);
     savedOverlay = effectiveOverlay(
@@ -247,10 +261,17 @@ window.bench = {
   },
   async load(limits, label) {
     const start = performance.now();
+    const { events, bodies, ...options } = input;
     const response = await request({
       type: "load",
       session: label,
-      input: { ...input, limits },
+      source: {
+        database: diagnosticStore.name,
+        snapshot: diagnosticInventory.snapshot,
+        events_digest: diagnosticInventory.events_digest,
+        count: diagnosticInventory.events.length,
+      },
+      options: { ...options, limits },
     });
     sentEventIds = input.events.map((envelope) => JSON.parse(envelope).id);
     return { ms: performance.now() - start, ...response };
@@ -260,7 +281,7 @@ window.bench = {
     const inventoryIds = input.events.map(
       (envelope) => JSON.parse(envelope).id,
     );
-    const addedIds = selectAddedEventIds(inventoryIds, sentEventIds);
+    const addedIds = personal.selectAddedEventIds(inventoryIds, sentEventIds);
     if (!addedIds)
       throw new Error("The diagnostic base is not an ordered subset.");
     const addedSet = new Set(addedIds);
@@ -283,6 +304,9 @@ window.bench = {
   },
   releaseInput() {
     input = null;
+    diagnosticStore?.database.then((database) => database.close());
+    diagnosticStore = null;
+    diagnosticInventory = null;
   },
   async rank(word, label) {
     const start = performance.now();

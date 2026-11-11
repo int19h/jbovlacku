@@ -41,10 +41,13 @@ export interface StoredRecord {
 export interface SnapshotInventory {
   snapshot: string;
   logical_inventory: string;
+  events_digest: string;
   view: string;
   events: string[];
   /** Body hashes the snapshot reports as retained. */
   bodies: string[];
+  /** Required body hashes that the snapshot does not retain. */
+  unretained_bodies?: string[];
   selections: string[];
 }
 export interface RecordsProgress {
@@ -227,6 +230,7 @@ export async function syncRecords(
     const record = await store.get<StoredRecord>("records", id);
     if (!record) continue;
     const normalized = normalize(record);
+    if (!record.bodyStatus) await store.put("records", id, normalized);
     cached.set(id, normalized);
     bytes +=
       byteLength(normalized.envelope) + byteLength(normalized.body ?? "");
@@ -436,13 +440,28 @@ export async function syncRecords(
   const inventory: SnapshotInventory = {
     snapshot,
     logical_inventory: manifest.logical_inventory,
+    events_digest: declared.events.hash!,
     view,
     events,
     bodies,
+    unretained_bodies: [
+      ...new Set(
+        events
+          .map((id) => cached.get(id)!.bodyHash)
+          .filter(
+            (hash): hash is string =>
+              typeof hash === "string" && !bodySet.has(hash),
+          ),
+      ),
+    ].sort(),
     selections,
   };
-  await store.put("inventory", snapshot, inventory);
-  await store.put("inventory", "latest", inventory);
+  if (typeof store.commitInventory === "function")
+    await store.commitInventory(inventory);
+  else {
+    await store.put("inventory", snapshot, inventory);
+    await store.put("inventory", "latest", inventory);
+  }
   progress({
     phase: "done",
     loaded: events.length,
@@ -489,6 +508,15 @@ export async function loadRecords(
         "missing",
       );
   }
+  const selections = await loadSelections(store, inventory, options);
+  return { events, bodies, selections };
+}
+/** Reads only import selections, leaving record authentication in the worker. */
+export async function loadSelections(
+  store: LocalStore,
+  inventory: SnapshotInventory,
+  options: { signal?: AbortSignal } = {},
+): Promise<Record<string, string[]>> {
   const selections: Record<string, string[]> = {};
   for (const hash of inventory.selections) {
     options.signal?.throwIfAborted();
@@ -500,7 +528,7 @@ export async function loadRecords(
       );
     selections[hash] = JSON.parse(canonical) as string[];
   }
-  return { events, bodies, selections };
+  return selections;
 }
 /**
  * The stored inventory of the last sync. Its records do not depend on the
@@ -511,7 +539,7 @@ export async function latestInventory(
   store: LocalStore,
 ): Promise<SnapshotInventory | null> {
   const stored = await store.get<SnapshotInventory>("inventory", "latest");
-  if (!stored) return null;
+  if (!stored || typeof stored.events_digest !== "string") return null;
   const chosen = getPreferredView();
   return chosen && chosen !== stored.view
     ? { ...stored, view: chosen }

@@ -258,11 +258,16 @@ pub struct Lifecycle {
     pub retired: BTreeSet<String>,
     pub compromised: BTreeSet<String>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Evaluation {
     pub selected_view: String,
     pub available: bool,
     pub reasons: BTreeSet<String>,
+    results: std::rc::Rc<EvaluationResults>,
+    pub overlay: Option<Value>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EvaluationResults {
     pub receipts: BTreeMap<String, Receipt>,
     pub lifecycle: Lifecycle,
     pub publications: BTreeMap<String, Publication>,
@@ -270,11 +275,111 @@ pub struct Evaluation {
     pub registers: BTreeMap<String, Register>,
     pub judgments: BTreeMap<String, BTreeMap<String, Judgment>>,
     pub policy: Option<Value>,
-    pub overlay: Option<Value>,
     pub(crate) policies: Vec<Value>,
     pub(crate) policy_history: BTreeMap<String, Value>,
     pub(crate) selections: BTreeMap<String, BTreeSet<String>>,
     pub(crate) trust: Vec<TrustRule>,
+}
+impl std::ops::Deref for Evaluation {
+    type Target = EvaluationResults;
+    fn deref(&self) -> &Self::Target {
+        &self.results
+    }
+}
+impl std::ops::DerefMut for Evaluation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        std::rc::Rc::make_mut(&mut self.results)
+    }
+}
+impl Serialize for Evaluation {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(15))?;
+        map.serialize_entry("selected_view", &self.selected_view)?;
+        map.serialize_entry("available", &self.available)?;
+        map.serialize_entry("reasons", &self.reasons)?;
+        map.serialize_entry("receipts", &self.receipts)?;
+        map.serialize_entry("lifecycle", &self.lifecycle)?;
+        map.serialize_entry("publications", &self.publications)?;
+        map.serialize_entry("accounts", &self.accounts)?;
+        map.serialize_entry("registers", &self.registers)?;
+        map.serialize_entry("judgments", &self.judgments)?;
+        map.serialize_entry("policy", &self.policy)?;
+        map.serialize_entry("overlay", &self.overlay)?;
+        map.serialize_entry("policies", &self.policies)?;
+        map.serialize_entry("policy_history", &self.policy_history)?;
+        map.serialize_entry("selections", &self.selections)?;
+        map.serialize_entry("trust", &self.trust)?;
+        map.end()
+    }
+}
+impl<'de> Deserialize<'de> for Evaluation {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            selected_view: String,
+            available: bool,
+            reasons: BTreeSet<String>,
+            #[serde(flatten)]
+            results: EvaluationResults,
+            overlay: Option<Value>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            selected_view: wire.selected_view,
+            available: wire.available,
+            reasons: wire.reasons,
+            results: std::rc::Rc::new(wire.results),
+            overlay: wire.overlay,
+        })
+    }
+}
+impl Evaluation {
+    pub fn with_overlay(&self, overlay: Option<Value>, suspended: impl Fn(&str) -> bool) -> Self {
+        let overlay_reason = self.reasons.contains("invalid_overlay")
+            || self.reasons.contains("public_shun_issuer_unavailable");
+        let mut result = Self {
+            selected_view: self.selected_view.clone(),
+            available: if overlay_reason {
+                !self.reasons.contains("resource_unavailable")
+                    && !self.reasons.contains("view_unavailable")
+            } else {
+                self.available
+            },
+            reasons: self.reasons.clone(),
+            results: self.results.clone(),
+            overlay,
+        };
+        result.reasons.remove("invalid_overlay");
+        result.reasons.remove("public_shun_issuer_unavailable");
+        apply_overlay(&mut result, &suspended);
+        result
+    }
+}
+fn apply_overlay(result: &mut Evaluation, suspended: &impl Fn(&str) -> bool) {
+    if result
+        .overlay
+        .as_ref()
+        .is_some_and(|overlay| !policy::valid_overlay(overlay, &result.selected_view))
+    {
+        result.available = false;
+        result.reasons.insert("invalid_overlay".into());
+    } else if result
+        .overlay
+        .as_ref()
+        .and_then(|overlay| overlay["public_shun_issuer"].as_str())
+        .is_some_and(suspended)
+    {
+        result.available = false;
+        result
+            .reasons
+            .insert("public_shun_issuer_unavailable".into());
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct TrustRule {
@@ -313,25 +418,27 @@ fn empty_evaluation(input: &EvaluationOptions) -> Evaluation {
         selected_view: input.selected_view.clone(),
         available: true,
         reasons: BTreeSet::new(),
-        receipts: BTreeMap::new(),
-        lifecycle: Lifecycle {
-            key_actor: BTreeMap::new(),
-            groups: BTreeMap::new(),
-            successor: BTreeMap::new(),
-            suspended: BTreeMap::new(),
-            retired: BTreeSet::new(),
-            compromised: BTreeSet::new(),
-        },
-        publications: BTreeMap::new(),
-        accounts: BTreeMap::new(),
-        registers: BTreeMap::new(),
-        judgments: BTreeMap::new(),
-        policy: None,
+        results: std::rc::Rc::new(EvaluationResults {
+            receipts: BTreeMap::new(),
+            lifecycle: Lifecycle {
+                key_actor: BTreeMap::new(),
+                groups: BTreeMap::new(),
+                successor: BTreeMap::new(),
+                suspended: BTreeMap::new(),
+                retired: BTreeSet::new(),
+                compromised: BTreeSet::new(),
+            },
+            publications: BTreeMap::new(),
+            accounts: BTreeMap::new(),
+            registers: BTreeMap::new(),
+            judgments: BTreeMap::new(),
+            policy: None,
+            policies: Vec::new(),
+            policy_history: BTreeMap::new(),
+            selections: BTreeMap::new(),
+            trust: Vec::new(),
+        }),
         overlay: input.overlay.clone(),
-        policies: Vec::new(),
-        policy_history: BTreeMap::new(),
-        selections: BTreeMap::new(),
-        trust: Vec::new(),
     }
 }
 fn event_limit_evaluation(input: &EvaluationOptions) -> Evaluation {
@@ -396,24 +503,7 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
         resource_unavailable(&mut result);
         return result;
     }
-    if input
-        .overlay
-        .as_ref()
-        .is_some_and(|o| !policy::valid_overlay(o, &input.selected_view))
-    {
-        result.available = false;
-        result.reasons.insert("invalid_overlay".into());
-    } else if input
-        .overlay
-        .as_ref()
-        .and_then(|overlay| overlay["public_shun_issuer"].as_str())
-        .is_some_and(|issuer| graph.suspended(issuer))
-    {
-        result.available = false;
-        result
-            .reasons
-            .insert("public_shun_issuer_unavailable".into());
-    }
+    apply_overlay(&mut result, &|issuer| graph.suspended(issuer));
     publications(graph, &mut result);
     reconcile_selections(graph, &mut result);
     accounts::evaluate(graph, input, &mut result);
@@ -781,6 +871,7 @@ fn rafsi_gate(result: &mut Evaluation) {
     let mut assignments: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut definition_gates: BTreeMap<String, (bool, bool)> = BTreeMap::new();
     let mut uncertain_words = BTreeSet::new();
+    let mut updates = Vec::new();
     for (id, p) in &result.publications {
         if p.kind == "definition.publish" && p.eligible != Eligibility::NotSelected {
             if !effective(id) {
@@ -834,11 +925,13 @@ fn rafsi_gate(result: &mut Evaluation) {
             Eligibility::Unknown
         };
         for id in ids {
-            let p = result.publications.get_mut(id).unwrap();
-            if p.eligible != Eligibility::NotSelected {
-                p.eligible = eligibility.clone();
+            if result.publications[id].eligible != Eligibility::NotSelected {
+                updates.push((id.clone(), eligibility.clone()));
             }
         }
+    }
+    for (id, eligibility) in updates {
+        result.publications.get_mut(&id).unwrap().eligible = eligibility;
     }
 }
 
@@ -890,17 +983,21 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
             r.interpretation = Interpretation::Unavailable;
             r.reasons.insert("body_unavailable".into());
         }
-        if let Some(p) = result.publications.get(id) {
-            for state in p.lineage.values() {
-                if state != "resolved" {
-                    result
-                        .receipts
-                        .get_mut(id)
-                        .unwrap()
-                        .reasons
-                        .insert(format!("lineage_{state}"));
-                }
-            }
+        let lineage_states: Vec<String> = result
+            .publications
+            .get(id)
+            .into_iter()
+            .flat_map(|p| p.lineage.values())
+            .filter(|state| *state != "resolved")
+            .cloned()
+            .collect();
+        for state in lineage_states {
+            result
+                .receipts
+                .get_mut(id)
+                .unwrap()
+                .reasons
+                .insert(format!("lineage_{state}"));
         }
         if !matches!(
             node.kind.as_str(),

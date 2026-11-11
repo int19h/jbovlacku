@@ -44,6 +44,7 @@ struct Fixture {
     nonce: u64,
     selected_view: String,
     overlay: Option<Value>,
+    limits: jvc_state::Limits,
 }
 
 #[test]
@@ -79,6 +80,7 @@ impl Fixture {
             nonce: 0,
             selected_view: String::new(),
             overlay: None,
+            limits: jvc_state::Limits::default(),
         }
     }
     fn event(&mut self, seed: u8, action: Value, body: Option<Value>) -> String {
@@ -168,7 +170,7 @@ impl Fixture {
         id
     }
     fn bytes(&self) -> Vec<u8> {
-        canonical_value(&json!({"events":self.events,"bodies":self.bodies,"selected_view":self.selected_view,"import_selections":{},"overlay":self.overlay})).unwrap()
+        canonical_value(&json!({"events":self.events,"bodies":self.bodies,"selected_view":self.selected_view,"import_selections":{},"overlay":self.overlay,"limits":self.limits})).unwrap()
     }
     fn legacy_state_output(&self) -> Value {
         let evaluation = jvc_state::evaluate(&jvc_state::EvaluationInput {
@@ -185,7 +187,7 @@ impl Fixture {
             selected_view: self.selected_view.clone(),
             overlay: self.overlay.clone(),
             import_selections: BTreeMap::new(),
-            limits: jvc_state::Limits::default(),
+            limits: self.limits.clone(),
         });
         let mut value = serde_json::to_value(&evaluation).unwrap();
         value["publication_statuses"] = json!(
@@ -247,7 +249,7 @@ impl Fixture {
         serde_json::from_str(&session.rank_with_reviewers(&self.word, 16).unwrap()).unwrap()
     }
     fn streamed_session(&self) -> jvc_runtime::EvaluationSession {
-        let options = canonical_value(&json!({"selected_view":self.selected_view,"import_selections":{},"overlay":self.overlay})).unwrap();
+        let options = canonical_value(&json!({"selected_view":self.selected_view,"import_selections":{},"overlay":self.overlay,"limits":self.limits})).unwrap();
         let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
         let mut trusted = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
         let mut records = Vec::new();
@@ -849,6 +851,151 @@ fn personal_shun_unavailable_or_invalid_input_never_produces_fallback_scores() {
             .iter()
             .any(|reason| reason == "public_shun_issuer_unavailable")
     );
+}
+
+fn assert_overlay_only_parity(f: &mut Fixture, overlay: Option<Value>) {
+    f.overlay = None;
+    let base = f.streamed_session();
+    let actual = base
+        .with_overlay(
+            overlay
+                .as_ref()
+                .map(|overlay| canonical_value(overlay).unwrap()),
+        )
+        .unwrap();
+    f.overlay = overlay;
+    let expected = jvc_runtime::EvaluationSession::new(&f.bytes()).unwrap();
+    assert_eq!(actual.state().unwrap(), expected.state().unwrap());
+    assert_eq!(
+        actual.rank(&f.word).unwrap(),
+        expected.rank(&f.word).unwrap()
+    );
+    assert_eq!(
+        actual.rank_with_reviewers(&f.word, 16).unwrap(),
+        expected.rank_with_reviewers(&f.word, 16).unwrap()
+    );
+    assert_eq!(actual.actors().unwrap(), expected.actors().unwrap());
+    let summary: Value = serde_json::from_str(&actual.summary().unwrap()).unwrap();
+    let state: Value = serde_json::from_str(&expected.state().unwrap()).unwrap();
+    assert_eq!(summary["available"], state["available"]);
+    assert_eq!(summary["reasons"], state["reasons"]);
+    assert_eq!(summary["selected_view"], state["selected_view"]);
+    assert_eq!(summary["events"], json!(f.events.len()));
+}
+
+#[test]
+fn overlay_only_matches_full_build_for_valid_invalid_and_suspended_issuers() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    f.bless(4, &target);
+    f.trust(6, 4, "heed", "*");
+    f.view("simple-routes-bounds-v1", &[1, 6], 1000);
+    assert_overlay_only_parity(&mut f, None);
+    let valid = local_overlay(
+        &f,
+        Some(6),
+        json!([{"issuer":key(6),"subject":key(4),"scope":{"kind":"definition","word":"*","language":"*"},"value":"heed","weight":null}]),
+        json!([{"identity":key(4),"scope":{"kind":"*","word":"*","language":"*"}}]),
+    );
+    assert_overlay_only_parity(&mut f, Some(valid));
+    let mut invalid = local_overlay(&f, Some(1), json!([]), json!([]));
+    invalid
+        .as_object_mut()
+        .unwrap()
+        .remove("public_shun_issuer");
+    assert_overlay_only_parity(&mut f, Some(invalid));
+    f.event_after(1,vec![format!("jve1:{}","f".repeat(64))],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    let suspended = local_overlay(&f, Some(1), json!([]), json!([]));
+    assert_overlay_only_parity(&mut f, Some(suspended));
+}
+
+fn suspended_fixture() -> Fixture {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    f.bless(4, &target);
+    f.trust(6, 4, "heed", "*");
+    f.view("simple-routes-bounds-v1", &[1, 6], 1000);
+    f.event_after(1,vec![format!("jve1:{}","f".repeat(64))],json!({"kind":"trust.set","subject":key(4),"scope":{"kind":"*","word":"*","language":"*"},"value":"shun"}),None);
+    f
+}
+
+fn assert_resource_overlays(f: &mut Fixture) {
+    assert_overlay_only_parity(f, Some(json!({"invalid":true})));
+    let suspended = local_overlay(f, Some(1), json!([]), json!([]));
+    assert_overlay_only_parity(f, Some(suspended));
+}
+
+#[test]
+fn overlay_only_rebuilds_event_limit_results_before_applying_an_overlay() {
+    let mut f = suspended_fixture();
+    f.limits.events = 0;
+    assert_resource_overlays(&mut f);
+}
+
+#[test]
+fn overlay_only_rebuilds_layout_resource_results_before_applying_an_overlay() {
+    let mut f = suspended_fixture();
+    f.limits.traversal = 0;
+    assert_resource_overlays(&mut f);
+}
+
+#[test]
+fn overlay_only_rebuilds_policy_resource_results_before_applying_an_overlay() {
+    let mut f = Fixture::new();
+    f.selected_view = format!("jve1:{}", "0".repeat(64));
+    f.limits.traversal = 0;
+    assert_resource_overlays(&mut f);
+}
+
+#[test]
+fn overlay_only_rebuilds_late_resource_results_and_keeps_full_overlay_reasons() {
+    let mut f = suspended_fixture();
+    for traversal in 0..1000 {
+        f.limits.traversal = traversal;
+        f.overlay = None;
+        let state = jvc_runtime::evaluate_bytes(&f.bytes()).unwrap();
+        if state["reasons"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("resource_unavailable"))
+            && !state["publications"].as_object().unwrap().is_empty()
+        {
+            assert_resource_overlays(&mut f);
+            return;
+        }
+    }
+    panic!("no late resource return found");
+}
+
+#[test]
+fn overlay_only_keeps_update_statistics_from_the_advanced_session() {
+    let mut f = Fixture::new();
+    let target = f.definition("en");
+    f.bless(4, &target);
+    f.trust(6, 4, "heed", "*");
+    f.view("simple-routes-bounds-v1", &[1, 6], 1000);
+    let base = f.streamed_session();
+    f.event(
+        2,
+        json!({"kind":"judgment.set","target":target,"value":"curse"}),
+        None,
+    );
+    let options = canonical_value(
+        &json!({"selected_view":f.selected_view,"import_selections":{},"limits":f.limits}),
+    )
+    .unwrap();
+    let mut builder = base.fork(&options).unwrap();
+    let envelope = f.events.last().unwrap();
+    builder.add_record(envelope.as_bytes(), None).unwrap();
+    let advanced = builder.finish();
+    let expected: Value = serde_json::from_str(&advanced.update_statistics().unwrap()).unwrap();
+    assert_eq!(expected["incremental_records"], json!(1));
+    let overlay = local_overlay(&f, Some(6), json!([]), json!([]));
+    let actual = advanced
+        .with_overlay(Some(canonical_value(&overlay).unwrap()))
+        .unwrap();
+    let statistics: Value = serde_json::from_str(&actual.update_statistics().unwrap()).unwrap();
+    assert_eq!(statistics, expected);
 }
 
 #[test]
