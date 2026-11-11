@@ -76,6 +76,7 @@ pub struct PreparedEvaluationInput {
     options: EvaluationOptions,
     nodes: std::rc::Rc<BTreeMap<String, graph::Node>>,
     arena: arena::SharedArena,
+    arena_error: Option<jvc_core::Error>,
     event_limit_exceeded: bool,
 }
 impl PreparedEvaluationInput {
@@ -84,6 +85,7 @@ impl PreparedEvaluationInput {
             options,
             nodes: std::rc::Rc::new(BTreeMap::new()),
             arena: std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default())),
+            arena_error: None,
             event_limit_exceeded: false,
         }
     }
@@ -100,33 +102,48 @@ impl PreparedEvaluationInput {
         body: Option<&[u8]>,
         inspect: impl FnOnce(&BodyAvailability) -> T,
     ) -> T {
-        let (node, content) = graph::Node::new_with_in(self.arena.clone(), event, body, inspect);
-        if !self.nodes.contains_key(event.id()) {
-            if self.nodes.len() >= self.options.limits.events {
-                self.event_limit_exceeded = true;
-            }
-            std::rc::Rc::make_mut(&mut self.nodes).insert(event.id().into(), node);
+        if self.nodes.contains_key(event.id()) {
+            return inspect(&inspect_body(event, body));
         }
+        let (node, content) = graph::Node::new_with_in(self.arena.clone(), event, body, inspect);
+        let error = self.arena.borrow_mut().take_error();
+        if error.is_some() {
+            self.arena_error = error;
+        }
+        if self.nodes.len() >= self.options.limits.events {
+            self.event_limit_exceeded = true;
+        }
+        std::rc::Rc::make_mut(&mut self.nodes).insert(event.id().into(), node);
         content
     }
     /// Only a trusted host can supply records from its private admission store.
     pub fn add_host_verified_record(&mut self, record: HostVerifiedRecord) {
+        if self.nodes.contains_key(record.id()) {
+            return;
+        }
         let node = record.node.repack(&self.arena);
         let id = node.id.clone();
-        if !self.nodes.contains_key(&id) {
-            if self.nodes.len() >= self.options.limits.events {
-                self.event_limit_exceeded = true;
-            }
-            std::rc::Rc::make_mut(&mut self.nodes).insert(id, node);
+        let error = self.arena.borrow_mut().take_error();
+        if error.is_some() {
+            self.arena_error = error;
         }
+        if self.nodes.len() >= self.options.limits.events {
+            self.event_limit_exceeded = true;
+        }
+        std::rc::Rc::make_mut(&mut self.nodes).insert(id, node);
+    }
+    pub(crate) fn arena_error(&self) -> Option<jvc_core::Error> {
+        self.arena_error.clone()
     }
     #[doc(hidden)]
     pub fn record_arena_bytes(&self) -> usize {
         let mut arenas = BTreeMap::new();
         for node in self.nodes.values() {
-            arenas
-                .entry(node.action.arena_id())
-                .or_insert_with(|| node.action.allocated_bytes());
+            for value in std::iter::once(&node.action).chain(node.body.iter()) {
+                arenas
+                    .entry(value.arena_id())
+                    .or_insert_with(|| value.allocated_bytes());
+            }
         }
         arenas.values().sum()
     }
@@ -437,7 +454,7 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
     prepared.evaluate()
 }
 fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
-    if prepared.arena.borrow().error().is_some() {
+    if prepared.arena_error().is_some() {
         let mut result = empty_evaluation(&prepared.options);
         resource_unavailable(&mut result);
         return result;
@@ -887,6 +904,7 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
             .or_default()
             .push(id.clone());
     }
+    let mut scope_arena = None;
     for (key, ids) in groups {
         let charge_before = graph.ancestry.bytes();
         let heads = graph.maxima(ids.into_iter().collect(), false);
@@ -951,7 +969,14 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
                         .as_str()
                         .unwrap_or_default(),
                 ),
-                scope: CompactValue::from(node.action.view().index("scope")),
+                scope: CompactValue::from_view_in(
+                    scope_arena
+                        .get_or_insert_with(|| {
+                            std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default()))
+                        })
+                        .clone(),
+                    node.action.view().index("scope"),
+                ),
                 values: values.clone(),
             });
         }
@@ -1282,6 +1307,49 @@ mod event_limit_tests {
             prepared.add_record(record, None);
         }
         prepared
+    }
+
+    #[test]
+    fn duplicate_records_do_not_grow_the_arena_and_still_run_inspect() {
+        let records = records();
+        let mut prepared = prepared(&records, records.len());
+        let before = prepared.record_arena_bytes();
+        let mut inspected = 0;
+        for record in &records {
+            let absent = prepared.add_record_with(record, None, |availability| {
+                inspected += 1;
+                matches!(availability, BodyAvailability::Absent)
+            });
+            assert!(absent);
+        }
+        assert_eq!(inspected, records.len());
+        assert_eq!(prepared.record_arena_bytes(), before);
+
+        for record in &records {
+            let (host, ()) = HostVerifiedRecord::extract_with(
+                record.id(),
+                record.header(),
+                BodyAvailability::Absent,
+                |_| (),
+            );
+            prepared.add_host_verified_record(host);
+        }
+        assert_eq!(prepared.nodes.len(), records.len());
+        assert_eq!(prepared.record_arena_bytes(), before);
+    }
+
+    #[test]
+    fn arena_bytes_include_a_body_arena_separate_from_the_action() {
+        let records = records();
+        let mut prepared = prepared(&records, records.len());
+        let action_bytes = prepared.record_arena_bytes();
+        let body = CompactValue::from(json!({"retained": "body"}));
+        let body_bytes = body.allocated_bytes();
+        std::rc::Rc::make_mut(&mut prepared.nodes)
+            .get_mut(records[0].id())
+            .unwrap()
+            .body = Some(body);
+        assert_eq!(prepared.record_arena_bytes(), action_bytes + body_bytes);
     }
 
     #[test]

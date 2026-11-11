@@ -131,12 +131,23 @@ pub(super) fn evaluate_context_with_limit(
         }
         let mut private: BTreeMap<(String, String, String), (CompactValue, BTreeSet<String>)> =
             BTreeMap::new();
+        let mut scope_arena = None;
         for rule in overlay["trust"].as_array().into_iter().flatten() {
             let issuer = resolve(rule["issuer"].as_str().unwrap());
             let subject = resolve(rule["subject"].as_str().unwrap());
             let entry = private
                 .entry((issuer, subject, rule["scope"].to_string()))
-                .or_insert_with(|| (CompactValue::from(rule["scope"].clone()), BTreeSet::new()));
+                .or_insert_with(|| {
+                    let arena = scope_arena.get_or_insert_with(|| {
+                        std::rc::Rc::new(std::cell::RefCell::new(
+                            crate::arena::RecordArena::default(),
+                        ))
+                    });
+                    (
+                        CompactValue::from_arena(arena.clone(), &rule["scope"]),
+                        BTreeSet::new(),
+                    )
+                });
             entry.1.insert(rule["value"].as_str().unwrap().into());
         }
         for ((issuer, subject, _), (scope, values)) in private {
