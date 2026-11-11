@@ -9,7 +9,11 @@ import {
   utf8,
   type EvaluationRequest,
 } from "../../../../packages/core/src/browser.ts";
-import type { LocalStore, Overlay } from "./store.ts";
+import {
+  isStrictlyIncreasing,
+  type LocalStore,
+  type Overlay,
+} from "./store.ts";
 import {
   forgetInventory,
   latestInventory,
@@ -680,17 +684,25 @@ export class PersonalCalculator {
       sent.selections !== canonicalize(utf8(JSON.stringify(selections)))
     )
       return null;
+    const retained = inventory.bodies;
+    if (
+      !isStrictlyIncreasing(inventory.events) ||
+      !isStrictlyIncreasing(retained)
+    )
+      return null;
     const previous = await this.store.get<SnapshotInventory>(
       "inventory",
       sent.snapshot,
     );
-    const retained = inventory.bodies;
     if (
       !previous ||
       previous.logical_inventory !== sent.logical_inventory ||
       previous.events_digest !== sent.events_digest ||
       previous.events.length !== sent.count ||
+      !isStrictlyIncreasing(previous.events) ||
+      !isStrictlyIncreasing(previous.bodies) ||
       !Array.isArray(previous.unretained_bodies) ||
+      !isStrictlyIncreasing(previous.unretained_bodies) ||
       previous.bodies.some((hash) => !hasSortedValue(retained, hash))
     )
       return null;

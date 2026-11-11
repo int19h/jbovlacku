@@ -490,6 +490,87 @@ test("a retained body that no added record carries uses a full load", async () =
   await assertBodyAdvanceFallsBack(h, [], false);
 });
 
+function appendBodyRecord(h: Harness) {
+  const hash = "sha256:" + "9".repeat(64);
+  h.records.set(added, {
+    id: added,
+    envelope: envelope(added),
+    body: JSON.stringify({ retained: true }),
+    bodyStatus: "present",
+    bodyHash: hash,
+  });
+  h.setInventory({
+    ...inventory([view, other, added], snapshot("b")),
+    bodies: [hash, bodyHash],
+  });
+}
+
+const unsortedInventoryCases: [string, (h: Harness) => void][] = [
+  [
+    "current event list",
+    (h) => {
+      appendRecord(h);
+      h.setInventory(inventory([view, added, other], snapshot("b")));
+    },
+  ],
+  [
+    "current body list",
+    (h) => {
+      appendBodyRecord(h);
+      h.setInventory({
+        ...inventory([view, other, added], snapshot("b")),
+        bodies: [bodyHash, "sha256:" + "9".repeat(64)],
+      });
+    },
+  ],
+  [
+    "previous event list",
+    (h) => {
+      h.setInventory(inventory([other, view], snapshot("a")));
+      appendRecord(h);
+    },
+  ],
+  [
+    "previous body list",
+    (h) => {
+      const earlierHash = "sha256:" + "7".repeat(64);
+      h.setInventory({
+        ...inventory([view, other], snapshot("a")),
+        bodies: [bodyHash, earlierHash],
+      });
+      appendBodyRecord(h);
+      h.setInventory({
+        ...inventory([view, other, added], snapshot("b")),
+        bodies: [earlierHash, "sha256:" + "9".repeat(64), bodyHash],
+      });
+    },
+  ],
+  [
+    "previous unretained body list",
+    (h) => {
+      h.setInventory({
+        ...inventory([view, other], snapshot("a")),
+        unretained_bodies: [bodyHash, "sha256:" + "7".repeat(64)],
+      });
+      appendBodyRecord(h);
+    },
+  ],
+];
+for (const [name, change] of unsortedInventoryCases) {
+  test(`an unsorted ${name} uses a full load`, async () => {
+    const h = harness();
+    await h.calculator.ensure();
+    change(h);
+    assert.equal((await h.calculator.ensure()).state, "ready");
+    assert.deepEqual(
+      h.worker.messages.map((message) => message.type),
+      ["load", "overlay", "load", "overlay"],
+    );
+    assert.equal(lastLoad(h).source.count, 3);
+    h.calculator.cancel();
+  });
+}
+
 test("a new ID that sorts between loaded IDs advances with only that envelope", async () => {
   const h = harness();
   const inserted = "jve1:" + "d".repeat(64);

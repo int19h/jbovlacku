@@ -129,11 +129,22 @@ test("the browser worker authenticates streamed records and checks the complete 
       const between = low + (high - low) / 2n;
       const betweenId = "jve1:" + between.toString(16).padStart(64, "0");
       const afterId = "jve1:" + "f".repeat(64);
-      await store.put("records", betweenId, { ...stored, id: betweenId });
-      await store.put("records", afterId, { ...stored, id: afterId });
+      await store.put("records", betweenId, null);
+      await store.put("records", afterId, { id: afterId });
       const extra = await send(options);
       await store.delete("records", betweenId);
       await store.delete("records", afterId);
+      await store.put("records", record.envelope.id, {
+        ...stored,
+        id: other.envelope.id,
+      });
+      const mismatchedId = await send(options);
+      await store.put("records", record.envelope.id, {
+        ...stored,
+        envelope: JSON.stringify(other.envelope),
+      });
+      const mismatchedEnvelope = await send(options);
+      await store.put("records", record.envelope.id, stored);
       const forged = { ...record.envelope, signature: "invalid" };
       await store.put("records", record.envelope.id, {
         ...stored,
@@ -145,6 +156,8 @@ test("the browser worker authenticates streamed records and checks the complete 
         claimed,
         missing,
         extra,
+        mismatchedId,
+        mismatchedEnvelope,
         ordinary,
         exportedHostPorts,
         unsafeSessionPorts: [...unsafeSessionPorts, ...unsafeBuilderPorts],
@@ -162,6 +175,10 @@ test("the browser worker authenticates streamed records and checks the complete 
   expect(results.missing.type).toBe("error");
   expect(results.missing.message).toContain("is not cached");
   expect(results.extra).toEqual(results.original);
+  expect(results.mismatchedId.type).toBe("error");
+  expect(results.mismatchedId.message).toBe(results.missing.message);
+  expect(results.mismatchedEnvelope.type).toBe("error");
+  expect(results.mismatchedEnvelope.message).toBe(results.missing.message);
   expect(results.ordinary.type).toBe("error");
 });
 
@@ -222,4 +239,61 @@ test("an inventory commit prunes stale record IDs and publishes the new pointer"
   expect(result.keys).toEqual(["jve1:" + "a".repeat(64)]);
   expect(result.latest).toEqual(result.pinned);
   expect(result.cursorCounts).toEqual({ key: 1, value: 0 });
+});
+
+test("an unordered inventory commit fails without pruning or publishing", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore(`inventory-${crypto.randomUUID()}`);
+    const a = "jve1:" + "a".repeat(64);
+    const f = "jve1:" + "f".repeat(64);
+    const snapshot = "sha256:" + "b".repeat(64);
+    const inventory = {
+      snapshot,
+      logical_inventory: snapshot,
+      events_digest: "digest",
+      view: "jve1:" + "0".repeat(64),
+      events: [a],
+      bodies: [],
+      selections: [],
+    };
+    try {
+      await store.put("records", a, { id: a });
+      await store.put("records", f, { id: f });
+      await store.put("inventory", "latest", { snapshot: "old" });
+      const errors: string[] = [];
+      for (const events of [
+        [f, a],
+        [a, a],
+      ]) {
+        const error = await store
+          .commitInventory({ ...inventory, events })
+          .then(
+            () => null,
+            (error: unknown) =>
+              error instanceof Error ? error.message : String(error),
+          );
+        errors.push(error ?? "committed");
+      }
+      return {
+        errors,
+        keys: await store.keys("records"),
+        latest: await store.get("inventory", "latest"),
+      };
+    } finally {
+      (await store.database).close();
+    }
+  });
+  expect(result.errors).toEqual([
+    "The inventory is not in order.",
+    "The inventory is not in order.",
+  ]);
+  expect(result.keys).toEqual([
+    "jve1:" + "a".repeat(64),
+    "jve1:" + "f".repeat(64),
+  ]);
+  expect(result.latest).toEqual({ snapshot: "old" });
 });

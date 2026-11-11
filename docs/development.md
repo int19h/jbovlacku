@@ -52,6 +52,7 @@ The core build accepts `CARGO_TARGET_DIR` and `JVC_WASM_BINDGEN`.
 The first variable selects Rust build storage. The second names the exact `wasm-bindgen` executable.
 Its version must remain 0.2.105.
 Select an ignored directory or a directory outside the checkout for Rust build output.
+Use a different `CARGO_TARGET_DIR` for each checkout. The core build deletes old revision directories under that target.
 The following example selects a temporary directory outside the checkout:
 
 ```sh

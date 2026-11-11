@@ -96,6 +96,20 @@ function missingRecord(id: string): Error {
   return new Error(`Record ${id} is not cached. Download the records again.`);
 }
 const BATCH_SIZE = 256;
+async function readBatch(recordStore: IDBObjectStore, after?: string) {
+  const range =
+    after === undefined ? undefined : IDBKeyRange.lowerBound(after, true);
+  const [keys, records] = await Promise.all([
+    request(recordStore.getAllKeys(range, BATCH_SIZE)),
+    request(
+      recordStore.getAll(range, BATCH_SIZE) as IDBRequest<StoredRecord[]>,
+    ),
+  ]);
+  return keys.map((key, index) => ({
+    id: String(key),
+    record: records[index],
+  }));
+}
 async function readStoredRecords(source: LoadSource, builder: Builder) {
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
     const opening = indexedDB.open(source.database);
@@ -139,33 +153,31 @@ async function readStoredRecords(source: LoadSource, builder: Builder) {
     let index = 0;
     let after: string | undefined;
     for (;;) {
-      const range =
-        after === undefined ? undefined : IDBKeyRange.lowerBound(after, true);
-      const batch = await request(
-        recordStore.getAll(range, BATCH_SIZE) as IDBRequest<StoredRecord[]>,
-      );
+      const batch = await readBatch(recordStore, after);
       if (batch.length === 0) break;
-      for (const record of batch) {
+      for (const { id, record } of batch) {
         const expected = stored.events[index];
-        if (record.id !== expected) {
-          if (expected === undefined || record.id < expected) {
-            after = record.id;
+        if (id !== expected) {
+          if (expected === undefined || id < expected) {
+            after = id;
             continue;
           }
           throw missingRecord(expected);
         }
+        if (record.id !== id) throw missingRecord(id);
         if (record.bodyHash && bodies.has(record.bodyHash) && !record.body)
           throw new Error(
-            `The body of ${record.id} is retained by the snapshot but not cached. Download the records again.`,
+            `The body of ${id} is retained by the snapshot but not cached. Download the records again.`,
           );
         builder.addRecordText(
           record.envelope,
           record.body && record.bodyHash && bodies.has(record.bodyHash)
             ? record.body
             : undefined,
+          id,
         );
         index++;
-        after = record.id;
+        after = id;
       }
       if (index === stored.events.length || batch.length < BATCH_SIZE) break;
     }
@@ -180,7 +192,6 @@ async function readStoredRecords(source: LoadSource, builder: Builder) {
 export class EvaluationWorker {
   private session: Session | null = null;
   private sessionKey: string | null = null;
-  private events = 0;
 
   constructor(
     private readonly loadSource: SourceLoader = readStoredRecords,
@@ -196,7 +207,6 @@ export class EvaluationWorker {
     this.session?.free();
     this.session = null;
     this.sessionKey = null;
-    this.events = 0;
   }
 
   private loaded(
@@ -220,7 +230,7 @@ export class EvaluationWorker {
     this.release();
     const builder = this.createSession(message.options);
     try {
-      this.events = await this.loadSource(message.source, builder);
+      await this.loadSource(message.source, builder);
       this.session = builder.finish();
       this.sessionKey = message.session;
       return this.loaded(message.id, message.session);
@@ -238,7 +248,6 @@ export class EvaluationWorker {
     this.release();
     this.session = next;
     this.sessionKey = message.session;
-    this.events = next.summary().events;
     return this.loaded(message.id, message.session, false);
   }
 
@@ -249,7 +258,6 @@ export class EvaluationWorker {
       throw new Error("The base evaluation session is not loaded.");
     const { events, bodies, ...options } = message.input;
     const builder = this.session.fork(options);
-    const previousEvents = this.events;
     this.release();
     try {
       for (const envelope of events) {
@@ -258,7 +266,6 @@ export class EvaluationWorker {
       }
       this.session = builder.finish();
       this.sessionKey = message.session;
-      this.events = previousEvents + events.length;
       return this.loaded(message.id, message.session);
     } finally {
       builder.free();
