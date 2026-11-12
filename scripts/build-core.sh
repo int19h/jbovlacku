@@ -21,9 +21,10 @@ fi
 cargo build --release --locked --target wasm32-unknown-unknown --target-dir "$jvc_target_dir" -p jvc-runtime --lib --jobs 2
 "$jvc_bindgen" "$jvc_target_dir/wasm32-unknown-unknown/release/jvc_runtime.wasm" --target web --out-dir packages/core/generated --out-name jvc_runtime
 cp "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" packages/core/generated/rust-standard-library-notices.html
-export JVC_REVISION="$jvc_revision"
-export JVC_SOURCE_DIRTY="$jvc_source_dirty"
-node -e '
+if command -v node >/dev/null 2>&1; then
+  export JVC_REVISION="$jvc_revision"
+  export JVC_SOURCE_DIRTY="$jvc_source_dirty"
+  node -e '
 const { createHash } = require("node:crypto");
 const { readFileSync, writeFileSync } = require("node:fs");
 const metadata = {
@@ -39,6 +40,11 @@ writeFileSync(
   JSON.stringify(metadata, null, 2) + "\n",
 );
 '
+else
+  read -r jvc_wasm_sha256 _ < <(sha256sum packages/core/generated/jvc_runtime_bg.wasm)
+  printf '{"schema":1,"source_revision":null,"source_dirty":null,"wasm_sha256":"%s"}\n' \
+    "$jvc_wasm_sha256" > packages/core/generated/jvc_runtime_build.json
+fi
 if [[ -n $jvc_revision ]]; then
   for old_target in "$jvc_target_root"/wasm-*; do
     old_name=${old_target##*/}
