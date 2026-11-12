@@ -45,6 +45,10 @@ impl ProjectionRow {
         self.node.body_hash.as_deref()
     }
 
+    pub fn body_is_missing(&self) -> bool {
+        self.node.body_label == "missing"
+    }
+
     pub fn apply_body_retention(&mut self, retained: bool) {
         if !retained && self.node.body_hash.is_some() {
             self.node.body = None;

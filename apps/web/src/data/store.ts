@@ -19,6 +19,7 @@ import {
   DISCARDED_PREDECESSOR,
 } from "./outbox-graph.ts";
 import {
+  PROJECTION_LATEST_KEY,
   PROJECTION_PRODUCER_KEY,
   projectionRowBytes,
   projectionSnapshotKey,
@@ -434,17 +435,27 @@ export class LocalStore {
       request.onerror = () => reject(request.error);
     });
   }
-  async readProjectionAdvance(ids: string[]): Promise<{
+  async readProjectionAdvance(
+    ids: string[],
+    snapshot: string,
+  ): Promise<{
     producer: string | undefined;
+    digest: string | undefined;
     rows: Map<string, Uint8Array>;
   }> {
     const db = await this.database;
     const transaction = db.transaction(["projections", "meta"], "readonly");
-    const producer = await idbRequest(
-      transaction
-        .objectStore("meta")
-        .get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
-    );
+    const meta = transaction.objectStore("meta");
+    const [producer, snapshotMeta] = await Promise.all([
+      idbRequest(
+        meta.get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
+      ),
+      idbRequest(
+        meta.get(projectionSnapshotKey(snapshot)) as IDBRequest<
+          ProjectionSnapshotMeta | undefined
+        >,
+      ),
+    ]);
     const rows = new Map<string, Uint8Array>();
     for (const id of ids) {
       const row = (await idbRequest(
@@ -452,7 +463,14 @@ export class LocalStore {
       )) as ProjectionBytes | undefined;
       if (row) rows.set(id, projectionRowBytes(row));
     }
-    return { producer, rows };
+    return {
+      producer,
+      digest:
+        typeof snapshotMeta?.rows_hash === "string"
+          ? snapshotMeta.rows_hash
+          : undefined,
+      rows,
+    };
   }
   async put(store: string, id: string, value: unknown): Promise<void> {
     const db = await this.database;
@@ -477,7 +495,7 @@ export class LocalStore {
     });
   }
   async putProjectedRecord(
-    record: { id: string },
+    record: { id: string; body?: string | null },
     row: Uint8Array,
     latest?: SnapshotInventory | null,
   ): Promise<void> {
@@ -489,8 +507,17 @@ export class LocalStore {
       );
       let failure: unknown;
       const execute = async () => {
+        const oldRecord = (await idbRequest(
+          tx.objectStore("records").get(record.id),
+        )) as { body?: string | null } | undefined;
+        if (oldRecord?.body && !record.body) return;
+        const latestSnapshot = await idbRequest(
+          tx.objectStore("meta").get(PROJECTION_LATEST_KEY) as IDBRequest<
+            string | undefined
+          >,
+        );
         const current =
-          latest === undefined
+          latest === undefined || latestSnapshot !== latest?.snapshot
             ? await idbRequest(
                 tx.objectStore("inventory").get("latest") as IDBRequest<
                   SnapshotInventory | undefined
@@ -1096,6 +1123,7 @@ export class LocalStore {
           },
           projectionSnapshotKey(inventory.snapshot),
         );
+        meta.put(inventory.snapshot, PROJECTION_LATEST_KEY);
         inventories.put(inventory, inventory.snapshot);
         inventories.put(inventory, "latest");
         const prune = (store: IDBObjectStore) => {

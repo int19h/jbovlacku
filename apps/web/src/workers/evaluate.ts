@@ -72,6 +72,7 @@ export type WorkerResponse =
       actors?: Record<string, string>;
       storage_bytes?: number;
       projection_rebuilt?: boolean;
+      projection_digest?: string;
     }
   | { type: "ranked"; id: number; session: string; result: unknown }
   | {
@@ -89,6 +90,7 @@ type Builder = ReturnType<typeof createEvaluationSession>;
 interface SourceLoad {
   count: number;
   bytesRead: number;
+  digest: string;
 }
 type SourceLoader = (
   source: LoadSource,
@@ -259,7 +261,7 @@ async function readProjectionRows(
   const actualHash = digest.finish();
   if (actualHash !== meta.rows_hash)
     throw new ProjectionRebuildNeeded("The projection digest does not match.");
-  return { count: index, bytesRead };
+  return { count: index, bytesRead, digest: actualHash };
 }
 function readStoredRecords(source: LoadSource, builder: Builder) {
   return openDatabase(source.database).then(async (database) => {
@@ -388,7 +390,7 @@ export class EvaluationWorker {
     id: number,
     key: string,
     includeActors = true,
-    storage?: { bytesRead: number; rebuilt: boolean },
+    storage?: { bytesRead: number; rebuilt: boolean; digest: string },
   ): LoadedResponse {
     if (!this.session) throw new Error("The evaluation session is not loaded.");
     return {
@@ -401,6 +403,7 @@ export class EvaluationWorker {
         ? {
             storage_bytes: storage.bytesRead,
             projection_rebuilt: storage.rebuilt,
+            projection_digest: storage.digest,
           }
         : {}),
     };
@@ -430,6 +433,7 @@ export class EvaluationWorker {
       return this.loaded(message.id, message.session, true, {
         bytesRead: rebuildBytes + loaded.bytesRead,
         rebuilt,
+        digest: loaded.digest,
       });
     } finally {
       builder.free();

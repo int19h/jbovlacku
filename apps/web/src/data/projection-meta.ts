@@ -1,6 +1,7 @@
 import { createProjectionDigest } from "../../../../packages/core/src/browser.ts";
 
 export const PROJECTION_PRODUCER_KEY = "projection:producer";
+export const PROJECTION_LATEST_KEY = "projection:latest";
 export const projectionSnapshotKey = (snapshot: string) =>
   `projection:${snapshot}`;
 

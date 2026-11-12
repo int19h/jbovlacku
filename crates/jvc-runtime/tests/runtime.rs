@@ -1436,6 +1436,27 @@ fn publication_global_and_reconfigured_updates_use_full_state_export() {
 }
 
 #[test]
+fn retained_projection_accepts_schema_invalid_bodies() {
+    let mut fixture = Fixture::new();
+    let id = fixture.definition("en");
+    let event = jvc_core::verify_envelope(fixture.events[0].as_bytes()).unwrap();
+    assert_eq!(event.id(), id);
+    let missing = jvc_state::ProjectionRow::extract(&event, None);
+    let invalid = jvc_state::ProjectionRow::extract(&event, Some(b"not json"));
+    let options = canonical_value(
+        &json!({"selected_view":"jve1:".to_owned()+&"0".repeat(64),"import_selections":{}}),
+    )
+    .unwrap();
+    let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+    let hash = missing.body_hash().unwrap();
+    let packed = hex::decode(&hash["sha256:".len()..]).unwrap();
+    builder.set_retained_bodies(&packed).unwrap();
+    builder
+        .add_projection_row(&invalid.encode().unwrap(), None, None)
+        .unwrap();
+}
+
+#[test]
 fn host_record_projection_matches_its_versioned_golden_digest() {
     #[derive(serde::Deserialize)]
     struct Input {

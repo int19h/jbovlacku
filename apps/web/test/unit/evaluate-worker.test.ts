@@ -116,7 +116,7 @@ async function worker(): Promise<TestWorker> {
       const input = loading!;
       for (const envelope of input.events)
         builder.addRecordText(envelope, input.bodies[JSON.parse(envelope).id]);
-      return { count: input.events.length, bytesRead: 0 };
+      return { count: input.events.length, bytesRead: 0, digest: "test" };
     },
     createEvaluationSession,
     async () => {},

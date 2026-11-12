@@ -342,7 +342,7 @@ Old compact records remain available for historical snapshots. Original envelope
 Every server evaluation uses these stored compact records. This includes cold starts, view changes, core upgrades, and checkpoint fallback.
 These paths do not repeat signature checks, body hashing, or full body parsing.
 The core uses a separate host-only port to accept the trusted host projections. The browser authenticates original records at sync or during a projection rebuild, then uses its own browser projection rows.
-Browser source imports the public `browser.ts` facade, which exposes no private record insertion, extraction, or restore ports.
+Browser source imports the public `browser.ts` facade. It exposes original-record verification and the browser's own projection-row construction, retained-body selection, and digest support. It exposes no private host-record insertion, extraction, or checkpoint restore ports.
 A source-policy test rejects host ports and direct runtime imports under `apps/web/src`.
 The shared raw Wasm artifact still contains host exports. The facade and source policy define the browser application boundary.
 

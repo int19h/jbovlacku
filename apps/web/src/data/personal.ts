@@ -6,10 +6,12 @@
 import {
   canonicalize,
   contentHash,
+  createProjectionDigest,
   projectionBuildIdentity,
   utf8,
   type EvaluationRequest,
 } from "../../../../packages/core/src/browser.ts";
+import { xorProjectionHashes } from "./projection-meta.ts";
 import {
   isStrictlyIncreasing,
   type LocalStore,
@@ -235,6 +237,7 @@ export class PersonalCalculator {
   } | null = null;
   /** The loaded inventory binding. Originals and authenticated rows stay in local storage. */
   private sent: SentRecords | null = null;
+  private projectionDigest: string | null = null;
   /**
    * True after Cancel until the user asks for a calculation again. An
    * automatic call from a page never restarts a cancelled calculation.
@@ -290,6 +293,7 @@ export class PersonalCalculator {
     worker?.terminate();
     this.clearLoadedSession();
     this.sent = null;
+    this.projectionDigest = null;
     this.rankCache.clear();
     for (const entry of this.pending.values()) entry.reject(error);
     this.pending.clear();
@@ -369,6 +373,7 @@ export class PersonalCalculator {
     this.pending.clear();
     this.clearLoadedSession();
     this.sent = null;
+    this.projectionDigest = null;
     this.loading = null;
     this.rankCache.clear();
     this.cancelled = true;
@@ -583,6 +588,8 @@ export class PersonalCalculator {
           loaded.selected_view !== inventory.view
         )
           throw new Error("Unexpected worker reply.");
+        this.projectionDigest =
+          advance?.projectionDigest ?? loaded.projection_digest ?? null;
         this.loadedKey = intermediate;
         this.continuity = {
           snapshot: inventory.snapshot,
@@ -687,11 +694,13 @@ export class PersonalCalculator {
       count: number;
     };
     rows: { id: string; row: Uint8Array; bodyRetained: boolean }[];
+    projectionDigest: string;
   } | null> {
     const sent = this.sent;
     if (
       !this.loadedKey ||
       !sent ||
+      !this.projectionDigest ||
       sent.snapshot === inventory.snapshot ||
       sent.view !== inventory.view ||
       sent.selections !== canonicalize(utf8(JSON.stringify(selections)))
@@ -730,7 +739,10 @@ export class PersonalCalculator {
       )
     )
       return null;
-    const advance = await this.store.readProjectionAdvance(added);
+    const advance = await this.store.readProjectionAdvance(
+      added,
+      inventory.snapshot,
+    );
     if (advance.producer !== projectionBuildIdentity()) return null;
     const rows: { id: string; row: Uint8Array; bodyRetained: boolean }[] = [];
     const addedBodies = new Set<string>();
@@ -757,6 +769,13 @@ export class PersonalCalculator {
       }
     }
     if (newBodies.some((hash) => !addedBodies.has(hash))) return null;
+    const delta = createProjectionDigest();
+    for (const { id, row } of rows) delta.update(id, row);
+    const projectionDigest = xorProjectionHashes(
+      this.projectionDigest,
+      delta.finish(),
+    );
+    if (projectionDigest !== advance.digest) return null;
     return {
       base: this.loadedKey,
       input: {
@@ -773,6 +792,7 @@ export class PersonalCalculator {
         count: inventory.events.length,
       },
       rows,
+      projectionDigest,
     };
   }
   private rememberSent(
@@ -944,6 +964,7 @@ export class PersonalCalculator {
     this.current = null;
     this.clearLoadedSession();
     this.sent = null;
+    this.projectionDigest = null;
     this.rankCache.clear();
     if (this.status.state !== "failed") this.set({ state: "idle" });
   }

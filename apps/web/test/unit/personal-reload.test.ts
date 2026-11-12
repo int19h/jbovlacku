@@ -11,6 +11,8 @@ import type { WorkerRequest } from "../../src/workers/evaluate.ts";
 };
 (globalThis as { window?: unknown }).window = globalThis;
 const core = await import("../../../../packages/core/src/browser.ts");
+const { xorProjectionHashes } =
+  await import("../../src/data/projection-meta.ts");
 const { PersonalCalculator } = await import("../../src/data/personal.ts");
 const { emptyOverlay } = await import("../../src/data/store.ts");
 
@@ -35,6 +37,14 @@ function inventory(events: string[], id: string): SnapshotInventory {
     unretained_bodies: [],
     selections: [],
   };
+}
+
+const BASE_DIGEST = "sha256:" + "0".repeat(64);
+let currentProjectionDigest = BASE_DIGEST;
+function advanceDigest(ids: string[]) {
+  const delta = core.createProjectionDigest();
+  for (const id of ids) delta.update(id, new Uint8Array([1]));
+  return xorProjectionHashes(currentProjectionDigest, delta.finish());
 }
 
 class RecordingWorker {
@@ -176,6 +186,8 @@ class RecordingWorker {
             selected_view: this.selectedView,
             events: this.events,
             actors: {},
+            projection_digest:
+              message.type === "load" ? currentProjectionDigest : undefined,
           },
         } as MessageEvent);
       }
@@ -203,6 +215,7 @@ type Harness = {
 };
 
 function harness(): Harness {
+  currentProjectionDigest = BASE_DIGEST;
   let currentInventory = inventory([view, other], snapshot("a"));
   let currentOverlay = emptyOverlay();
   let projectionProducer = core.projectionBuildIdentity();
@@ -244,10 +257,14 @@ function harness(): Harness {
       if (name === "selections") return selections.get(id);
       throw new Error(`Unexpected read: ${name}/${id}`);
     },
-    readProjectionAdvance: async (ids: string[]) => ({
-      producer: projectionProducer,
-      rows: new Map(ids.map((id) => [id, new Uint8Array([1])])),
-    }),
+    readProjectionAdvance: async (ids: string[]) => {
+      currentProjectionDigest = advanceDigest(ids);
+      return {
+        producer: projectionProducer,
+        digest: currentProjectionDigest,
+        rows: new Map(ids.map((id) => [id, new Uint8Array([1])])),
+      };
+    },
     keys: async (name: string) => {
       if (name === "selections") return [...selections.keys()];
       return [];
