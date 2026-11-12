@@ -894,24 +894,27 @@ export class LocalStore {
         ["records", "projections", "inventory", "meta"],
         "readwrite",
       );
-      const records = tx.objectStore("records");
-      const cursor = records.openKeyCursor();
-      cursor.onsuccess = () => {
-        const current = cursor.result;
-        if (!current) return;
-        if (!hasSortedId(events, String(current.key)))
-          records.delete(current.primaryKey);
-        current.continue();
+      const prune = (store: IDBObjectStore) => {
+        let after: string | undefined;
+        const read = () => {
+          const range =
+            after === undefined
+              ? undefined
+              : IDBKeyRange.lowerBound(after, true);
+          const request = store.getAllKeys(range, 256);
+          request.onsuccess = () => {
+            const keys = request.result;
+            for (const key of keys)
+              if (!hasSortedId(events, String(key))) store.delete(key);
+            if (keys.length < 256) return;
+            after = String(keys[keys.length - 1]);
+            read();
+          };
+        };
+        read();
       };
-      const projections = tx.objectStore("projections");
-      const projectionCursor = projections.openKeyCursor();
-      projectionCursor.onsuccess = () => {
-        const current = projectionCursor.result;
-        if (!current) return;
-        if (!hasSortedId(events, String(current.key)))
-          projections.delete(current.primaryKey);
-        current.continue();
-      };
+      prune(tx.objectStore("records"));
+      prune(tx.objectStore("projections"));
       const meta = tx.objectStore("meta");
       const producer = meta.get(PROJECTION_PRODUCER_KEY);
       producer.onsuccess = () => {

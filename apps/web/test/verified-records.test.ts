@@ -320,7 +320,7 @@ test("an inventory commit prunes stale record and projection IDs and publishes m
   expect(result.meta.events_digest).toBe("digest");
   expect(result.meta.count).toBe(1);
   expect(result.meta.rows_hash).toBeNull();
-  expect(result.cursorCounts).toEqual({ key: 2, value: 0 });
+  expect(result.cursorCounts).toEqual({ key: 0, value: 0 });
 });
 
 test("an unordered inventory commit fails without pruning or publishing", async ({
