@@ -892,44 +892,77 @@ export class LocalStore {
       let index = 0;
       let count = 0;
       let valid = true;
-      const rows = projections.openCursor();
-      rows.onsuccess = () => {
-        const current = rows.result;
-        if (!current) {
-          tx.objectStore("meta").put(
-            {
-              version: PROJECTION_ROW_VERSION,
-              build: projectionBuildIdentity(),
-              events_digest: inventory.events_digest,
-              rows_hash: digest.finish(),
-              count: valid ? count : -1,
-            },
-            `projection:${inventory.snapshot}`,
-          );
-          return;
-        }
-        const id = String(current.key);
-        if (!hasSortedId(events, id)) {
-          projections.delete(current.primaryKey);
-          current.continue();
-          return;
-        }
-        while (index < events.length && events[index] < id) index++;
-        if (events[index] === id) {
-          const value = current.value as ArrayBuffer | Uint8Array;
-          const bytes =
-            value instanceof Uint8Array
-              ? value
-              : value instanceof ArrayBuffer
-                ? new Uint8Array(value)
-                : null;
-          if (bytes) digest.update(bytes);
-          else valid = false;
-          count++;
-          index++;
-        }
-        current.continue();
+      let after: string | undefined;
+      const readBatch = () => {
+        const range =
+          after === undefined ? undefined : IDBKeyRange.lowerBound(after, true);
+        const keysRequest = projections.getAllKeys(range, 256);
+        const valuesRequest = projections.getAll(range, 256);
+        let keys: IDBValidKey[] = [];
+        let values: unknown[] = [];
+        let remaining = 2;
+        const proceed = () => {
+          if (--remaining) return;
+          if (!keys.length) {
+            tx.objectStore("meta").put(
+              {
+                version: PROJECTION_ROW_VERSION,
+                build: projectionBuildIdentity(),
+                events_digest: inventory.events_digest,
+                rows_hash: digest.finish(),
+                count: valid ? count : -1,
+              },
+              `projection:${inventory.snapshot}`,
+            );
+            return;
+          }
+          for (const [batchIndex, key] of keys.entries()) {
+            const id = String(key);
+            if (!hasSortedId(events, id)) {
+              projections.delete(id);
+              continue;
+            }
+            while (index < events.length && events[index] < id) index++;
+            if (events[index] === id) {
+              const value = values[batchIndex] as ArrayBuffer | Uint8Array;
+              const bytes =
+                value instanceof Uint8Array
+                  ? value
+                  : value instanceof ArrayBuffer
+                    ? new Uint8Array(value)
+                    : null;
+              if (bytes) digest.update(bytes);
+              else valid = false;
+              count++;
+              index++;
+            }
+          }
+          if (keys.length < 256) {
+            tx.objectStore("meta").put(
+              {
+                version: PROJECTION_ROW_VERSION,
+                build: projectionBuildIdentity(),
+                events_digest: inventory.events_digest,
+                rows_hash: digest.finish(),
+                count: valid ? count : -1,
+              },
+              `projection:${inventory.snapshot}`,
+            );
+            return;
+          }
+          after = String(keys[keys.length - 1]);
+          readBatch();
+        };
+        keysRequest.onsuccess = () => {
+          keys = keysRequest.result;
+          proceed();
+        };
+        valuesRequest.onsuccess = () => {
+          values = valuesRequest.result;
+          proceed();
+        };
       };
+      readBatch();
       const inventories = tx.objectStore("inventory");
       inventories.put(inventory, inventory.snapshot);
       inventories.put(inventory, "latest");
