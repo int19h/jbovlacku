@@ -11,6 +11,8 @@ import type { WorkerRequest } from "../../src/workers/evaluate.ts";
 };
 (globalThis as { window?: unknown }).window = globalThis;
 const core = await import("../../../../packages/core/src/browser.ts");
+const { xorProjectionHashes } =
+  await import("../../src/data/projection-meta.ts");
 const { PersonalCalculator } = await import("../../src/data/personal.ts");
 const { emptyOverlay } = await import("../../src/data/store.ts");
 
@@ -35,6 +37,14 @@ function inventory(events: string[], id: string): SnapshotInventory {
     unretained_bodies: [],
     selections: [],
   };
+}
+
+const BASE_DIGEST = "sha256:" + "0".repeat(64);
+let currentProjectionDigest = BASE_DIGEST;
+function advanceDigest(ids: string[]) {
+  const delta = core.createProjectionDigest();
+  for (const id of ids) delta.update(id, new Uint8Array([1]));
+  return xorProjectionHashes(currentProjectionDigest, delta.finish());
 }
 
 class RecordingWorker {
@@ -62,7 +72,7 @@ class RecordingWorker {
       this.selectedView = message.options.selected_view;
     }
     if (message.type === "advance") {
-      this.events += message.input.events.length;
+      this.events += message.input.events.length + (message.rows?.length ?? 0);
       this.selectedView = message.input.selected_view;
     }
     queueMicrotask(async () => {
@@ -176,6 +186,8 @@ class RecordingWorker {
             selected_view: this.selectedView,
             events: this.events,
             actors: {},
+            projection_digest:
+              message.type === "load" ? currentProjectionDigest : undefined,
           },
         } as MessageEvent);
       }
@@ -199,11 +211,14 @@ type Harness = {
   selections: Map<string, string>;
   setInventory: (value: SnapshotInventory) => void;
   setOverlay: (value: Overlay) => void;
+  setProjectionProducer: (value: string) => void;
 };
 
 function harness(): Harness {
+  currentProjectionDigest = BASE_DIGEST;
   let currentInventory = inventory([view, other], snapshot("a"));
   let currentOverlay = emptyOverlay();
+  let projectionProducer = core.projectionBuildIdentity();
   const records = new Map<string, unknown>([
     [
       view,
@@ -235,8 +250,20 @@ function harness(): Harness {
       if (name === "inventory" && id === "latest") return currentInventory;
       if (name === "inventory") return inventories.get(id);
       if (name === "records") return records.get(id);
+      if (name === "projections")
+        return records.has(id) ? new Uint8Array([1]) : undefined;
+      if (name === "meta" && id === "projection:producer")
+        return projectionProducer;
       if (name === "selections") return selections.get(id);
       throw new Error(`Unexpected read: ${name}/${id}`);
+    },
+    readProjectionAdvance: async (ids: string[]) => {
+      currentProjectionDigest = advanceDigest(ids);
+      return {
+        producer: projectionProducer,
+        digest: currentProjectionDigest,
+        rows: new Map(ids.map((id) => [id, new Uint8Array([1])])),
+      };
     },
     keys: async (name: string) => {
       if (name === "selections") return [...selections.keys()];
@@ -273,6 +300,9 @@ function harness(): Harness {
     },
     setOverlay: (value) => {
       currentOverlay = value;
+    },
+    setProjectionProducer: (value) => {
+      projectionProducer = value;
     },
   };
 }
@@ -406,12 +436,30 @@ test("a pure snapshot append advances with only the new record", async () => {
   assert.equal(advance.type, "advance");
   if (first.type !== "load" || advance.type !== "advance") return;
   assert.equal(advance.base, h.worker.messages[1].session);
-  assert.deepEqual(advance.input.events, [envelope(added)]);
+  assert.deepEqual(advance.input.events, []);
+  assert.deepEqual(
+    advance.rows?.map((row) => row.id),
+    [added],
+  );
   assert.deepEqual(advance.input.bodies, {});
   assert.equal(advance.input.selected_view, view);
   assert.equal(
     (advance.input.overlay as { version: number } | undefined)?.version,
     2,
+  );
+  h.calculator.cancel();
+});
+
+test("rows from another build use a full load instead of advance", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  appendRecord(h);
+  h.setProjectionProducer("another-build");
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load", "overlay", "load", "overlay"],
   );
   h.calculator.cancel();
 });
@@ -439,8 +487,13 @@ test("a new record with a retained body advances with that body", async () => {
   );
   const advance = h.worker.messages[2];
   assert.equal(advance.type, "advance");
-  if (advance.type === "advance")
-    assert.deepEqual(advance.input.bodies, { [added]: body });
+  if (advance.type === "advance") {
+    assert.deepEqual(advance.input.bodies, {});
+    assert.deepEqual(
+      advance.rows?.map((row) => row.id),
+      [added],
+    );
+  }
   h.calculator.cancel();
 });
 
@@ -583,8 +636,13 @@ test("a new ID that sorts between loaded IDs advances with only that envelope", 
     (message) => message.type === "advance",
   );
   assert.equal(advance?.type, "advance");
-  if (advance?.type === "advance")
-    assert.deepEqual(advance.input.events, [envelope(inserted)]);
+  if (advance?.type === "advance") {
+    assert.deepEqual(advance.input.events, []);
+    assert.deepEqual(
+      advance.rows?.map((row) => row.id),
+      [inserted],
+    );
+  }
   h.calculator.cancel();
 });
 
@@ -602,12 +660,13 @@ test("several new IDs at different positions advance in inventory order", async 
     (message) => message.type === "advance",
   );
   assert.equal(advance?.type, "advance");
-  if (advance?.type === "advance")
-    assert.deepEqual(advance.input.events, [
-      envelope(before),
-      envelope(middle),
-      envelope(added),
-    ]);
+  if (advance?.type === "advance") {
+    assert.deepEqual(advance.input.events, []);
+    assert.deepEqual(
+      advance.rows?.map((row) => row.id),
+      [before, middle, added],
+    );
+  }
   h.calculator.cancel();
 });
 
@@ -871,8 +930,13 @@ test("an inventory change during an advance starts the next delta from the compl
     (message) => message.type === "advance",
   );
   assert.equal(advance?.type, "advance");
-  if (advance?.type === "advance")
-    assert.deepEqual(advance.input.events, [envelope(later)]);
+  if (advance?.type === "advance") {
+    assert.deepEqual(advance.input.events, []);
+    assert.deepEqual(
+      advance.rows?.map((row) => row.id),
+      [later],
+    );
+  }
   assert.equal(h.workers.length, 1);
   h.calculator.cancel();
 });

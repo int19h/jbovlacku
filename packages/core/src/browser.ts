@@ -1,4 +1,4 @@
-/** The browser uses only original-record verification. Host storage ports stay outside this facade. */
+/** The browser uses original-record verification and its own projection rows. Host storage ports stay outside this facade. */
 export {
   utf8,
   initializeCore,
@@ -20,6 +20,11 @@ export {
   rafsiPairId,
   validateAction,
   inspectBody,
+  projectRecord,
+  createRecordProjector,
+  createProjectionDigest,
+  projectionBuildIdentity,
+  PROJECTION_ROW_VERSION,
   interpretDefinition,
   omitDefinitionDefaults,
   prepareSigning,
@@ -83,6 +88,8 @@ function wrapBrowserBuilder(builder: EvaluationBuilder) {
   return {
     addRecord: builder.addRecord,
     addRecordText: builder.addRecordText,
+    setRetainedBodies: builder.setRetainedBodies,
+    addProjectionRow: builder.addProjectionRow,
     finish: () => wrapBrowserSession(builder.finish()),
     free: builder.free,
   };

@@ -4,6 +4,7 @@ export {
   type WordResultPolicy,
 } from "./word-policy.ts";
 import init, * as wasm from "../generated/jvc_runtime.js";
+import buildMetadata from "../generated/jvc_runtime_build.json" with { type: "json" };
 import { encodeEvaluationRequest } from "./evaluation-request.ts";
 const encoder = new TextEncoder();
 export const utf8 = (value: string) => encoder.encode(value);
@@ -66,6 +67,37 @@ export const canonicalize = (bytes: Uint8Array): string =>
   wasm.runtime_canonicalize(bytes);
 export const contentHash = (bytes: Uint8Array): string =>
   wasm.content_hash(bytes);
+export const PROJECTION_ROW_VERSION = 1;
+export const projectionBuildIdentity = (): string => buildMetadata.wasm_sha256;
+export const createProjectionDigest = () => new wasm.ProjectionDigest();
+export interface ProjectedRecord {
+  envelope: string;
+  bodyStatus: "present" | "missing" | "none" | "invalid";
+  row: Uint8Array;
+}
+function readProjected(projected: wasm.ProjectedRecord): ProjectedRecord {
+  try {
+    return {
+      envelope: projected.envelope(),
+      bodyStatus: projected.body_status() as ProjectedRecord["bodyStatus"],
+      row: projected.row(),
+    };
+  } finally {
+    projected.free();
+  }
+}
+export const projectRecord = (
+  envelope: Uint8Array,
+  body?: Uint8Array,
+): ProjectedRecord => readProjected(wasm.project_record(envelope, body));
+export const createRecordProjector = () => {
+  const projector = new wasm.RecordProjector();
+  return {
+    project: (envelope: Uint8Array, body?: Uint8Array) =>
+      readProjected(projector.project(envelope, body)),
+    free: () => projector.free(),
+  };
+};
 /** One linear-time matcher with a cumulative work budget. Call free after use. */
 export const createSearchPattern = (source: string) =>
   new wasm.SearchPattern(source);
@@ -434,6 +466,12 @@ export interface EvaluationBuilder {
     body?: string,
     expectedId?: string,
   ): EvaluationPackageRecord | null;
+  setRetainedBodies(hashes: string[]): void;
+  addProjectionRow(
+    row: Uint8Array,
+    expectedId?: string,
+    bodyRetained?: boolean,
+  ): void;
   removeRecord(id: string): void;
   finish(): EvaluationSessionHandle;
   free(): void;
@@ -565,6 +603,28 @@ function wrapEvaluationBuilder(
       return JSON.parse(
         builder.add_record_text(envelope, body, expectedId),
       ) as EvaluationPackageRecord | null;
+    },
+    setRetainedBodies(hashes: string[]) {
+      requireOpen();
+      const packed = new Uint8Array(hashes.length * 32);
+      for (const [index, hash] of hashes.entries()) {
+        if (!/^sha256:[0-9a-f]{64}$/.test(hash))
+          throw new Error("Invalid retained body hash.");
+        for (let byte = 0; byte < 32; byte++)
+          packed[index * 32 + byte] = Number.parseInt(
+            hash.slice(7 + byte * 2, 9 + byte * 2),
+            16,
+          );
+      }
+      builder.set_retained_bodies(packed);
+    },
+    addProjectionRow(
+      row: Uint8Array,
+      expectedId?: string,
+      bodyRetained?: boolean,
+    ) {
+      requireOpen();
+      builder.add_projection_row(row, expectedId, bodyRetained);
     },
     removeRecord(id: string) {
       requireOpen();

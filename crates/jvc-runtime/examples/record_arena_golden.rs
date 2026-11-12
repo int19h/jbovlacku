@@ -36,6 +36,23 @@ fn build_state(wire: &Wire, limits: Limits) -> EvaluatedState {
     prepared.into_state()
 }
 
+fn build_projection_session(wire: &Wire) -> jvc_runtime::EvaluationSession {
+    let options = serde_json::to_vec(&options(wire, wire.limits.clone())).unwrap();
+    let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+    let mut verifier = jvc_core::EnvelopeVerifier::default();
+    for raw in &wire.events {
+        let event = verifier.verify(raw.as_bytes()).unwrap();
+        let row = jvc_state::ProjectionRow::extract(
+            &event,
+            wire.bodies.get(event.id()).map(String::as_bytes),
+        );
+        builder
+            .add_projection_row(&row.encode().unwrap(), Some(event.id().into()), None)
+            .unwrap();
+    }
+    builder.finish()
+}
+
 fn remaining_work(state: &EvaluatedState) -> usize {
     #[derive(Deserialize)]
     struct Saved {
@@ -119,16 +136,21 @@ fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() < 3 || args.len() > 4 {
         panic!(
-            "usage: record_arena_golden INPUT OUTPUT [ADDITIONS | --bounds-only | --counts-only]"
+            "usage: record_arena_golden INPUT OUTPUT [ADDITIONS | --projection | --bounds-only | --counts-only]"
         );
     }
+    let projection = args.get(3).is_some_and(|arg| arg == "--projection");
     let counts_only = args.get(3).is_some_and(|arg| arg == "--counts-only");
     let bounds_only = counts_only || args.get(3).is_some_and(|arg| arg == "--bounds-only");
     let (input, output) = (&args[1], &args[2]);
     std::fs::create_dir_all(output).unwrap();
     let bytes = std::fs::read(input).unwrap();
     let wire: Wire = serde_json::from_slice(&bytes).unwrap();
-    let mut session = jvc_runtime::EvaluationSession::new(&bytes).unwrap();
+    let mut session = if projection {
+        build_projection_session(&wire)
+    } else {
+        jvc_runtime::EvaluationSession::new(&bytes).unwrap()
+    };
 
     let state = session.state().unwrap();
     std::fs::write(format!("{output}/state.json"), &state).unwrap();
@@ -192,7 +214,7 @@ fn main() {
     )
     .unwrap();
 
-    if let Some(additions) = args.get(3).filter(|_| !bounds_only) {
+    if let Some(additions) = args.get(3).filter(|_| !bounds_only && !projection) {
         let additions: Vec<String> =
             serde_json::from_str(&std::fs::read_to_string(additions).unwrap()).unwrap();
         let delta_options = serde_json::to_vec(&json!({

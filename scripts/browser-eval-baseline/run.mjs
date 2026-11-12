@@ -1040,6 +1040,10 @@ async function trial(condition, rep, profile = false) {
         await setup(() => pageCDP.send("HeapProfiler.collectGarbage"));
         await delay(750);
         setupBudgetPause = false;
+        if (args["force-projection-rebuild"])
+          await setup(() =>
+            page.evaluate(() => window.bench.forceProjectionRebuild()),
+          );
         pssPeak = lastPss;
       }
       const gated = await operation("actual-personal-gate", () =>

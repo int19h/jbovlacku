@@ -99,22 +99,38 @@ fn full_data_streamed_load_and_overlay_match_whole_input() {
     }))
     .unwrap();
     let mut builder = EvaluationSessionBuilder::new(&options).unwrap();
-    for (id, envelope, _) in records {
+    let mut projected_builder = EvaluationSessionBuilder::new(&options).unwrap();
+    let mut projection_verifier = jvc_core::EnvelopeVerifier::default();
+    for (id, envelope, _) in &records {
         builder
-            .add_record_text(envelope, input.bodies.get(&id).cloned(), None)
+            .add_record_text(envelope, input.bodies.get(id).cloned(), None)
+            .unwrap();
+        let event = projection_verifier.verify(envelope.as_bytes()).unwrap();
+        let row =
+            jvc_state::ProjectionRow::extract(&event, input.bodies.get(id).map(String::as_bytes));
+        let encoded = row.encode().unwrap();
+        let decoded = jvc_state::ProjectionRow::decode(&encoded).unwrap();
+        assert_eq!(decoded, row, "projection changed record {id}");
+        projected_builder
+            .add_projection_row(&encoded, Some(id.clone()), None)
             .unwrap();
     }
     let streamed = builder.finish();
+    let projected = projected_builder.finish();
     let whole_state = whole.state().unwrap();
     assert_eq!(streamed.state().unwrap(), whole_state);
     assert_eq!(streamed.actors().unwrap(), whole.actors().unwrap());
+    assert_eq!(projected.state().unwrap(), whole_state);
+    assert_eq!(projected.actors().unwrap(), whole.actors().unwrap());
 
     let streamed_rankings = if std::env::var_os("JVC_STREAMED_LOAD_OVERLAY_ONLY").is_some() {
         None
     } else {
         let streamed_rankings = ranking_hash(&streamed, &words);
+        let projected_rankings = ranking_hash(&projected, &words);
         let whole_rankings = ranking_hash(&whole, &words);
         assert_eq!(streamed_rankings, whole_rankings);
+        assert_eq!(projected_rankings, whole_rankings);
         Some(streamed_rankings)
     };
 

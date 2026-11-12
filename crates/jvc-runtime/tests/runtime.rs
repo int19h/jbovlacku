@@ -1436,6 +1436,27 @@ fn publication_global_and_reconfigured_updates_use_full_state_export() {
 }
 
 #[test]
+fn retained_projection_accepts_schema_invalid_bodies() {
+    let mut fixture = Fixture::new();
+    let id = fixture.definition("en");
+    let event = jvc_core::verify_envelope(fixture.events[0].as_bytes()).unwrap();
+    assert_eq!(event.id(), id);
+    let missing = jvc_state::ProjectionRow::extract(&event, None);
+    let invalid = jvc_state::ProjectionRow::extract(&event, Some(b"not json"));
+    let options = canonical_value(
+        &json!({"selected_view":"jve1:".to_owned()+&"0".repeat(64),"import_selections":{}}),
+    )
+    .unwrap();
+    let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+    let hash = missing.body_hash().unwrap();
+    let packed = hex::decode(&hash["sha256:".len()..]).unwrap();
+    builder.set_retained_bodies(&packed).unwrap();
+    builder
+        .add_projection_row(&invalid.encode().unwrap(), None, None)
+        .unwrap();
+}
+
+#[test]
 fn host_record_projection_matches_its_versioned_golden_digest() {
     #[derive(serde::Deserialize)]
     struct Input {
@@ -1468,6 +1489,24 @@ fn host_record_projection_matches_its_versioned_golden_digest() {
         .unwrap();
         let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
         builder.add_host_verified_record(&compact).unwrap();
+        let event = jvc_core::verify_envelope(input.envelope.as_bytes()).unwrap();
+        let row =
+            jvc_state::ProjectionRow::extract(&event, input.body.as_deref().map(str::as_bytes));
+        let encoded = row.encode().unwrap();
+        assert_eq!(jvc_state::ProjectionRow::decode(&encoded).unwrap(), row);
+        let mut original = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        original
+            .add_record(
+                input.envelope.as_bytes(),
+                input.body.as_deref().map(str::as_bytes).map(Vec::from),
+            )
+            .unwrap();
+        let mut projected = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        projected.add_projection_row(&encoded, None, None).unwrap();
+        assert_eq!(
+            original.finish().state().unwrap(),
+            projected.finish().state().unwrap()
+        );
         let semantic_bytes = jvc_runtime::extract_host_semantic_record_bytes(
             input.envelope.as_bytes(),
             input.body.as_deref().map(str::as_bytes),

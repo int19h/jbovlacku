@@ -1,8 +1,16 @@
 /**
  * Local IndexedDB storage. Version 2 adds preferences, the private overlay,
  * delivery groups, and own-history caches, and migrates version 1 outbox rows.
+ * Version 5 adds authenticated projection rows and their metadata.
+ * Version 6 discards records from before body tracking for a fresh sync.
  */
-import { utf8, verifyEnvelope } from "../../../../packages/core/src/browser.ts";
+import {
+  createProjectionDigest,
+  projectionBuildIdentity,
+  PROJECTION_ROW_VERSION,
+  utf8,
+  verifyEnvelope,
+} from "../../../../packages/core/src/browser.ts";
 import {
   ownGraph,
   requiresLifecycleDelivery,
@@ -11,6 +19,15 @@ import {
   discardedPredecessorReads,
   DISCARDED_PREDECESSOR,
 } from "./outbox-graph.ts";
+import {
+  PROJECTION_LATEST_KEY,
+  PROJECTION_PRODUCER_KEY,
+  projectionRowBytes,
+  projectionSnapshotKey,
+  updateProjectionHash,
+  xorProjectionHashes,
+  type ProjectionBytes,
+} from "./projection-meta.ts";
 import type { Envelope, Transport } from "../model/types.ts";
 import type { Draft } from "../model/draft.ts";
 import type { SnapshotInventory } from "./records.ts";
@@ -262,6 +279,8 @@ const stores = [
   "ownhistory",
   "inventory",
   "records",
+  "projections",
+  "meta",
   "selections",
 ];
 export interface SavedDraftIndex {
@@ -296,6 +315,19 @@ function hasSortedId(values: readonly string[], target: string): boolean {
   }
   return values[low] === target;
 }
+function idbRequest<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+interface ProjectionSnapshotMeta {
+  version: number;
+  build: string;
+  events_digest: string;
+  rows_hash: string | null;
+  count: number;
+}
 export class LocalStore {
   /** The open database. Lifecycle transactions span several stores. */
   readonly database: Promise<IDBDatabase>;
@@ -305,11 +337,14 @@ export class LocalStore {
   >();
   constructor(readonly name = "jbovlacku-browser-v1") {
     this.database = new Promise((resolve, reject) => {
-      const request = indexedDB.open(name, 4);
+      const request = indexedDB.open(name, 6);
       request.onupgradeneeded = (event) => {
         const db = request.result;
         for (const store of stores)
           if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
+        if (event.oldVersion > 0 && event.oldVersion < 6)
+          for (const store of ["records", "projections", "inventory", "meta"])
+            request.transaction!.objectStore(store).clear();
         if (event.oldVersion < 2 && event.oldVersion > 0) {
           const outbox = request.transaction!.objectStore("outbox");
           const cursor = outbox.openCursor();
@@ -404,6 +439,43 @@ export class LocalStore {
       request.onerror = () => reject(request.error);
     });
   }
+  async readProjectionAdvance(
+    ids: string[],
+    snapshot: string,
+  ): Promise<{
+    producer: string | undefined;
+    digest: string | undefined;
+    rows: Map<string, Uint8Array>;
+  }> {
+    const db = await this.database;
+    const transaction = db.transaction(["projections", "meta"], "readonly");
+    const meta = transaction.objectStore("meta");
+    const [producer, snapshotMeta] = await Promise.all([
+      idbRequest(
+        meta.get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
+      ),
+      idbRequest(
+        meta.get(projectionSnapshotKey(snapshot)) as IDBRequest<
+          ProjectionSnapshotMeta | undefined
+        >,
+      ),
+    ]);
+    const rows = new Map<string, Uint8Array>();
+    for (const id of ids) {
+      const row = (await idbRequest(
+        transaction.objectStore("projections").get(id),
+      )) as ProjectionBytes | undefined;
+      if (row) rows.set(id, projectionRowBytes(row));
+    }
+    return {
+      producer,
+      digest:
+        typeof snapshotMeta?.rows_hash === "string"
+          ? snapshotMeta.rows_hash
+          : undefined,
+      rows,
+    };
+  }
   async put(store: string, id: string, value: unknown): Promise<void> {
     const db = await this.database;
     const revision = store === "packages" ? packageRevision() : undefined;
@@ -422,6 +494,83 @@ export class LocalStore {
       tx.onabort = () =>
         reject(
           tx.error ?? new Error("Local storage did not save this change."),
+        );
+      tx.onerror = () => {};
+    });
+  }
+  async putProjectedRecord(
+    record: { id: string; body?: string | null },
+    row: Uint8Array,
+    latest?: SnapshotInventory | null,
+  ): Promise<void> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(
+        ["records", "projections", "inventory", "meta"],
+        "readwrite",
+      );
+      let failure: unknown;
+      const execute = async () => {
+        const oldRecord = (await idbRequest(
+          tx.objectStore("records").get(record.id),
+        )) as { body?: string | null } | undefined;
+        if (oldRecord?.body && !record.body) return;
+        const latestSnapshot = await idbRequest(
+          tx.objectStore("meta").get(PROJECTION_LATEST_KEY) as IDBRequest<
+            string | undefined
+          >,
+        );
+        const current =
+          latest === undefined || latestSnapshot !== latest?.snapshot
+            ? await idbRequest(
+                tx.objectStore("inventory").get("latest") as IDBRequest<
+                  SnapshotInventory | undefined
+                >,
+              )
+            : latest;
+        const oldRow = (await idbRequest(
+          tx.objectStore("projections").get(record.id),
+        )) as ProjectionBytes | undefined;
+        if (current && hasSortedId(current.events, record.id)) {
+          const snapshot = (await idbRequest(
+            tx.objectStore("meta").get(projectionSnapshotKey(current.snapshot)),
+          )) as ProjectionSnapshotMeta | undefined;
+          if (snapshot && typeof snapshot.rows_hash === "string")
+            tx.objectStore("meta").put(
+              {
+                ...snapshot,
+                rows_hash: updateProjectionHash(
+                  snapshot.rows_hash,
+                  record.id,
+                  oldRow,
+                  row,
+                ),
+              },
+              projectionSnapshotKey(current.snapshot),
+            );
+        }
+        const meta = tx.objectStore("meta");
+        const producer = await idbRequest(
+          meta.get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
+        );
+        const next =
+          producer === undefined || producer === projectionBuildIdentity()
+            ? projectionBuildIdentity()
+            : "mixed";
+        meta.put(next, PROJECTION_PRODUCER_KEY);
+        tx.objectStore("records").put(record, record.id);
+        tx.objectStore("projections").put(row, record.id);
+      };
+      void execute().catch((error) => {
+        failure = error;
+        tx.abort();
+      });
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          failure ??
+            tx.error ??
+            new Error("Local storage did not save this record."),
         );
       tx.onerror = () => {};
     });
@@ -819,11 +968,54 @@ export class LocalStore {
     const db = await this.database;
     const revision = store === "packages" ? packageRevision() : undefined;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(
-        store === "packages" ? [store, "packageRevisions"] : store,
-        "readwrite",
-      );
-      tx.objectStore(store).delete(id);
+      const names =
+        store === "packages"
+          ? [store, "packageRevisions"]
+          : store === "records"
+            ? [store, "projections", "inventory", "meta"]
+            : store;
+      const tx = db.transaction(names, "readwrite");
+      let failure: unknown;
+      if (store === "records") {
+        const execute = async () => {
+          const latest = await idbRequest(
+            tx.objectStore("inventory").get("latest") as IDBRequest<
+              SnapshotInventory | undefined
+            >,
+          );
+          const oldRow = (await idbRequest(
+            tx.objectStore("projections").get(id),
+          )) as ProjectionBytes | undefined;
+          if (latest && hasSortedId(latest.events, id)) {
+            const snapshot = (await idbRequest(
+              tx
+                .objectStore("meta")
+                .get(projectionSnapshotKey(latest.snapshot)),
+            )) as ProjectionSnapshotMeta | undefined;
+            if (snapshot && typeof snapshot.rows_hash === "string")
+              tx.objectStore("meta").put(
+                {
+                  ...snapshot,
+                  rows_hash: updateProjectionHash(
+                    snapshot.rows_hash,
+                    id,
+                    oldRow,
+                    undefined,
+                  ),
+                },
+                projectionSnapshotKey(latest.snapshot),
+              );
+          }
+          tx.objectStore("records").delete(id);
+          tx.objectStore("projections").delete(id);
+        };
+        void execute().catch((error) => {
+          failure = error;
+          tx.abort();
+        });
+      } else {
+        tx.objectStore(store).delete(id);
+      }
       if (store === "packages")
         tx.objectStore("packageRevisions").put(revision, id);
       tx.oncomplete = () => {
@@ -832,35 +1024,144 @@ export class LocalStore {
       };
       tx.onabort = () =>
         reject(
-          tx.error ?? new Error("Local storage did not delete this record."),
+          failure ??
+            tx.error ??
+            new Error("Local storage did not delete this record."),
         );
       tx.onerror = () => {};
     });
   }
-  /** Commits a complete inventory and removes only records outside it. */
+  /** Commits a complete inventory, producer metadata, and its incremental row digest. */
   async commitInventory(inventory: SnapshotInventory): Promise<void> {
     const events = inventory.events;
     if (!isStrictlyIncreasing(events))
       throw new Error("The inventory is not in order.");
     const db = await this.database;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(["records", "inventory"], "readwrite");
-      const records = tx.objectStore("records");
-      const cursor = records.openKeyCursor();
-      cursor.onsuccess = () => {
-        const current = cursor.result;
-        if (!current) return;
-        if (!hasSortedId(events, String(current.key)))
-          records.delete(current.primaryKey);
-        current.continue();
+      const tx = db.transaction(
+        ["records", "projections", "inventory", "meta"],
+        "readwrite",
+      );
+      let failure: unknown;
+      const execute = async () => {
+        const inventories = tx.objectStore("inventory");
+        const previous = await idbRequest(
+          inventories.get("latest") as IDBRequest<
+            SnapshotInventory | undefined
+          >,
+        );
+        const meta = tx.objectStore("meta");
+        const previousMeta = previous
+          ? ((await idbRequest(
+              meta.get(projectionSnapshotKey(previous.snapshot)),
+            )) as ProjectionSnapshotMeta | undefined)
+          : undefined;
+        let hash = previousMeta?.rows_hash ?? null;
+        if (hash === null) {
+          const digest = createProjectionDigest();
+          if (previous) {
+            let after: string | undefined;
+            for (;;) {
+              const range =
+                after === undefined
+                  ? undefined
+                  : IDBKeyRange.lowerBound(after, true);
+              const [keys, rows] = await Promise.all([
+                idbRequest(
+                  tx.objectStore("projections").getAllKeys(range, 256),
+                ),
+                idbRequest(tx.objectStore("projections").getAll(range, 256)),
+              ]);
+              for (const [index, key] of keys.entries()) {
+                const id = String(key);
+                if (
+                  hasSortedId(previous.events, id) &&
+                  typeof rows[index] !== "undefined"
+                )
+                  digest.update(
+                    id,
+                    projectionRowBytes(rows[index] as ProjectionBytes),
+                  );
+              }
+              if (keys.length < 256) break;
+              after = String(keys[keys.length - 1]);
+            }
+          }
+          hash = digest.finish();
+        }
+        if (previous?.snapshot !== inventory.snapshot) {
+          const delta = createProjectionDigest();
+          const oldEvents = previous?.events ?? [];
+          let oldIndex = 0;
+          let newIndex = 0;
+          while (oldIndex < oldEvents.length || newIndex < events.length) {
+            const oldId = oldEvents[oldIndex] as string | undefined;
+            const newId = events[newIndex] as string | undefined;
+            const id =
+              newId === undefined || (oldId !== undefined && oldId < newId)
+                ? oldId
+                : newId;
+            const inOld = oldId === id;
+            const inNew = newId === id;
+            if (inOld !== inNew) {
+              const row = (await idbRequest(
+                tx.objectStore("projections").get(id!),
+              )) as ProjectionBytes | undefined;
+              if (row) delta.update(id!, projectionRowBytes(row));
+            }
+            if (inOld) oldIndex++;
+            if (inNew) newIndex++;
+          }
+          hash = xorProjectionHashes(hash, delta.finish());
+        }
+        const producer = await idbRequest(
+          meta.get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
+        );
+        meta.put(
+          {
+            version: PROJECTION_ROW_VERSION,
+            build: producer ?? "unknown",
+            events_digest: inventory.events_digest,
+            rows_hash: hash,
+            count: events.length,
+          },
+          projectionSnapshotKey(inventory.snapshot),
+        );
+        meta.put(inventory.snapshot, PROJECTION_LATEST_KEY);
+        inventories.put(inventory, inventory.snapshot);
+        inventories.put(inventory, "latest");
+        const prune = (store: IDBObjectStore) => {
+          let after: string | undefined;
+          const read = () => {
+            const range =
+              after === undefined
+                ? undefined
+                : IDBKeyRange.lowerBound(after, true);
+            const request = store.getAllKeys(range, 256);
+            request.onsuccess = () => {
+              const keys = request.result;
+              for (const key of keys)
+                if (!hasSortedId(events, String(key))) store.delete(key);
+              if (keys.length < 256) return;
+              after = String(keys[keys.length - 1]);
+              read();
+            };
+          };
+          read();
+        };
+        prune(tx.objectStore("records"));
+        prune(tx.objectStore("projections"));
       };
-      const inventories = tx.objectStore("inventory");
-      inventories.put(inventory, inventory.snapshot);
-      inventories.put(inventory, "latest");
+      void execute().catch((error) => {
+        failure = error;
+        tx.abort();
+      });
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
-          tx.error ?? new Error("Local storage did not commit this inventory."),
+          failure ??
+            tx.error ??
+            new Error("Local storage did not commit this inventory."),
         );
       tx.onerror = () => {};
     });

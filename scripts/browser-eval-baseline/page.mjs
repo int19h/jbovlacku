@@ -2,6 +2,7 @@ import {
   initializeCore,
   identityFromSeed,
   createEvent,
+  projectRecord,
   utf8,
 } from "../../packages/core/src/browser.ts";
 import * as personal from "../../apps/web/src/data/personal.ts";
@@ -23,6 +24,7 @@ let input = null,
   productDatabase = null,
   productInput = null,
   productWorkerBytes = 0,
+  productStorageBytes = 0,
   productSnapshot = null,
   NativeWorker = null,
   diagnosticStore = null,
@@ -103,11 +105,13 @@ window.bench = {
     mainWasm = await initializeCore();
     NativeWorker = globalThis.Worker;
     productWorkerBytes = 0;
+    productStorageBytes = 0;
     globalThis.Worker = class extends NativeWorker {
       constructor(...args) {
         super(...args);
         this.addEventListener("message", (event) => {
           productWorkerBytes += jsonBytes(event.data);
+          productStorageBytes += event.data.storage_bytes ?? 0;
         });
       }
       postMessage(message) {
@@ -144,7 +148,13 @@ window.bench = {
       calculator.cancel();
       (await store.database).close();
     }
-    return { ms, result, statuses, worker_bytes: productWorkerBytes };
+    return {
+      ms,
+      result,
+      statuses,
+      worker_bytes: productWorkerBytes,
+      storage_bytes: productStorageBytes,
+    };
   },
   async productSubmission({ target, previous, fresh }) {
     const start = performance.now();
@@ -152,13 +162,17 @@ window.bench = {
     const actorSeed = fresh ? freshSeed : seed;
     const event = signedJudgment(target, previous, actorSeed);
     const serialized = JSON.stringify(event.envelope);
-    await productStore.put("records", event.envelope.id, {
-      id: event.envelope.id,
-      envelope: serialized,
-      body: null,
-      bodyStatus: "none",
-      bodyHash: null,
-    });
+    const projected = projectRecord(utf8(serialized));
+    await productStore.putProjectedRecord(
+      {
+        id: event.envelope.id,
+        envelope: serialized,
+        body: null,
+        bodyStatus: "none",
+        bodyHash: null,
+      },
+      projected.row,
+    );
     return {
       ms: performance.now() - start,
       id: event.envelope.id,
@@ -168,6 +182,28 @@ window.bench = {
       envelope: serialized,
       bytes: utf8(serialized).length,
     };
+  },
+  async forceProjectionRebuild() {
+    const database = await productStore.database;
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction("meta", "readwrite");
+      const store = transaction.objectStore("meta");
+      const cursor = store.openCursor();
+      cursor.onsuccess = () => {
+        const current = cursor.result;
+        if (!current) return;
+        if (
+          typeof current.key === "string" &&
+          current.key.startsWith("projection:") &&
+          current.key !== "projection:producer"
+        )
+          store.put({ ...current.value, build: "different" }, current.key);
+        current.continue();
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+      transaction.onerror = () => {};
+    });
   },
   async productReload(inventory) {
     const start = performance.now();
@@ -179,6 +215,7 @@ window.bench = {
     }
     productSnapshot = inventory.snapshot;
     const before = productWorkerBytes;
+    const storageBefore = productStorageBytes;
     const result = await productCalculator.ensure({ mode: "personal" });
     if (result.state !== "ready" || result.snapshot !== productSnapshot)
       throw new Error(
@@ -188,6 +225,7 @@ window.bench = {
       ms: performance.now() - start,
       result,
       worker_bytes: productWorkerBytes - before,
+      storage_bytes: productStorageBytes - storageBefore,
     };
   },
   async productRank(word) {

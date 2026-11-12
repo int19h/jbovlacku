@@ -8,10 +8,9 @@
 import {
   canonicalize,
   contentHash,
-  inspectBody,
   prepareSelection,
+  projectRecord,
   utf8,
-  verifyEnvelope,
 } from "../../../../packages/core/src/browser.ts";
 import {
   api,
@@ -123,35 +122,32 @@ async function inventoryIds(
   }
   return ids;
 }
-/** Builds a stored record from a verified envelope and an optional body. */
+/** Authenticates one record and builds its stored record and projection together. */
 function storedRecord(
   id: string,
   envelopeValue: unknown,
   bodyValue: unknown,
-): StoredRecord {
-  const envelopeBytes = utf8(JSON.stringify(envelopeValue));
-  verifyEnvelope(envelopeBytes);
-  const envelope = canonicalize(envelopeBytes);
-  const parsed = JSON.parse(envelope) as Envelope;
+): { record: StoredRecord; row: Uint8Array } {
+  const body =
+    bodyValue === null || bodyValue === undefined
+      ? null
+      : canonicalize(utf8(JSON.stringify(bodyValue)));
+  const projected = projectRecord(
+    utf8(JSON.stringify(envelopeValue)),
+    body === null ? undefined : utf8(body),
+  );
+  const parsed = JSON.parse(projected.envelope) as Envelope;
   if (parsed.id !== id)
     throw new RecordsError(
       "A records item does not match its event ID.",
       "invalid",
     );
   const bodyHash = parsed.header.content?.hash ?? null;
-  if (bodyValue === null || bodyValue === undefined)
-    return {
-      id,
-      envelope,
-      body: null,
-      bodyStatus: bodyHash ? "missing" : "none",
-      bodyHash,
-    };
-  const body = canonicalize(utf8(JSON.stringify(bodyValue)));
   if (
-    !parsed.header.content ||
-    parsed.header.content.hash !== contentHash(utf8(body)) ||
-    parsed.header.content.bytes !== byteLength(body)
+    body !== null &&
+    (!parsed.header.content ||
+      parsed.header.content.hash !== contentHash(utf8(body)) ||
+      parsed.header.content.bytes !== byteLength(body))
   )
     throw new RecordsError(
       `The body of ${id} does not match its signed hash.`,
@@ -160,24 +156,15 @@ function storedRecord(
   // Authenticated bytes stay even when the current schema cannot interpret
   // them. The shared evaluator applies the format's invalid-content rules, so
   // one unsupported record stays inert instead of disabling the calculation.
-  const inspected = inspectBody(utf8(envelope), utf8(body));
   return {
-    id,
-    envelope,
-    body,
-    bodyStatus: inspected.availability === "invalid" ? "invalid" : "present",
-    bodyHash,
-  };
-}
-/** Upgrades a record cached before body availability was tracked. */
-function normalize(record: StoredRecord): StoredRecord {
-  if (record.bodyStatus) return record;
-  const parsed = JSON.parse(record.envelope) as Envelope;
-  const bodyHash = parsed.header.content?.hash ?? null;
-  return {
-    ...record,
-    bodyHash,
-    bodyStatus: record.body ? "present" : bodyHash ? "missing" : "none",
+    record: {
+      id,
+      envelope: projected.envelope,
+      body,
+      bodyStatus: projected.bodyStatus,
+      bodyHash,
+    },
+    row: projected.row,
   };
 }
 /**
@@ -199,6 +186,8 @@ export async function syncRecords(
   progress({ phase: "inventory", loaded: 0, total: 0, bytes: 0 });
   const manifest = await getManifest(options);
   const snapshot = manifest.snapshot;
+  const latest =
+    (await store.get<SnapshotInventory>("inventory", "latest")) ?? null;
   const declared = manifest.manifest as {
     events?: { count?: number; hash?: string };
     bodies?: { count?: number; hash?: string };
@@ -229,11 +218,8 @@ export async function syncRecords(
     check();
     const record = await store.get<StoredRecord>("records", id);
     if (!record) continue;
-    const normalized = normalize(record);
-    if (!record.bodyStatus) await store.put("records", id, normalized);
-    cached.set(id, normalized);
-    bytes +=
-      byteLength(normalized.envelope) + byteLength(normalized.body ?? "");
+    cached.set(id, record);
+    bytes += byteLength(record.envelope) + byteLength(record.body ?? "");
   }
   const missing = new Set(events.filter((id) => !cached.has(id)));
   // Position lookups by map and set. The inventory is in order, so the first
@@ -321,7 +307,8 @@ export async function syncRecords(
           `The server could not read the retained body of ${item.id} (status "${bodyStatus}"). The inventory is not at fault. Try the download again later.`,
           "unavailable",
         );
-      const record = storedRecord(item.id, item.envelope, item.body);
+      const projected = storedRecord(item.id, item.envelope, item.body);
+      const record = projected.record;
       if (record.bodyHash && !bodySet.has(record.bodyHash) && record.body)
         throw new RecordsError(
           "The server supplied a body that its inventory does not list.",
@@ -329,7 +316,7 @@ export async function syncRecords(
         );
       bytes += byteLength(record.envelope) + byteLength(record.body ?? "");
       bound();
-      await store.put("records", item.id, record);
+      await store.putProjectedRecord(record, projected.row, latest);
       cached.set(item.id, record);
       missing.delete(item.id);
       loaded++;
@@ -375,10 +362,10 @@ export async function syncRecords(
       JSON.parse(record.envelope),
       JSON.parse(new TextDecoder().decode(raw)),
     );
-    bytes += byteLength(updated.body ?? "");
+    bytes += byteLength(updated.record.body ?? "");
     bound();
-    await store.put("records", id, updated);
-    cached.set(id, updated);
+    await store.putProjectedRecord(updated.record, updated.row, latest);
+    cached.set(id, updated.record);
   }
   // Every retained body of a cached record must now be cached.
   for (const id of events) {
@@ -498,11 +485,10 @@ export async function loadRecords(
         `Record ${id} is not cached. Download the records again.`,
         "missing",
       );
-    const record = normalize(stored);
-    events.push(record.envelope);
-    if (record.body && record.bodyHash && bodySet.has(record.bodyHash))
-      bodies[id] = record.body;
-    else if (record.bodyHash && bodySet.has(record.bodyHash))
+    events.push(stored.envelope);
+    if (stored.body && stored.bodyHash && bodySet.has(stored.bodyHash))
+      bodies[id] = stored.body;
+    else if (stored.bodyHash && bodySet.has(stored.bodyHash))
       throw new RecordsError(
         `The body of ${id} is retained by the snapshot but not cached. Download the records again.`,
         "missing",

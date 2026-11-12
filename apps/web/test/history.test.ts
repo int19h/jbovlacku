@@ -727,7 +727,7 @@ test("a native IndexedDB open failure keeps a warning and allows anonymous onlin
       return request;
     };
     await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open("jbovlacku-browser-v1", 5);
+      const request = indexedDB.open("jbovlacku-browser-v1", 7);
       request.onupgradeneeded = () => {
         // The store exists when data was written before the failure.
         if (!request.result.objectStoreNames.contains("keys"))

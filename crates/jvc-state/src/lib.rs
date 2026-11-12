@@ -7,6 +7,7 @@ mod arena;
 mod graph;
 mod incremental;
 mod policy;
+mod projection;
 pub use api::{
     AccountControl, Authority, Certificate, PublicationStatus, account_control, publication_status,
 };
@@ -14,6 +15,7 @@ pub use arena::{ArrayValues, CompactValue, ValueView};
 pub use incremental::{
     CHECKPOINT_VERSION, EvaluatedState, JudgmentChanges, RankingContextBound, UpdateStatistics,
 };
+pub use projection::{PROJECTION_ROW_VERSION, ProjectionRow};
 
 use jvc_core::{BodyAvailability, VerifiedEnvelope, inspect_body, validate_action};
 pub use policy::{
@@ -116,12 +118,8 @@ impl PreparedEvaluationInput {
         std::rc::Rc::make_mut(&mut self.nodes).insert(event.id().into(), node);
         content
     }
-    /// Only a trusted host can supply records from its private admission store.
-    pub fn add_host_verified_record(&mut self, record: HostVerifiedRecord) {
-        if self.nodes.contains_key(record.id()) {
-            return;
-        }
-        let node = record.node.repack(&self.arena);
+    fn add_projection_node(&mut self, node: graph::Node) {
+        let node = node.repack(&self.arena);
         let id = node.id.clone();
         let error = self.arena.borrow_mut().take_error();
         if error.is_some() {
@@ -131,6 +129,20 @@ impl PreparedEvaluationInput {
             self.event_limit_exceeded = true;
         }
         std::rc::Rc::make_mut(&mut self.nodes).insert(id, node);
+    }
+    /// Only a trusted host can supply records from its private admission store.
+    pub fn add_host_verified_record(&mut self, record: HostVerifiedRecord) {
+        if self.nodes.contains_key(record.id()) {
+            return;
+        }
+        self.add_projection_node(record.node);
+    }
+    /// The browser authenticates this row at sync or during a complete rebuild.
+    pub fn add_projection_row(&mut self, row: ProjectionRow) {
+        if self.nodes.contains_key(row.id()) {
+            return;
+        }
+        self.add_projection_node(row.node);
     }
     pub(crate) fn arena_error(&self) -> Option<jvc_core::Error> {
         self.arena_error.clone()

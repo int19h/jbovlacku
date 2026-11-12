@@ -794,6 +794,7 @@ pub struct EvaluationSessionBuilder {
     base: Option<jvc_state::EvaluatedState>,
     removed: Vec<String>,
     base_identity: Option<String>,
+    retained_bodies: Option<Vec<[u8; 32]>>,
 }
 #[wasm_bindgen]
 pub fn evaluation_checkpoint_version() -> String {
@@ -1098,6 +1099,112 @@ fn decode_host_semantic_record(bytes: &[u8]) -> Result<HostSemanticRecord> {
     Ok(record)
 }
 
+#[wasm_bindgen]
+pub struct ProjectedRecord {
+    envelope: String,
+    body_status: String,
+    row: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl ProjectedRecord {
+    pub fn envelope(&self) -> String {
+        self.envelope.clone()
+    }
+    pub fn body_status(&self) -> String {
+        self.body_status.clone()
+    }
+    pub fn row(&self) -> Vec<u8> {
+        self.row.clone()
+    }
+}
+
+#[wasm_bindgen]
+#[derive(Default)]
+pub struct RecordProjector {
+    verifier: jvc_core::EnvelopeVerifier,
+}
+
+#[wasm_bindgen]
+impl RecordProjector {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn project(
+        &mut self,
+        envelope: &[u8],
+        body: Option<Vec<u8>>,
+    ) -> std::result::Result<ProjectedRecord, JsValue> {
+        project_with_verifier(&mut self.verifier, envelope, body)
+    }
+}
+
+fn project_with_verifier(
+    verifier: &mut jvc_core::EnvelopeVerifier,
+    envelope: &[u8],
+    body: Option<Vec<u8>>,
+) -> std::result::Result<ProjectedRecord, JsValue> {
+    let event = verifier.verify(envelope).map_err(fail)?;
+    let availability = jvc_core::inspect_body(&event, body.as_deref());
+    let body_status = match &availability {
+        jvc_core::BodyAvailability::Absent => "none",
+        jvc_core::BodyAvailability::Missing => "missing",
+        jvc_core::BodyAvailability::Valid { .. } => "present",
+        jvc_core::BodyAvailability::Invalid { .. } => "invalid",
+    }
+    .into();
+    let row = jvc_state::ProjectionRow::from_availability(&event, availability)
+        .encode()
+        .map_err(fail)?;
+    Ok(ProjectedRecord {
+        envelope: String::from_utf8(event.canonical_envelope().map_err(fail)?).unwrap(),
+        body_status,
+        row,
+    })
+}
+
+#[wasm_bindgen]
+pub fn project_record(
+    envelope: &[u8],
+    body: Option<Vec<u8>>,
+) -> std::result::Result<ProjectedRecord, JsValue> {
+    project_with_verifier(&mut jvc_core::EnvelopeVerifier::default(), envelope, body)
+}
+
+/// XOR of SHA-256(record ID, little-endian u64 row length, row bytes) per row.
+#[wasm_bindgen]
+pub struct ProjectionDigest {
+    digest: [u8; 32],
+}
+
+#[wasm_bindgen]
+impl ProjectionDigest {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self { digest: [0; 32] }
+    }
+    pub fn update(&mut self, id: &str, row: &[u8]) {
+        use sha2::Digest;
+        let mut hash = sha2::Sha256::new();
+        hash.update(id.as_bytes());
+        hash.update((row.len() as u64).to_le_bytes());
+        hash.update(row);
+        for (target, contribution) in self.digest.iter_mut().zip(hash.finalize()) {
+            *target ^= contribution;
+        }
+    }
+    pub fn finish(self) -> String {
+        format!("sha256:{}", hex::encode(self.digest))
+    }
+}
+
+impl Default for ProjectionDigest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn add_original_record(
     builder: &mut EvaluationSessionBuilder,
     envelope: &[u8],
@@ -1131,6 +1238,7 @@ impl EvaluationSessionBuilder {
             base: None,
             removed: Vec::new(),
             base_identity: None,
+            retained_bodies: None,
         })
     }
     pub fn add_record(
@@ -1152,6 +1260,65 @@ impl EvaluationSessionBuilder {
             body.as_ref().map(|body| body.as_bytes()),
             expected_id.as_deref(),
         )
+    }
+    pub fn set_retained_bodies(&mut self, hashes: &[u8]) -> std::result::Result<(), JsValue> {
+        if hashes.len() % 32 != 0
+            || hashes
+                .chunks_exact(32)
+                .zip(hashes.chunks_exact(32).skip(1))
+                .any(|(left, right)| left >= right)
+        {
+            return Err(JsValue::from_str(
+                "Retained body hashes are not packed, sorted, and unique.",
+            ));
+        }
+        self.retained_bodies = Some(
+            hashes
+                .chunks_exact(32)
+                .map(|chunk| chunk.try_into().unwrap())
+                .collect(),
+        );
+        Ok(())
+    }
+    pub fn add_projection_row(
+        &mut self,
+        bytes: &[u8],
+        expected_id: Option<String>,
+        body_retained: Option<bool>,
+    ) -> std::result::Result<(), JsValue> {
+        let mut row = jvc_state::ProjectionRow::decode(bytes).map_err(fail)?;
+        let retained = body_retained.unwrap_or_else(|| {
+            self.retained_bodies.as_ref().is_none_or(|hashes| {
+                row.body_hash().is_none_or(|hash| {
+                    let Ok(hash) = hex::decode(&hash["sha256:".len()..]) else {
+                        return false;
+                    };
+                    let Ok(hash) = <[u8; 32]>::try_from(hash) else {
+                        return false;
+                    };
+                    hashes.binary_search(&hash).is_ok()
+                })
+            })
+        });
+        if (body_retained.is_some() || self.retained_bodies.is_some())
+            && retained
+            && row.body_is_missing()
+        {
+            return Err(JsValue::from_str(
+                "A projection body is retained by the snapshot but missing.",
+            ));
+        }
+        row.apply_body_retention(retained);
+        if expected_id
+            .as_deref()
+            .is_some_and(|expected| expected != row.id())
+        {
+            return Err(JsValue::from_str(
+                "Projection row event ID does not match its key.",
+            ));
+        }
+        self.prepared.add_projection_row(row);
+        Ok(())
     }
     /// The host must obtain this record from its private admission store.
     pub fn add_host_verified_record(

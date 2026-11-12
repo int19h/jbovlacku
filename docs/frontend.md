@@ -1971,7 +1971,7 @@ The client authenticates listed lifecycle claims from their signed envelopes bef
 
 The records transport returns the committed envelope representation of the snapshot with its body when retained. Pages hold at most 200 records, and the encoded `items` bytes, as the response carries them before any transport compression, stay under 4 MiB. A page always holds at least one item, so one item can exceed that bound alone.
 `body_status` `missing` means that the snapshot never retained the body. `unavailable` means that the snapshot retained it and storage did not return it now. A client keeps the two apart: a missing body is a fact of the snapshot, and an unavailable one deserves another request.
-A client authenticates each envelope and body through the shared core and compares the complete set with the snapshot inventory before claiming a complete local calculation.
+A client authenticates each envelope and body through the shared core as it stores the record. It authenticates them again only when it rebuilds its stored projection from the originals. A stored projection is valid when it comes from the same core interpretation and uses the bodies that the current snapshot retains. A later load from a valid stored projection counts as a complete local calculation. The client compares the complete set with the snapshot inventory before claiming that calculation.
 
 A candidate ID is a signed definition event ID or a `jvv1:` virtual ID. Word layers contain those candidate IDs only.
 Every returned virtual target has one `VirtualReference` in the same response. References sort by virtual ID without duplicates.
