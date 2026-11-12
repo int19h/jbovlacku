@@ -1468,6 +1468,24 @@ fn host_record_projection_matches_its_versioned_golden_digest() {
         .unwrap();
         let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
         builder.add_host_verified_record(&compact).unwrap();
+        let event = jvc_core::verify_envelope(input.envelope.as_bytes()).unwrap();
+        let row =
+            jvc_state::ProjectionRow::extract(&event, input.body.as_deref().map(str::as_bytes));
+        let encoded = row.encode().unwrap();
+        assert_eq!(jvc_state::ProjectionRow::decode(&encoded).unwrap(), row);
+        let mut original = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        original
+            .add_record(
+                input.envelope.as_bytes(),
+                input.body.as_deref().map(str::as_bytes).map(Vec::from),
+            )
+            .unwrap();
+        let mut projected = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+        projected.add_projection_row(&encoded, None).unwrap();
+        assert_eq!(
+            original.finish().state().unwrap(),
+            projected.finish().state().unwrap()
+        );
         let semantic_bytes = jvc_runtime::extract_host_semantic_record_bytes(
             input.envelope.as_bytes(),
             input.body.as_deref().map(str::as_bytes),

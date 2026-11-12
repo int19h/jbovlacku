@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { corePath } from "./helpers.ts";
+import type { LocalStore as BrowserStore } from "../src/data/store.ts";
 
-test("the browser worker authenticates streamed records and checks the complete inventory", async ({
+test("the browser worker loads stored rows and rebuilds stale or damaged projections", async ({
   page,
 }) => {
   await page.goto("/");
@@ -54,7 +55,9 @@ test("the browser worker authenticates streamed records and checks the complete 
     builder.free();
     session.free();
 
-    const store = new LocalStore(`streamed-${crypto.randomUUID()}`);
+    const store = new LocalStore(
+      `streamed-${crypto.randomUUID()}`,
+    ) as BrowserStore;
     const snapshot = "sha256:" + "a".repeat(64);
     const stored = {
       id: record.envelope.id,
@@ -86,8 +89,13 @@ test("the browser worker authenticates streamed records and checks the complete 
       new URL("/src/workers/evaluate.ts", location.href),
       { type: "module" },
     );
+    let sequence = 0;
     const send = (options: unknown) =>
-      new Promise<{ type: string; message?: string }>((resolve, reject) => {
+      new Promise<{
+        type: string;
+        message?: string;
+        projection_rebuilt?: boolean;
+      }>((resolve, reject) => {
         const timer = setTimeout(
           () =>
             reject(new Error("The browser evaluation worker did not answer.")),
@@ -103,7 +111,7 @@ test("the browser worker authenticates streamed records and checks the complete 
         };
         worker.postMessage({
           type: "load",
-          id: 1,
+          id: ++sequence,
           session: "host-boundary",
           source: {
             database: store.name,
@@ -118,47 +126,93 @@ test("the browser worker authenticates streamed records and checks the complete 
       selected_view: "jve1:" + "0".repeat(64),
       import_selections: {},
     };
+    const metaKey = `projection:${snapshot}`;
+    const rebuilds: (boolean | undefined)[] = [];
+    const recovered: Record<string, unknown>[] = [];
     try {
       const original = await send(options);
+      const warm = await send(options);
       const claimed = await send({ ...options, host_records: [] });
-      await store.delete("records", record.envelope.id);
-      const missing = await send(options);
-      await store.put("records", record.envelope.id, stored);
+      const firstRow = await store.get<Uint8Array>(
+        "projections",
+        record.envelope.id,
+      );
+      const damaged = new Uint8Array(firstRow!);
+      damaged[damaged.length - 1] ^= 1;
+      await store.put("projections", record.envelope.id, damaged);
+      recovered.push(await send(options));
+      const validMeta = await store.get<Record<string, unknown>>(
+        "meta",
+        metaKey,
+      );
+      for (const change of [
+        { version: 999 },
+        { build: "different" },
+        { rows_hash: "sha256:" + "0".repeat(64) },
+      ]) {
+        await store.put("meta", metaKey, { ...validMeta, ...change });
+        recovered.push(await send(options));
+      }
+      rebuilds.push(
+        ...recovered.map(
+          (result) =>
+            (result as { projection_rebuilt?: boolean }).projection_rebuilt,
+        ),
+      );
       const low = BigInt("0x" + inventory.events[0].slice(5));
       const high = BigInt("0x" + inventory.events[1].slice(5));
       const between = low + (high - low) / 2n;
       const betweenId = "jve1:" + between.toString(16).padStart(64, "0");
       const afterId = "jve1:" + "f".repeat(64);
+      await store.put("projections", betweenId, firstRow);
+      const strayRow = await send(options);
+      await store.delete("projections", betweenId);
       await store.put("records", betweenId, null);
       await store.put("records", afterId, { id: afterId });
       const extra = await send(options);
       await store.delete("records", betweenId);
       await store.delete("records", afterId);
+      await store.delete("records", record.envelope.id);
+      const missing = await send(options);
+      await store.put("records", record.envelope.id, stored);
+      await send(options);
       await store.put("records", record.envelope.id, {
         ...stored,
         id: other.envelope.id,
       });
+      const trusted = await send(options);
+      await store.delete("projections", record.envelope.id);
       const mismatchedId = await send(options);
+      await store.put("records", record.envelope.id, stored);
+      await send(options);
       await store.put("records", record.envelope.id, {
         ...stored,
         envelope: JSON.stringify(other.envelope),
       });
+      await store.delete("projections", record.envelope.id);
       const mismatchedEnvelope = await send(options);
       await store.put("records", record.envelope.id, stored);
+      await send(options);
       const forged = { ...record.envelope, signature: "invalid" };
       await store.put("records", record.envelope.id, {
         ...stored,
         envelope: JSON.stringify(forged),
       });
+      await store.delete("projections", record.envelope.id);
       const ordinary = await send(options);
       return {
         original,
+        warm,
         claimed,
         missing,
         extra,
+        strayRow,
+        trusted,
         mismatchedId,
         mismatchedEnvelope,
         ordinary,
+        rebuilds,
+        recovered,
         exportedHostPorts,
         unsafeSessionPorts: [...unsafeSessionPorts, ...unsafeBuilderPorts],
       };
@@ -170,11 +224,27 @@ test("the browser worker authenticates streamed records and checks the complete 
   expect(results.exportedHostPorts).toEqual([]);
   expect(results.unsafeSessionPorts).toEqual([]);
   expect(results.original.type).toBe("loaded");
+  expect(results.original.projection_rebuilt).toBe(true);
+  expect(results.warm.type).toBe("loaded");
+  expect(results.warm.projection_rebuilt).toBe(false);
+  expect(results.rebuilds).toEqual([true, true, true, true]);
+  const summary = (value: Record<string, unknown>) => ({
+    available: value.available,
+    reasons: value.reasons,
+    selected_view: value.selected_view,
+    events: value.events,
+    actors: value.actors,
+  });
+  for (const recovered of results.recovered)
+    expect(summary(recovered)).toEqual(summary(results.original));
   expect(results.claimed.type).toBe("error");
   expect(results.claimed.message).toContain("unknown field `host_records`");
   expect(results.missing.type).toBe("error");
   expect(results.missing.message).toContain("is not cached");
-  expect(results.extra).toEqual(results.original);
+  expect(results.extra.type).toBe("loaded");
+  expect(results.strayRow.type).toBe("loaded");
+  expect(results.strayRow.projection_rebuilt).toBe(false);
+  expect(results.trusted.type).toBe("loaded");
   expect(results.mismatchedId.type).toBe("error");
   expect(results.mismatchedId.message).toBe(results.missing.message);
   expect(results.mismatchedEnvelope.type).toBe("error");
@@ -182,7 +252,7 @@ test("the browser worker authenticates streamed records and checks the complete 
   expect(results.ordinary.type).toBe("error");
 });
 
-test("an inventory commit prunes stale record IDs and publishes the new pointer", async ({
+test("an inventory commit prunes stale record and projection IDs and publishes metadata", async ({
   page,
 }) => {
   await page.goto("/");
@@ -223,11 +293,19 @@ test("an inventory commit prunes stale record IDs and publishes the new pointer"
       await store.put("records", "jve1:" + "f".repeat(64), {
         id: "jve1:" + "f".repeat(64),
       });
+      await store.put("projections", inventory.events[0], new Uint8Array([1]));
+      await store.put(
+        "projections",
+        "jve1:" + "f".repeat(64),
+        new Uint8Array([2]),
+      );
       await store.commitInventory(inventory);
       return {
         keys: await store.keys("records"),
+        projectionKeys: await store.keys("projections"),
         latest: await store.get("inventory", "latest"),
         pinned: await store.get("inventory", snapshot),
+        meta: await store.get("meta", `projection:${snapshot}`),
         cursorCounts,
       };
     } finally {
@@ -237,8 +315,11 @@ test("an inventory commit prunes stale record IDs and publishes the new pointer"
     }
   });
   expect(result.keys).toEqual(["jve1:" + "a".repeat(64)]);
+  expect(result.projectionKeys).toEqual(["jve1:" + "a".repeat(64)]);
   expect(result.latest).toEqual(result.pinned);
-  expect(result.cursorCounts).toEqual({ key: 1, value: 0 });
+  expect(result.meta.events_digest).toBe("digest");
+  expect(result.meta.count).toBe(1);
+  expect(result.cursorCounts).toEqual({ key: 1, value: 1 });
 });
 
 test("an unordered inventory commit fails without pruning or publishing", async ({
@@ -296,4 +377,42 @@ test("an unordered inventory commit fails without pruning or publishing", async 
     "jve1:" + "f".repeat(64),
   ]);
   expect(result.latest).toEqual({ snapshot: "old" });
+});
+
+test("sync stores a projection with every record and deletes both together", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { syncRecords } = await import(String("/src/data/records.ts"));
+    await core.initializeCore();
+    const store = new LocalStore(
+      `sync-projection-${crypto.randomUUID()}`,
+    ) as BrowserStore;
+    try {
+      const inventory = await syncRecords(store);
+      const records = await store.keys("records");
+      const projections = await store.keys("projections");
+      const first = inventory.events[0];
+      const row = await store.get<Uint8Array>("projections", first);
+      await store.delete("records", first);
+      return {
+        inventory,
+        records,
+        projections,
+        rowBytes: row?.byteLength ?? 0,
+        deletedRecord: await store.get("records", first),
+        deletedProjection: await store.get("projections", first),
+      };
+    } finally {
+      (await store.database).close();
+    }
+  }, corePath);
+  expect(result.records).toEqual(result.inventory.events);
+  expect(result.projections).toEqual(result.inventory.events);
+  expect(result.rowBytes).toBeGreaterThan(100);
+  expect(result.deletedRecord).toBeUndefined();
+  expect(result.deletedProjection).toBeUndefined();
 });

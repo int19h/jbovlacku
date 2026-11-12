@@ -332,6 +332,7 @@ test("a body that became available is fetched for a cached record, and malformed
         record.body &&
         JSON.parse(record.envelope).header.action.kind === "definition.publish"
       ) {
+        await store.delete("records", id);
         await store.put("records", id, {
           ...record,
           body: null,

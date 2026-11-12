@@ -13,6 +13,7 @@ num-bigint = { version = "=0.4.6", features = ["serde"] }
 num-rational = { version = "=0.4.2", features = ["serde"] }
 num-traits = "=0.2.19"
 jvc-rank = { path = "../jvc-rank" }
+hex = "=0.4.3"
 
 [dev-dependencies]
 sha2 = "=0.10.9"

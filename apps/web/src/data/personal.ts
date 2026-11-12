@@ -232,7 +232,7 @@ export class PersonalCalculator {
     view: string;
     actors: Record<string, string>;
   } | null = null;
-  /** IDs already authenticated by the worker. The envelopes and bodies stay in local storage. */
+  /** The loaded inventory binding. Originals and authenticated rows stay in local storage. */
   private sent: SentRecords | null = null;
   /**
    * True after Cancel until the user asks for a calculation again. An
@@ -565,6 +565,7 @@ export class PersonalCalculator {
               base: advance.base,
               session: intermediate,
               input: advance.input,
+              rows: advance.rows,
             });
           } catch {
             live();
@@ -674,7 +675,11 @@ export class PersonalCalculator {
   private async advanceInput(
     inventory: SnapshotInventory,
     selections: Record<string, string[]>,
-  ): Promise<{ base: string; input: EvaluationRequest } | null> {
+  ): Promise<{
+    base: string;
+    input: EvaluationRequest;
+    rows: { id: string; row: Uint8Array }[];
+  } | null> {
     const sent = this.sent;
     if (
       !this.loadedKey ||
@@ -717,24 +722,27 @@ export class PersonalCalculator {
       )
     )
       return null;
-    const events: string[] = [];
-    const bodies: Record<string, string> = {};
+    const rows: { id: string; row: Uint8Array }[] = [];
     const addedBodies = new Set<string>();
     for (const id of added) {
       const record = await this.store.get<{
-        envelope: string;
         body: string | null;
         bodyHash: string | null;
       }>("records", id);
-      if (!record) return null;
-      events.push(record.envelope);
+      const storedRow = await this.store.get<Uint8Array | ArrayBuffer>(
+        "projections",
+        id,
+      );
+      if (!record || !storedRow) return null;
+      const row =
+        storedRow instanceof Uint8Array ? storedRow : new Uint8Array(storedRow);
+      rows.push({ id, row });
       if (record.bodyHash && hasSortedValue(retained, record.bodyHash)) {
         if (!record.body)
           throw new RecordsError(
             `The body of ${id} is retained by the snapshot but not cached. Download the records again.`,
             "missing",
           );
-        bodies[id] = record.body;
         addedBodies.add(record.bodyHash);
       }
     }
@@ -742,12 +750,13 @@ export class PersonalCalculator {
     return {
       base: this.loadedKey,
       input: {
-        events,
-        bodies,
+        events: [],
+        bodies: {},
         selected_view: inventory.view,
         import_selections: selections,
         ...(sent.overlay ? { overlay: sent.overlay } : {}),
       },
+      rows,
     };
   }
   private rememberSent(

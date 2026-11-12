@@ -62,7 +62,7 @@ class RecordingWorker {
       this.selectedView = message.options.selected_view;
     }
     if (message.type === "advance") {
-      this.events += message.input.events.length;
+      this.events += message.input.events.length + (message.rows?.length ?? 0);
       this.selectedView = message.input.selected_view;
     }
     queueMicrotask(async () => {
@@ -235,6 +235,8 @@ function harness(): Harness {
       if (name === "inventory" && id === "latest") return currentInventory;
       if (name === "inventory") return inventories.get(id);
       if (name === "records") return records.get(id);
+      if (name === "projections")
+        return records.has(id) ? new Uint8Array([1]) : undefined;
       if (name === "selections") return selections.get(id);
       throw new Error(`Unexpected read: ${name}/${id}`);
     },
@@ -406,7 +408,11 @@ test("a pure snapshot append advances with only the new record", async () => {
   assert.equal(advance.type, "advance");
   if (first.type !== "load" || advance.type !== "advance") return;
   assert.equal(advance.base, h.worker.messages[1].session);
-  assert.deepEqual(advance.input.events, [envelope(added)]);
+  assert.deepEqual(advance.input.events, []);
+  assert.deepEqual(
+    advance.rows?.map((row) => row.id),
+    [added],
+  );
   assert.deepEqual(advance.input.bodies, {});
   assert.equal(advance.input.selected_view, view);
   assert.equal(
@@ -439,8 +445,13 @@ test("a new record with a retained body advances with that body", async () => {
   );
   const advance = h.worker.messages[2];
   assert.equal(advance.type, "advance");
-  if (advance.type === "advance")
-    assert.deepEqual(advance.input.bodies, { [added]: body });
+  if (advance.type === "advance") {
+    assert.deepEqual(advance.input.bodies, {});
+    assert.deepEqual(
+      advance.rows?.map((row) => row.id),
+      [added],
+    );
+  }
   h.calculator.cancel();
 });
 
@@ -583,8 +594,13 @@ test("a new ID that sorts between loaded IDs advances with only that envelope", 
     (message) => message.type === "advance",
   );
   assert.equal(advance?.type, "advance");
-  if (advance?.type === "advance")
-    assert.deepEqual(advance.input.events, [envelope(inserted)]);
+  if (advance?.type === "advance") {
+    assert.deepEqual(advance.input.events, []);
+    assert.deepEqual(
+      advance.rows?.map((row) => row.id),
+      [inserted],
+    );
+  }
   h.calculator.cancel();
 });
 
@@ -602,12 +618,13 @@ test("several new IDs at different positions advance in inventory order", async 
     (message) => message.type === "advance",
   );
   assert.equal(advance?.type, "advance");
-  if (advance?.type === "advance")
-    assert.deepEqual(advance.input.events, [
-      envelope(before),
-      envelope(middle),
-      envelope(added),
-    ]);
+  if (advance?.type === "advance") {
+    assert.deepEqual(advance.input.events, []);
+    assert.deepEqual(
+      advance.rows?.map((row) => row.id),
+      [before, middle, added],
+    );
+  }
   h.calculator.cancel();
 });
 
@@ -871,8 +888,13 @@ test("an inventory change during an advance starts the next delta from the compl
     (message) => message.type === "advance",
   );
   assert.equal(advance?.type, "advance");
-  if (advance?.type === "advance")
-    assert.deepEqual(advance.input.events, [envelope(later)]);
+  if (advance?.type === "advance") {
+    assert.deepEqual(advance.input.events, []);
+    assert.deepEqual(
+      advance.rows?.map((row) => row.id),
+      [later],
+    );
+  }
   assert.equal(h.workers.length, 1);
   h.calculator.cancel();
 });

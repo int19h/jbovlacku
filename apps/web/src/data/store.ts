@@ -1,8 +1,15 @@
 /**
  * Local IndexedDB storage. Version 2 adds preferences, the private overlay,
  * delivery groups, and own-history caches, and migrates version 1 outbox rows.
+ * Version 5 adds authenticated projection rows and their metadata.
  */
-import { utf8, verifyEnvelope } from "../../../../packages/core/src/browser.ts";
+import {
+  createProjectionDigest,
+  projectionBuildIdentity,
+  PROJECTION_ROW_VERSION,
+  utf8,
+  verifyEnvelope,
+} from "../../../../packages/core/src/browser.ts";
 import {
   ownGraph,
   requiresLifecycleDelivery,
@@ -262,6 +269,8 @@ const stores = [
   "ownhistory",
   "inventory",
   "records",
+  "projections",
+  "meta",
   "selections",
 ];
 export interface SavedDraftIndex {
@@ -305,7 +314,7 @@ export class LocalStore {
   >();
   constructor(readonly name = "jbovlacku-browser-v1") {
     this.database = new Promise((resolve, reject) => {
-      const request = indexedDB.open(name, 4);
+      const request = indexedDB.open(name, 5);
       request.onupgradeneeded = (event) => {
         const db = request.result;
         for (const store of stores)
@@ -422,6 +431,23 @@ export class LocalStore {
       tx.onabort = () =>
         reject(
           tx.error ?? new Error("Local storage did not save this change."),
+        );
+      tx.onerror = () => {};
+    });
+  }
+  async putProjectedRecord(
+    record: { id: string },
+    row: Uint8Array,
+  ): Promise<void> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(["records", "projections"], "readwrite");
+      tx.objectStore("records").put(record, record.id);
+      tx.objectStore("projections").put(row, record.id);
+      tx.oncomplete = () => resolve();
+      tx.onabort = () =>
+        reject(
+          tx.error ?? new Error("Local storage did not save this record."),
         );
       tx.onerror = () => {};
     });
@@ -819,13 +845,17 @@ export class LocalStore {
     const db = await this.database;
     const revision = store === "packages" ? packageRevision() : undefined;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(
-        store === "packages" ? [store, "packageRevisions"] : store,
-        "readwrite",
-      );
+      const names =
+        store === "packages"
+          ? [store, "packageRevisions"]
+          : store === "records"
+            ? [store, "projections"]
+            : store;
+      const tx = db.transaction(names, "readwrite");
       tx.objectStore(store).delete(id);
       if (store === "packages")
         tx.objectStore("packageRevisions").put(revision, id);
+      if (store === "records") tx.objectStore("projections").delete(id);
       tx.oncomplete = () => {
         if (store === "packages") this.packageCache.delete(id);
         resolve();
@@ -837,14 +867,17 @@ export class LocalStore {
       tx.onerror = () => {};
     });
   }
-  /** Commits a complete inventory and removes only records outside it. */
+  /** Commits a complete inventory and its projection digest, and prunes stale rows. */
   async commitInventory(inventory: SnapshotInventory): Promise<void> {
     const events = inventory.events;
     if (!isStrictlyIncreasing(events))
       throw new Error("The inventory is not in order.");
     const db = await this.database;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(["records", "inventory"], "readwrite");
+      const tx = db.transaction(
+        ["records", "projections", "inventory", "meta"],
+        "readwrite",
+      );
       const records = tx.objectStore("records");
       const cursor = records.openKeyCursor();
       cursor.onsuccess = () => {
@@ -852,6 +885,49 @@ export class LocalStore {
         if (!current) return;
         if (!hasSortedId(events, String(current.key)))
           records.delete(current.primaryKey);
+        current.continue();
+      };
+      const projections = tx.objectStore("projections");
+      const digest = createProjectionDigest();
+      let index = 0;
+      let count = 0;
+      let valid = true;
+      const rows = projections.openCursor();
+      rows.onsuccess = () => {
+        const current = rows.result;
+        if (!current) {
+          tx.objectStore("meta").put(
+            {
+              version: PROJECTION_ROW_VERSION,
+              build: projectionBuildIdentity(),
+              events_digest: inventory.events_digest,
+              rows_hash: digest.finish(),
+              count: valid ? count : -1,
+            },
+            `projection:${inventory.snapshot}`,
+          );
+          return;
+        }
+        const id = String(current.key);
+        if (!hasSortedId(events, id)) {
+          projections.delete(current.primaryKey);
+          current.continue();
+          return;
+        }
+        while (index < events.length && events[index] < id) index++;
+        if (events[index] === id) {
+          const value = current.value as ArrayBuffer | Uint8Array;
+          const bytes =
+            value instanceof Uint8Array
+              ? value
+              : value instanceof ArrayBuffer
+                ? new Uint8Array(value)
+                : null;
+          if (bytes) digest.update(bytes);
+          else valid = false;
+          count++;
+          index++;
+        }
         current.continue();
       };
       const inventories = tx.objectStore("inventory");

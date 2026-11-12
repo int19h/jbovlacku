@@ -8,6 +8,7 @@ import {
   evaluateSession,
   identityFromSeed,
   initializeCore,
+  projectRecord,
   utf8,
   wordId,
   type EvaluationRequest,
@@ -114,7 +115,7 @@ async function worker(): Promise<TestWorker> {
     const input = loading!;
     for (const envelope of input.events)
       builder.addRecordText(envelope, input.bodies[JSON.parse(envelope).id]);
-    return input.events.length;
+    return { count: input.events.length, bytesRead: 0 };
   }, createEvaluationSession);
   return new Proxy(actual, {
     get(target, property, receiver) {
@@ -192,12 +193,14 @@ test("a judgment advance equals full evaluation and replaces the session key", a
   const actual = await worker();
   try {
     await actual.load({ type: "load", id: 1, session: "before", input });
+    const projected = projectRecord(utf8(JSON.stringify(added.envelope)));
     const loaded = actual.advance({
       type: "advance",
       id: 2,
       base: "before",
       session: "after",
-      input: delta(input, added.envelope),
+      input: { ...delta(input, added.envelope), events: [] },
+      rows: [{ id: added.envelope.id, row: projected.row }],
     });
     assert.equal(loaded.events, fullInput.events.length);
     assertSession(actual, expected);

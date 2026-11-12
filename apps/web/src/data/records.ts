@@ -8,10 +8,9 @@
 import {
   canonicalize,
   contentHash,
-  inspectBody,
   prepareSelection,
+  projectRecord,
   utf8,
-  verifyEnvelope,
 } from "../../../../packages/core/src/browser.ts";
 import {
   api,
@@ -123,35 +122,32 @@ async function inventoryIds(
   }
   return ids;
 }
-/** Builds a stored record from a verified envelope and an optional body. */
+/** Authenticates one record and builds its stored record and projection together. */
 function storedRecord(
   id: string,
   envelopeValue: unknown,
   bodyValue: unknown,
-): StoredRecord {
-  const envelopeBytes = utf8(JSON.stringify(envelopeValue));
-  verifyEnvelope(envelopeBytes);
-  const envelope = canonicalize(envelopeBytes);
-  const parsed = JSON.parse(envelope) as Envelope;
+): { record: StoredRecord; row: Uint8Array } {
+  const body =
+    bodyValue === null || bodyValue === undefined
+      ? null
+      : canonicalize(utf8(JSON.stringify(bodyValue)));
+  const projected = projectRecord(
+    utf8(JSON.stringify(envelopeValue)),
+    body === null ? undefined : utf8(body),
+  );
+  const parsed = JSON.parse(projected.envelope) as Envelope;
   if (parsed.id !== id)
     throw new RecordsError(
       "A records item does not match its event ID.",
       "invalid",
     );
   const bodyHash = parsed.header.content?.hash ?? null;
-  if (bodyValue === null || bodyValue === undefined)
-    return {
-      id,
-      envelope,
-      body: null,
-      bodyStatus: bodyHash ? "missing" : "none",
-      bodyHash,
-    };
-  const body = canonicalize(utf8(JSON.stringify(bodyValue)));
   if (
-    !parsed.header.content ||
-    parsed.header.content.hash !== contentHash(utf8(body)) ||
-    parsed.header.content.bytes !== byteLength(body)
+    body !== null &&
+    (!parsed.header.content ||
+      parsed.header.content.hash !== contentHash(utf8(body)) ||
+      parsed.header.content.bytes !== byteLength(body))
   )
     throw new RecordsError(
       `The body of ${id} does not match its signed hash.`,
@@ -160,13 +156,15 @@ function storedRecord(
   // Authenticated bytes stay even when the current schema cannot interpret
   // them. The shared evaluator applies the format's invalid-content rules, so
   // one unsupported record stays inert instead of disabling the calculation.
-  const inspected = inspectBody(utf8(envelope), utf8(body));
   return {
-    id,
-    envelope,
-    body,
-    bodyStatus: inspected.availability === "invalid" ? "invalid" : "present",
-    bodyHash,
+    record: {
+      id,
+      envelope: projected.envelope,
+      body,
+      bodyStatus: projected.bodyStatus,
+      bodyHash,
+    },
+    row: projected.row,
   };
 }
 /** Upgrades a record cached before body availability was tracked. */
@@ -321,7 +319,8 @@ export async function syncRecords(
           `The server could not read the retained body of ${item.id} (status "${bodyStatus}"). The inventory is not at fault. Try the download again later.`,
           "unavailable",
         );
-      const record = storedRecord(item.id, item.envelope, item.body);
+      const projected = storedRecord(item.id, item.envelope, item.body);
+      const record = projected.record;
       if (record.bodyHash && !bodySet.has(record.bodyHash) && record.body)
         throw new RecordsError(
           "The server supplied a body that its inventory does not list.",
@@ -329,7 +328,7 @@ export async function syncRecords(
         );
       bytes += byteLength(record.envelope) + byteLength(record.body ?? "");
       bound();
-      await store.put("records", item.id, record);
+      await store.putProjectedRecord(record, projected.row);
       cached.set(item.id, record);
       missing.delete(item.id);
       loaded++;
@@ -375,10 +374,10 @@ export async function syncRecords(
       JSON.parse(record.envelope),
       JSON.parse(new TextDecoder().decode(raw)),
     );
-    bytes += byteLength(updated.body ?? "");
+    bytes += byteLength(updated.record.body ?? "");
     bound();
-    await store.put("records", id, updated);
-    cached.set(id, updated);
+    await store.putProjectedRecord(updated.record, updated.row);
+    cached.set(id, updated.record);
   }
   // Every retained body of a cached record must now be cached.
   for (const id of events) {

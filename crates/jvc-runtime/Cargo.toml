@@ -18,6 +18,8 @@ serde_json_canonicalizer = "=0.3.2"
 wasm-bindgen = "=0.2.105"
 regex-automata = { version = "=0.4.18", default-features = false, features = ["std", "syntax", "nfa-pikevm", "unicode"] }
 regex-syntax = { version = "=0.8.10", default-features = false, features = ["std", "unicode"] }
+sha2 = "=0.10.9"
+hex = "=0.4.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 jvc-carrier = { path = "../jvc-carrier" }

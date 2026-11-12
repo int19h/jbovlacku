@@ -1,6 +1,7 @@
 import {
   canonicalize,
   contentHash,
+  projectRecord,
   utf8,
 } from "../../packages/core/src/browser.ts";
 
@@ -58,29 +59,49 @@ const writeBatch = async (database, name, rows) => {
     });
   }
 };
+const writeProjectedBatch = async (database, records) => {
+  for (let start = 0; start < records.length; start += 256) {
+    const batch = records.slice(start, start + 256);
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(
+        ["records", "projections"],
+        "readwrite",
+      );
+      for (const { record, row } of batch) {
+        transaction.objectStore("records").put(record, record.id);
+        transaction.objectStore("projections").put(row, record.id);
+      }
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+      transaction.onerror = () => {};
+    });
+  }
+};
+const projectedRecord = (record) => {
+  const projected = projectRecord(
+    utf8(record.envelope),
+    record.body === null ? undefined : utf8(record.body),
+  );
+  return {
+    record: { ...record, bodyStatus: projected.bodyStatus },
+    row: projected.row,
+  };
+};
 export const seedProduct = async (store, value) => {
   const database = await store.database;
   for (let start = 0; start < value.events.length; start += 256) {
     const records = value.events.slice(start, start + 256).map((envelope) => {
       const { id, header } = JSON.parse(envelope);
       const body = value.bodies[id];
-      return [
+      return projectedRecord({
         id,
-        {
-          id,
-          envelope,
-          body: body ?? null,
-          bodyStatus:
-            body !== undefined
-              ? "present"
-              : header.content
-                ? "missing"
-                : "none",
-          bodyHash: header.content?.hash ?? null,
-        },
-      ];
+        envelope,
+        body: body ?? null,
+        bodyStatus: "none",
+        bodyHash: header.content?.hash ?? null,
+      });
     });
-    await writeBatch(database, "records", records);
+    await writeProjectedBatch(database, records);
   }
   await writeBatch(
     database,
@@ -91,8 +112,7 @@ export const seedProduct = async (store, value) => {
     ]),
   );
   const inventory = productInventory(value);
-  await store.put("inventory", inventory.snapshot, inventory);
-  await store.put("inventory", "latest", inventory);
+  await store.commitInventory(inventory);
   return inventory;
 };
 
@@ -106,7 +126,7 @@ export const seedProductStream = async (store, fixtureUrl, recordsUrl) => {
   let rows = [];
   const flush = async () => {
     if (rows.length === 0) return;
-    await writeBatch(database, "records", rows);
+    await writeProjectedBatch(database, rows.map(projectedRecord));
     rows = [];
   };
   for (;;) {
@@ -118,15 +138,12 @@ export const seedProductStream = async (store, fixtureUrl, recordsUrl) => {
       text = text.slice(end + 1);
       if (!line) continue;
       const row = JSON.parse(line);
-      rows.push([row.id, row]);
+      rows.push(row);
       if (rows.length === 256) await flush();
     }
     if (done) break;
   }
-  if (text) {
-    const row = JSON.parse(text);
-    rows.push([row.id, row]);
-  }
+  if (text) rows.push(JSON.parse(text));
   await flush();
   await writeBatch(
     database,
@@ -136,7 +153,6 @@ export const seedProductStream = async (store, fixtureUrl, recordsUrl) => {
       JSON.stringify(selection),
     ]),
   );
-  await store.put("inventory", fixture.inventory.snapshot, fixture.inventory);
-  await store.put("inventory", "latest", fixture.inventory);
+  await store.commitInventory(fixture.inventory);
   return fixture.inventory;
 };

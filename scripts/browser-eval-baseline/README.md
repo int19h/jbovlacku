@@ -130,7 +130,7 @@ node --expose-gc --max-old-space-size=6144 --import tsx \
 The product measurement calls `PersonalCalculator.ensure` from a blank measurement page.
 Its product worker uses the normal request protocol and a read-only measurement getter. It is separate from the diagnostic worker wrapper.
 Use `--product-reload --product-only` to measure only the first product load, both signed local judgments and reloads, and product rankings.
-Before that first load, a separate setup worker seeds IndexedDB in a persistent browser profile and terminates. That browser closes, then a new browser opens the same profile for the measured load. Seeding processes and their residue are outside the measured browser. The new page core initializes during calculator setup, for the overlay digest and later signing. The PSS watchdog pauses only during this setup and resumes before the calculator starts.
+Before that first load, a separate setup worker authenticates the records, seeds their originals and projection rows in IndexedDB in a persistent browser profile, and terminates. That browser closes, then a new browser opens the same profile for the measured load. Seeding processes and their residue are outside the measured browser. The new page core initializes during calculator setup, for the overlay digest and later signing. The PSS watchdog pauses only during this setup and resumes before the calculator starts.
 Each reload inventory is computed outside the browser from its deterministic signed envelope. The browser stores that small inventory and calls the real calculator again.
 
 It retains the normal inventory, byte, and evaluation limits.
