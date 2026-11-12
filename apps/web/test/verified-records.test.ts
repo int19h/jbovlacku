@@ -399,8 +399,15 @@ test("sync stores a projection with every record and deletes both together", asy
     const store = new LocalStore(
       `sync-projection-${crypto.randomUUID()}`,
     ) as BrowserStore;
+    const get = IDBObjectStore.prototype.get;
+    let latestReads = 0;
+    IDBObjectStore.prototype.get = function (key) {
+      if (this.name === "inventory" && key === "latest") latestReads++;
+      return get.call(this, key);
+    };
     try {
       const inventory = await syncRecords(store);
+      const syncLatestReads = latestReads;
       const records = await store.keys("records");
       const projections = await store.keys("projections");
       const first = inventory.events[0];
@@ -410,14 +417,17 @@ test("sync stores a projection with every record and deletes both together", asy
         inventory,
         records,
         projections,
+        syncLatestReads,
         rowBytes: row?.byteLength ?? 0,
         deletedRecord: await store.get("records", first),
         deletedProjection: await store.get("projections", first),
       };
     } finally {
+      IDBObjectStore.prototype.get = get;
       (await store.database).close();
     }
   }, corePath);
+  expect(result.syncLatestReads).toBe(2);
   expect(result.records).toEqual(result.inventory.events);
   expect(result.projections).toEqual(result.inventory.events);
   expect(result.rowBytes).toBeGreaterThan(100);

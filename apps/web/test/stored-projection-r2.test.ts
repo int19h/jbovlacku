@@ -181,6 +181,7 @@ test("row loads follow body retention when it drops and returns", async ({
   expect(results.afterDrop.expected.rank).not.toEqual(
     results.before.expected.rank,
   );
+  expect(results.afterDrop.actual.rebuilt).toBe(true);
   for (const result of [
     results.before,
     results.afterDrop,
@@ -336,11 +337,17 @@ test("advance and pruning keep the incremental row digest current", async ({
   const result = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
     const { LocalStore } = await import(String("/src/data/store.ts"));
-    const { syncRecords } = await import(String("/src/data/records.ts"));
+    const { syncRecords, loadSelections } = await import(
+      String("/src/data/records.ts")
+    );
     await core.initializeCore();
     const store = new LocalStore(
       `digest-${crypto.randomUUID()}`,
     ) as BrowserStore;
+    const worker = new Worker(
+      new URL("/src/workers/evaluate.ts", location.href),
+      { type: "module" },
+    );
     try {
       const inventory = await syncRecords(store);
       const firstHash = (
@@ -380,6 +387,28 @@ test("advance and pruning keep the incremental row digest current", async ({
           `projection:${advanced.snapshot}`,
         )
       )?.rows_hash;
+      const selections = await loadSelections(store, advanced);
+      const advancedLoad = await new Promise<Record<string, unknown>>(
+        (resolve, reject) => {
+          worker.onmessage = (event) => resolve(event.data);
+          worker.onerror = (event) => reject(new Error(event.message));
+          worker.postMessage({
+            type: "load",
+            id: 1,
+            session: advanced.snapshot,
+            source: {
+              database: store.name,
+              snapshot: advanced.snapshot,
+              events_digest: advanced.events_digest,
+              count: advanced.events.length,
+            },
+            options: {
+              selected_view: advanced.view,
+              import_selections: selections,
+            },
+          });
+        },
+      );
       await store.commitInventory(inventory);
       const prunedHash = (
         await store.get<Record<string, unknown>>(
@@ -387,13 +416,58 @@ test("advance and pruning keep the incremental row digest current", async ({
           `projection:${inventory.snapshot}`,
         )
       )?.rows_hash;
-      return { firstHash, advancedHash, prunedHash };
+      return { firstHash, advancedHash, advancedLoad, prunedHash };
     } finally {
+      worker.terminate();
       (await store.database).close();
     }
   }, corePath);
   expect(result.advancedHash).not.toBe(result.firstHash);
+  expect(result.advancedLoad.type).toBe("loaded");
+  expect(result.advancedLoad.projection_rebuilt).toBe(false);
   expect(result.prunedHash).toBe(result.firstHash);
+});
+
+test("record deletion removes the old row from the digest", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { syncRecords } = await import(String("/src/data/records.ts"));
+    await core.initializeCore();
+    const store = new LocalStore(
+      `delete-digest-${crypto.randomUUID()}`,
+    ) as BrowserStore;
+    try {
+      const inventory = await syncRecords(store);
+      const deleted = inventory.events[0];
+      const key = `projection:${inventory.snapshot}`;
+      const beforeHash = (await store.get<Record<string, unknown>>("meta", key))
+        ?.rows_hash;
+      await store.delete("records", deleted);
+      const digest = core.createProjectionDigest();
+      for (const id of inventory.events) {
+        const row = await store.get<Uint8Array>("projections", id);
+        if (row) digest.update(id, row);
+      }
+      return {
+        beforeHash,
+        expectedHash: digest.finish(),
+        actualHash: (await store.get<Record<string, unknown>>("meta", key))
+          ?.rows_hash,
+        record: await store.get("records", deleted),
+        row: await store.get("projections", deleted),
+      };
+    } finally {
+      (await store.database).close();
+    }
+  }, corePath);
+  expect(result.actualHash).toBe(result.expectedHash);
+  expect(result.actualHash).not.toBe(result.beforeHash);
+  expect(result.record).toBeUndefined();
+  expect(result.row).toBeUndefined();
 });
 
 test("a decodable row change is caught on the first load of a new page", async ({

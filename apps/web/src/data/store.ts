@@ -479,6 +479,7 @@ export class LocalStore {
   async putProjectedRecord(
     record: { id: string },
     row: Uint8Array,
+    latest?: SnapshotInventory | null,
   ): Promise<void> {
     const db = await this.database;
     return new Promise((resolve, reject) => {
@@ -488,17 +489,20 @@ export class LocalStore {
       );
       let failure: unknown;
       const execute = async () => {
-        const latest = await idbRequest(
-          tx.objectStore("inventory").get("latest") as IDBRequest<
-            SnapshotInventory | undefined
-          >,
-        );
+        const current =
+          latest === undefined
+            ? await idbRequest(
+                tx.objectStore("inventory").get("latest") as IDBRequest<
+                  SnapshotInventory | undefined
+                >,
+              )
+            : latest;
         const oldRow = (await idbRequest(
           tx.objectStore("projections").get(record.id),
         )) as ProjectionBytes | undefined;
-        if (latest && hasSortedId(latest.events, record.id)) {
+        if (current && hasSortedId(current.events, record.id)) {
           const snapshot = (await idbRequest(
-            tx.objectStore("meta").get(projectionSnapshotKey(latest.snapshot)),
+            tx.objectStore("meta").get(projectionSnapshotKey(current.snapshot)),
           )) as ProjectionSnapshotMeta | undefined;
           if (snapshot && typeof snapshot.rows_hash === "string")
             tx.objectStore("meta").put(
@@ -511,7 +515,7 @@ export class LocalStore {
                   row,
                 ),
               },
-              projectionSnapshotKey(latest.snapshot),
+              projectionSnapshotKey(current.snapshot),
             );
         }
         const meta = tx.objectStore("meta");
@@ -971,16 +975,18 @@ export class LocalStore {
                 projectionSnapshotKey(latest.snapshot),
               );
           }
+          tx.objectStore("records").delete(id);
+          tx.objectStore("projections").delete(id);
         };
         void execute().catch((error) => {
           failure = error;
           tx.abort();
         });
+      } else {
+        tx.objectStore(store).delete(id);
       }
-      tx.objectStore(store).delete(id);
       if (store === "packages")
         tx.objectStore("packageRevisions").put(revision, id);
-      if (store === "records") tx.objectStore("projections").delete(id);
       tx.oncomplete = () => {
         if (store === "packages") this.packageCache.delete(id);
         resolve();

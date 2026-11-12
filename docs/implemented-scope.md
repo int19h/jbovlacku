@@ -597,9 +597,11 @@ Site calculation metadata uses the digest of canonical JSON null for its absent 
 The personal view downloads the snapshot records, authenticates each envelope and body once at sync, and ranks words locally with the private overlay.
 It adds the current identity with allocation 1 only when its continuity group has no allocation or private root change.
 Zero allocations and removals also prevent that addition. It applies private blocks and public shuns as local blocks.
-Sync stores a versioned projection row with each record in one transaction. The row holds the complete evaluation projection in the compact arena's generic form. A store-wide producer value records which core build wrote the rows. The value is `mixed` when two builds wrote them. Inventory commits carry that producer forward and remove stale records and rows by key.
+Sync stores a versioned projection row with each record in one transaction. It reads the latest inventory once for all row writes and supplies that value to each write. The row holds the complete evaluation projection in the compact arena's generic form. A store-wide producer value records which core build wrote the rows. The value is `mixed` when two builds wrote them. Inventory commits carry that producer forward and remove stale records and rows by key.
 
 The row digest covers every inventory row. For each row, the core hashes the record ID, the row length as an unsigned 64-bit little-endian integer, and the row bytes with SHA-256. The digest is the bytewise XOR of these hashes. Sync, advance, rebuild, record deletion, and pruning update the digest. Each addition or removal XORs the same per-row hash.
+
+The digest detects accidental damage only. It is not a defense against a party who can write to this origin's storage. The client trusts that party.
 
 The worker reads rows in batches of 256 in one read-only transaction. That transaction also reads the live producer and snapshot metadata. Both producer values must name the current build. The worker makes sure that the inventory and snapshot binding match. It skips stray row keys and compares the digest with exactly the inventory rows it read.
 

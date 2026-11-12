@@ -197,6 +197,8 @@ export async function syncRecords(
   progress({ phase: "inventory", loaded: 0, total: 0, bytes: 0 });
   const manifest = await getManifest(options);
   const snapshot = manifest.snapshot;
+  const latest =
+    (await store.get<SnapshotInventory>("inventory", "latest")) ?? null;
   const declared = manifest.manifest as {
     events?: { count?: number; hash?: string };
     bodies?: { count?: number; hash?: string };
@@ -328,7 +330,7 @@ export async function syncRecords(
         );
       bytes += byteLength(record.envelope) + byteLength(record.body ?? "");
       bound();
-      await store.putProjectedRecord(record, projected.row);
+      await store.putProjectedRecord(record, projected.row, latest);
       cached.set(item.id, record);
       missing.delete(item.id);
       loaded++;
@@ -376,7 +378,7 @@ export async function syncRecords(
     );
     bytes += byteLength(updated.record.body ?? "");
     bound();
-    await store.putProjectedRecord(updated.record, updated.row);
+    await store.putProjectedRecord(updated.record, updated.row, latest);
     cached.set(id, updated.record);
   }
   // Every retained body of a cached record must now be cached.
