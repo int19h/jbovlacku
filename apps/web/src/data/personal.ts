@@ -589,7 +589,7 @@ export class PersonalCalculator {
         )
           throw new Error("Unexpected worker reply.");
         this.projectionDigest =
-          advance?.projectionDigest ?? loaded.projection_digest ?? null;
+          loaded.projection_digest ?? advance?.projectionDigest ?? null;
         this.loadedKey = intermediate;
         this.continuity = {
           snapshot: inventory.snapshot,

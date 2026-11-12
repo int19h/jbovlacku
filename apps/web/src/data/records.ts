@@ -167,17 +167,6 @@ function storedRecord(
     row: projected.row,
   };
 }
-/** Upgrades a record cached before body availability was tracked. */
-function normalize(record: StoredRecord): StoredRecord {
-  if (record.bodyStatus) return record;
-  const parsed = JSON.parse(record.envelope) as Envelope;
-  const bodyHash = parsed.header.content?.hash ?? null;
-  return {
-    ...record,
-    bodyHash,
-    bodyStatus: record.body ? "present" : bodyHash ? "missing" : "none",
-  };
-}
 /**
  * Downloads and verifies the current snapshot's records into the local store.
  * Returns the inventory. Records cached by ID are not fetched again, but a
@@ -229,11 +218,8 @@ export async function syncRecords(
     check();
     const record = await store.get<StoredRecord>("records", id);
     if (!record) continue;
-    const normalized = normalize(record);
-    if (!record.bodyStatus) await store.put("records", id, normalized);
-    cached.set(id, normalized);
-    bytes +=
-      byteLength(normalized.envelope) + byteLength(normalized.body ?? "");
+    cached.set(id, record);
+    bytes += byteLength(record.envelope) + byteLength(record.body ?? "");
   }
   const missing = new Set(events.filter((id) => !cached.has(id)));
   // Position lookups by map and set. The inventory is in order, so the first
@@ -499,11 +485,10 @@ export async function loadRecords(
         `Record ${id} is not cached. Download the records again.`,
         "missing",
       );
-    const record = normalize(stored);
-    events.push(record.envelope);
-    if (record.body && record.bodyHash && bodySet.has(record.bodyHash))
-      bodies[id] = record.body;
-    else if (record.bodyHash && bodySet.has(record.bodyHash))
+    events.push(stored.envelope);
+    if (stored.body && stored.bodyHash && bodySet.has(stored.bodyHash))
+      bodies[id] = stored.body;
+    else if (stored.bodyHash && bodySet.has(stored.bodyHash))
       throw new RecordsError(
         `The body of ${id} is retained by the snapshot but not cached. Download the records again.`,
         "missing",

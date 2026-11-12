@@ -2,6 +2,7 @@
  * Local IndexedDB storage. Version 2 adds preferences, the private overlay,
  * delivery groups, and own-history caches, and migrates version 1 outbox rows.
  * Version 5 adds authenticated projection rows and their metadata.
+ * Version 6 discards records from before body tracking for a fresh sync.
  */
 import {
   createProjectionDigest,
@@ -336,11 +337,14 @@ export class LocalStore {
   >();
   constructor(readonly name = "jbovlacku-browser-v1") {
     this.database = new Promise((resolve, reject) => {
-      const request = indexedDB.open(name, 5);
+      const request = indexedDB.open(name, 6);
       request.onupgradeneeded = (event) => {
         const db = request.result;
         for (const store of stores)
           if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
+        if (event.oldVersion > 0 && event.oldVersion < 6)
+          for (const store of ["records", "projections", "inventory", "meta"])
+            request.transaction!.objectStore(store).clear();
         if (event.oldVersion < 2 && event.oldVersion > 0) {
           const outbox = request.transaction!.objectStore("outbox");
           const cursor = outbox.openCursor();
