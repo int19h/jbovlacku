@@ -24,7 +24,6 @@ import {
   type RecordsProgress,
   type SnapshotInventory,
 } from "./records.ts";
-import { PROJECTION_PRODUCER_KEY } from "./projection-meta.ts";
 import type { WorkerRequest, WorkerResponse } from "../workers/evaluate.ts";
 import type { Calculation, ScoreRecord, TrustScope } from "../model/types.ts";
 import { describe } from "../lib/dom.ts";
@@ -698,11 +697,6 @@ export class PersonalCalculator {
       sent.selections !== canonicalize(utf8(JSON.stringify(selections)))
     )
       return null;
-    const producer = await this.store.get<string>(
-      "meta",
-      PROJECTION_PRODUCER_KEY,
-    );
-    if (producer !== projectionBuildIdentity()) return null;
     const retained = inventory.bodies;
     if (
       !isStrictlyIncreasing(inventory.events) ||
@@ -736,6 +730,8 @@ export class PersonalCalculator {
       )
     )
       return null;
+    const advance = await this.store.readProjectionAdvance(added);
+    if (advance.producer !== projectionBuildIdentity()) return null;
     const rows: { id: string; row: Uint8Array; bodyRetained: boolean }[] = [];
     const addedBodies = new Set<string>();
     for (const id of added) {
@@ -743,13 +739,8 @@ export class PersonalCalculator {
         body: string | null;
         bodyHash: string | null;
       }>("records", id);
-      const storedRow = await this.store.get<Uint8Array | ArrayBuffer>(
-        "projections",
-        id,
-      );
-      if (!record || !storedRow) return null;
-      const row =
-        storedRow instanceof Uint8Array ? storedRow : new Uint8Array(storedRow);
+      const row = advance.rows.get(id);
+      if (!record || !row) return null;
       rows.push({
         id,
         row,

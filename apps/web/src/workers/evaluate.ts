@@ -189,38 +189,6 @@ function rowBytes(value: unknown): Uint8Array {
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   throw new ProjectionRebuildNeeded("A projection row is not binary data.");
 }
-async function storeProjectionHash(
-  database: IDBDatabase,
-  source: LoadSource,
-  expected: ProjectionMeta,
-  hash: string,
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction("meta", "readwrite");
-    const store = transaction.objectStore("meta");
-    const read = store.get(
-      projectionSnapshotKey(source.snapshot),
-    ) as IDBRequest<ProjectionMeta | undefined>;
-    read.onsuccess = () => {
-      const current = read.result;
-      if (
-        current &&
-        current.version === expected.version &&
-        current.build === expected.build &&
-        current.events_digest === expected.events_digest &&
-        current.count === expected.count &&
-        current.rows_hash === null
-      )
-        store.put(
-          { ...current, rows_hash: hash },
-          projectionSnapshotKey(source.snapshot),
-        );
-    };
-    transaction.oncomplete = () => resolve();
-    transaction.onabort = () => reject(transaction.error);
-    transaction.onerror = () => {};
-  });
-}
 async function readProjectionRows(
   database: IDBDatabase,
   source: LoadSource,
@@ -231,20 +199,26 @@ async function readProjectionRows(
     "readonly",
   );
   const stored = await readInventory(transaction, source);
-  const meta = await request(
-    transaction
-      .objectStore("meta")
-      .get(projectionSnapshotKey(source.snapshot)) as IDBRequest<
-      ProjectionMeta | undefined
-    >,
-  );
+  const metaStore = transaction.objectStore("meta");
+  const [meta, producer] = await Promise.all([
+    request(
+      metaStore.get(projectionSnapshotKey(source.snapshot)) as IDBRequest<
+        ProjectionMeta | undefined
+      >,
+    ),
+    request(
+      metaStore.get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
+    ),
+  ]);
+  if (producer !== projectionBuildIdentity())
+    throw new ProjectionRebuildNeeded("Projection producer is stale.");
   if (
     !meta ||
     meta.version !== PROJECTION_ROW_VERSION ||
     meta.build !== projectionBuildIdentity() ||
     meta.events_digest !== source.events_digest ||
     meta.count !== source.count ||
-    (meta.rows_hash !== null && typeof meta.rows_hash !== "string")
+    typeof meta.rows_hash !== "string"
   )
     throw new ProjectionRebuildNeeded("Projection metadata is stale.");
   builder.setRetainedBodies(stored.bodies);
@@ -267,7 +241,7 @@ async function readProjectionRows(
         }
         throw new ProjectionRebuildNeeded("A projection row is missing.");
       }
-      digest.update(bytes);
+      digest.update(id, bytes);
       try {
         builder.addProjectionRow(bytes, id);
       } catch (error) {
@@ -283,10 +257,8 @@ async function readProjectionRows(
   if (index !== stored.events.length)
     throw new ProjectionRebuildNeeded("A projection row is missing.");
   const actualHash = digest.finish();
-  if (meta.rows_hash !== null && actualHash !== meta.rows_hash)
+  if (actualHash !== meta.rows_hash)
     throw new ProjectionRebuildNeeded("The projection digest does not match.");
-  if (meta.rows_hash === null)
-    await storeProjectionHash(database, source, meta, actualHash);
   return { count: index, bytesRead };
 }
 function readStoredRecords(source: LoadSource, builder: Builder) {
@@ -341,17 +313,14 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
             throw new Error(
               `The body of ${id} is retained by the snapshot but not cached. Download the records again.`,
             );
-          const body =
-            record.body && record.bodyHash && bodies.has(record.bodyHash)
-              ? record.body
-              : undefined;
+          const body = record.body ?? undefined;
           const projected = projector.project(
             utf8(record.envelope),
             body === undefined ? undefined : utf8(body),
           );
           if ((JSON.parse(projected.envelope) as { id: string }).id !== id)
             throw missingRecord(id);
-          digest.update(projected.row);
+          digest.update(id, projected.row);
           projectionStore.put(projected.row, id);
           index++;
           after = id;

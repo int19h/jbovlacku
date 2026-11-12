@@ -606,7 +606,17 @@ function wrapEvaluationBuilder(
     },
     setRetainedBodies(hashes: string[]) {
       requireOpen();
-      builder.set_retained_bodies(hashes);
+      const packed = new Uint8Array(hashes.length * 32);
+      for (const [index, hash] of hashes.entries()) {
+        if (!/^sha256:[0-9a-f]{64}$/.test(hash))
+          throw new Error("Invalid retained body hash.");
+        for (let byte = 0; byte < 32; byte++)
+          packed[index * 32 + byte] = Number.parseInt(
+            hash.slice(7 + byte * 2, 9 + byte * 2),
+            16,
+          );
+      }
+      builder.set_retained_bodies(packed);
     },
     addProjectionRow(
       row: Uint8Array,

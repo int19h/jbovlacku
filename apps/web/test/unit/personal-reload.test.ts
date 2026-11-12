@@ -244,6 +244,10 @@ function harness(): Harness {
       if (name === "selections") return selections.get(id);
       throw new Error(`Unexpected read: ${name}/${id}`);
     },
+    readProjectionAdvance: async (ids: string[]) => ({
+      producer: projectionProducer,
+      rows: new Map(ids.map((id) => [id, new Uint8Array([1])])),
+    }),
     keys: async (name: string) => {
       if (name === "selections") return [...selections.keys()];
       return [];

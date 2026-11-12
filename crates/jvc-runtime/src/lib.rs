@@ -794,7 +794,7 @@ pub struct EvaluationSessionBuilder {
     base: Option<jvc_state::EvaluatedState>,
     removed: Vec<String>,
     base_identity: Option<String>,
-    retained_bodies: Option<Vec<String>>,
+    retained_bodies: Option<Vec<[u8; 32]>>,
 }
 #[wasm_bindgen]
 pub fn evaluation_checkpoint_version() -> String {
@@ -1172,28 +1172,30 @@ pub fn project_record(
     project_with_verifier(&mut jvc_core::EnvelopeVerifier::default(), envelope, body)
 }
 
+/// XOR of SHA-256(record ID, little-endian u64 row length, row bytes) per row.
 #[wasm_bindgen]
 pub struct ProjectionDigest {
-    hash: sha2::Sha256,
+    digest: [u8; 32],
 }
 
 #[wasm_bindgen]
 impl ProjectionDigest {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        Self { digest: [0; 32] }
+    }
+    pub fn update(&mut self, id: &str, row: &[u8]) {
         use sha2::Digest;
-        Self {
-            hash: sha2::Sha256::new(),
+        let mut hash = sha2::Sha256::new();
+        hash.update(id.as_bytes());
+        hash.update((row.len() as u64).to_le_bytes());
+        hash.update(row);
+        for (target, contribution) in self.digest.iter_mut().zip(hash.finalize()) {
+            *target ^= contribution;
         }
     }
-    pub fn update(&mut self, row: &[u8]) {
-        use sha2::Digest;
-        self.hash.update((row.len() as u64).to_le_bytes());
-        self.hash.update(row);
-    }
     pub fn finish(self) -> String {
-        use sha2::Digest;
-        format!("sha256:{}", hex::encode(self.hash.finalize()))
+        format!("sha256:{}", hex::encode(self.digest))
     }
 }
 
@@ -1259,13 +1261,23 @@ impl EvaluationSessionBuilder {
             expected_id.as_deref(),
         )
     }
-    pub fn set_retained_bodies(&mut self, hashes: Vec<String>) -> std::result::Result<(), JsValue> {
-        if hashes.windows(2).any(|pair| pair[0] >= pair[1]) {
+    pub fn set_retained_bodies(&mut self, hashes: &[u8]) -> std::result::Result<(), JsValue> {
+        if hashes.len() % 32 != 0
+            || hashes
+                .chunks_exact(32)
+                .zip(hashes.chunks_exact(32).skip(1))
+                .any(|(left, right)| left >= right)
+        {
             return Err(JsValue::from_str(
-                "Retained body hashes are not sorted and unique.",
+                "Retained body hashes are not packed, sorted, and unique.",
             ));
         }
-        self.retained_bodies = Some(hashes);
+        self.retained_bodies = Some(
+            hashes
+                .chunks_exact(32)
+                .map(|chunk| chunk.try_into().unwrap())
+                .collect(),
+        );
         Ok(())
     }
     pub fn add_projection_row(
@@ -1278,9 +1290,13 @@ impl EvaluationSessionBuilder {
         let retained = body_retained.unwrap_or_else(|| {
             self.retained_bodies.as_ref().is_none_or(|hashes| {
                 row.body_hash().is_none_or(|hash| {
-                    hashes
-                        .binary_search_by(|candidate| candidate.as_str().cmp(hash))
-                        .is_ok()
+                    let Ok(hash) = hex::decode(&hash["sha256:".len()..]) else {
+                        return false;
+                    };
+                    let Ok(hash) = <[u8; 32]>::try_from(hash) else {
+                        return false;
+                    };
+                    hashes.binary_search(&hash).is_ok()
                 })
             })
         });

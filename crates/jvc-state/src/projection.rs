@@ -377,7 +377,7 @@ mod tests {
         }
         let mut seed = 0x4d595df4d0f33173u64;
         for length in 0..2048 {
-            let mut bytes = encoded[..length.min(110)].to_vec();
+            let mut bytes = encoded[..length.min(137)].to_vec();
             while bytes.len() < length {
                 seed ^= seed << 13;
                 seed ^= seed >> 7;

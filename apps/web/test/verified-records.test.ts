@@ -85,7 +85,7 @@ test("the browser worker loads stored rows and rebuilds stale or damaged project
       selections: [],
     };
     await store.put("inventory", snapshot, inventory);
-    const worker = new Worker(
+    let worker = new Worker(
       new URL("/src/workers/evaluate.ts", location.href),
       { type: "module" },
     );
@@ -138,8 +138,15 @@ test("the browser worker loads stored rows and rebuilds stale or damaged project
         record.envelope.id,
       );
       const damaged = new Uint8Array(firstRow!);
-      damaged[damaged.length - 1] ^= 1;
+      damaged[67] ^= 1;
+      const decoder = core.createEvaluationSession(options);
+      decoder.addProjectionRow(damaged, record.envelope.id);
+      decoder.free();
       await store.put("projections", record.envelope.id, damaged);
+      worker.terminate();
+      worker = new Worker(new URL("/src/workers/evaluate.ts", location.href), {
+        type: "module",
+      });
       recovered.push(await send(options));
       const validMeta = await store.get<Record<string, unknown>>(
         "meta",
@@ -319,7 +326,7 @@ test("an inventory commit prunes stale record and projection IDs and publishes m
   expect(result.latest).toEqual(result.pinned);
   expect(result.meta.events_digest).toBe("digest");
   expect(result.meta.count).toBe(1);
-  expect(result.meta.rows_hash).toBeNull();
+  expect(typeof result.meta.rows_hash).toBe("string");
   expect(result.cursorCounts).toEqual({ key: 0, value: 0 });
 });
 
