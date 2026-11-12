@@ -109,6 +109,10 @@ test("row loads follow body retention when it drops and returns", async ({
           expected: await original(inventory),
           actual: await rows(inventory),
         };
+        const loadedMeta = await store.get<Record<string, unknown>>(
+          "meta",
+          `projection:${inventory.snapshot}`,
+        );
         const bodyRecord = await (async () => {
           for (const id of inventory.events) {
             const record = await store.get<{
@@ -149,7 +153,7 @@ test("row loads follow body retention when it drops and returns", async ({
           expected: await original(restored),
           actual: await rows(restored),
         };
-        return { firstMeta, before, afterDrop, afterRestore };
+        return { firstMeta, loadedMeta, before, afterDrop, afterRestore };
       } finally {
         worker.terminate();
         (await store.database).close();
@@ -158,6 +162,7 @@ test("row loads follow body retention when it drops and returns", async ({
     { corePath, word },
   );
   expect(results.firstMeta?.rows_hash).toBeNull();
+  expect(typeof results.loadedMeta?.rows_hash).toBe("string");
   for (const result of [
     results.before,
     results.afterDrop,
