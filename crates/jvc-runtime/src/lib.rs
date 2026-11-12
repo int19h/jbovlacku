@@ -1300,7 +1300,10 @@ impl EvaluationSessionBuilder {
                 })
             })
         });
-        if retained && row.body_is_missing() {
+        if (body_retained.is_some() || self.retained_bodies.is_some())
+            && retained
+            && row.body_is_missing()
+        {
             return Err(JsValue::from_str(
                 "A projection body is retained by the snapshot but missing.",
             ));
