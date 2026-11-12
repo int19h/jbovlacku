@@ -111,12 +111,16 @@ type TestWorker = EvaluationWorker & {
 let loading: EvaluationRequest | null = null;
 async function worker(): Promise<TestWorker> {
   const { EvaluationWorker } = await import("../../src/workers/evaluate.ts");
-  const actual = new EvaluationWorker(async (_source, builder) => {
-    const input = loading!;
-    for (const envelope of input.events)
-      builder.addRecordText(envelope, input.bodies[JSON.parse(envelope).id]);
-    return { count: input.events.length, bytesRead: 0 };
-  }, createEvaluationSession);
+  const actual = new EvaluationWorker(
+    async (_source, builder) => {
+      const input = loading!;
+      for (const envelope of input.events)
+        builder.addRecordText(envelope, input.bodies[JSON.parse(envelope).id]);
+      return { count: input.events.length, bytesRead: 0 };
+    },
+    createEvaluationSession,
+    async () => {},
+  );
   return new Proxy(actual, {
     get(target, property, receiver) {
       if (property === "load")
@@ -194,13 +198,19 @@ test("a judgment advance equals full evaluation and replaces the session key", a
   try {
     await actual.load({ type: "load", id: 1, session: "before", input });
     const projected = projectRecord(utf8(JSON.stringify(added.envelope)));
-    const loaded = actual.advance({
+    const loaded = await actual.advance({
       type: "advance",
       id: 2,
       base: "before",
       session: "after",
       input: { ...delta(input, added.envelope), events: [] },
-      rows: [{ id: added.envelope.id, row: projected.row }],
+      source: {
+        database: "test",
+        snapshot: "test",
+        events_digest: "test",
+        count: fullInput.events.length,
+      },
+      rows: [{ id: added.envelope.id, row: projected.row, bodyRetained: true }],
     });
     assert.equal(loaded.events, fullInput.events.length);
     assertSession(actual, expected);
@@ -254,7 +264,7 @@ test("a layout-split advance refreshes the full state and ranking without a delt
       word,
       reviewers: 64,
     }).result;
-    actual.advance({
+    await actual.advance({
       type: "advance",
       id: 3,
       base: "before",
@@ -305,7 +315,7 @@ test("a global action rebuilds through advance with full state and ranking parit
   const actual = await worker();
   try {
     await actual.load({ type: "load", id: 1, session: "before", input });
-    actual.advance({
+    await actual.advance({
       type: "advance",
       id: 2,
       base: "before",
@@ -367,7 +377,7 @@ test("changed limits rebuild to the same unavailable result as full evaluation",
   const actual = await worker();
   try {
     await actual.load({ type: "load", id: 1, session: "before", input });
-    actual.advance({
+    await actual.advance({
       type: "advance",
       id: 2,
       base: "before",
@@ -396,7 +406,7 @@ test("an advance with the wrong base keeps the loaded session", async () => {
   try {
     await actual.load({ type: "load", id: 1, session: "before", input });
     const summary = actual.currentSession?.summary();
-    assert.throws(
+    await assert.rejects(
       () =>
         actual.advance({
           type: "advance",
@@ -451,7 +461,7 @@ test("a body-bearing definition advance equals full evaluation", async () => {
   const actual = await worker();
   try {
     await actual.load({ type: "load", id: 1, session: "before", input });
-    actual.advance({
+    await actual.advance({
       type: "advance",
       id: 2,
       base: "before",
@@ -506,7 +516,7 @@ test("an overlay delta rebuilds to the same state as full evaluation", async () 
   const actual = await worker();
   try {
     await actual.load({ type: "load", id: 1, session: "before", input });
-    actual.advance({
+    await actual.advance({
       type: "advance",
       id: 2,
       base: "before",
@@ -553,7 +563,7 @@ test("a failure after release leaves no session and a full load recovers", async
   const actual = await worker();
   try {
     await actual.load({ type: "load", id: 1, session: "before", input });
-    assert.throws(() =>
+    await assert.rejects(() =>
       actual.advance({
         type: "advance",
         id: 2,
@@ -608,7 +618,7 @@ test("an unchanged overlay keeps a judgment advance on the fast path", async () 
       session: "before",
       input: baseInput,
     });
-    actual.advance({
+    await actual.advance({
       type: "advance",
       id: 2,
       base: "before",

@@ -2,8 +2,10 @@ import {
   canonicalize,
   contentHash,
   projectRecord,
+  projectionBuildIdentity,
   utf8,
 } from "../../packages/core/src/browser.ts";
+import { PROJECTION_PRODUCER_KEY } from "../../apps/web/src/data/projection-meta.ts";
 
 const hashJson = (value) =>
   contentHash(utf8(canonicalize(utf8(JSON.stringify(value)))));
@@ -64,13 +66,23 @@ const writeProjectedBatch = async (database, records) => {
     const batch = records.slice(start, start + 256);
     await new Promise((resolve, reject) => {
       const transaction = database.transaction(
-        ["records", "projections"],
+        ["records", "projections", "meta"],
         "readwrite",
       );
-      for (const { record, row } of batch) {
-        transaction.objectStore("records").put(record, record.id);
-        transaction.objectStore("projections").put(row, record.id);
-      }
+      const meta = transaction.objectStore("meta");
+      const producer = meta.get(PROJECTION_PRODUCER_KEY);
+      producer.onsuccess = () => {
+        const current = producer.result;
+        const next =
+          current === undefined || current === projectionBuildIdentity()
+            ? projectionBuildIdentity()
+            : "mixed";
+        meta.put(next, PROJECTION_PRODUCER_KEY);
+        for (const { record, row } of batch) {
+          transaction.objectStore("records").put(record, record.id);
+          transaction.objectStore("projections").put(row, record.id);
+        }
+      };
       transaction.oncomplete = () => resolve();
       transaction.onabort = () => reject(transaction.error);
       transaction.onerror = () => {};

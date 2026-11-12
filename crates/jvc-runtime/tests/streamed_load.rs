@@ -112,7 +112,7 @@ fn full_data_streamed_load_and_overlay_match_whole_input() {
         let decoded = jvc_state::ProjectionRow::decode(&encoded).unwrap();
         assert_eq!(decoded, row, "projection changed record {id}");
         projected_builder
-            .add_projection_row(&encoded, Some(id.clone()))
+            .add_projection_row(&encoded, Some(id.clone()), None)
             .unwrap();
     }
     let streamed = builder.finish();

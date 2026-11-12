@@ -47,7 +47,7 @@ fn build_projection_session(wire: &Wire) -> jvc_runtime::EvaluationSession {
             wire.bodies.get(event.id()).map(String::as_bytes),
         );
         builder
-            .add_projection_row(&row.encode().unwrap(), Some(event.id().into()))
+            .add_projection_row(&row.encode().unwrap(), Some(event.id().into()), None)
             .unwrap();
     }
     builder.finish()

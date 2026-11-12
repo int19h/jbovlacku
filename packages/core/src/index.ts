@@ -466,7 +466,12 @@ export interface EvaluationBuilder {
     body?: string,
     expectedId?: string,
   ): EvaluationPackageRecord | null;
-  addProjectionRow(row: Uint8Array, expectedId?: string): void;
+  setRetainedBodies(hashes: string[]): void;
+  addProjectionRow(
+    row: Uint8Array,
+    expectedId?: string,
+    bodyRetained?: boolean,
+  ): void;
   removeRecord(id: string): void;
   finish(): EvaluationSessionHandle;
   free(): void;
@@ -599,9 +604,17 @@ function wrapEvaluationBuilder(
         builder.add_record_text(envelope, body, expectedId),
       ) as EvaluationPackageRecord | null;
     },
-    addProjectionRow(row: Uint8Array, expectedId?: string) {
+    setRetainedBodies(hashes: string[]) {
       requireOpen();
-      builder.add_projection_row(row, expectedId);
+      builder.set_retained_bodies(hashes);
+    },
+    addProjectionRow(
+      row: Uint8Array,
+      expectedId?: string,
+      bodyRetained?: boolean,
+    ) {
+      requireOpen();
+      builder.add_projection_row(row, expectedId, bodyRetained);
     },
     removeRecord(id: string) {
       requireOpen();

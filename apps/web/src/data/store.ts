@@ -4,7 +4,6 @@
  * Version 5 adds authenticated projection rows and their metadata.
  */
 import {
-  createProjectionDigest,
   projectionBuildIdentity,
   PROJECTION_ROW_VERSION,
   utf8,
@@ -18,6 +17,10 @@ import {
   discardedPredecessorReads,
   DISCARDED_PREDECESSOR,
 } from "./outbox-graph.ts";
+import {
+  PROJECTION_PRODUCER_KEY,
+  projectionSnapshotKey,
+} from "./projection-meta.ts";
 import type { Envelope, Transport } from "../model/types.ts";
 import type { Draft } from "../model/draft.ts";
 import type { SnapshotInventory } from "./records.ts";
@@ -441,9 +444,22 @@ export class LocalStore {
   ): Promise<void> {
     const db = await this.database;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(["records", "projections"], "readwrite");
-      tx.objectStore("records").put(record, record.id);
-      tx.objectStore("projections").put(row, record.id);
+      const tx = db.transaction(
+        ["records", "projections", "meta"],
+        "readwrite",
+      );
+      const meta = tx.objectStore("meta");
+      const producer = meta.get(PROJECTION_PRODUCER_KEY);
+      producer.onsuccess = () => {
+        const current = producer.result as string | undefined;
+        const next =
+          current === undefined || current === projectionBuildIdentity()
+            ? projectionBuildIdentity()
+            : "mixed";
+        meta.put(next, PROJECTION_PRODUCER_KEY);
+        tx.objectStore("records").put(record, record.id);
+        tx.objectStore("projections").put(row, record.id);
+      };
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
@@ -867,7 +883,7 @@ export class LocalStore {
       tx.onerror = () => {};
     });
   }
-  /** Commits a complete inventory and its projection digest, and prunes stale rows. */
+  /** Commits a complete inventory and producer metadata, and prunes stale rows by key. */
   async commitInventory(inventory: SnapshotInventory): Promise<void> {
     const events = inventory.events;
     if (!isStrictlyIncreasing(events))
@@ -888,81 +904,28 @@ export class LocalStore {
         current.continue();
       };
       const projections = tx.objectStore("projections");
-      const digest = createProjectionDigest();
-      let index = 0;
-      let count = 0;
-      let valid = true;
-      let after: string | undefined;
-      const readBatch = () => {
-        const range =
-          after === undefined ? undefined : IDBKeyRange.lowerBound(after, true);
-        const keysRequest = projections.getAllKeys(range, 256);
-        const valuesRequest = projections.getAll(range, 256);
-        let keys: IDBValidKey[] = [];
-        let values: unknown[] = [];
-        let remaining = 2;
-        const proceed = () => {
-          if (--remaining) return;
-          if (!keys.length) {
-            tx.objectStore("meta").put(
-              {
-                version: PROJECTION_ROW_VERSION,
-                build: projectionBuildIdentity(),
-                events_digest: inventory.events_digest,
-                rows_hash: digest.finish(),
-                count: valid ? count : -1,
-              },
-              `projection:${inventory.snapshot}`,
-            );
-            return;
-          }
-          for (const [batchIndex, key] of keys.entries()) {
-            const id = String(key);
-            if (!hasSortedId(events, id)) {
-              projections.delete(id);
-              continue;
-            }
-            while (index < events.length && events[index] < id) index++;
-            if (events[index] === id) {
-              const value = values[batchIndex] as ArrayBuffer | Uint8Array;
-              const bytes =
-                value instanceof Uint8Array
-                  ? value
-                  : value instanceof ArrayBuffer
-                    ? new Uint8Array(value)
-                    : null;
-              if (bytes) digest.update(bytes);
-              else valid = false;
-              count++;
-              index++;
-            }
-          }
-          if (keys.length < 256) {
-            tx.objectStore("meta").put(
-              {
-                version: PROJECTION_ROW_VERSION,
-                build: projectionBuildIdentity(),
-                events_digest: inventory.events_digest,
-                rows_hash: digest.finish(),
-                count: valid ? count : -1,
-              },
-              `projection:${inventory.snapshot}`,
-            );
-            return;
-          }
-          after = String(keys[keys.length - 1]);
-          readBatch();
-        };
-        keysRequest.onsuccess = () => {
-          keys = keysRequest.result;
-          proceed();
-        };
-        valuesRequest.onsuccess = () => {
-          values = valuesRequest.result;
-          proceed();
-        };
+      const projectionCursor = projections.openKeyCursor();
+      projectionCursor.onsuccess = () => {
+        const current = projectionCursor.result;
+        if (!current) return;
+        if (!hasSortedId(events, String(current.key)))
+          projections.delete(current.primaryKey);
+        current.continue();
       };
-      readBatch();
+      const meta = tx.objectStore("meta");
+      const producer = meta.get(PROJECTION_PRODUCER_KEY);
+      producer.onsuccess = () => {
+        meta.put(
+          {
+            version: PROJECTION_ROW_VERSION,
+            build: producer.result ?? "unknown",
+            events_digest: inventory.events_digest,
+            rows_hash: null,
+            count: events.length,
+          },
+          projectionSnapshotKey(inventory.snapshot),
+        );
+      };
       const inventories = tx.objectStore("inventory");
       inventories.put(inventory, inventory.snapshot);
       inventories.put(inventory, "latest");

@@ -1481,7 +1481,7 @@ fn host_record_projection_matches_its_versioned_golden_digest() {
             )
             .unwrap();
         let mut projected = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
-        projected.add_projection_row(&encoded, None).unwrap();
+        projected.add_projection_row(&encoded, None, None).unwrap();
         assert_eq!(
             original.finish().state().unwrap(),
             projected.finish().state().unwrap()

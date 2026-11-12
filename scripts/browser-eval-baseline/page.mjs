@@ -183,6 +183,28 @@ window.bench = {
       bytes: utf8(serialized).length,
     };
   },
+  async forceProjectionRebuild() {
+    const database = await productStore.database;
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction("meta", "readwrite");
+      const store = transaction.objectStore("meta");
+      const cursor = store.openCursor();
+      cursor.onsuccess = () => {
+        const current = cursor.result;
+        if (!current) return;
+        if (
+          typeof current.key === "string" &&
+          current.key.startsWith("projection:") &&
+          current.key !== "projection:producer"
+        )
+          store.put({ ...current.value, build: "different" }, current.key);
+        current.continue();
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+      transaction.onerror = () => {};
+    });
+  },
   async productReload(inventory) {
     const start = performance.now();
     if (typeof productStore.commitInventory === "function")

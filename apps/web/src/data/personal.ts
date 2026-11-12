@@ -6,6 +6,7 @@
 import {
   canonicalize,
   contentHash,
+  projectionBuildIdentity,
   utf8,
   type EvaluationRequest,
 } from "../../../../packages/core/src/browser.ts";
@@ -23,6 +24,7 @@ import {
   type RecordsProgress,
   type SnapshotInventory,
 } from "./records.ts";
+import { PROJECTION_PRODUCER_KEY } from "./projection-meta.ts";
 import type { WorkerRequest, WorkerResponse } from "../workers/evaluate.ts";
 import type { Calculation, ScoreRecord, TrustScope } from "../model/types.ts";
 import { describe } from "../lib/dom.ts";
@@ -565,6 +567,7 @@ export class PersonalCalculator {
               base: advance.base,
               session: intermediate,
               input: advance.input,
+              source: advance.source,
               rows: advance.rows,
             });
           } catch {
@@ -678,7 +681,13 @@ export class PersonalCalculator {
   ): Promise<{
     base: string;
     input: EvaluationRequest;
-    rows: { id: string; row: Uint8Array }[];
+    source: {
+      database: string;
+      snapshot: string;
+      events_digest: string;
+      count: number;
+    };
+    rows: { id: string; row: Uint8Array; bodyRetained: boolean }[];
   } | null> {
     const sent = this.sent;
     if (
@@ -689,6 +698,11 @@ export class PersonalCalculator {
       sent.selections !== canonicalize(utf8(JSON.stringify(selections)))
     )
       return null;
+    const producer = await this.store.get<string>(
+      "meta",
+      PROJECTION_PRODUCER_KEY,
+    );
+    if (producer !== projectionBuildIdentity()) return null;
     const retained = inventory.bodies;
     if (
       !isStrictlyIncreasing(inventory.events) ||
@@ -722,7 +736,7 @@ export class PersonalCalculator {
       )
     )
       return null;
-    const rows: { id: string; row: Uint8Array }[] = [];
+    const rows: { id: string; row: Uint8Array; bodyRetained: boolean }[] = [];
     const addedBodies = new Set<string>();
     for (const id of added) {
       const record = await this.store.get<{
@@ -736,7 +750,12 @@ export class PersonalCalculator {
       if (!record || !storedRow) return null;
       const row =
         storedRow instanceof Uint8Array ? storedRow : new Uint8Array(storedRow);
-      rows.push({ id, row });
+      rows.push({
+        id,
+        row,
+        bodyRetained:
+          record.bodyHash !== null && hasSortedValue(retained, record.bodyHash),
+      });
       if (record.bodyHash && hasSortedValue(retained, record.bodyHash)) {
         if (!record.body)
           throw new RecordsError(
@@ -755,6 +774,12 @@ export class PersonalCalculator {
         selected_view: inventory.view,
         import_selections: selections,
         ...(sent.overlay ? { overlay: sent.overlay } : {}),
+      },
+      source: {
+        database: this.store.name,
+        snapshot: inventory.snapshot,
+        events_digest: inventory.events_digest,
+        count: inventory.events.length,
       },
       rows,
     };

@@ -41,6 +41,17 @@ impl ProjectionRow {
         &self.node.id
     }
 
+    pub fn body_hash(&self) -> Option<&str> {
+        self.node.body_hash.as_deref()
+    }
+
+    pub fn apply_body_retention(&mut self, retained: bool) {
+        if !retained && self.node.body_hash.is_some() {
+            self.node.body = None;
+            self.node.body_label = "missing".into();
+        }
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>> {
         let node = &self.node;
         let id = digest(&node.id, "jve1:")?;
@@ -122,6 +133,9 @@ impl ProjectionRow {
         put_bytes(&mut output, &action)?;
         if let Some(body) = body {
             put_bytes(&mut output, &body)?;
+        }
+        if output.len() > MAX_ROW_BYTES {
+            return Err(Error::new("projection_row", "row exceeds 1 MiB"));
         }
         Ok(output)
     }
@@ -313,6 +327,21 @@ mod tests {
     }
 
     #[test]
+    fn body_retention_matches_missing_original_input() {
+        let mut row = row();
+        let action = row.node.action.clone();
+        let hash = row.node.body_hash.clone();
+        row.apply_body_retention(false);
+        assert!(row.node.body.is_none());
+        assert_eq!(row.node.body_label, "missing");
+        assert_eq!(row.node.body_hash, hash);
+        assert_eq!(row.node.action, action);
+        assert_eq!(ProjectionRow::decode(&row.encode().unwrap()).unwrap(), row);
+        row.apply_body_retention(true);
+        assert_eq!(row.node.body_label, "missing");
+    }
+
+    #[test]
     fn other_kinds_and_invalid_bodies_round_trip() {
         let mut row = row();
         row.node.kind = "future.action".into();
@@ -322,6 +351,17 @@ mod tests {
         row.node.body_label = "invalid:future body".into();
         let encoded = row.encode().unwrap();
         assert_eq!(ProjectionRow::decode(&encoded).unwrap(), row);
+    }
+
+    #[test]
+    fn encoder_enforces_the_decoder_size_limit() {
+        let mut row = row();
+        row.node.body = None;
+        row.node.body_hash = None;
+        row.node.body_label = format!("invalid:{}", "x".repeat(MAX_ROW_BYTES));
+        let error = row.encode().unwrap_err();
+        assert_eq!(error.code, "projection_row");
+        assert_eq!(error.message, "row exceeds 1 MiB");
     }
 
     #[test]
@@ -337,8 +377,8 @@ mod tests {
         }
         let mut seed = 0x4d595df4d0f33173u64;
         for length in 0..2048 {
-            let mut bytes = Vec::with_capacity(length);
-            for _ in 0..length {
+            let mut bytes = encoded[..length.min(110)].to_vec();
+            while bytes.len() < length {
                 seed ^= seed << 13;
                 seed ^= seed >> 7;
                 seed ^= seed << 17;

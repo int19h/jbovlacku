@@ -794,6 +794,7 @@ pub struct EvaluationSessionBuilder {
     base: Option<jvc_state::EvaluatedState>,
     removed: Vec<String>,
     base_identity: Option<String>,
+    retained_bodies: Option<Vec<String>>,
 }
 #[wasm_bindgen]
 pub fn evaluation_checkpoint_version() -> String {
@@ -1235,6 +1236,7 @@ impl EvaluationSessionBuilder {
             base: None,
             removed: Vec::new(),
             base_identity: None,
+            retained_bodies: None,
         })
     }
     pub fn add_record(
@@ -1257,12 +1259,32 @@ impl EvaluationSessionBuilder {
             expected_id.as_deref(),
         )
     }
+    pub fn set_retained_bodies(&mut self, hashes: Vec<String>) -> std::result::Result<(), JsValue> {
+        if hashes.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(JsValue::from_str(
+                "Retained body hashes are not sorted and unique.",
+            ));
+        }
+        self.retained_bodies = Some(hashes);
+        Ok(())
+    }
     pub fn add_projection_row(
         &mut self,
         bytes: &[u8],
         expected_id: Option<String>,
+        body_retained: Option<bool>,
     ) -> std::result::Result<(), JsValue> {
-        let row = jvc_state::ProjectionRow::decode(bytes).map_err(fail)?;
+        let mut row = jvc_state::ProjectionRow::decode(bytes).map_err(fail)?;
+        let retained = body_retained.unwrap_or_else(|| {
+            self.retained_bodies.as_ref().is_none_or(|hashes| {
+                row.body_hash().is_none_or(|hash| {
+                    hashes
+                        .binary_search_by(|candidate| candidate.as_str().cmp(hash))
+                        .is_ok()
+                })
+            })
+        });
+        row.apply_body_retention(retained);
         if expected_id
             .as_deref()
             .is_some_and(|expected| expected != row.id())

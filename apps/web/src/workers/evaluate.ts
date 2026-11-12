@@ -17,6 +17,10 @@ import {
   type EvaluationRequest,
   type EvaluationSessionOptions,
 } from "../../../../packages/core/src/browser.ts";
+import {
+  PROJECTION_PRODUCER_KEY,
+  projectionSnapshotKey,
+} from "../data/projection-meta.ts";
 
 export interface LoadSource {
   database: string;
@@ -45,7 +49,8 @@ export type WorkerRequest =
       base: string;
       session: string;
       input: EvaluationRequest;
-      rows?: { id: string; row: Uint8Array }[];
+      source?: LoadSource;
+      rows?: { id: string; row: Uint8Array; bodyRetained: boolean }[];
     }
   | {
       type: "rank";
@@ -105,7 +110,7 @@ interface ProjectionMeta {
   version: number;
   build: string;
   events_digest: string;
-  rows_hash: string;
+  rows_hash: string | null;
   count: number;
 }
 class ProjectionRebuildNeeded extends Error {}
@@ -127,6 +132,16 @@ function openDatabase(name: string): Promise<IDBDatabase> {
     opening.onblocked = () =>
       reject(new Error("Local storage is blocked by another open tab."));
   });
+}
+async function assertProjectionProducer(database: IDBDatabase) {
+  const producer = await request(
+    database
+      .transaction("meta", "readonly")
+      .objectStore("meta")
+      .get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
+  );
+  if (producer !== projectionBuildIdentity())
+    throw new Error("Projection rows come from another core build.");
 }
 async function readInventory(
   transaction: IDBTransaction,
@@ -174,6 +189,38 @@ function rowBytes(value: unknown): Uint8Array {
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   throw new ProjectionRebuildNeeded("A projection row is not binary data.");
 }
+async function storeProjectionHash(
+  database: IDBDatabase,
+  source: LoadSource,
+  expected: ProjectionMeta,
+  hash: string,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction("meta", "readwrite");
+    const store = transaction.objectStore("meta");
+    const read = store.get(
+      projectionSnapshotKey(source.snapshot),
+    ) as IDBRequest<ProjectionMeta | undefined>;
+    read.onsuccess = () => {
+      const current = read.result;
+      if (
+        current &&
+        current.version === expected.version &&
+        current.build === expected.build &&
+        current.events_digest === expected.events_digest &&
+        current.count === expected.count &&
+        current.rows_hash === null
+      )
+        store.put(
+          { ...current, rows_hash: hash },
+          projectionSnapshotKey(source.snapshot),
+        );
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () => reject(transaction.error);
+    transaction.onerror = () => {};
+  });
+}
 async function readProjectionRows(
   database: IDBDatabase,
   source: LoadSource,
@@ -187,7 +234,7 @@ async function readProjectionRows(
   const meta = await request(
     transaction
       .objectStore("meta")
-      .get(`projection:${source.snapshot}`) as IDBRequest<
+      .get(projectionSnapshotKey(source.snapshot)) as IDBRequest<
       ProjectionMeta | undefined
     >,
   );
@@ -197,9 +244,10 @@ async function readProjectionRows(
     meta.build !== projectionBuildIdentity() ||
     meta.events_digest !== source.events_digest ||
     meta.count !== source.count ||
-    typeof meta.rows_hash !== "string"
+    (meta.rows_hash !== null && typeof meta.rows_hash !== "string")
   )
     throw new ProjectionRebuildNeeded("Projection metadata is stale.");
+  builder.setRetainedBodies(stored.bodies);
   const projectionStore = transaction.objectStore("projections");
   const digest = createProjectionDigest();
   let bytesRead = 0;
@@ -234,8 +282,11 @@ async function readProjectionRows(
   }
   if (index !== stored.events.length)
     throw new ProjectionRebuildNeeded("A projection row is missing.");
-  if (digest.finish() !== meta.rows_hash)
+  const actualHash = digest.finish();
+  if (meta.rows_hash !== null && actualHash !== meta.rows_hash)
     throw new ProjectionRebuildNeeded("The projection digest does not match.");
+  if (meta.rows_hash === null)
+    await storeProjectionHash(database, source, meta, actualHash);
   return { count: index, bytesRead };
 }
 function readStoredRecords(source: LoadSource, builder: Builder) {
@@ -309,7 +360,9 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
       }
       if (index !== stored.events.length)
         throw missingRecord(stored.events[index]);
-      transaction.objectStore("meta").put(
+      const meta = transaction.objectStore("meta");
+      meta.put(projectionBuildIdentity(), PROJECTION_PRODUCER_KEY);
+      meta.put(
         {
           version: PROJECTION_ROW_VERSION,
           build: projectionBuildIdentity(),
@@ -317,7 +370,7 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
           rows_hash: digest.finish(),
           count: index,
         },
-        `projection:${source.snapshot}`,
+        projectionSnapshotKey(source.snapshot),
       );
     } catch (error) {
       transaction.abort();
@@ -330,6 +383,14 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
     database.close();
   }
 }
+async function checkProjectionProducer(source: LoadSource): Promise<void> {
+  const database = await openDatabase(source.database);
+  try {
+    await assertProjectionProducer(database);
+  } finally {
+    database.close();
+  }
+}
 
 export class EvaluationWorker {
   private session: Session | null = null;
@@ -338,6 +399,9 @@ export class EvaluationWorker {
   constructor(
     private readonly loadSource: SourceLoader = readStoredRecords,
     private readonly createSession = createEvaluationSession,
+    private readonly producerCheck: (
+      source: LoadSource,
+    ) => Promise<void> = checkProjectionProducer,
   ) {}
 
   /** Test and measurement access to the current browser-safe session. */
@@ -415,17 +479,22 @@ export class EvaluationWorker {
     return this.loaded(message.id, message.session, false);
   }
 
-  advance(
+  async advance(
     message: Extract<WorkerRequest, { type: "advance" }>,
-  ): LoadedResponse {
+  ): Promise<LoadedResponse> {
     if (!this.session || this.sessionKey !== message.base)
       throw new Error("The base evaluation session is not loaded.");
+    if (message.rows?.length) {
+      if (!message.source)
+        throw new Error("Projection advance has no inventory source.");
+      await this.producerCheck(message.source);
+    }
     const { events, bodies, ...options } = message.input;
     const builder = this.session.fork(options);
     this.release();
     try {
-      for (const { id, row } of message.rows ?? [])
-        builder.addProjectionRow(row, id);
+      for (const { id, row, bodyRetained } of message.rows ?? [])
+        builder.addProjectionRow(row, id, bodyRetained);
       for (const envelope of events) {
         const { id } = JSON.parse(envelope) as { id: string };
         builder.addRecordText(envelope, bodies[id]);
@@ -479,7 +548,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     } else if (message.type === "overlay") {
       reply(evaluation.overlay(message));
     } else if (message.type === "advance") {
-      reply(evaluation.advance(message));
+      reply(await evaluation.advance(message));
     } else if (message.type === "rank") {
       reply(evaluation.rank(message));
     }

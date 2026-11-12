@@ -199,11 +199,13 @@ type Harness = {
   selections: Map<string, string>;
   setInventory: (value: SnapshotInventory) => void;
   setOverlay: (value: Overlay) => void;
+  setProjectionProducer: (value: string) => void;
 };
 
 function harness(): Harness {
   let currentInventory = inventory([view, other], snapshot("a"));
   let currentOverlay = emptyOverlay();
+  let projectionProducer = core.projectionBuildIdentity();
   const records = new Map<string, unknown>([
     [
       view,
@@ -237,6 +239,8 @@ function harness(): Harness {
       if (name === "records") return records.get(id);
       if (name === "projections")
         return records.has(id) ? new Uint8Array([1]) : undefined;
+      if (name === "meta" && id === "projection:producer")
+        return projectionProducer;
       if (name === "selections") return selections.get(id);
       throw new Error(`Unexpected read: ${name}/${id}`);
     },
@@ -275,6 +279,9 @@ function harness(): Harness {
     },
     setOverlay: (value) => {
       currentOverlay = value;
+    },
+    setProjectionProducer: (value) => {
+      projectionProducer = value;
     },
   };
 }
@@ -418,6 +425,20 @@ test("a pure snapshot append advances with only the new record", async () => {
   assert.equal(
     (advance.input.overlay as { version: number } | undefined)?.version,
     2,
+  );
+  h.calculator.cancel();
+});
+
+test("rows from another build use a full load instead of advance", async () => {
+  const h = harness();
+  await h.calculator.ensure();
+  appendRecord(h);
+  h.setProjectionProducer("another-build");
+  const ready = await h.calculator.ensure();
+  assert.equal(ready.state, "ready");
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load", "overlay", "load", "overlay"],
   );
   h.calculator.cancel();
 });
