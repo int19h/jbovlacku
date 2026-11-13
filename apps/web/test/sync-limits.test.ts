@@ -335,6 +335,7 @@ test("a terminal records page reports missing inventory before a no-write traver
     const response = await route.fetch();
     const value = await response.json();
     value.items = value.items.slice(1);
+    value.next = null;
     await route.fulfill({ response, json: value });
   });
   await page.goto("/");
