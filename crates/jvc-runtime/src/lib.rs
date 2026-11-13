@@ -1174,6 +1174,36 @@ pub fn project_record(
 
 /// XOR of SHA-256(record ID, little-endian u64 row length, row bytes) per row.
 #[wasm_bindgen]
+pub struct ContentDigest {
+    hash: sha2::Sha256,
+}
+
+#[wasm_bindgen]
+impl ContentDigest {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        use sha2::Digest;
+        Self {
+            hash: sha2::Sha256::new(),
+        }
+    }
+    pub fn update(&mut self, bytes: &[u8]) {
+        use sha2::Digest;
+        self.hash.update(bytes);
+    }
+    pub fn finish(self) -> String {
+        use sha2::Digest;
+        format!("sha256:{}", hex::encode(self.hash.finalize()))
+    }
+}
+
+impl Default for ContentDigest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[wasm_bindgen]
 pub struct ProjectionDigest {
     digest: [u8; 32],
 }

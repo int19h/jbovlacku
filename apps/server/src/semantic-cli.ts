@@ -25,7 +25,11 @@ import {
   readLoadedView,
   stateTraversalLimit,
 } from "../../../packages/importer/src/load-config.ts";
-import { closeSemanticIndexHost, SqliteVectorStore } from "./semantic.ts";
+import {
+  closeSemanticIndexHost,
+  semanticVectorLimits,
+  SqliteVectorStore,
+} from "./semantic.ts";
 import {
   FileObjectStore,
   SqliteCoordinator,
@@ -296,7 +300,10 @@ async function main() {
         ),
       ),
     );
-    vectors = new SqliteVectorStore(join(directory, "semantic-vectors.sqlite"));
+    vectors = new SqliteVectorStore(
+      join(directory, "semantic-vectors.sqlite"),
+      semanticVectorLimits(),
+    );
     let id = job;
     if (command === "prepare")
       id = (

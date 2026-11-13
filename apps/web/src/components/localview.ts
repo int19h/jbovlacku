@@ -8,7 +8,6 @@ import { plural } from "../lib/format.ts";
 import type { App } from "../app/context.ts";
 import { navigate, type RenderContext } from "../app/router.ts";
 import type { PersonalStatus } from "../data/personal.ts";
-import { RECORD_LIMITS } from "../data/records.ts";
 import { onDisconnect } from "../lib/lifetime.ts";
 import type { Calculation, ScoreRecord, WordResponse } from "../model/types.ts";
 
@@ -137,11 +136,6 @@ export function calculationPanel(
     "aria-live": "polite",
     style: "margin:0",
   });
-  const limits = el("p", {
-    class: "meta",
-    style: "margin:4px 0 0",
-    text: `Local limits: ${RECORD_LIMITS.events} events and ${Math.round(RECORD_LIMITS.bytes / 1048576)} MiB of records per snapshot.`,
-  });
   const actions = el("div", {
     style: "display:flex;gap:8px;flex-wrap:wrap;margin-top:8px",
   });
@@ -181,7 +175,7 @@ export function calculationPanel(
   );
   actions.append(cancel, retry);
   if (options.mode === "personal") actions.append(useSite);
-  region.append(line, limits, actions);
+  region.append(line, actions);
   const update = (status: PersonalStatus) => {
     line.textContent = statusText(status, options.includeSnapshot);
     const busy =

@@ -394,7 +394,9 @@ test("sync stores a projection with every record and deletes both together", asy
   const result = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
     const { LocalStore } = await import(String("/src/data/store.ts"));
-    const { syncRecords } = await import(String("/src/data/records.ts"));
+    const { forgetInventory, syncRecords } = await import(
+      String("/src/data/records.ts")
+    );
     await core.initializeCore();
     const store = new LocalStore(
       `sync-projection-${crypto.randomUUID()}`,
@@ -413,6 +415,7 @@ test("sync stores a projection with every record and deletes both together", asy
       const first = inventory.events[0];
       const row = await store.get<Uint8Array>("projections", first);
       await store.delete("records", first);
+      await forgetInventory(store);
       return {
         inventory,
         records,
@@ -421,6 +424,8 @@ test("sync stores a projection with every record and deletes both together", asy
         rowBytes: row?.byteLength ?? 0,
         deletedRecord: await store.get("records", first),
         deletedProjection: await store.get("projections", first),
+        forgottenInventory: await store.get("inventory", "latest"),
+        forgottenProjection: await store.get("meta", "projection:latest"),
       };
     } finally {
       IDBObjectStore.prototype.get = get;
@@ -433,4 +438,6 @@ test("sync stores a projection with every record and deletes both together", asy
   expect(result.rowBytes).toBeGreaterThan(100);
   expect(result.deletedRecord).toBeUndefined();
   expect(result.deletedProjection).toBeUndefined();
+  expect(result.forgottenInventory).toBeUndefined();
+  expect(result.forgottenProjection).toBeUndefined();
 });

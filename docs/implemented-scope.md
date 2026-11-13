@@ -540,6 +540,8 @@ Mocked tests cover partial progress, restart, failures, retirement, atomic publi
 The Node host serves meaning searches from compatible published vectors with exact event bindings in the requested snapshot and view.
 New definitions remain pending while unchanged definitions stay searchable. Optional background indexing uses the same host budgets without stopping dictionary reads.
 `JVC_SEMANTIC_ROUTE` selects a compatible route for server queries and background indexing.
+`JVC_SEMANTIC_STORE_ASSOCIATIONS`, `JVC_SEMANTIC_STORE_VECTORS`, and `JVC_SEMANTIC_STORE_BYTES` set the derived-store quotas.
+Their defaults remain 300,000 associations, 100,000 vectors, and 2 GiB. The operator command uses the same values.
 
 Stale event bindings count as pending. Operator status compares every binding field against the retained snapshot.
 Background indexing rebuilds stale associations after an extraction change, even within the same snapshot.
@@ -597,7 +599,17 @@ Site calculation metadata uses the digest of canonical JSON null for its absent 
 The personal view downloads the snapshot records, authenticates each envelope and body once at sync, and ranks words locally with the private overlay.
 It adds the current identity with allocation 1 only when its continuity group has no allocation or private root change.
 Zero allocations and removals also prevent that addition. It applies private blocks and public shuns as local blocks.
-Sync stores a versioned projection row with each record in one transaction. Database version 6 clears legacy records and projections for a fresh sync, so no legacy normalization write remains. It reads the latest inventory once for all row writes and supplies that value to each write. A small snapshot-ID key lets a write detect and refresh an outdated inventory copy. A bodyless write never replaces a record or row that already has a body. The row holds the complete evaluation projection in the compact arena's generic form. A store-wide producer value records which core build wrote the rows. The value is `mixed` when two builds wrote them. Inventory commits carry that producer forward and remove stale records and rows by key.
+Sync has no total event-count or record-byte quota. It retains the per-record, per-body, and per-page bounds.
+The browser reads cached records in batches of 256. It commits each records page of at most 200 in one transaction.
+An interrupted sync reuses every committed record. The committed inventory defines the record set, and the worker skips stray records.
+A streaming digest compares the envelopes with the manifest. Sync does not retain the complete record text in memory.
+Storage-quota and out-of-memory failures produce distinct messages.
+
+Sync stores a versioned projection row with each record. Database version 6 clears legacy records and projections for a fresh sync.
+No legacy normalization write remains. Each page write reads the latest inventory once and supplies that value to its row writes.
+A small snapshot-ID key lets a write detect and refresh an outdated inventory copy. A bodyless write never replaces a record or row that already has a body.
+The row holds the complete evaluation projection in the compact arena's generic form. A store-wide producer value records which core build wrote the rows.
+The value is `mixed` when two builds wrote them. Inventory commits carry that producer forward and remove stale records and rows by key.
 
 The row digest covers every inventory row. For each row, the core hashes the record ID, the row length as an unsigned 64-bit little-endian integer, and the row bytes with SHA-256. The digest is the bytewise XOR of these hashes. Each addition or removal XORs the same per-row hash.
 
