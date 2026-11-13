@@ -174,6 +174,7 @@ test("an interrupted sync preserves a concurrently downloaded body", async ({
       return {
         intervened,
         syncError,
+        originalBodyStatus: full.bodyStatus,
         bodyPreserved: after.body === full.body,
         bodyStatus: after.bodyStatus,
         rowPreserved:
@@ -184,6 +185,7 @@ test("an interrupted sync preserves a concurrently downloaded body", async ({
     }
   }, corePath);
   expect(result.intervened).toBe(true);
+  expect(result.originalBodyStatus).toBe("present");
   expect(result.bodyPreserved).toBe(true);
   expect(result.bodyStatus).toBe("present");
   expect(result.rowPreserved).toBe(true);
