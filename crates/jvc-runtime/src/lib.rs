@@ -935,6 +935,7 @@ pub struct EvaluationSessionBuilder {
     removed: Vec<String>,
     base_identity: Option<String>,
     retained_bodies: Option<Vec<[u8; 32]>>,
+    has_import_selections: bool,
 }
 #[wasm_bindgen]
 pub fn evaluation_checkpoint_version() -> String {
@@ -1317,7 +1318,7 @@ pub fn max_incremental_records() -> usize {
     jvc_state::MAX_INCREMENTAL_RECORDS
 }
 
-/// XOR of SHA-256(record ID, little-endian u64 row length, row bytes) per row.
+/// Streaming SHA-256 digest prefixed with "sha256:".
 #[wasm_bindgen]
 pub struct ContentDigest {
     hash: sha2::Sha256,
@@ -1348,6 +1349,7 @@ impl Default for ContentDigest {
     }
 }
 
+/// XOR of SHA-256(record ID, little-endian u64 row length, row bytes) per row.
 #[wasm_bindgen]
 pub struct ProjectionDigest {
     digest: [u8; 32],
@@ -1401,12 +1403,32 @@ fn add_original_record(
     output(content)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EvaluationOptionsWire {
+    selected_view: String,
+    #[serde(default)]
+    import_selections: Option<BTreeMap<String, Vec<String>>>,
+    #[serde(default)]
+    overlay: Option<Value>,
+    #[serde(default)]
+    limits: jvc_state::Limits,
+}
+
 #[wasm_bindgen]
 impl EvaluationSessionBuilder {
     #[wasm_bindgen(constructor)]
     pub fn new(options: &[u8]) -> std::result::Result<Self, JsValue> {
-        let options = serde_json::from_value(parse_json(options).map_err(fail)?)
-            .map_err(|e| fail(Error::new("evaluation", e.to_string())))?;
+        let wire: EvaluationOptionsWire =
+            serde_json::from_value(parse_json(options).map_err(fail)?)
+                .map_err(|e| fail(Error::new("evaluation", e.to_string())))?;
+        let has_import_selections = wire.import_selections.is_some();
+        let options = jvc_state::EvaluationOptions {
+            selected_view: wire.selected_view,
+            import_selections: wire.import_selections.unwrap_or_default(),
+            overlay: wire.overlay,
+            limits: wire.limits,
+        };
         Ok(Self {
             prepared: jvc_state::PreparedEvaluationInput::new(options),
             verifier: jvc_core::EnvelopeVerifier::default(),
@@ -1414,7 +1436,31 @@ impl EvaluationSessionBuilder {
             removed: Vec::new(),
             base_identity: None,
             retained_bodies: None,
+            has_import_selections,
         })
+    }
+    pub fn set_import_selection(
+        &mut self,
+        hash: &str,
+        canonical: &str,
+    ) -> std::result::Result<(), JsValue> {
+        let bytes = canonical.as_bytes();
+        let ids = if let Some(Ok(count)) = try_canonical_selection(bytes) {
+            let mut ids = Vec::with_capacity(count);
+            if count > 0 {
+                let inner = &bytes[1..bytes.len() - 1];
+                for i in 0..count {
+                    let item = &inner[i * 72..i * 72 + 71];
+                    ids.push(std::str::from_utf8(&item[1..70]).unwrap().to_owned());
+                }
+            }
+            ids
+        } else {
+            serde_json::from_value(parse_json(bytes).map_err(fail)?)
+                .map_err(|e| fail(Error::new("evaluation", e.to_string())))?
+        };
+        self.prepared.insert_import_selection(hash.to_owned(), ids);
+        Ok(())
     }
     pub fn add_record(
         &mut self,
@@ -1505,15 +1551,26 @@ impl EvaluationSessionBuilder {
         output(record.package)
     }
     pub fn finish(self) -> EvaluationSession {
+        let Self {
+            prepared,
+            verifier,
+            base,
+            removed,
+            base_identity,
+            retained_bodies,
+            has_import_selections: _,
+        } = self;
+        drop(verifier);
+        drop(retained_bodies);
         EvaluationSession {
             identity: session_identity(),
             preparation: Default::default(),
             preparation_generation: Default::default(),
             word_results: Default::default(),
-            base_identity: self.base_identity,
-            state: match self.base {
-                Some(base) => base.advance(self.prepared, &self.removed),
-                None => self.prepared.into_state(),
+            base_identity,
+            state: match base {
+                Some(base) => base.advance(prepared, &removed),
+                None => prepared.into_state(),
             },
         }
     }
@@ -1538,6 +1595,9 @@ impl EvaluationSession {
     }
     pub fn fork(&self, options: &[u8]) -> std::result::Result<EvaluationSessionBuilder, JsValue> {
         let mut builder = EvaluationSessionBuilder::new(options)?;
+        if !builder.has_import_selections {
+            builder.prepared.inherit_import_selections(&self.state);
+        }
         builder.base = Some(self.state.clone());
         builder.base_identity = Some(self.identity.clone());
         Ok(builder)

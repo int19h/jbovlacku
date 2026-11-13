@@ -749,19 +749,23 @@ test("a mode change alone applies a new overlay without a full load", async () =
   h.calculator.cancel();
 });
 
-test("an import selection change alone uses a full load", async () => {
+test("an import selection change alone uses a full load without reading selections on the page", async () => {
   const h = harness();
   const selection = "sha256:" + "9".repeat(64);
   h.selections.set(selection, JSON.stringify([other]));
   await h.calculator.ensure();
+  appendRecord(h);
   h.setInventory({
-    ...inventory([view, other], snapshot("b")),
+    ...inventory([view, other, added], snapshot("b")),
     selections: [selection],
   });
   await h.calculator.ensure();
-  assert.deepEqual(lastLoad(h).options.import_selections, {
-    [selection]: [other],
-  });
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load", "overlay", "load", "overlay"],
+  );
+  assert.equal(lastLoad(h).source.snapshot, snapshot("b"));
+  assert.equal(lastLoad(h).options.import_selections, undefined);
   h.calculator.cancel();
 });
 
@@ -1423,12 +1427,15 @@ test("syncRecords streams events_digest in bounded batches when the first record
     const selectionsMap = new Map<string, string>();
     const inventoryMap = new Map<string, any>();
     const readBatchSizes: number[] = [];
+    const writePageSizes: number[] = [];
     const postWriteReadBatchSizes: number[] = [];
     const liveRecords: WeakRef<object>[] = [];
     let writeOccurred = false;
     let seenMissingInInitialScan = false;
     let poisonAfterMissing = true;
-    let maxHeldEnvelopes = 0;
+    let maxReadBatch = 0;
+    let maxWritePage = 0;
+    let maxCombinedLive = 0;
 
     const countLive = () => {
       gc();
@@ -1437,12 +1444,15 @@ test("syncRecords streams events_digest in bounded batches when the first record
 
     const resetTracking = (enablePoisonAfterMissing = true) => {
       readBatchSizes.length = 0;
+      writePageSizes.length = 0;
       postWriteReadBatchSizes.length = 0;
       liveRecords.length = 0;
       writeOccurred = false;
       seenMissingInInitialScan = false;
       poisonAfterMissing = enablePoisonAfterMissing;
-      maxHeldEnvelopes = 0;
+      maxReadBatch = 0;
+      maxWritePage = 0;
+      maxCombinedLive = 0;
     };
 
     const store = {
@@ -1464,7 +1474,8 @@ test("syncRecords streams events_digest in bounded batches when the first record
       },
       async readRecords(ids: string[]) {
         await new Promise((resolve) => setImmediate(resolve));
-        maxHeldEnvelopes = Math.max(maxHeldEnvelopes, countLive(), ids.length);
+        maxReadBatch = Math.max(maxReadBatch, ids.length);
+        maxCombinedLive = Math.max(maxCombinedLive, countLive());
         readBatchSizes.push(ids.length);
         if (writeOccurred) postWriteReadBatchSizes.push(ids.length);
         const batch = ids.map((id) => {
@@ -1481,18 +1492,18 @@ test("syncRecords streams events_digest in bounded batches when the first record
           liveRecords.push(new WeakRef(clone));
           return clone;
         });
+        maxCombinedLive = Math.max(maxCombinedLive, countLive());
         return batch;
       },
       async putProjectedRecords(writes: { record: any; row: Uint8Array }[]) {
+        for (const { record } of writes) liveRecords.push(new WeakRef(record));
         await new Promise((resolve) => setImmediate(resolve));
         writeOccurred = true;
         for (const { record } of writes)
           recordsMap.set(record.id, { ...record });
-        maxHeldEnvelopes = Math.max(
-          maxHeldEnvelopes,
-          countLive(),
-          writes.length,
-        );
+        writePageSizes.push(writes.length);
+        maxWritePage = Math.max(maxWritePage, writes.length);
+        maxCombinedLive = Math.max(maxCombinedLive, countLive());
       },
       async commitInventory(inv: SnapshotInventory) {
         inventoryMap.set(inv.snapshot, inv);
@@ -1503,10 +1514,13 @@ test("syncRecords streams events_digest in bounded batches when the first record
     return {
       store,
       readBatchSizes,
+      writePageSizes,
       postWriteReadBatchSizes,
       countLive,
       resetTracking,
-      getMaxHeldEnvelopes: () => maxHeldEnvelopes,
+      getMaxReadBatch: () => maxReadBatch,
+      getMaxWritePage: () => maxWritePage,
+      getMaxCombinedLive: () => maxCombinedLive,
     };
   };
 
@@ -1530,8 +1544,16 @@ test("syncRecords streams events_digest in bounded batches when the first record
     );
     assert.deepEqual(firstMissing.postWriteReadBatchSizes, [256, 256, 87]);
     assert.ok(
-      firstMissing.getMaxHeldEnvelopes() <= 256,
-      `Expected held envelopes <= 256, got ${firstMissing.getMaxHeldEnvelopes()}`,
+      firstMissing.getMaxReadBatch() <= 256,
+      `Expected read batch <= 256, got ${firstMissing.getMaxReadBatch()}`,
+    );
+    assert.ok(
+      firstMissing.getMaxWritePage() <= 200,
+      `Expected write page <= 200, got ${firstMissing.getMaxWritePage()}`,
+    );
+    assert.ok(
+      firstMissing.getMaxCombinedLive() <= 200 + 256,
+      `Expected combined live envelopes <= 456, got ${firstMissing.getMaxCombinedLive()}`,
     );
 
     // 2. Resumed sync: interrupted after committing the first page (0..199) with a later cached range (400..599).
@@ -1568,10 +1590,133 @@ test("syncRecords streams events_digest in bounded batches when the first record
     );
     assert.deepEqual(resumed.postWriteReadBatchSizes, [200]);
     assert.ok(
-      resumed.getMaxHeldEnvelopes() <= 256,
-      `Expected held envelopes <= 256, got ${resumed.getMaxHeldEnvelopes()}`,
+      resumed.getMaxReadBatch() <= 256,
+      `Expected read batch <= 256, got ${resumed.getMaxReadBatch()}`,
+    );
+    assert.ok(
+      resumed.getMaxWritePage() <= 200,
+      `Expected write page <= 200, got ${resumed.getMaxWritePage()}`,
+    );
+    assert.ok(
+      resumed.getMaxCombinedLive() <= 200 + 256,
+      `Expected combined live envelopes <= 456, got ${resumed.getMaxCombinedLive()}`,
     );
   } finally {
     globalThis.fetch = savedFetch;
+  }
+});
+
+test("inventory traversal stops immediately when the returned count exceeds the manifest count", async () => {
+  const savedFetch = globalThis.fetch;
+  let inventoryRequests = 0;
+  let recordsRequests = 0;
+  const idA = "jve1:" + "1".repeat(64);
+  const idB = "jve1:" + "2".repeat(64);
+  const idC = "jve1:" + "3".repeat(64);
+  const snap = "sha256:" + "a".repeat(64);
+  try {
+    globalThis.fetch = (async (input: any) => {
+      const url = new URL(
+        typeof input === "string" ? input : input.url,
+        "http://peer.test",
+      );
+      if (url.pathname.endsWith("/manifest")) {
+        return new Response(
+          JSON.stringify({
+            snapshot: snap,
+            logical_inventory: snap,
+            manifest: {
+              events: { count: 1, hash: snap },
+              bodies: { count: 0, hash: snap },
+              import_selections: { count: 0, hash: snap },
+            },
+            view,
+            accepted_cursor: "x.1",
+            materialized_cursor: "x.1",
+            packages: [],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.pathname.endsWith("/inventory")) {
+        inventoryRequests++;
+        return new Response(
+          JSON.stringify({
+            snapshot: snap,
+            kind: "events",
+            ids: [idA, idB],
+            next: idB,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.pathname.endsWith("/records")) {
+        recordsRequests++;
+      }
+      return new Response(JSON.stringify({ view }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const store = {
+      get: async () => undefined,
+      put: async () => {},
+      keys: async () => [],
+    } as unknown as LocalStore;
+
+    await assert.rejects(
+      syncRecords(store),
+      /The inventory does not match the manifest digests/,
+    );
+    assert.equal(inventoryRequests, 1);
+    assert.equal(recordsRequests, 0);
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+test("Wasm RuntimeError during sync and memory failure during evaluation produce physical-failure messages", async () => {
+  const { isMemoryFailure } = await import("../../src/data/records.ts");
+  assert.equal(
+    isMemoryFailure(new WebAssembly.RuntimeError("unreachable")),
+    true,
+  );
+  assert.equal(
+    isMemoryFailure(new RangeError("Array buffer allocation failed")),
+    true,
+  );
+
+  const h = harness();
+  const originalPostMessage = RecordingWorker.prototype.postMessage;
+  let failLoadWithMemory = true;
+  RecordingWorker.prototype.postMessage = function (message: WorkerRequest) {
+    if (message.type === "load" && failLoadWithMemory) {
+      failLoadWithMemory = false;
+      queueMicrotask(() => {
+        this.onmessage?.({
+          data: {
+            type: "error",
+            id: message.id,
+            message: "WebAssembly.RuntimeError: unreachable",
+            session_valid: false,
+            fatal: true,
+          },
+        } as MessageEvent);
+      });
+      return;
+    }
+    originalPostMessage.call(this, message);
+  };
+  try {
+    const failed = await h.calculator.ensure();
+    assert.equal(failed.state, "failed");
+    if (failed.state === "failed") {
+      assert.equal(failed.kind, "memory");
+      assert.match(failed.message, /ran out of memory while evaluating records/);
+    }
+  } finally {
+    RecordingWorker.prototype.postMessage = originalPostMessage;
+    h.calculator.cancel();
   }
 });

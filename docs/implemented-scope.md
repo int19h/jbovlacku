@@ -599,17 +599,17 @@ Site calculation metadata uses the digest of canonical JSON null for its absent 
 The personal view downloads the snapshot records, authenticates each envelope and body once at sync, and ranks words locally with the private overlay.
 It adds the current identity with allocation 1 only when its continuity group has no allocation or private root change.
 Zero allocations and removals also prevent that addition. It applies private blocks and public shuns as local blocks.
-Sync has no total event-count or record-byte quota. It retains the per-record, per-body, and per-page bounds.
+Sync has no total event-count or record-byte quota. It retains the per-record, per-body, and per-page bounds, and stops an inventory traversal as soon as its count passes the manifest count for that kind.
 The browser reads cached records in batches of 256. It commits each records page of at most 200 in one transaction.
 An interrupted sync reuses every committed record. The committed inventory defines the record set, and the worker skips stray records.
 A streaming digest compares the envelopes with the manifest. Sync does not retain the complete record text in memory.
-Storage-quota and out-of-memory failures produce distinct messages.
+Storage-quota and out-of-memory failures, including WebAssembly memory-growth traps, produce distinct messages during sync and evaluation.
 
 Sync stores a versioned projection row with each record. Database version 6 clears legacy records and projections for a fresh sync.
 No legacy normalization write remains. Sync reads the latest inventory once and supplies that value to every page write.
 A small snapshot-ID key lets a write detect and refresh an outdated inventory copy. A bodyless write never replaces a record or row that already has a body.
 The row holds the complete evaluation projection in the compact arena's generic form. A store-wide producer value records which core build wrote the rows.
-The value is `mixed` when two builds wrote them. Inventory commits carry that producer forward and remove stale records and rows by key.
+The value is `mixed` when two builds wrote them. Inventory commits carry that producer forward, abort if any inventory record was removed by another tab, remove stale records and rows by key, and prune older per-snapshot inventories, projection metadata, and import selections beyond the current and previous committed snapshots.
 
 The row digest covers every inventory row. For each row, the core hashes the record ID, the row length as an unsigned 64-bit little-endian integer, and the row bytes with SHA-256. The digest is the bytewise XOR of these hashes. Each addition or removal XORs the same per-row hash.
 
@@ -617,11 +617,11 @@ Record and late-body writes, inventory commits, record deletion, and rebuilds ma
 
 The digest detects accidental damage only. It is not a defense against a party who can write to this origin's storage. The client trusts that party.
 
-The worker reads rows in batches of 256 in one read-only transaction. That transaction also reads the live producer and snapshot metadata. Both producer values must name the current build. The worker makes sure that the inventory and snapshot binding match. It skips stray row keys and compares the digest with exactly the inventory rows it read.
+The worker reads rows in batches of 256 in one read-only transaction. That transaction also reads the live producer, snapshot metadata, and cached import selections. Both producer values must name the current build. The worker makes sure that the inventory and snapshot binding match. It skips stray row keys and compares the digest with exactly the inventory rows it read.
 
 A missing row triggers an atomic rebuild from the original records. A missing original makes that rebuild fail. A row that is `missing` when the snapshot retains its body also triggers a rebuild. If the cached body is still absent, the rebuild reports the missing-body error. The rebuild authenticates every original again. It projects every cached body even when the current snapshot does not retain it. It writes fresh rows and metadata, and then loads the rows.
 
-At load, the core changes a descriptor-bearing row to `missing` when the current snapshot does not retain that body. The page sends only the database name, snapshot binding, and calculation options. It does not read or transfer the record set.
+At load, the core changes a descriptor-bearing row to `missing` when the current snapshot does not retain that body. The page compares selection sets by hashing their content-hash list and sends only the database name, snapshot binding, and calculation options. It does not read or transfer the record set or the selection map; incremental advances inherit the base session's import selections.
 
 The browser receives a small summary with availability, reasons, selected view, and event count. Full and incremental loads include the actor map. An overlay reply omits that map because the overlay does not change it. The browser does not export the full evaluation state or a state delta. The loaded session supplies continuity without a separate evaluation. Applying a private overlay, removing it, or changing calculation mode repeats only the overlay validity and availability checks. The record map and evaluation results are shared until an incremental update needs to change them. A base evaluation with `resource_unavailable` instead rebuilds with the new overlay, because some resource returns happen before those checks. Applying an overlay keeps the session's update statistics.
 

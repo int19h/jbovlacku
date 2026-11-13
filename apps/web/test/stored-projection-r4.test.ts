@@ -3,14 +3,14 @@ import { corePath } from "./helpers.ts";
 import type { LocalStore as BrowserStore } from "../src/data/store.ts";
 import type { SnapshotInventory } from "../src/data/records.ts";
 
-test("the version 6 upgrade clears legacy record projections for a fresh sync", async ({
+test("the version 6 upgrade reports a blocked open when an older connection stays open and clears legacy record projections once unblocked", async ({
   page,
 }) => {
   await page.goto("/");
   const result = await page.evaluate(async () => {
     const name = `legacy-upgrade-${crypto.randomUUID()}`;
     let olderVersionChanged = false;
-    await new Promise<void>((resolve, reject) => {
+    const legacyDb = await new Promise<IDBDatabase>((resolve, reject) => {
       const opening = indexedDB.open(name, 5);
       opening.onupgradeneeded = () => {
         for (const store of [
@@ -28,10 +28,6 @@ test("the version 6 upgrade clears legacy record projections for a fresh sync", 
       opening.onerror = () => reject(opening.error);
       opening.onsuccess = () => {
         const database = opening.result;
-        database.onversionchange = () => {
-          olderVersionChanged = true;
-          database.close();
-        };
         const transaction = database.transaction(
           [
             "records",
@@ -62,14 +58,88 @@ test("the version 6 upgrade clears legacy record projections for a fresh sync", 
         transaction.objectStore("keys").put({ identity: "keep" }, "selected");
         transaction.objectStore("prefs").put({ theme: "dark" }, "preferences");
         transaction.objectStore("outbox").put({ id: "keep" }, "pending");
-        transaction.oncomplete = () => resolve();
+        transaction.oncomplete = () => resolve(database);
         transaction.onerror = () => reject(transaction.error);
       };
     });
     const { LocalStore } = await import(String("/src/data/store.ts"));
-    const store = new LocalStore(name) as BrowserStore;
+    // Case 1: older connection stays open without closing on versionchange.
+    let stayedOpenVersionChanged = false;
+    legacyDb.onversionchange = () => {
+      stayedOpenVersionChanged = true;
+    };
+    let blockedError = "";
+    const blockedStore = new LocalStore(name) as BrowserStore;
     try {
-      return {
+      await blockedStore.database;
+    } catch (error) {
+      blockedError = error instanceof Error ? error.message : String(error);
+    }
+    legacyDb.close();
+
+    // Case 2: older v5 connection closes on versionchange, allowing version 6 upgrade.
+    const upgradeName = `legacy-upgrade-unblocked-${crypto.randomUUID()}`;
+    const legacyDb2 = await new Promise<IDBDatabase>((resolve, reject) => {
+      const opening = indexedDB.open(upgradeName, 5);
+      opening.onupgradeneeded = () => {
+        for (const store of [
+          "records",
+          "projections",
+          "inventory",
+          "meta",
+          "drafts",
+          "keys",
+          "prefs",
+          "outbox",
+        ])
+          opening.result.createObjectStore(store);
+      };
+      opening.onerror = () => reject(opening.error);
+      opening.onsuccess = () => {
+        const database = opening.result;
+        const transaction = database.transaction(
+          [
+            "records",
+            "projections",
+            "inventory",
+            "meta",
+            "drafts",
+            "keys",
+            "prefs",
+            "outbox",
+          ],
+          "readwrite",
+        );
+        transaction
+          .objectStore("records")
+          .put(
+            { id: "legacy", envelope: "legacy", body: null, bodyHash: null },
+            "legacy",
+          );
+        transaction
+          .objectStore("projections")
+          .put(new Uint8Array([1]), "legacy");
+        transaction
+          .objectStore("inventory")
+          .put({ snapshot: "legacy" }, "latest");
+        transaction.objectStore("meta").put("legacy", "projection:latest");
+        transaction.objectStore("drafts").put({ revision: "keep" }, "current");
+        transaction.objectStore("keys").put({ identity: "keep" }, "selected");
+        transaction.objectStore("prefs").put({ theme: "dark" }, "preferences");
+        transaction.objectStore("outbox").put({ id: "keep" }, "pending");
+        transaction.oncomplete = () => resolve(database);
+        transaction.onerror = () => reject(transaction.error);
+      };
+    });
+    legacyDb2.onversionchange = () => {
+      olderVersionChanged = true;
+      legacyDb2.close();
+    };
+    const store = new LocalStore(upgradeName) as BrowserStore;
+    try {
+      const snapshot = {
+        stayedOpenVersionChanged,
+        blockedError,
         version: (await store.database).version,
         record: await store.get("records", "legacy"),
         row: await store.get("projections", "legacy"),
@@ -80,11 +150,30 @@ test("the version 6 upgrade clears legacy record projections for a fresh sync", 
         preferences: await store.get("prefs", "preferences"),
         outbox: await store.get("outbox", "pending"),
         olderVersionChanged,
+        productClosedOnUpgrade: false,
       };
+      // Verify the product's own onversionchange handler closes its connection when a higher version opens.
+      const nextVersion = await new Promise<number>((resolve, reject) => {
+        const opening = indexedDB.open(upgradeName, 7);
+        opening.onerror = () => reject(opening.error);
+        opening.onblocked = () =>
+          reject(new Error("Product connection blocked upgrade."));
+        opening.onsuccess = () => {
+          const v = opening.result.version;
+          opening.result.close();
+          resolve(v);
+        };
+      });
+      snapshot.productClosedOnUpgrade = nextVersion === 7;
+      return snapshot;
     } finally {
       (await store.database).close();
     }
   });
+  expect(result.stayedOpenVersionChanged).toBe(true);
+  expect(result.blockedError).toBe(
+    "Local storage is blocked by another open tab.",
+  );
   expect(result.version).toBe(6);
   expect(result.record).toBeUndefined();
   expect(result.row).toBeUndefined();
@@ -95,6 +184,7 @@ test("the version 6 upgrade clears legacy record projections for a fresh sync", 
   expect(result.preferences).toEqual({ theme: "dark" });
   expect(result.outbox).toEqual({ id: "keep" });
   expect(result.olderVersionChanged).toBe(true);
+  expect(result.productClosedOnUpgrade).toBe(true);
 });
 
 test("an interrupted sync preserves a concurrently downloaded body", async ({
@@ -302,4 +392,122 @@ test("a rejected advance uses the full-load digest on the next advance", async (
   const thirdAdvance = result.operations.lastIndexOf("advance");
   const lastLoad = result.operations.lastIndexOf("load");
   expect(thirdAdvance).toBeGreaterThan(lastLoad);
+});
+
+test("commitInventory aborts when another tab pruned a record in the inventory and prunes older snapshots beyond the previous one", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { syncRecords } = await import(String("/src/data/records.ts"));
+    await core.initializeCore();
+    const name = `two-tab-commit-${crypto.randomUUID()}`;
+    const tabA = new LocalStore(name) as BrowserStore;
+    const tabB = new LocalStore(name) as BrowserStore;
+    const makeSnapshot = async (
+      base: SnapshotInventory,
+      letter: string,
+      selectionHash: string,
+    ) => {
+      const event = core.createEvent(
+        new Uint8Array(32).fill(letter.charCodeAt(0)),
+        [],
+        letter.repeat(32),
+        { kind: "identity.merge" },
+        null,
+      );
+      const projected = core.projectRecord(
+        core.utf8(JSON.stringify(event.envelope)),
+      );
+      const stored = {
+        id: event.envelope.id,
+        envelope: projected.envelope,
+        body: null,
+        bodyHash: null,
+        bodyStatus: "none",
+      };
+      await tabA.putProjectedRecord(stored, projected.row);
+      await tabA.put("selections", selectionHash, "[]");
+      const events = [...base.events, event.envelope.id].sort();
+      const envelopes = await Promise.all(
+        events.map(async (id) => {
+          const record = await tabA.get<{ envelope: string }>("records", id);
+          return record!.envelope + "\n";
+        }),
+      );
+      const next: SnapshotInventory = {
+        ...base,
+        snapshot: "sha256:" + letter.repeat(64),
+        logical_inventory: "sha256:" + letter.repeat(64),
+        events,
+        events_digest: core.contentHash(core.utf8(envelopes.join(""))),
+        selections: [selectionHash],
+      };
+      return { next, addedId: event.envelope.id };
+    };
+    try {
+      const s0 = await syncRecords(tabA);
+      const sel1 = "sha256:" + "1".repeat(64);
+      const sel2 = "sha256:" + "2".repeat(64);
+      const sel3 = "sha256:" + "3".repeat(64);
+      const s1 = await makeSnapshot(s0, "a", sel1);
+      await tabA.commitInventory(s1.next);
+      const s2 = await makeSnapshot(s1.next, "b", sel2);
+      await tabA.commitInventory(s2.next);
+      const s3 = await makeSnapshot(s2.next, "c", sel3);
+      await tabA.commitInventory(s3.next);
+
+      const inventoryKeysAfterS3 = (await tabA.keys("inventory")).sort();
+      const metaKeysAfterS3 = (await tabA.keys("meta")).sort();
+      const selectionKeysAfterS3 = (await tabA.keys("selections")).sort();
+
+      // Now stage S4 in tabA, but before tabA commits S4, tabB commits S3 which prunes S4's added record.
+      const sel4 = "sha256:" + "4".repeat(64);
+      const s4 = await makeSnapshot(s3.next, "d", sel4);
+      await tabB.commitInventory(s3.next);
+      const removedBeforeCommit = await tabA.get("records", s4.addedId);
+      let commitError = "";
+      try {
+        await tabA.commitInventory(s4.next);
+      } catch (error) {
+        commitError = error instanceof Error ? error.message : String(error);
+      }
+      const latestAfterAbort = await tabA.get<SnapshotInventory>(
+        "inventory",
+        "latest",
+      );
+      return {
+        inventoryKeysAfterS3,
+        metaKeysAfterS3,
+        selectionKeysAfterS3,
+        s2Snapshot: s2.next.snapshot,
+        s3Snapshot: s3.next.snapshot,
+        sel2,
+        sel3,
+        removedBeforeCommit: removedBeforeCommit === undefined,
+        commitError,
+        latestSnapshotAfterAbort: latestAfterAbort?.snapshot ?? null,
+      };
+    } finally {
+      (await tabA.database).close();
+      (await tabB.database).close();
+    }
+  }, corePath);
+  expect(result.inventoryKeysAfterS3).toEqual(
+    ["latest", result.s2Snapshot, result.s3Snapshot].sort(),
+  );
+  expect(result.metaKeysAfterS3).toEqual(
+    [
+      "projection:latest",
+      "projection:producer",
+      `projection:${result.s2Snapshot}`,
+      `projection:${result.s3Snapshot}`,
+    ].sort(),
+  );
+  expect(result.selectionKeysAfterS3).toEqual([result.sel2, result.sel3].sort());
+  expect(result.removedBeforeCommit).toBe(true);
+  expect(result.commitError).toMatch(/no longer cached/);
+  expect(result.latestSnapshotAfterAbort).toBe(result.s3Snapshot);
 });

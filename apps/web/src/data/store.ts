@@ -373,8 +373,13 @@ export class LocalStore {
           };
         }
       };
+      let blocked = false;
       request.onsuccess = () => {
         const db = request.result;
+        if (blocked) {
+          db.close();
+          return;
+        }
         db.onversionchange = () => {
           this.packageCache.clear();
           db.close();
@@ -387,8 +392,10 @@ export class LocalStore {
             "Local storage did not open. Export your draft before closing this page.",
           ),
         );
-      request.onblocked = () =>
+      request.onblocked = () => {
+        blocked = true;
         reject(new Error("Local storage is blocked by another open tab."));
+      };
     });
     void this.database.catch(() => {});
   }
@@ -449,15 +456,33 @@ export class LocalStore {
     });
   }
   async readRecords(ids: string[]): Promise<(StoredRecord | undefined)[]> {
+    if (!ids.length) return [];
     const db = await this.database;
     const transaction = db.transaction("records", "readonly");
+    const store = transaction.objectStore("records");
+    if (ids.length === 1) {
+      return [
+        await idbRequest(
+          store.get(ids[0]) as IDBRequest<StoredRecord | undefined>,
+        ),
+      ];
+    }
+    let minId = ids[0];
+    let maxId = ids[0];
+    for (const id of ids) {
+      if (id < minId) minId = id;
+      if (id > maxId) maxId = id;
+    }
+    const existingKeys = await idbRequest(
+      store.getAllKeys(IDBKeyRange.bound(minId, maxId)),
+    );
+    if (!existingKeys.length) return ids.map(() => undefined);
+    const existingSet = new Set(existingKeys.map(String));
     return Promise.all(
       ids.map((id) =>
-        idbRequest(
-          transaction.objectStore("records").get(id) as IDBRequest<
-            StoredRecord | undefined
-          >,
-        ),
+        existingSet.has(id)
+          ? idbRequest(store.get(id) as IDBRequest<StoredRecord | undefined>)
+          : Promise.resolve(undefined),
       ),
     );
   }
@@ -560,17 +585,45 @@ export class LocalStore {
               meta.get(projectionSnapshotKey(current.snapshot)),
             )) as ProjectionSnapshotMeta | undefined)
           : undefined;
+        let rowsHash = snapshot?.rows_hash;
+        let minId = projected[0].record.id;
+        let maxId = minId;
+        for (const { record } of projected) {
+          if (record.id < minId) minId = record.id;
+          if (record.id > maxId) maxId = record.id;
+        }
+        const range = IDBKeyRange.bound(minId, maxId);
+        const needOldRows = Boolean(current && typeof rowsHash === "string");
+        const [existingRecordKeys, existingRowKeys] = await Promise.all([
+          idbRequest(tx.objectStore("records").getAllKeys(range)),
+          needOldRows
+            ? idbRequest(tx.objectStore("projections").getAllKeys(range))
+            : Promise.resolve([] as IDBValidKey[]),
+        ]);
+        const recordKeySet = new Set(existingRecordKeys.map(String));
+        const rowKeySet = new Set(existingRowKeys.map(String));
         const previous = await Promise.all(
           projected.map(({ record }) => {
-            const oldRecord = tx.objectStore("records").get(record.id);
-            const oldRow = tx.objectStore("projections").get(record.id);
-            return Promise.all([
-              idbRequest(oldRecord as IDBRequest<{ body?: string | null }>),
-              idbRequest(oldRow as IDBRequest<ProjectionBytes>),
-            ]);
+            const oldRecord = recordKeySet.has(record.id)
+              ? idbRequest(
+                  tx.objectStore("records").get(record.id) as IDBRequest<{
+                    body?: string | null;
+                  }>,
+                )
+              : Promise.resolve(undefined);
+            const oldRow =
+              needOldRows &&
+              rowKeySet.has(record.id) &&
+              hasSortedId(current!.events, record.id)
+                ? idbRequest(
+                    tx
+                      .objectStore("projections")
+                      .get(record.id) as IDBRequest<ProjectionBytes>,
+                  )
+                : Promise.resolve(undefined);
+            return Promise.all([oldRecord, oldRow]);
           }),
         );
-        let rowsHash = snapshot?.rows_hash;
         let wrote = false;
         for (const [index, { record, row }] of projected.entries()) {
           const [oldRecord, oldRow] = previous[index];
@@ -1078,7 +1131,7 @@ export class LocalStore {
     const db = await this.database;
     return new Promise((resolve, reject) => {
       const tx = db.transaction(
-        ["records", "projections", "inventory", "meta"],
+        ["records", "projections", "selections", "inventory", "meta"],
         "readwrite",
       );
       let failure: unknown;
@@ -1166,27 +1219,61 @@ export class LocalStore {
         meta.put(inventory.snapshot, PROJECTION_LATEST_KEY);
         inventories.put(inventory, inventory.snapshot);
         inventories.put(inventory, "latest");
-        const prune = (store: IDBObjectStore) => {
+        if (!previous || previous.snapshot !== inventory.snapshot) {
+          const retainedInventories = new Set<string>([
+            "latest",
+            inventory.snapshot,
+            ...(previous ? [previous.snapshot] : []),
+          ]);
+          const retainedMeta = new Set<string>([
+            PROJECTION_PRODUCER_KEY,
+            PROJECTION_LATEST_KEY,
+            projectionSnapshotKey(inventory.snapshot),
+            ...(previous ? [projectionSnapshotKey(previous.snapshot)] : []),
+          ]);
+          const retainedSelections = new Set<string>([
+            ...inventory.selections,
+            ...(previous?.selections ?? []),
+          ]);
+          const selectionStore = tx.objectStore("selections");
+          const [inventoryKeys, metaKeys, selectionKeys] = await Promise.all([
+            idbRequest(inventories.getAllKeys()),
+            idbRequest(meta.getAllKeys()),
+            idbRequest(selectionStore.getAllKeys()),
+          ]);
+          for (const key of inventoryKeys)
+            if (!retainedInventories.has(String(key))) inventories.delete(key);
+          for (const key of metaKeys) {
+            const name = String(key);
+            if (name.startsWith("projection:") && !retainedMeta.has(name))
+              meta.delete(key);
+          }
+          for (const key of selectionKeys)
+            if (!retainedSelections.has(String(key)))
+              selectionStore.delete(key);
+        }
+        const prune = async (store: IDBObjectStore, verifyComplete: boolean) => {
           let after: string | undefined;
-          const read = () => {
+          let retainedCount = 0;
+          for (;;) {
             const range =
               after === undefined
                 ? undefined
                 : IDBKeyRange.lowerBound(after, true);
-            const request = store.getAllKeys(range, 256);
-            request.onsuccess = () => {
-              const keys = request.result;
-              for (const key of keys)
-                if (!hasSortedId(events, String(key))) store.delete(key);
-              if (keys.length < 256) return;
-              after = String(keys[keys.length - 1]);
-              read();
-            };
-          };
-          read();
+            const keys = await idbRequest(store.getAllKeys(range, 256));
+            for (const key of keys)
+              if (hasSortedId(events, String(key))) retainedCount++;
+              else store.delete(key);
+            if (keys.length < 256) break;
+            after = String(keys[keys.length - 1]);
+          }
+          if (verifyComplete && retainedCount < events.length)
+            throw new Error(
+              "A record in the inventory is no longer cached. Download the records again.",
+            );
         };
-        prune(tx.objectStore("records"));
-        prune(tx.objectStore("projections"));
+        await prune(tx.objectStore("records"), true);
+        await prune(tx.objectStore("projections"), false);
       };
       void execute().catch((error) => {
         failure = error;

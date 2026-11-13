@@ -654,3 +654,69 @@ test("a WebAssembly RuntimeError is fatal and an ordinary Error is not", async (
   assert.equal(fatal.fatal, true);
   assert.equal(workerErrorResponse(2, new Error("ordinary")).fatal, false);
 });
+
+test("setImportSelection on load and omitted import_selections on fork preserve import selections across advance", async () => {
+  const { input, word, target, previous } = await fixture();
+  const selectionCanonical = canonicalize(utf8(JSON.stringify([target])));
+  const selectionHash =
+    "sha256:" +
+    (
+      await import("../../../../packages/core/src/index.ts")
+    )
+      .contentHash(utf8(selectionCanonical))
+      .slice(7);
+  const added = createEvent(
+    seed(2),
+    [previous],
+    "e".repeat(32),
+    { kind: "judgment.set", target, value: "curse" },
+    null,
+  );
+  const fullInput = {
+    ...input,
+    events: [...input.events, JSON.stringify(added.envelope)],
+    import_selections: { [selectionHash]: [target] },
+  };
+  const expected = evaluateSession(fullInput);
+  const builder = createEvaluationSession({
+    selected_view: input.selected_view,
+  });
+  let baseSession: ReturnType<typeof evaluateSession> | null = null;
+  let advancedSession: ReturnType<typeof evaluateSession> | null = null;
+  try {
+    builder.setImportSelection(selectionHash, selectionCanonical);
+    for (const envelope of input.events) {
+      const id = (JSON.parse(envelope) as { id: string }).id;
+      builder.addRecordText(envelope, input.bodies[id], id);
+    }
+    baseSession = builder.finish();
+    const forkBuilder = baseSession.fork({
+      selected_view: input.selected_view,
+    });
+    try {
+      forkBuilder.addRecordText(
+        JSON.stringify(added.envelope),
+        undefined,
+        added.envelope.id,
+      );
+      advancedSession = forkBuilder.finish();
+    } finally {
+      forkBuilder.free();
+    }
+    assert.deepEqual(advancedSession.updateStatistics(), {
+      incremental_records: 1,
+      rebuilt: false,
+      reason: null,
+    });
+    assert.deepEqual(advancedSession.state, expected.state);
+    assert.deepEqual(
+      advancedSession.rankWord(word, 64),
+      expected.rankWord(word, 64),
+    );
+  } finally {
+    builder.free();
+    baseSession?.free();
+    advancedSession?.free();
+    expected.free();
+  }
+});
