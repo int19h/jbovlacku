@@ -11,6 +11,11 @@ import {
   qwenRequestRoute,
 } from "../../../packages/service/src/semantic/profile.ts";
 import type { SemanticOptions } from "../../../packages/service/src/semantic/search.ts";
+import {
+  DEFAULT_VECTOR_LIMITS,
+  type VectorLimits,
+} from "../../../packages/service/src/semantic/sql-vector-store.ts";
+import { semanticVectorLimits } from "../src/semantic.ts";
 
 before(async () => {
   await initializeCore(
@@ -28,12 +33,14 @@ async function startHost(
   storedRoute: EmbeddingRoute,
   requested?: string,
   withProfile = true,
+  environment: Record<string, string> = {},
 ) {
   const profile = createQwenProfile("ab".repeat(16), storedRoute);
   const state: {
     env: Record<string, string>;
     profile: typeof profile;
     semantic?: SemanticOptions;
+    vectorLimits: VectorLimits | undefined;
     listening: boolean;
     released: boolean;
     vectorsClosed: boolean;
@@ -42,8 +49,10 @@ async function startHost(
     env: {
       ...(withProfile ? { JVC_SEMANTIC_PROFILE: profileId(profile) } : {}),
       ...(requested === undefined ? {} : { JVC_SEMANTIC_ROUTE: requested }),
+      ...environment,
     },
     profile,
+    vectorLimits: undefined,
     listening: false,
     released: false,
     vectorsClosed: false,
@@ -121,8 +130,14 @@ export class NodePatternScanner extends Resource {}
 export class NodeVectorScanner extends Resource {}
 export class FileObjectStore extends Resource {}
 export class FileCheckpointStore extends Resource {}
+export const semanticVectorLimits = () => ({
+  associations: Number(state.env.JVC_SEMANTIC_STORE_ASSOCIATIONS ?? 300000),
+  vectors: Number(state.env.JVC_SEMANTIC_STORE_VECTORS ?? 100000),
+  bytes: Number(state.env.JVC_SEMANTIC_STORE_BYTES ?? 2147483648),
+});
 export class SqliteVectorStore extends Resource {
   queryCache = {};
+  constructor(path, limits) { super(); state.vectorLimits = limits; }
   async storedProfile(id) { state.lookups.push(id); return state.profile; }
   close() { state.vectorsClosed = true; }
 }
@@ -227,3 +242,39 @@ test("Node host keeps semantic search disabled without a profile or route", asyn
   assert.equal(result.semantic, undefined);
   assert.deepEqual(result.lookups, []);
 });
+
+test("semantic-store quotas keep their defaults when omitted", () => {
+  assert.deepEqual(semanticVectorLimits({}), DEFAULT_VECTOR_LIMITS);
+});
+
+test("Node host passes configured semantic-store quotas to the store", async () => {
+  const environment = {
+    JVC_SEMANTIC_STORE_ASSOCIATIONS: "400001",
+    JVC_SEMANTIC_STORE_VECTORS: "200002",
+    JVC_SEMANTIC_STORE_BYTES: "3000000003",
+  };
+  const expected = {
+    associations: 400001,
+    vectors: 200002,
+    bytes: 3000000003,
+  };
+  assert.deepEqual(semanticVectorLimits(environment), expected);
+  const result = await startHost("nebius", undefined, true, environment);
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.vectorLimits, expected);
+});
+
+for (const name of [
+  "JVC_SEMANTIC_STORE_ASSOCIATIONS",
+  "JVC_SEMANTIC_STORE_VECTORS",
+  "JVC_SEMANTIC_STORE_BYTES",
+] as const) {
+  for (const value of ["", "0", "-1", "1.5", " 1", "9007199254740992"]) {
+    test(`semantic-store configuration rejects ${name}=${JSON.stringify(value)}`, () => {
+      assert.throws(
+        () => semanticVectorLimits({ [name]: value }),
+        new RegExp(`${name} must be a positive safe integer`),
+      );
+    });
+  }
+}

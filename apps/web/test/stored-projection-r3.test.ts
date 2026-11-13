@@ -126,6 +126,7 @@ test("delayed bodyless writes preserve cached bodies and retained rows stay comp
         const record = await store.get<typeof target>("records", id);
         if (
           record?.body &&
+          record.bodyStatus === "present" &&
           JSON.parse(record.envelope).header.action.kind ===
             "definition.publish"
         ) {

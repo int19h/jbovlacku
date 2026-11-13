@@ -331,6 +331,9 @@ Another current or rollback pointer still protects any generation that it names.
 
 The store permits 300,000 associations and 100,000 vectors by default.
 Its separate logical allowance for retained document inputs and vector bytes is 2 GiB.
+`JVC_SEMANTIC_STORE_ASSOCIATIONS`, `JVC_SEMANTIC_STORE_VECTORS`, and `JVC_SEMANTIC_STORE_BYTES` change these allowances.
+Each variable accepts a positive safe integer. An omitted variable keeps its default.
+The server and the operator indexing command use the same values.
 Each claimed batch reserves its future vector count and bytes before provider admission.
 Preparation also respects those reservations, so later staged inputs cannot consume space promised to an active batch.
 A capacity refusal pauses the generation with `semantic_capacity` and creates no batch or provider charge.

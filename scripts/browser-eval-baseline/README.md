@@ -134,7 +134,7 @@ Use `--product-reload --product-only` to measure only the first product load, bo
 Before that first load, a separate setup worker authenticates the records, seeds their originals and projection rows in IndexedDB in a persistent browser profile, and terminates. That browser closes, then a new browser opens the same profile for the measured load. Seeding processes and their residue are outside the measured browser. The new page core initializes during calculator setup, for the overlay digest and later signing. The PSS watchdog pauses only during this setup and resumes before the calculator starts.
 Each reload inventory is computed outside the browser from its deterministic signed envelope. The browser stores that small inventory and calls the real calculator again.
 
-The calculator retains the normal inventory, byte, and evaluation limits. The separate full-download sync measurement uses a page-only override for the existing base fixture; product sync currently refuses that fixture under its event and byte caps.
+The calculator retains the normal per-record, per-page, and evaluation bounds. It has no total event-count or record-byte quota. A full-download sync measurement calls the product sync path without a measurement override.
 The page does not render the dictionary application or measure paint, search, layout, or accessibility.
 The diagnostic retains only the last complete ranking response, rather than the application's whole word-result cache.
 Its bootstrap bundle differs from the application bundle.

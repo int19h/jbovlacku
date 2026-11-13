@@ -1,5 +1,5 @@
 import { BROWSER_HEADERS } from "./security.ts";
-import { SqliteVectorStore } from "./semantic.ts";
+import { semanticVectorLimits, SqliteVectorStore } from "./semantic.ts";
 import { NodeVectorScanner } from "./semantic-scanner.ts";
 import {
   nodeAssistance,
@@ -110,7 +110,7 @@ async function initializeService() {
       );
     if (semanticProfile) {
       const path = join(directory, "semantic-vectors.sqlite");
-      vectors = new SqliteVectorStore(path);
+      vectors = new SqliteVectorStore(path, semanticVectorLimits());
       if (
         semanticRoute !== undefined &&
         qwenRequestRoute(

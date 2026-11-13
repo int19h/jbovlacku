@@ -14,6 +14,8 @@ const core = await import("../../../../packages/core/src/browser.ts");
 const { xorProjectionHashes } =
   await import("../../src/data/projection-meta.ts");
 const { PersonalCalculator } = await import("../../src/data/personal.ts");
+const { hashInventoryIds, hashLogicalInventory, syncRecords } =
+  await import("../../src/data/records.ts");
 const { emptyOverlay } = await import("../../src/data/store.ts");
 
 const view = "jve1:" + "c".repeat(64);
@@ -1144,4 +1146,432 @@ test("an empty delta under a different key uses a full load", async () => {
     ["load", "overlay", "load", "overlay"],
   );
   h.calculator.cancel();
+});
+
+test("an advance uses incremental rows up to the core limit and a full load above it", async () => {
+  const limit = core.maxIncrementalRecords();
+  assert.equal(limit, 64);
+
+  const within = harness();
+  await within.calculator.ensure();
+  const withinAdded = Array.from(
+    { length: limit },
+    (_, index) => `jvr1:f${index.toString(16).padStart(63, "0")}`,
+  );
+  for (const id of withinAdded) putEmptyRecord(within, id);
+  within.setInventory(inventory([view, other, ...withinAdded], snapshot("b")));
+  const withinReady = await within.calculator.ensure();
+  assert.equal(withinReady.state, "ready");
+  assert.equal(withinReady.events, 2 + limit);
+  assert.deepEqual(
+    within.worker.messages.map((message) => message.type),
+    ["load", "overlay", "advance", "overlay"],
+  );
+  within.calculator.cancel();
+
+  const above = harness();
+  await above.calculator.ensure();
+  const aboveAdded = Array.from(
+    { length: limit + 1 },
+    (_, index) => `jvr1:f${index.toString(16).padStart(63, "0")}`,
+  );
+  for (const id of aboveAdded) putEmptyRecord(above, id);
+  above.setInventory(inventory([view, other, ...aboveAdded], snapshot("c")));
+  const aboveReady = await above.calculator.ensure();
+  assert.equal(aboveReady.state, "ready");
+  assert.equal(aboveReady.events, 2 + limit + 1);
+  assert.deepEqual(
+    above.worker.messages.map((message) => message.type),
+    ["load", "overlay", "load", "overlay"],
+  );
+  assert.equal(lastLoad(above).source.count, 2 + limit + 1);
+  above.calculator.cancel();
+});
+
+test("streamed inventory digests equal canonical JSON digests across empty and multi-page inventories", () => {
+  const oldHash = (value: unknown) =>
+    core.contentHash(
+      core.utf8(core.canonicalize(core.utf8(JSON.stringify(value)))),
+    );
+  const makeEvents = (count: number) =>
+    Array.from(
+      { length: count },
+      (_, index) => `jve1:${index.toString(16).padStart(64, "0")}`,
+    );
+  const makeHashes = (count: number, prefix = "0") =>
+    Array.from(
+      { length: count },
+      (_, index) => `sha256:${prefix}${index.toString(16).padStart(63, "0")}`,
+    );
+
+  const cases = [
+    { events: [], bodies: [], import_selections: [] },
+    {
+      events: makeEvents(1),
+      bodies: [],
+      import_selections: [],
+    },
+    {
+      events: [],
+      bodies: makeHashes(1, "a"),
+      import_selections: makeHashes(1, "b"),
+    },
+    {
+      events: makeEvents(1000),
+      bodies: makeHashes(1000, "c"),
+      import_selections: [],
+    },
+    {
+      events: makeEvents(2005),
+      bodies: makeHashes(1001, "d"),
+      import_selections: makeHashes(3, "e"),
+    },
+  ];
+
+  for (const sample of cases) {
+    for (const pageSize of [1, 3, 256, 1000]) {
+      assert.equal(
+        hashInventoryIds(sample.events, pageSize),
+        oldHash(sample.events),
+      );
+      assert.equal(
+        hashInventoryIds(sample.bodies, pageSize),
+        oldHash(sample.bodies),
+      );
+      assert.equal(
+        hashInventoryIds(sample.import_selections, pageSize),
+        oldHash(sample.import_selections),
+      );
+      assert.equal(hashLogicalInventory(sample, pageSize), oldHash(sample));
+    }
+  }
+});
+
+test("prepareSelectionCanonical matches prepareSelection across canonical, whitespace, and invalid inputs", () => {
+  const makeIds = (count: number) =>
+    Array.from(
+      { length: count },
+      (_, index) => `jve1:${index.toString(16).padStart(64, "0")}`,
+    );
+  for (const ids of [[], makeIds(1), makeIds(25), makeIds(1005)]) {
+    const canonicalBytes = core.utf8(JSON.stringify(ids));
+    const expected = core.prepareSelection(canonicalBytes);
+    const actualCanonical = core.prepareSelectionCanonical(canonicalBytes);
+    assert.equal(actualCanonical.hash, expected.hash);
+    assert.equal(actualCanonical.canonical, expected.canonical);
+
+    const formattedBytes = core.utf8(
+      `[\n  ${ids.map((id) => JSON.stringify(id)).join(" ,\n  ")}\n]`,
+    );
+    const actualFormatted = core.prepareSelectionCanonical(formattedBytes);
+    assert.equal(actualFormatted.hash, expected.hash);
+    assert.equal(actualFormatted.canonical, expected.canonical);
+  }
+
+  const twoIds = makeIds(2);
+  const invalidInputs = [
+    new Uint8Array(0),
+    core.utf8("{}"),
+    core.utf8("[1]"),
+    core.utf8('["jve1:bad"]'),
+    core.utf8(JSON.stringify([twoIds[1], twoIds[0]])),
+    core.utf8(JSON.stringify([twoIds[0], twoIds[0]])),
+    new Uint8Array(16 * 1024 * 1024 + 1),
+  ];
+  for (const invalid of invalidInputs) {
+    let expectedError = "";
+    let actualError = "";
+    try {
+      core.prepareSelection(invalid);
+    } catch (error) {
+      expectedError = String(error);
+    }
+    try {
+      core.prepareSelectionCanonical(invalid);
+    } catch (error) {
+      actualError = String(error);
+    }
+    assert.notEqual(expectedError, "");
+    assert.equal(actualError, expectedError);
+  }
+});
+
+test("syncRecords streams events_digest in bounded batches when the first record is missing and when resuming", async () => {
+  const v8 = await import("node:v8");
+  const vm = await import("node:vm");
+  v8.setFlagsFromString("--expose-gc");
+  const gc = vm.runInNewContext("gc") as () => void;
+
+  const seed = new Uint8Array(32).fill(73);
+  const items = Array.from({ length: 600 }, (_, index) =>
+    core.createEvent(
+      seed,
+      [],
+      String(index + 1).padStart(32, "0"),
+      { kind: "identity.merge" },
+      null,
+    ),
+  )
+    .map((event) => ({ id: event.envelope.id, ...event }))
+    .sort((a, b) => (a.id < b.id ? -1 : 1));
+  const canon = (value: unknown) =>
+    core.canonicalize(core.utf8(JSON.stringify(value)));
+  const hash = (value: unknown) => core.contentHash(core.utf8(canon(value)));
+  const events = items.map((item) => item.id);
+  const bodies: string[] = [];
+  const selectionIds = events.slice(0, 50);
+  const selectionPrepared = core.prepareSelection(
+    core.utf8(JSON.stringify(selectionIds)),
+  );
+  const selections = [selectionPrepared.hash];
+  const declared = {
+    events: {
+      count: events.length,
+      hash: core.contentHash(
+        core.utf8(items.map((item) => canon(item.envelope) + "\n").join("")),
+      ),
+    },
+    bodies: { count: 0, hash: hash(bodies) },
+    import_selections: { count: 1, hash: hash(selections) },
+  };
+  const snap = hash(declared);
+  const logical_inventory = hashLogicalInventory({
+    events,
+    bodies,
+    import_selections: selections,
+  });
+  const storedById = new Map<
+    string,
+    {
+      id: string;
+      envelope: string;
+      body: string | null;
+      bodyStatus: "none";
+      bodyHash: null;
+    }
+  >();
+  for (const item of items) {
+    storedById.set(item.id, {
+      id: item.id,
+      envelope: canon(item.envelope),
+      body: null,
+      bodyStatus: "none",
+      bodyHash: null,
+    });
+  }
+
+  const savedFetch = globalThis.fetch;
+  const installFetch = (onRecordsRequest?: () => void) => {
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = new URL(
+        String(input instanceof Request ? input.url : input),
+        "http://peer.test",
+      );
+      let value: unknown;
+      if (url.pathname.endsWith("/manifest")) {
+        value = {
+          snapshot: snap,
+          logical_inventory,
+          manifest: declared,
+          view,
+          accepted_cursor: "x.1",
+          materialized_cursor: "x.1",
+          packages: [],
+        };
+      } else if (url.pathname.endsWith("/inventory")) {
+        const kind = url.searchParams.get("kind")!;
+        const ids =
+          kind === "events" ? events : kind === "bodies" ? bodies : selections;
+        const after = url.searchParams.get("after");
+        const start = after === null ? 0 : ids.indexOf(after) + 1;
+        const limit = Number(url.searchParams.get("limit"));
+        const pageIds = ids.slice(start, start + limit);
+        value = {
+          snapshot: snap,
+          kind,
+          ids: pageIds,
+          next: start + limit < ids.length ? pageIds.at(-1) : null,
+        };
+      } else if (url.pathname.endsWith("/records")) {
+        await new Promise((resolve) => setImmediate(resolve));
+        onRecordsRequest?.();
+        const after = url.searchParams.get("after");
+        const start = after === null ? 0 : events.indexOf(after) + 1;
+        const limit = Number(url.searchParams.get("limit"));
+        const pageItems = items.slice(start, start + limit);
+        value = {
+          snapshot: snap,
+          items: pageItems,
+          next: start + limit < items.length ? pageItems.at(-1)!.id : null,
+        };
+      } else if (url.pathname.includes("/import-selections/")) {
+        return new Response(selectionPrepared.canonical, {
+          headers: { "content-type": "application/json" },
+        });
+      } else {
+        value = { view };
+      }
+      return new Response(JSON.stringify(value), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+  };
+
+  const makeStore = (initialIds: Iterable<string>) => {
+    const recordsMap = new Map<string, any>();
+    for (const id of initialIds) recordsMap.set(id, { ...storedById.get(id)! });
+    const selectionsMap = new Map<string, string>();
+    const inventoryMap = new Map<string, any>();
+    const readBatchSizes: number[] = [];
+    const postWriteReadBatchSizes: number[] = [];
+    const liveRecords: WeakRef<object>[] = [];
+    let writeOccurred = false;
+    let seenMissingInInitialScan = false;
+    let poisonAfterMissing = true;
+    let maxHeldEnvelopes = 0;
+
+    const countLive = () => {
+      gc();
+      return liveRecords.filter((ref) => ref.deref() !== undefined).length;
+    };
+
+    const resetTracking = (enablePoisonAfterMissing = true) => {
+      readBatchSizes.length = 0;
+      postWriteReadBatchSizes.length = 0;
+      liveRecords.length = 0;
+      writeOccurred = false;
+      seenMissingInInitialScan = false;
+      poisonAfterMissing = enablePoisonAfterMissing;
+      maxHeldEnvelopes = 0;
+    };
+
+    const store = {
+      async get(table: string, key: string) {
+        if (table === "inventory") return inventoryMap.get(key);
+        if (table === "records") return recordsMap.get(key);
+        if (table === "selections") return selectionsMap.get(key);
+        return undefined;
+      },
+      async put(table: string, key: string, value: any) {
+        if (table === "inventory") inventoryMap.set(key, value);
+        if (table === "records") recordsMap.set(key, value);
+        if (table === "selections") selectionsMap.set(key, value);
+      },
+      async keys(table: string) {
+        if (table === "selections") return [...selectionsMap.keys()];
+        if (table === "records") return [...recordsMap.keys()];
+        return [];
+      },
+      async readRecords(ids: string[]) {
+        await new Promise((resolve) => setImmediate(resolve));
+        maxHeldEnvelopes = Math.max(maxHeldEnvelopes, countLive(), ids.length);
+        readBatchSizes.push(ids.length);
+        if (writeOccurred) postWriteReadBatchSizes.push(ids.length);
+        const batch = ids.map((id) => {
+          const item = recordsMap.get(id);
+          if (!item) {
+            if (!writeOccurred) seenMissingInInitialScan = true;
+            return undefined;
+          }
+          const envelope =
+            !writeOccurred && poisonAfterMissing && seenMissingInInitialScan
+              ? "x".repeat(item.envelope.length)
+              : item.envelope;
+          const clone = { ...item, envelope };
+          liveRecords.push(new WeakRef(clone));
+          return clone;
+        });
+        return batch;
+      },
+      async putProjectedRecords(writes: { record: any; row: Uint8Array }[]) {
+        await new Promise((resolve) => setImmediate(resolve));
+        writeOccurred = true;
+        for (const { record } of writes)
+          recordsMap.set(record.id, { ...record });
+        maxHeldEnvelopes = Math.max(
+          maxHeldEnvelopes,
+          countLive(),
+          writes.length,
+        );
+      },
+      async commitInventory(inv: SnapshotInventory) {
+        inventoryMap.set(inv.snapshot, inv);
+        inventoryMap.set("latest", inv);
+      },
+    } as unknown as LocalStore;
+
+    return {
+      store,
+      readBatchSizes,
+      postWriteReadBatchSizes,
+      countLive,
+      resetTracking,
+      getMaxHeldEnvelopes: () => maxHeldEnvelopes,
+    };
+  };
+
+  try {
+    // 1. First record missing (events[0]), every other record (events[1..599]) cached.
+    let liveAtFirstFetch = -1;
+    const firstMissing = makeStore(events.slice(1));
+    installFetch(() => {
+      if (liveAtFirstFetch < 0) liveAtFirstFetch = firstMissing.countLive();
+    });
+    const firstResult = await syncRecords(firstMissing.store);
+    assert.equal(firstResult.events_digest, declared.events.hash);
+    assert.equal(firstResult.events.length, 600);
+    assert.ok(
+      liveAtFirstFetch >= 0 && liveAtFirstFetch <= 1,
+      `Expected no cached batch held across fetch, got ${liveAtFirstFetch}`,
+    );
+    assert.ok(
+      firstMissing.readBatchSizes.every((size) => size <= 256),
+      `Expected every read batch <= 256, got ${firstMissing.readBatchSizes.join(",")}`,
+    );
+    assert.deepEqual(firstMissing.postWriteReadBatchSizes, [256, 256, 87]);
+    assert.ok(
+      firstMissing.getMaxHeldEnvelopes() <= 256,
+      `Expected held envelopes <= 256, got ${firstMissing.getMaxHeldEnvelopes()}`,
+    );
+
+    // 2. Resumed sync: interrupted after committing the first page (0..199) with a later cached range (400..599).
+    const resumed = makeStore(events.slice(400));
+    installFetch();
+    const abortController = new AbortController();
+    await assert.rejects(
+      syncRecords(resumed.store, {
+        signal: abortController.signal,
+        onProgress: (progress) => {
+          if (progress.phase === "records" && progress.loaded === 400)
+            abortController.abort(
+              new Error("Interrupt after first missing page"),
+            );
+        },
+      }),
+      /Interrupt after first missing page/,
+    );
+    resumed.resetTracking(true);
+    let liveAtResumeFetch = -1;
+    installFetch(() => {
+      if (liveAtResumeFetch < 0) liveAtResumeFetch = resumed.countLive();
+    });
+    const resumedResult = await syncRecords(resumed.store);
+    assert.equal(resumedResult.events_digest, declared.events.hash);
+    assert.equal(resumedResult.events.length, 600);
+    assert.ok(
+      liveAtResumeFetch >= 0 && liveAtResumeFetch <= 1,
+      `Expected no cached batch held across resume fetch, got ${liveAtResumeFetch}`,
+    );
+    assert.ok(
+      resumed.readBatchSizes.every((size) => size <= 256),
+      `Expected every read batch <= 256, got ${resumed.readBatchSizes.join(",")}`,
+    );
+    assert.deepEqual(resumed.postWriteReadBatchSizes, [200]);
+    assert.ok(
+      resumed.getMaxHeldEnvelopes() <= 256,
+      `Expected held envelopes <= 256, got ${resumed.getMaxHeldEnvelopes()}`,
+    );
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
 });

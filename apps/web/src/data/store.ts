@@ -30,7 +30,7 @@ import {
 } from "./projection-meta.ts";
 import type { Envelope, Transport } from "../model/types.ts";
 import type { Draft } from "../model/draft.ts";
-import type { SnapshotInventory } from "./records.ts";
+import type { SnapshotInventory, StoredRecord } from "./records.ts";
 
 /** Only authenticated, well-formed lifecycle actions can disable ordinary signing. */
 function lifecycleMarkers(identity: string, envelopes: Envelope[]) {
@@ -305,7 +305,10 @@ export function isStrictlyIncreasing(values: readonly string[]): boolean {
       typeof value === "string" && (index === 0 || values[index - 1] < value),
   );
 }
-function hasSortedId(values: readonly string[], target: string): boolean {
+export function findSortedId(
+  values: readonly string[],
+  target: string,
+): number {
   let low = 0;
   let high = values.length;
   while (low < high) {
@@ -313,7 +316,13 @@ function hasSortedId(values: readonly string[], target: string): boolean {
     if (values[middle] < target) low = middle + 1;
     else high = middle;
   }
-  return values[low] === target;
+  return values[low] === target ? low : -1;
+}
+export function hasSortedId(
+  values: readonly string[],
+  target: string,
+): boolean {
+  return findSortedId(values, target) >= 0;
 }
 function idbRequest<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -439,6 +448,19 @@ export class LocalStore {
       request.onerror = () => reject(request.error);
     });
   }
+  async readRecords(ids: string[]): Promise<(StoredRecord | undefined)[]> {
+    const db = await this.database;
+    const transaction = db.transaction("records", "readonly");
+    return Promise.all(
+      ids.map((id) =>
+        idbRequest(
+          transaction.objectStore("records").get(id) as IDBRequest<
+            StoredRecord | undefined
+          >,
+        ),
+      ),
+    );
+  }
   async readProjectionAdvance(
     ids: string[],
     snapshot: string,
@@ -503,6 +525,16 @@ export class LocalStore {
     row: Uint8Array,
     latest?: SnapshotInventory | null,
   ): Promise<void> {
+    await this.putProjectedRecords([{ record, row }], latest);
+  }
+  async putProjectedRecords(
+    projected: {
+      record: { id: string; body?: string | null };
+      row: Uint8Array;
+    }[],
+    latest?: SnapshotInventory | null,
+  ): Promise<void> {
+    if (!projected.length) return;
     const db = await this.database;
     return new Promise((resolve, reject) => {
       const tx = db.transaction(
@@ -511,14 +543,9 @@ export class LocalStore {
       );
       let failure: unknown;
       const execute = async () => {
-        const oldRecord = (await idbRequest(
-          tx.objectStore("records").get(record.id),
-        )) as { body?: string | null } | undefined;
-        if (oldRecord?.body && !record.body) return;
+        const meta = tx.objectStore("meta");
         const latestSnapshot = await idbRequest(
-          tx.objectStore("meta").get(PROJECTION_LATEST_KEY) as IDBRequest<
-            string | undefined
-          >,
+          meta.get(PROJECTION_LATEST_KEY) as IDBRequest<string | undefined>,
         );
         const current =
           latest === undefined || latestSnapshot !== latest?.snapshot
@@ -528,28 +555,42 @@ export class LocalStore {
                 >,
               )
             : latest;
-        const oldRow = (await idbRequest(
-          tx.objectStore("projections").get(record.id),
-        )) as ProjectionBytes | undefined;
-        if (current && hasSortedId(current.events, record.id)) {
-          const snapshot = (await idbRequest(
-            tx.objectStore("meta").get(projectionSnapshotKey(current.snapshot)),
-          )) as ProjectionSnapshotMeta | undefined;
-          if (snapshot && typeof snapshot.rows_hash === "string")
-            tx.objectStore("meta").put(
-              {
-                ...snapshot,
-                rows_hash: updateProjectionHash(
-                  snapshot.rows_hash,
-                  record.id,
-                  oldRow,
-                  row,
-                ),
-              },
-              projectionSnapshotKey(current.snapshot),
-            );
+        const snapshot = current
+          ? ((await idbRequest(
+              meta.get(projectionSnapshotKey(current.snapshot)),
+            )) as ProjectionSnapshotMeta | undefined)
+          : undefined;
+        const previous = await Promise.all(
+          projected.map(({ record }) => {
+            const oldRecord = tx.objectStore("records").get(record.id);
+            const oldRow = tx.objectStore("projections").get(record.id);
+            return Promise.all([
+              idbRequest(oldRecord as IDBRequest<{ body?: string | null }>),
+              idbRequest(oldRow as IDBRequest<ProjectionBytes>),
+            ]);
+          }),
+        );
+        let rowsHash = snapshot?.rows_hash;
+        let wrote = false;
+        for (const [index, { record, row }] of projected.entries()) {
+          const [oldRecord, oldRow] = previous[index];
+          if (oldRecord?.body && !record.body) continue;
+          if (
+            current &&
+            typeof rowsHash === "string" &&
+            hasSortedId(current.events, record.id)
+          )
+            rowsHash = updateProjectionHash(rowsHash, record.id, oldRow, row);
+          tx.objectStore("records").put(record, record.id);
+          tx.objectStore("projections").put(row, record.id);
+          wrote = true;
         }
-        const meta = tx.objectStore("meta");
+        if (!wrote) return;
+        if (snapshot && typeof rowsHash === "string")
+          meta.put(
+            { ...snapshot, rows_hash: rowsHash },
+            projectionSnapshotKey(current!.snapshot),
+          );
         const producer = await idbRequest(
           meta.get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
         );
@@ -558,8 +599,6 @@ export class LocalStore {
             ? projectionBuildIdentity()
             : "mixed";
         meta.put(next, PROJECTION_PRODUCER_KEY);
-        tx.objectStore("records").put(record, record.id);
-        tx.objectStore("projections").put(row, record.id);
       };
       void execute().catch((error) => {
         failure = error;
@@ -1059,39 +1098,36 @@ export class LocalStore {
         let hash = previousMeta?.rows_hash ?? null;
         if (hash === null) {
           const digest = createProjectionDigest();
-          if (previous) {
-            let after: string | undefined;
-            for (;;) {
-              const range =
-                after === undefined
-                  ? undefined
-                  : IDBKeyRange.lowerBound(after, true);
-              const [keys, rows] = await Promise.all([
-                idbRequest(
-                  tx.objectStore("projections").getAllKeys(range, 256),
-                ),
-                idbRequest(tx.objectStore("projections").getAll(range, 256)),
-              ]);
-              for (const [index, key] of keys.entries()) {
-                const id = String(key);
-                if (
-                  hasSortedId(previous.events, id) &&
-                  typeof rows[index] !== "undefined"
-                )
-                  digest.update(
-                    id,
-                    projectionRowBytes(rows[index] as ProjectionBytes),
-                  );
-              }
-              if (keys.length < 256) break;
-              after = String(keys[keys.length - 1]);
+          const included = previous?.events ?? events;
+          let after: string | undefined;
+          for (;;) {
+            const range =
+              after === undefined
+                ? undefined
+                : IDBKeyRange.lowerBound(after, true);
+            const [keys, rows] = await Promise.all([
+              idbRequest(tx.objectStore("projections").getAllKeys(range, 256)),
+              idbRequest(tx.objectStore("projections").getAll(range, 256)),
+            ]);
+            for (const [index, key] of keys.entries()) {
+              const id = String(key);
+              if (
+                hasSortedId(included, id) &&
+                typeof rows[index] !== "undefined"
+              )
+                digest.update(
+                  id,
+                  projectionRowBytes(rows[index] as ProjectionBytes),
+                );
             }
+            if (keys.length < 256) break;
+            after = String(keys[keys.length - 1]);
           }
           hash = digest.finish();
         }
-        if (previous?.snapshot !== inventory.snapshot) {
+        if (previous && previous.snapshot !== inventory.snapshot) {
           const delta = createProjectionDigest();
-          const oldEvents = previous?.events ?? [];
+          const oldEvents = previous.events;
           let oldIndex = 0;
           let newIndex = 0;
           while (oldIndex < oldEvents.length || newIndex < events.length) {

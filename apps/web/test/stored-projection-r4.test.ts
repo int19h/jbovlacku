@@ -9,6 +9,7 @@ test("the version 6 upgrade clears legacy record projections for a fresh sync", 
   await page.goto("/");
   const result = await page.evaluate(async () => {
     const name = `legacy-upgrade-${crypto.randomUUID()}`;
+    let olderVersionChanged = false;
     await new Promise<void>((resolve, reject) => {
       const opening = indexedDB.open(name, 5);
       opening.onupgradeneeded = () => {
@@ -18,14 +19,30 @@ test("the version 6 upgrade clears legacy record projections for a fresh sync", 
           "inventory",
           "meta",
           "drafts",
+          "keys",
+          "prefs",
+          "outbox",
         ])
           opening.result.createObjectStore(store);
       };
       opening.onerror = () => reject(opening.error);
       opening.onsuccess = () => {
         const database = opening.result;
+        database.onversionchange = () => {
+          olderVersionChanged = true;
+          database.close();
+        };
         const transaction = database.transaction(
-          ["records", "projections", "inventory", "meta", "drafts"],
+          [
+            "records",
+            "projections",
+            "inventory",
+            "meta",
+            "drafts",
+            "keys",
+            "prefs",
+            "outbox",
+          ],
           "readwrite",
         );
         transaction
@@ -42,10 +59,10 @@ test("the version 6 upgrade clears legacy record projections for a fresh sync", 
           .put({ snapshot: "legacy" }, "latest");
         transaction.objectStore("meta").put("legacy", "projection:latest");
         transaction.objectStore("drafts").put({ revision: "keep" }, "current");
-        transaction.oncomplete = () => {
-          database.close();
-          resolve();
-        };
+        transaction.objectStore("keys").put({ identity: "keep" }, "selected");
+        transaction.objectStore("prefs").put({ theme: "dark" }, "preferences");
+        transaction.objectStore("outbox").put({ id: "keep" }, "pending");
+        transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error);
       };
     });
@@ -59,6 +76,10 @@ test("the version 6 upgrade clears legacy record projections for a fresh sync", 
         latest: await store.get("inventory", "latest"),
         producer: await store.get("meta", "projection:latest"),
         draft: await store.get("drafts", "current"),
+        key: await store.get("keys", "selected"),
+        preferences: await store.get("prefs", "preferences"),
+        outbox: await store.get("outbox", "pending"),
+        olderVersionChanged,
       };
     } finally {
       (await store.database).close();
@@ -70,6 +91,10 @@ test("the version 6 upgrade clears legacy record projections for a fresh sync", 
   expect(result.latest).toBeUndefined();
   expect(result.producer).toBeUndefined();
   expect(result.draft).toEqual({ revision: "keep" });
+  expect(result.key).toEqual({ identity: "keep" });
+  expect(result.preferences).toEqual({ theme: "dark" });
+  expect(result.outbox).toEqual({ id: "keep" });
+  expect(result.olderVersionChanged).toBe(true);
 });
 
 test("an interrupted sync preserves a concurrently downloaded body", async ({
@@ -91,6 +116,7 @@ test("an interrupted sync preserves a concurrently downloaded body", async ({
         const record = await store.get<any>("records", id);
         if (
           record.body &&
+          record.bodyStatus === "present" &&
           JSON.parse(record.envelope).header.action.kind ===
             "definition.publish"
         ) {
@@ -116,13 +142,11 @@ test("an interrupted sync preserves a concurrently downloaded body", async ({
         name: string,
         id: string,
       ) => Promise<T | undefined>;
+      const readRecords = store.readRecords.bind(store);
       let intervened = false;
-      store.get = async <T>(
-        name: string,
-        id: string,
-      ): Promise<T | undefined> => {
-        const cached = await get<T>(name, id);
-        if (!intervened && name === "records" && id === full.id) {
+      store.readRecords = async (ids: string[]) => {
+        const cached = await readRecords(ids);
+        if (!intervened && ids.includes(full.id)) {
           intervened = true;
           const second = new LocalStore(store.name) as BrowserStore;
           try {
@@ -151,6 +175,7 @@ test("an interrupted sync preserves a concurrently downloaded body", async ({
       return {
         intervened,
         syncError,
+        originalBodyStatus: full.bodyStatus,
         bodyPreserved: after.body === full.body,
         bodyStatus: after.bodyStatus,
         rowPreserved:
@@ -161,6 +186,7 @@ test("an interrupted sync preserves a concurrently downloaded body", async ({
     }
   }, corePath);
   expect(result.intervened).toBe(true);
+  expect(result.originalBodyStatus).toBe("present");
   expect(result.bodyPreserved).toBe(true);
   expect(result.bodyStatus).toBe("present");
   expect(result.rowPreserved).toBe(true);

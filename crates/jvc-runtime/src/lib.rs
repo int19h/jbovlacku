@@ -116,26 +116,166 @@ fn prepare(bytes: &[u8]) -> Result<Value> {
 pub fn content_hash(bytes: &[u8]) -> String {
     jvc_core::hash_id("sha256:", b"", bytes)
 }
+fn try_canonical_selection(bytes: &[u8]) -> Option<Result<usize>> {
+    if bytes == b"[]" {
+        return Some(Ok(0));
+    }
+    if bytes.len() < 2 || bytes[0] != b'[' || bytes[bytes.len() - 1] != b']' {
+        return None;
+    }
+    let inner = &bytes[1..bytes.len() - 1];
+    if inner.len() % 72 != 71 {
+        return None;
+    }
+    let count = (inner.len() + 1) / 72;
+    let mut prev: Option<&str> = None;
+    for i in 0..count {
+        if i > 0 && inner[i * 72 - 1] != b',' {
+            return None;
+        }
+        let item = &inner[i * 72..i * 72 + 71];
+        if item[0] != b'"' || item[70] != b'"' {
+            return None;
+        }
+        let Ok(id) = std::str::from_utf8(&item[1..70]) else {
+            return None;
+        };
+        if !jvc_core::valid_id(id, "jve1:") || prev.is_some_and(|p| p >= id) {
+            return None;
+        }
+        prev = Some(id);
+    }
+    if count > 200_000 {
+        return Some(Err(Error::new(
+            "identifier",
+            "identifiers must be valid, sorted, unique, and within their limit",
+        )));
+    }
+    Some(Ok(count))
+}
+fn stream_canonical_selection(bytes: &[u8]) -> std::result::Result<String, ()> {
+    struct SelectionVisitor;
+    impl<'de> serde::de::Visitor<'de> for SelectionVisitor {
+        type Value = String;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("an identifier array")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> std::result::Result<String, A::Error> {
+            let mut canonical = String::new();
+            canonical.push('[');
+            let mut prev: Option<String> = None;
+            let mut count = 0usize;
+            while let Some(id) = seq.next_element::<String>()? {
+                count += 1;
+                if count > 200_000
+                    || !jvc_core::valid_id(&id, "jve1:")
+                    || prev.as_deref().is_some_and(|p| p >= id.as_str())
+                {
+                    return Err(serde::de::Error::custom("invalid identifier"));
+                }
+                if count > 1 {
+                    canonical.push(',');
+                }
+                canonical.push('"');
+                canonical.push_str(&id);
+                canonical.push('"');
+                prev = Some(id);
+            }
+            canonical.push(']');
+            Ok(canonical)
+        }
+    }
+    use serde::Deserializer as _;
+    let mut d = serde_json::Deserializer::from_slice(bytes);
+    let canonical = d.deserialize_seq(SelectionVisitor).map_err(|_| ())?;
+    d.end().map_err(|_| ())?;
+    Ok(canonical)
+}
+fn validate_selection_ids(bytes: &[u8]) -> Result<Vec<String>> {
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err(Error::new(
+            "selection_size",
+            "import selection exceeds 16 MiB",
+        ));
+    }
+    let value = parse_json(bytes)?;
+    let ids: Vec<String> = serde_json::from_value(value)
+        .map_err(|_| Error::new("selection", "selection must be an identifier array"))?;
+    jvc_core::sorted_ids(&ids, "jve1:", 200_000)?;
+    Ok(ids)
+}
+fn format_canonical_ids(ids: &[String]) -> String {
+    let mut canonical = String::with_capacity(if ids.is_empty() {
+        2
+    } else {
+        ids.len() * 72 + 1
+    });
+    canonical.push('[');
+    for (i, id) in ids.iter().enumerate() {
+        if i > 0 {
+            canonical.push(',');
+        }
+        canonical.push('"');
+        canonical.push_str(id);
+        canonical.push('"');
+    }
+    canonical.push(']');
+    canonical
+}
 #[wasm_bindgen]
-pub fn prepare_selection(bytes: &[u8]) -> std::result::Result<String, JsValue> {
+pub struct PreparedSelection {
+    hash: String,
+    canonical: Option<String>,
+}
+#[wasm_bindgen]
+impl PreparedSelection {
+    pub fn hash(&self) -> String {
+        self.hash.clone()
+    }
+    pub fn canonical(&self) -> Option<String> {
+        self.canonical.clone()
+    }
+}
+#[wasm_bindgen]
+pub fn prepare_selection_canonical(
+    bytes: &[u8],
+) -> std::result::Result<PreparedSelection, JsValue> {
     if bytes.len() > 16 * 1024 * 1024 {
         return Err(fail(Error::new(
             "selection_size",
             "import selection exceeds 16 MiB",
         )));
     }
-    let value = parse_json(bytes).map_err(fail)?;
-    let ids: Vec<String> = serde_json::from_value(value.clone()).map_err(|_| {
-        fail(Error::new(
-            "selection",
-            "selection must be an identifier array",
-        ))
-    })?;
-    jvc_core::sorted_ids(&ids, "jve1:", 200_000).map_err(fail)?;
-    let canonical = canonical_value(&value).map_err(fail)?;
-    output(
-        json!({"hash":content_hash(&canonical),"bytes":canonical.len(),"count":ids.len(),"canonical":text(canonical),"ids":ids}),
-    )
+    if let Some(result) = try_canonical_selection(bytes) {
+        result.map_err(fail)?;
+        return Ok(PreparedSelection {
+            hash: content_hash(bytes),
+            canonical: None,
+        });
+    }
+    if let Ok(canonical) = stream_canonical_selection(bytes) {
+        return Ok(PreparedSelection {
+            hash: content_hash(canonical.as_bytes()),
+            canonical: Some(canonical),
+        });
+    }
+    let ids = validate_selection_ids(bytes).map_err(fail)?;
+    let canonical = format_canonical_ids(&ids);
+    Ok(PreparedSelection {
+        hash: content_hash(canonical.as_bytes()),
+        canonical: Some(canonical),
+    })
+}
+#[wasm_bindgen]
+pub fn prepare_selection(bytes: &[u8]) -> std::result::Result<String, JsValue> {
+    let ids = validate_selection_ids(bytes).map_err(fail)?;
+    let canonical = format_canonical_ids(&ids);
+    let hash = content_hash(canonical.as_bytes());
+    let len = canonical.len();
+    output(json!({"hash":hash,"bytes":len,"count":ids.len(),"canonical":canonical,"ids":ids}))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1172,7 +1312,42 @@ pub fn project_record(
     project_with_verifier(&mut jvc_core::EnvelopeVerifier::default(), envelope, body)
 }
 
+#[wasm_bindgen]
+pub fn max_incremental_records() -> usize {
+    jvc_state::MAX_INCREMENTAL_RECORDS
+}
+
 /// XOR of SHA-256(record ID, little-endian u64 row length, row bytes) per row.
+#[wasm_bindgen]
+pub struct ContentDigest {
+    hash: sha2::Sha256,
+}
+
+#[wasm_bindgen]
+impl ContentDigest {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        use sha2::Digest;
+        Self {
+            hash: sha2::Sha256::new(),
+        }
+    }
+    pub fn update(&mut self, bytes: &[u8]) {
+        use sha2::Digest;
+        self.hash.update(bytes);
+    }
+    pub fn finish(self) -> String {
+        use sha2::Digest;
+        format!("sha256:{}", hex::encode(self.hash.finalize()))
+    }
+}
+
+impl Default for ContentDigest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[wasm_bindgen]
 pub struct ProjectionDigest {
     digest: [u8; 32],

@@ -45,6 +45,7 @@ test("row loads follow body retention when it drops and returns", async ({
           const record = await store.get<{
             envelope: string;
             body: string | null;
+            bodyStatus: string;
             bodyHash: string | null;
           }>("records", id);
           events.push(record!.envelope);
@@ -118,12 +119,14 @@ test("row loads follow body retention when it drops and returns", async ({
           const record = await store.get<{
             envelope: string;
             body: string | null;
+            bodyStatus: string;
             bodyHash: string | null;
           }>("records", id);
           const action = JSON.parse(record!.envelope).header.action;
           if (
             action.kind === "definition.publish" &&
             action.word === word &&
+            record!.bodyStatus === "present" &&
             record!.body &&
             record!.bodyHash
           )
@@ -283,10 +286,16 @@ test("sync over rows from another build rebuilds instead of relabeling them", as
           const record = await store.get<{
             envelope: string;
             body: string | null;
+            bodyStatus: string;
             bodyHash: string | null;
           }>("records", id);
           events.push(record!.envelope);
-          if (record!.body && record!.bodyHash) bodies[id] = record!.body!;
+          if (
+            record!.body &&
+            record!.bodyHash &&
+            inventory.bodies.includes(record!.bodyHash)
+          )
+            bodies[id] = record!.body!;
         }
         const expected = core.evaluateSession({
           events,

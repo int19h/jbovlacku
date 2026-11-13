@@ -2,7 +2,8 @@ use super::*;
 use graph::{Graph, Node};
 
 pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v3";
-const APPENDS_BEFORE_REBASE: usize = 64;
+pub const MAX_INCREMENTAL_RECORDS: usize = 64;
+const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct UpdateStatistics {

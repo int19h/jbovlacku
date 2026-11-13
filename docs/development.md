@@ -120,21 +120,24 @@ Build the WebAssembly bindings before either command.
 
 The Node adapter accepts these environment variables:
 
-| Variable                    | Purpose                                                                                         |
-| --------------------------- | ----------------------------------------------------------------------------------------------- |
-| `JVC_DATA_DIR`              | Persistent objects and SQLite databases. The default is `data/node` relative to the checkout.   |
-| `HOST`                      | Listen address. The source default is `127.0.0.1`.                                              |
-| `PORT`                      | Listen port. The default is `8789`.                                                             |
-| `JVC_ASSETS_DIR`            | Browser assets. The source default is `apps/web/dist`.                                          |
-| `JVC_SERVER_ID`             | Service identifier. The source default is `local-node`.                                         |
-| `JVC_VIEW`                  | Explicit selected view event ID. A fresh service has no dictionary view.                        |
-| `JVC_STATE_TRAVERSAL_LIMIT` | Explicit state work budget from 1 through 1,000,000,000. It overrides the saved import limit.   |
-| `JVC_PUBLIC_ORIGIN`         | Explicit public origin permitted to submit browser writes through a reverse proxy.              |
-| `JVC_SEMANTIC_INDEXING`     | Set `enabled` to index pending definitions in the running Node server under its shared budgets. |
-| `JVC_SNAPSHOT_LIMIT`        | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                    |
-| `JVC_CORS_ORIGINS`          | Comma-separated additional permitted origins.                                                   |
-| `JVC_POLICY_URL`            | Operator policy URL. The prototype placeholder is not a published policy.                       |
-| `JVC_PROTOTYPE_BATCH`       | Set `enabled` only for authorized local batch fixtures. The default disables batch admission.   |
+| Variable                          | Purpose                                                                                                       |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `JVC_DATA_DIR`                    | Persistent objects and SQLite databases. The default is `data/node` relative to the checkout.                 |
+| `HOST`                            | Listen address. The source default is `127.0.0.1`.                                                            |
+| `PORT`                            | Listen port. The default is `8789`.                                                                           |
+| `JVC_ASSETS_DIR`                  | Browser assets. The source default is `apps/web/dist`.                                                        |
+| `JVC_SERVER_ID`                   | Service identifier. The source default is `local-node`.                                                       |
+| `JVC_VIEW`                        | Explicit selected view event ID. A fresh service has no dictionary view.                                      |
+| `JVC_STATE_TRAVERSAL_LIMIT`       | Explicit state work budget from 1 through 1,000,000,000. It overrides the saved import limit.                 |
+| `JVC_PUBLIC_ORIGIN`               | Explicit public origin permitted to submit browser writes through a reverse proxy.                            |
+| `JVC_SEMANTIC_INDEXING`           | Set `enabled` to index pending definitions in the running Node server under its shared budgets.               |
+| `JVC_SEMANTIC_STORE_ASSOCIATIONS` | Maximum semantic associations. The default is 300,000. A value must be a positive safe integer.               |
+| `JVC_SEMANTIC_STORE_VECTORS`      | Maximum semantic vectors. The default is 100,000. A value must be a positive safe integer.                    |
+| `JVC_SEMANTIC_STORE_BYTES`        | Maximum bytes for semantic inputs and vectors. The default is 2 GiB. A value must be a positive safe integer. |
+| `JVC_SNAPSHOT_LIMIT`              | Retained snapshot count. The default is 16. Allowed values are 1 through 64.                                  |
+| `JVC_CORS_ORIGINS`                | Comma-separated additional permitted origins.                                                                 |
+| `JVC_POLICY_URL`                  | Operator policy URL. The prototype placeholder is not a published policy.                                     |
+| `JVC_PROTOTYPE_BATCH`             | Set `enabled` only for authorized local batch fixtures. The default disables batch admission.                 |
 
 A browser write is allowed when its `Origin` equals the request URL's origin.
 Set `JVC_PUBLIC_ORIGIN` when an HTTPS reverse proxy gives the browser a different public origin.
@@ -632,6 +635,7 @@ cargo test --workspace
 npm run typecheck
 npm run test:search
 npm run test:service
+npx tsx --test apps/server/test/*.test.ts
 JVC_TEST_ROOT="$PWD/.cache/adapter-tests" npm run test:adapters
 npx tsx --test packages/importer/test/*.test.ts
 npx tsx --test packages/core/test/evaluation-request.test.ts

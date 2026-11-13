@@ -253,7 +253,9 @@ test("the personal view follows the chosen profile, private blocks and own publi
       `Exact value ${expected.nets[d1].replace("/1", "")}.*In your personal view`,
     ),
   );
-  await expect(panel).toContainText(`snapshot`);
+  await expect(panel).toContainText(
+    /Personal view calculated in this browser from \d+ verified records/,
+  );
   // A private Ignore of curator2 removes every route through curator2 in the
   // personal view only. Outcast keeps D's route and its own allowance.
   await page.goto(`/identity/${encodeURIComponent(f.identities.curator2)}`);

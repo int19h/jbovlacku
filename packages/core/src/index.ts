@@ -67,6 +67,9 @@ export const canonicalize = (bytes: Uint8Array): string =>
   wasm.runtime_canonicalize(bytes);
 export const contentHash = (bytes: Uint8Array): string =>
   wasm.content_hash(bytes);
+export const createContentDigest = () => new wasm.ContentDigest();
+export const maxIncrementalRecords = (): number =>
+  wasm.max_incremental_records();
 export const PROJECTION_ROW_VERSION = 1;
 export const projectionBuildIdentity = (): string => buildMetadata.wasm_sha256;
 export const createProjectionDigest = () => new wasm.ProjectionDigest();
@@ -114,6 +117,22 @@ export const prepareSelection = (
   canonical: string;
   ids: string[];
 } => JSON.parse(wasm.prepare_selection(bytes));
+export const prepareSelectionCanonical = (
+  bytes: Uint8Array,
+): {
+  hash: string;
+  canonical: string;
+} => {
+  const prepared = wasm.prepare_selection_canonical(bytes);
+  try {
+    return {
+      hash: prepared.hash(),
+      canonical: prepared.canonical() ?? new TextDecoder().decode(bytes),
+    };
+  } finally {
+    prepared.free();
+  }
+};
 export const evaluate = (input: {
   events: string[];
   bodies: Record<string, string>;
