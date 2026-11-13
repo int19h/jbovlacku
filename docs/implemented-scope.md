@@ -606,7 +606,7 @@ A streaming digest compares the envelopes with the manifest. Sync does not retai
 Storage-quota and out-of-memory failures produce distinct messages.
 
 Sync stores a versioned projection row with each record. Database version 6 clears legacy records and projections for a fresh sync.
-No legacy normalization write remains. Each page write reads the latest inventory once and supplies that value to its row writes.
+No legacy normalization write remains. Sync reads the latest inventory once and supplies that value to every page write.
 A small snapshot-ID key lets a write detect and refresh an outdated inventory copy. A bodyless write never replaces a record or row that already has a body.
 The row holds the complete evaluation projection in the compact arena's generic form. A store-wide producer value records which core build wrote the rows.
 The value is `mixed` when two builds wrote them. Inventory commits carry that producer forward and remove stale records and rows by key.
