@@ -1172,6 +1172,11 @@ pub fn project_record(
     project_with_verifier(&mut jvc_core::EnvelopeVerifier::default(), envelope, body)
 }
 
+#[wasm_bindgen]
+pub fn max_incremental_records() -> usize {
+    jvc_state::MAX_INCREMENTAL_RECORDS
+}
+
 /// XOR of SHA-256(record ID, little-endian u64 row length, row bytes) per row.
 #[wasm_bindgen]
 pub struct ContentDigest {

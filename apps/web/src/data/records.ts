@@ -21,7 +21,7 @@ import {
   type RequestOptions,
   getPreferredView,
 } from "./api.ts";
-import type { LocalStore } from "./store.ts";
+import { findSortedId, hasSortedId, type LocalStore } from "./store.ts";
 import { eventId, hashId, type Envelope } from "../model/types.ts";
 
 export interface StoredRecord {
@@ -72,11 +72,58 @@ export class RecordsError extends Error {
     super(message);
   }
 }
+const INVENTORY_PAGE_LIMIT = 1000;
 const PAGE_LIMIT = 200;
 const READ_BATCH = 256;
+const MAX_BODY_BYTES = 262144;
+const STATE_MISSING = 0;
+const STATE_READY = 1;
+const STATE_MISSING_RETAINED_BODY = 2;
 const byteLength = (text: string) => utf8(text).length;
 const hashJson = (value: unknown) =>
   contentHash(utf8(canonicalize(utf8(JSON.stringify(value)))));
+
+function updateCanonicalIdArray(
+  digest: ReturnType<typeof createContentDigest>,
+  ids: readonly string[],
+  pageSize = INVENTORY_PAGE_LIMIT,
+): void {
+  digest.update(utf8("["));
+  for (let start = 0; start < ids.length; start += pageSize) {
+    const page = ids.slice(start, start + pageSize);
+    const prefix = start === 0 ? '"' : ',"';
+    digest.update(utf8(prefix + page.join('","') + '"'));
+  }
+  digest.update(utf8("]"));
+}
+
+export function hashInventoryIds(
+  ids: readonly string[],
+  pageSize = INVENTORY_PAGE_LIMIT,
+): string {
+  const digest = createContentDigest();
+  updateCanonicalIdArray(digest, ids, pageSize);
+  return digest.finish();
+}
+
+export function hashLogicalInventory(
+  inventory: {
+    events: readonly string[];
+    bodies: readonly string[];
+    import_selections: readonly string[];
+  },
+  pageSize = INVENTORY_PAGE_LIMIT,
+): string {
+  const digest = createContentDigest();
+  digest.update(utf8('{"bodies":'));
+  updateCanonicalIdArray(digest, inventory.bodies, pageSize);
+  digest.update(utf8(',"events":'));
+  updateCanonicalIdArray(digest, inventory.events, pageSize);
+  digest.update(utf8(',"import_selections":'));
+  updateCanonicalIdArray(digest, inventory.import_selections, pageSize);
+  digest.update(utf8("}"));
+  return digest.finish();
+}
 
 async function inventoryIds(
   kind: "events" | "bodies" | "import_selections",
@@ -87,7 +134,11 @@ async function inventoryIds(
   let after: string | null = null;
   for (;;) {
     options.signal?.throwIfAborted();
-    const query = new URLSearchParams({ kind, snapshot, limit: "1000" });
+    const query = new URLSearchParams({
+      kind,
+      snapshot,
+      limit: String(INVENTORY_PAGE_LIMIT),
+    });
     if (after) query.set("after", after);
     const value = (await api(`/inventory?${query}`, options)) as {
       snapshot?: string;
@@ -103,6 +154,11 @@ async function inventoryIds(
     )
       throw new RecordsError(
         "The server returned an invalid inventory page.",
+        "invalid",
+      );
+    if (value.ids.length > INVENTORY_PAGE_LIMIT)
+      throw new RecordsError(
+        "The server returned an inventory page outside the per-page bound.",
         "invalid",
       );
     for (const id of value.ids) {
@@ -130,7 +186,6 @@ type SyncOptions = RequestOptions & {
   fresh?: boolean;
   onProgress?: (progress: RecordsProgress) => void;
 };
-type RecordMetadata = Pick<StoredRecord, "bodyStatus" | "bodyHash">;
 
 async function readRecords(store: LocalStore, ids: string[]) {
   if (typeof store.readRecords === "function") return store.readRecords(ids);
@@ -257,22 +312,43 @@ async function syncProjectedRecords(
   const events = await inventoryIds("events", snapshot, options);
   const bodies = await inventoryIds("bodies", snapshot, options);
   const selections = await inventoryIds("import_selections", snapshot, options);
-  const bodySet = new Set(bodies);
   if (
-    hashJson(bodies) !== declared.bodies?.hash ||
+    hashInventoryIds(bodies) !== declared.bodies?.hash ||
     bodies.length !== declared.bodies?.count ||
-    hashJson(selections) !== declared.import_selections?.hash ||
+    hashInventoryIds(selections) !== declared.import_selections?.hash ||
     events.length !== declared.events?.count ||
-    hashJson({ events, bodies, import_selections: selections }) !==
-      manifest.logical_inventory ||
+    hashLogicalInventory({
+      events,
+      bodies,
+      import_selections: selections,
+    }) !== manifest.logical_inventory ||
     hashJson(declared) !== snapshot
   )
     throw new RecordsError(
       "The inventory does not match the manifest digests. The snapshot is inconsistent.",
       "invalid",
     );
-  const cached = new Map<string, RecordMetadata>();
-  const missing = new Set(events);
+  const state = new Uint8Array(events.length);
+  let missingCount = events.length;
+  const missingBodies: { index: number; id: string; bodyHash: string }[] = [];
+  const unretainedBodies = new Set<string>();
+  const eventsDigest = createContentDigest();
+  let digestCursor = 0;
+  const pendingEnvelopes = new Map<number, string>();
+  const recordEnvelope = (index: number, envelope: string) => {
+    if (index < digestCursor) return;
+    if (index === digestCursor) {
+      eventsDigest.update(utf8(envelope + "\n"));
+      digestCursor++;
+      while (pendingEnvelopes.has(digestCursor)) {
+        eventsDigest.update(utf8(pendingEnvelopes.get(digestCursor)! + "\n"));
+        pendingEnvelopes.delete(digestCursor);
+        digestCursor++;
+      }
+    } else {
+      pendingEnvelopes.set(index, envelope);
+    }
+  };
   let bytes = 0;
   for (let start = 0; start < events.length; start += READ_BATCH) {
     check();
@@ -280,31 +356,34 @@ async function syncProjectedRecords(
       store,
       events.slice(start, start + READ_BATCH),
     );
-    for (const record of records) {
-      if (!record) continue;
-      cached.set(record.id, {
-        bodyStatus: record.bodyStatus,
-        bodyHash: record.bodyHash,
-      });
-      missing.delete(record.id);
+    for (const [offset, record] of records.entries()) {
+      const index = start + offset;
+      if (!record || record.id !== events[index]) continue;
+      const retainedBody =
+        record.bodyHash !== null && hasSortedId(bodies, record.bodyHash);
+      if (record.bodyHash !== null && !retainedBody)
+        unretainedBodies.add(record.bodyHash);
+      if (record.bodyStatus === "missing" && retainedBody) {
+        state[index] = STATE_MISSING_RETAINED_BODY;
+        missingBodies.push({
+          index,
+          id: record.id,
+          bodyHash: record.bodyHash!,
+        });
+      } else {
+        state[index] = STATE_READY;
+      }
+      missingCount--;
+      recordEnvelope(index, record.envelope);
       bytes += byteLength(record.envelope) + byteLength(record.body ?? "");
     }
   }
-  const eventSet = new Set(events);
   let cursor = 0;
-  const missingBodies = events.filter((id) => {
-    const record = cached.get(id);
-    return (
-      record?.bodyStatus === "missing" &&
-      record.bodyHash !== null &&
-      bodySet.has(record.bodyHash)
-    );
-  });
-  let loaded = events.length - missing.size;
+  let loaded = events.length - missingCount;
   progress({ phase: "records", loaded, total: events.length, bytes });
-  while (missing.size) {
+  while (missingCount > 0) {
     check();
-    while (cursor < events.length && !missing.has(events[cursor])) cursor++;
+    while (cursor < events.length && state[cursor] !== STATE_MISSING) cursor++;
     const index = cursor;
     const after = index > 0 ? events[index - 1] : null;
     const query = new URLSearchParams({ snapshot, limit: String(PAGE_LIMIT) });
@@ -324,7 +403,12 @@ async function syncProjectedRecords(
         "invalid",
       );
     let previous = after ?? "";
-    const writes: { record: StoredRecord; row: Uint8Array }[] = [];
+    const writes: {
+      record: StoredRecord;
+      row: Uint8Array;
+      index: number;
+      retainedBody: boolean;
+    }[] = [];
     for (const item of page.items as {
       id?: unknown;
       envelope?: unknown;
@@ -339,12 +423,13 @@ async function syncProjectedRecords(
           "invalid",
         );
       previous = item.id;
-      if (!eventSet.has(item.id))
+      const itemIndex = findSortedId(events, item.id);
+      if (itemIndex < 0)
         throw new RecordsError(
           "The server returned a record outside the inventory.",
           "invalid",
         );
-      if (!missing.has(item.id)) continue;
+      if (state[itemIndex] !== STATE_MISSING) continue;
       const bodyStatus = (item as { body_status?: unknown }).body_status;
       if (
         item.body == null &&
@@ -362,17 +447,19 @@ async function syncProjectedRecords(
         project,
       );
       const record = projected.record;
-      if (record.bodyHash && !bodySet.has(record.bodyHash) && record.body)
+      const retainedBody =
+        record.bodyHash !== null && hasSortedId(bodies, record.bodyHash);
+      if (record.bodyHash && !retainedBody && record.body)
         throw new RecordsError(
           "The server supplied a body that its inventory does not list.",
           "invalid",
         );
       bytes += byteLength(record.envelope) + byteLength(record.body ?? "");
-      writes.push(projected);
+      writes.push({ ...projected, index: itemIndex, retainedBody });
     }
-    if (page.next === null && missing.size > writes.length)
+    if (page.next === null && missingCount > writes.length)
       throw new RecordsError(
-        `${missing.size - writes.length} inventory records are missing from the records transport.`,
+        `${missingCount - writes.length} inventory records are missing from the records transport.`,
         "missing",
       );
     if (!writes.length)
@@ -381,12 +468,15 @@ async function syncProjectedRecords(
         "invalid",
       );
     await writeRecords(store, writes, latest);
-    for (const { record } of writes) {
-      cached.set(record.id, {
-        bodyStatus: record.bodyStatus,
-        bodyHash: record.bodyHash,
-      });
-      missing.delete(record.id);
+    for (const { record, index: itemIndex, retainedBody } of writes) {
+      if (record.bodyHash !== null && !retainedBody)
+        unretainedBodies.add(record.bodyHash);
+      state[itemIndex] =
+        record.bodyStatus === "missing" && retainedBody
+          ? STATE_MISSING_RETAINED_BODY
+          : STATE_READY;
+      recordEnvelope(itemIndex, record.envelope);
+      missingCount--;
       loaded++;
     }
     progress({ phase: "records", loaded, total: events.length, bytes });
@@ -397,7 +487,7 @@ async function syncProjectedRecords(
         "invalid",
       );
   }
-  for (const [index, id] of missingBodies.entries()) {
+  for (const [index, target] of missingBodies.entries()) {
     check();
     progress({
       phase: "bodies",
@@ -405,60 +495,43 @@ async function syncProjectedRecords(
       total: missingBodies.length,
       bytes,
     });
-    const metadata = cached.get(id)!;
-    const [record] = await readRecords(store, [id]);
+    const [record] = await readRecords(store, [target.id]);
     if (!record)
       throw new RecordsError(
-        `Record ${id} is not cached. Download the records again.`,
+        `Record ${target.id} is not cached. Download the records again.`,
         "missing",
       );
     const raw = await objectBytes(
-      `/bodies/${encodeURIComponent(metadata.bodyHash!)}?snapshot=${encodeURIComponent(snapshot)}`,
-      16 * 1024 * 1024,
+      `/bodies/${encodeURIComponent(target.bodyHash)}?snapshot=${encodeURIComponent(snapshot)}`,
+      MAX_BODY_BYTES,
       options,
     );
     const updated = storedRecord(
-      id,
+      target.id,
       JSON.parse(record.envelope),
       JSON.parse(new TextDecoder().decode(raw)),
       project,
     );
     bytes += byteLength(updated.record.body ?? "");
     await writeRecords(store, [updated], latest);
-    cached.set(id, {
-      bodyStatus: updated.record.bodyStatus,
-      bodyHash: updated.record.bodyHash,
-    });
+    state[target.index] =
+      updated.record.bodyStatus === "missing"
+        ? STATE_MISSING_RETAINED_BODY
+        : STATE_READY;
   }
-  for (const id of events) {
-    const record = cached.get(id)!;
-    if (
-      record.bodyStatus === "missing" &&
-      record.bodyHash &&
-      bodySet.has(record.bodyHash)
-    )
-      throw new RecordsError(
-        `The body of ${id} is listed as retained in the inventory but the records transport reports it as not retained.`,
-        "missing",
-      );
-  }
-  const digest = createContentDigest();
-  for (let start = 0; start < events.length; start += READ_BATCH) {
-    check();
-    const records = await readRecords(
-      store,
-      events.slice(start, start + READ_BATCH),
+  const missingRetainedIndex = state.indexOf(STATE_MISSING_RETAINED_BODY);
+  if (missingRetainedIndex >= 0)
+    throw new RecordsError(
+      `The body of ${events[missingRetainedIndex]} is listed as retained in the inventory but the records transport reports it as not retained.`,
+      "missing",
     );
-    for (const [index, record] of records.entries()) {
-      if (!record || record.id !== events[start + index])
-        throw new RecordsError(
-          `Record ${events[start + index]} is not cached. Download the records again.`,
-          "missing",
-        );
-      digest.update(utf8(record.envelope + "\n"));
-    }
-  }
-  if (digest.finish() !== declared.events?.hash)
+  const missingRecordIndex = state.indexOf(STATE_MISSING);
+  if (missingRecordIndex >= 0 || digestCursor !== events.length)
+    throw new RecordsError(
+      `Record ${events[missingRecordIndex >= 0 ? missingRecordIndex : digestCursor]} is not cached. Download the records again.`,
+      "missing",
+    );
+  if (eventsDigest.finish() !== declared.events?.hash)
     throw new RecordsError(
       "The downloaded envelopes do not match the manifest's events digest.",
       "invalid",
@@ -507,16 +580,7 @@ async function syncProjectedRecords(
     view,
     events,
     bodies,
-    unretained_bodies: [
-      ...new Set(
-        events
-          .map((id) => cached.get(id)!.bodyHash)
-          .filter(
-            (hash): hash is string =>
-              typeof hash === "string" && !bodySet.has(hash),
-          ),
-      ),
-    ].sort(),
+    unretained_bodies: [...unretainedBodies].sort(),
     selections,
   };
   if (typeof store.commitInventory === "function")

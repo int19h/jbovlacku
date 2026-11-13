@@ -9,6 +9,7 @@ export {
   canonicalize,
   contentHash,
   createContentDigest,
+  maxIncrementalRecords,
   createSearchPattern,
   prepareAdmission,
   verifyEnvelope,

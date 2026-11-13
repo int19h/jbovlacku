@@ -14,6 +14,8 @@ const core = await import("../../../../packages/core/src/browser.ts");
 const { xorProjectionHashes } =
   await import("../../src/data/projection-meta.ts");
 const { PersonalCalculator } = await import("../../src/data/personal.ts");
+const { hashInventoryIds, hashLogicalInventory } =
+  await import("../../src/data/records.ts");
 const { emptyOverlay } = await import("../../src/data/store.ts");
 
 const view = "jve1:" + "c".repeat(64);
@@ -1144,4 +1146,103 @@ test("an empty delta under a different key uses a full load", async () => {
     ["load", "overlay", "load", "overlay"],
   );
   h.calculator.cancel();
+});
+
+test("an advance uses incremental rows up to the core limit and a full load above it", async () => {
+  const limit = core.maxIncrementalRecords();
+  assert.equal(limit, 64);
+
+  const within = harness();
+  await within.calculator.ensure();
+  const withinAdded = Array.from(
+    { length: limit },
+    (_, index) => `jvr1:f${index.toString(16).padStart(63, "0")}`,
+  );
+  for (const id of withinAdded) putEmptyRecord(within, id);
+  within.setInventory(inventory([view, other, ...withinAdded], snapshot("b")));
+  const withinReady = await within.calculator.ensure();
+  assert.equal(withinReady.state, "ready");
+  assert.equal(withinReady.events, 2 + limit);
+  assert.deepEqual(
+    within.worker.messages.map((message) => message.type),
+    ["load", "overlay", "advance", "overlay"],
+  );
+  within.calculator.cancel();
+
+  const above = harness();
+  await above.calculator.ensure();
+  const aboveAdded = Array.from(
+    { length: limit + 1 },
+    (_, index) => `jvr1:f${index.toString(16).padStart(63, "0")}`,
+  );
+  for (const id of aboveAdded) putEmptyRecord(above, id);
+  above.setInventory(inventory([view, other, ...aboveAdded], snapshot("c")));
+  const aboveReady = await above.calculator.ensure();
+  assert.equal(aboveReady.state, "ready");
+  assert.equal(aboveReady.events, 2 + limit + 1);
+  assert.deepEqual(
+    above.worker.messages.map((message) => message.type),
+    ["load", "overlay", "load", "overlay"],
+  );
+  assert.equal(lastLoad(above).source.count, 2 + limit + 1);
+  above.calculator.cancel();
+});
+
+test("streamed inventory digests equal canonical JSON digests across empty and multi-page inventories", () => {
+  const oldHash = (value: unknown) =>
+    core.contentHash(
+      core.utf8(core.canonicalize(core.utf8(JSON.stringify(value)))),
+    );
+  const makeEvents = (count: number) =>
+    Array.from(
+      { length: count },
+      (_, index) => `jve1:${index.toString(16).padStart(64, "0")}`,
+    );
+  const makeHashes = (count: number, prefix = "0") =>
+    Array.from(
+      { length: count },
+      (_, index) => `sha256:${prefix}${index.toString(16).padStart(63, "0")}`,
+    );
+
+  const cases = [
+    { events: [], bodies: [], import_selections: [] },
+    {
+      events: makeEvents(1),
+      bodies: [],
+      import_selections: [],
+    },
+    {
+      events: [],
+      bodies: makeHashes(1, "a"),
+      import_selections: makeHashes(1, "b"),
+    },
+    {
+      events: makeEvents(1000),
+      bodies: makeHashes(1000, "c"),
+      import_selections: [],
+    },
+    {
+      events: makeEvents(2005),
+      bodies: makeHashes(1001, "d"),
+      import_selections: makeHashes(3, "e"),
+    },
+  ];
+
+  for (const sample of cases) {
+    for (const pageSize of [1, 3, 256, 1000]) {
+      assert.equal(
+        hashInventoryIds(sample.events, pageSize),
+        oldHash(sample.events),
+      );
+      assert.equal(
+        hashInventoryIds(sample.bodies, pageSize),
+        oldHash(sample.bodies),
+      );
+      assert.equal(
+        hashInventoryIds(sample.import_selections, pageSize),
+        oldHash(sample.import_selections),
+      );
+      assert.equal(hashLogicalInventory(sample, pageSize), oldHash(sample));
+    }
+  }
 });

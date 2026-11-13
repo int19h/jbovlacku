@@ -330,6 +330,7 @@ test("a body that became available is fetched for a cached record, and malformed
       const record = await store.get("records", id);
       if (
         record.body &&
+        record.bodyStatus === "present" &&
         JSON.parse(record.envelope).header.action.kind === "definition.publish"
       ) {
         await store.delete("records", id);

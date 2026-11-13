@@ -68,6 +68,8 @@ export const canonicalize = (bytes: Uint8Array): string =>
 export const contentHash = (bytes: Uint8Array): string =>
   wasm.content_hash(bytes);
 export const createContentDigest = () => new wasm.ContentDigest();
+export const maxIncrementalRecords = (): number =>
+  wasm.max_incremental_records();
 export const PROJECTION_ROW_VERSION = 1;
 export const projectionBuildIdentity = (): string => buildMetadata.wasm_sha256;
 export const createProjectionDigest = () => new wasm.ProjectionDigest();

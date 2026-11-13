@@ -7,6 +7,7 @@ import {
   canonicalize,
   contentHash,
   createProjectionDigest,
+  maxIncrementalRecords,
   projectionBuildIdentity,
   utf8,
   type EvaluationRequest,
@@ -703,6 +704,8 @@ export class PersonalCalculator {
       !this.projectionDigest ||
       sent.snapshot === inventory.snapshot ||
       sent.view !== inventory.view ||
+      inventory.events.length <= sent.count ||
+      inventory.events.length - sent.count > maxIncrementalRecords() ||
       sent.selections !== canonicalize(utf8(JSON.stringify(selections)))
     )
       return null;
@@ -729,7 +732,8 @@ export class PersonalCalculator {
     )
       return null;
     const added = selectAddedEventIds(inventory.events, previous.events);
-    if (!added || added.length === 0) return null;
+    if (!added || added.length === 0 || added.length > maxIncrementalRecords())
+      return null;
     const newBodies = retained.filter(
       (hash) => !hasSortedValue(previous.bodies, hash),
     );

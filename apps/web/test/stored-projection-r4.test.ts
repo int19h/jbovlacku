@@ -116,6 +116,7 @@ test("an interrupted sync preserves a concurrently downloaded body", async ({
         const record = await store.get<any>("records", id);
         if (
           record.body &&
+          record.bodyStatus === "present" &&
           JSON.parse(record.envelope).header.action.kind ===
             "definition.publish"
         ) {

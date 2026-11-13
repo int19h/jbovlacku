@@ -305,7 +305,10 @@ export function isStrictlyIncreasing(values: readonly string[]): boolean {
       typeof value === "string" && (index === 0 || values[index - 1] < value),
   );
 }
-function hasSortedId(values: readonly string[], target: string): boolean {
+export function findSortedId(
+  values: readonly string[],
+  target: string,
+): number {
   let low = 0;
   let high = values.length;
   while (low < high) {
@@ -313,7 +316,13 @@ function hasSortedId(values: readonly string[], target: string): boolean {
     if (values[middle] < target) low = middle + 1;
     else high = middle;
   }
-  return values[low] === target;
+  return values[low] === target ? low : -1;
+}
+export function hasSortedId(
+  values: readonly string[],
+  target: string,
+): boolean {
+  return findSortedId(values, target) >= 0;
 }
 function idbRequest<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {

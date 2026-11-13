@@ -472,3 +472,88 @@ test("a first inventory commit reads projection rows in batches", async ({
   expect(result.projectionBatchReads).toBe(2);
   expect(result.count).toBe(300);
 });
+
+test("sync rejects an inventory page above the per-message bound and a late body above 256 KiB", async ({
+  page,
+}) => {
+  let rejectInventory = true;
+  await page.route("**/api/v1/inventory?*", async (route) => {
+    const response = await route.fetch();
+    if (!rejectInventory) {
+      await route.fulfill({ response });
+      return;
+    }
+    const value = await response.json();
+    value.ids = Array.from(
+      { length: 1001 },
+      (_, index) => `jve1:${index.toString(16).padStart(64, "0")}`,
+    );
+    value.next = null;
+    await route.fulfill({ response, json: value });
+  });
+  await page.route("**/api/v1/bodies/*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: "x".repeat(262145),
+    });
+  });
+  await page.goto("/");
+  const inventoryFailure = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { syncRecords } = await import(String("/src/data/records.ts"));
+    const store = new LocalStore(
+      `bounded-inventory-${crypto.randomUUID()}`,
+    ) as BrowserStore;
+    try {
+      await syncRecords(store);
+      return null;
+    } catch (error) {
+      const failure = error as { kind?: string; message?: string };
+      return { kind: failure.kind, message: failure.message };
+    } finally {
+      (await store.database).close();
+    }
+  }, corePath);
+  expect(inventoryFailure?.kind).toBe("invalid");
+  expect(inventoryFailure?.message).toContain(
+    "inventory page outside the per-page bound",
+  );
+
+  rejectInventory = false;
+  const bodyFailure = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { syncRecords } = await import(String("/src/data/records.ts"));
+    const store = new LocalStore(
+      `bounded-late-body-${crypto.randomUUID()}`,
+    ) as BrowserStore;
+    try {
+      const inventory = await syncRecords(store);
+      for (const id of inventory.events) {
+        const record = await store.get<any>("records", id);
+        if (record?.body && record.bodyStatus === "present") {
+          await store.put("records", id, {
+            ...record,
+            body: null,
+            bodyStatus: "missing",
+          });
+          break;
+        }
+      }
+      await syncRecords(store);
+      return null;
+    } catch (error) {
+      const failure = error as { message?: string };
+      return { message: failure.message };
+    } finally {
+      (await store.database).close();
+    }
+  }, corePath);
+  expect(bodyFailure?.message).toBe(
+    "The response exceeds the browser byte limit.",
+  );
+});

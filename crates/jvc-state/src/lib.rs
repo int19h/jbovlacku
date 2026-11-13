@@ -13,7 +13,8 @@ pub use api::{
 };
 pub use arena::{ArrayValues, CompactValue, ValueView};
 pub use incremental::{
-    CHECKPOINT_VERSION, EvaluatedState, JudgmentChanges, RankingContextBound, UpdateStatistics,
+    CHECKPOINT_VERSION, EvaluatedState, JudgmentChanges, MAX_INCREMENTAL_RECORDS,
+    RankingContextBound, UpdateStatistics,
 };
 pub use projection::{PROJECTION_ROW_VERSION, ProjectionRow};
 
