@@ -10,7 +10,7 @@ import {
   contentHash,
   createContentDigest,
   createRecordProjector,
-  prepareSelection,
+  prepareSelectionCanonical,
   projectRecord,
   utf8,
 } from "../../../../packages/core/src/browser.ts";
@@ -334,19 +334,45 @@ async function syncProjectedRecords(
   const unretainedBodies = new Set<string>();
   const eventsDigest = createContentDigest();
   let digestCursor = 0;
-  const pendingEnvelopes = new Map<number, string>();
-  const recordEnvelope = (index: number, envelope: string) => {
-    if (index < digestCursor) return;
-    if (index === digestCursor) {
-      eventsDigest.update(utf8(envelope + "\n"));
-      digestCursor++;
-      while (pendingEnvelopes.has(digestCursor)) {
-        eventsDigest.update(utf8(pendingEnvelopes.get(digestCursor)! + "\n"));
-        pendingEnvelopes.delete(digestCursor);
+  const advanceDigest = async (
+    writes: readonly { record: StoredRecord; index: number }[],
+  ) => {
+    let writePos = 0;
+    while (
+      digestCursor < events.length &&
+      state[digestCursor] !== STATE_MISSING
+    ) {
+      while (writePos < writes.length && writes[writePos].index < digestCursor)
+        writePos++;
+      if (writePos < writes.length && writes[writePos].index === digestCursor) {
+        eventsDigest.update(utf8(writes[writePos].record.envelope + "\n"));
         digestCursor++;
+        writePos++;
+        continue;
       }
-    } else {
-      pendingEnvelopes.set(index, envelope);
+      const limit =
+        writePos < writes.length ? writes[writePos].index : events.length;
+      let end = digestCursor + 1;
+      while (
+        end < limit &&
+        end - digestCursor < READ_BATCH &&
+        state[end] !== STATE_MISSING
+      )
+        end++;
+      check();
+      const cached = await readRecords(store, events.slice(digestCursor, end));
+      for (let offset = 0; offset < end - digestCursor; offset++) {
+        const record = cached[offset];
+        const id = events[digestCursor + offset];
+        if (!record || record.id !== id)
+          throw new RecordsError(
+            `Record ${id} is not cached. Download the records again.`,
+            "missing",
+          );
+        eventsDigest.update(utf8(record.envelope + "\n"));
+      }
+      cached.length = 0;
+      digestCursor = end;
     }
   };
   let bytes = 0;
@@ -374,9 +400,13 @@ async function syncProjectedRecords(
         state[index] = STATE_READY;
       }
       missingCount--;
-      recordEnvelope(index, record.envelope);
+      if (index === digestCursor) {
+        eventsDigest.update(utf8(record.envelope + "\n"));
+        digestCursor++;
+      }
       bytes += byteLength(record.envelope) + byteLength(record.body ?? "");
     }
+    records.length = 0;
   }
   let cursor = 0;
   let loaded = events.length - missingCount;
@@ -475,10 +505,11 @@ async function syncProjectedRecords(
         record.bodyStatus === "missing" && retainedBody
           ? STATE_MISSING_RETAINED_BODY
           : STATE_READY;
-      recordEnvelope(itemIndex, record.envelope);
       missingCount--;
       loaded++;
     }
+    await advanceDigest(writes);
+    writes.length = 0;
     progress({ phase: "records", loaded, total: events.length, bytes });
     if (page.next === null) break;
     if (typeof page.next !== "string" || page.next !== previous)
@@ -552,7 +583,7 @@ async function syncProjectedRecords(
       16 * 1024 * 1024,
       options,
     );
-    const prepared = prepareSelection(raw);
+    const prepared = prepareSelectionCanonical(raw);
     if (prepared.hash !== hash)
       throw new RecordsError(
         "An import selection did not match its hash.",

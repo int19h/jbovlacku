@@ -14,6 +14,7 @@ export {
   prepareAdmission,
   verifyEnvelope,
   prepareSelection,
+  prepareSelectionCanonical,
   evaluate,
   signHeader,
   identityFromSeed,

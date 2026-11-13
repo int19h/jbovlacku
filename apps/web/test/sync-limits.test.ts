@@ -132,11 +132,23 @@ test("an interrupted sync resumes from committed record pages", async ({
       const firstStored = await store.keys("records");
       const firstLatest = await store.get("inventory", "latest");
       const inventory = await syncRecords(store);
+      await store.delete("records", events[0]);
+      const postDeleteReads: number[] = [];
+      store.readRecords = async (ids: string[]) => {
+        maxRead = Math.max(maxRead, ids.length);
+        postDeleteReads.push(ids.length);
+        return read(ids);
+      };
+      const firstMissingInventory = await syncRecords(store);
       return {
         firstError,
         firstStored: firstStored.length,
         firstLatest,
         secondEvents: inventory.events.length,
+        resumedDigest: inventory.events_digest,
+        firstMissingDigest: firstMissingInventory.events_digest,
+        declaredEventsHash: declared.events.hash,
+        postDeleteReads,
         recordRequests,
         maxRead,
         maxWrite,
@@ -150,9 +162,13 @@ test("an interrupted sync resumes from committed record pages", async ({
   expect(result.firstStored).toBe(200);
   expect(result.firstLatest).toBeUndefined();
   expect(result.secondEvents).toBe(201);
-  expect(result.recordRequests).toHaveLength(2);
+  expect(result.resumedDigest).toBe(result.declaredEventsHash);
+  expect(result.firstMissingDigest).toBe(result.declaredEventsHash);
+  expect(result.postDeleteReads).toEqual([201, 200]);
+  expect(result.recordRequests).toHaveLength(3);
   expect(result.recordRequests[0]).toBeNull();
   expect(typeof result.recordRequests[1]).toBe("string");
+  expect(result.recordRequests[2]).toBeNull();
   expect(result.maxRead).toBeLessThanOrEqual(256);
   expect(result.maxWrite).toBeLessThanOrEqual(200);
 });

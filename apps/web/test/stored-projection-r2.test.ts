@@ -50,7 +50,6 @@ test("row loads follow body retention when it drops and returns", async ({
           }>("records", id);
           events.push(record!.envelope);
           if (
-            record!.bodyStatus === "present" &&
             record!.body &&
             record!.bodyHash &&
             current.bodies.includes(record!.bodyHash)
@@ -292,9 +291,9 @@ test("sync over rows from another build rebuilds instead of relabeling them", as
           }>("records", id);
           events.push(record!.envelope);
           if (
-            record!.bodyStatus === "present" &&
             record!.body &&
-            record!.bodyHash
+            record!.bodyHash &&
+            inventory.bodies.includes(record!.bodyHash)
           )
             bodies[id] = record!.body!;
         }

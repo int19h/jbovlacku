@@ -117,6 +117,22 @@ export const prepareSelection = (
   canonical: string;
   ids: string[];
 } => JSON.parse(wasm.prepare_selection(bytes));
+export const prepareSelectionCanonical = (
+  bytes: Uint8Array,
+): {
+  hash: string;
+  canonical: string;
+} => {
+  const prepared = wasm.prepare_selection_canonical(bytes);
+  try {
+    return {
+      hash: prepared.hash(),
+      canonical: prepared.canonical() ?? new TextDecoder().decode(bytes),
+    };
+  } finally {
+    prepared.free();
+  }
+};
 export const evaluate = (input: {
   events: string[];
   bodies: Record<string, string>;
