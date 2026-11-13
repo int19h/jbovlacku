@@ -370,6 +370,11 @@ async function syncProjectedRecords(
       bytes += byteLength(record.envelope) + byteLength(record.body ?? "");
       writes.push(projected);
     }
+    if (page.next === null && missing.size > writes.length)
+      throw new RecordsError(
+        `${missing.size - writes.length} inventory records are missing from the records transport.`,
+        "missing",
+      );
     if (!writes.length)
       throw new RecordsError(
         "The records page supplied no missing record. The traversal did not advance.",
@@ -385,14 +390,7 @@ async function syncProjectedRecords(
       loaded++;
     }
     progress({ phase: "records", loaded, total: events.length, bytes });
-    if (page.next === null) {
-      if (missing.size)
-        throw new RecordsError(
-          `${missing.size} inventory records are missing from the records transport.`,
-          "missing",
-        );
-      break;
-    }
+    if (page.next === null) break;
     if (typeof page.next !== "string" || page.next !== previous)
       throw new RecordsError(
         "The records cursor does not name the last returned record.",

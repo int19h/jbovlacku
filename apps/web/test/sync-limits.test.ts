@@ -328,6 +328,46 @@ test("sync rejects a records page above the per-message bound", async ({
   expect(result?.message).toContain("per-page bound");
 });
 
+test("a terminal records page reports missing inventory before a no-write traversal error", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/records?*", async (route) => {
+    const response = await route.fetch();
+    const value = await response.json();
+    value.items = value.items.slice(1);
+    await route.fulfill({ response, json: value });
+  });
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { syncRecords } = await import(String("/src/data/records.ts"));
+    const store = new LocalStore(`missing-records-${crypto.randomUUID()}`);
+    const errors: { kind?: string; message?: string }[] = [];
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await syncRecords(store);
+        } catch (error) {
+          const failure = error as { kind?: string; message?: string };
+          errors.push({ kind: failure.kind, message: failure.message });
+        }
+      }
+      return errors;
+    } finally {
+      (await store.database).close();
+    }
+  }, corePath);
+  expect(result).toHaveLength(2);
+  for (const error of result) {
+    expect(error.kind).toBe("missing");
+    expect(error.message).toContain(
+      "inventory records are missing from the records transport",
+    );
+  }
+});
+
 test("sync reports physical storage and memory failures", async ({ page }) => {
   await page.goto("/");
   const result = await page.evaluate(async (corePath) => {
