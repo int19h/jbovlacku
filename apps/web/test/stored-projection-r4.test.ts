@@ -506,7 +506,9 @@ test("commitInventory aborts when another tab pruned a record in the inventory a
       `projection:${result.s3Snapshot}`,
     ].sort(),
   );
-  expect(result.selectionKeysAfterS3).toEqual([result.sel2, result.sel3].sort());
+  expect(result.selectionKeysAfterS3).toEqual(
+    [result.sel2, result.sel3].sort(),
+  );
   expect(result.removedBeforeCommit).toBe(true);
   expect(result.commitError).toMatch(/no longer cached/);
   expect(result.latestSnapshotAfterAbort).toBe(result.s3Snapshot);
@@ -803,5 +805,376 @@ test("concurrent tab commits abort on pruned selections across all three orders 
   );
   expect(result.order3SameSnapshotError).toMatch(
     /import selection in the inventory is no longer cached/,
+  );
+});
+
+test("same-snapshot commit retains the stored previous snapshot and keeps storage bounded across mixed commits", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { projectionRowBytes } = await import(
+      String("/src/data/projection-meta.ts")
+    );
+    const { EvaluationWorker } = await import(
+      String("/src/workers/evaluate.ts")
+    );
+    await core.initializeCore();
+
+    const makeEvent = (seedByte: number, nonceChar: string) => {
+      const event = core.createEvent(
+        new Uint8Array(32).fill(seedByte),
+        [],
+        nonceChar.repeat(32),
+        { kind: "identity.merge" },
+        null,
+      );
+      const projected = core.projectRecord(
+        core.utf8(JSON.stringify(event.envelope)),
+      );
+      return {
+        id: event.envelope.id,
+        stored: {
+          id: event.envelope.id,
+          envelope: projected.envelope,
+          body: null,
+          bodyHash: null,
+          bodyStatus: "none" as const,
+        },
+        row: projected.row,
+      };
+    };
+
+    const eventsDigestFor = async (store: BrowserStore, ids: string[]) => {
+      const envelopes = await Promise.all(
+        ids.map(async (id) => {
+          const rec = await store.get<{ envelope: string }>("records", id);
+          return rec!.envelope + "\n";
+        }),
+      );
+      return core.contentHash(core.utf8(envelopes.join("")));
+    };
+
+    const actualRowsDigestAndCount = async (
+      store: BrowserStore,
+      ids: string[],
+    ) => {
+      const digest = core.createProjectionDigest();
+      let count = 0;
+      try {
+        for (const id of ids) {
+          const row = await store.get<Uint8Array>("projections", id);
+          if (row !== undefined) {
+            count++;
+            digest.update(id, projectionRowBytes(row));
+          }
+        }
+        return { count, rowsHash: digest.finish() };
+      } catch (error) {
+        digest.free();
+        throw error;
+      }
+    };
+
+    const pool = [
+      makeEvent(11, "1"),
+      makeEvent(22, "2"),
+      makeEvent(33, "3"),
+      makeEvent(44, "4"),
+      makeEvent(55, "5"),
+      makeEvent(66, "6"),
+    ].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const [ev1, ev2, ev3, ev4, ev5] = pool;
+
+    // Part 1: commit S1 with events 1 and 2, commit S2 with event 1, commit S2 again;
+    // then S1 is still loadable and its meta count and hash match its rows.
+    const dbName1 = `same-snapshot-retain-${crypto.randomUUID()}`;
+    const store1 = new LocalStore(dbName1) as BrowserStore;
+    const worker1 = new EvaluationWorker();
+    let s1RecordKeysAfterS2Recommit: string[] = [];
+    let s1ProjectionKeysAfterS2Recommit: string[] = [];
+    let s1MetaCount = -1;
+    let s1ActualRowCount = -1;
+    let s1MetaRowsHash: string | null = null;
+    let s1ActualRowsHash = "";
+    let s1LoadedEvents = -1;
+    let s1Rebuilt = true;
+    try {
+      await store1.put(
+        "meta",
+        "projection:producer",
+        core.projectionBuildIdentity(),
+      );
+      await store1.putProjectedRecord(ev1.stored, ev1.row);
+      await store1.putProjectedRecord(ev2.stored, ev2.row);
+      const sel1 = "sha256:" + "1".repeat(64);
+      const sel2 = "sha256:" + "2".repeat(64);
+      await store1.put("selections", sel1, "[]");
+
+      const s1Events = [ev1.id, ev2.id];
+      const s1: SnapshotInventory = {
+        snapshot: "sha256:" + "a".repeat(64),
+        logical_inventory: "sha256:" + "a".repeat(64),
+        events_digest: await eventsDigestFor(store1, s1Events),
+        view: ev1.id,
+        events: s1Events,
+        bodies: [],
+        unretained_bodies: [],
+        selections: [sel1],
+      };
+      await store1.commitInventory(s1);
+
+      await store1.put("selections", sel2, "[]");
+      const s2Events = [ev1.id];
+      const s2: SnapshotInventory = {
+        snapshot: "sha256:" + "b".repeat(64),
+        logical_inventory: "sha256:" + "b".repeat(64),
+        events_digest: await eventsDigestFor(store1, s2Events),
+        view: ev1.id,
+        events: s2Events,
+        bodies: [],
+        unretained_bodies: [],
+        selections: [sel2],
+      };
+      await store1.commitInventory(s2);
+      await store1.commitInventory(s2);
+
+      s1RecordKeysAfterS2Recommit = (await store1.keys("records")).map(String);
+      s1ProjectionKeysAfterS2Recommit = (await store1.keys("projections")).map(
+        String,
+      );
+      const metaS1 = await store1.get<{
+        count: number;
+        rows_hash: string | null;
+      }>("meta", `projection:${s1.snapshot}`);
+      const actualS1 = await actualRowsDigestAndCount(store1, s1.events);
+      s1MetaCount = metaS1?.count ?? -1;
+      s1ActualRowCount = actualS1.count;
+      s1MetaRowsHash = metaS1?.rows_hash ?? null;
+      s1ActualRowsHash = actualS1.rowsHash;
+
+      try {
+        const loaded = await worker1.load({
+          id: 1,
+          type: "load",
+          session: "s1-session",
+          source: {
+            database: dbName1,
+            snapshot: s1.snapshot,
+            events_digest: s1.events_digest,
+            count: s1.events.length,
+          },
+          options: { selected_view: ev1.id },
+        });
+        s1LoadedEvents = loaded.events;
+        s1Rebuilt = Boolean(loaded.projection_rebuilt);
+      } catch {}
+    } finally {
+      worker1.currentSession?.free();
+      (await store1.database).close();
+    }
+
+    // Part 2: bounded-storage check over a mixed sequence of 8 commits (mixing new and repeated snapshot IDs).
+    const dbName2 = `bounded-mixed-commits-${crypto.randomUUID()}`;
+    const store2 = new LocalStore(dbName2) as BrowserStore;
+    const worker2 = new EvaluationWorker();
+    const stepChecks: {
+      step: number;
+      recordsMatch: boolean;
+      projectionsMatch: boolean;
+      selectionsMatch: boolean;
+      inventoriesMatch: boolean;
+      metaMatch: boolean;
+      currentAndPrevLoadableWithoutRebuild: boolean;
+    }[] = [];
+    try {
+      await store2.put(
+        "meta",
+        "projection:producer",
+        core.projectionBuildIdentity(),
+      );
+      const specs = [
+        { tag: "a", events: [ev1, ev2], sel: "sha256:" + "a".repeat(64) },
+        { tag: "a", events: [ev1, ev2], sel: "sha256:" + "a".repeat(64) },
+        { tag: "b", events: [ev1, ev3], sel: "sha256:" + "b".repeat(64) },
+        { tag: "b", events: [ev1, ev3], sel: "sha256:" + "b".repeat(64) },
+        { tag: "c", events: [ev1, ev4], sel: "sha256:" + "c".repeat(64) },
+        { tag: "b", events: [ev1, ev3], sel: "sha256:" + "b".repeat(64) },
+        { tag: "b", events: [ev1, ev3], sel: "sha256:" + "b".repeat(64) },
+        { tag: "d", events: [ev1, ev5], sel: "sha256:" + "d".repeat(64) },
+      ];
+      let currentSpec: (typeof specs)[number] | null = null;
+      let previousSpec: (typeof specs)[number] | null = null;
+
+      for (let i = 0; i < specs.length; i++) {
+        const spec = specs[i];
+        for (const ev of spec.events) {
+          await store2.putProjectedRecord(ev.stored, ev.row);
+        }
+        await store2.put("selections", spec.sel, "[]");
+        const eventIds = spec.events.map((e) => e.id).sort();
+        const inv: SnapshotInventory = {
+          snapshot: "sha256:" + spec.tag.repeat(64),
+          logical_inventory: "sha256:" + spec.tag.repeat(64),
+          events_digest: await eventsDigestFor(store2, eventIds),
+          view: ev1.id,
+          events: eventIds,
+          bodies: [],
+          unretained_bodies: [],
+          selections: [spec.sel],
+        };
+        await store2.commitInventory(inv);
+        if (currentSpec && currentSpec.tag !== spec.tag) {
+          previousSpec = currentSpec;
+        }
+        currentSpec = spec;
+
+        const expectedEvents = Array.from(
+          new Set([
+            ...currentSpec.events.map((e) => e.id),
+            ...(previousSpec ? previousSpec.events.map((e) => e.id) : []),
+          ]),
+        ).sort();
+        const expectedSelections = Array.from(
+          new Set([
+            currentSpec.sel,
+            ...(previousSpec ? [previousSpec.sel] : []),
+          ]),
+        ).sort();
+        const currentSnap = "sha256:" + currentSpec.tag.repeat(64);
+        const prevSnap = previousSpec
+          ? "sha256:" + previousSpec.tag.repeat(64)
+          : null;
+        const expectedInventories = Array.from(
+          new Set(["latest", currentSnap, ...(prevSnap ? [prevSnap] : [])]),
+        ).sort();
+        const expectedMeta = Array.from(
+          new Set([
+            "projection:latest",
+            "projection:producer",
+            `projection:${currentSnap}`,
+            ...(prevSnap ? [`projection:${prevSnap}`] : []),
+          ]),
+        ).sort();
+
+        const recordKeys = (await store2.keys("records")).map(String).sort();
+        const projectionKeys = (await store2.keys("projections"))
+          .map(String)
+          .sort();
+        const selectionKeys = (await store2.keys("selections"))
+          .map(String)
+          .sort();
+        const inventoryKeys = (await store2.keys("inventory"))
+          .map(String)
+          .sort();
+        const metaKeys = (await store2.keys("meta"))
+          .map(String)
+          .filter((k) => k.startsWith("projection:"))
+          .sort();
+
+        let loadableOk = true;
+        for (const snap of prevSnap ? [currentSnap, prevSnap] : [currentSnap]) {
+          const snapInv = await store2.get<SnapshotInventory>(
+            "inventory",
+            snap,
+          );
+          const snapMeta = await store2.get<{
+            count: number;
+            rows_hash: string | null;
+          }>("meta", `projection:${snap}`);
+          if (!snapInv || !snapMeta) {
+            loadableOk = false;
+            break;
+          }
+          const actual = await actualRowsDigestAndCount(store2, snapInv.events);
+          if (
+            snapMeta.count !== actual.count ||
+            snapMeta.rows_hash !== actual.rowsHash
+          ) {
+            loadableOk = false;
+            break;
+          }
+          try {
+            const loaded = await worker2.load({
+              id: i * 10 + 1,
+              type: "load",
+              session: `step-${i}-${snap}`,
+              source: {
+                database: dbName2,
+                snapshot: snapInv.snapshot,
+                events_digest: snapInv.events_digest,
+                count: snapInv.events.length,
+              },
+              options: { selected_view: ev1.id },
+            });
+            if (
+              loaded.events !== snapInv.events.length ||
+              Boolean(loaded.projection_rebuilt)
+            ) {
+              loadableOk = false;
+              break;
+            }
+          } catch {
+            loadableOk = false;
+            break;
+          }
+        }
+
+        stepChecks.push({
+          step: i + 1,
+          recordsMatch:
+            JSON.stringify(recordKeys) === JSON.stringify(expectedEvents),
+          projectionsMatch:
+            JSON.stringify(projectionKeys) === JSON.stringify(expectedEvents),
+          selectionsMatch:
+            JSON.stringify(selectionKeys) ===
+            JSON.stringify(expectedSelections),
+          inventoriesMatch:
+            JSON.stringify(inventoryKeys) ===
+            JSON.stringify(expectedInventories),
+          metaMatch: JSON.stringify(metaKeys) === JSON.stringify(expectedMeta),
+          currentAndPrevLoadableWithoutRebuild: loadableOk,
+        });
+      }
+    } finally {
+      worker2.currentSession?.free();
+      (await store2.database).close();
+    }
+
+    return {
+      expectedS1Events: [ev1.id, ev2.id],
+      s1RecordKeysAfterS2Recommit,
+      s1ProjectionKeysAfterS2Recommit,
+      s1MetaCount,
+      s1ActualRowCount,
+      s1MetaRowsHash,
+      s1ActualRowsHash,
+      s1LoadedEvents,
+      s1Rebuilt,
+      stepChecks,
+    };
+  }, corePath);
+
+  expect(result.s1RecordKeysAfterS2Recommit).toEqual(result.expectedS1Events);
+  expect(result.s1ProjectionKeysAfterS2Recommit).toEqual(
+    result.expectedS1Events,
+  );
+  expect(result.s1MetaCount).toBe(2);
+  expect(result.s1ActualRowCount).toBe(2);
+  expect(result.s1MetaRowsHash).toBe(result.s1ActualRowsHash);
+  expect(result.s1LoadedEvents).toBe(2);
+  expect(result.s1Rebuilt).toBe(false);
+  expect(result.stepChecks).toEqual(
+    Array.from({ length: 8 }, (_, idx) => ({
+      step: idx + 1,
+      recordsMatch: true,
+      projectionsMatch: true,
+      selectionsMatch: true,
+      inventoriesMatch: true,
+      metaMatch: true,
+      currentAndPrevLoadableWithoutRebuild: true,
+    })),
   );
 });

@@ -1234,60 +1234,75 @@ export class LocalStore {
         inventories.put(inventory, inventory.snapshot);
         inventories.put(inventory, "latest");
         const selectionStore = tx.objectStore("selections");
-        if (!previous || previous.snapshot !== inventory.snapshot) {
-          const retainedInventories = new Set<string>([
-            "latest",
-            inventory.snapshot,
-            ...(previous ? [previous.snapshot] : []),
-          ]);
-          const retainedMeta = new Set<string>([
-            PROJECTION_PRODUCER_KEY,
-            PROJECTION_LATEST_KEY,
-            projectionSnapshotKey(inventory.snapshot),
-            ...(previous ? [projectionSnapshotKey(previous.snapshot)] : []),
-          ]);
-          const retainedSelections = new Set<string>([
-            ...inventory.selections,
-            ...(previous?.selections ?? []),
-          ]);
-          const [inventoryKeys, metaKeys, selectionKeys] = await Promise.all([
-            idbRequest(inventories.getAllKeys()),
-            idbRequest(meta.getAllKeys()),
-            idbRequest(selectionStore.getAllKeys()),
-          ]);
-          for (const key of inventoryKeys)
-            if (!retainedInventories.has(String(key))) inventories.delete(key);
-          for (const key of metaKeys) {
-            const name = String(key);
-            if (name.startsWith("projection:") && !retainedMeta.has(name))
-              meta.delete(key);
-          }
-          const presentSelections = new Set<string>();
-          for (const key of selectionKeys) {
-            const hash = String(key);
-            if (retainedSelections.has(hash)) presentSelections.add(hash);
-            else selectionStore.delete(key);
-          }
-          for (const hash of inventory.selections) {
-            if (!presentSelections.has(hash))
-              throw new Error(
-                "An import selection in the inventory is no longer cached. Download the records again.",
-              );
-          }
-        } else if (inventory.selections.length > 0) {
-          const selectionKeys = await idbRequest(selectionStore.getAllKeys());
-          const presentSelections = new Set(selectionKeys.map(String));
-          for (const hash of inventory.selections) {
-            if (!presentSelections.has(hash))
-              throw new Error(
-                "An import selection in the inventory is no longer cached. Download the records again.",
-              );
+        const [inventoryKeys, metaKeys, selectionKeys] = await Promise.all([
+          idbRequest(inventories.getAllKeys()),
+          idbRequest(meta.getAllKeys()),
+          idbRequest(selectionStore.getAllKeys()),
+        ]);
+        let retainedPrevious: SnapshotInventory | undefined =
+          previous && previous.snapshot !== inventory.snapshot
+            ? previous
+            : undefined;
+        if (previous && previous.snapshot === inventory.snapshot) {
+          const otherSnapshotKey = inventoryKeys
+            .map(String)
+            .find((key) => key !== "latest" && key !== inventory.snapshot);
+          if (otherSnapshotKey !== undefined) {
+            const candidate = await idbRequest(
+              inventories.get(otherSnapshotKey) as IDBRequest<
+                SnapshotInventory | undefined
+              >,
+            );
+            if (
+              candidate &&
+              candidate.snapshot === otherSnapshotKey &&
+              Array.isArray(candidate.events) &&
+              isStrictlyIncreasing(candidate.events) &&
+              Array.isArray(candidate.selections)
+            ) {
+              retainedPrevious = candidate;
+            }
           }
         }
-        const previousEvents =
-          previous && previous.snapshot !== inventory.snapshot
-            ? previous.events
-            : null;
+        const retainedInventories = new Set<string>([
+          "latest",
+          inventory.snapshot,
+          ...(retainedPrevious ? [retainedPrevious.snapshot] : []),
+        ]);
+        const retainedMeta = new Set<string>([
+          PROJECTION_PRODUCER_KEY,
+          PROJECTION_LATEST_KEY,
+          projectionSnapshotKey(inventory.snapshot),
+          ...(retainedPrevious
+            ? [projectionSnapshotKey(retainedPrevious.snapshot)]
+            : []),
+        ]);
+        const retainedSelections = new Set<string>([
+          ...inventory.selections,
+          ...(retainedPrevious?.selections ?? []),
+        ]);
+        for (const key of inventoryKeys)
+          if (!retainedInventories.has(String(key))) inventories.delete(key);
+        for (const key of metaKeys) {
+          const name = String(key);
+          if (name.startsWith("projection:") && !retainedMeta.has(name))
+            meta.delete(key);
+        }
+        const presentSelections = new Set<string>();
+        for (const key of selectionKeys) {
+          const hash = String(key);
+          if (retainedSelections.has(hash)) presentSelections.add(hash);
+          else selectionStore.delete(key);
+        }
+        for (const hash of inventory.selections) {
+          if (!presentSelections.has(hash))
+            throw new Error(
+              "An import selection in the inventory is no longer cached. Download the records again.",
+            );
+        }
+        const previousEvents = retainedPrevious
+          ? retainedPrevious.events
+          : null;
         const prune = async (
           store: IDBObjectStore,
           verifyComplete: boolean,

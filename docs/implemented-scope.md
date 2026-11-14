@@ -609,7 +609,7 @@ Sync stores a versioned projection row with each record. Database version 6 clea
 No legacy normalization write remains. Sync reads the latest inventory once and supplies that value to every page write.
 A small snapshot-ID key lets a write detect and refresh an outdated inventory copy. A bodyless write never replaces a record or row that already has a body.
 The row holds the complete evaluation projection in the compact arena's generic form. A store-wide producer value records which core build wrote the rows.
-The value is `mixed` when two builds wrote them. Inventory commits carry that producer forward, abort if any inventory record or import selection was removed by another tab, and prune records, projection rows, per-snapshot inventories, projection metadata, and import selections beyond the current and previous committed snapshots.
+The value is `mixed` when two builds wrote them. Inventory commits carry that producer forward, abort if any inventory record or import selection was removed by another tab, and prune records, projection rows, per-snapshot inventories, projection metadata, and import selections beyond the current and previous committed snapshots, including when a commit repeats the current snapshot.
 
 The row digest covers every inventory row. For each row, the core hashes the record ID, the row length as an unsigned 64-bit little-endian integer, and the row bytes with SHA-256. The digest is the bytewise XOR of these hashes. Each addition or removal XORs the same per-row hash.
 
