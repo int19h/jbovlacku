@@ -6,6 +6,15 @@ export const projectionSnapshotKey = (snapshot: string) =>
   `projection:${snapshot}`;
 
 export type ProjectionBytes = Uint8Array | ArrayBuffer;
+export interface ProjectionAdvanceFrom {
+  snapshot: string;
+  logical_inventory: string;
+  events_digest: string;
+  count: number;
+  selections: string[];
+  added: string[];
+  new_bodies: string[];
+}
 export const projectionRowBytes = (value: ProjectionBytes): Uint8Array =>
   value instanceof Uint8Array ? value : new Uint8Array(value);
 

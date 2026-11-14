@@ -595,7 +595,9 @@ export async function queueHandover(
     let failure: Error | undefined;
     const stop = (message: string) => {
       failure = new LifecycleConflictError(message);
-      tx.abort();
+      try {
+        tx.abort();
+      } catch {}
     };
     // Compare the current state before writing. Another tab can have retired this key meanwhile.
     const discarded = discardedPredecessorReads(keys, [
@@ -668,8 +670,8 @@ export async function queueHandover(
     tx.oncomplete = () => resolve();
     tx.onabort = () =>
       reject(
-        failure ??
-          tx.error ??
+        tx.error ??
+          failure ??
           new Error("Local storage did not save the handover."),
       );
     tx.onerror = () => {};
@@ -747,7 +749,9 @@ export async function queueRecoveryAcceptance(
           failure = new LifecycleConflictError(
             "The recovery state changed or an acceptance is already saved. Nothing was saved or sent. Reload and search again.",
           );
-          tx.abort();
+          try {
+            tx.abort();
+          } catch {}
           return;
         }
         keys.put(accept.id, `recovery:${transfer.id}`);
@@ -774,8 +778,8 @@ export async function queueRecoveryAcceptance(
     tx.oncomplete = () => resolve();
     tx.onabort = () =>
       reject(
-        failure ??
-          tx.error ??
+        tx.error ??
+          failure ??
           new Error("Local storage did not save the recovery acceptance."),
       );
     tx.onerror = () => {};
@@ -798,6 +802,11 @@ export async function queueCompromise(
     const heads = tx.objectStore("heads");
     const keys = tx.objectStore("keys");
     let failure: Error | undefined;
+    const abort = () => {
+      try {
+        tx.abort();
+      } catch {}
+    };
     const headsRequest = heads.get(item.identity);
     const markRequest = keys.get(`compromised:${item.identity}`);
     const discarded = discardedPredecessorReads(keys, envelope.header.previous);
@@ -806,20 +815,20 @@ export async function queueCompromise(
       if (--remaining) return;
       if (discarded.some((request) => request.result)) {
         failure = new LifecycleConflictError(DISCARDED_PREDECESSOR);
-        return tx.abort();
+        return abort();
       }
       const current = (headsRequest.result as string[] | undefined) ?? [];
       if (markRequest.result) {
         failure = new LifecycleConflictError(
           "This key already has a compromise notice in this browser. Nothing was saved or sent.",
         );
-        return tx.abort();
+        return abort();
       }
       if (current.slice().sort().join(" ") !== expected) {
         failure = new LifecycleConflictError(
           "The key's known history changed during signing. Nothing was saved or sent. Review the frontier again.",
         );
-        return tx.abort();
+        return abort();
       }
       tx.objectStore("outbox").put(item, item.id);
       heads.put([item.id], item.identity);
@@ -831,8 +840,8 @@ export async function queueCompromise(
     tx.oncomplete = () => resolve();
     tx.onabort = () =>
       reject(
-        failure ??
-          tx.error ??
+        tx.error ??
+          failure ??
           new Error("Local storage did not save the notice."),
       );
     tx.onerror = () => {};

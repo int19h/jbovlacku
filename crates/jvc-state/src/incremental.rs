@@ -109,6 +109,10 @@ impl EvaluatedState {
         &self.evaluation
     }
 
+    pub fn import_selections(&self) -> &BTreeMap<String, Vec<String>> {
+        &self.prepared.options.import_selections
+    }
+
     #[doc(hidden)]
     pub fn allocation_stages(mut self, mut observe: impl FnMut(&str)) {
         observe("state_loaded");
