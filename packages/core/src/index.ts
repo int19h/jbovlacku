@@ -248,8 +248,10 @@ export function finishSigning(
 export type EvaluationRequest = Parameters<typeof evaluate>[0];
 export type EvaluationSessionOptions = Omit<
   EvaluationRequest,
-  "events" | "bodies"
->;
+  "events" | "bodies" | "import_selections"
+> & {
+  import_selections?: Record<string, string[]>;
+};
 /** Search fields copied from an authenticated record and its checked body. */
 export interface EvaluationPackageRecord {
   id: string;
@@ -486,6 +488,8 @@ export interface EvaluationBuilder {
     expectedId?: string,
   ): EvaluationPackageRecord | null;
   setRetainedBodies(hashes: string[]): void;
+  clearImportSelections(): void;
+  setImportSelection(hash: string, canonical: string): void;
   addProjectionRow(
     row: Uint8Array,
     expectedId?: string,
@@ -636,6 +640,14 @@ function wrapEvaluationBuilder(
           );
       }
       builder.set_retained_bodies(packed);
+    },
+    clearImportSelections() {
+      requireOpen();
+      builder.clear_import_selections();
+    },
+    setImportSelection(hash: string, canonical: string) {
+      requireOpen();
+      builder.set_import_selection(hash, canonical);
     },
     addProjectionRow(
       row: Uint8Array,

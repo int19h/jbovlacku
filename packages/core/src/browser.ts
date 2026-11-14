@@ -92,6 +92,8 @@ function wrapBrowserBuilder(builder: EvaluationBuilder) {
     addRecord: builder.addRecord,
     addRecordText: builder.addRecordText,
     setRetainedBodies: builder.setRetainedBodies,
+    clearImportSelections: builder.clearImportSelections,
+    setImportSelection: builder.setImportSelection,
     addProjectionRow: builder.addProjectionRow,
     finish: () => wrapBrowserSession(builder.finish()),
     free: builder.free,

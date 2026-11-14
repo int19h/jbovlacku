@@ -18,8 +18,10 @@ import {
   type EvaluationSessionOptions,
 } from "../../../../packages/core/src/browser.ts";
 import {
+  PROJECTION_LATEST_KEY,
   PROJECTION_PRODUCER_KEY,
   projectionSnapshotKey,
+  type ProjectionAdvanceFrom,
 } from "../data/projection-meta.ts";
 
 export interface LoadSource {
@@ -28,6 +30,9 @@ export interface LoadSource {
   events_digest: string;
   count: number;
 }
+export type AdvanceInput = Omit<EvaluationRequest, "import_selections"> & {
+  import_selections?: Record<string, string[]>;
+};
 export type WorkerRequest =
   | {
       type: "load";
@@ -48,7 +53,7 @@ export type WorkerRequest =
       id: number;
       base: string;
       session: string;
-      input: EvaluationRequest;
+      input: AdvanceInput;
       source?: LoadSource;
       rows?: { id: string; row: Uint8Array; bodyRetained: boolean }[];
     }
@@ -81,6 +86,8 @@ export type WorkerResponse =
       message: string;
       session_valid: boolean;
       fatal: boolean;
+      memory?: boolean;
+      quota?: boolean;
     };
 
 type LoadedResponse = Extract<WorkerResponse, { type: "loaded" }>;
@@ -95,11 +102,14 @@ interface SourceLoad {
 type SourceLoader = (
   source: LoadSource,
   builder: Builder,
+  loadSelections?: boolean,
 ) => Promise<SourceLoad>;
 
 interface StoredInventory {
+  snapshot?: string;
   events: string[];
   bodies: string[];
+  selections?: string[];
   events_digest: string;
 }
 interface StoredRecord {
@@ -114,6 +124,7 @@ interface ProjectionMeta {
   events_digest: string;
   rows_hash: string | null;
   count: number;
+  advance_from?: ProjectionAdvanceFrom;
 }
 class ProjectionRebuildNeeded extends Error {}
 function request<T>(read: IDBRequest<T>): Promise<T> {
@@ -125,6 +136,11 @@ function request<T>(read: IDBRequest<T>): Promise<T> {
 function missingRecord(id: string): Error {
   return new Error(`Record ${id} is not cached. Download the records again.`);
 }
+function missingSnapshot(snapshot: string): Error {
+  return new Error(
+    `Snapshot ${snapshot} is not cached. Download the records again.`,
+  );
+}
 const BATCH_SIZE = 256;
 function openDatabase(name: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -135,26 +151,65 @@ function openDatabase(name: string): Promise<IDBDatabase> {
       reject(new Error("Local storage is blocked by another open tab."));
   });
 }
-async function assertProjectionProducer(database: IDBDatabase) {
-  const producer = await request(
-    database
-      .transaction("meta", "readonly")
-      .objectStore("meta")
-      .get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
+async function assertProjectionProducer(
+  database: IDBDatabase,
+  source: LoadSource,
+) {
+  const hasInventory = database.objectStoreNames.contains("inventory");
+  const transaction = database.transaction(
+    hasInventory ? ["meta", "inventory"] : ["meta"],
+    "readonly",
   );
+  const [producer, latest] = await Promise.all([
+    request(
+      transaction
+        .objectStore("meta")
+        .get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
+    ),
+    hasInventory
+      ? request(
+          transaction.objectStore("inventory").get("latest") as IDBRequest<
+            StoredInventory | undefined
+          >,
+        )
+      : Promise.resolve(undefined),
+  ]);
+  if (
+    latest &&
+    typeof latest.snapshot === "string" &&
+    latest.snapshot !== source.snapshot
+  )
+    throw missingSnapshot(source.snapshot);
   if (producer !== projectionBuildIdentity())
     throw new Error("Projection rows come from another core build.");
 }
 async function readInventory(
   transaction: IDBTransaction,
   source: LoadSource,
-): Promise<StoredInventory> {
-  const stored = await request(
-    transaction.objectStore("inventory").get(source.snapshot) as IDBRequest<
-      StoredInventory | undefined
-    >,
+  requireLatest = false,
+): Promise<{ stored: StoredInventory; isLatest: boolean }> {
+  const inventoryStore = transaction.objectStore("inventory");
+  const latest = await request(
+    inventoryStore.get("latest") as IDBRequest<StoredInventory | undefined>,
   );
-  if (!stored) throw missingRecord(source.snapshot);
+  let stored: StoredInventory | undefined;
+  let isLatest = false;
+  if (latest !== undefined) {
+    if (
+      typeof latest.snapshot === "string" &&
+      latest.snapshot !== source.snapshot
+    )
+      throw missingSnapshot(source.snapshot);
+    stored = latest;
+    isLatest = true;
+  } else if (!requireLatest) {
+    stored = await request(
+      inventoryStore.get(source.snapshot) as IDBRequest<
+        StoredInventory | undefined
+      >,
+    );
+  }
+  if (!stored) throw missingSnapshot(source.snapshot);
   if (stored.events_digest !== source.events_digest)
     throw new Error(
       "The cached inventory digest does not match the requested snapshot.",
@@ -172,7 +227,7 @@ async function readInventory(
     )
   )
     throw new Error("The inventory is not in order.");
-  return stored;
+  return { stored, isLatest };
 }
 async function readBatch<T>(
   store: IDBObjectStore,
@@ -195,12 +250,16 @@ async function readProjectionRows(
   database: IDBDatabase,
   source: LoadSource,
   builder: Builder,
+  loadSelections = true,
 ): Promise<SourceLoad> {
+  const hasSelectionsStore = database.objectStoreNames.contains("selections");
   const transaction = database.transaction(
-    ["inventory", "projections", "meta"],
+    hasSelectionsStore
+      ? ["inventory", "projections", "selections", "meta"]
+      : ["inventory", "projections", "meta"],
     "readonly",
   );
-  const stored = await readInventory(transaction, source);
+  const { stored } = await readInventory(transaction, source);
   const metaStore = transaction.objectStore("meta");
   const [meta, producer] = await Promise.all([
     request(
@@ -223,50 +282,82 @@ async function readProjectionRows(
     typeof meta.rows_hash !== "string"
   )
     throw new ProjectionRebuildNeeded("Projection metadata is stale.");
+  if (loadSelections) {
+    builder.clearImportSelections();
+    for (const hash of stored.selections ?? []) {
+      const canonical = hasSelectionsStore
+        ? await request(
+            transaction.objectStore("selections").get(hash) as IDBRequest<
+              string | undefined
+            >,
+          )
+        : undefined;
+      if (typeof canonical !== "string" || !canonical)
+        throw new Error(
+          `Import selection ${hash} is not cached. Download the records again.`,
+        );
+      builder.setImportSelection(hash, canonical);
+    }
+  }
+  if (Array.isArray(stored.selections)) stored.selections.length = 0;
   builder.setRetainedBodies(stored.bodies);
+  stored.bodies.length = 0;
   const projectionStore = transaction.objectStore("projections");
   const digest = createProjectionDigest();
-  let bytesRead = 0;
-  let index = 0;
-  let after: string | undefined;
-  for (;;) {
-    const batch = await readBatch<unknown>(projectionStore, after);
-    if (batch.length === 0) break;
-    for (const { id, value } of batch) {
-      const bytes = rowBytes(value);
-      bytesRead += bytes.byteLength;
-      const expected = stored.events[index];
-      if (id !== expected) {
-        if (expected === undefined || id < expected) {
-          after = id;
-          continue;
+  let digestFinished = false;
+  try {
+    let bytesRead = 0;
+    let index = 0;
+    let after: string | undefined;
+    for (;;) {
+      const batch = await readBatch<unknown>(projectionStore, after);
+      if (batch.length === 0) break;
+      for (const { id, value } of batch) {
+        const bytes = rowBytes(value);
+        bytesRead += bytes.byteLength;
+        const expected = stored.events[index];
+        if (id !== expected) {
+          if (expected === undefined || id < expected) {
+            after = id;
+            continue;
+          }
+          throw new ProjectionRebuildNeeded("A projection row is missing.");
         }
-        throw new ProjectionRebuildNeeded("A projection row is missing.");
+        digest.update(id, bytes);
+        try {
+          builder.addProjectionRow(bytes, id);
+        } catch (error) {
+          throw new ProjectionRebuildNeeded(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        index++;
+        after = id;
       }
-      digest.update(id, bytes);
-      try {
-        builder.addProjectionRow(bytes, id);
-      } catch (error) {
-        throw new ProjectionRebuildNeeded(
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-      index++;
-      after = id;
+      if (index === stored.events.length || batch.length < BATCH_SIZE) break;
     }
-    if (index === stored.events.length || batch.length < BATCH_SIZE) break;
+    if (index !== stored.events.length)
+      throw new ProjectionRebuildNeeded("A projection row is missing.");
+    stored.events.length = 0;
+    digestFinished = true;
+    const actualHash = digest.finish();
+    if (actualHash !== meta.rows_hash)
+      throw new ProjectionRebuildNeeded(
+        "The projection digest does not match.",
+      );
+    return { count: index, bytesRead, digest: actualHash };
+  } finally {
+    if (!digestFinished) digest.free();
   }
-  if (index !== stored.events.length)
-    throw new ProjectionRebuildNeeded("A projection row is missing.");
-  const actualHash = digest.finish();
-  if (actualHash !== meta.rows_hash)
-    throw new ProjectionRebuildNeeded("The projection digest does not match.");
-  return { count: index, bytesRead, digest: actualHash };
 }
-function readStoredRecords(source: LoadSource, builder: Builder) {
+function readStoredRecords(
+  source: LoadSource,
+  builder: Builder,
+  loadSelections = true,
+) {
   return openDatabase(source.database).then(async (database) => {
     try {
-      return await readProjectionRows(database, source, builder);
+      return await readProjectionRows(database, source, builder, loadSelections);
     } finally {
       database.close();
     }
@@ -288,61 +379,101 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
     void completion.catch(() => {});
     let bytesRead = 0;
     try {
-      const stored = await readInventory(transaction, source);
+      const meta = transaction.objectStore("meta");
+      const [latestMeta, existingMeta, metaKeys] = await Promise.all([
+        request(
+          meta.get(PROJECTION_LATEST_KEY) as IDBRequest<string | undefined>,
+        ),
+        request(
+          meta.get(projectionSnapshotKey(source.snapshot)) as IDBRequest<
+            ProjectionMeta | undefined
+          >,
+        ),
+        request(meta.getAllKeys()),
+      ]);
+      if (latestMeta !== undefined && latestMeta !== source.snapshot)
+        throw missingSnapshot(source.snapshot);
+      const { stored, isLatest } = await readInventory(
+        transaction,
+        source,
+        latestMeta !== undefined,
+      );
       const recordStore = transaction.objectStore("records");
       const projectionStore = transaction.objectStore("projections");
       projectionStore.clear();
       const bodies = new Set(stored.bodies);
       const digest = createProjectionDigest();
-      let index = 0;
-      let after: string | undefined;
-      for (;;) {
-        const batch = await readBatch<StoredRecord>(recordStore, after);
-        if (batch.length === 0) break;
-        for (const { id, value: record } of batch) {
-          bytesRead += utf8(record?.envelope ?? "").byteLength;
-          bytesRead += utf8(record?.body ?? "").byteLength;
-          const expected = stored.events[index];
-          if (id !== expected) {
-            if (expected === undefined || id < expected) {
-              after = id;
-              continue;
+      let digestFinished = false;
+      try {
+        let index = 0;
+        let after: string | undefined;
+        for (;;) {
+          const batch = await readBatch<StoredRecord>(recordStore, after);
+          if (batch.length === 0) break;
+          for (const { id, value: record } of batch) {
+            bytesRead += utf8(record?.envelope ?? "").byteLength;
+            bytesRead += utf8(record?.body ?? "").byteLength;
+            const expected = stored.events[index];
+            if (id !== expected) {
+              if (expected === undefined || id < expected) {
+                after = id;
+                continue;
+              }
+              throw missingRecord(expected);
             }
-            throw missingRecord(expected);
-          }
-          if (!record || record.id !== id) throw missingRecord(id);
-          if (record.bodyHash && bodies.has(record.bodyHash) && !record.body)
-            throw new Error(
-              `The body of ${id} is retained by the snapshot but not cached. Download the records again.`,
+            if (!record || record.id !== id) throw missingRecord(id);
+            if (record.bodyHash && bodies.has(record.bodyHash) && !record.body)
+              throw new Error(
+                `The body of ${id} is retained by the snapshot but not cached. Download the records again.`,
+              );
+            const body = record.body ?? undefined;
+            const projected = projector.project(
+              utf8(record.envelope),
+              body === undefined ? undefined : utf8(body),
             );
-          const body = record.body ?? undefined;
-          const projected = projector.project(
-            utf8(record.envelope),
-            body === undefined ? undefined : utf8(body),
-          );
-          if ((JSON.parse(projected.envelope) as { id: string }).id !== id)
-            throw missingRecord(id);
-          digest.update(id, projected.row);
-          projectionStore.put(projected.row, id);
-          index++;
-          after = id;
+            if ((JSON.parse(projected.envelope) as { id: string }).id !== id)
+              throw missingRecord(id);
+            digest.update(id, projected.row);
+            projectionStore.put(projected.row, id);
+            index++;
+            after = id;
+          }
+          if (index === stored.events.length || batch.length < BATCH_SIZE)
+            break;
         }
-        if (index === stored.events.length || batch.length < BATCH_SIZE) break;
+        if (index !== stored.events.length)
+          throw missingRecord(stored.events[index]);
+        digestFinished = true;
+        const rowsHash = digest.finish();
+        const retainedMeta = new Set<string>([
+          PROJECTION_PRODUCER_KEY,
+          PROJECTION_LATEST_KEY,
+          projectionSnapshotKey(source.snapshot),
+        ]);
+        for (const key of metaKeys) {
+          const name = String(key);
+          if (name.startsWith("projection:") && !retainedMeta.has(name))
+            meta.delete(key);
+        }
+        meta.put(projectionBuildIdentity(), PROJECTION_PRODUCER_KEY);
+        if (isLatest || latestMeta !== undefined)
+          meta.put(source.snapshot, PROJECTION_LATEST_KEY);
+        meta.put(
+          {
+            version: PROJECTION_ROW_VERSION,
+            build: projectionBuildIdentity(),
+            events_digest: source.events_digest,
+            rows_hash: rowsHash,
+            count: index,
+            ...(existingMeta?.advance_from
+              ? { advance_from: existingMeta.advance_from }
+              : {}),
+          },
+          projectionSnapshotKey(source.snapshot),
+        );
+      } finally {
+        if (!digestFinished) digest.free();
       }
-      if (index !== stored.events.length)
-        throw missingRecord(stored.events[index]);
-      const meta = transaction.objectStore("meta");
-      meta.put(projectionBuildIdentity(), PROJECTION_PRODUCER_KEY);
-      meta.put(
-        {
-          version: PROJECTION_ROW_VERSION,
-          build: projectionBuildIdentity(),
-          events_digest: source.events_digest,
-          rows_hash: digest.finish(),
-          count: index,
-        },
-        projectionSnapshotKey(source.snapshot),
-      );
     } catch (error) {
       transaction.abort();
       throw error;
@@ -357,7 +488,7 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
 async function checkProjectionProducer(source: LoadSource): Promise<void> {
   const database = await openDatabase(source.database);
   try {
-    await assertProjectionProducer(database);
+    await assertProjectionProducer(database, source);
   } finally {
     database.close();
   }
@@ -413,20 +544,21 @@ export class EvaluationWorker {
     message: Extract<WorkerRequest, { type: "load" }>,
   ): Promise<LoadedResponse> {
     this.release();
+    const loadSelections = message.options.import_selections === undefined;
     let builder = this.createSession(message.options);
     let rebuilt = false;
     let rebuildBytes = 0;
     try {
       let loaded: SourceLoad;
       try {
-        loaded = await this.loadSource(message.source, builder);
+        loaded = await this.loadSource(message.source, builder, loadSelections);
       } catch (error) {
         if (!(error instanceof ProjectionRebuildNeeded)) throw error;
         builder.free();
         rebuilt = true;
         rebuildBytes = await rebuildStoredProjection(message.source);
         builder = this.createSession(message.options);
-        loaded = await this.loadSource(message.source, builder);
+        loaded = await this.loadSource(message.source, builder, loadSelections);
       }
       this.session = builder.finish();
       this.sessionKey = message.session;
@@ -497,12 +629,37 @@ export function workerErrorResponse(
   id: number,
   error: unknown,
 ): Extract<WorkerResponse, { type: "error" }> {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const errorName =
+    typeof error === "object" && error !== null && "name" in error
+      ? String(error.name)
+      : "";
+  const quotaError =
+    errorName === "QuotaExceededError" || /storage quota/i.test(rawMessage);
+  const memoryError =
+    error instanceof WebAssembly.RuntimeError ||
+    (error instanceof RangeError &&
+      /out of memory|allocation|buffer|invalid string length/i.test(
+        rawMessage,
+      )) ||
+    /out of memory|array buffer allocation failed|invalid array buffer length|invalid string length|WebAssembly\.RuntimeError/i.test(
+      rawMessage,
+    );
+  const message =
+    error instanceof WebAssembly.RuntimeError &&
+    !/WebAssembly\.RuntimeError|trap/i.test(rawMessage)
+      ? rawMessage
+        ? `WebAssembly.RuntimeError: ${rawMessage}`
+        : "WebAssembly.RuntimeError"
+      : rawMessage;
   return {
     type: "error",
     id,
-    message: error instanceof Error ? error.message : String(error),
+    message,
     session_valid: evaluation.currentSession !== null,
-    fatal: initializationFailed || error instanceof WebAssembly.RuntimeError,
+    fatal: initializationFailed || memoryError,
+    memory: memoryError,
+    quota: quotaError,
   };
 }
 

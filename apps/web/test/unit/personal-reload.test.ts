@@ -749,19 +749,23 @@ test("a mode change alone applies a new overlay without a full load", async () =
   h.calculator.cancel();
 });
 
-test("an import selection change alone uses a full load", async () => {
+test("an import selection change alone uses a full load without reading selections on the page", async () => {
   const h = harness();
   const selection = "sha256:" + "9".repeat(64);
   h.selections.set(selection, JSON.stringify([other]));
   await h.calculator.ensure();
+  appendRecord(h);
   h.setInventory({
-    ...inventory([view, other], snapshot("b")),
+    ...inventory([view, other, added], snapshot("b")),
     selections: [selection],
   });
   await h.calculator.ensure();
-  assert.deepEqual(lastLoad(h).options.import_selections, {
-    [selection]: [other],
-  });
+  assert.deepEqual(
+    h.worker.messages.map((message) => message.type),
+    ["load", "overlay", "load", "overlay"],
+  );
+  assert.equal(lastLoad(h).source.snapshot, snapshot("b"));
+  assert.equal(lastLoad(h).options.import_selections, undefined);
   h.calculator.cancel();
 });
 
@@ -1423,12 +1427,15 @@ test("syncRecords streams events_digest in bounded batches when the first record
     const selectionsMap = new Map<string, string>();
     const inventoryMap = new Map<string, any>();
     const readBatchSizes: number[] = [];
+    const writePageSizes: number[] = [];
     const postWriteReadBatchSizes: number[] = [];
     const liveRecords: WeakRef<object>[] = [];
     let writeOccurred = false;
     let seenMissingInInitialScan = false;
     let poisonAfterMissing = true;
-    let maxHeldEnvelopes = 0;
+    let maxReadBatch = 0;
+    let maxWritePage = 0;
+    let maxCombinedLive = 0;
 
     const countLive = () => {
       gc();
@@ -1437,12 +1444,15 @@ test("syncRecords streams events_digest in bounded batches when the first record
 
     const resetTracking = (enablePoisonAfterMissing = true) => {
       readBatchSizes.length = 0;
+      writePageSizes.length = 0;
       postWriteReadBatchSizes.length = 0;
       liveRecords.length = 0;
       writeOccurred = false;
       seenMissingInInitialScan = false;
       poisonAfterMissing = enablePoisonAfterMissing;
-      maxHeldEnvelopes = 0;
+      maxReadBatch = 0;
+      maxWritePage = 0;
+      maxCombinedLive = 0;
     };
 
     const store = {
@@ -1464,7 +1474,8 @@ test("syncRecords streams events_digest in bounded batches when the first record
       },
       async readRecords(ids: string[]) {
         await new Promise((resolve) => setImmediate(resolve));
-        maxHeldEnvelopes = Math.max(maxHeldEnvelopes, countLive(), ids.length);
+        maxReadBatch = Math.max(maxReadBatch, ids.length);
+        maxCombinedLive = Math.max(maxCombinedLive, countLive());
         readBatchSizes.push(ids.length);
         if (writeOccurred) postWriteReadBatchSizes.push(ids.length);
         const batch = ids.map((id) => {
@@ -1481,18 +1492,18 @@ test("syncRecords streams events_digest in bounded batches when the first record
           liveRecords.push(new WeakRef(clone));
           return clone;
         });
+        maxCombinedLive = Math.max(maxCombinedLive, countLive());
         return batch;
       },
       async putProjectedRecords(writes: { record: any; row: Uint8Array }[]) {
+        for (const { record } of writes) liveRecords.push(new WeakRef(record));
         await new Promise((resolve) => setImmediate(resolve));
         writeOccurred = true;
         for (const { record } of writes)
           recordsMap.set(record.id, { ...record });
-        maxHeldEnvelopes = Math.max(
-          maxHeldEnvelopes,
-          countLive(),
-          writes.length,
-        );
+        writePageSizes.push(writes.length);
+        maxWritePage = Math.max(maxWritePage, writes.length);
+        maxCombinedLive = Math.max(maxCombinedLive, countLive());
       },
       async commitInventory(inv: SnapshotInventory) {
         inventoryMap.set(inv.snapshot, inv);
@@ -1503,10 +1514,13 @@ test("syncRecords streams events_digest in bounded batches when the first record
     return {
       store,
       readBatchSizes,
+      writePageSizes,
       postWriteReadBatchSizes,
       countLive,
       resetTracking,
-      getMaxHeldEnvelopes: () => maxHeldEnvelopes,
+      getMaxReadBatch: () => maxReadBatch,
+      getMaxWritePage: () => maxWritePage,
+      getMaxCombinedLive: () => maxCombinedLive,
     };
   };
 
@@ -1530,8 +1544,16 @@ test("syncRecords streams events_digest in bounded batches when the first record
     );
     assert.deepEqual(firstMissing.postWriteReadBatchSizes, [256, 256, 87]);
     assert.ok(
-      firstMissing.getMaxHeldEnvelopes() <= 256,
-      `Expected held envelopes <= 256, got ${firstMissing.getMaxHeldEnvelopes()}`,
+      firstMissing.getMaxReadBatch() <= 256,
+      `Expected read batch <= 256, got ${firstMissing.getMaxReadBatch()}`,
+    );
+    assert.ok(
+      firstMissing.getMaxWritePage() <= 200,
+      `Expected write page <= 200, got ${firstMissing.getMaxWritePage()}`,
+    );
+    assert.ok(
+      firstMissing.getMaxCombinedLive() <= 200 + 256,
+      `Expected combined live envelopes <= 456, got ${firstMissing.getMaxCombinedLive()}`,
     );
 
     // 2. Resumed sync: interrupted after committing the first page (0..199) with a later cached range (400..599).
@@ -1568,10 +1590,515 @@ test("syncRecords streams events_digest in bounded batches when the first record
     );
     assert.deepEqual(resumed.postWriteReadBatchSizes, [200]);
     assert.ok(
-      resumed.getMaxHeldEnvelopes() <= 256,
-      `Expected held envelopes <= 256, got ${resumed.getMaxHeldEnvelopes()}`,
+      resumed.getMaxReadBatch() <= 256,
+      `Expected read batch <= 256, got ${resumed.getMaxReadBatch()}`,
+    );
+    assert.ok(
+      resumed.getMaxWritePage() <= 200,
+      `Expected write page <= 200, got ${resumed.getMaxWritePage()}`,
+    );
+    assert.ok(
+      resumed.getMaxCombinedLive() <= 200 + 256,
+      `Expected combined live envelopes <= 456, got ${resumed.getMaxCombinedLive()}`,
     );
   } finally {
     globalThis.fetch = savedFetch;
+  }
+});
+
+test("inventory traversal stops immediately when the returned count exceeds the manifest count", async () => {
+  const savedFetch = globalThis.fetch;
+  let inventoryRequests = 0;
+  let recordsRequests = 0;
+  const idA = "jve1:" + "1".repeat(64);
+  const idB = "jve1:" + "2".repeat(64);
+  const idC = "jve1:" + "3".repeat(64);
+  const snap = "sha256:" + "a".repeat(64);
+  try {
+    globalThis.fetch = (async (input: any) => {
+      const url = new URL(
+        typeof input === "string" ? input : input.url,
+        "http://peer.test",
+      );
+      if (url.pathname.endsWith("/manifest")) {
+        return new Response(
+          JSON.stringify({
+            snapshot: snap,
+            logical_inventory: snap,
+            manifest: {
+              events: { count: 1, hash: snap },
+              bodies: { count: 0, hash: snap },
+              import_selections: { count: 0, hash: snap },
+            },
+            view,
+            accepted_cursor: "x.1",
+            materialized_cursor: "x.1",
+            packages: [],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.pathname.endsWith("/inventory")) {
+        inventoryRequests++;
+        return new Response(
+          JSON.stringify({
+            snapshot: snap,
+            kind: "events",
+            ids: [idA, idB],
+            next: idB,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.pathname.endsWith("/records")) {
+        recordsRequests++;
+      }
+      return new Response(JSON.stringify({ view }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const store = {
+      get: async () => undefined,
+      put: async () => {},
+      keys: async () => [],
+    } as unknown as LocalStore;
+
+    await assert.rejects(
+      syncRecords(store),
+      /The inventory does not match the manifest digests/,
+    );
+    assert.equal(inventoryRequests, 1);
+    assert.equal(recordsRequests, 0);
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+test("Wasm RuntimeError during sync and memory failure during evaluation produce physical-failure messages", async () => {
+  const { isMemoryFailure, isStorageQuotaFailure } = await import(
+    "../../src/data/records.ts"
+  );
+  const { RequestError, TransportError } = await import("../../src/data/api.ts");
+  assert.equal(
+    isMemoryFailure(new WebAssembly.RuntimeError("unreachable")),
+    true,
+  );
+  assert.equal(
+    isMemoryFailure(new RangeError("Array buffer allocation failed")),
+    true,
+  );
+  assert.equal(isMemoryFailure(new RangeError("Invalid string length")), true);
+  assert.equal(
+    isMemoryFailure(new RangeError("Invalid time value")),
+    false,
+  );
+  assert.equal(
+    isMemoryFailure(
+      new RequestError(502, "upstream_unreachable", "Upstream unreachable."),
+    ),
+    false,
+  );
+  assert.equal(
+    isMemoryFailure(
+      new TransportError("Peer out of memory while serving response.", "offline"),
+    ),
+    false,
+  );
+  assert.equal(
+    isStorageQuotaFailure(
+      new RequestError(507, "quota", "Upstream storage quota exceeded."),
+    ),
+    false,
+  );
+  assert.equal(
+    isStorageQuotaFailure(
+      new TransportError("Peer storage quota exceeded.", "offline"),
+    ),
+    false,
+  );
+  assert.equal(
+    isStorageQuotaFailure(
+      Object.assign(new Error("Quota exceeded."), { quota: true }),
+    ),
+    true,
+  );
+
+  const h = harness();
+  const originalPostMessage = RecordingWorker.prototype.postMessage;
+  let failLoadWithMemory = true;
+  let failLoadWithStringLength = false;
+  RecordingWorker.prototype.postMessage = function (message: WorkerRequest) {
+    if (message.type === "load" && failLoadWithMemory) {
+      failLoadWithMemory = false;
+      queueMicrotask(() => {
+        this.onmessage?.({
+          data: {
+            type: "error",
+            id: message.id,
+            message: "WebAssembly.RuntimeError: unreachable",
+            session_valid: false,
+            fatal: true,
+            memory: true,
+          },
+        } as MessageEvent);
+      });
+      return;
+    }
+    if (message.type === "load" && failLoadWithStringLength) {
+      failLoadWithStringLength = false;
+      queueMicrotask(() => {
+        this.onmessage?.({
+          data: {
+            type: "error",
+            id: message.id,
+            message: "Invalid string length",
+            session_valid: false,
+            fatal: true,
+            memory: true,
+          },
+        } as MessageEvent);
+      });
+      return;
+    }
+    originalPostMessage.call(this, message);
+  };
+  try {
+    const failed = await h.calculator.ensure();
+    assert.equal(failed.state, "failed");
+    if (failed.state === "failed") {
+      assert.equal(failed.kind, "memory");
+      assert.match(failed.message, /ran out of memory while evaluating records/);
+    }
+
+    failLoadWithStringLength = true;
+    const stringLengthFailed = await h.calculator.ensure();
+    assert.equal(stringLengthFailed.state, "failed");
+    if (stringLengthFailed.state === "failed") {
+      assert.equal(stringLengthFailed.kind, "memory");
+      assert.match(
+        stringLengthFailed.message,
+        /ran out of memory while evaluating records/,
+      );
+    }
+  } finally {
+    RecordingWorker.prototype.postMessage = originalPostMessage;
+    h.calculator.cancel();
+  }
+});
+
+test("HTTP 502 with 'unreachable' in its message is classified as network, not memory", async () => {
+  const savedFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          error: "upstream_unreachable",
+          message: "Upstream server is unreachable.",
+        }),
+        { status: 502, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+    const h = harness();
+    const status = await h.calculator.ensure({
+      mode: "personal",
+      refresh: true,
+    });
+    assert.equal(status.state, "failed");
+    if (status.state === "failed") {
+      assert.notEqual(status.kind, "memory");
+      assert.match(status.message, /Upstream server is unreachable/);
+    }
+    h.calculator.cancel();
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+test("overlay setup or worker overlay failure after load keeps loadedKey, sent, and projectionDigest consistent", async () => {
+  const selA = "sha256:" + "1".repeat(64);
+  const selB = "sha256:" + "2".repeat(64);
+  const added2 = "jvr1:" + "z".repeat(64);
+
+  // Sub-case 1: overlayFor fails after fullLoad of S2 (with selB),
+  // then S3 (with selA) runs. S3 must not advance from S2 while thinking S2 had selA.
+  {
+    const h = harness();
+    h.selections.set(selA, JSON.stringify([other]));
+    h.selections.set(selB, JSON.stringify([added]));
+    h.records.set(added, {
+      id: added,
+      envelope: envelope(added),
+      body: null,
+      bodyStatus: "none",
+      bodyHash: null,
+    });
+    h.records.set(added2, {
+      id: added2,
+      envelope: envelope(added2),
+      body: null,
+      bodyStatus: "none",
+      bodyHash: null,
+    });
+
+    const inv1: SnapshotInventory = {
+      ...inventory([view, other], snapshot("1")),
+      selections: [selA],
+    };
+    const inv2: SnapshotInventory = {
+      ...inventory([view, other, added], snapshot("2")),
+      selections: [selB],
+    };
+    const inv3: SnapshotInventory = {
+      ...inventory([view, other, added, added2], snapshot("3")),
+      selections: [selA],
+    };
+
+    h.setInventory(inv1);
+    const r1 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r1.state, "ready");
+
+    h.setInventory(inv2);
+    currentProjectionDigest = advanceDigest([added]);
+    const origOverlayFor = (h.calculator as any).overlayFor.bind(h.calculator);
+    let overlayCalls = 0;
+    (h.calculator as any).overlayFor = async (...args: unknown[]) => {
+      overlayCalls++;
+      if (overlayCalls === 2) {
+        throw new Error("Transient IDB error reading outbox");
+      }
+      return origOverlayFor(...args);
+    };
+
+    const r2 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r2.state, "failed");
+    assert.equal((h.calculator as any).sent?.snapshot, inv2.snapshot);
+
+    h.setInventory(inv3);
+    currentProjectionDigest = advanceDigest([added2]);
+    const beforeMessages = h.worker.messages.length;
+    const r3 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r3.state, "ready");
+    const run3Types = h.worker.messages
+      .slice(beforeMessages)
+      .map((m) => m.type);
+    // Because S2 had selB and S3 has selA, Run 3 must do a full load, not an advance from S2.
+    assert.ok(
+      run3Types.includes("load") && !run3Types.includes("advance"),
+      `Expected full load for S3 when selections differ from S2, got ${run3Types.join(",")}`,
+    );
+    h.calculator.cancel();
+  }
+
+  // Sub-case 2: overlayFor fails after fullLoad of S2,
+  // then store rolls back to S1 and Run 3 runs on S1. Run 3 must not take sameBase on S2's session.
+  {
+    const h = harness();
+    h.selections.set(selA, JSON.stringify([other]));
+    h.selections.set(selB, JSON.stringify([added]));
+    h.records.set(added, {
+      id: added,
+      envelope: envelope(added),
+      body: null,
+      bodyStatus: "none",
+      bodyHash: null,
+    });
+
+    const inv1: SnapshotInventory = {
+      ...inventory([view, other], snapshot("1")),
+      selections: [selA],
+    };
+    const inv2: SnapshotInventory = {
+      ...inventory([view, other, added], snapshot("2")),
+      selections: [selB],
+    };
+
+    h.setInventory(inv1);
+    const r1 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r1.state, "ready");
+    if (r1.state === "ready") assert.equal(r1.events, 2);
+
+    h.setInventory(inv2);
+    currentProjectionDigest = advanceDigest([added]);
+    const origOverlayFor = (h.calculator as any).overlayFor.bind(h.calculator);
+    let overlayCalls = 0;
+    (h.calculator as any).overlayFor = async (...args: unknown[]) => {
+      overlayCalls++;
+      if (overlayCalls === 2) {
+        throw new Error("Transient IDB error reading outbox");
+      }
+      return origOverlayFor(...args);
+    };
+
+    const r2 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r2.state, "failed");
+
+    // Roll back store to inv1 (2 events)
+    h.setInventory(inv1);
+    currentProjectionDigest = BASE_DIGEST;
+    const r3 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r3.state, "ready");
+    if (r3.state === "ready") {
+      assert.equal(r3.snapshot, inv1.snapshot);
+      assert.equal(r3.events, 2);
+    }
+    h.calculator.cancel();
+  }
+
+  // Sub-case 3: worker 'overlay' step failure clears loadedKey, sent, and projectionDigest.
+  {
+    const h = harness();
+    const r1 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r1.state, "ready");
+    const originalPostMessage = RecordingWorker.prototype.postMessage;
+    let failWorkerOverlay = true;
+    RecordingWorker.prototype.postMessage = function (message: WorkerRequest) {
+      if (message.type === "overlay" && failWorkerOverlay) {
+        failWorkerOverlay = false;
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: {
+              type: "error",
+              id: message.id,
+              message: "overlay failed",
+              session_valid: false,
+              fatal: false,
+            },
+          } as MessageEvent);
+        });
+        return;
+      }
+      originalPostMessage.call(this, message);
+    };
+    try {
+      const r2 = await h.calculator.ensure({ mode: "site" });
+      assert.equal(r2.state, "failed");
+      assert.equal((h.calculator as any).loadedKey, null);
+      assert.equal((h.calculator as any).sent, null);
+      assert.equal((h.calculator as any).projectionDigest, null);
+    } finally {
+      RecordingWorker.prototype.postMessage = originalPostMessage;
+      h.calculator.cancel();
+    }
+  }
+});
+
+test("commitInventory frees both ProjectionDigest allocations when IndexedDB reads fail", async () => {
+  const { LocalStore } = await import("../../src/data/store.ts");
+  const sampleDigest = core.createProjectionDigest();
+  const proto = Object.getPrototypeOf(sampleDigest) as {
+    free: () => void;
+  };
+  sampleDigest.free();
+
+  const origFree = proto.free;
+  let freeCalls = 0;
+  proto.free = function (this: unknown) {
+    freeCalls++;
+    return origFree.call(this);
+  };
+
+  const makeReq = <T>(value: T, shouldFail = false) => {
+    const req: {
+      result?: T;
+      error?: Error;
+      onsuccess?: () => void;
+      onerror?: () => void;
+    } = {};
+    queueMicrotask(() => {
+      if (shouldFail) {
+        req.error = new Error("IDB read failure");
+        req.onerror?.();
+      } else {
+        req.result = value;
+        req.onsuccess?.();
+      }
+    });
+    return req;
+  };
+
+  try {
+    // 1. Failure inside initial digest scan (hash === null)
+    const inv1 = inventory([view], snapshot("1"));
+    const fakeStore1 = Object.create(LocalStore.prototype) as LocalStore;
+    (fakeStore1 as any).database = Promise.resolve({
+      transaction: () => {
+        const tx: any = {
+          error: null,
+          oncomplete: null,
+          onabort: null,
+          onerror: null,
+          abort() {
+            queueMicrotask(() => tx.onabort?.());
+          },
+          objectStore(name: string) {
+            if (name === "inventory") {
+              return { get: () => makeReq(undefined) };
+            }
+            if (name === "projections") {
+              return {
+                getAllKeys: () => makeReq([], true),
+                getAll: () => makeReq([]),
+              };
+            }
+            return {};
+          },
+        };
+        return tx;
+      },
+    });
+    await assert.rejects(
+      () => fakeStore1.commitInventory(inv1),
+      /IDB read failure/,
+    );
+    assert.equal(freeCalls, 1);
+
+    // 2. Failure inside delta digest scan (previous && previous.snapshot !== inventory.snapshot)
+    const inv2 = inventory([view, other], snapshot("2"));
+    const fakeStore2 = Object.create(LocalStore.prototype) as LocalStore;
+    (fakeStore2 as any).database = Promise.resolve({
+      transaction: () => {
+        const tx: any = {
+          error: null,
+          oncomplete: null,
+          onabort: null,
+          onerror: null,
+          abort() {
+            queueMicrotask(() => tx.onabort?.());
+          },
+          objectStore(name: string) {
+            if (name === "inventory") {
+              return { get: () => makeReq(inv1) };
+            }
+            if (name === "meta") {
+              return {
+                get: () =>
+                  makeReq({
+                    version: 1,
+                    build: core.projectionBuildIdentity(),
+                    events_digest: inv1.events_digest,
+                    rows_hash: BASE_DIGEST,
+                    count: 1,
+                  }),
+              };
+            }
+            if (name === "projections") {
+              return {
+                get: () => makeReq(undefined, true),
+              };
+            }
+            return {};
+          },
+        };
+        return tx;
+      },
+    });
+    await assert.rejects(
+      () => fakeStore2.commitInventory(inv2),
+      /IDB read failure/,
+    );
+    assert.equal(freeCalls, 2);
+  } finally {
+    proto.free = origFree;
   }
 });

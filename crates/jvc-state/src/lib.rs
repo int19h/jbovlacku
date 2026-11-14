@@ -145,6 +145,15 @@ impl PreparedEvaluationInput {
         }
         self.add_projection_node(row.node);
     }
+    pub fn clear_import_selections(&mut self) {
+        self.options.import_selections.clear();
+    }
+    pub fn insert_import_selection(&mut self, hash: String, ids: Vec<String>) {
+        self.options.import_selections.insert(hash, ids);
+    }
+    pub fn inherit_import_selections(&mut self, base: &EvaluatedState) {
+        self.options.import_selections = base.import_selections().clone();
+    }
     pub(crate) fn arena_error(&self) -> Option<jvc_core::Error> {
         self.arena_error.clone()
     }

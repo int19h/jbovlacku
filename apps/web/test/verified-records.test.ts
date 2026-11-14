@@ -310,6 +310,7 @@ test("an inventory commit prunes stale record and projection IDs and publishes m
       return {
         keys: await store.keys("records"),
         projectionKeys: await store.keys("projections"),
+        inventoryKeys: await store.keys("inventory"),
         latest: await store.get("inventory", "latest"),
         pinned: await store.get("inventory", snapshot),
         meta: await store.get("meta", `projection:${snapshot}`),
@@ -323,7 +324,9 @@ test("an inventory commit prunes stale record and projection IDs and publishes m
   });
   expect(result.keys).toEqual(["jve1:" + "a".repeat(64)]);
   expect(result.projectionKeys).toEqual(["jve1:" + "a".repeat(64)]);
-  expect(result.latest).toEqual(result.pinned);
+  expect(result.inventoryKeys).toEqual(["latest"]);
+  expect(result.latest?.snapshot).toBe("sha256:" + "b".repeat(64));
+  expect(result.pinned).toBeUndefined();
   expect(result.meta.events_digest).toBe("digest");
   expect(result.meta.count).toBe(1);
   expect(typeof result.meta.rows_hash).toBe("string");

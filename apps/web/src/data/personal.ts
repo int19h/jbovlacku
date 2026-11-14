@@ -10,7 +10,6 @@ import {
   maxIncrementalRecords,
   projectionBuildIdentity,
   utf8,
-  type EvaluationRequest,
 } from "../../../../packages/core/src/browser.ts";
 import { xorProjectionHashes } from "./projection-meta.ts";
 import {
@@ -20,14 +19,20 @@ import {
 } from "./store.ts";
 import {
   forgetInventory,
+  hashInventoryIds,
+  isMemoryFailure,
+  isStorageQuotaFailure,
   latestInventory,
-  loadSelections,
   RecordsError,
   syncRecords,
   type RecordsProgress,
   type SnapshotInventory,
 } from "./records.ts";
-import type { WorkerRequest, WorkerResponse } from "../workers/evaluate.ts";
+import type {
+  AdvanceInput,
+  WorkerRequest,
+  WorkerResponse,
+} from "../workers/evaluate.ts";
 import type { Calculation, ScoreRecord, TrustScope } from "../model/types.ts";
 import { describe } from "../lib/dom.ts";
 
@@ -81,6 +86,9 @@ export interface EffectiveOverlay extends Omit<Overlay, "version"> {
 }
 /** The digest of canonical JSON null: the overlay digest of the site view. */
 export const nullOverlayDigest = () => contentHash(utf8("null"));
+function selectionSetBinding(hashes: readonly string[]): string {
+  return hashInventoryIds([...new Set(hashes)].sort());
+}
 function hasSortedValue(values: readonly string[], target: string): boolean {
   let low = 0;
   let high = values.length;
@@ -311,14 +319,26 @@ export class PersonalCalculator {
       if (!entry) return;
       this.pending.delete(event.data.id);
       if (event.data.type === "error") {
-        const error = new Error(event.data.message);
-        if (
-          (event.data.fatal ||
+        const error = new Error(event.data.message) as Error & {
+          memory?: boolean;
+          quota?: boolean;
+        };
+        if (event.data.memory) error.memory = true;
+        if (event.data.quota) error.quota = true;
+        if (this.worker === worker) {
+          if (
+            event.data.fatal ||
             (event.data.session_valid === false &&
-              entry.operation !== "other")) &&
-          this.worker === worker
-        )
-          this.retireWorker(error);
+              entry.operation !== "other")
+          ) {
+            this.retireWorker(error);
+          } else if (event.data.session_valid === false) {
+            this.clearLoadedSession();
+            this.sent = null;
+            this.projectionDigest = null;
+            this.continuity = null;
+          }
+        }
         entry.reject(error);
       } else entry.resolve(event.data);
     };
@@ -389,17 +409,36 @@ export class PersonalCalculator {
     run: Run,
     refresh: boolean,
   ): Promise<SnapshotInventory> {
+    let expectedLatest: string | null | undefined;
     if (!refresh) {
       const cached = await latestInventory(this.store);
       if (cached) return cached;
+      expectedLatest = null;
     }
-    return syncRecords(this.store, {
-      signal: run.abort.signal,
-      fresh: refresh,
-      onProgress: (progress) => {
-        if (this.current === run) this.set({ state: "downloading", progress });
-      },
-    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await syncRecords(this.store, {
+          signal: run.abort.signal,
+          fresh: refresh,
+          expectedLatest,
+          onProgress: (progress) => {
+            if (this.current === run)
+              this.set({ state: "downloading", progress });
+          },
+        });
+      } catch (error) {
+        if (error instanceof RecordsError && error.kind === "superseded") {
+          const cached = await latestInventory(this.store);
+          if (cached) return cached;
+          if (attempt === 0) {
+            expectedLatest = null;
+            continue;
+          }
+        }
+        throw error;
+      }
+    }
+    throw new Error("Unreachable");
   }
   /**
    * Makes sure that a session for the current snapshot, mode, and overlay is
@@ -483,6 +522,7 @@ export class PersonalCalculator {
       this.current?.abort.abort(new Error(CANCELLED));
       this.current = run;
       const promise = this.run(run, mode, refresh, cachedInventory);
+      cachedInventory = null;
       this.loading = promise;
       this.loadingRequest = { mode, refresh };
       let result: PersonalStatus;
@@ -517,10 +557,12 @@ export class PersonalCalculator {
         throw new Error(CANCELLED);
     };
     try {
-      let inventory: SnapshotInventory;
+      let inventory: SnapshotInventory | null;
       try {
         inventory = cachedInventory ?? (await this.inventory(run, refresh));
+        cachedInventory = null;
       } catch (error) {
+        cachedInventory = null;
         live();
         if (refresh) throw error;
         const cached = await latestInventory(this.store);
@@ -528,122 +570,228 @@ export class PersonalCalculator {
         inventory = cached;
       }
       live();
-      const selections = await loadSelections(this.store, inventory, {
-        signal: run.abort.signal,
-      });
-      const selectionBinding = canonicalize(utf8(JSON.stringify(selections)));
-      const sameBase = Boolean(
-        this.loadedKey &&
-        this.sent?.snapshot === inventory.snapshot &&
-        this.sent.view === inventory.view &&
-        this.sent.selections === selectionBinding,
-      );
-      if (!sameBase) {
-        const advance = await this.advanceInput(inventory, selections);
-        live();
-        const intermediate = `${inventory.snapshot}|${inventory.view}|${run.id}`;
-        this.clearLoadedSession();
-        this.rankCache.clear();
-        this.set({
-          state: "evaluating",
-          mode,
-          events: inventory.events.length,
-        });
-        const fullLoad = () =>
-          this.request(run, {
-            type: "load",
-            session: intermediate,
-            source: {
-              database: this.store.name,
-              snapshot: inventory.snapshot,
-              events_digest: inventory.events_digest,
-              count: inventory.events.length,
-            },
-            options: {
-              selected_view: inventory.view,
-              import_selections: selections,
-            },
-          });
-        let loaded: WorkerResponse;
-        if (advance) {
+      let currentInventory: SnapshotInventory | null = inventory;
+      inventory = null;
+      for (let attempt = 0; ; attempt++) {
+        let activeInventory: SnapshotInventory | null = currentInventory!;
+        currentInventory = null;
+        const attemptSnapshot = activeInventory.snapshot;
+        try {
+          const selectionBinding = selectionSetBinding(
+            activeInventory.selections,
+          );
+          const summary = {
+            snapshot: activeInventory.snapshot,
+            logical_inventory: activeInventory.logical_inventory,
+            events_digest: activeInventory.events_digest,
+            view: activeInventory.view,
+            count: activeInventory.events.length,
+          };
+          const sameBase = Boolean(
+            this.loadedKey &&
+            this.sent?.snapshot === summary.snapshot &&
+            this.sent.view === summary.view &&
+            this.sent.selections === selectionBinding,
+          );
+          if (!sameBase) {
+            let advance: Awaited<ReturnType<PersonalCalculator["advanceInput"]>>;
+            try {
+              advance = await this.advanceInput(
+                activeInventory,
+                selectionBinding,
+              );
+              activeInventory = null;
+            } catch (error) {
+              activeInventory = null;
+              if (this.current === run) {
+                this.clearLoadedSession();
+                this.sent = null;
+                this.projectionDigest = null;
+                this.continuity = null;
+                this.rankCache.clear();
+              }
+              throw error;
+            }
+            live();
+            const intermediate =
+              attempt === 0
+                ? `${summary.snapshot}|${summary.view}|${run.id}`
+                : `${summary.snapshot}|${summary.view}|${run.id}|${attempt}`;
+            this.clearLoadedSession();
+            this.sent = null;
+            this.projectionDigest = null;
+            this.continuity = null;
+            this.rankCache.clear();
+            this.set({
+              state: "evaluating",
+              mode,
+              events: summary.count,
+            });
+            const fullLoad = () =>
+              this.request(run, {
+                type: "load",
+                session: intermediate,
+                source: {
+                  database: this.store.name,
+                  snapshot: summary.snapshot,
+                  events_digest: summary.events_digest,
+                  count: summary.count,
+                },
+                options: {
+                  selected_view: summary.view,
+                },
+              });
+            let loaded: WorkerResponse;
+            let usedAdvance = false;
+            if (advance) {
+              try {
+                loaded = await this.request(run, {
+                  type: "advance",
+                  base: advance.base,
+                  session: intermediate,
+                  input: advance.input,
+                  source: advance.source,
+                  rows: advance.rows,
+                });
+                usedAdvance = true;
+              } catch (advanceError) {
+                live();
+                const currentLatest = await latestInventory(this.store);
+                live();
+                if (
+                  currentLatest &&
+                  currentLatest.snapshot !== summary.snapshot
+                )
+                  throw advanceError;
+                loaded = await fullLoad();
+              }
+            } else {
+              loaded = await fullLoad();
+            }
+            live();
+            if (
+              loaded.type !== "loaded" ||
+              loaded.session !== intermediate ||
+              loaded.selected_view !== summary.view
+            )
+              throw new Error("Unexpected worker reply.");
+            const intermediateOverlay: EffectiveOverlay | null = usedAdvance
+              ? ((advance?.input.overlay as
+                  | EffectiveOverlay
+                  | null
+                  | undefined) ?? null)
+              : null;
+            this.projectionDigest =
+              loaded.projection_digest ??
+              (usedAdvance ? advance?.projectionDigest : null) ??
+              null;
+            this.loadedKey = intermediate;
+            this.rememberSent(
+              summary,
+              selectionBinding,
+              intermediateOverlay,
+              intermediateOverlay
+                ? overlayDigest(intermediateOverlay)
+                : nullOverlayDigest(),
+              mode,
+            );
+            this.continuity = {
+              snapshot: summary.snapshot,
+              view: summary.view,
+              actors: loaded.actors ?? {},
+            };
+          } else {
+            activeInventory = null;
+          }
+          // One overlay per run. The digest is derived from the exact overlay
+          // that enters the worker, so a result never carries another digest.
+          const overlay = await this.overlayFor(summary, mode, true);
+          live();
+          const digest = overlay ? overlayDigest(overlay) : nullOverlayDigest();
+          const key = `${summary.snapshot}|${summary.view}|${digest}|${mode}`;
+          const loadedStatus = this.loadedStatus;
+          if (this.loadedKey === key && loadedStatus) {
+            this.set(loadedStatus);
+            return loadedStatus;
+          }
+          const base = this.loadedKey;
+          if (!base)
+            throw new Error("The base evaluation session is not loaded.");
+          if (sameBase) {
+            this.clearLoadedSession();
+            this.rankCache.clear();
+            this.set({
+              state: "evaluating",
+              mode,
+              events: summary.count,
+            });
+          }
+          let loaded: WorkerResponse;
           try {
             loaded = await this.request(run, {
-              type: "advance",
-              base: advance.base,
-              session: intermediate,
-              input: advance.input,
-              source: advance.source,
-              rows: advance.rows,
+              type: "overlay",
+              base,
+              session: key,
+              overlay,
             });
-          } catch {
             live();
-            loaded = await fullLoad();
+            if (loaded.type !== "loaded" || loaded.session !== key)
+              throw new Error("Unexpected worker reply.");
+          } catch (error) {
+            if (this.current === run) {
+              this.clearLoadedSession();
+              this.sent = null;
+              this.projectionDigest = null;
+              this.continuity = null;
+            }
+            throw error;
           }
-        } else {
-          loaded = await fullLoad();
+          this.rememberSent(summary, selectionBinding, overlay, digest, mode);
+          const status: Extract<PersonalStatus, { state: "ready" }> = {
+            state: "ready",
+            mode,
+            snapshot: summary.snapshot,
+            view: summary.view,
+            events: loaded.events,
+            overlay: digest,
+            available: loaded.available,
+            reasons: loaded.reasons,
+          };
+          this.loadedKey = key;
+          this.loadedStatus = status;
+          this.set(status);
+          return status;
+        } catch (attemptError) {
+          if (this.current === run && attemptError instanceof RecordsError) {
+            this.clearLoadedSession();
+            this.sent = null;
+            this.projectionDigest = null;
+            this.continuity = null;
+            this.rankCache.clear();
+          }
+          live();
+          if (
+            attempt === 0 &&
+            !isMemoryFailure(attemptError) &&
+            !isStorageQuotaFailure(attemptError)
+          ) {
+            const nextLatest = await latestInventory(this.store);
+            live();
+            if (nextLatest && nextLatest.snapshot !== attemptSnapshot) {
+              if (this.current === run) {
+                this.clearLoadedSession();
+                this.sent = null;
+                this.projectionDigest = null;
+                this.continuity = null;
+                this.rankCache.clear();
+              }
+              currentInventory = nextLatest;
+              continue;
+            }
+          }
+          throw attemptError;
         }
-        live();
-        if (
-          loaded.type !== "loaded" ||
-          loaded.session !== intermediate ||
-          loaded.selected_view !== inventory.view
-        )
-          throw new Error("Unexpected worker reply.");
-        this.projectionDigest =
-          loaded.projection_digest ?? advance?.projectionDigest ?? null;
-        this.loadedKey = intermediate;
-        this.continuity = {
-          snapshot: inventory.snapshot,
-          view: inventory.view,
-          actors: loaded.actors ?? {},
-        };
       }
-      // One overlay per run. The digest is derived from the exact overlay
-      // that enters the worker, so a result never carries another digest.
-      const overlay = await this.overlayFor(inventory, mode);
-      live();
-      const digest = overlay ? overlayDigest(overlay) : nullOverlayDigest();
-      const key = `${inventory.snapshot}|${inventory.view}|${digest}|${mode}`;
-      const loadedStatus = this.loadedStatus;
-      if (this.loadedKey === key && loadedStatus) {
-        this.set(loadedStatus);
-        return loadedStatus;
-      }
-      const base = this.loadedKey;
-      if (!base) throw new Error("The base evaluation session is not loaded.");
-      if (sameBase) {
-        this.clearLoadedSession();
-        this.rankCache.clear();
-        this.set({
-          state: "evaluating",
-          mode,
-          events: inventory.events.length,
-        });
-      }
-      const loaded = await this.request(run, {
-        type: "overlay",
-        base,
-        session: key,
-        overlay,
-      });
-      live();
-      if (loaded.type !== "loaded" || loaded.session !== key)
-        throw new Error("Unexpected worker reply.");
-      this.rememberSent(inventory, selections, overlay, digest, mode);
-      const status: Extract<PersonalStatus, { state: "ready" }> = {
-        state: "ready",
-        mode,
-        snapshot: inventory.snapshot,
-        view: inventory.view,
-        events: loaded.events,
-        overlay: digest,
-        available: loaded.available,
-        reasons: loaded.reasons,
-      };
-      this.loadedKey = key;
-      this.loadedStatus = status;
-      this.set(status);
-      return status;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const aborted =
@@ -661,6 +809,12 @@ export class PersonalCalculator {
               kind: "cancelled",
             };
       }
+      const storageFailure =
+        !(error instanceof RecordsError) && isStorageQuotaFailure(error);
+      const memoryFailure =
+        !(error instanceof RecordsError) &&
+        !storageFailure &&
+        isMemoryFailure(error);
       const kind: PersonalStatus & { state: "failed" } extends {
         kind: infer K;
       }
@@ -668,12 +822,23 @@ export class PersonalCalculator {
         : never =
         error instanceof RecordsError
           ? error.kind
-          : /fetch|network|answer|connection|timed out|HTTP/i.test(message)
-            ? "network"
-            : "worker";
+          : storageFailure
+            ? "storage"
+            : memoryFailure
+              ? "memory"
+              : /is not cached\./i.test(message)
+                ? "missing"
+                : /fetch|network|answer|connection|timed out|HTTP/i.test(message)
+                  ? "network"
+                  : "worker";
+      const failureMessage = storageFailure
+        ? "The browser storage quota is full. Free storage for this site, then recompute from records."
+        : memoryFailure
+          ? "The browser ran out of memory while evaluating records. Close other tabs or use a device with more memory, then recompute from records."
+          : describe(error);
       const status: PersonalStatus = {
         state: "failed",
-        message: describe(error),
+        message: failureMessage,
         kind,
       };
       this.set(status);
@@ -684,10 +849,10 @@ export class PersonalCalculator {
   }
   private async advanceInput(
     inventory: SnapshotInventory,
-    selections: Record<string, string[]>,
+    selectionBinding: string,
   ): Promise<{
     base: string;
-    input: EvaluationRequest;
+    input: AdvanceInput;
     source: {
       database: string;
       snapshot: string;
@@ -706,7 +871,7 @@ export class PersonalCalculator {
       sent.view !== inventory.view ||
       inventory.events.length <= sent.count ||
       inventory.events.length - sent.count > maxIncrementalRecords() ||
-      sent.selections !== canonicalize(utf8(JSON.stringify(selections)))
+      sent.selections !== selectionBinding
     )
       return null;
     const retained = inventory.bodies;
@@ -719,30 +884,59 @@ export class PersonalCalculator {
       "inventory",
       sent.snapshot,
     );
-    if (
-      !previous ||
-      previous.logical_inventory !== sent.logical_inventory ||
-      previous.events_digest !== sent.events_digest ||
-      previous.events.length !== sent.count ||
-      !isStrictlyIncreasing(previous.events) ||
-      !isStrictlyIncreasing(previous.bodies) ||
-      !Array.isArray(previous.unretained_bodies) ||
-      !isStrictlyIncreasing(previous.unretained_bodies) ||
-      previous.bodies.some((hash) => !hasSortedValue(retained, hash))
-    )
-      return null;
-    const added = selectAddedEventIds(inventory.events, previous.events);
-    if (!added || added.length === 0 || added.length > maxIncrementalRecords())
-      return null;
-    const newBodies = retained.filter(
-      (hash) => !hasSortedValue(previous.bodies, hash),
-    );
-    if (
-      newBodies.some((hash) =>
-        hasSortedValue(previous.unretained_bodies!, hash),
+    let added: string[] | null;
+    let newBodies: string[];
+    if (previous) {
+      if (
+        previous.logical_inventory !== sent.logical_inventory ||
+        previous.events_digest !== sent.events_digest ||
+        previous.events.length !== sent.count ||
+        !isStrictlyIncreasing(previous.events) ||
+        !isStrictlyIncreasing(previous.bodies) ||
+        !Array.isArray(previous.unretained_bodies) ||
+        !isStrictlyIncreasing(previous.unretained_bodies) ||
+        selectionSetBinding(previous.selections) !== selectionBinding ||
+        previous.bodies.some((hash) => !hasSortedValue(retained, hash))
       )
-    )
-      return null;
+        return null;
+      added = selectAddedEventIds(inventory.events, previous.events);
+      if (
+        !added ||
+        added.length === 0 ||
+        added.length > maxIncrementalRecords()
+      )
+        return null;
+      newBodies = retained.filter(
+        (hash) => !hasSortedValue(previous.bodies, hash),
+      );
+      if (
+        newBodies.some((hash) =>
+          hasSortedValue(previous.unretained_bodies!, hash),
+        )
+      )
+        return null;
+    } else {
+      const preflight = await this.store.readProjectionAdvance(
+        [],
+        inventory.snapshot,
+      );
+      const from = preflight.advanceFrom;
+      if (
+        !from ||
+        from.snapshot !== sent.snapshot ||
+        from.logical_inventory !== sent.logical_inventory ||
+        from.events_digest !== sent.events_digest ||
+        from.count !== sent.count ||
+        selectionSetBinding(from.selections) !== selectionBinding ||
+        !Array.isArray(from.added) ||
+        from.added.length === 0 ||
+        from.added.length > maxIncrementalRecords() ||
+        !Array.isArray(from.new_bodies)
+      )
+        return null;
+      added = from.added;
+      newBodies = from.new_bodies;
+    }
     const advance = await this.store.readProjectionAdvance(
       added,
       inventory.snapshot,
@@ -774,10 +968,18 @@ export class PersonalCalculator {
     }
     if (newBodies.some((hash) => !addedBodies.has(hash))) return null;
     const delta = createProjectionDigest();
-    for (const { id, row } of rows) delta.update(id, row);
+    let deltaFinished = false;
+    let deltaHash: string;
+    try {
+      for (const { id, row } of rows) delta.update(id, row);
+      deltaFinished = true;
+      deltaHash = delta.finish();
+    } finally {
+      if (!deltaFinished) delta.free();
+    }
     const projectionDigest = xorProjectionHashes(
       this.projectionDigest,
-      delta.finish(),
+      deltaHash,
     );
     if (projectionDigest !== advance.digest) return null;
     return {
@@ -786,7 +988,6 @@ export class PersonalCalculator {
         events: [],
         bodies: {},
         selected_view: inventory.view,
-        import_selections: selections,
         ...(sent.overlay ? { overlay: sent.overlay } : {}),
       },
       source: {
@@ -800,8 +1001,11 @@ export class PersonalCalculator {
     };
   }
   private rememberSent(
-    inventory: SnapshotInventory,
-    selections: Record<string, string[]>,
+    inventory: Pick<
+      SnapshotInventory,
+      "snapshot" | "logical_inventory" | "events_digest" | "view"
+    > & { count: number },
+    selectionBinding: string,
     overlay: EffectiveOverlay | null,
     digest: string,
     mode: CalculationMode,
@@ -810,16 +1014,16 @@ export class PersonalCalculator {
       snapshot: inventory.snapshot,
       logical_inventory: inventory.logical_inventory,
       events_digest: inventory.events_digest,
-      count: inventory.events.length,
+      count: inventory.count,
       view: inventory.view,
       overlay,
       overlayDigest: digest,
       mode,
-      selections: canonicalize(utf8(JSON.stringify(selections))),
+      selections: selectionBinding,
     };
   }
   private async effective(
-    inventory: SnapshotInventory,
+    inventory: Pick<SnapshotInventory, "snapshot" | "view">,
     bodies: Record<string, string>,
   ): Promise<EffectiveOverlay> {
     const viewRoots: string[] = [];
@@ -845,18 +1049,27 @@ export class PersonalCalculator {
   }
   /** The effective overlay for a mode, read once from the private choices and the cached view body. */
   private async overlayFor(
-    inventory: SnapshotInventory,
+    inventory: Pick<SnapshotInventory, "snapshot" | "view">,
     mode: CalculationMode,
+    verifyLatest = false,
   ): Promise<EffectiveOverlay | null> {
     if (mode !== "personal") return null;
     const view = await this.store.get<{ body: string | null }>(
       "records",
       inventory.view,
     );
+    if (!view && verifyLatest) {
+      const currentLatest = await latestInventory(this.store);
+      if (currentLatest && currentLatest.snapshot !== inventory.snapshot)
+        throw new RecordsError(
+          `Record ${inventory.view} is not cached. Download the records again.`,
+          "missing",
+        );
+    }
     return this.effective(inventory, { [inventory.view]: view?.body ?? "" });
   }
   private async key(
-    inventory: SnapshotInventory,
+    inventory: Pick<SnapshotInventory, "snapshot" | "view">,
     mode: CalculationMode,
   ): Promise<string> {
     const overlay = await this.overlayFor(inventory, mode);
