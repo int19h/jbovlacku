@@ -511,3 +511,297 @@ test("commitInventory aborts when another tab pruned a record in the inventory a
   expect(result.commitError).toMatch(/no longer cached/);
   expect(result.latestSnapshotAfterAbort).toBe(result.s3Snapshot);
 });
+
+test("concurrent tab commits abort on pruned selections across all three orders and retain previous snapshot records and projections", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { syncRecords } = await import(String("/src/data/records.ts"));
+    const { EvaluationWorker } = await import(
+      String("/src/workers/evaluate.ts")
+    );
+    await core.initializeCore();
+
+    const makeEvent = (seedByte: number, nonceChar: string) => {
+      const event = core.createEvent(
+        new Uint8Array(32).fill(seedByte),
+        [],
+        nonceChar.repeat(32),
+        { kind: "identity.merge" },
+        null,
+      );
+      const projected = core.projectRecord(
+        core.utf8(JSON.stringify(event.envelope)),
+      );
+      return {
+        id: event.envelope.id,
+        stored: {
+          id: event.envelope.id,
+          envelope: projected.envelope,
+          body: null,
+          bodyHash: null,
+          bodyStatus: "none" as const,
+        },
+        row: projected.row,
+      };
+    };
+
+    const eventsDigestFor = async (store: BrowserStore, ids: string[]) => {
+      const envelopes = await Promise.all(
+        ids.map(async (id) => {
+          const rec = await store.get<{ envelope: string }>("records", id);
+          return rec!.envelope + "\n";
+        }),
+      );
+      return core.contentHash(core.utf8(envelopes.join("")));
+    };
+
+    // Order 1: S0 -> S1 committed, Tab A stages S2 selection,
+    // Tab B commits older S0 (pruning S2's staged selection), Tab A commits S2 -> must abort.
+    let order1Error = "";
+    let order1LatestAfterAbort = "";
+    {
+      const name = `order1-selection-prune-${crypto.randomUUID()}`;
+      const tabA = new LocalStore(name) as BrowserStore;
+      const tabB = new LocalStore(name) as BrowserStore;
+      try {
+        const base = await syncRecords(tabA);
+        const sel0 = "sha256:" + "0".repeat(64);
+        const sel1 = "sha256:" + "1".repeat(64);
+        const sel2 = "sha256:" + "2".repeat(64);
+        await tabA.put("selections", sel0, "[]");
+        const s0: SnapshotInventory = {
+          ...base,
+          snapshot: "sha256:" + "a".repeat(64),
+          logical_inventory: "sha256:" + "a".repeat(64),
+          selections: [sel0],
+        };
+        await tabA.commitInventory(s0);
+
+        await tabA.put("selections", sel1, "[]");
+        const s1: SnapshotInventory = {
+          ...base,
+          snapshot: "sha256:" + "b".repeat(64),
+          logical_inventory: "sha256:" + "b".repeat(64),
+          selections: [sel1],
+        };
+        await tabA.commitInventory(s1);
+
+        // Tab A stages sel2 for S2
+        await tabA.put("selections", sel2, "[]");
+        const s2: SnapshotInventory = {
+          ...base,
+          snapshot: "sha256:" + "c".repeat(64),
+          logical_inventory: "sha256:" + "c".repeat(64),
+          selections: [sel2],
+        };
+
+        // Tab B commits older S0 while latest is S1 -> retains {sel0, sel1}, prunes sel2
+        await tabB.commitInventory(s0);
+
+        try {
+          await tabA.commitInventory(s2);
+        } catch (error) {
+          order1Error = error instanceof Error ? error.message : String(error);
+        }
+        const latest = await tabA.get<SnapshotInventory>("inventory", "latest");
+        order1LatestAfterAbort = latest?.snapshot ?? "";
+      } finally {
+        (await tabA.database).close();
+        (await tabB.database).close();
+      }
+    }
+
+    // Order 2: S0 -> S1 -> S2 with concurrent tab,
+    // plus verifying that Tab B's just-committed S2 remains loadable after Tab A commits another snapshot.
+    let order2SelectionError = "";
+    let order2S2LoadableAfterOtherCommit = false;
+    let order2S2Rebuilt = true;
+    {
+      const name = `order2-concurrent-commit-${crypto.randomUUID()}`;
+      const tabA = new LocalStore(name) as BrowserStore;
+      const tabB = new LocalStore(name) as BrowserStore;
+      const worker = new EvaluationWorker();
+      try {
+        const base = await syncRecords(tabA);
+        const sel0 = "sha256:" + "0".repeat(64);
+        const sel1 = "sha256:" + "1".repeat(64);
+        const sel2 = "sha256:" + "2".repeat(64);
+
+        await tabA.put("selections", sel0, "[]");
+        const s0: SnapshotInventory = {
+          ...base,
+          snapshot: "sha256:" + "0".repeat(64),
+          logical_inventory: "sha256:" + "0".repeat(64),
+          selections: [sel0],
+        };
+        await tabA.commitInventory(s0);
+
+        // Tab A stages sel1 for S1
+        await tabA.put("selections", sel1, "[]");
+        const s1WithSel1: SnapshotInventory = {
+          ...base,
+          snapshot: "sha256:" + "1".repeat(64),
+          logical_inventory: "sha256:" + "1".repeat(64),
+          selections: [sel1],
+        };
+
+        // Tab B stages extra record and sel2 for S2, and commits S2 first
+        const extra = makeEvent(91, "9");
+        await tabB.putProjectedRecord(extra.stored, extra.row);
+        await tabB.put("selections", sel2, "[]");
+        const s2Events = [...base.events, extra.id].sort();
+        const s2: SnapshotInventory = {
+          ...base,
+          snapshot: "sha256:" + "2".repeat(64),
+          logical_inventory: "sha256:" + "2".repeat(64),
+          events: s2Events,
+          events_digest: await eventsDigestFor(tabB, s2Events),
+          selections: [sel2],
+        };
+        await tabB.commitInventory(s2);
+
+        // Tab A's commit of s1WithSel1 must abort because sel1 was pruned when S2 committed
+        try {
+          await tabA.commitInventory(s1WithSel1);
+        } catch (error) {
+          order2SelectionError =
+            error instanceof Error ? error.message : String(error);
+        }
+
+        // Now suppose Tab A commits a valid snapshot S1 (using sel0, which is still cached).
+        // S2 was the previous snapshot, so S2's extra record and projection row must remain cached
+        // and Tab B must still be able to load S2 in EvaluationWorker without rebuilding!
+        const s1Valid: SnapshotInventory = {
+          ...base,
+          snapshot: "sha256:" + "1".repeat(64),
+          logical_inventory: "sha256:" + "1".repeat(64),
+          selections: [sel0],
+        };
+        await tabA.commitInventory(s1Valid);
+
+        const loadedS2 = await worker.load({
+          type: "load",
+          id: 1,
+          session: "s2-session",
+          source: {
+            database: name,
+            snapshot: s2.snapshot,
+            events_digest: s2.events_digest,
+            count: s2.events.length,
+          },
+          options: { selected_view: s2.view },
+        });
+        order2S2LoadableAfterOtherCommit = loadedS2.events === s2.events.length;
+        order2S2Rebuilt = Boolean(loadedS2.projection_rebuilt);
+      } finally {
+        worker.currentSession?.free();
+        (await tabA.database).close();
+        (await tabB.database).close();
+      }
+    }
+
+    // Order 3: cachedSelections check in records.ts goes stale
+    // while another tab advances through S1 and S2, pruning sel0 before Tab A commits S3.
+    let order3Error = "";
+    let order3SameSnapshotError = "";
+    {
+      const name = `order3-stale-cached-selections-${crypto.randomUUID()}`;
+      const tabA = new LocalStore(name) as BrowserStore;
+      const tabB = new LocalStore(name) as BrowserStore;
+      try {
+        const base = await syncRecords(tabA);
+        const sel0 = "sha256:" + "0".repeat(64);
+        const sel1 = "sha256:" + "1".repeat(64);
+        const sel2 = "sha256:" + "2".repeat(64);
+
+        await tabA.put("selections", sel0, "[]");
+        const s0: SnapshotInventory = {
+          ...base,
+          snapshot: "sha256:" + "0".repeat(64),
+          logical_inventory: "sha256:" + "0".repeat(64),
+          selections: [sel0],
+        };
+        await tabA.commitInventory(s0);
+
+        // Tab A checks store.keys("selections") while S0 is latest and sees sel0 cached
+        const cachedSelectionsInTabA = new Set(await tabA.keys("selections"));
+        if (!cachedSelectionsInTabA.has(sel0))
+          throw new Error("Expected sel0 to be cached initially");
+
+        // Tab B commits S1 (sel1) and then S2 (sel2), pruning sel0
+        await tabB.put("selections", sel1, "[]");
+        const s1: SnapshotInventory = {
+          ...base,
+          snapshot: "sha256:" + "1".repeat(64),
+          logical_inventory: "sha256:" + "1".repeat(64),
+          selections: [sel1],
+        };
+        await tabB.commitInventory(s1);
+
+        await tabB.put("selections", sel2, "[]");
+        const s2: SnapshotInventory = {
+          ...base,
+          snapshot: "sha256:" + "2".repeat(64),
+          logical_inventory: "sha256:" + "2".repeat(64),
+          selections: [sel2],
+        };
+        await tabB.commitInventory(s2);
+
+        // Tab A now commits S3 referencing sel0 (which it skipped downloading because cachedSelectionsInTabA had sel0)
+        const s3: SnapshotInventory = {
+          ...base,
+          snapshot: "sha256:" + "3".repeat(64),
+          logical_inventory: "sha256:" + "3".repeat(64),
+          selections: [sel0],
+        };
+        try {
+          await tabA.commitInventory(s3);
+        } catch (error) {
+          order3Error = error instanceof Error ? error.message : String(error);
+        }
+
+        // Also check same-snapshot re-commit (previous.snapshot === inventory.snapshot) when selection is missing
+        await tabB.delete("selections", sel2);
+        try {
+          await tabB.commitInventory(s2);
+        } catch (error) {
+          order3SameSnapshotError =
+            error instanceof Error ? error.message : String(error);
+        }
+      } finally {
+        (await tabA.database).close();
+        (await tabB.database).close();
+      }
+    }
+
+    return {
+      order1Error,
+      order1LatestAfterAbort,
+      order2SelectionError,
+      order2S2LoadableAfterOtherCommit,
+      order2S2Rebuilt,
+      order3Error,
+      order3SameSnapshotError,
+    };
+  }, corePath);
+
+  expect(result.order1Error).toMatch(
+    /import selection in the inventory is no longer cached/,
+  );
+  expect(result.order1LatestAfterAbort).toBe("sha256:" + "a".repeat(64));
+  expect(result.order2SelectionError).toMatch(
+    /import selection in the inventory is no longer cached/,
+  );
+  expect(result.order2S2LoadableAfterOtherCommit).toBe(true);
+  expect(result.order2S2Rebuilt).toBe(false);
+  expect(result.order3Error).toMatch(
+    /import selection in the inventory is no longer cached/,
+  );
+  expect(result.order3SameSnapshotError).toMatch(
+    /import selection in the inventory is no longer cached/,
+  );
+});

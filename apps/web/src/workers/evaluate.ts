@@ -84,6 +84,7 @@ export type WorkerResponse =
       message: string;
       session_valid: boolean;
       fatal: boolean;
+      memory?: boolean;
     };
 
 type LoadedResponse = Extract<WorkerResponse, { type: "loaded" }>;
@@ -233,6 +234,7 @@ async function readProjectionRows(
   )
     throw new ProjectionRebuildNeeded("Projection metadata is stale.");
   if (loadSelections) {
+    builder.clearImportSelections();
     for (const hash of stored.selections ?? []) {
       const canonical = hasSelectionsStore
         ? await request(
@@ -548,8 +550,10 @@ export function workerErrorResponse(
   const memoryError =
     error instanceof WebAssembly.RuntimeError ||
     (error instanceof RangeError &&
-      /out of memory|allocation|buffer|length/i.test(rawMessage)) ||
-    /out of memory|array buffer allocation failed|invalid array buffer length/i.test(
+      /out of memory|allocation|buffer|invalid string length/i.test(
+        rawMessage,
+      )) ||
+    /out of memory|array buffer allocation failed|invalid array buffer length|invalid string length|WebAssembly\.RuntimeError/i.test(
       rawMessage,
     );
   const message =
@@ -565,6 +569,7 @@ export function workerErrorResponse(
     message,
     session_valid: evaluation.currentSession !== null,
     fatal: initializationFailed || memoryError,
+    memory: memoryError,
   };
 }
 

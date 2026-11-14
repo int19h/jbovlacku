@@ -647,76 +647,287 @@ test("an unchanged overlay keeps a judgment advance on the fast path", async () 
   }
 });
 
-test("a WebAssembly RuntimeError is fatal and an ordinary Error is not", async () => {
+test("a WebAssembly RuntimeError or memory RangeError is fatal and marked memory, while an ordinary Error is not", async () => {
   const { workerErrorResponse } = await import("../../src/workers/evaluate.ts");
   const fatal = workerErrorResponse(1, new WebAssembly.RuntimeError("trap"));
   assert.equal(fatal.type, "error");
   assert.equal(fatal.fatal, true);
-  assert.equal(workerErrorResponse(2, new Error("ordinary")).fatal, false);
+  assert.equal(fatal.memory, true);
+  const stringLen = workerErrorResponse(
+    2,
+    new RangeError("Invalid string length"),
+  );
+  assert.equal(stringLen.fatal, true);
+  assert.equal(stringLen.memory, true);
+  const ordinary = workerErrorResponse(3, new Error("ordinary"));
+  assert.equal(ordinary.fatal, false);
+  assert.equal(ordinary.memory, false);
 });
 
-test("setImportSelection on load and omitted import_selections on fork preserve import selections across advance", async () => {
-  const { input, word, target, previous } = await fixture();
-  const selectionCanonical = canonicalize(utf8(JSON.stringify([target])));
-  const selectionHash =
-    "sha256:" +
-    (
-      await import("../../../../packages/core/src/index.ts")
-    )
-      .contentHash(utf8(selectionCanonical))
-      .slice(7);
-  const added = createEvent(
-    seed(2),
-    [previous],
-    "e".repeat(32),
-    { kind: "judgment.set", target, value: "curse" },
+test("streamed import selections affect imported definitions, inherit across fork, and replace inherited selections when streamed or cleared", async () => {
+  const { contentHash } = await import("../../../../packages/core/src/index.ts");
+  const viewTemplate = JSON.parse(
+    JSON.parse(
+      await readFile(
+        new URL(
+          "../../../../crates/jvc-runtime/tests/fixtures/host-record-inputs-v8.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ).find((row: { name: string }) => row.name === "f64-contract-0").body,
+  );
+  const definitionBody = JSON.parse(
+    await readFile(
+      new URL(
+        "../../../../crates/jvc-core/tests/fixtures/definition.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const word = wordId({ language: "jbo", spelling: "banli" });
+  const importedBody = (id: number) => ({
+    ...definitionBody,
+    legacy: {
+      source: "fixture",
+      snapshot: `sha256:${"a".repeat(64)}`,
+      extraction: "fixture-v1",
+      record: { kind: "definition", id },
+      locator: "fixture",
+      original: {},
+      attribution: {
+        author: "author",
+        editor: null,
+        author_account: null,
+        dates: {},
+      },
+      conversion: {
+        method: "literal",
+        tool: "fixture",
+        version: "1",
+        model: null,
+        review: "unreviewed",
+        mappings: [],
+        warnings: [],
+      },
+      limitations: [],
+    },
+  });
+  const importedDef = createEvent(
+    seed(9),
+    [],
+    "2".repeat(32),
+    {
+      kind: "definition.publish",
+      word,
+      language: "en",
+      parents: [],
+      origin: "import",
+    },
+    importedBody(1),
+  );
+  const otherDef = createEvent(
+    seed(9),
+    [importedDef.envelope.id],
+    "6".repeat(32),
+    {
+      kind: "definition.publish",
+      word,
+      language: "en",
+      parents: [],
+      origin: "import",
+    },
+    importedBody(2),
+  );
+  const selACanonical = canonicalize(
+    utf8(JSON.stringify([importedDef.envelope.id])),
+  );
+  const selAHash = contentHash(utf8(selACanonical));
+  const selBCanonical = canonicalize(
+    utf8(JSON.stringify([otherDef.envelope.id])),
+  );
+  const selBHash = contentHash(utf8(selBCanonical));
+
+  viewTemplate.calculation = "simple-routes-shun-v1";
+  viewTemplate.roots = [
+    {
+      identity: identityFromSeed(seed(1)),
+      q: { numerator: 1, denominator: 1 },
+    },
+  ];
+  viewTemplate.import_sets = [
+    {
+      source: "fixture",
+      importer: identityFromSeed(seed(9)),
+      selection: selAHash,
+    },
+  ];
+  const viewEvent = createEvent(
+    seed(20),
+    [],
+    "1".repeat(32),
+    { kind: "view.publish", parents: [] },
+    viewTemplate,
+  );
+  const trustEvent = createEvent(
+    seed(1),
+    [],
+    "3".repeat(32),
+    {
+      kind: "trust.set",
+      subject: identityFromSeed(seed(2)),
+      scope: { kind: "definition", word: "*", language: "en" },
+      value: "heed",
+    },
     null,
   );
-  const fullInput = {
+  const blessEvent = createEvent(
+    seed(2),
+    [],
+    "4".repeat(32),
+    {
+      kind: "judgment.set",
+      target: importedDef.envelope.id,
+      value: "bless",
+    },
+    null,
+  );
+  const baseEvents = [viewEvent, importedDef, otherDef, trustEvent, blessEvent]
+    .map((row) => row.envelope)
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const input: EvaluationRequest = {
+    events: baseEvents.map((envelope) => JSON.stringify(envelope)),
+    bodies: {
+      [viewEvent.envelope.id]: canonicalize(
+        utf8(JSON.stringify(viewEvent.body)),
+      ),
+      [importedDef.envelope.id]: canonicalize(
+        utf8(JSON.stringify(importedDef.body)),
+      ),
+      [otherDef.envelope.id]: canonicalize(utf8(JSON.stringify(otherDef.body))),
+    },
+    selected_view: viewEvent.envelope.id,
+    import_selections: { [selAHash]: [importedDef.envelope.id] },
+  };
+  const added = createEvent(
+    seed(2),
+    [blessEvent.envelope.id],
+    "e".repeat(32),
+    {
+      kind: "judgment.set",
+      target: importedDef.envelope.id,
+      value: "curse",
+    },
+    null,
+  );
+  const fullWithSelA = evaluateSession({
     ...input,
     events: [...input.events, JSON.stringify(added.envelope)],
-    import_selections: { [selectionHash]: [target] },
-  };
-  const expected = evaluateSession(fullInput);
+    import_selections: { [selAHash]: [importedDef.envelope.id] },
+  });
+  const fullWithSelBOnly = evaluateSession({
+    ...input,
+    import_selections: { [selBHash]: [otherDef.envelope.id] },
+  });
+  const fullWithEmptySelections = evaluateSession({
+    ...input,
+    import_selections: {},
+  });
   const builder = createEvaluationSession({
     selected_view: input.selected_view,
   });
   let baseSession: ReturnType<typeof evaluateSession> | null = null;
-  let advancedSession: ReturnType<typeof evaluateSession> | null = null;
+  let inheritedSession: ReturnType<typeof evaluateSession> | null = null;
+  let replacedSession: ReturnType<typeof evaluateSession> | null = null;
+  let clearedSession: ReturnType<typeof evaluateSession> | null = null;
   try {
-    builder.setImportSelection(selectionHash, selectionCanonical);
+    // Without selA, the imported definition's eligibility is unknown.
+    assert.equal(
+      fullWithEmptySelections.state.publications[importedDef.envelope.id]
+        ?.eligible,
+      "unknown",
+    );
+    assert.equal(
+      fullWithSelA.state.publications[importedDef.envelope.id]?.eligible,
+      "eligible",
+    );
+
+    builder.setImportSelection(selAHash, selACanonical);
     for (const envelope of input.events) {
       const id = (JSON.parse(envelope) as { id: string }).id;
       builder.addRecordText(envelope, input.bodies[id], id);
     }
     baseSession = builder.finish();
-    const forkBuilder = baseSession.fork({
+    assert.equal(
+      baseSession.state.publications[importedDef.envelope.id]?.eligible,
+      "eligible",
+    );
+
+    // 1. Fork without streaming selections inherits selA on the incremental fast path.
+    const inheritBuilder = baseSession.fork({
       selected_view: input.selected_view,
     });
     try {
-      forkBuilder.addRecordText(
+      inheritBuilder.addRecordText(
         JSON.stringify(added.envelope),
         undefined,
         added.envelope.id,
       );
-      advancedSession = forkBuilder.finish();
+      inheritedSession = inheritBuilder.finish();
     } finally {
-      forkBuilder.free();
+      inheritBuilder.free();
     }
-    assert.deepEqual(advancedSession.updateStatistics(), {
+    assert.deepEqual(inheritedSession.updateStatistics(), {
       incremental_records: 1,
       rebuilt: false,
       reason: null,
     });
-    assert.deepEqual(advancedSession.state, expected.state);
+    assert.deepEqual(inheritedSession.state, fullWithSelA.state);
     assert.deepEqual(
-      advancedSession.rankWord(word, 64),
-      expected.rankWord(word, 64),
+      inheritedSession.rankWord(word, 64),
+      fullWithSelA.rankWord(word, 64),
     );
+
+    // 2. Streaming a new selection set on a fork replaces inherited selections instead of merging.
+    const replaceBuilder = baseSession.fork({
+      selected_view: input.selected_view,
+    });
+    try {
+      replaceBuilder.setImportSelection(selBHash, selBCanonical);
+      replacedSession = replaceBuilder.finish();
+    } finally {
+      replaceBuilder.free();
+    }
+    assert.equal(
+      replacedSession.state.publications[importedDef.envelope.id]?.eligible,
+      "unknown",
+    );
+    assert.deepEqual(replacedSession.state, fullWithSelBOnly.state);
+
+    // 3. Clearing selections on a fork replaces inherited selections with the empty set.
+    const clearBuilder = baseSession.fork({
+      selected_view: input.selected_view,
+    });
+    try {
+      clearBuilder.clearImportSelections();
+      clearedSession = clearBuilder.finish();
+    } finally {
+      clearBuilder.free();
+    }
+    assert.equal(
+      clearedSession.state.publications[importedDef.envelope.id]?.eligible,
+      "unknown",
+    );
+    assert.deepEqual(clearedSession.state, fullWithEmptySelections.state);
   } finally {
     builder.free();
     baseSession?.free();
-    advancedSession?.free();
-    expected.free();
+    inheritedSession?.free();
+    replacedSession?.free();
+    clearedSession?.free();
+    fullWithSelA.free();
+    fullWithSelBOnly.free();
+    fullWithEmptySelections.free();
   }
 });

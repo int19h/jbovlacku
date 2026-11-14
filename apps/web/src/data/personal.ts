@@ -319,14 +319,24 @@ export class PersonalCalculator {
       if (!entry) return;
       this.pending.delete(event.data.id);
       if (event.data.type === "error") {
-        const error = new Error(event.data.message);
-        if (
-          (event.data.fatal ||
+        const error = new Error(event.data.message) as Error & {
+          memory?: boolean;
+        };
+        if (event.data.memory) error.memory = true;
+        if (this.worker === worker) {
+          if (
+            event.data.fatal ||
             (event.data.session_valid === false &&
-              entry.operation !== "other")) &&
-          this.worker === worker
-        )
-          this.retireWorker(error);
+              entry.operation !== "other")
+          ) {
+            this.retireWorker(error);
+          } else if (event.data.session_valid === false) {
+            this.clearLoadedSession();
+            this.sent = null;
+            this.projectionDigest = null;
+            this.continuity = null;
+          }
+        }
         entry.reject(error);
       } else entry.resolve(event.data);
     };
@@ -560,6 +570,9 @@ export class PersonalCalculator {
         live();
         const intermediate = `${summary.snapshot}|${summary.view}|${run.id}`;
         this.clearLoadedSession();
+        this.sent = null;
+        this.projectionDigest = null;
+        this.continuity = null;
         this.rankCache.clear();
         this.set({
           state: "evaluating",
@@ -581,6 +594,7 @@ export class PersonalCalculator {
             },
           });
         let loaded: WorkerResponse;
+        let usedAdvance = false;
         if (advance) {
           try {
             loaded = await this.request(run, {
@@ -591,6 +605,7 @@ export class PersonalCalculator {
               source: advance.source,
               rows: advance.rows,
             });
+            usedAdvance = true;
           } catch {
             live();
             loaded = await fullLoad();
@@ -605,9 +620,24 @@ export class PersonalCalculator {
           loaded.selected_view !== summary.view
         )
           throw new Error("Unexpected worker reply.");
+        const intermediateOverlay: EffectiveOverlay | null = usedAdvance
+          ? ((advance?.input.overlay as EffectiveOverlay | null | undefined) ??
+            null)
+          : null;
         this.projectionDigest =
-          loaded.projection_digest ?? advance?.projectionDigest ?? null;
+          loaded.projection_digest ??
+          (usedAdvance ? advance?.projectionDigest : null) ??
+          null;
         this.loadedKey = intermediate;
+        this.rememberSent(
+          summary,
+          selectionBinding,
+          intermediateOverlay,
+          intermediateOverlay
+            ? overlayDigest(intermediateOverlay)
+            : nullOverlayDigest(),
+          mode,
+        );
         this.continuity = {
           snapshot: summary.snapshot,
           view: summary.view,
@@ -638,15 +668,26 @@ export class PersonalCalculator {
           events: summary.count,
         });
       }
-      const loaded = await this.request(run, {
-        type: "overlay",
-        base,
-        session: key,
-        overlay,
-      });
-      live();
-      if (loaded.type !== "loaded" || loaded.session !== key)
-        throw new Error("Unexpected worker reply.");
+      let loaded: WorkerResponse;
+      try {
+        loaded = await this.request(run, {
+          type: "overlay",
+          base,
+          session: key,
+          overlay,
+        });
+        live();
+        if (loaded.type !== "loaded" || loaded.session !== key)
+          throw new Error("Unexpected worker reply.");
+      } catch (error) {
+        if (this.current === run) {
+          this.clearLoadedSession();
+          this.sent = null;
+          this.projectionDigest = null;
+          this.continuity = null;
+        }
+        throw error;
+      }
       this.rememberSent(summary, selectionBinding, overlay, digest, mode);
       const status: Extract<PersonalStatus, { state: "ready" }> = {
         state: "ready",

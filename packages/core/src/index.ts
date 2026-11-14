@@ -488,6 +488,7 @@ export interface EvaluationBuilder {
     expectedId?: string,
   ): EvaluationPackageRecord | null;
   setRetainedBodies(hashes: string[]): void;
+  clearImportSelections(): void;
   setImportSelection(hash: string, canonical: string): void;
   addProjectionRow(
     row: Uint8Array,
@@ -639,6 +640,10 @@ function wrapEvaluationBuilder(
           );
       }
       builder.set_retained_bodies(packed);
+    },
+    clearImportSelections() {
+      requireOpen();
+      builder.clear_import_selections();
     },
     setImportSelection(hash: string, canonical: string) {
       requireOpen();

@@ -936,6 +936,7 @@ pub struct EvaluationSessionBuilder {
     base_identity: Option<String>,
     retained_bodies: Option<Vec<[u8; 32]>>,
     has_import_selections: bool,
+    inherited_import_selections: bool,
 }
 #[wasm_bindgen]
 pub fn evaluation_checkpoint_version() -> String {
@@ -1437,7 +1438,13 @@ impl EvaluationSessionBuilder {
             base_identity: None,
             retained_bodies: None,
             has_import_selections,
+            inherited_import_selections: false,
         })
+    }
+    pub fn clear_import_selections(&mut self) {
+        self.prepared.clear_import_selections();
+        self.has_import_selections = true;
+        self.inherited_import_selections = false;
     }
     pub fn set_import_selection(
         &mut self,
@@ -1459,6 +1466,11 @@ impl EvaluationSessionBuilder {
             serde_json::from_value(parse_json(bytes).map_err(fail)?)
                 .map_err(|e| fail(Error::new("evaluation", e.to_string())))?
         };
+        if self.inherited_import_selections {
+            self.prepared.clear_import_selections();
+            self.inherited_import_selections = false;
+        }
+        self.has_import_selections = true;
         self.prepared.insert_import_selection(hash.to_owned(), ids);
         Ok(())
     }
@@ -1559,6 +1571,7 @@ impl EvaluationSessionBuilder {
             base_identity,
             retained_bodies,
             has_import_selections: _,
+            inherited_import_selections: _,
         } = self;
         drop(verifier);
         drop(retained_bodies);
@@ -1597,6 +1610,7 @@ impl EvaluationSession {
         let mut builder = EvaluationSessionBuilder::new(options)?;
         if !builder.has_import_selections {
             builder.prepared.inherit_import_selections(&self.state);
+            builder.inherited_import_selections = true;
         }
         builder.base = Some(self.state.clone());
         builder.base_identity = Some(self.identity.clone());

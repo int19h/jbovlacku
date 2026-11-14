@@ -18,7 +18,9 @@ import {
   api,
   getManifest,
   objectBytes,
+  RequestError,
   type RequestOptions,
+  TransportError,
   getPreferredView,
 } from "./api.ts";
 import { findSortedId, hasSortedId, type LocalStore } from "./store.ts";
@@ -236,6 +238,12 @@ async function writeRecords(
     await store.putProjectedRecord(projected.record, projected.row, latest);
 }
 export function isStorageQuotaFailure(error: unknown): boolean {
+  if (
+    error instanceof RecordsError ||
+    error instanceof RequestError ||
+    error instanceof TransportError
+  )
+    return false;
   const name =
     typeof error === "object" && error !== null && "name" in error
       ? String(error.name)
@@ -244,6 +252,19 @@ export function isStorageQuotaFailure(error: unknown): boolean {
   return name === "QuotaExceededError" || /storage quota/i.test(message);
 }
 export function isMemoryFailure(error: unknown): boolean {
+  if (
+    error instanceof RecordsError ||
+    error instanceof RequestError ||
+    error instanceof TransportError
+  )
+    return false;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "memory" in error &&
+    (error as { memory?: unknown }).memory === true
+  )
+    return true;
   const name =
     typeof error === "object" && error !== null && "name" in error
       ? String(error.name)
@@ -254,8 +275,8 @@ export function isMemoryFailure(error: unknown): boolean {
       error instanceof WebAssembly.RuntimeError) ||
     name === "RuntimeError" ||
     (error instanceof RangeError &&
-      /out of memory|allocation|buffer|length/i.test(message)) ||
-    /out of memory|array buffer allocation failed|invalid array buffer length|WebAssembly\.RuntimeError|\bunreachable\b/i.test(
+      /out of memory|allocation|buffer|invalid string length/i.test(message)) ||
+    /out of memory|array buffer allocation failed|invalid array buffer length|invalid string length|WebAssembly\.RuntimeError/i.test(
       message,
     )
   );

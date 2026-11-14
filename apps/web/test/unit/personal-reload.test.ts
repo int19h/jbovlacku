@@ -1677,7 +1677,10 @@ test("inventory traversal stops immediately when the returned count exceeds the 
 });
 
 test("Wasm RuntimeError during sync and memory failure during evaluation produce physical-failure messages", async () => {
-  const { isMemoryFailure } = await import("../../src/data/records.ts");
+  const { isMemoryFailure, isStorageQuotaFailure } = await import(
+    "../../src/data/records.ts"
+  );
+  const { RequestError, TransportError } = await import("../../src/data/api.ts");
   assert.equal(
     isMemoryFailure(new WebAssembly.RuntimeError("unreachable")),
     true,
@@ -1686,10 +1689,34 @@ test("Wasm RuntimeError during sync and memory failure during evaluation produce
     isMemoryFailure(new RangeError("Array buffer allocation failed")),
     true,
   );
+  assert.equal(isMemoryFailure(new RangeError("Invalid string length")), true);
+  assert.equal(
+    isMemoryFailure(new RangeError("Invalid time value")),
+    false,
+  );
+  assert.equal(
+    isMemoryFailure(
+      new RequestError(502, "upstream_unreachable", "Upstream unreachable."),
+    ),
+    false,
+  );
+  assert.equal(
+    isMemoryFailure(
+      new TransportError("Peer out of memory while serving response.", "offline"),
+    ),
+    false,
+  );
+  assert.equal(
+    isStorageQuotaFailure(
+      new RequestError(507, "quota", "Upstream storage quota exceeded."),
+    ),
+    false,
+  );
 
   const h = harness();
   const originalPostMessage = RecordingWorker.prototype.postMessage;
   let failLoadWithMemory = true;
+  let failLoadWithStringLength = false;
   RecordingWorker.prototype.postMessage = function (message: WorkerRequest) {
     if (message.type === "load" && failLoadWithMemory) {
       failLoadWithMemory = false;
@@ -1701,6 +1728,23 @@ test("Wasm RuntimeError during sync and memory failure during evaluation produce
             message: "WebAssembly.RuntimeError: unreachable",
             session_valid: false,
             fatal: true,
+            memory: true,
+          },
+        } as MessageEvent);
+      });
+      return;
+    }
+    if (message.type === "load" && failLoadWithStringLength) {
+      failLoadWithStringLength = false;
+      queueMicrotask(() => {
+        this.onmessage?.({
+          data: {
+            type: "error",
+            id: message.id,
+            message: "Invalid string length",
+            session_valid: false,
+            fatal: true,
+            memory: true,
           },
         } as MessageEvent);
       });
@@ -1715,8 +1759,334 @@ test("Wasm RuntimeError during sync and memory failure during evaluation produce
       assert.equal(failed.kind, "memory");
       assert.match(failed.message, /ran out of memory while evaluating records/);
     }
+
+    failLoadWithStringLength = true;
+    const stringLengthFailed = await h.calculator.ensure();
+    assert.equal(stringLengthFailed.state, "failed");
+    if (stringLengthFailed.state === "failed") {
+      assert.equal(stringLengthFailed.kind, "memory");
+      assert.match(
+        stringLengthFailed.message,
+        /ran out of memory while evaluating records/,
+      );
+    }
   } finally {
     RecordingWorker.prototype.postMessage = originalPostMessage;
     h.calculator.cancel();
+  }
+});
+
+test("HTTP 502 with 'unreachable' in its message is classified as network, not memory", async () => {
+  const savedFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          error: "upstream_unreachable",
+          message: "Upstream server is unreachable.",
+        }),
+        { status: 502, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+    const h = harness();
+    const status = await h.calculator.ensure({
+      mode: "personal",
+      refresh: true,
+    });
+    assert.equal(status.state, "failed");
+    if (status.state === "failed") {
+      assert.notEqual(status.kind, "memory");
+      assert.match(status.message, /Upstream server is unreachable/);
+    }
+    h.calculator.cancel();
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+test("overlay setup or worker overlay failure after load keeps loadedKey, sent, and projectionDigest consistent", async () => {
+  const selA = "sha256:" + "1".repeat(64);
+  const selB = "sha256:" + "2".repeat(64);
+  const added2 = "jvr1:" + "z".repeat(64);
+
+  // Sub-case 1: overlayFor fails after fullLoad of S2 (with selB),
+  // then S3 (with selA) runs. S3 must not advance from S2 while thinking S2 had selA.
+  {
+    const h = harness();
+    h.selections.set(selA, JSON.stringify([other]));
+    h.selections.set(selB, JSON.stringify([added]));
+    h.records.set(added, {
+      id: added,
+      envelope: envelope(added),
+      body: null,
+      bodyStatus: "none",
+      bodyHash: null,
+    });
+    h.records.set(added2, {
+      id: added2,
+      envelope: envelope(added2),
+      body: null,
+      bodyStatus: "none",
+      bodyHash: null,
+    });
+
+    const inv1: SnapshotInventory = {
+      ...inventory([view, other], snapshot("1")),
+      selections: [selA],
+    };
+    const inv2: SnapshotInventory = {
+      ...inventory([view, other, added], snapshot("2")),
+      selections: [selB],
+    };
+    const inv3: SnapshotInventory = {
+      ...inventory([view, other, added, added2], snapshot("3")),
+      selections: [selA],
+    };
+
+    h.setInventory(inv1);
+    const r1 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r1.state, "ready");
+
+    h.setInventory(inv2);
+    currentProjectionDigest = advanceDigest([added]);
+    const origOverlayFor = (h.calculator as any).overlayFor.bind(h.calculator);
+    let overlayCalls = 0;
+    (h.calculator as any).overlayFor = async (...args: unknown[]) => {
+      overlayCalls++;
+      if (overlayCalls === 2) {
+        throw new Error("Transient IDB error reading outbox");
+      }
+      return origOverlayFor(...args);
+    };
+
+    const r2 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r2.state, "failed");
+    assert.equal((h.calculator as any).sent?.snapshot, inv2.snapshot);
+
+    h.setInventory(inv3);
+    currentProjectionDigest = advanceDigest([added2]);
+    const beforeMessages = h.worker.messages.length;
+    const r3 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r3.state, "ready");
+    const run3Types = h.worker.messages
+      .slice(beforeMessages)
+      .map((m) => m.type);
+    // Because S2 had selB and S3 has selA, Run 3 must do a full load, not an advance from S2.
+    assert.ok(
+      run3Types.includes("load") && !run3Types.includes("advance"),
+      `Expected full load for S3 when selections differ from S2, got ${run3Types.join(",")}`,
+    );
+    h.calculator.cancel();
+  }
+
+  // Sub-case 2: overlayFor fails after fullLoad of S2,
+  // then store rolls back to S1 and Run 3 runs on S1. Run 3 must not take sameBase on S2's session.
+  {
+    const h = harness();
+    h.selections.set(selA, JSON.stringify([other]));
+    h.selections.set(selB, JSON.stringify([added]));
+    h.records.set(added, {
+      id: added,
+      envelope: envelope(added),
+      body: null,
+      bodyStatus: "none",
+      bodyHash: null,
+    });
+
+    const inv1: SnapshotInventory = {
+      ...inventory([view, other], snapshot("1")),
+      selections: [selA],
+    };
+    const inv2: SnapshotInventory = {
+      ...inventory([view, other, added], snapshot("2")),
+      selections: [selB],
+    };
+
+    h.setInventory(inv1);
+    const r1 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r1.state, "ready");
+    if (r1.state === "ready") assert.equal(r1.events, 2);
+
+    h.setInventory(inv2);
+    currentProjectionDigest = advanceDigest([added]);
+    const origOverlayFor = (h.calculator as any).overlayFor.bind(h.calculator);
+    let overlayCalls = 0;
+    (h.calculator as any).overlayFor = async (...args: unknown[]) => {
+      overlayCalls++;
+      if (overlayCalls === 2) {
+        throw new Error("Transient IDB error reading outbox");
+      }
+      return origOverlayFor(...args);
+    };
+
+    const r2 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r2.state, "failed");
+
+    // Roll back store to inv1 (2 events)
+    h.setInventory(inv1);
+    currentProjectionDigest = BASE_DIGEST;
+    const r3 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r3.state, "ready");
+    if (r3.state === "ready") {
+      assert.equal(r3.snapshot, inv1.snapshot);
+      assert.equal(r3.events, 2);
+    }
+    h.calculator.cancel();
+  }
+
+  // Sub-case 3: worker 'overlay' step failure clears loadedKey, sent, and projectionDigest.
+  {
+    const h = harness();
+    const r1 = await h.calculator.ensure({ mode: "personal" });
+    assert.equal(r1.state, "ready");
+    const originalPostMessage = RecordingWorker.prototype.postMessage;
+    let failWorkerOverlay = true;
+    RecordingWorker.prototype.postMessage = function (message: WorkerRequest) {
+      if (message.type === "overlay" && failWorkerOverlay) {
+        failWorkerOverlay = false;
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: {
+              type: "error",
+              id: message.id,
+              message: "overlay failed",
+              session_valid: false,
+              fatal: false,
+            },
+          } as MessageEvent);
+        });
+        return;
+      }
+      originalPostMessage.call(this, message);
+    };
+    try {
+      const r2 = await h.calculator.ensure({ mode: "site" });
+      assert.equal(r2.state, "failed");
+      assert.equal((h.calculator as any).loadedKey, null);
+      assert.equal((h.calculator as any).sent, null);
+      assert.equal((h.calculator as any).projectionDigest, null);
+    } finally {
+      RecordingWorker.prototype.postMessage = originalPostMessage;
+      h.calculator.cancel();
+    }
+  }
+});
+
+test("commitInventory frees both ProjectionDigest allocations when IndexedDB reads fail", async () => {
+  const { LocalStore } = await import("../../src/data/store.ts");
+  const sampleDigest = core.createProjectionDigest();
+  const proto = Object.getPrototypeOf(sampleDigest) as {
+    free: () => void;
+  };
+  sampleDigest.free();
+
+  const origFree = proto.free;
+  let freeCalls = 0;
+  proto.free = function (this: unknown) {
+    freeCalls++;
+    return origFree.call(this);
+  };
+
+  const makeReq = <T>(value: T, shouldFail = false) => {
+    const req: {
+      result?: T;
+      error?: Error;
+      onsuccess?: () => void;
+      onerror?: () => void;
+    } = {};
+    queueMicrotask(() => {
+      if (shouldFail) {
+        req.error = new Error("IDB read failure");
+        req.onerror?.();
+      } else {
+        req.result = value;
+        req.onsuccess?.();
+      }
+    });
+    return req;
+  };
+
+  try {
+    // 1. Failure inside initial digest scan (hash === null)
+    const inv1 = inventory([view], snapshot("1"));
+    const fakeStore1 = Object.create(LocalStore.prototype) as LocalStore;
+    (fakeStore1 as any).database = Promise.resolve({
+      transaction: () => {
+        const tx: any = {
+          error: null,
+          oncomplete: null,
+          onabort: null,
+          onerror: null,
+          abort() {
+            queueMicrotask(() => tx.onabort?.());
+          },
+          objectStore(name: string) {
+            if (name === "inventory") {
+              return { get: () => makeReq(undefined) };
+            }
+            if (name === "projections") {
+              return {
+                getAllKeys: () => makeReq([], true),
+                getAll: () => makeReq([]),
+              };
+            }
+            return {};
+          },
+        };
+        return tx;
+      },
+    });
+    await assert.rejects(
+      () => fakeStore1.commitInventory(inv1),
+      /IDB read failure/,
+    );
+    assert.equal(freeCalls, 1);
+
+    // 2. Failure inside delta digest scan (previous && previous.snapshot !== inventory.snapshot)
+    const inv2 = inventory([view, other], snapshot("2"));
+    const fakeStore2 = Object.create(LocalStore.prototype) as LocalStore;
+    (fakeStore2 as any).database = Promise.resolve({
+      transaction: () => {
+        const tx: any = {
+          error: null,
+          oncomplete: null,
+          onabort: null,
+          onerror: null,
+          abort() {
+            queueMicrotask(() => tx.onabort?.());
+          },
+          objectStore(name: string) {
+            if (name === "inventory") {
+              return { get: () => makeReq(inv1) };
+            }
+            if (name === "meta") {
+              return {
+                get: () =>
+                  makeReq({
+                    version: 1,
+                    build: core.projectionBuildIdentity(),
+                    events_digest: inv1.events_digest,
+                    rows_hash: BASE_DIGEST,
+                    count: 1,
+                  }),
+              };
+            }
+            if (name === "projections") {
+              return {
+                get: () => makeReq(undefined, true),
+              };
+            }
+            return {};
+          },
+        };
+        return tx;
+      },
+    });
+    await assert.rejects(
+      () => fakeStore2.commitInventory(inv2),
+      /IDB read failure/,
+    );
+    assert.equal(freeCalls, 2);
+  } finally {
+    proto.free = origFree;
   }
 });

@@ -145,6 +145,9 @@ impl PreparedEvaluationInput {
         }
         self.add_projection_node(row.node);
     }
+    pub fn clear_import_selections(&mut self) {
+        self.options.import_selections.clear();
+    }
     pub fn insert_import_selection(&mut self, hash: String, ids: Vec<String>) {
         self.options.import_selections.insert(hash, ids);
     }
