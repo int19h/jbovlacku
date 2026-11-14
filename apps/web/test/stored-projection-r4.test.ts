@@ -1834,3 +1834,173 @@ test("a late body write followed by a load gives a consistent meta and rows with
   expect(result.loadedEvents).toBe(result.expectedEvents);
   expect(result.calcState).toBe("ready");
 });
+
+test("a same-snapshot commit repairs stale current projection metadata", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { projectionRowBytes } = await import(
+      String("/src/data/projection-meta.ts")
+    );
+    await core.initializeCore();
+    const store = new LocalStore(
+      `stale-current-${crypto.randomUUID()}`,
+    ) as BrowserStore;
+    const makeEvent = (seedByte: number, nonceChar: string) => {
+      const event = core.createEvent(
+        new Uint8Array(32).fill(seedByte),
+        [],
+        nonceChar.repeat(32),
+        { kind: "identity.merge" },
+        null,
+      );
+      const projected = core.projectRecord(
+        core.utf8(JSON.stringify(event.envelope)),
+      );
+      return {
+        id: event.envelope.id,
+        stored: {
+          id: event.envelope.id,
+          envelope: projected.envelope,
+          body: null,
+          bodyHash: null,
+          bodyStatus: "none" as const,
+        },
+        row: projected.row,
+      };
+    };
+    try {
+      const first = makeEvent(11, "1");
+      const second = makeEvent(22, "2");
+      const selection = core.contentHash(core.utf8("[]"));
+      await store.put(
+        "meta",
+        "projection:producer",
+        core.projectionBuildIdentity(),
+      );
+      await store.putProjectedRecord(first.stored, first.row);
+      await store.putProjectedRecord(second.stored, second.row);
+      await store.put("selections", selection, "[]");
+      const events = [first.id, second.id].sort();
+      const envelopes = await Promise.all(
+        events.map(async (id) => {
+          const record = await store.get<{ envelope: string }>("records", id);
+          return record!.envelope + "\n";
+        }),
+      );
+      const inventory: SnapshotInventory = {
+        snapshot: "sha256:" + "a".repeat(64),
+        logical_inventory: "sha256:" + "a".repeat(64),
+        events_digest: core.contentHash(core.utf8(envelopes.join(""))),
+        view: first.id,
+        events,
+        bodies: [],
+        unretained_bodies: [],
+        selections: [selection],
+      };
+      await store.commitInventory(inventory);
+      await store.put("meta", `projection:${inventory.snapshot}`, {
+        version: core.PROJECTION_ROW_VERSION,
+        build: core.projectionBuildIdentity(),
+        events_digest: inventory.events_digest,
+        rows_hash: "sha256:" + "f".repeat(64),
+        count: events.length,
+      });
+      await store.commitInventory(inventory);
+      const stored = await store.get<{ rows_hash: string; count: number }>(
+        "meta",
+        `projection:${inventory.snapshot}`,
+      );
+      const digest = core.createProjectionDigest();
+      let count = 0;
+      let actualHash = "";
+      try {
+        for (const id of events) {
+          const row = await store.get<Uint8Array>("projections", id);
+          if (row) {
+            count++;
+            digest.update(id, projectionRowBytes(row));
+          }
+        }
+        actualHash = digest.finish();
+      } catch (error) {
+        digest.free();
+        throw error;
+      }
+
+      const db = await store.database;
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("projections", "readwrite");
+        tx.objectStore("projections").delete(second.id);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      await store.commitInventory(inventory);
+      const storedAfterMissing = await store.get<{
+        rows_hash: string;
+        count: number;
+      }>("meta", `projection:${inventory.snapshot}`);
+      const digestAfterMissing = core.createProjectionDigest();
+      let countAfterMissing = 0;
+      let actualHashAfterMissing = "";
+      try {
+        for (const id of events) {
+          const row = await store.get<Uint8Array>("projections", id);
+          if (row) {
+            countAfterMissing++;
+            digestAfterMissing.update(id, projectionRowBytes(row));
+          }
+        }
+        actualHashAfterMissing = digestAfterMissing.finish();
+      } catch (error) {
+        digestAfterMissing.free();
+        throw error;
+      }
+      const { EvaluationWorker } = await import(
+        String("/src/workers/evaluate.ts")
+      );
+      const worker = new EvaluationWorker();
+      try {
+        const loaded = await worker.load({
+          id: 1,
+          type: "load",
+          session: "after-missing-row-same-snapshot",
+          source: {
+            database: store.name,
+            snapshot: inventory.snapshot,
+            events_digest: inventory.events_digest,
+            count: inventory.events.length,
+          },
+          options: { selected_view: first.id },
+        });
+        return {
+          storedHash: stored?.rows_hash,
+          actualHash,
+          storedCount: stored?.count,
+          actualCount: count,
+          storedHashAfterMissing: storedAfterMissing?.rows_hash,
+          actualHashAfterMissing,
+          storedCountAfterMissing: storedAfterMissing?.count,
+          actualCountAfterMissing: countAfterMissing,
+          rebuilt: Boolean(loaded.projection_rebuilt),
+          loadedEvents: loaded.events,
+        };
+      } finally {
+        worker.currentSession?.free();
+      }
+    } finally {
+      (await store.database).close();
+    }
+  }, corePath);
+
+  expect(result.storedHash).toBe(result.actualHash);
+  expect(result.storedCount).toBe(result.actualCount);
+  expect(result.storedHashAfterMissing).toBe(result.actualHashAfterMissing);
+  expect(result.storedCountAfterMissing).toBe(1);
+  expect(result.actualCountAfterMissing).toBe(1);
+  expect(result.rebuilt).toBe(true);
+  expect(result.loadedEvents).toBe(2);
+});

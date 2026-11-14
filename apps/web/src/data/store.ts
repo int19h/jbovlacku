@@ -1209,9 +1209,14 @@ export class LocalStore {
             )) as ProjectionSnapshotMeta | undefined)
           : undefined;
         let hash =
+          validPrevious &&
+          validPrevious.snapshot !== inventory.snapshot &&
+          previousMeta?.count === validPrevious.events.length &&
+          previousMeta?.events_digest === validPrevious.events_digest &&
           typeof previousMeta?.rows_hash === "string"
             ? previousMeta.rows_hash
             : null;
+        let rowCount = events.length;
         if (
           hash !== null &&
           validPrevious &&
@@ -1256,9 +1261,13 @@ export class LocalStore {
             if (!deltaFinished) delta.free();
           }
         }
-        if (hash === null) {
+        const scanProjectionRows = async (): Promise<{
+          hash: string;
+          count: number;
+        }> => {
           const digest = createProjectionDigest();
           let digestFinished = false;
+          let count = 0;
           try {
             let after: string | undefined;
             for (;;) {
@@ -1277,20 +1286,27 @@ export class LocalStore {
                 if (
                   hasSortedId(events, id) &&
                   typeof rows[index] !== "undefined"
-                )
+                ) {
+                  count++;
                   digest.update(
                     id,
                     projectionRowBytes(rows[index] as ProjectionBytes),
                   );
+                }
               }
               if (keys.length < 256) break;
               after = String(keys[keys.length - 1]);
             }
             digestFinished = true;
-            hash = digest.finish();
+            return { hash: digest.finish(), count };
           } finally {
             if (!digestFinished) digest.free();
           }
+        };
+        if (hash === null) {
+          const scanned = await scanProjectionRows();
+          hash = scanned.hash;
+          rowCount = scanned.count;
         }
         let advanceFrom: ProjectionAdvanceFrom | undefined;
         if (
@@ -1346,18 +1362,6 @@ export class LocalStore {
         const producer = await idbRequest(
           meta.get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
         );
-        meta.put(
-          {
-            version: PROJECTION_ROW_VERSION,
-            build: producer ?? "unknown",
-            events_digest: inventory.events_digest,
-            rows_hash: hash,
-            count: events.length,
-            ...(advanceFrom ? { advance_from: advanceFrom } : {}),
-          },
-          projectionSnapshotKey(inventory.snapshot),
-        );
-        meta.put(inventory.snapshot, PROJECTION_LATEST_KEY);
         inventories.put(inventory, "latest");
         const selectionStore = tx.objectStore("selections");
         const [inventoryKeys, metaKeys, selectionKeys] = await Promise.all([
@@ -1393,7 +1397,7 @@ export class LocalStore {
         const prune = async (
           store: IDBObjectStore,
           verifyComplete: boolean,
-        ) => {
+        ): Promise<number> => {
           let after: string | undefined;
           let retainedCount = 0;
           for (;;) {
@@ -1414,9 +1418,32 @@ export class LocalStore {
             throw new Error(
               "A record in the inventory is no longer cached. Download the records again.",
             );
+          return retainedCount;
         };
         await prune(tx.objectStore("records"), true);
-        await prune(tx.objectStore("projections"), false);
+        const retainedProjections = await prune(
+          tx.objectStore("projections"),
+          false,
+        );
+        if (retainedProjections !== rowCount) {
+          const scanned = await scanProjectionRows();
+          hash = scanned.hash;
+          rowCount = scanned.count;
+        }
+        meta.put(
+          {
+            version: PROJECTION_ROW_VERSION,
+            build: producer ?? "unknown",
+            events_digest: inventory.events_digest,
+            rows_hash: hash,
+            count: rowCount,
+            ...(advanceFrom && rowCount === events.length
+              ? { advance_from: advanceFrom }
+              : {}),
+          },
+          projectionSnapshotKey(inventory.snapshot),
+        );
+        meta.put(inventory.snapshot, PROJECTION_LATEST_KEY);
       };
       void execute().catch((error) => {
         failure = error;

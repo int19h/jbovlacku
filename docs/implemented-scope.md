@@ -613,7 +613,7 @@ The value is `mixed` when two builds wrote them. Sync records which `latest` sna
 
 The row digest covers every inventory row. For each row, the core hashes the record ID, the row length as an unsigned 64-bit little-endian integer, and the row bytes with SHA-256. The digest is the bytewise XOR of these hashes. Each addition or removal XORs the same per-row hash.
 
-Record and late-body writes, inventory commits, record deletion, and rebuilds maintain the stored digest for `latest`. A commit also removes pruned IDs in its delta and records an incremental advance descriptor when the committed snapshot is a bounded append to the previous `latest` snapshot. Advance writes no rows or metadata. It verifies the new snapshot's stored digest by XORing its added rows into the verified base digest before using the advance session.
+Record and late-body writes, inventory commits, record deletion, and rebuilds maintain the stored digest for `latest`. A commit also removes pruned IDs in its delta, recomputes the row digest and count from the retained rows when re-committing the same snapshot or when rows are missing, and records an incremental advance descriptor when the committed snapshot is a bounded append to the previous `latest` snapshot. Advance writes no rows or metadata. It verifies the new snapshot's stored digest by XORing its added rows into the verified base digest before using the advance session.
 
 The digest detects accidental damage only. It is not a defense against a party who can write to this origin's storage. The client trusts that party.
 

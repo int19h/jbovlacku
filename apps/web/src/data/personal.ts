@@ -562,7 +562,7 @@ export class PersonalCalculator {
       let currentInventory: SnapshotInventory | null = inventory;
       inventory = null;
       for (let attempt = 0; ; attempt++) {
-        const activeInventory = currentInventory!;
+        let activeInventory: SnapshotInventory | null = currentInventory!;
         currentInventory = null;
         const attemptSnapshot = activeInventory.snapshot;
         try {
@@ -589,7 +589,9 @@ export class PersonalCalculator {
                 activeInventory,
                 selectionBinding,
               );
+              activeInventory = null;
             } catch (error) {
+              activeInventory = null;
               if (this.current === run) {
                 this.clearLoadedSession();
                 this.sent = null;
@@ -687,6 +689,8 @@ export class PersonalCalculator {
               view: summary.view,
               actors: loaded.actors ?? {},
             };
+          } else {
+            activeInventory = null;
           }
           // One overlay per run. The digest is derived from the exact overlay
           // that enters the worker, so a result never carries another digest.
