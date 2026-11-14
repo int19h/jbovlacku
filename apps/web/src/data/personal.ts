@@ -409,15 +409,18 @@ export class PersonalCalculator {
     run: Run,
     refresh: boolean,
   ): Promise<SnapshotInventory> {
+    let expectedLatest: string | null | undefined;
     if (!refresh) {
       const cached = await latestInventory(this.store);
       if (cached) return cached;
+      expectedLatest = null;
     }
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         return await syncRecords(this.store, {
           signal: run.abort.signal,
           fresh: refresh,
+          expectedLatest,
           onProgress: (progress) => {
             if (this.current === run)
               this.set({ state: "downloading", progress });
@@ -427,7 +430,10 @@ export class PersonalCalculator {
         if (error instanceof RecordsError && error.kind === "superseded") {
           const cached = await latestInventory(this.store);
           if (cached) return cached;
-          if (attempt === 0) continue;
+          if (attempt === 0) {
+            expectedLatest = null;
+            continue;
+          }
         }
         throw error;
       }

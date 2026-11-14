@@ -222,6 +222,7 @@ async function inventoryIds(
 type Project = typeof projectRecord;
 type SyncOptions = RequestOptions & {
   fresh?: boolean;
+  expectedLatest?: string | null;
   onProgress?: (progress: RecordsProgress) => void;
 };
 
@@ -394,7 +395,11 @@ async function syncProjectedRecords(
   const latest =
     (await store.get<SnapshotInventory>("inventory", "latest")) ?? null;
   const expectedLatest =
-    latest && typeof latest.snapshot === "string" ? latest.snapshot : null;
+    options.expectedLatest !== undefined
+      ? options.expectedLatest
+      : latest && typeof latest.snapshot === "string"
+        ? latest.snapshot
+        : null;
   const manifest = await getManifest(options);
   const snapshot = manifest.snapshot;
   const declared = manifest.manifest as {

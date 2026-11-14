@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
-import { corePath } from "./helpers.ts";
+import { corePath, fixture } from "./helpers.ts";
 import type { LocalStore as BrowserStore } from "../src/data/store.ts";
-import type { SnapshotInventory } from "../src/data/records.ts";
+import type { SnapshotInventory, StoredRecord } from "../src/data/records.ts";
 
 test("the version 6 upgrade reports a blocked open when an older connection stays open and clears legacy record projections once unblocked", async ({
   page,
@@ -2270,4 +2270,406 @@ test("forgetInventory in another tab during a sync retries once and missing snap
   expect(result.missingSnapshotMessage).toBe(
     `Snapshot ${result.missingSnap} is not cached. Download the records again.`,
   );
+});
+
+test("a newer commit after the superseded handler sees no latest and before the retry reads latest is not overwritten", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const {
+      syncRecords,
+      forgetInventory,
+      hashInventoryIds,
+      hashLogicalInventory,
+    } = await import(String("/src/data/records.ts"));
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const name = `retry-race-${crypto.randomUUID()}`;
+    const tabA = new LocalStore(name) as BrowserStore;
+    const tabB = new LocalStore(name) as BrowserStore;
+    try {
+      const base = await syncRecords(tabA);
+      const event = core.createEvent(
+        new Uint8Array(32).fill(191),
+        [],
+        "bf".repeat(16),
+        { kind: "identity.merge" },
+        null,
+      );
+      const projection = core.projectRecord(
+        core.utf8(JSON.stringify(event.envelope)),
+      );
+      const record = {
+        id: event.envelope.id,
+        envelope: projection.envelope,
+        body: null,
+        bodyHash: null,
+        bodyStatus: "none" as const,
+      };
+      const events = [...base.events, record.id].sort();
+      const rows = await tabA.readRecords(base.events);
+      const envelopes = new Map(
+        rows.map((r: StoredRecord | undefined) => [r!.id, r!.envelope]),
+      );
+      envelopes.set(record.id, record.envelope);
+      const events_digest = core.contentHash(
+        core.utf8(events.map((id: string) => envelopes.get(id) + "\n").join("")),
+      );
+      const manifest = {
+        events: { count: events.length, hash: events_digest },
+        bodies: {
+          count: base.bodies.length,
+          hash: hashInventoryIds(base.bodies),
+        },
+        import_selections: {
+          count: base.selections.length,
+          hash: hashInventoryIds(base.selections),
+        },
+      };
+      const snapshot = core.contentHash(
+        core.utf8(core.canonicalize(core.utf8(JSON.stringify(manifest)))),
+      );
+      const newer: SnapshotInventory = {
+        ...base,
+        snapshot,
+        events,
+        events_digest,
+        logical_inventory: hashLogicalInventory({
+          events,
+          bodies: base.bodies,
+          import_selections: base.selections,
+        }),
+      };
+      const originalGet = tabB.get.bind(tabB);
+      const originalCommit = tabB.commitInventory.bind(tabB);
+      let gets = 0;
+      let commits = 0;
+      const expected: (string | null | undefined)[] = [];
+      tabB.commitInventory = async (
+        inventory: SnapshotInventory,
+        expectedLatest?: string | null,
+      ) => {
+        commits++;
+        expected.push(expectedLatest);
+        if (commits === 1) await forgetInventory(tabA);
+        return originalCommit(inventory, expectedLatest);
+      };
+      tabB.get = async <T>(store: string, key: string): Promise<T | undefined> => {
+        const value = await originalGet<T>(store, key);
+        if (store === "inventory" && key === "latest" && ++gets === 2) {
+          if (value !== undefined && value !== null)
+            throw new Error("Expected forgotten inventory");
+          await tabA.putProjectedRecord(record, projection.row);
+          await tabA.commitInventory(newer, null);
+        }
+        return value;
+      };
+      const calc = new PersonalCalculator(tabB, async () => ({
+        identity: null,
+      }));
+      const status = await calc.ensure({ mode: "personal", refresh: true });
+      const latest = await tabA.get<SnapshotInventory>("inventory", "latest");
+      const hasNewEvent = Boolean(
+        await tabA.get<StoredRecord>("records", record.id),
+      );
+      calc.cancel();
+      return {
+        status,
+        latest: latest?.snapshot ?? null,
+        newer: snapshot,
+        base: base.snapshot,
+        commits,
+        gets,
+        expected,
+        hasNewEvent,
+      };
+    } finally {
+      (await tabA.database).close();
+      (await tabB.database).close();
+    }
+  }, corePath);
+
+  expect(result.latest).toBe(result.newer);
+  expect(result.status).toMatchObject({
+    state: "ready",
+    snapshot: result.newer,
+  });
+  expect(result.hasNewEvent).toBe(true);
+  expect(result.commits).toBe(2);
+  expect(result.expected).toEqual([result.base, null]);
+});
+
+test("forgotten-inventory retry handles a newer commit during the second sync and stops after two syncs when forgotten again", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(
+    async ({ corePath, word }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { syncRecords, forgetInventory } = await import(
+        String("/src/data/records.ts")
+      );
+      const { PersonalCalculator } = await import(
+        String("/src/data/personal.ts")
+      );
+      const rankOf = async (calc: any) => {
+        const rank = await calc.rankWord(word, { mode: "personal" });
+        return JSON.stringify({
+          scores: rank.scores,
+          layers: rank.layers,
+          unavailable: rank.unavailable_scores,
+          calculation: rank.calculation,
+        });
+      };
+      const internal = (calc: any) => ({
+        loadedKey: calc.loadedKey,
+        sent: calc.sent?.snapshot ?? null,
+        digest: calc.projectionDigest,
+      });
+      const buildNewer = async (
+        store: BrowserStore,
+        base: SnapshotInventory,
+      ): Promise<SnapshotInventory> => {
+        const event = core.createEvent(
+          new Uint8Array(32).fill(77),
+          [],
+          "7".repeat(32),
+          { kind: "identity.merge" },
+          null,
+        );
+        const projected = core.projectRecord(
+          core.utf8(JSON.stringify(event.envelope)),
+        );
+        const record: StoredRecord = {
+          id: event.envelope.id,
+          envelope: projected.envelope,
+          body: null,
+          bodyHash: null,
+          bodyStatus: "none",
+        };
+        await store.putProjectedRecord(record, projected.row);
+        const env = new Map<string, string>();
+        for (const id of base.events) {
+          const rec = await store.get<StoredRecord>("records", id);
+          env.set(id, rec!.envelope);
+        }
+        env.set(event.envelope.id, projected.envelope);
+        const events = [...base.events, event.envelope.id].sort();
+        const snapshot = "sha256:" + "e".repeat(64);
+        return {
+          ...base,
+          snapshot,
+          logical_inventory: snapshot,
+          events,
+          events_digest: core.contentHash(
+            core.utf8(events.map((id) => env.get(id) + "\n").join("")),
+          ),
+        };
+      };
+      const freshOracle = async (targetSnapshot: string) => {
+        const store = new LocalStore(
+          `fresh-oracle-${crypto.randomUUID()}`,
+        ) as BrowserStore;
+        try {
+          const base = await syncRecords(store);
+          let target = base;
+          if (targetSnapshot !== base.snapshot) {
+            target = await buildNewer(store, base);
+            await store.commitInventory(target);
+          }
+          const calc = new PersonalCalculator(store, async () => ({
+            identity: null,
+          }));
+          const status = await calc.ensure({ mode: "personal" });
+          const rank = status.state === "ready" ? await rankOf(calc) : null;
+          calc.cancel();
+          return { status, rank, snapshot: target.snapshot };
+        } finally {
+          (await store.database).close();
+        }
+      };
+
+      // Case 1: forget during first sync, then a newer commit by tabA during the second sync.
+      let newerDuringSecond: any;
+      {
+        const name = `forget-second-commit-${crypto.randomUUID()}`;
+        const tabA = new LocalStore(name) as BrowserStore;
+        const tabB = new LocalStore(name) as BrowserStore;
+        try {
+          const base = await syncRecords(tabA);
+          let calls = 0;
+          let passed = 0;
+          let newerSnapshot = "";
+          const originalCommit = tabB.commitInventory.bind(tabB);
+          tabB.commitInventory = async (
+            inventory: SnapshotInventory,
+            expected?: string | null,
+          ) => {
+            calls++;
+            if (calls === 1) await forgetInventory(tabA);
+            if (calls === 2) {
+              const next = await buildNewer(tabA, base);
+              newerSnapshot = next.snapshot;
+              await tabA.commitInventory(next, null);
+            }
+            const value = await originalCommit(inventory, expected);
+            passed++;
+            return value;
+          };
+          const calc = new PersonalCalculator(tabB, async () => ({
+            identity: null,
+          }));
+          const first = await calc.ensure({ mode: "personal", refresh: true });
+          const latest =
+            (await tabA.get<SnapshotInventory>("inventory", "latest"))
+              ?.snapshot ?? null;
+          const rank = first.state === "ready" ? await rankOf(calc) : null;
+          const state = internal(calc);
+          calc.cancel();
+          const want = await freshOracle(newerSnapshot);
+          newerDuringSecond = {
+            first,
+            calls,
+            passed,
+            latest,
+            newerSnapshot,
+            sent: state.sent,
+            sameRank: rank === want.rank,
+            sameStatus: JSON.stringify(first) === JSON.stringify(want.status),
+          };
+        } finally {
+          (await tabA.database).close();
+          (await tabB.database).close();
+        }
+      }
+
+      // Case 2: the retry is used up (forget, then a newer commit, then a second forget
+      // before the calculator reads `latest`), ending in a clean superseded failure,
+      // and the next `ensure` is ready.
+      let exhaustedRetry: any;
+      {
+        const name = `forget-exhausted-${crypto.randomUUID()}`;
+        const tabA = new LocalStore(name) as BrowserStore;
+        const tabB = new LocalStore(name) as BrowserStore;
+        try {
+          const base = await syncRecords(tabA);
+          const calc = new PersonalCalculator(tabB, async () => ({
+            identity: null,
+          }));
+          const before = await calc.ensure({ mode: "personal" });
+          const beforeState = internal(calc);
+          let calls = 0;
+          let armed = false;
+          const originalCommit = tabB.commitInventory.bind(tabB);
+          const originalGet = tabB.get.bind(tabB);
+          tabB.commitInventory = async (
+            inventory: SnapshotInventory,
+            expected?: string | null,
+          ) => {
+            calls++;
+            if (calls === 1) await forgetInventory(tabA);
+            if (calls === 2) {
+              const next = await buildNewer(tabA, base);
+              await tabA.commitInventory(next, null);
+              armed = true;
+            }
+            return originalCommit(inventory, expected);
+          };
+          tabB.get = async <T>(
+            storeName: string,
+            key: string,
+          ): Promise<T | undefined> => {
+            if (armed && storeName === "inventory" && key === "latest") {
+              armed = false;
+              await forgetInventory(tabA);
+            }
+            return originalGet<T>(storeName, key);
+          };
+          const failed = await calc.ensure({ mode: "personal", refresh: true });
+          const failedState = internal(calc);
+          const latestAfterFail =
+            (await tabA.get<SnapshotInventory>("inventory", "latest"))
+              ?.snapshot ?? null;
+          tabB.commitInventory = originalCommit;
+          tabB.get = originalGet;
+          const callsAtFail = calls;
+          const again = await calc.ensure({ mode: "personal" });
+          const latest =
+            (await tabA.get<SnapshotInventory>("inventory", "latest"))
+              ?.snapshot ?? null;
+          const rank = again.state === "ready" ? await rankOf(calc) : null;
+          const againState = internal(calc);
+          calc.cancel();
+          const want = await freshOracle(base.snapshot);
+          const keys = async (s: string) =>
+            (await tabA.keys(s)).map(String).sort();
+          exhaustedRetry = {
+            before: before.state,
+            beforeState,
+            failed,
+            failedState,
+            callsAtFail,
+            latestAfterFail,
+            again,
+            againSent: againState.sent,
+            latest,
+            base: base.snapshot,
+            sameRank: rank === want.rank,
+            sameStatus: JSON.stringify(again) === JSON.stringify(want.status),
+            inventoryKeys: await keys("inventory"),
+            recordCount: (await keys("records")).length,
+            rowCount: (await keys("projections")).length,
+            baseCount: base.events.length,
+          };
+        } finally {
+          (await tabA.database).close();
+          (await tabB.database).close();
+        }
+      }
+
+      return { newerDuringSecond, exhaustedRetry };
+    },
+    { corePath, word: fixture().words.cukta },
+  );
+
+  expect(result.newerDuringSecond.first.state).toBe("ready");
+  expect(result.newerDuringSecond.calls).toBe(2);
+  expect(result.newerDuringSecond.passed).toBe(0);
+  expect(result.newerDuringSecond.latest).toBe(
+    result.newerDuringSecond.newerSnapshot,
+  );
+  expect(result.newerDuringSecond.first.snapshot).toBe(
+    result.newerDuringSecond.newerSnapshot,
+  );
+  expect(result.newerDuringSecond.sent).toBe(
+    result.newerDuringSecond.newerSnapshot,
+  );
+  expect(result.newerDuringSecond.sameRank).toBe(true);
+  expect(result.newerDuringSecond.sameStatus).toBe(true);
+
+  expect(result.exhaustedRetry.before).toBe("ready");
+  expect(result.exhaustedRetry.failed.state).toBe("failed");
+  expect(result.exhaustedRetry.failed.kind).toBe("superseded");
+  expect(result.exhaustedRetry.callsAtFail).toBe(2);
+  expect(result.exhaustedRetry.latestAfterFail).toBeNull();
+  expect(result.exhaustedRetry.failedState).toEqual(
+    result.exhaustedRetry.beforeState,
+  );
+  expect(result.exhaustedRetry.again.state).toBe("ready");
+  expect(result.exhaustedRetry.latest).toBe(result.exhaustedRetry.base);
+  expect(result.exhaustedRetry.againSent).toBe(result.exhaustedRetry.base);
+  expect(result.exhaustedRetry.sameRank).toBe(true);
+  expect(result.exhaustedRetry.sameStatus).toBe(true);
+  expect(result.exhaustedRetry.inventoryKeys).toEqual(["latest"]);
+  expect(result.exhaustedRetry.recordCount).toBe(
+    result.exhaustedRetry.baseCount,
+  );
+  expect(result.exhaustedRetry.rowCount).toBe(result.exhaustedRetry.baseCount);
 });
