@@ -130,7 +130,7 @@ class ProjectionRebuildNeeded extends Error {}
 function request<T>(read: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     read.onsuccess = () => resolve(read.result);
-    read.onerror = () => reject(read.error);
+    read.onerror = () => reject(read.transaction?.error ?? read.error);
   });
 }
 function missingRecord(id: string): Error {
@@ -373,7 +373,8 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
     );
     const completion = new Promise<void>((resolve, reject) => {
       transaction.oncomplete = () => resolve();
-      transaction.onabort = () => reject(transaction.error);
+      transaction.onabort = () =>
+        reject(transaction.error ?? new Error("Projection write failed."));
       transaction.onerror = () => {};
     });
     void completion.catch(() => {});
@@ -475,8 +476,11 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
         if (!digestFinished) digest.free();
       }
     } catch (error) {
-      transaction.abort();
-      throw error;
+      const txError = transaction.error;
+      try {
+        transaction.abort();
+      } catch {}
+      throw txError ?? error;
     }
     await completion;
     return bytesRead;

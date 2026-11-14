@@ -24,6 +24,7 @@ import {
   isStorageQuotaFailure,
   latestInventory,
   RecordsError,
+  snapshotInventoryFromStored,
   syncRecords,
   type RecordsProgress,
   type SnapshotInventory,
@@ -405,15 +406,25 @@ export class PersonalCalculator {
       kind: "cancelled",
     });
   }
+  private async readLatestState(): Promise<{
+    cached: SnapshotInventory | null;
+    token: string | null;
+  }> {
+    const raw = await this.store.get<SnapshotInventory>("inventory", "latest");
+    return {
+      cached: snapshotInventoryFromStored(raw),
+      token: raw && typeof raw.snapshot === "string" ? raw.snapshot : null,
+    };
+  }
   private async inventory(
     run: Run,
     refresh: boolean,
   ): Promise<SnapshotInventory> {
     let expectedLatest: string | null | undefined;
     if (!refresh) {
-      const cached = await latestInventory(this.store);
+      const { cached, token } = await this.readLatestState();
       if (cached) return cached;
-      expectedLatest = null;
+      expectedLatest = token;
     }
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -428,10 +439,10 @@ export class PersonalCalculator {
         });
       } catch (error) {
         if (error instanceof RecordsError && error.kind === "superseded") {
-          const cached = await latestInventory(this.store);
+          const { cached, token } = await this.readLatestState();
           if (cached) return cached;
           if (attempt === 0) {
-            expectedLatest = null;
+            expectedLatest = token;
             continue;
           }
         }

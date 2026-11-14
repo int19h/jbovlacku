@@ -826,15 +826,20 @@ export async function loadSelections(
  * view, so a view the reader chose by ID rebinds it; a stored inventory from
  * another chosen view never answers for the chosen one.
  */
-export async function latestInventory(
-  store: LocalStore,
-): Promise<SnapshotInventory | null> {
-  const stored = await store.get<SnapshotInventory>("inventory", "latest");
+export function snapshotInventoryFromStored(
+  stored: SnapshotInventory | undefined | null,
+): SnapshotInventory | null {
   if (!stored || typeof stored.events_digest !== "string") return null;
   const chosen = getPreferredView();
   return chosen && chosen !== stored.view
     ? { ...stored, view: chosen }
     : stored;
+}
+export async function latestInventory(
+  store: LocalStore,
+): Promise<SnapshotInventory | null> {
+  const stored = await store.get<SnapshotInventory>("inventory", "latest");
+  return snapshotInventoryFromStored(stored);
 }
 /** Drops the stored inventory, so the next sync reads the server's selected view again. */
 export async function forgetInventory(store: LocalStore): Promise<void> {

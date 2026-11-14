@@ -425,7 +425,12 @@ export async function handoverPage(
             `transfer-known:${old.identity}`,
           );
         tx.oncomplete = () => resolve();
-        tx.onabort = () => reject(tx.error);
+        tx.onabort = () =>
+          reject(
+            tx.error ??
+              new Error("Local storage did not save the transfer state."),
+          );
+        tx.onerror = () => {};
       });
       knowledge = await askPeers(
         peers,

@@ -2673,3 +2673,582 @@ test("forgotten-inventory retry handles a newer commit during the second sync an
   );
   expect(result.exhaustedRetry.rowCount).toBe(result.exhaustedRetry.baseCount);
 });
+
+test("asynchronous request-level quota abort in multi-batch projection rebuild and putProjectedRecords keeps QuotaExceededError without unhandled rejection", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(String(err)));
+  await page.goto("/");
+  await page.route("**/src/workers/evaluate.ts*", async (route) => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const injection = `
+{
+  const origTxError = Object.getOwnPropertyDescriptor(IDBTransaction.prototype, "error");
+  const patchedTxs = new WeakSet();
+  Object.defineProperty(IDBTransaction.prototype, "error", {
+    configurable: true,
+    get() {
+      const err = origTxError.get.call(this);
+      if (patchedTxs.has(this) && err && err.name === "ConstraintError") {
+        return new DOMException("Quota exceeded.", "QuotaExceededError");
+      }
+      return err;
+    },
+  });
+  let count = 0;
+  let firstKey = null;
+  const origPut = IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put = function(val, key) {
+    if (this.name === "projections") {
+      count++;
+      if (count === 1) firstKey = key;
+      if (count === 10 && firstKey !== null) {
+        patchedTxs.add(this.transaction);
+        return this.add(val, firstKey);
+      }
+    }
+    return origPut.call(this, val, key);
+  };
+}
+`;
+    await route.fulfill({ response, body: injection + source });
+  });
+
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { syncRecords, hashLogicalInventory } = await import(
+      String("/src/data/records.ts")
+    );
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const unhandled: { name: string; message: string }[] = [];
+    const onUnhandled = (event: PromiseRejectionEvent) => {
+      unhandled.push({
+        name: event.reason?.name ?? typeof event.reason,
+        message: event.reason?.message ?? String(event.reason),
+      });
+    };
+    window.addEventListener("unhandledrejection", onUnhandled);
+    const store = new LocalStore(
+      `async-quota-multibatch-${crypto.randomUUID()}`,
+    ) as BrowserStore;
+    const NativeWorker = globalThis.Worker;
+    const workerErrors: any[] = [];
+    globalThis.Worker = class extends NativeWorker {
+      constructor(url: any, options: any) {
+        super(url, options);
+        this.addEventListener("message", (event: any) => {
+          if (event.data?.type === "error") workerErrors.push(event.data);
+        });
+      }
+    };
+    try {
+      const base = await syncRecords(store);
+      const baseRecords = await store.readRecords(base.events);
+      const envelopes = new Map<string, string>(
+        baseRecords.map((r: StoredRecord | undefined) => [r!.id, r!.envelope]),
+      );
+      const extraProjected: { record: StoredRecord; row: Uint8Array }[] = [];
+      for (let i = 0; i < 270; i++) {
+        const seed = new Uint8Array(32);
+        seed[0] = i & 255;
+        seed[1] = (i >> 8) & 255;
+        seed[2] = 91;
+        const hex = (i + 1000).toString(16).padStart(32, "0");
+        const event = core.createEvent(
+          seed,
+          [],
+          hex,
+          { kind: "identity.merge" },
+          null,
+        );
+        const projected = core.projectRecord(
+          core.utf8(JSON.stringify(event.envelope)),
+        );
+        const record: StoredRecord = {
+          id: event.envelope.id,
+          envelope: projected.envelope,
+          body: null,
+          bodyHash: null,
+          bodyStatus: "none",
+        };
+        envelopes.set(record.id, record.envelope);
+        extraProjected.push({ record, row: projected.row });
+      }
+      for (let i = 0; i < extraProjected.length; i += 100) {
+        await store.putProjectedRecords(extraProjected.slice(i, i + 100));
+      }
+      const events = [...envelopes.keys()].sort();
+      const events_digest = core.contentHash(
+        core.utf8(events.map((id) => envelopes.get(id) + "\n").join("")),
+      );
+      const largeInventory: SnapshotInventory = {
+        ...base,
+        snapshot: core.contentHash(core.utf8("large-snap-" + store.name)),
+        logical_inventory: hashLogicalInventory({
+          events,
+          bodies: base.bodies,
+          import_selections: base.selections,
+        }),
+        events_digest,
+        events,
+      };
+      await store.commitInventory(largeInventory);
+
+      const db = await store.database;
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("projections", "readwrite");
+        tx.objectStore("projections").clear();
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error);
+      });
+
+      const calc = new PersonalCalculator(store, async () => ({
+        identity: null,
+      }));
+      const status = await calc.ensure({ mode: "personal" });
+      calc.cancel();
+
+      unhandled.length = 0;
+      const origTxError = Object.getOwnPropertyDescriptor(
+        IDBTransaction.prototype,
+        "error",
+      )!;
+      const patchedTxs = new WeakSet<IDBTransaction>();
+      Object.defineProperty(IDBTransaction.prototype, "error", {
+        configurable: true,
+        get() {
+          const err = origTxError.get!.call(this);
+          if (patchedTxs.has(this) && err && err.name === "ConstraintError") {
+            return new DOMException("Quota exceeded.", "QuotaExceededError");
+          }
+          return err;
+        },
+      });
+      const origPut = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (val: any, key?: IDBValidKey) {
+        if (this.name === "projections") {
+          patchedTxs.add(this.transaction);
+          origPut.call(this, val, key);
+          return this.add(val, key);
+        }
+        return origPut.call(this, val, key);
+      };
+      let mainCaught: { name: string; message: string } | null = null;
+      try {
+        const sample = extraProjected[0];
+        await store.putProjectedRecords([
+          {
+            record: { ...sample.record, body: "updated" },
+            row: sample.row,
+          },
+        ]);
+      } catch (error: any) {
+        mainCaught = {
+          name: error?.name ?? typeof error,
+          message: error?.message ?? String(error),
+        };
+      } finally {
+        IDBObjectStore.prototype.put = origPut;
+        Object.defineProperty(IDBTransaction.prototype, "error", origTxError);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      return {
+        eventCount: events.length,
+        workerRebuild: { status, errors: workerErrors },
+        mainThreadPut: { caught: mainCaught, unhandled: [...unhandled] },
+      };
+    } finally {
+      window.removeEventListener("unhandledrejection", onUnhandled);
+      globalThis.Worker = NativeWorker;
+      (await store.database).close();
+    }
+  }, corePath);
+
+  expect(result.eventCount).toBeGreaterThan(256);
+  expect({
+    workerState: result.workerRebuild.status.state,
+    workerKind: result.workerRebuild.status.kind,
+    workerMessage: result.workerRebuild.status.message,
+    workerQuota: result.workerRebuild.errors[0]?.quota ?? null,
+    mainCaught: result.mainThreadPut.caught,
+    unhandled: result.mainThreadPut.unhandled,
+    pageErrors,
+  }).toEqual({
+    workerState: "failed",
+    workerKind: "storage",
+    workerMessage:
+      "The browser storage quota is full. Free storage for this site, then recompute from records.",
+    workerQuota: true,
+    mainCaught: {
+      name: "QuotaExceededError",
+      message: "Quota exceeded.",
+    },
+    unhandled: [],
+    pageErrors: [],
+  });
+});
+
+test("a newer commit after a non-refresh load sees no latest is not overwritten", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const {
+      syncRecords,
+      forgetInventory,
+      hashInventoryIds,
+      hashLogicalInventory,
+    } = await import(String("/src/data/records.ts"));
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const name = `non-refresh-race-${crypto.randomUUID()}`;
+    const tabA = new LocalStore(name) as BrowserStore;
+    const tabB = new LocalStore(name) as BrowserStore;
+    try {
+      const base = await syncRecords(tabA);
+      const event = core.createEvent(
+        new Uint8Array(32).fill(191),
+        [],
+        "bf".repeat(16),
+        { kind: "identity.merge" },
+        null,
+      );
+      const projection = core.projectRecord(
+        core.utf8(JSON.stringify(event.envelope)),
+      );
+      const record: StoredRecord = {
+        id: event.envelope.id,
+        envelope: projection.envelope,
+        body: null,
+        bodyHash: null,
+        bodyStatus: "none",
+      };
+      const events = [...base.events, record.id].sort();
+      const rows = await tabA.readRecords(base.events);
+      const envelopes = new Map<string, string>(
+        rows.map((r: StoredRecord | undefined) => [r!.id, r!.envelope]),
+      );
+      envelopes.set(record.id, record.envelope);
+      const events_digest = core.contentHash(
+        core.utf8(events.map((id: string) => envelopes.get(id) + "\n").join("")),
+      );
+      const manifest = {
+        events: { count: events.length, hash: events_digest },
+        bodies: {
+          count: base.bodies.length,
+          hash: hashInventoryIds(base.bodies),
+        },
+        import_selections: {
+          count: base.selections.length,
+          hash: hashInventoryIds(base.selections),
+        },
+      };
+      const snapshot = core.contentHash(
+        core.utf8(core.canonicalize(core.utf8(JSON.stringify(manifest)))),
+      );
+      const newer: SnapshotInventory = {
+        ...base,
+        snapshot,
+        events,
+        events_digest,
+        logical_inventory: hashLogicalInventory({
+          events,
+          bodies: base.bodies,
+          import_selections: base.selections,
+        }),
+      };
+      await forgetInventory(tabA);
+      const originalGet = tabB.get.bind(tabB);
+      const originalCommit = tabB.commitInventory.bind(tabB);
+      let gets = 0;
+      let commits = 0;
+      const expected: (string | null | undefined)[] = [];
+      const outcomes: string[] = [];
+      tabB.commitInventory = async (
+        inventory: SnapshotInventory,
+        expectedLatest?: string | null,
+      ) => {
+        commits++;
+        expected.push(
+          expectedLatest === undefined ? "UNDEFINED" : expectedLatest,
+        );
+        try {
+          const value = await originalCommit(inventory, expectedLatest);
+          outcomes.push("ok " + inventory.snapshot);
+          return value;
+        } catch (error: any) {
+          outcomes.push("error " + (error?.code ?? error?.message));
+          throw error;
+        }
+      };
+      tabB.get = async <T>(
+        store: string,
+        key: string,
+      ): Promise<T | undefined> => {
+        const value = await originalGet<T>(store, key);
+        if (store === "inventory" && key === "latest" && ++gets === 1) {
+          if (value !== undefined && value !== null)
+            throw new Error("Expected no latest at the first read");
+          await tabA.putProjectedRecord(record, projection.row);
+          await tabA.commitInventory(newer, null);
+        }
+        return value;
+      };
+      const calc = new PersonalCalculator(tabB, async () => ({
+        identity: null,
+      }));
+      const status = await calc.ensure({ mode: "personal" });
+      const latest = await tabA.get<SnapshotInventory>("inventory", "latest");
+      const hasNewEvent = Boolean(
+        await tabA.get<StoredRecord>("records", record.id),
+      );
+      calc.cancel();
+      return {
+        status: {
+          state: status.state,
+          snapshot: (status as any).snapshot ?? null,
+          kind: (status as any).kind ?? null,
+          message: (status as any).message ?? null,
+        },
+        latest: latest?.snapshot ?? null,
+        latestEvents: latest?.events?.length ?? null,
+        newer: snapshot,
+        base: base.snapshot,
+        baseEvents: base.events.length,
+        commits,
+        gets,
+        expected,
+        outcomes,
+        hasNewEvent,
+      };
+    } finally {
+      (await tabA.database).close();
+      (await tabB.database).close();
+    }
+  }, corePath);
+
+  expect(result.latest).toBe(result.newer);
+  expect(result.status.state).toBe("ready");
+  expect(result.status.snapshot).toBe(result.newer);
+  expect(result.hasNewEvent).toBe(true);
+  expect(result.commits).toBe(1);
+  expect(result.expected).toEqual([null]);
+});
+
+test("damaged latest row with snapshot but no events_digest is repaired on first non-refresh load and still aborts if superseded in the gap", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { syncRecords, hashInventoryIds, hashLogicalInventory } =
+      await import(String("/src/data/records.ts"));
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+
+    let repairCase: any;
+    {
+      const name = `damaged-latest-repair-${crypto.randomUUID()}`;
+      const tabA = new LocalStore(name) as BrowserStore;
+      const tabB = new LocalStore(name) as BrowserStore;
+      try {
+        const base = await syncRecords(tabA);
+        const damaged: Record<string, unknown> = { ...base };
+        delete damaged.events_digest;
+        await tabA.put("inventory", "latest", damaged);
+        const originalCommit = tabB.commitInventory.bind(tabB);
+        const expected: (string | null)[] = [];
+        const outcomes: string[] = [];
+        tabB.commitInventory = async (
+          inventory: SnapshotInventory,
+          expectedLatest?: string | null,
+        ) => {
+          expected.push(
+            expectedLatest === undefined ? "UNDEFINED" : expectedLatest,
+          );
+          try {
+            const value = await originalCommit(inventory, expectedLatest);
+            outcomes.push("ok");
+            return value;
+          } catch (error: any) {
+            outcomes.push("error " + (error?.code ?? error?.message));
+            throw error;
+          }
+        };
+        const calc = new PersonalCalculator(tabB, async () => ({
+          identity: null,
+        }));
+        const status = await calc.ensure({ mode: "personal" });
+        const afterFirst = await tabA.get<SnapshotInventory>(
+          "inventory",
+          "latest",
+        );
+        calc.cancel();
+        repairCase = {
+          base: base.snapshot,
+          first: {
+            state: status.state,
+            snapshot: (status as any).snapshot ?? null,
+            kind: (status as any).kind ?? null,
+            message: (status as any).message ?? null,
+          },
+          expected,
+          outcomes,
+          digestAfterFirst: typeof afterFirst?.events_digest,
+          latestAfterFirst: afterFirst?.snapshot ?? null,
+        };
+      } finally {
+        (await tabA.database).close();
+        (await tabB.database).close();
+      }
+    }
+
+    let raceCase: any;
+    {
+      const name = `damaged-latest-race-${crypto.randomUUID()}`;
+      const tabA = new LocalStore(name) as BrowserStore;
+      const tabB = new LocalStore(name) as BrowserStore;
+      try {
+        const base = await syncRecords(tabA);
+        const event = core.createEvent(
+          new Uint8Array(32).fill(192),
+          [],
+          "c0".repeat(16),
+          { kind: "identity.merge" },
+          null,
+        );
+        const projection = core.projectRecord(
+          core.utf8(JSON.stringify(event.envelope)),
+        );
+        const record: StoredRecord = {
+          id: event.envelope.id,
+          envelope: projection.envelope,
+          body: null,
+          bodyHash: null,
+          bodyStatus: "none",
+        };
+        const events = [...base.events, record.id].sort();
+        const rows = await tabA.readRecords(base.events);
+        const envelopes = new Map<string, string>(
+          rows.map((r: StoredRecord | undefined) => [r!.id, r!.envelope]),
+        );
+        envelopes.set(record.id, record.envelope);
+        const events_digest = core.contentHash(
+          core.utf8(
+            events.map((id: string) => envelopes.get(id) + "\n").join(""),
+          ),
+        );
+        const manifest = {
+          events: { count: events.length, hash: events_digest },
+          bodies: {
+            count: base.bodies.length,
+            hash: hashInventoryIds(base.bodies),
+          },
+          import_selections: {
+            count: base.selections.length,
+            hash: hashInventoryIds(base.selections),
+          },
+        };
+        const snapshot = core.contentHash(
+          core.utf8(core.canonicalize(core.utf8(JSON.stringify(manifest)))),
+        );
+        const newer: SnapshotInventory = {
+          ...base,
+          snapshot,
+          events,
+          events_digest,
+          logical_inventory: hashLogicalInventory({
+            events,
+            bodies: base.bodies,
+            import_selections: base.selections,
+          }),
+        };
+
+        const damaged: Record<string, unknown> = { ...base };
+        delete damaged.events_digest;
+        await tabA.put("inventory", "latest", damaged);
+
+        const originalGet = tabB.get.bind(tabB);
+        const originalCommit = tabB.commitInventory.bind(tabB);
+        let gets = 0;
+        let commits = 0;
+        const expected: (string | null)[] = [];
+        tabB.commitInventory = async (
+          inventory: SnapshotInventory,
+          expectedLatest?: string | null,
+        ) => {
+          commits++;
+          expected.push(
+            expectedLatest === undefined ? "UNDEFINED" : expectedLatest,
+          );
+          return originalCommit(inventory, expectedLatest);
+        };
+        tabB.get = async <T>(
+          store: string,
+          key: string,
+        ): Promise<T | undefined> => {
+          const value = await originalGet<T>(store, key);
+          if (store === "inventory" && key === "latest" && ++gets === 1) {
+            await tabA.putProjectedRecord(record, projection.row);
+            await tabA.commitInventory(newer, base.snapshot);
+          }
+          return value;
+        };
+        const calc = new PersonalCalculator(tabB, async () => ({
+          identity: null,
+        }));
+        const status = await calc.ensure({ mode: "personal" });
+        const latest = await tabA.get<SnapshotInventory>("inventory", "latest");
+        const hasNewEvent = Boolean(
+          await tabA.get<StoredRecord>("records", record.id),
+        );
+        calc.cancel();
+        raceCase = {
+          base: base.snapshot,
+          newer: snapshot,
+          status: {
+            state: status.state,
+            snapshot: (status as any).snapshot ?? null,
+          },
+          latest: latest?.snapshot ?? null,
+          hasNewEvent,
+          commits,
+          expected,
+        };
+      } finally {
+        (await tabA.database).close();
+        (await tabB.database).close();
+      }
+    }
+
+    return { repairCase, raceCase };
+  }, corePath);
+
+  expect(result.repairCase.first.state).toBe("ready");
+  expect(result.repairCase.first.snapshot).toBe(result.repairCase.base);
+  expect(result.repairCase.expected).toEqual([result.repairCase.base]);
+  expect(result.repairCase.outcomes).toEqual(["ok"]);
+  expect(result.repairCase.digestAfterFirst).toBe("string");
+  expect(result.repairCase.latestAfterFirst).toBe(result.repairCase.base);
+
+  expect(result.raceCase.status.state).toBe("ready");
+  expect(result.raceCase.status.snapshot).toBe(result.raceCase.newer);
+  expect(result.raceCase.latest).toBe(result.raceCase.newer);
+  expect(result.raceCase.hasNewEvent).toBe(true);
+  expect(result.raceCase.commits).toBe(1);
+  expect(result.raceCase.expected).toEqual([result.raceCase.base]);
+});

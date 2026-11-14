@@ -350,7 +350,8 @@ function selectAddedInventoryIds(
 function idbRequest<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onerror = () =>
+      reject(request.transaction?.error ?? request.error);
   });
 }
 interface ProjectionSnapshotMeta {
@@ -453,7 +454,10 @@ export class LocalStore {
             resolve(request.result);
           };
         };
-        tx.onabort = () => reject(tx.error);
+        tx.onabort = () =>
+          reject(
+            tx.error ?? new Error("Local storage did not read this package."),
+          );
         tx.onerror = () => {};
       });
     }
@@ -685,14 +689,16 @@ export class LocalStore {
         meta.put(next, PROJECTION_PRODUCER_KEY);
       };
       void execute().catch((error) => {
-        failure = error;
-        tx.abort();
+        failure = tx.error ?? error;
+        try {
+          tx.abort();
+        } catch {}
       });
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not save this record."),
         );
       tx.onerror = () => {};
@@ -783,12 +789,15 @@ export class LocalStore {
           };
         } catch (error) {
           failure =
-            error instanceof Error
+            tx.error ??
+            (error instanceof Error
               ? error
               : new Error(
                   "The local history could not be read. Nothing was discarded.",
-                );
-          tx.abort();
+                ));
+          try {
+            tx.abort();
+          } catch {}
         }
       };
       items.onsuccess = proceed;
@@ -796,8 +805,8 @@ export class LocalStore {
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not discard this record."),
         );
       tx.onerror = () => {};
@@ -839,7 +848,9 @@ export class LocalStore {
             !stored ? (published?.result ? "published" : "removed") : "changed",
             (stored as { revision?: string } | undefined)?.revision ?? null,
           );
-          tx.abort();
+          try {
+            tx.abort();
+          } catch {}
           return;
         }
         drafts.put(draft, key);
@@ -850,8 +861,8 @@ export class LocalStore {
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not save this change."),
         );
       tx.onerror = () => {};
@@ -984,8 +995,10 @@ export class LocalStore {
           drafts.put(next, "current");
           if (consumed) drafts.delete(consumed);
         } catch (error) {
-          failure = error;
-          tx.abort();
+          failure = tx.error ?? error;
+          try {
+            tx.abort();
+          } catch {}
         }
       };
       current.onsuccess = proceed;
@@ -997,8 +1010,8 @@ export class LocalStore {
       tx.oncomplete = () => resolve(next);
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not switch drafts."),
         );
       tx.onerror = () => {};
@@ -1035,7 +1048,9 @@ export class LocalStore {
             stored ? "changed" : "removed",
             stored?.revision ?? null,
           );
-          tx.abort();
+          try {
+            tx.abort();
+          } catch {}
           return;
         }
         if (next === null) drafts.delete(key);
@@ -1046,8 +1061,8 @@ export class LocalStore {
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not save this change."),
         );
       tx.onerror = () => {};
@@ -1070,7 +1085,9 @@ export class LocalStore {
         if (!stored) return;
         if (stored.revision !== expected.revision) {
           failure = new DraftConflictError("changed", stored.revision ?? null);
-          tx.abort();
+          try {
+            tx.abort();
+          } catch {}
           return;
         }
         drafts.delete(key);
@@ -1080,8 +1097,8 @@ export class LocalStore {
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not delete this record."),
         );
       tx.onerror = () => {};
@@ -1137,8 +1154,10 @@ export class LocalStore {
           tx.objectStore("projections").delete(id);
         };
         void execute().catch((error) => {
-          failure = error;
-          tx.abort();
+          failure = tx.error ?? error;
+          try {
+            tx.abort();
+          } catch {}
         });
       } else {
         tx.objectStore(store).delete(id);
@@ -1151,8 +1170,8 @@ export class LocalStore {
       };
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not delete this record."),
         );
       tx.onerror = () => {};
@@ -1448,14 +1467,16 @@ export class LocalStore {
         meta.put(inventory.snapshot, PROJECTION_LATEST_KEY);
       };
       void execute().catch((error) => {
-        failure = error;
-        tx.abort();
+        failure = tx.error ?? error;
+        try {
+          tx.abort();
+        } catch {}
       });
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not commit this inventory."),
         );
       tx.onerror = () => {};
@@ -1514,15 +1535,17 @@ export class LocalStore {
           change(overlay);
           prefs.put(overlay, "overlay");
         } catch (error) {
-          failure = error;
-          tx.abort();
+          failure = tx.error ?? error;
+          try {
+            tx.abort();
+          } catch {}
         }
       };
       tx.oncomplete = () => resolve(overlay);
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not save this private choice."),
         );
       tx.onerror = () => {};
@@ -1549,7 +1572,9 @@ export class LocalStore {
           (mode !== "restore" || selected.identity !== backup.identity)
         ) {
           failure = new IdentityConflictError();
-          tx.abort();
+          try {
+            tx.abort();
+          } catch {}
           return;
         }
         keys.put(backup, "selected");
@@ -1584,8 +1609,8 @@ export class LocalStore {
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not install this identity."),
         );
       tx.onerror = () => {};
@@ -1627,6 +1652,11 @@ export class LocalStore {
       const keys = tx.objectStore("keys");
       const drafts = tx.objectStore("drafts");
       let failure: Error | undefined;
+      const abort = () => {
+        try {
+          tx.abort();
+        } catch {}
+      };
       // A key retired or reported stolen in another tab cannot gain new ordinary records.
       const retired = keys.get(`handover:${identity}`);
       const compromised = keys.get(`compromised:${identity}`);
@@ -1648,7 +1678,7 @@ export class LocalStore {
         if (--remaining) return;
         if (discarded.some((request) => request.result)) {
           failure = new Error(DISCARDED_PREDECESSOR);
-          tx.abort();
+          abort();
           return;
         }
         if (
@@ -1662,7 +1692,7 @@ export class LocalStore {
               ? "This key signed a handover and is retired. The group was not saved or sent."
               : "This key published a compromise notice. The group was not saved or sent.",
           );
-          tx.abort();
+          abort();
           return;
         }
         if (publication) {
@@ -1674,7 +1704,7 @@ export class LocalStore {
               "already-published",
               existing,
             );
-            tx.abort();
+            abort();
             return;
           }
           const stored = draftRequest!.result as
@@ -1685,7 +1715,7 @@ export class LocalStore {
               stored ? "newer-draft" : "draft-missing",
               null,
             );
-            tx.abort();
+            abort();
             return;
           }
           const record: PublicationRecord = {
@@ -1725,8 +1755,8 @@ export class LocalStore {
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not save the signed group."),
         );
       tx.onerror = () => {};
@@ -1790,19 +1820,22 @@ export class LocalStore {
             if (restored) prefs.put([...rediscovered].sort(), noticeKey);
           } catch (error) {
             failure =
-              error instanceof Error
+              tx.error ??
+              (error instanceof Error
                 ? error
                 : new Error(
                     "The local history could not be read. Nothing was restored.",
-                  );
-            tx.abort();
+                  ));
+            try {
+              tx.abort();
+            } catch {}
           }
         };
       tx.oncomplete = () => resolve();
       tx.onabort = () =>
         reject(
-          failure ??
-            tx.error ??
+          tx.error ??
+            failure ??
             new Error("Local storage did not restore the public history."),
         );
       tx.onerror = () => {};
