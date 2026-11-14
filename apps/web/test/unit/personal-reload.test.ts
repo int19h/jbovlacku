@@ -1712,6 +1712,18 @@ test("Wasm RuntimeError during sync and memory failure during evaluation produce
     ),
     false,
   );
+  assert.equal(
+    isStorageQuotaFailure(
+      new TransportError("Peer storage quota exceeded.", "offline"),
+    ),
+    false,
+  );
+  assert.equal(
+    isStorageQuotaFailure(
+      Object.assign(new Error("Quota exceeded."), { quota: true }),
+    ),
+    true,
+  );
 
   const h = harness();
   const originalPostMessage = RecordingWorker.prototype.postMessage;

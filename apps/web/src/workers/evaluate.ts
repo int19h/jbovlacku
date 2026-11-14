@@ -87,6 +87,7 @@ export type WorkerResponse =
       session_valid: boolean;
       fatal: boolean;
       memory?: boolean;
+      quota?: boolean;
     };
 
 type LoadedResponse = Extract<WorkerResponse, { type: "loaded" }>;
@@ -135,6 +136,11 @@ function request<T>(read: IDBRequest<T>): Promise<T> {
 function missingRecord(id: string): Error {
   return new Error(`Record ${id} is not cached. Download the records again.`);
 }
+function missingSnapshot(snapshot: string): Error {
+  return new Error(
+    `Snapshot ${snapshot} is not cached. Download the records again.`,
+  );
+}
 const BATCH_SIZE = 256;
 function openDatabase(name: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -173,7 +179,7 @@ async function assertProjectionProducer(
     typeof latest.snapshot === "string" &&
     latest.snapshot !== source.snapshot
   )
-    throw missingRecord(source.snapshot);
+    throw missingSnapshot(source.snapshot);
   if (producer !== projectionBuildIdentity())
     throw new Error("Projection rows come from another core build.");
 }
@@ -193,7 +199,7 @@ async function readInventory(
       typeof latest.snapshot === "string" &&
       latest.snapshot !== source.snapshot
     )
-      throw missingRecord(source.snapshot);
+      throw missingSnapshot(source.snapshot);
     stored = latest;
     isLatest = true;
   } else if (!requireLatest) {
@@ -203,7 +209,7 @@ async function readInventory(
       >,
     );
   }
-  if (!stored) throw missingRecord(source.snapshot);
+  if (!stored) throw missingSnapshot(source.snapshot);
   if (stored.events_digest !== source.events_digest)
     throw new Error(
       "The cached inventory digest does not match the requested snapshot.",
@@ -386,7 +392,7 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
         request(meta.getAllKeys()),
       ]);
       if (latestMeta !== undefined && latestMeta !== source.snapshot)
-        throw missingRecord(source.snapshot);
+        throw missingSnapshot(source.snapshot);
       const { stored, isLatest } = await readInventory(
         transaction,
         source,
@@ -624,6 +630,12 @@ export function workerErrorResponse(
   error: unknown,
 ): Extract<WorkerResponse, { type: "error" }> {
   const rawMessage = error instanceof Error ? error.message : String(error);
+  const errorName =
+    typeof error === "object" && error !== null && "name" in error
+      ? String(error.name)
+      : "";
+  const quotaError =
+    errorName === "QuotaExceededError" || /storage quota/i.test(rawMessage);
   const memoryError =
     error instanceof WebAssembly.RuntimeError ||
     (error instanceof RangeError &&
@@ -647,6 +659,7 @@ export function workerErrorResponse(
     session_valid: evaluation.currentSession !== null,
     fatal: initializationFailed || memoryError,
     memory: memoryError,
+    quota: quotaError,
   };
 }
 

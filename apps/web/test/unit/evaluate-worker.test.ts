@@ -662,6 +662,14 @@ test("a WebAssembly RuntimeError or memory RangeError is fatal and marked memory
   const ordinary = workerErrorResponse(3, new Error("ordinary"));
   assert.equal(ordinary.fatal, false);
   assert.equal(ordinary.memory, false);
+  assert.equal(ordinary.quota, false);
+  const quotaErr = Object.assign(new Error("Quota exceeded."), {
+    name: "QuotaExceededError",
+  });
+  const quotaReply = workerErrorResponse(4, quotaErr);
+  assert.equal(quotaReply.fatal, false);
+  assert.equal(quotaReply.memory, false);
+  assert.equal(quotaReply.quota, true);
 });
 
 test("streamed import selections affect imported definitions, inherit across fork, and replace inherited selections when streamed or cleared", async () => {

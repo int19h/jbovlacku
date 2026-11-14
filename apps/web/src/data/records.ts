@@ -248,6 +248,13 @@ export function isStorageQuotaFailure(error: unknown): boolean {
     error instanceof TransportError
   )
     return false;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "quota" in error &&
+    (error as { quota?: unknown }).quota === true
+  )
+    return true;
   const name =
     typeof error === "object" && error !== null && "name" in error
       ? String(error.name)

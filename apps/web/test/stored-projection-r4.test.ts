@@ -2004,3 +2004,270 @@ test("a same-snapshot commit repairs stale current projection metadata", async (
   expect(result.rebuilt).toBe(true);
   expect(result.loadedEvents).toBe(2);
 });
+
+test("same-mode reload releases the cached inventory before worker evaluation", async ({
+  page,
+  context,
+}) => {
+  await page.goto("/");
+  await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const records = await import(String("/src/data/records.ts"));
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const w = window as unknown as Record<string, any>;
+    const store = new LocalStore(`same-mode-retention-${crypto.randomUUID()}`);
+    const base = await records.syncRecords(store);
+    const NativeWorker = globalThis.Worker;
+    w.probe = {
+      core,
+      records,
+      store,
+      base,
+      NativeWorker,
+      freeze: false,
+      paused: false,
+    };
+    globalThis.Worker = class extends NativeWorker {
+      postMessage(message: any, options?: any) {
+        if (
+          w.probe.freeze &&
+          ["load", "advance", "overlay"].includes(message.type)
+        ) {
+          w.probe.paused = true;
+          return;
+        }
+        super.postMessage(message, options);
+      }
+    };
+    w.probe.calc = new PersonalCalculator(store, async () => ({
+      identity: null,
+    }));
+    await w.probe.calc.ensure({ mode: "personal" });
+
+    const event = core.createEvent(
+      new Uint8Array(32).fill(181),
+      [],
+      (181).toString(16).padStart(2, "0").repeat(16),
+      { kind: "identity.merge" },
+      null,
+    );
+    const projection = core.projectRecord(
+      core.utf8(JSON.stringify(event.envelope)),
+    );
+    const record = {
+      id: event.envelope.id,
+      envelope: projection.envelope,
+      body: null,
+      bodyHash: null,
+      bodyStatus: "none" as const,
+    };
+    await (store as BrowserStore).putProjectedRecord(record, projection.row);
+    const events = [...base.events, record.id].sort();
+    const rows = await (store as BrowserStore).readRecords(events);
+    const spec: SnapshotInventory = {
+      ...base,
+      snapshot: core.contentHash(core.utf8("snapshot-181")),
+      logical_inventory: core.contentHash(core.utf8("inventory-181")),
+      events,
+      events_digest: core.contentHash(
+        core.utf8(rows.map((r: any) => r.envelope + "\n").join("")),
+      ),
+    };
+    await (store as BrowserStore).commitInventory(spec);
+    const originalGet = store.get.bind(store);
+    store.get = async (...args: [string, string]) => {
+      const value = await originalGet(...args);
+      if (
+        args[0] === "inventory" &&
+        args[1] === "latest" &&
+        value &&
+        typeof value === "object"
+      ) {
+        w.probe.inventoryRef = new WeakRef(value);
+        w.probe.eventsRef = new WeakRef((value as SnapshotInventory).events);
+      }
+      return value;
+    };
+    w.probe.freeze = true;
+    w.probe.running = w.probe.calc.ensure({ mode: "personal" });
+  }, corePath);
+
+  await page.waitForFunction(() => Boolean((window as any).probe.paused));
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("HeapProfiler.collectGarbage");
+  await cdp.send("HeapProfiler.collectGarbage");
+  const alive = await page.evaluate(async () => {
+    const w = window as unknown as Record<string, any>;
+    const status = {
+      inventory: Boolean(w.probe.inventoryRef.deref()),
+      events: Boolean(w.probe.eventsRef.deref()),
+    };
+    w.probe.calc.cancel();
+    globalThis.Worker = w.probe.NativeWorker;
+    (await (w.probe.store as BrowserStore).database).close();
+    return status;
+  });
+
+  expect(alive.inventory).toBe(false);
+  expect(alive.events).toBe(false);
+});
+
+test("quota DOMException injected at a real rebuild write keeps its storage classification across the worker", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.route("**/src/workers/evaluate.ts*", async (route) => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const injection = `\nconst quotaTestOriginalPut = IDBObjectStore.prototype.put;\nIDBObjectStore.prototype.put = function(...args) { if (this.name === "projections") throw new DOMException("Quota exceeded.", "QuotaExceededError"); return quotaTestOriginalPut.apply(this, args); };\n`;
+    await route.fulfill({ response, body: source + injection });
+  });
+
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const records = await import(String("/src/data/records.ts"));
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const store = new LocalStore(
+      `quota-forwarding-${crypto.randomUUID()}`,
+    ) as BrowserStore;
+    const NativeWorker = globalThis.Worker;
+    const errors: any[] = [];
+    globalThis.Worker = class extends NativeWorker {
+      constructor(url: any, options: any) {
+        super(url, options);
+        this.addEventListener("message", (event: any) => {
+          if (event.data?.type === "error") errors.push(event.data);
+        });
+      }
+    };
+    try {
+      const inventory = await records.syncRecords(store);
+      const db = await store.database;
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("projections", "readwrite");
+        tx.objectStore("projections").delete(inventory.events[0]);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      const calc = new PersonalCalculator(store, async () => ({
+        identity: null,
+      }));
+      const status = await calc.ensure({ mode: "personal" });
+      const state = {
+        loadedKey: (calc as any).loadedKey,
+        sent: (calc as any).sent,
+        projectionDigest: (calc as any).projectionDigest,
+      };
+      const latest = await store.get<SnapshotInventory>("inventory", "latest");
+      calc.cancel();
+      return { status, errors, state, snapshot: latest?.snapshot ?? null };
+    } finally {
+      globalThis.Worker = NativeWorker;
+      (await store.database).close();
+    }
+  }, corePath);
+
+  expect(result.status.state).toBe("failed");
+  expect(result.status.kind).toBe("storage");
+  expect(result.status.message).toBe(
+    "The browser storage quota is full. Free storage for this site, then recompute from records.",
+  );
+  expect(result.errors[0]?.quota).toBe(true);
+  expect(result.state).toEqual({
+    loadedKey: null,
+    sent: null,
+    projectionDigest: null,
+  });
+});
+
+test("forgetInventory in another tab during a sync retries once and missing snapshots report Snapshot not Record", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { syncRecords, forgetInventory } = await import(
+      String("/src/data/records.ts")
+    );
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const { EvaluationWorker } = await import(
+      String("/src/workers/evaluate.ts")
+    );
+    const name = `forget-during-sync-${crypto.randomUUID()}`;
+    const tabA = new LocalStore(name) as BrowserStore;
+    const tabB = new LocalStore(name) as BrowserStore;
+    try {
+      const initial = await syncRecords(tabA);
+      const originalCommit = tabB.commitInventory.bind(tabB);
+      let calls = 0;
+      tabB.commitInventory = async (
+        inventory: SnapshotInventory,
+        expectedLatest?: string | null,
+      ) => {
+        if (calls++ === 0) await forgetInventory(tabA);
+        return originalCommit(inventory, expectedLatest);
+      };
+      const calc = new PersonalCalculator(tabB, async () => ({
+        identity: null,
+      }));
+      const first = await calc.ensure({ mode: "personal", refresh: true });
+      const latestAfterFirst =
+        (await tabA.get<SnapshotInventory>("inventory", "latest"))?.snapshot ??
+        null;
+      calc.cancel();
+
+      const missingSnap = "sha256:" + "9".repeat(64);
+      const worker = new EvaluationWorker();
+      let missingSnapshotMessage = "";
+      try {
+        await worker.load({
+          id: 1,
+          type: "load",
+          session: "missing-snap",
+          source: {
+            database: name,
+            snapshot: missingSnap,
+            events_digest: initial.events_digest,
+            count: initial.events.length,
+          },
+          options: { selected_view: initial.view },
+        });
+      } catch (error) {
+        missingSnapshotMessage =
+          error instanceof Error ? error.message : String(error);
+      } finally {
+        worker.currentSession?.free();
+      }
+      return {
+        first,
+        latestAfterFirst,
+        calls,
+        expectedSnapshot: initial.snapshot,
+        missingSnapshotMessage,
+        missingSnap,
+      };
+    } finally {
+      (await tabA.database).close();
+      (await tabB.database).close();
+    }
+  }, corePath);
+
+  expect(result.first.state).toBe("ready");
+  expect(result.calls).toBe(2);
+  expect(result.latestAfterFirst).toBe(result.expectedSnapshot);
+  expect(result.missingSnapshotMessage).toBe(
+    `Snapshot ${result.missingSnap} is not cached. Download the records again.`,
+  );
+});

@@ -1189,7 +1189,9 @@ export class LocalStore {
           previousSnapshot !== expectedLatest
         ) {
           const error = new Error(
-            "Another tab committed a newer snapshot while syncing. Retry with the latest snapshot.",
+            previousSnapshot === null
+              ? "Another tab cleared the cached inventory while syncing. Retry with the latest snapshot."
+              : "Another tab committed a newer snapshot while syncing. Retry with the latest snapshot.",
           ) as Error & { retryable?: boolean; code?: string };
           error.retryable = true;
           error.code = "SUPERSEDED_SNAPSHOT";

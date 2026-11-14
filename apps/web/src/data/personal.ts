@@ -321,8 +321,10 @@ export class PersonalCalculator {
       if (event.data.type === "error") {
         const error = new Error(event.data.message) as Error & {
           memory?: boolean;
+          quota?: boolean;
         };
         if (event.data.memory) error.memory = true;
+        if (event.data.quota) error.quota = true;
         if (this.worker === worker) {
           if (
             event.data.fatal ||
@@ -411,22 +413,26 @@ export class PersonalCalculator {
       const cached = await latestInventory(this.store);
       if (cached) return cached;
     }
-    try {
-      return await syncRecords(this.store, {
-        signal: run.abort.signal,
-        fresh: refresh,
-        onProgress: (progress) => {
-          if (this.current === run)
-            this.set({ state: "downloading", progress });
-        },
-      });
-    } catch (error) {
-      if (error instanceof RecordsError && error.kind === "superseded") {
-        const cached = await latestInventory(this.store);
-        if (cached) return cached;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await syncRecords(this.store, {
+          signal: run.abort.signal,
+          fresh: refresh,
+          onProgress: (progress) => {
+            if (this.current === run)
+              this.set({ state: "downloading", progress });
+          },
+        });
+      } catch (error) {
+        if (error instanceof RecordsError && error.kind === "superseded") {
+          const cached = await latestInventory(this.store);
+          if (cached) return cached;
+          if (attempt === 0) continue;
+        }
+        throw error;
       }
-      throw error;
     }
+    throw new Error("Unreachable");
   }
   /**
    * Makes sure that a session for the current snapshot, mode, and overlay is
@@ -509,9 +515,8 @@ export class PersonalCalculator {
       };
       this.current?.abort.abort(new Error(CANCELLED));
       this.current = run;
-      const inventoryForRun = cachedInventory;
+      const promise = this.run(run, mode, refresh, cachedInventory);
       cachedInventory = null;
-      const promise = this.run(run, mode, refresh, inventoryForRun);
       this.loading = promise;
       this.loadingRequest = { mode, refresh };
       let result: PersonalStatus;
