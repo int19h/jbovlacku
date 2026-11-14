@@ -411,13 +411,22 @@ export class PersonalCalculator {
       const cached = await latestInventory(this.store);
       if (cached) return cached;
     }
-    return syncRecords(this.store, {
-      signal: run.abort.signal,
-      fresh: refresh,
-      onProgress: (progress) => {
-        if (this.current === run) this.set({ state: "downloading", progress });
-      },
-    });
+    try {
+      return await syncRecords(this.store, {
+        signal: run.abort.signal,
+        fresh: refresh,
+        onProgress: (progress) => {
+          if (this.current === run)
+            this.set({ state: "downloading", progress });
+        },
+      });
+    } catch (error) {
+      if (error instanceof RecordsError && error.kind === "superseded") {
+        const cached = await latestInventory(this.store);
+        if (cached) return cached;
+      }
+      throw error;
+    }
   }
   /**
    * Makes sure that a session for the current snapshot, mode, and overlay is
@@ -550,159 +559,224 @@ export class PersonalCalculator {
         inventory = cached;
       }
       live();
-      const selectionBinding = selectionSetBinding(inventory.selections);
-      const summary = {
-        snapshot: inventory.snapshot,
-        logical_inventory: inventory.logical_inventory,
-        events_digest: inventory.events_digest,
-        view: inventory.view,
-        count: inventory.events.length,
-      };
-      const sameBase = Boolean(
-        this.loadedKey &&
-        this.sent?.snapshot === summary.snapshot &&
-        this.sent.view === summary.view &&
-        this.sent.selections === selectionBinding,
-      );
-      if (!sameBase) {
-        const advance = await this.advanceInput(inventory, selectionBinding);
-        inventory = null;
-        live();
-        const intermediate = `${summary.snapshot}|${summary.view}|${run.id}`;
-        this.clearLoadedSession();
-        this.sent = null;
-        this.projectionDigest = null;
-        this.continuity = null;
-        this.rankCache.clear();
-        this.set({
-          state: "evaluating",
-          mode,
-          events: summary.count,
-        });
-        const fullLoad = () =>
-          this.request(run, {
-            type: "load",
-            session: intermediate,
-            source: {
-              database: this.store.name,
+      let currentInventory: SnapshotInventory | null = inventory;
+      inventory = null;
+      for (let attempt = 0; ; attempt++) {
+        const activeInventory = currentInventory!;
+        currentInventory = null;
+        const attemptSnapshot = activeInventory.snapshot;
+        try {
+          const selectionBinding = selectionSetBinding(
+            activeInventory.selections,
+          );
+          const summary = {
+            snapshot: activeInventory.snapshot,
+            logical_inventory: activeInventory.logical_inventory,
+            events_digest: activeInventory.events_digest,
+            view: activeInventory.view,
+            count: activeInventory.events.length,
+          };
+          const sameBase = Boolean(
+            this.loadedKey &&
+            this.sent?.snapshot === summary.snapshot &&
+            this.sent.view === summary.view &&
+            this.sent.selections === selectionBinding,
+          );
+          if (!sameBase) {
+            let advance: Awaited<ReturnType<PersonalCalculator["advanceInput"]>>;
+            try {
+              advance = await this.advanceInput(
+                activeInventory,
+                selectionBinding,
+              );
+            } catch (error) {
+              if (this.current === run) {
+                this.clearLoadedSession();
+                this.sent = null;
+                this.projectionDigest = null;
+                this.continuity = null;
+                this.rankCache.clear();
+              }
+              throw error;
+            }
+            live();
+            const intermediate =
+              attempt === 0
+                ? `${summary.snapshot}|${summary.view}|${run.id}`
+                : `${summary.snapshot}|${summary.view}|${run.id}|${attempt}`;
+            this.clearLoadedSession();
+            this.sent = null;
+            this.projectionDigest = null;
+            this.continuity = null;
+            this.rankCache.clear();
+            this.set({
+              state: "evaluating",
+              mode,
+              events: summary.count,
+            });
+            const fullLoad = () =>
+              this.request(run, {
+                type: "load",
+                session: intermediate,
+                source: {
+                  database: this.store.name,
+                  snapshot: summary.snapshot,
+                  events_digest: summary.events_digest,
+                  count: summary.count,
+                },
+                options: {
+                  selected_view: summary.view,
+                },
+              });
+            let loaded: WorkerResponse;
+            let usedAdvance = false;
+            if (advance) {
+              try {
+                loaded = await this.request(run, {
+                  type: "advance",
+                  base: advance.base,
+                  session: intermediate,
+                  input: advance.input,
+                  source: advance.source,
+                  rows: advance.rows,
+                });
+                usedAdvance = true;
+              } catch (advanceError) {
+                live();
+                const currentLatest = await latestInventory(this.store);
+                live();
+                if (
+                  currentLatest &&
+                  currentLatest.snapshot !== summary.snapshot
+                )
+                  throw advanceError;
+                loaded = await fullLoad();
+              }
+            } else {
+              loaded = await fullLoad();
+            }
+            live();
+            if (
+              loaded.type !== "loaded" ||
+              loaded.session !== intermediate ||
+              loaded.selected_view !== summary.view
+            )
+              throw new Error("Unexpected worker reply.");
+            const intermediateOverlay: EffectiveOverlay | null = usedAdvance
+              ? ((advance?.input.overlay as
+                  | EffectiveOverlay
+                  | null
+                  | undefined) ?? null)
+              : null;
+            this.projectionDigest =
+              loaded.projection_digest ??
+              (usedAdvance ? advance?.projectionDigest : null) ??
+              null;
+            this.loadedKey = intermediate;
+            this.rememberSent(
+              summary,
+              selectionBinding,
+              intermediateOverlay,
+              intermediateOverlay
+                ? overlayDigest(intermediateOverlay)
+                : nullOverlayDigest(),
+              mode,
+            );
+            this.continuity = {
               snapshot: summary.snapshot,
-              events_digest: summary.events_digest,
-              count: summary.count,
-            },
-            options: {
-              selected_view: summary.view,
-            },
-          });
-        let loaded: WorkerResponse;
-        let usedAdvance = false;
-        if (advance) {
+              view: summary.view,
+              actors: loaded.actors ?? {},
+            };
+          }
+          // One overlay per run. The digest is derived from the exact overlay
+          // that enters the worker, so a result never carries another digest.
+          const overlay = await this.overlayFor(summary, mode, true);
+          live();
+          const digest = overlay ? overlayDigest(overlay) : nullOverlayDigest();
+          const key = `${summary.snapshot}|${summary.view}|${digest}|${mode}`;
+          const loadedStatus = this.loadedStatus;
+          if (this.loadedKey === key && loadedStatus) {
+            this.set(loadedStatus);
+            return loadedStatus;
+          }
+          const base = this.loadedKey;
+          if (!base)
+            throw new Error("The base evaluation session is not loaded.");
+          if (sameBase) {
+            this.clearLoadedSession();
+            this.rankCache.clear();
+            this.set({
+              state: "evaluating",
+              mode,
+              events: summary.count,
+            });
+          }
+          let loaded: WorkerResponse;
           try {
             loaded = await this.request(run, {
-              type: "advance",
-              base: advance.base,
-              session: intermediate,
-              input: advance.input,
-              source: advance.source,
-              rows: advance.rows,
+              type: "overlay",
+              base,
+              session: key,
+              overlay,
             });
-            usedAdvance = true;
-          } catch {
             live();
-            loaded = await fullLoad();
+            if (loaded.type !== "loaded" || loaded.session !== key)
+              throw new Error("Unexpected worker reply.");
+          } catch (error) {
+            if (this.current === run) {
+              this.clearLoadedSession();
+              this.sent = null;
+              this.projectionDigest = null;
+              this.continuity = null;
+            }
+            throw error;
           }
-        } else {
-          loaded = await fullLoad();
+          this.rememberSent(summary, selectionBinding, overlay, digest, mode);
+          const status: Extract<PersonalStatus, { state: "ready" }> = {
+            state: "ready",
+            mode,
+            snapshot: summary.snapshot,
+            view: summary.view,
+            events: loaded.events,
+            overlay: digest,
+            available: loaded.available,
+            reasons: loaded.reasons,
+          };
+          this.loadedKey = key;
+          this.loadedStatus = status;
+          this.set(status);
+          return status;
+        } catch (attemptError) {
+          if (this.current === run && attemptError instanceof RecordsError) {
+            this.clearLoadedSession();
+            this.sent = null;
+            this.projectionDigest = null;
+            this.continuity = null;
+            this.rankCache.clear();
+          }
+          live();
+          if (
+            attempt === 0 &&
+            !isMemoryFailure(attemptError) &&
+            !isStorageQuotaFailure(attemptError)
+          ) {
+            const nextLatest = await latestInventory(this.store);
+            live();
+            if (nextLatest && nextLatest.snapshot !== attemptSnapshot) {
+              if (this.current === run) {
+                this.clearLoadedSession();
+                this.sent = null;
+                this.projectionDigest = null;
+                this.continuity = null;
+                this.rankCache.clear();
+              }
+              currentInventory = nextLatest;
+              continue;
+            }
+          }
+          throw attemptError;
         }
-        live();
-        if (
-          loaded.type !== "loaded" ||
-          loaded.session !== intermediate ||
-          loaded.selected_view !== summary.view
-        )
-          throw new Error("Unexpected worker reply.");
-        const intermediateOverlay: EffectiveOverlay | null = usedAdvance
-          ? ((advance?.input.overlay as EffectiveOverlay | null | undefined) ??
-            null)
-          : null;
-        this.projectionDigest =
-          loaded.projection_digest ??
-          (usedAdvance ? advance?.projectionDigest : null) ??
-          null;
-        this.loadedKey = intermediate;
-        this.rememberSent(
-          summary,
-          selectionBinding,
-          intermediateOverlay,
-          intermediateOverlay
-            ? overlayDigest(intermediateOverlay)
-            : nullOverlayDigest(),
-          mode,
-        );
-        this.continuity = {
-          snapshot: summary.snapshot,
-          view: summary.view,
-          actors: loaded.actors ?? {},
-        };
-      } else {
-        inventory = null;
       }
-      // One overlay per run. The digest is derived from the exact overlay
-      // that enters the worker, so a result never carries another digest.
-      const overlay = await this.overlayFor(summary, mode);
-      live();
-      const digest = overlay ? overlayDigest(overlay) : nullOverlayDigest();
-      const key = `${summary.snapshot}|${summary.view}|${digest}|${mode}`;
-      const loadedStatus = this.loadedStatus;
-      if (this.loadedKey === key && loadedStatus) {
-        this.set(loadedStatus);
-        return loadedStatus;
-      }
-      const base = this.loadedKey;
-      if (!base) throw new Error("The base evaluation session is not loaded.");
-      if (sameBase) {
-        this.clearLoadedSession();
-        this.rankCache.clear();
-        this.set({
-          state: "evaluating",
-          mode,
-          events: summary.count,
-        });
-      }
-      let loaded: WorkerResponse;
-      try {
-        loaded = await this.request(run, {
-          type: "overlay",
-          base,
-          session: key,
-          overlay,
-        });
-        live();
-        if (loaded.type !== "loaded" || loaded.session !== key)
-          throw new Error("Unexpected worker reply.");
-      } catch (error) {
-        if (this.current === run) {
-          this.clearLoadedSession();
-          this.sent = null;
-          this.projectionDigest = null;
-          this.continuity = null;
-        }
-        throw error;
-      }
-      this.rememberSent(summary, selectionBinding, overlay, digest, mode);
-      const status: Extract<PersonalStatus, { state: "ready" }> = {
-        state: "ready",
-        mode,
-        snapshot: summary.snapshot,
-        view: summary.view,
-        events: loaded.events,
-        overlay: digest,
-        available: loaded.available,
-        reasons: loaded.reasons,
-      };
-      this.loadedKey = key;
-      this.loadedStatus = status;
-      this.set(status);
-      return status;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const aborted =
@@ -795,31 +869,59 @@ export class PersonalCalculator {
       "inventory",
       sent.snapshot,
     );
-    if (
-      !previous ||
-      previous.logical_inventory !== sent.logical_inventory ||
-      previous.events_digest !== sent.events_digest ||
-      previous.events.length !== sent.count ||
-      !isStrictlyIncreasing(previous.events) ||
-      !isStrictlyIncreasing(previous.bodies) ||
-      !Array.isArray(previous.unretained_bodies) ||
-      !isStrictlyIncreasing(previous.unretained_bodies) ||
-      selectionSetBinding(previous.selections) !== selectionBinding ||
-      previous.bodies.some((hash) => !hasSortedValue(retained, hash))
-    )
-      return null;
-    const added = selectAddedEventIds(inventory.events, previous.events);
-    if (!added || added.length === 0 || added.length > maxIncrementalRecords())
-      return null;
-    const newBodies = retained.filter(
-      (hash) => !hasSortedValue(previous.bodies, hash),
-    );
-    if (
-      newBodies.some((hash) =>
-        hasSortedValue(previous.unretained_bodies!, hash),
+    let added: string[] | null;
+    let newBodies: string[];
+    if (previous) {
+      if (
+        previous.logical_inventory !== sent.logical_inventory ||
+        previous.events_digest !== sent.events_digest ||
+        previous.events.length !== sent.count ||
+        !isStrictlyIncreasing(previous.events) ||
+        !isStrictlyIncreasing(previous.bodies) ||
+        !Array.isArray(previous.unretained_bodies) ||
+        !isStrictlyIncreasing(previous.unretained_bodies) ||
+        selectionSetBinding(previous.selections) !== selectionBinding ||
+        previous.bodies.some((hash) => !hasSortedValue(retained, hash))
       )
-    )
-      return null;
+        return null;
+      added = selectAddedEventIds(inventory.events, previous.events);
+      if (
+        !added ||
+        added.length === 0 ||
+        added.length > maxIncrementalRecords()
+      )
+        return null;
+      newBodies = retained.filter(
+        (hash) => !hasSortedValue(previous.bodies, hash),
+      );
+      if (
+        newBodies.some((hash) =>
+          hasSortedValue(previous.unretained_bodies!, hash),
+        )
+      )
+        return null;
+    } else {
+      const preflight = await this.store.readProjectionAdvance(
+        [],
+        inventory.snapshot,
+      );
+      const from = preflight.advanceFrom;
+      if (
+        !from ||
+        from.snapshot !== sent.snapshot ||
+        from.logical_inventory !== sent.logical_inventory ||
+        from.events_digest !== sent.events_digest ||
+        from.count !== sent.count ||
+        selectionSetBinding(from.selections) !== selectionBinding ||
+        !Array.isArray(from.added) ||
+        from.added.length === 0 ||
+        from.added.length > maxIncrementalRecords() ||
+        !Array.isArray(from.new_bodies)
+      )
+        return null;
+      added = from.added;
+      newBodies = from.new_bodies;
+    }
     const advance = await this.store.readProjectionAdvance(
       added,
       inventory.snapshot,
@@ -934,12 +1036,21 @@ export class PersonalCalculator {
   private async overlayFor(
     inventory: Pick<SnapshotInventory, "snapshot" | "view">,
     mode: CalculationMode,
+    verifyLatest = false,
   ): Promise<EffectiveOverlay | null> {
     if (mode !== "personal") return null;
     const view = await this.store.get<{ body: string | null }>(
       "records",
       inventory.view,
     );
+    if (!view && verifyLatest) {
+      const currentLatest = await latestInventory(this.store);
+      if (currentLatest && currentLatest.snapshot !== inventory.snapshot)
+        throw new RecordsError(
+          `Record ${inventory.view} is not cached. Download the records again.`,
+          "missing",
+        );
+    }
     return this.effective(inventory, { [inventory.view]: view?.body ?? "" });
   }
   private async key(

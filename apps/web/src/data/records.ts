@@ -60,6 +60,7 @@ export interface RecordsProgress {
   bytes: number;
 }
 export class RecordsError extends Error {
+  readonly retryable: boolean;
   constructor(
     message: string,
     public kind:
@@ -69,9 +70,12 @@ export class RecordsError extends Error {
       | "network"
       | "unavailable"
       | "storage"
-      | "memory",
+      | "memory"
+      | "superseded",
+    retryable = kind === "superseded",
   ) {
     super(message);
+    this.retryable = retryable;
   }
 }
 const INVENTORY_PAGE_LIMIT = 1000;
@@ -283,6 +287,17 @@ export function isMemoryFailure(error: unknown): boolean {
 }
 function physicalFailure(error: unknown): never {
   if (error instanceof RecordsError) throw error;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    ((error as { code?: unknown }).code === "SUPERSEDED_SNAPSHOT" ||
+      (error as { retryable?: unknown }).retryable === true)
+  )
+    throw new RecordsError(
+      error instanceof Error ? error.message : String(error),
+      "superseded",
+      true,
+    );
   if (isStorageQuotaFailure(error))
     throw new RecordsError(
       "The browser storage quota is full. Free storage for this site, then recompute from records.",
@@ -369,10 +384,12 @@ async function syncProjectedRecords(
   const progress = options.onProgress ?? (() => {});
   const check = () => options.signal?.throwIfAborted();
   progress({ phase: "inventory", loaded: 0, total: 0, bytes: 0 });
-  const manifest = await getManifest(options);
-  const snapshot = manifest.snapshot;
   const latest =
     (await store.get<SnapshotInventory>("inventory", "latest")) ?? null;
+  const expectedLatest =
+    latest && typeof latest.snapshot === "string" ? latest.snapshot : null;
+  const manifest = await getManifest(options);
+  const snapshot = manifest.snapshot;
   const declared = manifest.manifest as {
     events?: { count?: number; hash?: string };
     bodies?: { count?: number; hash?: string };
@@ -720,7 +737,7 @@ async function syncProjectedRecords(
     selections,
   };
   if (typeof store.commitInventory === "function")
-    await store.commitInventory(inventory);
+    await store.commitInventory(inventory, expectedLatest);
   else {
     await store.put("inventory", snapshot, inventory);
     await store.put("inventory", "latest", inventory);
@@ -785,7 +802,7 @@ export async function loadSelections(
     const canonical = await store.get<string>("selections", hash);
     if (!canonical)
       throw new RecordsError(
-        `Import selection ${hash} is not cached.`,
+        `Import selection ${hash} is not cached. Download the records again.`,
         "missing",
       );
     selections[hash] = JSON.parse(canonical) as string[];

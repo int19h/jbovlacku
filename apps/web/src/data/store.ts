@@ -6,6 +6,7 @@
  */
 import {
   createProjectionDigest,
+  maxIncrementalRecords,
   projectionBuildIdentity,
   PROJECTION_ROW_VERSION,
   utf8,
@@ -26,6 +27,7 @@ import {
   projectionSnapshotKey,
   updateProjectionHash,
   xorProjectionHashes,
+  type ProjectionAdvanceFrom,
   type ProjectionBytes,
 } from "./projection-meta.ts";
 import type { Envelope, Transport } from "../model/types.ts";
@@ -324,6 +326,27 @@ export function hasSortedId(
 ): boolean {
   return findSortedId(values, target) >= 0;
 }
+function selectAddedInventoryIds(
+  events: readonly string[],
+  previousEvents: readonly string[],
+): string[] | null {
+  if (previousEvents.length > events.length) return null;
+  const added: string[] = [];
+  let previous = 0;
+  for (const id of events) {
+    if (previousEvents[previous] === id) {
+      previous++;
+    } else if (
+      previous < previousEvents.length &&
+      previousEvents[previous] < id
+    ) {
+      return null;
+    } else {
+      added.push(id);
+    }
+  }
+  return previous === previousEvents.length ? added : null;
+}
 function idbRequest<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
@@ -336,6 +359,7 @@ interface ProjectionSnapshotMeta {
   events_digest: string;
   rows_hash: string | null;
   count: number;
+  advance_from?: ProjectionAdvanceFrom;
 }
 export class LocalStore {
   /** The open database. Lifecycle transactions span several stores. */
@@ -492,6 +516,7 @@ export class LocalStore {
   ): Promise<{
     producer: string | undefined;
     digest: string | undefined;
+    advanceFrom?: ProjectionAdvanceFrom;
     rows: Map<string, Uint8Array>;
   }> {
     const db = await this.database;
@@ -520,6 +545,7 @@ export class LocalStore {
         typeof snapshotMeta?.rows_hash === "string"
           ? snapshotMeta.rows_hash
           : undefined,
+      advanceFrom: snapshotMeta?.advance_from,
       rows,
     };
   }
@@ -593,7 +619,12 @@ export class LocalStore {
           if (record.id > maxId) maxId = record.id;
         }
         const range = IDBKeyRange.bound(minId, maxId);
-        const needOldRows = Boolean(current && typeof rowsHash === "string");
+        const currentHasEvents = Boolean(
+          current && Array.isArray(current.events),
+        );
+        const needOldRows = Boolean(
+          currentHasEvents && typeof rowsHash === "string",
+        );
         const [existingRecordKeys, existingRowKeys] = await Promise.all([
           idbRequest(tx.objectStore("records").getAllKeys(range)),
           needOldRows
@@ -629,9 +660,9 @@ export class LocalStore {
           const [oldRecord, oldRow] = previous[index];
           if (oldRecord?.body && !record.body) continue;
           if (
-            current &&
+            currentHasEvents &&
             typeof rowsHash === "string" &&
-            hasSortedId(current.events, record.id)
+            hasSortedId(current!.events, record.id)
           )
             rowsHash = updateProjectionHash(rowsHash, record.id, oldRow, row);
           tx.objectStore("records").put(record, record.id);
@@ -1078,7 +1109,11 @@ export class LocalStore {
           const oldRow = (await idbRequest(
             tx.objectStore("projections").get(id),
           )) as ProjectionBytes | undefined;
-          if (latest && hasSortedId(latest.events, id)) {
+          if (
+            latest &&
+            Array.isArray(latest.events) &&
+            hasSortedId(latest.events, id)
+          ) {
             const snapshot = (await idbRequest(
               tx
                 .objectStore("meta")
@@ -1124,7 +1159,10 @@ export class LocalStore {
     });
   }
   /** Commits a complete inventory, producer metadata, and its incremental row digest. */
-  async commitInventory(inventory: SnapshotInventory): Promise<void> {
+  async commitInventory(
+    inventory: SnapshotInventory,
+    expectedLatest?: string | null,
+  ): Promise<void> {
     const events = inventory.events;
     if (!isStrictlyIncreasing(events))
       throw new Error("The inventory is not in order.");
@@ -1142,55 +1180,48 @@ export class LocalStore {
             SnapshotInventory | undefined
           >,
         );
+        const previousSnapshot =
+          previous && typeof previous.snapshot === "string"
+            ? previous.snapshot
+            : null;
+        if (
+          expectedLatest !== undefined &&
+          previousSnapshot !== expectedLatest
+        ) {
+          const error = new Error(
+            "Another tab committed a newer snapshot while syncing. Retry with the latest snapshot.",
+          ) as Error & { retryable?: boolean; code?: string };
+          error.retryable = true;
+          error.code = "SUPERSEDED_SNAPSHOT";
+          throw error;
+        }
+        const validPrevious =
+          previous &&
+          typeof previous.snapshot === "string" &&
+          Array.isArray(previous.events) &&
+          isStrictlyIncreasing(previous.events)
+            ? previous
+            : undefined;
         const meta = tx.objectStore("meta");
-        const previousMeta = previous
+        const previousMeta = validPrevious
           ? ((await idbRequest(
-              meta.get(projectionSnapshotKey(previous.snapshot)),
+              meta.get(projectionSnapshotKey(validPrevious.snapshot)),
             )) as ProjectionSnapshotMeta | undefined)
           : undefined;
-        let hash = previousMeta?.rows_hash ?? null;
-        if (hash === null) {
-          const digest = createProjectionDigest();
-          let digestFinished = false;
-          try {
-            const included = previous?.events ?? events;
-            let after: string | undefined;
-            for (;;) {
-              const range =
-                after === undefined
-                  ? undefined
-                  : IDBKeyRange.lowerBound(after, true);
-              const [keys, rows] = await Promise.all([
-                idbRequest(
-                  tx.objectStore("projections").getAllKeys(range, 256),
-                ),
-                idbRequest(tx.objectStore("projections").getAll(range, 256)),
-              ]);
-              for (const [index, key] of keys.entries()) {
-                const id = String(key);
-                if (
-                  hasSortedId(included, id) &&
-                  typeof rows[index] !== "undefined"
-                )
-                  digest.update(
-                    id,
-                    projectionRowBytes(rows[index] as ProjectionBytes),
-                  );
-              }
-              if (keys.length < 256) break;
-              after = String(keys[keys.length - 1]);
-            }
-            digestFinished = true;
-            hash = digest.finish();
-          } finally {
-            if (!digestFinished) digest.free();
-          }
-        }
-        if (previous && previous.snapshot !== inventory.snapshot) {
+        let hash =
+          typeof previousMeta?.rows_hash === "string"
+            ? previousMeta.rows_hash
+            : null;
+        if (
+          hash !== null &&
+          validPrevious &&
+          validPrevious.snapshot !== inventory.snapshot
+        ) {
           const delta = createProjectionDigest();
           let deltaFinished = false;
+          let missingDeltaRow = false;
           try {
-            const oldEvents = previous.events;
+            const oldEvents = validPrevious.events;
             let oldIndex = 0;
             let newIndex = 0;
             while (oldIndex < oldEvents.length || newIndex < events.length) {
@@ -1207,14 +1238,109 @@ export class LocalStore {
                   tx.objectStore("projections").get(id!),
                 )) as ProjectionBytes | undefined;
                 if (row) delta.update(id!, projectionRowBytes(row));
+                else {
+                  missingDeltaRow = true;
+                  break;
+                }
               }
               if (inOld) oldIndex++;
               if (inNew) newIndex++;
             }
-            deltaFinished = true;
-            hash = xorProjectionHashes(hash, delta.finish());
+            if (missingDeltaRow) {
+              hash = null;
+            } else {
+              deltaFinished = true;
+              hash = xorProjectionHashes(hash, delta.finish());
+            }
           } finally {
             if (!deltaFinished) delta.free();
+          }
+        }
+        if (hash === null) {
+          const digest = createProjectionDigest();
+          let digestFinished = false;
+          try {
+            let after: string | undefined;
+            for (;;) {
+              const range =
+                after === undefined
+                  ? undefined
+                  : IDBKeyRange.lowerBound(after, true);
+              const [keys, rows] = await Promise.all([
+                idbRequest(
+                  tx.objectStore("projections").getAllKeys(range, 256),
+                ),
+                idbRequest(tx.objectStore("projections").getAll(range, 256)),
+              ]);
+              for (const [index, key] of keys.entries()) {
+                const id = String(key);
+                if (
+                  hasSortedId(events, id) &&
+                  typeof rows[index] !== "undefined"
+                )
+                  digest.update(
+                    id,
+                    projectionRowBytes(rows[index] as ProjectionBytes),
+                  );
+              }
+              if (keys.length < 256) break;
+              after = String(keys[keys.length - 1]);
+            }
+            digestFinished = true;
+            hash = digest.finish();
+          } finally {
+            if (!digestFinished) digest.free();
+          }
+        }
+        let advanceFrom: ProjectionAdvanceFrom | undefined;
+        if (
+          validPrevious &&
+          validPrevious.snapshot === inventory.snapshot &&
+          previousMeta?.advance_from &&
+          validPrevious.logical_inventory === inventory.logical_inventory &&
+          validPrevious.events_digest === inventory.events_digest
+        ) {
+          advanceFrom = previousMeta.advance_from;
+        } else if (
+          validPrevious &&
+          validPrevious.snapshot !== inventory.snapshot &&
+          typeof validPrevious.logical_inventory === "string" &&
+          typeof validPrevious.events_digest === "string" &&
+          Array.isArray(validPrevious.bodies) &&
+          isStrictlyIncreasing(validPrevious.bodies) &&
+          Array.isArray(validPrevious.unretained_bodies) &&
+          isStrictlyIncreasing(validPrevious.unretained_bodies) &&
+          Array.isArray(validPrevious.selections) &&
+          Array.isArray(inventory.bodies) &&
+          isStrictlyIncreasing(inventory.bodies) &&
+          !validPrevious.bodies.some(
+            (bodyHash) => !hasSortedId(inventory.bodies, bodyHash),
+          )
+        ) {
+          const added = selectAddedInventoryIds(events, validPrevious.events);
+          if (
+            added &&
+            added.length > 0 &&
+            added.length <= maxIncrementalRecords()
+          ) {
+            const newBodies = inventory.bodies.filter(
+              (bodyHash) => !hasSortedId(validPrevious.bodies, bodyHash),
+            );
+            if (
+              !newBodies.some((bodyHash) =>
+                hasSortedId(validPrevious.unretained_bodies!, bodyHash),
+              )
+            ) {
+              advanceFrom = {
+                snapshot: validPrevious.snapshot,
+                logical_inventory: validPrevious.logical_inventory,
+                events_digest: validPrevious.events_digest,
+                count: validPrevious.events.length,
+                selections: validPrevious.selections,
+                added,
+                new_bodies: newBodies,
+              };
+            }
           }
         }
         const producer = await idbRequest(
@@ -1227,11 +1353,11 @@ export class LocalStore {
             events_digest: inventory.events_digest,
             rows_hash: hash,
             count: events.length,
+            ...(advanceFrom ? { advance_from: advanceFrom } : {}),
           },
           projectionSnapshotKey(inventory.snapshot),
         );
         meta.put(inventory.snapshot, PROJECTION_LATEST_KEY);
-        inventories.put(inventory, inventory.snapshot);
         inventories.put(inventory, "latest");
         const selectionStore = tx.objectStore("selections");
         const [inventoryKeys, metaKeys, selectionKeys] = await Promise.all([
@@ -1239,50 +1365,14 @@ export class LocalStore {
           idbRequest(meta.getAllKeys()),
           idbRequest(selectionStore.getAllKeys()),
         ]);
-        let retainedPrevious: SnapshotInventory | undefined =
-          previous && previous.snapshot !== inventory.snapshot
-            ? previous
-            : undefined;
-        if (previous && previous.snapshot === inventory.snapshot) {
-          const otherSnapshotKey = inventoryKeys
-            .map(String)
-            .find((key) => key !== "latest" && key !== inventory.snapshot);
-          if (otherSnapshotKey !== undefined) {
-            const candidate = await idbRequest(
-              inventories.get(otherSnapshotKey) as IDBRequest<
-                SnapshotInventory | undefined
-              >,
-            );
-            if (
-              candidate &&
-              candidate.snapshot === otherSnapshotKey &&
-              Array.isArray(candidate.events) &&
-              isStrictlyIncreasing(candidate.events) &&
-              Array.isArray(candidate.selections)
-            ) {
-              retainedPrevious = candidate;
-            }
-          }
-        }
-        const retainedInventories = new Set<string>([
-          "latest",
-          inventory.snapshot,
-          ...(retainedPrevious ? [retainedPrevious.snapshot] : []),
-        ]);
         const retainedMeta = new Set<string>([
           PROJECTION_PRODUCER_KEY,
           PROJECTION_LATEST_KEY,
           projectionSnapshotKey(inventory.snapshot),
-          ...(retainedPrevious
-            ? [projectionSnapshotKey(retainedPrevious.snapshot)]
-            : []),
         ]);
-        const retainedSelections = new Set<string>([
-          ...inventory.selections,
-          ...(retainedPrevious?.selections ?? []),
-        ]);
+        const retainedSelections = new Set<string>(inventory.selections);
         for (const key of inventoryKeys)
-          if (!retainedInventories.has(String(key))) inventories.delete(key);
+          if (String(key) !== "latest") inventories.delete(key);
         for (const key of metaKeys) {
           const name = String(key);
           if (name.startsWith("projection:") && !retainedMeta.has(name))
@@ -1290,19 +1380,16 @@ export class LocalStore {
         }
         const presentSelections = new Set<string>();
         for (const key of selectionKeys) {
-          const hash = String(key);
-          if (retainedSelections.has(hash)) presentSelections.add(hash);
+          const hashKey = String(key);
+          if (retainedSelections.has(hashKey)) presentSelections.add(hashKey);
           else selectionStore.delete(key);
         }
-        for (const hash of inventory.selections) {
-          if (!presentSelections.has(hash))
+        for (const hashKey of inventory.selections) {
+          if (!presentSelections.has(hashKey))
             throw new Error(
               "An import selection in the inventory is no longer cached. Download the records again.",
             );
         }
-        const previousEvents = retainedPrevious
-          ? retainedPrevious.events
-          : null;
         const prune = async (
           store: IDBObjectStore,
           verifyComplete: boolean,
@@ -1318,8 +1405,7 @@ export class LocalStore {
             for (const key of keys) {
               const id = String(key);
               if (hasSortedId(events, id)) retainedCount++;
-              else if (!previousEvents || !hasSortedId(previousEvents, id))
-                store.delete(key);
+              else store.delete(key);
             }
             if (keys.length < 256) break;
             after = String(keys[keys.length - 1]);

@@ -18,8 +18,10 @@ import {
   type EvaluationSessionOptions,
 } from "../../../../packages/core/src/browser.ts";
 import {
+  PROJECTION_LATEST_KEY,
   PROJECTION_PRODUCER_KEY,
   projectionSnapshotKey,
+  type ProjectionAdvanceFrom,
 } from "../data/projection-meta.ts";
 
 export interface LoadSource {
@@ -103,6 +105,7 @@ type SourceLoader = (
 ) => Promise<SourceLoad>;
 
 interface StoredInventory {
+  snapshot?: string;
   events: string[];
   bodies: string[];
   selections?: string[];
@@ -120,6 +123,7 @@ interface ProjectionMeta {
   events_digest: string;
   rows_hash: string | null;
   count: number;
+  advance_from?: ProjectionAdvanceFrom;
 }
 class ProjectionRebuildNeeded extends Error {}
 function request<T>(read: IDBRequest<T>): Promise<T> {
@@ -141,25 +145,64 @@ function openDatabase(name: string): Promise<IDBDatabase> {
       reject(new Error("Local storage is blocked by another open tab."));
   });
 }
-async function assertProjectionProducer(database: IDBDatabase) {
-  const producer = await request(
-    database
-      .transaction("meta", "readonly")
-      .objectStore("meta")
-      .get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
+async function assertProjectionProducer(
+  database: IDBDatabase,
+  source: LoadSource,
+) {
+  const hasInventory = database.objectStoreNames.contains("inventory");
+  const transaction = database.transaction(
+    hasInventory ? ["meta", "inventory"] : ["meta"],
+    "readonly",
   );
+  const [producer, latest] = await Promise.all([
+    request(
+      transaction
+        .objectStore("meta")
+        .get(PROJECTION_PRODUCER_KEY) as IDBRequest<string | undefined>,
+    ),
+    hasInventory
+      ? request(
+          transaction.objectStore("inventory").get("latest") as IDBRequest<
+            StoredInventory | undefined
+          >,
+        )
+      : Promise.resolve(undefined),
+  ]);
+  if (
+    latest &&
+    typeof latest.snapshot === "string" &&
+    latest.snapshot !== source.snapshot
+  )
+    throw missingRecord(source.snapshot);
   if (producer !== projectionBuildIdentity())
     throw new Error("Projection rows come from another core build.");
 }
 async function readInventory(
   transaction: IDBTransaction,
   source: LoadSource,
-): Promise<StoredInventory> {
-  const stored = await request(
-    transaction.objectStore("inventory").get(source.snapshot) as IDBRequest<
-      StoredInventory | undefined
-    >,
+  requireLatest = false,
+): Promise<{ stored: StoredInventory; isLatest: boolean }> {
+  const inventoryStore = transaction.objectStore("inventory");
+  const latest = await request(
+    inventoryStore.get("latest") as IDBRequest<StoredInventory | undefined>,
   );
+  let stored: StoredInventory | undefined;
+  let isLatest = false;
+  if (latest !== undefined) {
+    if (
+      typeof latest.snapshot === "string" &&
+      latest.snapshot !== source.snapshot
+    )
+      throw missingRecord(source.snapshot);
+    stored = latest;
+    isLatest = true;
+  } else if (!requireLatest) {
+    stored = await request(
+      inventoryStore.get(source.snapshot) as IDBRequest<
+        StoredInventory | undefined
+      >,
+    );
+  }
   if (!stored) throw missingRecord(source.snapshot);
   if (stored.events_digest !== source.events_digest)
     throw new Error(
@@ -178,7 +221,7 @@ async function readInventory(
     )
   )
     throw new Error("The inventory is not in order.");
-  return stored;
+  return { stored, isLatest };
 }
 async function readBatch<T>(
   store: IDBObjectStore,
@@ -210,7 +253,7 @@ async function readProjectionRows(
       : ["inventory", "projections", "meta"],
     "readonly",
   );
-  const stored = await readInventory(transaction, source);
+  const { stored } = await readInventory(transaction, source);
   const metaStore = transaction.objectStore("meta");
   const [meta, producer] = await Promise.all([
     request(
@@ -244,7 +287,9 @@ async function readProjectionRows(
           )
         : undefined;
       if (typeof canonical !== "string" || !canonical)
-        throw new Error(`Import selection ${hash} is not cached.`);
+        throw new Error(
+          `Import selection ${hash} is not cached. Download the records again.`,
+        );
       builder.setImportSelection(hash, canonical);
     }
   }
@@ -328,7 +373,25 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
     void completion.catch(() => {});
     let bytesRead = 0;
     try {
-      const stored = await readInventory(transaction, source);
+      const meta = transaction.objectStore("meta");
+      const [latestMeta, existingMeta, metaKeys] = await Promise.all([
+        request(
+          meta.get(PROJECTION_LATEST_KEY) as IDBRequest<string | undefined>,
+        ),
+        request(
+          meta.get(projectionSnapshotKey(source.snapshot)) as IDBRequest<
+            ProjectionMeta | undefined
+          >,
+        ),
+        request(meta.getAllKeys()),
+      ]);
+      if (latestMeta !== undefined && latestMeta !== source.snapshot)
+        throw missingRecord(source.snapshot);
+      const { stored, isLatest } = await readInventory(
+        transaction,
+        source,
+        latestMeta !== undefined,
+      );
       const recordStore = transaction.objectStore("records");
       const projectionStore = transaction.objectStore("projections");
       projectionStore.clear();
@@ -376,8 +439,19 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
           throw missingRecord(stored.events[index]);
         digestFinished = true;
         const rowsHash = digest.finish();
-        const meta = transaction.objectStore("meta");
+        const retainedMeta = new Set<string>([
+          PROJECTION_PRODUCER_KEY,
+          PROJECTION_LATEST_KEY,
+          projectionSnapshotKey(source.snapshot),
+        ]);
+        for (const key of metaKeys) {
+          const name = String(key);
+          if (name.startsWith("projection:") && !retainedMeta.has(name))
+            meta.delete(key);
+        }
         meta.put(projectionBuildIdentity(), PROJECTION_PRODUCER_KEY);
+        if (isLatest || latestMeta !== undefined)
+          meta.put(source.snapshot, PROJECTION_LATEST_KEY);
         meta.put(
           {
             version: PROJECTION_ROW_VERSION,
@@ -385,6 +459,9 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
             events_digest: source.events_digest,
             rows_hash: rowsHash,
             count: index,
+            ...(existingMeta?.advance_from
+              ? { advance_from: existingMeta.advance_from }
+              : {}),
           },
           projectionSnapshotKey(source.snapshot),
         );
@@ -405,7 +482,7 @@ async function rebuildStoredProjection(source: LoadSource): Promise<number> {
 async function checkProjectionProducer(source: LoadSource): Promise<void> {
   const database = await openDatabase(source.database);
   try {
-    await assertProjectionProducer(database);
+    await assertProjectionProducer(database, source);
   } finally {
     database.close();
   }
