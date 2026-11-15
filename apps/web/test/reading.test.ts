@@ -1031,6 +1031,14 @@ test("explicit page focus keeps a connected control, rejects stale or detached t
       const after = new AbortController();
       const nextFocus = watchReaderFocus(main, after.signal);
       try {
+        // A bare focus move to an editable field inside the page, with no
+        // key or pointer event, is a reader choice (a screen reader move).
+        const field = document.createElement("input");
+        main.append(field);
+        field.focus();
+        const keepsEditable =
+          nextFocus.keeps() && document.activeElement === field;
+        field.remove();
         const dialog = document.createElement("dialog");
         const inside = document.createElement("button");
         dialog.append(inside);
@@ -1054,6 +1062,7 @@ test("explicit page focus keeps a connected control, rejects stale or detached t
           acceptsOutside,
           acceptsDisabled,
           acceptsAborted,
+          keepsEditable,
           acceptsWithDialog,
           keepsDialog,
           acceptsAfterReader,
@@ -1076,6 +1085,7 @@ test("explicit page focus keeps a connected control, rejects stale or detached t
     acceptsOutside: false,
     acceptsDisabled: false,
     acceptsAborted: false,
+    keepsEditable: true,
     acceptsWithDialog: false,
     keepsDialog: true,
     acceptsAfterReader: false,
