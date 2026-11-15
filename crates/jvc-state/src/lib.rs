@@ -1253,17 +1253,33 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
         let mut pending = false;
         let mut invalid = false;
         if node.kind == "judgment.set" && target.starts_with("jvr1:") {
-            let mut found = false;
+            let mut matched = None;
             for p in result.publications.values() {
                 if !graph.charge(1) {
                     return;
                 }
                 if p.assignment.as_deref() == Some(target) {
-                    found = true;
+                    matched = Some(p.id.clone());
                     break;
                 }
             }
-            pending = !found;
+            if only.is_none() {
+                match matched.as_ref() {
+                    Some(id) => {
+                        *graph
+                            .matched_publication_scans
+                            .borrow_mut()
+                            .entry(id.clone())
+                            .or_insert(0) += 1;
+                    }
+                    None => {
+                        graph
+                            .unmatched_publication_scans
+                            .set(graph.unmatched_publication_scans.get() + 1);
+                    }
+                }
+            }
+            pending = matched.is_none();
         } else {
             match graph.nodes.get(target) {
                 None => pending = true,
@@ -1289,7 +1305,7 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                             let source_id = node.action.view().index("source_definition").as_u64();
                             let origin = node.action.view().index("origin");
                             let origin = origin.as_str().unwrap_or_default();
-                            let mut linked = false;
+                            let mut linked = None;
                             for p in result.publications.values() {
                                 if !graph.charge(1) {
                                     return;
@@ -1319,11 +1335,27 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                                                 )
                                         })
                                 {
-                                    linked = true;
+                                    linked = Some(p.id.clone());
                                     break;
                                 }
                             }
-                            if !linked {
+                            if only.is_none() {
+                                match linked.as_ref() {
+                                    Some(id) => {
+                                        *graph
+                                            .matched_publication_scans
+                                            .borrow_mut()
+                                            .entry(id.clone())
+                                            .or_insert(0) += 1;
+                                    }
+                                    None => {
+                                        graph
+                                            .unmatched_publication_scans
+                                            .set(graph.unmatched_publication_scans.get() + 1);
+                                    }
+                                }
+                            }
+                            if linked.is_none() {
                                 let r = result.receipts.get_mut(id).unwrap();
                                 r.interpretation = Interpretation::Pending;
                                 r.reasons.insert("account_binding_unavailable".into());
