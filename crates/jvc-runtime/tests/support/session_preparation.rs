@@ -829,36 +829,50 @@ fn unavailable_evaluations_skip_setup_bounds_for_raw_overlays() {
 #[test]
 fn restored_malformed_overlay_never_panics_in_setup() {
     let (f, _) = fixture();
+    let overlay = json!({"trust":[{"issuer":1}]});
+
+    // 1. A real resource_unavailable checkpoint with a raw malformed overlay restores and skips setup.
+    let mut unavail_input: Value = serde_json::from_slice(&f.bytes()).unwrap();
+    unavail_input["limits"] = json!({"traversal": 0});
+    unavail_input["overlay"] = overlay.clone();
+    let unavail_session =
+        EvaluationSession::new(&serde_json::to_vec(&unavail_input).unwrap()).unwrap();
+    let unavail_cp = unavail_session.checkpoint("raw-overlay").unwrap();
+    let restored_unavail =
+        EvaluationSession::restore_host_checkpoint(&unavail_cp, "raw-overlay").unwrap();
+    let d = restored_unavail
+        .ranking_descriptor_native(&policy())
+        .unwrap();
+    assert!(!d.available);
+    assert_eq!((d.setup.setup_bytes, d.setup.setup_units), (0, 0));
+
+    // 2. An available checkpoint mutated to carry a malformed overlay never panics in setup.
     let session = EvaluationSession::new(&f.bytes()).unwrap();
     let mut saved: Value =
         serde_json::from_slice(&session.checkpoint("raw-overlay").unwrap()).unwrap();
-    let overlay = json!({"trust":[{"issuer":1}]});
     saved["evaluation"]["overlay"] = overlay.clone();
     saved["options"]["overlay"] = overlay;
-    for available in [false, true] {
-        saved["evaluation"]["available"] = json!(available);
-        saved["evaluation"]["reasons"] = if available {
-            json!([])
-        } else {
-            json!(["resource_unavailable"])
-        };
-        let restored = EvaluationSession::restore_host_checkpoint(
+    let restored_avail = EvaluationSession::restore_host_checkpoint(
+        &serde_json::to_vec(&saved).unwrap(),
+        "raw-overlay",
+    )
+    .unwrap();
+    assert_eq!(
+        restored_avail
+            .ranking_descriptor_native(&policy())
+            .unwrap_err()
+            .code,
+        "invalid_overlay"
+    );
+
+    // 3. Forging resource_unavailable onto a populated available checkpoint is rejected on restore.
+    saved["evaluation"]["available"] = json!(false);
+    saved["evaluation"]["reasons"] = json!(["resource_unavailable"]);
+    assert!(
+        jvc_state::EvaluatedState::restore_host_checkpoint(
             &serde_json::to_vec(&saved).unwrap(),
             "raw-overlay",
         )
-        .unwrap();
-        if available {
-            assert_eq!(
-                restored
-                    .ranking_descriptor_native(&policy())
-                    .unwrap_err()
-                    .code,
-                "invalid_overlay"
-            );
-        } else {
-            let d = restored.ranking_descriptor_native(&policy()).unwrap();
-            assert!(!d.available);
-            assert_eq!((d.setup.setup_bytes, d.setup.setup_units), (0, 0));
-        }
-    }
+        .is_err()
+    );
 }

@@ -99,6 +99,7 @@ pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &m
         }
         todo.extend(parents);
         if id == input.selected_view {
+            let mut invalid_selections = BTreeSet::new();
             for entry in body
                 .view()
                 .index("import_sets")
@@ -129,8 +130,16 @@ pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &m
                     result.reasons.insert("resource_unavailable".into());
                     return;
                 }
+                if result.selections.contains_key(selection_id) {
+                    continue;
+                }
+                if invalid_selections.contains(selection_id) {
+                    result.reasons.insert("import_selection_unavailable".into());
+                    continue;
+                }
                 match valid_selection(input, selection_id) {
                     None => {
+                        invalid_selections.insert(selection_id.to_owned());
                         result.reasons.insert("import_selection_unavailable".into());
                     }
                     Some(ids) => {
@@ -1135,10 +1144,21 @@ pub(crate) fn valid_selection<'a>(
     input: &'a EvaluationOptions,
     id: &str,
 ) -> Option<&'a Vec<String>> {
+    use std::io::Write;
     let ids = input.import_selections.get(id)?;
     jvc_core::sorted_ids(ids, "jve1:", usize::MAX).ok()?;
-    let bytes = jvc_core::canonical_value(&serde_json::json!(ids)).ok()?;
-    if bytes.len() > 16 * 1024 * 1024 || jvc_core::hash_id("sha256:", b"", &bytes) != id {
+    let mut writer = jvc_core::HashWriter::new(b"", 16 * 1024 * 1024);
+    writer.write_all(b"[").ok()?;
+    for (index, item) in ids.iter().enumerate() {
+        if index > 0 {
+            writer.write_all(b",").ok()?;
+        }
+        writer.write_all(b"\"").ok()?;
+        writer.write_all(item.as_bytes()).ok()?;
+        writer.write_all(b"\"").ok()?;
+    }
+    writer.write_all(b"]").ok()?;
+    if writer.finish("sha256:").0 != id {
         return None;
     }
     Some(ids)

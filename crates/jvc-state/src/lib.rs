@@ -49,6 +49,17 @@ pub struct EvaluationOptions {
     pub overlay: Option<Value>,
     pub limits: Limits,
 }
+impl EvaluationOptions {
+    pub fn selection_id_count(&self) -> usize {
+        self.import_selections
+            .values()
+            .fold(0usize, |acc, ids| acc.saturating_add(ids.len()))
+    }
+    pub fn traversal_budget(&self, records: usize) -> usize {
+        self.limits
+            .traversal_budget_with_selections(records, self.selection_id_count())
+    }
+}
 /// An opaque projection held only in the trusted host's private storage.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -228,9 +239,13 @@ impl Default for Limits {
 }
 impl Limits {
     pub fn traversal_budget(&self, records: usize) -> usize {
+        self.traversal_budget_with_selections(records, 0)
+    }
+    pub fn traversal_budget_with_selections(&self, records: usize, selection_ids: usize) -> usize {
         self.traversal.unwrap_or_else(|| {
             DEFAULT_TRAVERSAL_BASE
                 .saturating_add(records.saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD))
+                .saturating_add(selection_ids)
         })
     }
 }
@@ -559,7 +574,7 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
         arena,
         ..
     } = prepared;
-    let graph = graph::Graph::new(nodes, &input.limits);
+    let graph = graph::Graph::new_with_options(nodes, &input);
     let result = evaluate_graph(&input, &graph);
     arena.borrow_mut().finish_load();
     result

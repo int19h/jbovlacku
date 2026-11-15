@@ -325,8 +325,8 @@ Keep the proposal journal and external source archive available for retries and 
 The SQL archive records the digest and path of the external dump instead of copying it into the proposal.
 Rights remain unknown in this extraction. Local loading grants no publication authority.
 
-The default state work budget grows linearly with the input record count (`10,000,000 + 256 * records`), and an explicit traversal limit (`--state-traversal-limit`, `state_traversal_limit`, `JVC_STATE_TRAVERSAL_LIMIT`, or `Limits.traversal`) overrides that default.
-The traversal flag changes the work limit only. It does not remove memory limits or an optional configured event quota.
+The default state work budget grows linearly with the input (`10,000,000 + 256 * records + selection_ids`), and an explicit traversal limit (`--state-traversal-limit`, `state_traversal_limit`, `JVC_STATE_TRAVERSAL_LIMIT`, or `Limits.traversal`) overrides that default.
+The traversal flag changes the work limit only. It does not remove memory or event limits.
 The loader completes admission before the server builds its snapshot, indexes, and search packages.
 The SQL loader projects only final changed event bindings and stages at most 256 compact records per batch.
 One admission transaction promotes staged rows and accepted events together. Failed admission removes its own staged rows.

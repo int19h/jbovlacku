@@ -289,15 +289,27 @@ pub(crate) struct Graph {
     pub appended: usize,
 }
 impl Graph {
+    #[allow(dead_code)]
     pub fn new(nodes: impl Into<Rc<BTreeMap<String, Node>>>, limits: &Limits) -> Self {
         let nodes = nodes.into();
+        let budget = limits.traversal_budget(nodes.len());
+        Self::new_with_budget(nodes, budget)
+    }
+    pub fn new_with_options(
+        nodes: impl Into<Rc<BTreeMap<String, Node>>>,
+        options: &EvaluationOptions,
+    ) -> Self {
+        let nodes = nodes.into();
+        let budget = options.traversal_budget(nodes.len());
+        Self::new_with_budget(nodes, budget)
+    }
+    fn new_with_budget(nodes: Rc<BTreeMap<String, Node>>, budget: usize) -> Self {
         #[cfg(test)]
         CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
         // The layout scan costs one unit per record and per predecessor
         // edge. Charge it before the scan runs, so a tiny budget refuses
         // before any layout allocation.
         let layout_work = nodes.len() + nodes.values().map(|n| n.previous.len()).sum::<usize>();
-        let budget = limits.traversal_budget(nodes.len());
         let mut graph = Self {
             nodes,
             space: super::ancestors::Space::empty(),

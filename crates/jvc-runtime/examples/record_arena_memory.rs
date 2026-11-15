@@ -50,6 +50,37 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 #[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LimitsWire {
+    #[serde(default)]
+    events: Option<usize>,
+    #[serde(default)]
+    traversal: Option<usize>,
+    claim_depth: usize,
+}
+
+impl Default for LimitsWire {
+    fn default() -> Self {
+        let defaults = jvc_state::Limits::default();
+        Self {
+            events: defaults.events,
+            traversal: defaults.traversal,
+            claim_depth: defaults.claim_depth,
+        }
+    }
+}
+
+impl From<LimitsWire> for jvc_state::Limits {
+    fn from(wire: LimitsWire) -> Self {
+        Self {
+            events: wire.events,
+            traversal: wire.traversal,
+            claim_depth: wire.claim_depth,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct Wire {
     events: Vec<String>,
     bodies: BTreeMap<String, String>,
@@ -58,7 +89,7 @@ struct Wire {
     #[serde(default)]
     overlay: Option<Value>,
     #[serde(default)]
-    limits: jvc_state::Limits,
+    limits: LimitsWire,
 }
 
 fn live() -> usize {
@@ -95,7 +126,7 @@ fn main() {
         selected_view,
         import_selections,
         overlay,
-        limits,
+        limits: limits.into(),
     };
     let mut prepared = jvc_state::PreparedEvaluationInput::new(options);
     let records = events.len();
