@@ -5609,7 +5609,7 @@ mod rebuild_tests {
         let result_json: Value = serde_json::from_slice(&result_bytes).unwrap();
         assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v6"));
         assert_eq!(result_json["version"], json!("jvc-evaluation-results-v6"));
-        assert_eq!(result_json.get("nodes"), Some(&Value::Null));
+        assert!(result_json.get("nodes").is_none());
         for json in [&full_json, &result_json] {
             assert_eq!(json.get("unmatched_publication_scans"), Some(&json!(0)));
             assert_eq!(json.get("matched_publication_scans"), Some(&json!({})));
