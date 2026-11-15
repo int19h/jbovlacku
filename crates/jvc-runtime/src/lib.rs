@@ -270,6 +270,34 @@ pub fn prepare_selection(bytes: &[u8]) -> std::result::Result<String, JsValue> {
     let len = canonical.len();
     output(json!({"hash":hash,"bytes":len,"count":ids.len(),"canonical":canonical,"ids":ids}))
 }
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LimitsWire {
+    #[serde(default)]
+    events: Option<usize>,
+    #[serde(default)]
+    traversal: Option<usize>,
+    claim_depth: usize,
+}
+impl Default for LimitsWire {
+    fn default() -> Self {
+        let defaults = jvc_state::Limits::default();
+        Self {
+            events: defaults.events,
+            traversal: defaults.traversal,
+            claim_depth: defaults.claim_depth,
+        }
+    }
+}
+impl From<LimitsWire> for jvc_state::Limits {
+    fn from(wire: LimitsWire) -> Self {
+        Self {
+            events: wire.events,
+            traversal: wire.traversal,
+            claim_depth: wire.claim_depth,
+        }
+    }
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EvaluationWire {
@@ -280,7 +308,7 @@ struct EvaluationWire {
     #[serde(default)]
     overlay: Option<Value>,
     #[serde(default)]
-    limits: jvc_state::Limits,
+    limits: LimitsWire,
 }
 fn evaluation_input(bytes: &[u8]) -> Result<jvc_state::EvaluationInput> {
     evaluation_input_with_verifier(bytes, &mut jvc_core::EnvelopeVerifier::default())
@@ -306,7 +334,7 @@ fn evaluation_input_with_verifier(
         selected_view: wire.selected_view,
         import_selections: wire.import_selections,
         overlay: wire.overlay,
-        limits: wire.limits,
+        limits: wire.limits.into(),
     })
 }
 #[derive(Serialize)]
@@ -1406,7 +1434,7 @@ struct EvaluationOptionsWire {
     #[serde(default)]
     overlay: Option<Value>,
     #[serde(default)]
-    limits: jvc_state::Limits,
+    limits: LimitsWire,
 }
 
 #[wasm_bindgen]
@@ -1421,7 +1449,7 @@ impl EvaluationSessionBuilder {
             selected_view: wire.selected_view,
             import_selections: wire.import_selections.unwrap_or_default(),
             overlay: wire.overlay,
-            limits: wire.limits,
+            limits: wire.limits.into(),
         };
         Ok(Self {
             prepared: jvc_state::PreparedEvaluationInput::new(options),

@@ -209,11 +209,11 @@ pub const DEFAULT_TRAVERSAL_BASE: usize = 10_000_000;
 pub const DEFAULT_TRAVERSAL_PER_RECORD: usize = 256;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct Limits {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "Option::deserialize")]
     pub events: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "Option::deserialize")]
     pub traversal: Option<usize>,
     pub claim_depth: usize,
 }
@@ -244,6 +244,7 @@ pub enum Interpretation {
     Unavailable,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub interpretation: Interpretation,
     pub body: String,
@@ -267,33 +268,43 @@ pub enum Eligibility {
     NotSelected,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AccountKey {
     pub origin: String,
     pub account: u64,
 }
 impl AccountKey {
-    fn token(&self) -> String {
+    pub(crate) fn token(&self) -> String {
         format!("{}#{}", self.origin, self.account)
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Publication {
     pub id: String,
     pub issuer: String,
     pub kind: String,
     pub word: String,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub language: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub assignment: Option<String>,
     pub lineage: BTreeMap<String, String>,
     pub imported: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub source: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub source_record: Option<u64>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub account: Option<AccountKey>,
     pub authority: Authority,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub controller: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub claim: Option<String>,
     pub observations: BTreeSet<String>,
     pub status_frontier: BTreeSet<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub deciding_claim: Option<String>,
     pub controller_candidates: BTreeSet<String>,
     pub witness_contributions: BTreeMap<String, BTreeSet<String>>,
@@ -304,14 +315,17 @@ pub struct Publication {
     pub reasons: BTreeSet<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AccountState {
     pub account: AccountKey,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub controller: Option<String>,
     pub candidates: BTreeSet<String>,
     pub contributions: BTreeMap<String, BTreeSet<String>>,
     pub observation_evidence: BTreeMap<String, BTreeSet<String>>,
     pub certificates: Vec<Certificate>,
     pub chain: BTreeSet<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub controller_identity: Option<String>,
     pub current_observations: BTreeSet<String>,
     pub historical: BTreeSet<String>,
@@ -331,6 +345,7 @@ pub enum Judgment {
     Conflicted,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Register {
     pub actor: String,
     pub key: String,
@@ -350,6 +365,7 @@ pub struct Register {
     pub(crate) maxima_member_work: usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Lifecycle {
     pub key_actor: BTreeMap<String, String>,
     pub groups: BTreeMap<String, BTreeSet<String>>,
@@ -367,6 +383,7 @@ pub struct Evaluation {
     pub overlay: Option<Value>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct EvaluationResults {
     pub receipts: BTreeMap<String, Receipt>,
     pub lifecycle: Lifecycle,
@@ -374,6 +391,7 @@ pub struct EvaluationResults {
     pub accounts: BTreeMap<String, AccountState>,
     pub registers: BTreeMap<String, Register>,
     pub judgments: BTreeMap<String, BTreeMap<String, Judgment>>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub policy: Option<CompactValue>,
     pub(crate) policies: Vec<CompactValue>,
     pub(crate) policy_history: BTreeMap<String, CompactValue>,
@@ -421,20 +439,44 @@ impl<'de> Deserialize<'de> for Evaluation {
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Wire {
             selected_view: String,
             available: bool,
             reasons: BTreeSet<String>,
-            #[serde(flatten)]
-            results: EvaluationResults,
+            receipts: BTreeMap<String, Receipt>,
+            lifecycle: Lifecycle,
+            publications: BTreeMap<String, Publication>,
+            accounts: BTreeMap<String, AccountState>,
+            registers: BTreeMap<String, Register>,
+            judgments: BTreeMap<String, BTreeMap<String, Judgment>>,
+            #[serde(deserialize_with = "Option::deserialize")]
+            policy: Option<CompactValue>,
+            #[serde(deserialize_with = "Option::deserialize")]
             overlay: Option<Value>,
+            policies: Vec<CompactValue>,
+            policy_history: BTreeMap<String, CompactValue>,
+            selections: BTreeMap<String, BTreeSet<String>>,
+            trust: Vec<TrustRule>,
         }
         let wire = Wire::deserialize(deserializer)?;
         Ok(Self {
             selected_view: wire.selected_view,
             available: wire.available,
             reasons: wire.reasons,
-            results: std::rc::Rc::new(wire.results),
+            results: std::rc::Rc::new(EvaluationResults {
+                receipts: wire.receipts,
+                lifecycle: wire.lifecycle,
+                publications: wire.publications,
+                accounts: wire.accounts,
+                registers: wire.registers,
+                judgments: wire.judgments,
+                policy: wire.policy,
+                policies: wire.policies,
+                policy_history: wire.policy_history,
+                selections: wire.selections,
+                trust: wire.trust,
+            }),
             overlay: wire.overlay,
         })
     }
@@ -482,6 +524,7 @@ fn apply_overlay(result: &mut Evaluation, suspended: &impl Fn(&str) -> bool) {
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct TrustRule {
     pub actor: String,
     pub subject: String,

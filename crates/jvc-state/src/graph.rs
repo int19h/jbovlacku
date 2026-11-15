@@ -63,7 +63,9 @@ pub(crate) struct Node {
     pub action: CompactValue,
     pub kind: String,
     pub semantic: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub body_hash: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub body: Option<CompactValue>,
     pub body_label: String,
 }

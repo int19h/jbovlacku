@@ -8,32 +8,39 @@ pub enum Authority {
     Uncertain,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Certificate {
     pub policy: String,
     pub claim: String,
     pub observations: BTreeSet<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct WitnessContribution {
     pub witness: String,
     pub claims: BTreeSet<String>,
     pub observations: BTreeSet<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PublicationStatus {
     pub event: String,
     pub state: Status,
     pub frontier: BTreeSet<String>,
     pub reasons: BTreeSet<String>,
     pub controller_candidates: BTreeSet<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub deciding_claim: Option<String>,
     pub witness_contributions: Vec<WitnessContribution>,
     pub authority: Authority,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub controller: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub claim: Option<String>,
     pub observations: BTreeSet<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AccountControl {
     pub snapshot: String,
     pub view: String,
