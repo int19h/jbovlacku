@@ -393,10 +393,10 @@ fn inclusive_preparation_limits_refuse_before_context_allocation() {
     let baseline = prepared(&session, &f.word);
     let d = session.ranking_descriptor_native(&policy()).unwrap();
     let mut exact = policy();
-    exact.limits.records = d.setup.setup_records;
-    exact.limits.setup_bytes = d.setup.setup_bytes as usize;
+    exact.limits.records = Some(d.setup.setup_records);
+    exact.limits.setup_bytes = Some(d.setup.setup_bytes as usize);
     exact.limits.units = baseline.usage.charged_units;
-    exact.limits.setup_units = baseline.usage.setup_units;
+    exact.limits.setup_units = Some(baseline.usage.setup_units);
     exact.limits.word_publications = baseline.usage.visited_publications;
     exact.limits.targets = baseline.targets.len();
     exact.limits.contexts = baseline.contexts.len();
@@ -419,9 +419,13 @@ fn inclusive_preparation_limits_refuse_before_context_allocation() {
     ] {
         let mut policy = exact.clone();
         match limit {
-            "records" => policy.limits.records -= 1,
-            "setup_bytes" => policy.limits.setup_bytes -= 1,
-            "setup_units" => policy.limits.setup_units -= 1,
+            "records" => policy.limits.records = Some(policy.limits.records.unwrap() - 1),
+            "setup_bytes" => {
+                policy.limits.setup_bytes = Some(policy.limits.setup_bytes.unwrap() - 1)
+            }
+            "setup_units" => {
+                policy.limits.setup_units = Some(policy.limits.setup_units.unwrap() - 1)
+            }
             "units" => policy.limits.units -= 1,
             "word_publications" => policy.limits.word_publications -= 1,
             "targets" => policy.limits.targets -= 1,
@@ -480,9 +484,9 @@ fn large_source_is_streamed_and_context_charges_do_not_repeat_dictionary_bytes()
     assert!(source_bytes > 3_000_000);
     assert_eq!(baseline.contexts.len(), 2);
     let mut source_bounded = policy();
-    source_bounded.limits.source_bytes = source_bytes as usize;
+    source_bounded.limits.source_bytes = Some(source_bytes as usize);
     assert!(session.ranking_descriptor_native(&source_bounded).is_ok());
-    source_bounded.limits.source_bytes -= 1;
+    source_bounded.limits.source_bytes = Some(source_bounded.limits.source_bytes.unwrap() - 1);
     assert_eq!(
         session
             .ranking_descriptor_native(&source_bounded)
@@ -509,8 +513,8 @@ fn exact_profiles_skip_the_source_walk_and_float_unavailability_keeps_its_reason
     f.view("simple-routes-bounds-v1", &[1], 1000);
     let exact = EvaluationSession::new(&f.bytes()).unwrap();
     let mut tiny = policy();
-    tiny.limits.records = 1;
-    tiny.limits.setup_bytes = 1;
+    tiny.limits.records = Some(1);
+    tiny.limits.setup_bytes = Some(1);
     tiny.limits.units = 1;
     let d = exact.ranking_descriptor_native(&tiny).unwrap();
     assert!(!d.available && d.reasons.contains("unsupported_calculation"));
@@ -549,7 +553,7 @@ fn resource_refused_policy_releases_controller_and_old_requests_without_resettin
     let before = prepared(&session, &f.word);
     let d = session.ranking_descriptor_native(&policy()).unwrap();
     let mut limited = policy();
-    limited.limits.records = 1;
+    limited.limits.records = Some(1);
     assert_eq!(
         session
             .ranking_descriptor_native(&limited)
@@ -811,8 +815,8 @@ fn unavailable_evaluations_skip_setup_bounds_for_raw_overlays() {
         );
         let session = EvaluationSession::new(&bytes).unwrap();
         let mut tiny = policy();
-        tiny.limits.setup_bytes = 1;
-        tiny.limits.setup_units = 1;
+        tiny.limits.setup_bytes = Some(1);
+        tiny.limits.setup_units = Some(1);
         let descriptor = session.ranking_descriptor_native(&tiny).unwrap();
         assert!(!descriptor.available, "{name}");
         assert!(descriptor.reasons.contains("resource_unavailable"));

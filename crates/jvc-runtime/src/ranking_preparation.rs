@@ -4,15 +4,21 @@ use super::*;
 use jvc_rank::approximate as a;
 use std::{collections::BTreeSet, sync::Arc};
 
-pub const PREPARATION_CONTRACT: &str = "jvc-session-ranking-preparation-v4";
+pub const PREPARATION_CONTRACT: &str = "jvc-session-ranking-preparation-v5";
+/// Fixed part of the default setup-unit budget.
+pub const SETUP_UNITS_FIXED_ALLOWANCE: u64 = 100_000_000;
+/// Default setup-unit allowance per index entry.
+pub const SETUP_UNITS_PER_ENTRY: u64 = 512;
+/// Default setup-unit allowance per copied key byte.
+pub const SETUP_UNITS_PER_KEY_BYTE: u64 = 4;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RankingPreparationLimits {
-    pub records: usize,
-    pub setup_bytes: usize,
+    pub records: Option<usize>,
+    pub setup_bytes: Option<usize>,
     pub units: u64,
-    pub setup_units: u64,
-    pub source_bytes: usize,
+    pub setup_units: Option<u64>,
+    pub source_bytes: Option<usize>,
     pub source_millis: u64,
     pub word_publications: usize,
     pub targets: usize,
@@ -23,11 +29,11 @@ pub struct RankingPreparationLimits {
 impl Default for RankingPreparationLimits {
     fn default() -> Self {
         Self {
-            records: 1_000_000,
-            setup_bytes: 512 * 1024 * 1024,
+            records: None,
+            setup_bytes: None,
             units: 100_000_000,
-            setup_units: 400_000_000,
-            source_bytes: 256 * 1024 * 1024,
+            setup_units: None,
+            source_bytes: None,
             source_millis: 30_000,
             word_publications: 8192,
             targets: 4096,
@@ -88,25 +94,53 @@ impl RankingPreparationPolicy {
         // The outer factor also covers allocator overhead and transient maps.
         let bytes = mul(add(bytes, fixed)?, 2)?;
         let log = u64::from(64 - add(entries, 1)?.leading_zeros());
-        let units = mul(add(mul(mul(entries, 8)?, log)?, c.key_bytes)?, 2)?;
-        if bytes > self.limits.setup_bytes as u64 || units > self.limits.setup_units {
+        let base = mul(add(mul(mul(entries, 8)?, log)?, c.key_bytes)?, 2)?;
+        // The record-count walk and the index-count walk scan these entries
+        // and key bytes. Charge them in the same total, before index build.
+        let walk = add(mul(entries, 16)?, mul(c.key_bytes, 4)?)?;
+        let units = add(base, walk)?;
+        if self
+            .limits
+            .setup_bytes
+            .is_some_and(|limit| bytes > limit as u64)
+            || units > self.effective_setup_units(entries, c.key_bytes)?
+        {
             return Err(resource("ranking setup envelope limit"));
         }
         Ok((bytes, units))
     }
+    /// The explicit setup-unit quota, or the scaled default for these counts.
+    pub fn effective_setup_units(&self, entries: u64, key_bytes: u64) -> Result<u64> {
+        if let Some(limit) = self.limits.setup_units {
+            return Ok(limit);
+        }
+        add(
+            add(
+                SETUP_UNITS_FIXED_ALLOWANCE,
+                mul(entries, SETUP_UNITS_PER_ENTRY)?,
+            )?,
+            mul(key_bytes, SETUP_UNITS_PER_KEY_BYTE)?,
+        )
+    }
+    /// Budget known before a count walk, from map lengths alone.
+    fn provisional_setup_units(&self, hint_entries: u64) -> Result<u64> {
+        if let Some(limit) = self.limits.setup_units {
+            return Ok(limit);
+        }
+        add(
+            SETUP_UNITS_FIXED_ALLOWANCE,
+            mul(hint_entries, SETUP_UNITS_PER_ENTRY)?,
+        )
+    }
     fn validate(&self) -> Result<()> {
         let l = &self.limits;
         if !jvc_core::valid_id(&self.core_binding, "sha256:")
-            || l.records == 0
-            || l.records > 1_000_000
-            || l.setup_bytes == 0
-            || l.setup_bytes > 1024 * 1024 * 1024
+            || l.records == Some(0)
+            || l.setup_bytes == Some(0)
             || l.units == 0
             || l.units > 1_000_000_000
-            || l.setup_units == 0
-            || l.setup_units > 1_000_000_000
-            || l.source_bytes == 0
-            || l.source_bytes > 1024 * 1024 * 1024
+            || l.setup_units == Some(0)
+            || l.source_bytes == Some(0)
             || l.source_millis == 0
             || l.source_millis > 120_000
             || l.word_publications == 0
@@ -259,7 +293,7 @@ fn source_binding(
     let start = std::time::Instant::now();
     #[cfg(target_arch = "wasm32")]
     let start = setup_now();
-    state.ranking_source_binding_checked(limits.source_bytes, || {
+    state.ranking_source_binding_checked(limits.source_bytes.unwrap_or(usize::MAX), || {
         #[cfg(not(target_arch = "wasm32"))]
         {
             start.elapsed().as_secs_f64() * 1000.0 <= limits.source_millis as f64
@@ -342,6 +376,33 @@ fn parameters(e: &jvc_state::Evaluation) -> Result<PreparationParameters> {
         work,
     })
 }
+/// An entry-count hint from map lengths only. It bounds the setup walks.
+fn hint_entries(session: &EvaluationSession) -> Result<u64> {
+    let e = session.state.evaluation();
+    let mut hint = session.state.event_count() as u64;
+    for n in [
+        e.publications.len(),
+        e.receipts.len(),
+        e.registers.len(),
+        e.judgments.len(),
+        e.accounts.len(),
+        e.lifecycle.key_actor.len(),
+    ] {
+        hint = add(hint, n as u64)?;
+    }
+    if let Some(overlay) = &e.overlay {
+        for key in ["trust", "blocked", "root_changes"] {
+            hint = add(
+                hint,
+                overlay
+                    .get(key)
+                    .and_then(|v| v.as_array())
+                    .map_or(0, Vec::len) as u64,
+            )?;
+        }
+    }
+    Ok(hint)
+}
 impl SessionPreparation {
     fn new(session: &EvaluationSession, policy: &RankingPreparationPolicy) -> Result<Self> {
         policy.validate()?;
@@ -379,11 +440,27 @@ impl SessionPreparation {
                 0,
             )
         } else {
+            // Charge each setup walk against the setup-unit budget before it
+            // runs. The hint uses only map lengths, so it costs no walk. The
+            // advance charges are part of the walk term in `setup_estimate`.
+            let hint = if available { hint_entries(session)? } else { 0 };
+            let budget = policy.provisional_setup_units(hint)?;
+            let mut advance = 0u64;
+            if available {
+                advance = add(advance, add(mul(hint, 1)?, 1)?)?;
+                if advance > budget {
+                    return Err(resource("ranking setup envelope limit"));
+                }
+            }
             let records = session.state.ranking_source_records()?;
-            if records > limits.records {
+            if limits.records.is_some_and(|limit| records > limit) {
                 return Err(resource("ranking setup record limit"));
             }
             let (setup_bytes, setup_units) = if available {
+                advance = add(advance, add(mul(hint, 8)?, 1)?)?;
+                if advance > budget {
+                    return Err(resource("ranking setup envelope limit"));
+                }
                 let counts = session.state.ranking_index_bound()?;
                 policy.setup_estimate(&counts)?
             } else {
@@ -990,7 +1067,7 @@ mod tests {
         session.prepare_ranking_native(&request).unwrap();
         let refused = graph(&session);
         let mut smaller = policy.clone();
-        smaller.limits.records = 1;
+        smaller.limits.records = Some(1);
         assert_eq!(
             session
                 .ranking_descriptor_native(&smaller)
@@ -1131,43 +1208,38 @@ mod tests {
             core_binding: format!("sha256:{}", "a".repeat(64)),
             limits: Default::default(),
         };
+        assert_eq!(p.limits.records, None);
+        assert_eq!(p.limits.setup_bytes, None);
+        assert_eq!(p.limits.setup_units, None);
+        assert_eq!(p.limits.source_bytes, None);
         let (bytes, units) = p.setup_estimate(&c).unwrap();
-        assert_eq!((bytes, units), (291_524_664, 204_442_264));
-        assert!(
-            bytes + p.limits.graph_bytes as u64 + (p.limits.metadata_bytes as u64)
-                < p.limits.setup_bytes as u64
-        );
-        assert!(units + 50_000_000 < p.limits.setup_units);
+        assert_eq!((bytes, units), (291_524_664, 345_414_824));
+        assert!(units + 50_000_000 < p.effective_setup_units(452_554, 33_432_924).unwrap());
         assert_eq!(p.limits.units, 100_000_000);
-        assert!(165_438_058 < p.limits.source_bytes);
         let mut grown = serde_json::to_value(&c).unwrap();
         for count in grown.as_object_mut().unwrap().values_mut() {
             *count = json!(count.as_u64().unwrap() * 3 / 2);
         }
         let grown: jvc_state::RankingIndexCounts = serde_json::from_value(grown).unwrap();
-        let (grown_bytes, _) = p.setup_estimate(&grown).unwrap();
-        assert!(
-            grown_bytes + p.limits.graph_bytes as u64 + (p.limits.metadata_bytes as u64)
-                < p.limits.setup_bytes as u64
-        );
-        assert!(165_438_058 * 3 / 2 < p.limits.source_bytes);
-        assert!(269_350 * 3 / 2 < p.limits.records);
-        p.limits.setup_bytes = bytes as usize;
-        p.limits.setup_units = units;
+        p.setup_estimate(&grown).unwrap();
+        p.limits.setup_bytes = Some(bytes as usize);
+        p.limits.setup_units = Some(units);
         assert_eq!(p.setup_estimate(&c).unwrap(), (bytes, units));
-        p.limits.setup_bytes -= 1;
+        p.limits.setup_bytes = Some(bytes as usize - 1);
         assert_eq!(
             p.setup_estimate(&c).unwrap_err().code,
             "resource_unavailable"
         );
-        p.limits.setup_bytes += 1;
-        p.limits.setup_units -= 1;
+        p.limits.setup_bytes = Some(bytes as usize);
+        p.limits.setup_units = Some(units - 1);
         assert_eq!(
             p.setup_estimate(&c).unwrap_err().code,
             "resource_unavailable"
         );
-        p.limits.setup_bytes = 1024 * 1024 * 1024;
-        p.limits.setup_units = 1_000_000_000;
+        // Eight times the measured shape passes at the scaled default and
+        // under quotas above the old whole-dictionary ceilings.
+        p.limits.setup_bytes = Some(1024 * 1024 * 1024 * 4);
+        p.limits.setup_units = Some(4_000_000_000);
         let mut large = c.clone();
         large.words *= 8;
         large.word_publications *= 8;
@@ -1175,13 +1247,97 @@ mod tests {
         large.targets *= 8;
         large.judgment_groups *= 8;
         large.key_bytes *= 8;
+        p.limits.setup_bytes = None;
+        p.limits.setup_units = None;
+        p.setup_estimate(&large).unwrap();
+        large.words = u64::MAX;
         assert_eq!(
             p.setup_estimate(&large).unwrap_err().code,
             "resource_unavailable"
         );
-        large.words = u64::MAX;
+    }
+    fn restored_with_judgments(
+        mut session: EvaluationSession,
+        judgments: Value,
+    ) -> EvaluationSession {
+        let mut saved: Value =
+            serde_json::from_slice(&session.checkpoint("synthetic").unwrap()).unwrap();
+        saved["evaluation"]["judgments"] = judgments;
+        session.state = jvc_state::EvaluatedState::restore_host_checkpoint(
+            &serde_json::to_vec(&saved).unwrap(),
+            "synthetic",
+        )
+        .unwrap();
+        session.word_results.borrow_mut().take();
+        *session.preparation.borrow_mut() = None;
+        session
+    }
+    #[test]
+    fn setup_above_a_million_records_without_a_quota_completes() {
+        let (session, word) = session();
+        let inner: serde_json::Map<String, Value> = (0..=1_000_000u32)
+            .map(|n| (format!("k{n}"), json!("bless")))
+            .collect();
+        let session = restored_with_judgments(
+            session,
+            json!({ format!("jve1:{}", "0".repeat(64)): inner }),
+        );
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(descriptor.available, "{:?}", descriptor.reasons);
+        assert!(descriptor.setup.setup_records > 1_000_000);
+        let summary = session
+            .prepare_ranking_native(&RankingPreparationRequest {
+                owner_session: descriptor.owner_session.clone(),
+                descriptor_binding: descriptor.binding.clone(),
+                word: word.clone(),
+            })
+            .unwrap();
+        assert_eq!(summary.usage.setup_records, descriptor.setup.setup_records);
+        // A configured record quota keeps the old refusal and message.
+        let mut quota = policy.clone();
+        quota.limits.records = Some(descriptor.setup.setup_records - 1);
+        let error = session.ranking_descriptor_native(&quota).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup record limit");
+        // A configured envelope quota keeps the old refusal and message.
+        let mut quota = policy.clone();
+        quota.limits.setup_bytes = Some(descriptor.setup.setup_bytes as usize - 1);
+        let error = session.ranking_descriptor_native(&quota).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+        // A configured setup-unit quota below the advance charge also refuses.
+        let mut quota = policy;
+        quota.limits.setup_units = Some(1);
+        let error = session.ranking_descriptor_native(&quota).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn source_above_256_mib_without_a_quota_completes() {
+        let (session, _word) = session();
+        let inner: serde_json::Map<String, Value> = (0..9u32)
+            .map(|n| (format!("k{n}-{}", "x".repeat(30_000_000)), json!("bless")))
+            .collect();
+        let session = restored_with_judgments(
+            session,
+            json!({ format!("jve1:{}", "0".repeat(64)): inner }),
+        );
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(descriptor.available, "{:?}", descriptor.reasons);
+        assert!(descriptor.setup.source_bytes > 256 * 1024 * 1024);
+        // A configured source quota keeps the old refusal.
+        let mut quota = policy;
+        quota.limits.source_bytes = Some(descriptor.setup.source_bytes as usize - 1);
         assert_eq!(
-            p.setup_estimate(&large).unwrap_err().code,
+            session.ranking_descriptor_native(&quota).unwrap_err().code,
             "resource_unavailable"
         );
     }
@@ -1191,18 +1347,15 @@ mod tests {
             core_binding: format!("sha256:{}", "a".repeat(64)),
             limits: Default::default(),
         };
-        p.limits.source_bytes = 1024 * 1024 * 1024;
+        p.limits.source_bytes = Some(1024 * 1024 * 1024 * 4);
         p.limits.source_millis = 120_000;
         p.validate().unwrap();
-        p.limits.source_bytes += 1;
-        assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
-        p.limits.source_bytes -= 1;
         p.limits.source_millis += 1;
         assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
         p.limits.source_millis = 0;
         assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
         p.limits.source_millis = 1;
-        p.limits.source_bytes = 0;
+        p.limits.source_bytes = Some(0);
         assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
     }
     #[test]
@@ -1221,7 +1374,7 @@ mod tests {
             key_bytes: 434,
             ..Default::default()
         };
-        assert_eq!(p.setup_estimate(&c).unwrap(), (12_772, 1_156));
+        assert_eq!(p.setup_estimate(&c).unwrap(), (12_772, 2_988));
     }
     #[test]
     fn setup_units_do_not_spend_the_context_allowance() {
@@ -1252,9 +1405,9 @@ mod tests {
             session.prepare_ranking_native(&request).unwrap_err().code,
             "resource_unavailable"
         );
-        policy.limits.setup_units = 0;
+        policy.limits.setup_units = Some(0);
         assert_eq!(policy.validate().unwrap_err().code, "ranking_policy");
-        policy.limits.setup_units = 1_000_000_001;
-        assert_eq!(policy.validate().unwrap_err().code, "ranking_policy");
+        policy.limits.setup_units = Some(4_000_000_001);
+        policy.validate().unwrap();
     }
 }
