@@ -944,7 +944,7 @@ fn long_history_uses_explicit_global_limit_without_stack_recursion() {
         let id = f.event(30, previous, json!({"kind":"identity.merge"}), None);
         previous = vec![id];
     }
-    f.input.limits.traversal = 10_000;
+    f.input.limits.traversal = Some(10_000);
     let result = evaluate_observed(&f.input);
     assert!(!result.available);
     assert!(result.reasons.contains("resource_unavailable"));
@@ -1884,7 +1884,7 @@ fn incremental_record_growth_with_carried_account_history_keeps_resource_results
     let (mut low, mut high) = (0, 100_000);
     while low < high {
         let middle = (low + high) / 2;
-        f.input.limits.traversal = middle;
+        f.input.limits.traversal = Some(middle);
         if evaluate(&f.input).reasons.contains("resource_unavailable") {
             low = middle + 1;
         } else {
@@ -1893,8 +1893,8 @@ fn incremental_record_growth_with_carried_account_history_keeps_resource_results
     }
     for budget in [low - 1, low, low + 100] {
         let mut base = before.clone();
-        base.limits.traversal = budget;
-        f.input.limits.traversal = budget;
+        base.limits.traversal = Some(budget);
+        f.input.limits.traversal = Some(budget);
         let state = jvc_state::EvaluatedState::from_input(&base);
         let mut delta = PreparedEvaluationInput::new(EvaluationOptions {
             selected_view: f.input.selected_view.clone(),
@@ -2292,7 +2292,7 @@ fn growing_missing_predecessor_sets_stop_at_global_budget() {
         heads.extend(previous);
         previous = Some(f.event(30, heads, json!({"kind":"identity.merge"}), None));
     }
-    f.input.limits.traversal = 20_000;
+    f.input.limits.traversal = Some(20_000);
     let result = evaluate_observed(&f.input);
     assert!(!result.available);
     assert!(result.reasons.contains("resource_unavailable"));
@@ -2871,4 +2871,56 @@ fn personal_overlay_versions_keep_exact_fields_and_null_issuer_compatibility() {
     assert_eq!(old.rows, graph.rows);
     assert_eq!(old.roots, graph.roots);
     assert!(old.public_shun_blocked.is_empty());
+}
+
+#[test]
+fn selection_above_200000_ids_and_multiple_selections_authorize_imports() {
+    let mut f = Fixture::new();
+    let d2 = f.publish(2);
+    let mut large_ids: Vec<String> = (0..200_005usize)
+        .map(|i| format!("jve1:{i:064x}"))
+        .collect();
+    large_ids.push(f.d.clone());
+    large_ids.sort();
+    let selection_a = hash_id("sha256:", b"", &canonical_value(&json!(large_ids)).unwrap());
+    let small_ids = vec![d2.clone()];
+    let selection_b = hash_id("sha256:", b"", &canonical_value(&json!(small_ids)).unwrap());
+    f.input.import_selections.clear();
+    f.input
+        .import_selections
+        .insert(selection_a.clone(), large_ids);
+    f.input
+        .import_selections
+        .insert(selection_b.clone(), small_ids);
+    let mut witnesses = vec![key(10), key(11)];
+    witnesses.sort();
+    let mut selections = [selection_a, selection_b];
+    selections.sort();
+    f.input.selected_view = f.event(
+        20,
+        vec![],
+        json!({"kind":"view.publish","parents":[]}),
+        Some(json!({
+            "name":"fixture",
+            "description":[],
+            "roots":[],
+            "rafsi_threshold":{"numerator":1,"denominator":1},
+            "H":{"numerator":3,"denominator":1},
+            "alpha":{"numerator":1,"denominator":2},
+            "excluded":[],
+            "calculation":"simple-routes-bounds-v1",
+            "work":1000,
+            "import_sets":[
+                {"source":"fixture","importer":key(9),"selection":selections[0]},
+                {"source":"fixture","importer":key(9),"selection":selections[1]}
+            ],
+            "account_witnesses":witnesses,
+            "account_authority":true,
+            "notes":[]
+        })),
+    );
+    let result = evaluate(&f.input);
+    assert!(result.available);
+    assert_eq!(result.publications[&f.d].status, Status::Active);
+    assert_eq!(result.publications[&d2].status, Status::Active);
 }

@@ -91,8 +91,8 @@ fn main() {
         mut limits,
     } = serde_json::from_slice(&bytes).unwrap();
     drop(bytes);
-    limits.events = 1_000_000;
-    limits.traversal = 1_000_000_000;
+    limits.events = Some(1_000_000);
+    limits.traversal = Some(1_000_000_000);
     let options = jvc_state::EvaluationOptions {
         selected_view,
         import_selections,

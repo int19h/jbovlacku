@@ -288,6 +288,7 @@ impl Graph {
         // edge. Charge it before the scan runs, so a tiny budget refuses
         // before any layout allocation.
         let layout_work = nodes.len() + nodes.values().map(|n| n.previous.len()).sum::<usize>();
+        let budget = limits.traversal_budget(nodes.len());
         let mut graph = Self {
             nodes,
             space: super::ancestors::Space::empty(),
@@ -313,7 +314,7 @@ impl Graph {
             cutoffs: BTreeMap::new(),
             transfers: BTreeMap::new(),
             pending_cutoffs: BTreeSet::new(),
-            budget: Cell::new(limits.traversal),
+            budget: Cell::new(budget),
             resource: Cell::new(false),
             appended: 0,
         };
@@ -532,7 +533,11 @@ impl Graph {
                 result.missing.insert(id.clone());
                 continue;
             };
-            if !self.charge(1 + c.missing.len() + c.ids.fresh_ranges) {
+            if !self.charge(
+                1 + c.missing.len()
+                    + result.ids.fresh_ranges.saturating_sub(1)
+                    + c.ids.fresh_ranges,
+            ) {
                 result.resource = true;
                 break;
             }
@@ -586,6 +591,9 @@ impl Graph {
                     .collect();
                 let mut invalid = false;
                 for id in &safe {
+                    if !self.charge(1) {
+                        return;
+                    }
                     match self.nodes.get(id) {
                         Some(n) if n.issuer != node.issuer => invalid = true,
                         Some(_) if !self.own[&node.id].ids.contains(id) || id == &node.id => {
@@ -602,7 +610,9 @@ impl Graph {
                     if c.resource || !self.charge(1 + c.missing.len()) {
                         return;
                     }
-                    if !self.charge(1 + c.ids.fresh_ranges) {
+                    if !self
+                        .charge(1 + cutoff.ids.fresh_ranges.saturating_sub(1) + c.ids.fresh_ranges)
+                    {
                         return;
                     }
                     cutoff.ids.extend(&self.ancestry, c.ids);
@@ -686,6 +696,9 @@ impl Graph {
                 };
                 path.push(at);
                 on_path.insert(at);
+                if !self.charge(1) {
+                    return;
+                }
                 #[cfg(test)]
                 count_work(1);
                 at = next.as_str();
@@ -724,6 +737,9 @@ impl Graph {
                     Some(parent) => {
                         path.push(at);
                         on_path.insert(at);
+                        if !self.charge(1) {
+                            return;
+                        }
                         #[cfg(test)]
                         count_work(1);
                         at = parent;
@@ -747,12 +763,16 @@ impl Graph {
         // Per-issuer completeness for `local_complete`, in one pass
         // over the records instead of one scan per claim.
         for (id, node) in self.nodes.as_ref() {
-            let complete =
-                if self.lifecycle.successor.contains_key(&node.issuer) && !self.retained(id) {
-                    true
-                } else {
-                    self.own_complete(id)
-                };
+            let retained =
+                !self.lifecycle.successor.contains_key(&node.issuer) || self.retained(id);
+            if self.resource.get() {
+                return;
+            }
+            let complete = if !retained {
+                true
+            } else {
+                self.own_complete(id)
+            };
             *self
                 .issuer_complete
                 .entry(node.issuer.clone())
@@ -768,11 +788,15 @@ impl Graph {
                         .push(id.clone());
                 }
             }
-            if !self.lifecycle.successor.contains_key(&node.issuer) || self.retained(id) {
+            if retained {
+                let missing = &self.own[id].missing;
+                if !missing.is_empty() && !self.charge(missing.len()) {
+                    return;
+                }
                 self.issuer_missing
                     .entry(node.issuer.clone())
                     .or_default()
-                    .extend(self.own[id].missing.iter().cloned());
+                    .extend(missing.iter().cloned());
             }
         }
         for (id, node) in self.nodes.as_ref() {
@@ -1030,16 +1054,28 @@ impl Graph {
         let Some(node) = self.nodes.get(id) else {
             return false;
         };
-        self.transfers.get(&node.issuer).is_some_and(|transfers| {
-            transfers.iter().any(|transfer| {
+        if let Some(transfers) = self.transfers.get(&node.issuer) {
+            for transfer in transfers {
+                if !self.charge(1) {
+                    return false;
+                }
                 let history = &self.own[transfer];
-                history.complete() && (transfer == id || !history.ids.contains(id))
-            })
-        }) || self.cutoffs.get(&node.issuer).is_some_and(|cutoffs| {
-            cutoffs
-                .iter()
-                .any(|cutoff| cutoff.complete() && !cutoff.ids.contains(id))
-        })
+                if history.complete() && (transfer == id || !history.ids.contains(id)) {
+                    return true;
+                }
+            }
+        }
+        if let Some(cutoffs) = self.cutoffs.get(&node.issuer) {
+            for cutoff in cutoffs {
+                if !self.charge(1) {
+                    return false;
+                }
+                if cutoff.complete() && !cutoff.ids.contains(id) {
+                    return true;
+                }
+            }
+        }
+        false
     }
     pub fn retained(&self, id: &str) -> bool {
         let Some(node) = self.nodes.get(id) else {
@@ -1049,16 +1085,23 @@ impl Graph {
             return false;
         }
         if let Some(transfers) = self.transfers.get(&node.issuer) {
-            if transfers
-                .iter()
-                .any(|t| t == id || !self.own[t].ids.contains(id))
-            {
-                return false;
+            for t in transfers {
+                if !self.charge(1) {
+                    return false;
+                }
+                if t == id || !self.own[t].ids.contains(id) {
+                    return false;
+                }
             }
         }
         if let Some(cutoffs) = self.cutoffs.get(&node.issuer) {
-            if cutoffs.iter().any(|c| !c.complete() || !c.ids.contains(id)) {
-                return false;
+            for c in cutoffs {
+                if !self.charge(1) {
+                    return false;
+                }
+                if !c.complete() || !c.ids.contains(id) {
+                    return false;
+                }
             }
         }
         true
@@ -1104,10 +1147,15 @@ impl Graph {
         let mut groups: BTreeMap<usize, Vec<(&String, &Closure)>> = BTreeMap::new();
         for id in ids {
             match cache.get(id) {
-                Some(closure) => groups
-                    .entry(closure.ids.member_count())
-                    .or_default()
-                    .push((id, closure)),
+                Some(closure) => {
+                    if closure.ids.fresh_ranges > 1 && !self.charge(closure.ids.fresh_ranges - 1) {
+                        return BTreeSet::new();
+                    }
+                    groups
+                        .entry(closure.ids.member_count())
+                        .or_default()
+                        .push((id, closure));
+                }
                 None => {
                     unknown.insert(id.clone());
                 }
@@ -1116,23 +1164,39 @@ impl Graph {
         let mut result = unknown;
         let mut larger = IdSet::empty(self.space.clone());
         for (_, members) in groups.iter().rev() {
-            // Same-size members eliminate each other only through
-            // identical closures, which eliminate every member that
-            // shares them.
-            type Signature<'a> = (Vec<(u32, u32)>, &'a BTreeSet<String>);
-            let mut signatures: BTreeMap<Signature<'_>, usize> = BTreeMap::new();
-            for (_, closure) in members {
-                *signatures
-                    .entry((closure.ids.ranges().collect(), &closure.ids.extra))
-                    .or_insert(0) += 1;
+            let mut candidates: Vec<(&String, &Closure)> = Vec::new();
+            for &(id, closure) in members {
+                if larger.fresh_ranges > 1 && !self.charge(larger.fresh_ranges - 1) {
+                    return BTreeSet::new();
+                }
+                if !larger.contains(id) {
+                    candidates.push((id, closure));
+                }
             }
-            for (id, closure) in members {
-                let signature = (
-                    closure.ids.ranges().collect::<Vec<(u32, u32)>>(),
-                    &closure.ids.extra,
-                );
-                if signatures[&signature] < 2 && !larger.contains(id) {
-                    result.insert((*id).clone());
+            if candidates.len() == 1 {
+                result.insert(candidates[0].0.clone());
+            } else if candidates.len() > 1 {
+                // Same-size members eliminate each other only through
+                // identical closures, which eliminate every member that
+                // shares them.
+                type Signature<'a> = (Vec<(u32, u32)>, &'a BTreeSet<String>);
+                let mut signatures: BTreeMap<Signature<'_>, usize> = BTreeMap::new();
+                for &(_, closure) in &candidates {
+                    if !self.charge(1 + closure.ids.fresh_ranges + closure.ids.extra.len()) {
+                        return BTreeSet::new();
+                    }
+                    *signatures
+                        .entry((closure.ids.ranges().collect(), &closure.ids.extra))
+                        .or_insert(0) += 1;
+                }
+                for (id, closure) in candidates {
+                    let signature = (
+                        closure.ids.ranges().collect::<Vec<(u32, u32)>>(),
+                        &closure.ids.extra,
+                    );
+                    if signatures[&signature] < 2 {
+                        result.insert((*id).clone());
+                    }
                 }
             }
             for (_, closure) in members {
@@ -1146,7 +1210,17 @@ impl Graph {
                 // nothing: skip its merge (and its charge) instead
                 // of recounting an unchanged accumulator.
                 if closure.ids.subset_of(&larger) {
+                    if larger.fresh_ranges > 1 && !self.charge(larger.fresh_ranges - 1) {
+                        return BTreeSet::new();
+                    }
                     continue;
+                }
+                let union_work = larger
+                    .fresh_ranges
+                    .saturating_add(closure.ids.fresh_ranges)
+                    .saturating_sub(1);
+                if union_work > 0 && !self.charge(union_work) {
+                    return BTreeSet::new();
                 }
                 larger.union(budget, &closure.ids);
                 // The accumulator's charge for the next merge must
@@ -1167,13 +1241,20 @@ impl Graph {
         // the closure is connected to it exactly when a stored range
         // overlaps that block or an appended member belongs to it.
         self.structural.get(event).is_some_and(|c| {
-            self.space
+            if self
+                .space
                 .block(root)
                 .is_some_and(|(first, last)| c.ids.intersects_positions(first, last))
-                || c.ids
-                    .extra
-                    .iter()
-                    .any(|id| self.nodes[id.as_str()].issuer == root)
+            {
+                return true;
+            }
+            if !c.ids.extra.is_empty() && !self.charge(c.ids.extra.len()) {
+                return false;
+            }
+            c.ids
+                .extra
+                .iter()
+                .any(|id| self.nodes[id.as_str()].issuer == root)
         })
     }
     pub fn downstream(&self, root: &str) -> BTreeSet<String> {
@@ -1184,7 +1265,12 @@ impl Graph {
         let mut at = root;
         while keys.insert(at.into()) {
             match self.lifecycle.successor.get(at) {
-                Some(next) => at = next,
+                Some(next) => {
+                    if !self.charge(1) {
+                        break;
+                    }
+                    at = next;
+                }
                 None => break,
             }
         }
@@ -1194,6 +1280,9 @@ impl Graph {
     }
     pub fn local_complete(&self, root: &str, _claim: &str) -> bool {
         let keys = self.downstream(root);
+        if keys.len() > 1 && !self.charge(keys.len() - 1) {
+            return false;
+        }
         !keys.iter().any(|key| self.pending_cutoffs.contains(key))
             && keys
                 .iter()
@@ -1520,7 +1609,7 @@ mod tests {
         // unit per record: 8N in total.
         let work = 8 * count;
         let limits = Limits {
-            traversal: work,
+            traversal: Some(work),
             ..Limits::default()
         };
         let graph = Graph::new(nodes(count, false), &limits);
@@ -1530,7 +1619,7 @@ mod tests {
         assert!(Rc::ptr_eq(&graph.own, &graph.accepted));
         assert!(graph.own.values().all(|c| c.ids.range_count() == 1));
         let limits = Limits {
-            traversal: work - 1,
+            traversal: Some(work - 1),
             ..limits
         };
         assert!(Graph::new(nodes(count, false), &limits).resource.get());
@@ -1545,14 +1634,14 @@ mod tests {
         // record: 18N - 10 in total.
         let work = 18 * count - 10;
         let limits = Limits {
-            traversal: work,
+            traversal: Some(work),
             ..Limits::default()
         };
         let graph = Graph::new(nodes(count, true), &limits);
         assert!(!graph.resource.get());
         assert_eq!(graph.budget.get(), 0);
         let limits = Limits {
-            traversal: work - 1,
+            traversal: Some(work - 1),
             ..limits
         };
         assert!(Graph::new(nodes(count, true), &limits).resource.get());
@@ -1562,7 +1651,7 @@ mod tests {
     fn linear_histories_use_one_range_past_the_old_dense_threshold() {
         let count = 70_000;
         let limits = Limits {
-            traversal: 100_000_000,
+            traversal: Some(100_000_000),
             ..Limits::default()
         };
         let graph = Graph::new(nodes(count, true), &limits);
@@ -1619,7 +1708,7 @@ mod tests {
 
     fn assert_graph_matches_oracle(nodes: BTreeMap<String, Node>) {
         let limits = Limits {
-            traversal: 100_000_000,
+            traversal: Some(100_000_000),
             ..Limits::default()
         };
         let graph = Graph::new(nodes.clone(), &limits);
@@ -1731,7 +1820,7 @@ mod tests {
         }
         assert_graph_matches_oracle(map.clone());
         let limits = Limits {
-            traversal: 100_000_000,
+            traversal: Some(100_000_000),
             ..Limits::default()
         };
         let graph = Graph::new(map, &limits);
@@ -1770,7 +1859,7 @@ mod tests {
             map.insert(n.id.clone(), n);
         }
         let limits = Limits {
-            traversal: 100_000_000,
+            traversal: Some(100_000_000),
             ..Limits::default()
         };
         let mut graph = Graph::new(map.clone(), &limits);
@@ -1882,7 +1971,7 @@ mod tests {
         let graph = Graph::new(nodes.clone(), &Limits::default());
         assert!(graph.resource.get());
         let limits = Limits {
-            traversal: 1_000_000_000,
+            traversal: Some(1_000_000_000),
             ..Limits::default()
         };
         let graph = Graph::new(nodes, &limits);
@@ -1900,7 +1989,7 @@ mod tests {
         let graph = Graph::new(nodes.clone(), &Limits::default());
         assert!(graph.resource.get());
         let limits = Limits {
-            traversal: 1_000_000_000,
+            traversal: Some(1_000_000_000),
             ..Limits::default()
         };
         let graph = Graph::new(nodes, &limits);
@@ -1929,7 +2018,7 @@ mod tests {
         // the graph must report resource exhaustion, and no accepted
         // closure built after the failed charge may be complete.
         let limits = Limits {
-            traversal: 1_000_000_000,
+            traversal: Some(1_000_000_000),
             ..Limits::default()
         };
         let graph = Graph::new(interleaved_with_acceptance(2_880), &limits);
@@ -1943,7 +2032,7 @@ mod tests {
     #[test]
     fn append_past_the_cap_marks_the_graph_and_closure_unavailable() {
         let limits = Limits {
-            traversal: 1_000_000_000,
+            traversal: Some(1_000_000_000),
             ..Limits::default()
         };
         let mut graph = Graph::new(interleaved_with_acceptance(2_348), &limits);
@@ -1966,7 +2055,7 @@ mod tests {
     #[test]
     fn sibling_clones_have_independent_cap_accounting() {
         let limits = Limits {
-            traversal: 1_000_000_000,
+            traversal: Some(1_000_000_000),
             ..Limits::default()
         };
         let graph = Graph::new(interleaved_with_acceptance(2_348), &limits);
@@ -1996,7 +2085,7 @@ mod tests {
     #[test]
     fn zero_budget_refuses_before_layout() {
         let limits = Limits {
-            traversal: 0,
+            traversal: Some(0),
             ..Limits::default()
         };
         let graph = Graph::new(nodes(64, true), &limits);

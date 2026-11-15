@@ -1,7 +1,7 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v3";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v4";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
 
@@ -181,6 +181,14 @@ impl EvaluatedState {
         self.prepared.nodes.len()
     }
 
+    pub fn consumed_work(&self) -> usize {
+        self.prepared
+            .options
+            .limits
+            .traversal_budget(self.prepared.nodes.len())
+            .saturating_sub(self.remaining_work)
+    }
+
     pub fn statistics(&self) -> &UpdateStatistics {
         &self.statistics
     }
@@ -356,14 +364,22 @@ impl EvaluatedState {
             self.evaluation = empty_evaluation(&self.prepared.options);
             resource_unavailable(&mut self.evaluation);
             self.graph = None;
-            self.remaining_work = self.prepared.options.limits.traversal;
+            self.remaining_work = self
+                .prepared
+                .options
+                .limits
+                .traversal_budget(self.prepared.nodes.len());
             self.unresolved.clear();
             return;
         }
         if self.prepared.event_limit_exceeded {
             self.evaluation = event_limit_evaluation(&self.prepared.options);
             self.graph = None;
-            self.remaining_work = self.prepared.options.limits.traversal;
+            self.remaining_work = self
+                .prepared
+                .options
+                .limits
+                .traversal_budget(self.prepared.nodes.len());
             self.unresolved.clear();
             return;
         }
@@ -410,9 +426,11 @@ impl EvaluatedState {
                 }
             }
         }
-        self.prepared.event_limit_exceeded = delta.event_limit_exceeded
-            || self.prepared.nodes.len().saturating_add(added.len())
-                > self.prepared.options.limits.events;
+        self.prepared.event_limit_exceeded =
+            delta.event_limit_exceeded
+                || self.prepared.options.limits.events.is_some_and(|limit| {
+                    self.prepared.nodes.len().saturating_add(added.len()) > limit
+                });
         self.statistics = UpdateStatistics::default();
         self.judgment_changes = Some(JudgmentChanges::default());
         if self.prepared.event_limit_exceeded {
@@ -555,14 +573,20 @@ impl EvaluatedState {
         }) {
             return Err("history_changed");
         }
+        let mut target_work = 0usize;
         if node.kind == "judgment.set" {
             let target = node.action.view().index("target");
             let target = target.as_str().unwrap_or_default();
             let known = if target.starts_with("jvr1:") {
-                self.evaluation
-                    .publications
-                    .values()
-                    .any(|p| p.assignment.as_deref() == Some(target))
+                let mut found = false;
+                for p in self.evaluation.publications.values() {
+                    target_work += 1;
+                    if p.assignment.as_deref() == Some(target) {
+                        found = true;
+                        break;
+                    }
+                }
+                found
             } else {
                 graph.nodes.get(target).is_some_and(|n| {
                     n.semantic && matches!(n.kind.as_str(), "definition.publish" | "rafsi.publish")
@@ -673,8 +697,14 @@ impl EvaluatedState {
         let work = (1 + node.previous.len())
             + construction
             + 1
-            + usize::from(self.evaluation.policy.is_some());
-        if work > self.remaining_work {
+            + usize::from(self.evaluation.policy.is_some())
+            + target_work;
+        let record_allowance = if self.prepared.options.limits.traversal.is_none() {
+            DEFAULT_TRAVERSAL_PER_RECORD
+        } else {
+            0
+        };
+        if work > self.remaining_work.saturating_add(record_allowance) {
             return Err("work_budget");
         }
         Ok(work)
@@ -692,6 +722,11 @@ impl EvaluatedState {
         // code a full evaluation runs for this record, and their own
         // charges (closure unions for the new record) come out of the
         // same budget, so the total equals a full evaluation.
+        if self.prepared.options.limits.traversal.is_none() {
+            self.remaining_work = self
+                .remaining_work
+                .saturating_add(DEFAULT_TRAVERSAL_PER_RECORD);
+        }
         self.remaining_work -= work;
         graph.budget.set(self.remaining_work);
         self.evaluation.lifecycle = graph.lifecycle.clone();
@@ -721,13 +756,20 @@ impl EvaluatedState {
             // evaluation already paid for the previous member set,
             // so refund exactly that and keep the new charge. No
             // unions are replayed to recover the old charge.
-            let previous_charge = self
+            let (previous_charge, previous_work, previous_member_work) = self
                 .evaluation
                 .registers
                 .get(&key)
-                .map(|register| register.maxima_charge)
-                .unwrap_or(0);
+                .map(|register| {
+                    (
+                        register.maxima_charge,
+                        register.maxima_work,
+                        register.maxima_member_work,
+                    )
+                })
+                .unwrap_or((0, 0, 0));
             graph.ancestry.refund(previous_charge);
+            graph.budget.set(graph.budget.get() + previous_work);
             // Closed form, when it applies: the fast path's parents
             // cover the issuer's whole block, so every same-issuer
             // member is an ancestor of the new record. If every
@@ -742,6 +784,8 @@ impl EvaluatedState {
             // another issuer whose actor is this issuer) keeps the
             // general member-set path below.
             let new_closure = &graph.accepted[&node.id];
+            let new_member_work =
+                previous_member_work + new_closure.ids.fresh_ranges.saturating_sub(1);
             let sole_head = self
                 .evaluation
                 .registers
@@ -753,12 +797,15 @@ impl EvaluatedState {
                         .all(|head| new_closure.ids.contains(head))
                 })
                 .unwrap_or(true);
-            let (heads, new_charge) = if sole_head {
+            let (heads, new_charge, new_work) = if sole_head && new_closure.ids.fresh_ranges == 1 {
                 let amount = new_closure.ids.fresh_ranges * 8 + 64;
                 if !graph.ancestry.charge(amount) {
                     graph.resource.set(true);
                 }
-                (BTreeSet::from([node.id.clone()]), amount)
+                if new_member_work > 0 {
+                    let _ = graph.charge(new_member_work);
+                }
+                (BTreeSet::from([node.id.clone()]), amount, new_member_work)
             } else {
                 // General path: run maxima over the same member set
                 // a full evaluation uses for this register, so its
@@ -788,8 +835,13 @@ impl EvaluatedState {
                     .map(|n| n.id.clone())
                     .collect();
                 let charge_before = graph.ancestry.bytes();
+                let work_before = graph.budget.get();
                 let heads = graph.maxima(members, false);
-                (heads, graph.ancestry.bytes() - charge_before)
+                (
+                    heads,
+                    graph.ancestry.bytes() - charge_before,
+                    work_before - graph.budget.get(),
+                )
             };
             let values: BTreeSet<String> = heads
                 .iter()
@@ -826,6 +878,8 @@ impl EvaluatedState {
                     conflicted: values.len() > 1,
                     values,
                     maxima_charge: new_charge,
+                    maxima_work: new_work,
+                    maxima_member_work: new_member_work,
                 },
             );
         } else {
@@ -898,10 +952,12 @@ impl EvaluatedState {
             /// Maxima charge per register, in `evaluation.registers`
             /// order at save time.
             register_maxima_charges: Vec<usize>,
+            register_maxima_work: Vec<usize>,
+            register_maxima_member_work: Vec<usize>,
         }
         serde_json::to_vec(&Saved {
             version: if results_only {
-                "jvc-evaluation-results-v3"
+                "jvc-evaluation-results-v4"
             } else {
                 CHECKPOINT_VERSION
             },
@@ -921,6 +977,18 @@ impl EvaluatedState {
                 .registers
                 .values()
                 .map(|register| register.maxima_charge)
+                .collect(),
+            register_maxima_work: self
+                .evaluation
+                .registers
+                .values()
+                .map(|register| register.maxima_work)
+                .collect(),
+            register_maxima_member_work: self
+                .evaluation
+                .registers
+                .values()
+                .map(|register| register.maxima_member_work)
                 .collect(),
         })
         .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))
@@ -957,11 +1025,13 @@ impl EvaluatedState {
             #[serde(default)]
             ancestry_bytes: Option<usize>,
             register_maxima_charges: Vec<usize>,
+            register_maxima_work: Vec<usize>,
+            register_maxima_member_work: Vec<usize>,
         }
         let saved: Saved = serde_json::from_slice(bytes)
             .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
         let expected_version = if records.is_some() {
-            "jvc-evaluation-results-v3"
+            "jvc-evaluation-results-v4"
         } else {
             CHECKPOINT_VERSION
         };
@@ -982,7 +1052,7 @@ impl EvaluatedState {
             || saved.binding != binding
             || saved.evaluation.selected_view != saved.options.selected_view
             || saved.evaluation.overlay != saved.options.overlay
-            || saved.remaining_work > saved.options.limits.traversal
+            || saved.remaining_work > saved.options.limits.traversal_budget(nodes.len())
             || nodes.iter().any(|(id, node)| id != &node.id)
         {
             return Err(jvc_core::Error::new(
@@ -1010,18 +1080,25 @@ impl EvaluatedState {
         // them; the checkpoint's array restores them in register
         // order.
         let mut evaluation = saved.evaluation;
-        if evaluation.registers.len() != saved.register_maxima_charges.len() {
+        if evaluation.registers.len() != saved.register_maxima_charges.len()
+            || evaluation.registers.len() != saved.register_maxima_work.len()
+            || evaluation.registers.len() != saved.register_maxima_member_work.len()
+        {
             return Err(jvc_core::Error::new(
                 "checkpoint",
                 "checkpoint version or binding does not match",
             ));
         }
-        for (register, charge) in evaluation
+        for (((register, charge), work), member_work) in evaluation
             .registers
             .values_mut()
             .zip(saved.register_maxima_charges.iter())
+            .zip(saved.register_maxima_work.iter())
+            .zip(saved.register_maxima_member_work.iter())
         {
             register.maxima_charge = *charge;
+            register.maxima_work = *work;
+            register.maxima_member_work = *member_work;
         }
         Ok(Self {
             unresolved: unresolved(&prepared),
@@ -1361,7 +1438,7 @@ mod rebuild_tests {
             if unavailable_reason == "invalid_overlay" {
                 complete.options.overlay = Some(json!({}));
             } else {
-                complete.options.limits.traversal = 1;
+                complete.options.limits.traversal = Some(1);
             }
             let evaluation = complete.clone().evaluate();
             assert!(!evaluation.available);
@@ -1390,8 +1467,8 @@ mod rebuild_tests {
             Some(json!({"name":"fixture","bio":[],"links":[]})),
         );
         let mut complete = base();
-        let used = complete.options.limits.traversal - complete.clone().into_state().remaining_work;
-        complete.options.limits.traversal = used;
+        let used = complete.clone().into_state().consumed_work();
+        complete.options.limits.traversal = Some(used);
         assert!(complete.clone().evaluate().available);
         let mut expected = complete.clone();
         for (record, body) in [&profile, &publication] {
@@ -1993,7 +2070,14 @@ mod rebuild_tests {
         let mut delta = prepared.clone();
         let parent = prepared.into_state();
         let mut clean = PreparedEvaluationInput::new(parent.prepared.options.clone());
-        clean.options.limits.traversal += 1;
+        clean.options.limits.traversal = Some(
+            parent
+                .prepared
+                .options
+                .limits
+                .traversal_budget(parent.event_count())
+                + 1,
+        );
         let expected = parent.clone().advance(clean.clone(), &[]);
         assert!(expected.evaluation().available);
         let expected_checkpoint = expected.checkpoint("projection").unwrap();
@@ -2133,7 +2217,7 @@ mod rebuild_tests {
             .suspended
             .insert(issuer.clone(), BTreeSet::new());
         let mut state = prepared.into_state();
-        state.prepared.options.limits.traversal = 0;
+        state.prepared.options.limits.traversal = Some(0);
         state.evaluation = evaluate_graph(&state.prepared.options, &graph);
         state.graph = Some(graph);
         assert!(state.evaluation.reasons.contains("resource_unavailable"));
@@ -2455,12 +2539,12 @@ mod rebuild_tests {
         record: &HostVerifiedRecord,
         full_prepared: &PreparedEvaluationInput,
     ) {
-        let consumed = 10_000_000 - remaining_work(&full_prepared.clone().into_state());
+        let consumed = full_prepared.clone().into_state().consumed_work();
         for budget in [consumed, consumed - 1] {
             let mut base_p = base_prepared.clone();
-            base_p.options.limits.traversal = budget;
+            base_p.options.limits.traversal = Some(budget);
             let mut full_p = full_prepared.clone();
-            full_p.options.limits.traversal = budget;
+            full_p.options.limits.traversal = Some(budget);
             assert!(base_p.clone().into_state().evaluation().available);
             let mut delta = PreparedEvaluationInput::new(base_p.options.clone());
             delta.add_host_verified_record(record.clone());
@@ -2799,7 +2883,7 @@ mod rebuild_tests {
             graph::reset_audit_work();
             let state = prepared.into_state();
             assert!(state.evaluation().available);
-            let used = 10_000_000 - remaining_work(&state);
+            let used = state.consumed_work();
             let work = graph::audit_work();
             assert!(
                 work <= 16 * used,
@@ -2878,7 +2962,7 @@ mod rebuild_tests {
                 "status {id} did not reach authorization"
             );
         }
-        let used = 10_000_000 - remaining_work(&state);
+        let used = state.consumed_work();
         let work = graph::audit_work();
         assert!(
             work <= 16 * used,
@@ -2919,7 +3003,7 @@ mod rebuild_tests {
             graph::reset_audit_work();
             let state = prepared.into_state();
             assert!(state.evaluation().available, "{name}");
-            let used = 10_000_000 - remaining_work(&state);
+            let used = state.consumed_work();
             let work = graph::audit_work();
             assert!(
                 work <= 16 * used,
@@ -3752,5 +3836,429 @@ mod rebuild_tests {
             state.ranking_index_counts().unwrap_err().code,
             "invalid_overlay"
         );
+    }
+
+    fn host_missing_body(
+        id: String,
+        issuer: &str,
+        previous: Vec<String>,
+        action: Value,
+    ) -> HostVerifiedRecord {
+        let header = Header {
+            version: 1,
+            issuer: issuer.into(),
+            previous,
+            nonce: "00".repeat(16),
+            action,
+            content: Some(jvc_core::ContentDescriptor {
+                hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                bytes: 1,
+            }),
+        };
+        HostVerifiedRecord::extract_with(&id, &header, jvc_core::BodyAvailability::Missing, |_| ())
+            .0
+    }
+
+    fn assert_whole_evaluation_refusal(evaluation: &Evaluation) {
+        assert!(!evaluation.available);
+        assert!(evaluation.reasons.contains("resource_unavailable"));
+        assert!(evaluation.registers.is_empty());
+        assert!(evaluation.judgments.is_empty());
+        assert!(evaluation.trust.is_empty());
+        assert!(evaluation.publications.values().all(|p| {
+            p.status == Status::Unavailable
+                && p.eligible == Eligibility::Unknown
+                && p.reasons.contains("resource_unavailable")
+        }));
+        assert!(evaluation.accounts.values().all(|a| {
+            a.unavailable
+                && !a.commands
+                && a.controller.is_none()
+                && a.controller_identity.is_none()
+                && a.reasons.contains("resource_unavailable")
+        }));
+        assert!(evaluation.receipts.values().all(|r| {
+            r.interpretation == Interpretation::Inert
+                || (r.interpretation == Interpretation::Unavailable
+                    && r.reasons.contains("resource_unavailable"))
+        }));
+    }
+
+    fn assert_probe_refuses_under_budget_and_passes_default(
+        mut prepared: PreparedEvaluationInput,
+        budget: usize,
+    ) {
+        let mut bounded = prepared.clone();
+        bounded.options.limits.traversal = Some(budget);
+        let bounded_eval = bounded.clone().evaluate();
+        assert_whole_evaluation_refusal(&bounded_eval);
+        let bounded_state = bounded.into_state();
+        assert_whole_evaluation_refusal(bounded_state.evaluation());
+        assert_eq!(bounded_state.evaluation(), &bounded_eval);
+
+        prepared.options.limits = Limits::default();
+        graph::reset_audit_work();
+        let state = prepared.into_state();
+        assert!(state.evaluation().available);
+        let used = state.consumed_work();
+        assert!(
+            used > budget,
+            "consumed {used} units must exceed refusal budget {budget}"
+        );
+        let work = graph::audit_work();
+        assert!(
+            work <= 16 * used,
+            "{work} audited work for {used} charged units"
+        );
+    }
+
+    fn seed_identity(tag: u64, step: usize) -> String {
+        let mut seed = [0u8; 32];
+        seed[0..8].copy_from_slice(&tag.to_le_bytes());
+        seed[8..16].copy_from_slice(&(step as u64).to_le_bytes());
+        identity_from_seed(&seed)
+    }
+
+    #[test]
+    fn downstream_successor_walks_across_publications_and_claims_stop_at_work_budget() {
+        let mut prepared = witnessed_view();
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let mut current = identity_from_seed(&[1u8; 32]);
+        let mut current_prev: Vec<String> = Vec::new();
+        for step in 0..300usize {
+            let next = seed_identity(10, step);
+            let transfer_id = format!("jve1:{:064x}", 1_100_000 + step);
+            let accept_id = format!("jve1:{:064x}", 1_200_000 + step);
+            prepared.add_host_verified_record(host(
+                transfer_id.clone(),
+                &current,
+                current_prev,
+                json!({"kind":"identity.transfer","successor":next}),
+            ));
+            prepared.add_host_verified_record(host(
+                accept_id.clone(),
+                &next,
+                vec![],
+                json!({"kind":"identity.accept","transfer":transfer_id}),
+            ));
+            current = next;
+            current_prev = vec![accept_id];
+        }
+        let origin_issuer = identity_from_seed(&[1u8; 32]);
+        for i in 0..800usize {
+            prepared.add_host_verified_record(host_missing_body(
+                format!("jve1:{:064x}", 1_300_000 + i),
+                &origin_issuer,
+                vec![],
+                json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            ));
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 1_400_000 + i),
+                &origin_issuer,
+                vec![],
+                json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 120_000);
+    }
+
+    #[test]
+    fn fragmented_closure_maxima_subset_and_signature_scans_stop_at_work_budget() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let judge = identity_from_seed(&[7u8; 32]);
+        for i in 0..600usize {
+            let id = format!("jve1:{:064x}", 2_100_000 + i);
+            let previous = (i >= 2)
+                .then(|| format!("jve1:{:064x}", 2_100_000 + i - 2))
+                .into_iter()
+                .collect();
+            prepared.add_host_verified_record(host(
+                id,
+                &judge,
+                previous,
+                json!({"kind":"identity.merge"}),
+            ));
+        }
+        let tip = format!("jve1:{:064x}", 2_100_000 + 598);
+        for i in 0..600usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 2_200_000 + i),
+                &judge,
+                vec![tip.clone()],
+                json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 900_000);
+    }
+
+    #[test]
+    fn import_status_candidate_claim_scans_stop_at_work_budget() {
+        let mut prepared = witnessed_view();
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let mut body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        body["legacy"] = json!({"source":"fixture","snapshot":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","extraction":"fixture-v1","record":{"kind":"definition","id":1},"locator":"fixture","original":{},"attribution":{"author":"author","editor":null,"author_account":{"origin":"https://source.example","account":41,"username":"author","evidence":{"kind":"source-id","source":{"label":"source author numeric field","url":null,"event":null,"locator":"author_id"}}},"dates":{}},"conversion":{"method":"literal","tool":"fixture","version":"1","model":null,"review":"unreviewed","mappings":[],"warnings":[]},"limitations":[]});
+        let (publication, publication_body) = event(
+            9,
+            3,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"import"}),
+            Some(body),
+        );
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, publication_body.as_deref());
+        let claim_issuer = identity_from_seed(&[1u8; 32]);
+        for i in 0..800usize {
+            let id = format!("jve1:{:064x}", 3_100_000 + i);
+            let previous = (i >= 2)
+                .then(|| format!("jve1:{:064x}", 3_100_000 + i - 2))
+                .into_iter()
+                .collect();
+            prepared.add_host_verified_record(host(
+                id,
+                &claim_issuer,
+                previous,
+                json!({"kind":"identity.merge"}),
+            ));
+        }
+        let tip = format!("jve1:{:064x}", 3_100_000 + 798);
+        let mut first_claim = String::new();
+        for i in 0..300usize {
+            let claim_id = format!("jve1:{:064x}", 3_200_000 + i);
+            if i == 0 {
+                first_claim = claim_id.clone();
+            }
+            prepared.add_host_verified_record(host(
+                claim_id,
+                &claim_issuer,
+                vec![],
+                json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+            ));
+        }
+        for i in 0..500usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 3_300_000 + i),
+                &claim_issuer,
+                vec![tip.clone(), first_claim.clone()],
+                json!({"kind":"import.status","target":publication_id,"claim":first_claim,"value":"active"}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 1_200_000);
+    }
+
+    #[test]
+    fn witness_group_rescans_in_account_certificates_stop_at_work_budget() {
+        let mut prepared = witnessed_view();
+        let mut current = identity_from_seed(&[10u8; 32]);
+        let mut current_prev: Vec<String> = Vec::new();
+        for step in 0..200usize {
+            let next = seed_identity(40, step);
+            let transfer_id = format!("jve1:{:064x}", 4_100_000 + step);
+            let accept_id = format!("jve1:{:064x}", 4_200_000 + step);
+            prepared.add_host_verified_record(host(
+                transfer_id.clone(),
+                &current,
+                current_prev,
+                json!({"kind":"identity.transfer","successor":next}),
+            ));
+            prepared.add_host_verified_record(host(
+                accept_id.clone(),
+                &next,
+                vec![],
+                json!({"kind":"identity.accept","transfer":transfer_id}),
+            ));
+            current = next;
+            current_prev = vec![accept_id];
+        }
+        let issuer = identity_from_seed(&[1u8; 32]);
+        for i in 0..500usize {
+            let claim_id = format!("jve1:{:064x}", 4_300_000 + i);
+            prepared.add_host_verified_record(host(
+                claim_id.clone(),
+                &issuer,
+                vec![],
+                json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+            ));
+            observe(&mut prepared, 10, (i % 256) as u8, &claim_id);
+            observe(&mut prepared, 11, (i % 256) as u8, &claim_id);
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 80_000);
+    }
+
+    #[test]
+    fn accounts_across_policy_history_views_stop_at_work_budget() {
+        let mut prepared = witnessed_view();
+        let mut parent = prepared.options.selected_view.clone();
+        for i in 0..200usize {
+            let (view, view_body) = event(
+                1,
+                i as u8,
+                json!({"kind":"view.publish","parents":[parent]}),
+                Some(
+                    json!({"name":"fixture","description":[],"roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],"rafsi_threshold":{"numerator":1,"denominator":1},"H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},"excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,"import_sets":[],"account_witnesses":[identity_from_seed(&[10;32]),identity_from_seed(&[11;32])],"account_authority":true,"notes":[]}),
+                ),
+            );
+            parent = view.id().to_string();
+            prepared.add_record(&view, view_body.as_deref());
+        }
+        prepared.options.selected_view = parent;
+        let issuer = identity_from_seed(&[1u8; 32]);
+        for account in 1..=300u64 {
+            let claim_id = format!("jve1:{:064x}", 5_100_000 + account as usize);
+            prepared.add_host_verified_record(host(
+                claim_id,
+                &issuer,
+                vec![],
+                json!({"kind":"account.set","origin":"https://source.example","account":account,"value":"claim","previous":null,"carry":[]}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 30_000);
+    }
+
+    #[test]
+    fn competing_transfers_and_cutoffs_in_retention_stop_at_work_budget() {
+        let mut prepared = base();
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let issuer = identity_from_seed(&[5u8; 32]);
+        let absent_successor = identity_from_seed(&[250u8; 32]);
+        let mut prev: Vec<String> = Vec::new();
+        for i in 0..200usize {
+            let pub_id = format!("jve1:{:064x}", 6_300_000 + i);
+            prepared.add_host_verified_record(host_missing_body(
+                pub_id.clone(),
+                &issuer,
+                prev,
+                json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            ));
+            prev = vec![pub_id];
+        }
+        let safe_id = format!("jve1:{:064x}", 6_000_000usize);
+        prepared.add_host_verified_record(host(
+            safe_id.clone(),
+            &issuer,
+            prev,
+            json!({"kind":"identity.merge"}),
+        ));
+        for i in 0..500usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 6_100_000 + i),
+                &issuer,
+                vec![safe_id.clone()],
+                json!({"kind":"identity.transfer","successor":absent_successor}),
+            ));
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 6_200_000 + i),
+                &issuer,
+                vec![safe_id.clone()],
+                json!({"kind":"identity.compromise","safe":[safe_id]}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 300_000);
+    }
+
+    #[test]
+    fn rafsi_pair_judgment_and_managed_bridge_publication_scans_stop_at_work_budget() {
+        let mut prepared = base();
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        let issuer = identity_from_seed(&[5u8; 32]);
+        let mut first_pub = String::new();
+        for i in 0..400usize {
+            let pub_id = format!("jve1:{:064x}", 7_100_000 + i);
+            if i == 0 {
+                first_pub = pub_id.clone();
+            }
+            prepared.add_host_verified_record(host_missing_body(
+                pub_id,
+                &issuer,
+                vec![],
+                json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            ));
+        }
+        for i in 0..400usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 7_200_000 + i),
+                &issuer,
+                vec![],
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            ));
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 7_300_000 + i),
+                &issuer,
+                vec![],
+                json!({"kind":"bridge.set","origin":"https://source.example","source_definition":i + 1,"target":first_pub,"value":"managed"}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 40_000);
+    }
+
+    #[test]
+    fn issuer_missing_and_command_authority_scans_stop_at_work_budget() {
+        let mut prepared = witnessed_view();
+        let issuer = identity_from_seed(&[1u8; 32]);
+        let missing_parents: Vec<String> = (0..200usize)
+            .map(|i| format!("jve1:{:064x}", 8_000_000 + i))
+            .collect();
+        let root_with_missing = format!("jve1:{:064x}", 8_050_000usize);
+        prepared.add_host_verified_record(host(
+            root_with_missing,
+            &issuer,
+            missing_parents,
+            json!({"kind":"identity.merge"}),
+        ));
+        let mut previous: Vec<String> = Vec::new();
+        let mut action_previous: Option<String> = None;
+        for i in 0..400usize {
+            let claim_id = format!("jve1:{:064x}", 8_100_000 + i);
+            prepared.add_host_verified_record(host(
+                claim_id.clone(),
+                &issuer,
+                previous,
+                json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":action_previous,"carry":[]}),
+            ));
+            observe(&mut prepared, 10, (i % 256) as u8, &claim_id);
+            observe(&mut prepared, 11, (i % 256) as u8, &claim_id);
+            previous = vec![claim_id.clone()];
+            action_previous = Some(claim_id);
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 40_000);
+    }
+
+    #[test]
+    fn default_limits_grow_linearly_and_have_no_event_cap_until_configured() {
+        let defaults = Limits::default();
+        assert_eq!(defaults.events, None);
+        assert_eq!(defaults.traversal, None);
+        assert_eq!(
+            defaults.traversal_budget(250_000),
+            DEFAULT_TRAVERSAL_BASE + 250_000 * DEFAULT_TRAVERSAL_PER_RECORD
+        );
+        let mut prepared = base();
+        let issuer = identity_from_seed(&[9u8; 32]);
+        let mut previous = Vec::new();
+        for i in 0..200_005usize {
+            let id = format!("jve1:{:064x}", 9_000_000 + i);
+            prepared.add_host_verified_record(host(
+                id.clone(),
+                &issuer,
+                previous,
+                json!({"kind":"identity.merge"}),
+            ));
+            previous = vec![id];
+        }
+        assert!(prepared.nodes.len() > 200_000);
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+
+        let mut capped = prepared;
+        capped.options.limits.events = Some(200_000);
+        capped.event_limit_exceeded = true;
+        let capped_state = capped.into_state();
+        assert_whole_evaluation_refusal(capped_state.evaluation());
     }
 }

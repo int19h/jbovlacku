@@ -145,12 +145,6 @@ fn try_canonical_selection(bytes: &[u8]) -> Option<Result<usize>> {
         }
         prev = Some(id);
     }
-    if count > 200_000 {
-        return Some(Err(Error::new(
-            "identifier",
-            "identifiers must be valid, sorted, unique, and within their limit",
-        )));
-    }
     Some(Ok(count))
 }
 fn stream_canonical_selection(bytes: &[u8]) -> std::result::Result<String, ()> {
@@ -170,8 +164,7 @@ fn stream_canonical_selection(bytes: &[u8]) -> std::result::Result<String, ()> {
             let mut count = 0usize;
             while let Some(id) = seq.next_element::<String>()? {
                 count += 1;
-                if count > 200_000
-                    || !jvc_core::valid_id(&id, "jve1:")
+                if !jvc_core::valid_id(&id, "jve1:")
                     || prev.as_deref().is_some_and(|p| p >= id.as_str())
                 {
                     return Err(serde::de::Error::custom("invalid identifier"));
@@ -204,7 +197,7 @@ fn validate_selection_ids(bytes: &[u8]) -> Result<Vec<String>> {
     let value = parse_json(bytes)?;
     let ids: Vec<String> = serde_json::from_value(value)
         .map_err(|_| Error::new("selection", "selection must be an identifier array"))?;
-    jvc_core::sorted_ids(&ids, "jve1:", 200_000)?;
+    jvc_core::sorted_ids(&ids, "jve1:", usize::MAX)?;
     Ok(ids)
 }
 fn format_canonical_ids(ids: &[String]) -> String {

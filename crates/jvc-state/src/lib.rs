@@ -113,7 +113,12 @@ impl PreparedEvaluationInput {
         if error.is_some() {
             self.arena_error = error;
         }
-        if self.nodes.len() >= self.options.limits.events {
+        if self
+            .options
+            .limits
+            .events
+            .is_some_and(|limit| self.nodes.len() >= limit)
+        {
             self.event_limit_exceeded = true;
         }
         std::rc::Rc::make_mut(&mut self.nodes).insert(event.id().into(), node);
@@ -126,7 +131,12 @@ impl PreparedEvaluationInput {
         if error.is_some() {
             self.arena_error = error;
         }
-        if self.nodes.len() >= self.options.limits.events {
+        if self
+            .options
+            .limits
+            .events
+            .is_some_and(|limit| self.nodes.len() >= limit)
+        {
             self.event_limit_exceeded = true;
         }
         std::rc::Rc::make_mut(&mut self.nodes).insert(id, node);
@@ -196,20 +206,33 @@ impl PreparedEvaluationInput {
         EvaluatedState::new(self)
     }
 }
+pub const DEFAULT_TRAVERSAL_BASE: usize = 10_000_000;
+pub const DEFAULT_TRAVERSAL_PER_RECORD: usize = 256;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Limits {
-    pub events: usize,
-    pub traversal: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traversal: Option<usize>,
     pub claim_depth: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            events: 200_000,
-            traversal: 10_000_000,
+            events: None,
+            traversal: None,
             claim_depth: 1024,
         }
+    }
+}
+impl Limits {
+    pub fn traversal_budget(&self, records: usize) -> usize {
+        self.traversal.unwrap_or_else(|| {
+            DEFAULT_TRAVERSAL_BASE
+                .saturating_add(records.saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD))
+        })
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -322,6 +345,10 @@ pub struct Register {
     /// in register order.
     #[serde(skip)]
     pub(crate) maxima_charge: usize,
+    #[serde(skip)]
+    pub(crate) maxima_work: usize,
+    #[serde(skip)]
+    pub(crate) maxima_member_work: usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Lifecycle {
@@ -581,7 +608,7 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
         );
     }
     policy::select(graph, input, &mut result);
-    if result.reasons.contains("resource_unavailable") {
+    if graph.resource.get() || result.reasons.contains("resource_unavailable") {
         resource_unavailable(&mut result);
         return result;
     }
@@ -589,10 +616,6 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
     publications(graph, &mut result);
     reconcile_selections(graph, &mut result);
     accounts::evaluate(graph, input, &mut result);
-    if graph.resource.get() {
-        resource_unavailable(&mut result);
-        return result;
-    }
     native_status(graph, &mut result);
     action_targets(graph, &mut result);
     registers(graph, &mut result);
@@ -691,6 +714,9 @@ fn publications_for(
                     .into_iter()
                     .flatten()
                 {
+                    if !graph.charge(1) {
+                        break;
+                    }
                     if entry.index("importer").as_str() != Some(&node.issuer)
                         || source
                             .as_deref()
@@ -728,6 +754,7 @@ fn publications_for(
                 };
             }
         }
+        let lineage = lineage(graph, node);
         result.publications.insert(
             id.clone(),
             Publication {
@@ -753,7 +780,7 @@ fn publications_for(
                     .index("assignment")
                     .as_str()
                     .map(str::to_owned),
-                lineage: lineage(graph, node),
+                lineage,
                 imported,
                 source,
                 source_record,
@@ -791,8 +818,10 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
         .filter(|n| n.semantic && n.kind == "status.set")
     {
         let target = node.action.view().index("target");
-        if let Some(target) = target.as_str().map(str::to_owned) {
-            status_records.entry(target).or_default().push(node);
+        if let Some(target) = target.as_str() {
+            if only.is_none_or(|id| id == target) {
+                status_records.entry(target.into()).or_default().push(node);
+            }
         }
     }
     for publication in result
@@ -802,6 +831,12 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
     {
         let actor = graph.actor(&publication.issuer);
         let keys = graph.downstream(&publication.issuer);
+        if graph.resource.get() {
+            return;
+        }
+        if keys.len() > 1 && !graph.charge(keys.len() - 1) {
+            return;
+        }
         if !graph.suspended(&publication.issuer)
             && keys.iter().any(|k| {
                 !graph.lifecycle.retired.contains(k) && !graph.lifecycle.compromised.contains(k)
@@ -817,21 +852,34 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
             publication.reasons.insert("incomplete_group".into());
             continue;
         }
-        let records: Vec<_> = status_records
+        let candidates = status_records
             .get(publication.id.as_str())
-            .into_iter()
-            .flatten()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if !candidates.is_empty() && !graph.charge(candidates.len()) {
+            return;
+        }
+        let records: Vec<_> = candidates
+            .iter()
             .copied()
             .filter(|n| {
                 graph.structurally_connected(&publication.issuer, &n.issuer, &n.id)
                     && graph.transfers.get(&n.issuer).is_none_or(|ts| {
-                        ts.iter()
-                            .all(|t| t != &n.id && graph.own[t].ids.contains(&n.id))
+                        graph.charge(ts.len().max(1))
+                            && ts
+                                .iter()
+                                .all(|t| t != &n.id && graph.own[t].ids.contains(&n.id))
                     })
                     && (graph.retained(&n.id) || graph.actor(&n.issuer) != actor)
             })
             .collect();
+        if graph.resource.get() {
+            return;
+        }
         let frontier = graph.maxima(records.iter().map(|n| n.id.clone()).collect(), true);
+        if graph.resource.get() {
+            return;
+        }
         publication.status_frontier = frontier.clone();
         if frontier
             .iter()
@@ -869,8 +917,12 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
 fn registers(graph: &graph::Graph, result: &mut Evaluation) {
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (id, n) in graph.nodes.as_ref() {
+        let retained = graph.retained(id);
+        if graph.resource.get() {
+            return;
+        }
         if !n.semantic
-            || !graph.retained(id)
+            || !retained
             || graph.suspended(&n.issuer)
             || !graph.own_complete(id)
             || result.receipts[id].reasons.contains("invalid_target")
@@ -928,9 +980,19 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
     }
     let mut scope_arena = None;
     for (key, ids) in groups {
+        let maxima_member_work: usize = ids
+            .iter()
+            .filter_map(|id| graph.accepted.get(id))
+            .map(|c| c.ids.fresh_ranges.saturating_sub(1))
+            .sum();
         let charge_before = graph.ancestry.bytes();
+        let work_before = graph.budget.get();
         let heads = graph.maxima(ids.into_iter().collect(), false);
+        if graph.resource.get() || graph.ancestry.failed() {
+            return;
+        }
         let maxima_charge = graph.ancestry.bytes() - charge_before;
+        let maxima_work = work_before - graph.budget.get();
         let node = &graph.nodes[heads.iter().next().unwrap()];
         let actor = graph.actor(&node.issuer);
         let values: BTreeSet<String> = heads
@@ -1011,6 +1073,8 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
                 conflicted: values.len() > 1,
                 values,
                 maxima_charge,
+                maxima_work,
+                maxima_member_work,
             },
         );
     }
@@ -1104,13 +1168,20 @@ fn rafsi_gate(result: &mut Evaluation) {
 }
 
 fn lineage(graph: &graph::Graph, node: &graph::Node) -> BTreeMap<String, String> {
-    node.action
+    let parents: Vec<_> = node
+        .action
         .view()
         .index("parents")
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    if parents.len() > 1 && !graph.charge(parents.len() - 1) {
+        return BTreeMap::new();
+    }
+    parents
+        .into_iter()
         .map(|id| {
             let state = match graph.nodes.get(&id) {
                 None => "pending",
@@ -1182,10 +1253,17 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
         let mut pending = false;
         let mut invalid = false;
         if node.kind == "judgment.set" && target.starts_with("jvr1:") {
-            pending = !result
-                .publications
-                .values()
-                .any(|p| p.assignment.as_deref() == Some(target));
+            let mut found = false;
+            for p in result.publications.values() {
+                if !graph.charge(1) {
+                    return;
+                }
+                if p.assignment.as_deref() == Some(target) {
+                    found = true;
+                    break;
+                }
+            }
+            pending = !found;
         } else {
             match graph.nodes.get(target) {
                 None => pending = true,
@@ -1195,6 +1273,9 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                     if node.kind == "status.set" {
                         invalid |= n.action.view().index("origin") != "native"
                             || !graph.structurally_connected(&n.issuer, &node.issuer, id);
+                        if graph.resource.get() {
+                            return;
+                        }
                     }
                     if node.kind == "import.status" {
                         invalid |= n.kind != "definition.publish"
@@ -1208,24 +1289,23 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                             let source_id = node.action.view().index("source_definition").as_u64();
                             let origin = node.action.view().index("origin");
                             let origin = origin.as_str().unwrap_or_default();
-                            let linked = result
-                                .publications
-                                .values()
-                                .filter(|p| {
-                                    p.imported
-                                        && p.kind == "definition.publish"
-                                        && p.source_record == source_id
-                                        && p.word
-                                            == n.action
-                                                .view()
-                                                .index("word")
-                                                .as_str()
-                                                .unwrap_or_default()
-                                        && p.language.as_deref()
-                                            == n.action.view().index("language").as_str()
-                                })
-                                .any(|p| {
-                                    p.account
+                            let mut linked = false;
+                            for p in result.publications.values() {
+                                if !graph.charge(1) {
+                                    return;
+                                }
+                                if p.imported
+                                    && p.kind == "definition.publish"
+                                    && p.source_record == source_id
+                                    && p.word
+                                        == n.action
+                                            .view()
+                                            .index("word")
+                                            .as_str()
+                                            .unwrap_or_default()
+                                    && p.language.as_deref()
+                                        == n.action.view().index("language").as_str()
+                                    && p.account
                                         .as_ref()
                                         .filter(|a| a.origin == origin)
                                         .and_then(|a| result.accounts.get(&a.token()))
@@ -1238,7 +1318,11 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                                                     },
                                                 )
                                         })
-                                });
+                                {
+                                    linked = true;
+                                    break;
+                                }
+                            }
                             if !linked {
                                 let r = result.receipts.get_mut(id).unwrap();
                                 r.interpretation = Interpretation::Pending;
@@ -1316,7 +1400,7 @@ mod event_limit_tests {
 
     fn prepared(records: &[VerifiedEnvelope], limit: usize) -> PreparedEvaluationInput {
         let limits = Limits {
-            events: limit,
+            events: Some(limit),
             ..Limits::default()
         };
         let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {

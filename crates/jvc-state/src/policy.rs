@@ -36,7 +36,12 @@ pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &m
     let mut todo = vec![input.selected_view.clone()];
     let mut seen = BTreeSet::new();
     while let Some(id) = todo.pop() {
-        if seen.len() >= input.limits.traversal {
+        if input
+            .limits
+            .traversal
+            .is_some_and(|limit| seen.len() >= limit)
+            || !graph.charge(1)
+        {
             result.available = false;
             result.reasons.insert("resource_unavailable".into());
             break;
@@ -78,36 +83,60 @@ pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &m
         }
         result.policies.push(body.clone());
         result.policy_history.insert(id.clone(), body.clone());
-        todo.extend(
-            n.action
-                .view()
-                .index("parents")
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v.as_str().map(str::to_owned)),
-        );
-        for entry in body
+        let parents = n
+            .action
             .view()
-            .index("import_sets")
+            .index("parents")
             .as_array()
             .into_iter()
             .flatten()
-        {
-            if id == input.selected_view {
-                match entry
-                    .index("selection")
-                    .as_str()
-                    .and_then(|id| valid_selection(input, id))
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        if !parents.is_empty() && !graph.charge(parents.len()) {
+            result.available = false;
+            result.reasons.insert("resource_unavailable".into());
+            break;
+        }
+        todo.extend(parents);
+        if id == input.selected_view {
+            for entry in body
+                .view()
+                .index("import_sets")
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                if input
+                    .limits
+                    .traversal
+                    .is_some_and(|limit| seen.len() >= limit)
+                    || !graph.charge(1)
                 {
+                    result.available = false;
+                    result.reasons.insert("resource_unavailable".into());
+                    return;
+                }
+                let selection_field = entry.index("selection");
+                let Some(selection_id) = selection_field.as_str() else {
+                    result.reasons.insert("import_selection_unavailable".into());
+                    continue;
+                };
+                if let Some(ids) = input.import_selections.get(selection_id)
+                    && !ids.is_empty()
+                    && !graph.charge(ids.len())
+                {
+                    result.available = false;
+                    result.reasons.insert("resource_unavailable".into());
+                    return;
+                }
+                match valid_selection(input, selection_id) {
                     None => {
                         result.reasons.insert("import_selection_unavailable".into());
                     }
                     Some(ids) => {
-                        result.selections.insert(
-                            entry.index("selection").as_str().unwrap().into(),
-                            ids.iter().cloned().collect(),
-                        );
+                        result
+                            .selections
+                            .insert(selection_id.into(), ids.iter().cloned().collect());
                         if ids.iter().any(|id| !graph.nodes.contains_key(id)) {
                             result
                                 .reasons
@@ -1107,7 +1136,7 @@ pub(crate) fn valid_selection<'a>(
     id: &str,
 ) -> Option<&'a Vec<String>> {
     let ids = input.import_selections.get(id)?;
-    jvc_core::sorted_ids(ids, "jve1:", 200_000).ok()?;
+    jvc_core::sorted_ids(ids, "jve1:", usize::MAX).ok()?;
     let bytes = jvc_core::canonical_value(&serde_json::json!(ids)).ok()?;
     if bytes.len() > 16 * 1024 * 1024 || jvc_core::hash_id("sha256:", b"", &bytes) != id {
         return None;

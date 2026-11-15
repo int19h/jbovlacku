@@ -700,13 +700,13 @@ The [ranking measurements](../crates/jvc-rank/README.md) cover eleven synthetic 
 The weighted sixteen-actor case takes 8.119 seconds in WebAssembly despite zero completed expansion work.
 The expansion budget does not bound total CPU time. These measurements do not establish performance for real community graphs.
 
-The default state work budget is 10,000,000 logical units. One unit stands for one record, one dependency edge, one propagated missing ID, or one range a union copies. One layout pass charges those units once. A dependency setup pass and a closure construction pass charge for each of the three link modes, and evaluation-time closure work charges the same terms.
-A flat history costs eight units per record and a single-parent chain costs eighteen units per record, before evaluation-time charges. Ancestry range metadata is also capped at 64 MiB over every copied or allocated range vector, and a history past the cap fails with `resource_unavailable` at any budget. Histories with more edges reach the limit sooner, and the requested state also affects the work.
+The state work budget counts logical units across layout, dependency setup, closure construction, lifecycle, registers, retention, accounts, certificates, and downstream passes. One unit stands for one record, one dependency edge, one propagated missing ID, one range a union copies, or one evaluator inner-loop step.
+The default work budget grows linearly with the input record count: 10,000,000 base units plus 256 units per record. An explicit `Limits.traversal` value, the loaded view's `state_traversal_limit`, or the Node loader flag overrides that default. `Limits.events` is absent by default and serves as an optional event-count quota when configured. Ancestry range metadata is also capped at 64 MiB over every copied or allocated range vector, and a history past the cap fails with `resource_unavailable` at any budget.
 Each stored range costs 8 bytes. A fragmented history (for example interleaved chains of one issuer) can therefore use more ancestry memory than the old bitset representation, and an input past the cap returns `resource_unavailable` where the old representation still evaluated it. Results are unchanged for every input under the cap.
-The Node loader can retain a larger explicit traversal budget for a local import.
+The Node loader can retain an explicit traversal budget for a local import.
 A larger traversal budget does not remove memory limits.
 
-Evaluation work is not yet bounded by the traversal budget on every path. The budget bounds ancestry construction and the charges named above. Some register, retention, account, certificate, and downstream paths can still do work that grows faster than the charged units on large histories. A follow-up change adds a work meter that charges those inner loops, so that a large input refuses deterministically instead of running long.
+Evaluation work is bounded by this budget across ancestry construction and every evaluator inner loop, including register maxima, retention and cutoffs, policy and selection scans, account claim and certificate loops, and downstream passes. Ordinary histories grow linearly with their record count and pass the default budget, while super-linear inputs refuse deterministically with `resource_unavailable`.
 
 The server, worker, and Wasm artifacts at `fedfec3` match the earlier measurement at `b6c0354`.
 That run restored its checkpoint in 22.68 seconds. A later restart took 29.33 seconds.

@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const PART_BYTES: usize = 8 * 1024 * 1024;
 pub const SELECTION_BYTES: usize = 16 * 1024 * 1024;
-pub const SELECTION_IDS: usize = 200_000;
 pub const FORMAT_BYTES: &[u8] = br#"{"format":"jbovlacku-git","version":1}"#;
 pub const ATTRIBUTES_BYTES: &[u8] = b"* -text -ident -filter\n";
 const MAX_RECORD_BYTES: usize = MAX_BODY_BYTES + MAX_ENVELOPE_BYTES + 32;
@@ -180,12 +179,6 @@ impl Snapshot {
         let ids = selection
             .as_array()
             .ok_or_else(|| error("selection_shape", "selection must be an array"))?;
-        if ids.len() > SELECTION_IDS {
-            return Err(error(
-                "selection_size",
-                "selection exceeds 200000 event identifiers",
-            ));
-        }
         let mut previous = None;
         for v in ids {
             let id = v.as_str().ok_or_else(|| {

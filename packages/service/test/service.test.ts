@@ -583,15 +583,13 @@ test("transport enclosure accepts a depth32 body and rejects depth33", async () 
   );
   coordinator.close();
 });
-test("import selection preparation enforces200000 IDs and16 MiB", async () => {
+test("import selection preparation accepts above 200000 IDs and enforces 16 MiB", async () => {
   const { prepareSelection } = await import("../../core/src/index.ts");
   const ids = Array.from(
-    { length: 200000 },
+    { length: 200001 },
     (_, index) => "jve1:" + index.toString(16).padStart(64, "0"),
   );
-  assert.equal(prepareSelection(utf8(JSON.stringify(ids))).count, 200000);
-  ids.push("jve1:" + (200000).toString(16).padStart(64, "0"));
-  assert.throws(() => prepareSelection(utf8(JSON.stringify(ids))));
+  assert.equal(prepareSelection(utf8(JSON.stringify(ids))).count, 200001);
   assert.throws(() => prepareSelection(new Uint8Array(16 * 1024 * 1024 + 1)));
 });
 

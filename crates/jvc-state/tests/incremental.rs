@@ -405,7 +405,7 @@ fn repeated_appends_rebase_after_restore_without_changing_tight_work_results() {
     for budget in [minimum - 1, minimum] {
         let mut f = Fixture::new();
         f.input = base.clone();
-        f.input.limits.traversal = budget;
+        f.input.limits.traversal = Some(budget);
         let mut state = EvaluatedState::from_input(&f.input);
         let mut rebases = 0;
         for (index, event) in complete.input.events[base.events.len()..]
@@ -459,7 +459,8 @@ fn host_checkpoint_rejects_invalid_fields_and_changed_options_keep_parent_isolat
         .clone();
     wrong_id["nodes"][&id]["id"] = json!(format!("jve1:{}", "f".repeat(64)));
     let mut excess_work = saved;
-    excess_work["remaining_work"] = json!(f.input.limits.traversal + 1);
+    excess_work["remaining_work"] =
+        json!(f.input.limits.traversal_budget(f.input.events.len()) + 1);
     for invalid in [missing, wrong_id, excess_work] {
         assert!(
             EvaluatedState::restore_host_checkpoint(
@@ -471,7 +472,7 @@ fn host_checkpoint_rejects_invalid_fields_and_changed_options_keep_parent_isolat
     }
     let restored = EvaluatedState::restore_host_checkpoint(&bytes, "guard-checks").unwrap();
     let restored_expected = restored.evaluation().clone();
-    f.input.limits.traversal += 1000;
+    f.input.limits.traversal = Some(f.input.limits.traversal_budget(f.input.events.len()) + 1000);
     f.input.overlay = Some(
         json!({"version":1,"base_view":f.input.selected_view,"root_changes":[{"identity":key(1),"q":{"numerator":2,"denominator":1}}],"trust":[],"blocked":[],"work":null}),
     );
@@ -554,7 +555,7 @@ fn minimum_budget(input: &EvaluationInput) -> usize {
     while low < high {
         let middle = (low + high) / 2;
         let mut trial = input.clone();
-        trial.limits.traversal = middle;
+        trial.limits.traversal = Some(middle);
         if evaluate(&trial).reasons.contains("resource_unavailable") {
             low = middle + 1;
         } else {
@@ -586,9 +587,9 @@ fn record_growth_keeps_tight_resource_outcomes_with_control_history() {
         let id = f.judgment(vec![], "bless");
         let after_min = minimum_budget(&f.input);
         for budget in [after_min - 1, after_min, after_min + 100] {
-            f.input.limits.traversal = budget;
+            f.input.limits.traversal = Some(budget);
             let mut base = before.clone();
-            base.limits.traversal = budget;
+            base.limits.traversal = Some(budget);
             let state = f.advance(
                 EvaluatedState::from_input(&base),
                 std::slice::from_ref(&id),
@@ -607,10 +608,10 @@ fn record_growth_keeps_tight_resource_outcomes_with_control_history() {
 #[test]
 fn event_limit_changes_retain_complete_authenticated_input() {
     let mut f = Fixture::new();
-    f.input.limits.events = 0;
+    f.input.limits.events = Some(0);
     let state = EvaluatedState::from_input(&f.input);
     assert!(!state.evaluation().available);
-    f.input.limits.events = 200_000;
+    f.input.limits.events = None;
     let state = f.advance(state, &[], &[]);
     assert!(state.evaluation().available);
 }
@@ -626,7 +627,7 @@ fn lensisku_slice_mixed_writes_equal_full_evaluation() {
     let mut f = Fixture::new();
     f.input.events.clear();
     f.input.bodies.clear();
-    f.input.limits.traversal = 1_000_000_000;
+    f.input.limits.traversal = Some(1_000_000_000);
     let mut first: Option<VerifiedEnvelope> = None;
     for line in std::io::BufReader::new(std::fs::File::open(&path).unwrap()).split(b'\n') {
         let line = line.unwrap();

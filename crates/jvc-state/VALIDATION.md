@@ -17,9 +17,9 @@ Evaluation and result export finish in 3.411 seconds with the debug build and de
 A separate case with 401 accounts sharing witnesses finishes evaluation and export in 1.278 seconds.
 These timings come from single runs on the development machine. They do not guarantee performance on another host.
 A separate 5,000-event history reaches an explicit smaller budget without recursive traversal.
-The default event admission limit does not promise support for every history shape at that size.
-The default 10,000,000-unit work budget counts records, dependency edges, propagated missing IDs, and copied ranges. One layout pass charges once, and a setup pass and a construction pass charge for each link mode. A flat history costs eight units per record and a single-parent chain costs eighteen units per record, before evaluation-time closure charges. Range metadata is capped at 64 MiB over all copied or allocated range vectors, and histories past the cap refuse at any budget.
-Histories with more edges can reach the limit sooner. Exhaustion makes the entire evaluation unavailable, including unrelated accounts and native results.
+`Limits.events` is absent by default and serves as an optional event-count quota when configured.
+The default work budget is 10,000,000 units plus 256 units per record, unless an explicit `Limits.traversal` override is supplied. It counts records, dependency edges, propagated missing IDs, copied ranges, and evaluator inner-loop steps across registers, retention, accounts, certificates, and downstream passes. Range metadata is capped at 64 MiB over all copied or allocated range vectors, and histories past the cap refuse at any budget.
+Super-linear history shapes reach the work budget sooner. Exhaustion makes the entire evaluation unavailable, including unrelated accounts and native results.
 
 The crate passes native and standalone wasm32-unknown-unknown build checks.
 CI installs Rustfmt and Clippy on the pinned 1.99.0 toolchain.

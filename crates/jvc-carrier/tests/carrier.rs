@@ -575,6 +575,34 @@ fn selection_shape_order_encoding_and_size_are_strict() {
 }
 
 #[test]
+fn selection_above_200000_ids_and_multiple_selections_succeed() {
+    let mut snapshot = Snapshot::new();
+    let count = 200_001usize;
+    let mut large = Vec::with_capacity(2 + count * 72);
+    large.push(b'[');
+    for i in 0..count {
+        if i > 0 {
+            large.push(b',');
+        }
+        large.extend_from_slice(format!("\"jve1:{i:064x}\"").as_bytes());
+    }
+    large.push(b']');
+    assert!(large.len() <= SELECTION_BYTES);
+    let first_id = hash_id("sha256:", b"", &large);
+    snapshot.insert_selection(&first_id, &large).unwrap();
+    let second = canonical_value(&json!([
+        format!("jve1:{:064x}", count),
+        format!("jve1:{:064x}", count + 1)
+    ]))
+    .unwrap();
+    let second_id = hash_id("sha256:", b"", &second);
+    snapshot.insert_selection(&second_id, &second).unwrap();
+    assert_eq!(snapshot.selections().len(), 2);
+    assert_eq!(snapshot.selections()[&first_id], large);
+    assert_eq!(snapshot.selections()[&second_id], second);
+}
+
+#[test]
 fn git_reader_rejects_executable_blobs_and_symlinks_without_running_hooks() {
     let temp = tempfile::tempdir().unwrap();
     let repo = temp.path().join("repo");

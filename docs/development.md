@@ -325,8 +325,8 @@ Keep the proposal journal and external source archive available for retries and 
 The SQL archive records the digest and path of the external dump instead of copying it into the proposal.
 Rights remain unknown in this extraction. Local loading grants no publication authority.
 
-Large imports need a larger explicit state work budget and enough memory.
-The traversal flag changes the work limit only. It does not remove memory or event limits.
+The default state work budget grows linearly with the input record count (`10,000,000 + 256 * records`), and an explicit traversal limit (`--state-traversal-limit`, `state_traversal_limit`, `JVC_STATE_TRAVERSAL_LIMIT`, or `Limits.traversal`) overrides that default.
+The traversal flag changes the work limit only. It does not remove memory limits or an optional configured event quota.
 The loader completes admission before the server builds its snapshot, indexes, and search packages.
 The SQL loader projects only final changed event bindings and stages at most 256 compact records per batch.
 One admission transaction promotes staged rows and accepted events together. Failed admission removes its own staged rows.
@@ -1199,12 +1199,12 @@ The weighted sixteen-actor measurement takes 8.119 seconds in WebAssembly with z
 Resource errors must expose unavailable results instead of fabricated zero scores.
 [Issue 9](https://github.com/int19h/jbovlacku/issues/9) tracks ranking CPU limits before public deployment.
 
-The state evaluator also has a work budget for history traversal and ancestor sets.
-The budget counts logical units: one per record, per dependency edge, per propagated missing ID, and per range a union copies. One layout pass charges those units once. A dependency setup pass and a closure construction pass each charge for the three link modes, and lifecycle work charges the same terms. The charge counts the exact interval layout - its records, edges, and ranges - and no bitset words or pointer sizes, so the same input charges the same total in native and Wasm builds.
-The default budget is 10,000,000 units. A flat history costs eight units per record and a single-parent chain costs eighteen units per record, before evaluation-time charges.
+The state evaluator also has a work budget for history traversal, ancestor sets, and evaluator inner loops.
+The budget counts logical units across layout, dependency setup, closure construction, lifecycle, registers, retention, accounts, certificates, and downstream passes. The charge counts the exact interval layout and evaluator loop iterations - its records, edges, ranges, and loop steps - and no bitset words or pointer sizes, so the same input charges the same total in native and Wasm builds.
+The default budget grows linearly with the input record count: 10,000,000 base units plus 256 units per record. An explicit `Limits.traversal` value, `loaded-view.json` `state_traversal_limit`, or the Node loader flag overrides that default.
 Ancestry range metadata also has a hard cap of 64 MiB, counted over every range vector a union copies or allocates. A history whose ranges pass the cap fails with `resource_unavailable` at any budget.
-Histories with more edges can reach it sooner, and the requested state also affects the work.
-The configured event-count limit does not guarantee successful evaluation of every history below that count.
+Super-linear history shapes reach the work budget sooner, while ordinary histories grow linearly and pass the default budget.
+`Limits.events` is absent by default and serves as an optional event-count quota when configured.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.
 Use the [state validation guide](../crates/jvc-state/VALIDATION.md) for its tested corpus and limits.
 

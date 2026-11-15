@@ -336,29 +336,29 @@ fn main() {
         return;
     }
 
-    let consumed_work = wire.limits.traversal - remaining_work(&bounds_state);
+    let consumed_work = bounds_state.consumed_work();
     assert!(consumed_work > 0);
     let event_count = bounds_state.event_count();
     drop(bounds_state);
     let mut limits = wire.limits.clone();
-    limits.events = event_count;
+    limits.events = Some(event_count);
     let state = build_state(&wire, limits.clone());
     assert!(state.evaluation().available);
     boundary(output, "event-accept", &state, &limits);
     drop(state);
-    limits.events = event_count - 1;
+    limits.events = Some(event_count - 1);
     let state = build_state(&wire, limits.clone());
     assert!(!state.evaluation().available);
     boundary(output, "event-refuse", &state, &limits);
     drop(state);
 
     let mut limits = wire.limits.clone();
-    limits.traversal = consumed_work;
+    limits.traversal = Some(consumed_work);
     let state = build_state(&wire, limits.clone());
     assert!(state.evaluation().available);
     boundary(output, "traversal-accept", &state, &limits);
     drop(state);
-    limits.traversal = consumed_work - 1;
+    limits.traversal = Some(consumed_work - 1);
     let state = build_state(&wire, limits.clone());
     assert!(!state.evaluation().available);
     boundary(output, "traversal-refuse", &state, &limits);
