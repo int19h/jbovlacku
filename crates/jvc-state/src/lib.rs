@@ -45,9 +45,8 @@ pub struct EvaluationInput {
 pub struct EvaluationOptions {
     pub selected_view: String,
     pub import_selections: BTreeMap<String, Vec<String>>,
-    #[serde(default)]
+    #[serde(deserialize_with = "Option::deserialize")]
     pub overlay: Option<Value>,
-    #[serde(default)]
     pub limits: Limits,
 }
 /// An opaque projection held only in the trusted host's private storage.

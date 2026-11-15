@@ -1,7 +1,8 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v4";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v5";
+const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v5";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
 
@@ -1013,9 +1014,6 @@ impl EvaluatedState {
         if let Some(error) = self.prepared.arena_error() {
             return Err(jvc_core::Error::new("checkpoint", error.to_string()));
         }
-        fn is_zero(value: &usize) -> bool {
-            *value == 0
-        }
         #[derive(Serialize)]
         struct Saved<'a> {
             version: &'static str,
@@ -1033,14 +1031,12 @@ impl EvaluatedState {
             register_maxima_charges: Vec<usize>,
             register_maxima_work: Vec<usize>,
             register_maxima_member_work: Vec<usize>,
-            #[serde(skip_serializing_if = "is_zero")]
             unmatched_publication_scans: usize,
-            #[serde(skip_serializing_if = "BTreeMap::is_empty")]
             matched_publication_scans: &'a BTreeMap<String, usize>,
         }
         serde_json::to_vec(&Saved {
             version: if results_only {
-                "jvc-evaluation-results-v4"
+                RESULTS_CHECKPOINT_VERSION
             } else {
                 CHECKPOINT_VERSION
             },
@@ -1112,15 +1108,13 @@ impl EvaluatedState {
             register_maxima_charges: Vec<usize>,
             register_maxima_work: Vec<usize>,
             register_maxima_member_work: Vec<usize>,
-            #[serde(default)]
             unmatched_publication_scans: usize,
-            #[serde(default)]
             matched_publication_scans: BTreeMap<String, usize>,
         }
         let saved: Saved = serde_json::from_slice(bytes)
             .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
         let expected_version = if records.is_some() {
-            "jvc-evaluation-results-v4"
+            RESULTS_CHECKPOINT_VERSION
         } else {
             CHECKPOINT_VERSION
         };
@@ -4691,6 +4685,279 @@ mod rebuild_tests {
             assert_tight_budgets_match(&after_judgment_prepared, &new_pub, &expected);
             after_judgment = direct;
             after_judgment_prepared = expected;
+        }
+    }
+
+    #[test]
+    fn checkpoint_without_publication_scan_fields_or_with_v4_version_refuses_at_tight_budget() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let new_issuer = identity_from_seed(&[9u8; 32]);
+        let new_pub = host_missing_body(
+            format!("jve1:{:064x}", 40_000usize),
+            &new_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+
+        // 1. Unmatched `jvr1:` scans at tight budget (218).
+        let mut prepared = base();
+        let mut records = Vec::new();
+        for node in prepared.nodes.values() {
+            records.push(HostVerifiedRecord { node: node.clone() });
+        }
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        let judge = identity_from_seed(&[5u8; 32]);
+        for i in 0..20usize {
+            let record = host(
+                format!("jve1:{:064x}", 30_000 + i),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            );
+            records.push(record.clone());
+            prepared.add_host_verified_record(record);
+        }
+        prepared.options.limits.traversal = Some(218);
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+        assert_eq!(state.consumed_work(), 190);
+
+        let mut full_prepared = prepared.clone();
+        full_prepared.add_host_verified_record(new_pub.clone());
+        let full = full_prepared.into_state();
+        assert!(!full.evaluation().available);
+        assert_eq!(full.consumed_work(), 218);
+        assert_whole_evaluation_refusal(full.evaluation());
+
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(new_pub.clone());
+
+        let saved_full = state.checkpoint("host-checked").unwrap();
+        let saved_results = state.result_checkpoint("host-checked").unwrap();
+        for case in [
+            "strip_unmatched",
+            "strip_matched",
+            "strip_both",
+            "v4_version",
+        ] {
+            for (is_results, raw) in [(false, &saved_full), (true, &saved_results)] {
+                let mut value: Value = serde_json::from_slice(raw).unwrap();
+                match case {
+                    "strip_unmatched" => {
+                        value
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("unmatched_publication_scans");
+                    }
+                    "strip_matched" => {
+                        value
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("matched_publication_scans");
+                    }
+                    "strip_both" => {
+                        let obj = value.as_object_mut().unwrap();
+                        obj.remove("unmatched_publication_scans");
+                        obj.remove("matched_publication_scans");
+                    }
+                    "v4_version" => {
+                        value["version"] = json!(if is_results {
+                            "jvc-evaluation-results-v4"
+                        } else {
+                            "jvc-evaluation-checkpoint-v4"
+                        });
+                    }
+                    _ => unreachable!(),
+                }
+                let mutated = serde_json::to_vec(&value).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &mutated,
+                        "host-checked",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&mutated, "host-checked")
+                };
+                let err_flag = restored.is_err();
+                let base_or_rebuilt = restored.unwrap_or_else(|_| prepared.clone().into_state());
+                let fast = base_or_rebuilt.advance(delta.clone(), &[]);
+                assert!(
+                    !fast.evaluation().available,
+                    "case={case} is_results={is_results}: expected refusal, got available=true with consumed_work={}",
+                    fast.consumed_work()
+                );
+                assert_eq!(fast.consumed_work(), full.consumed_work());
+                assert_whole_evaluation_refusal(fast.evaluation());
+                assert_eq!(
+                    serde_json::to_value(fast.evaluation()).unwrap(),
+                    serde_json::to_value(full.evaluation()).unwrap()
+                );
+                assert!(
+                    err_flag,
+                    "case={case} is_results={is_results} must be rejected"
+                );
+            }
+        }
+
+        // 2. Matched `jvr1:` scans at tight budget (`full_work - 1`).
+        let mut matched_prepared = base();
+        let mut matched_records = Vec::new();
+        for node in matched_prepared.nodes.values() {
+            matched_records.push(HostVerifiedRecord { node: node.clone() });
+        }
+        let rafsi_pub = host_missing_body(
+            format!("jve1:{:064x}", 0xf000usize),
+            &identity_from_seed(&[1u8; 32]),
+            vec![],
+            json!({"kind":"rafsi.publish","word":word,"assignment":rafsi_target,"origin":"native"}),
+        );
+        matched_records.push(rafsi_pub.clone());
+        matched_prepared.add_host_verified_record(rafsi_pub);
+        for i in 0..20usize {
+            let record = host(
+                format!("jve1:{:064x}", 30_000 + i),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            );
+            matched_records.push(record.clone());
+            matched_prepared.add_host_verified_record(record);
+        }
+        let before_rafsi_pub = host_missing_body(
+            format!("jve1:{:064x}", 0xd001usize),
+            &new_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+        let base_work = matched_prepared.clone().into_state().consumed_work();
+        let mut matched_full_open = matched_prepared.clone();
+        matched_full_open.add_host_verified_record(before_rafsi_pub.clone());
+        let full_work = matched_full_open.into_state().consumed_work();
+        assert_eq!(full_work - base_work, 29);
+        let tight_limit = full_work - 1;
+
+        matched_prepared.options.limits.traversal = Some(tight_limit);
+        let matched_state = matched_prepared.clone().into_state();
+        assert!(matched_state.evaluation().available);
+        assert_eq!(matched_state.consumed_work(), base_work);
+
+        let mut matched_full_prepared = matched_prepared.clone();
+        matched_full_prepared.add_host_verified_record(before_rafsi_pub.clone());
+        let matched_full = matched_full_prepared.into_state();
+        assert!(!matched_full.evaluation().available);
+        assert_eq!(matched_full.consumed_work(), tight_limit);
+        assert_whole_evaluation_refusal(matched_full.evaluation());
+
+        let mut matched_delta = PreparedEvaluationInput::new(matched_prepared.options.clone());
+        matched_delta.add_host_verified_record(before_rafsi_pub);
+
+        let saved_matched = matched_state.checkpoint("host-checked").unwrap();
+        let saved_matched_results = matched_state.result_checkpoint("host-checked").unwrap();
+        for case in ["strip_matched", "v4_version"] {
+            for (is_results, raw) in [(false, &saved_matched), (true, &saved_matched_results)] {
+                let mut value: Value = serde_json::from_slice(raw).unwrap();
+                match case {
+                    "strip_matched" => {
+                        value
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("matched_publication_scans");
+                    }
+                    "v4_version" => {
+                        value["version"] = json!(if is_results {
+                            "jvc-evaluation-results-v4"
+                        } else {
+                            "jvc-evaluation-checkpoint-v4"
+                        });
+                    }
+                    _ => unreachable!(),
+                }
+                let mutated = serde_json::to_vec(&value).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &mutated,
+                        "host-checked",
+                        matched_records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&mutated, "host-checked")
+                };
+                let err_flag = restored.is_err();
+                let base_or_rebuilt =
+                    restored.unwrap_or_else(|_| matched_prepared.clone().into_state());
+                let fast = base_or_rebuilt.advance(matched_delta.clone(), &[]);
+                assert!(
+                    !fast.evaluation().available,
+                    "matched case={case} is_results={is_results}: expected refusal, got available=true with consumed_work={}",
+                    fast.consumed_work()
+                );
+                assert_eq!(fast.consumed_work(), matched_full.consumed_work());
+                assert_whole_evaluation_refusal(fast.evaluation());
+                assert!(
+                    err_flag,
+                    "matched case={case} is_results={is_results} must be rejected"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_always_serializes_publication_scan_fields_even_when_zero_or_empty() {
+        let prepared = base();
+        let mut records = Vec::new();
+        for node in prepared.nodes.values() {
+            records.push(HostVerifiedRecord { node: node.clone() });
+        }
+        let state = prepared.into_state();
+        let full_bytes = state.checkpoint("host-checked").unwrap();
+        let result_bytes = state.result_checkpoint("host-checked").unwrap();
+
+        let full_json: Value = serde_json::from_slice(&full_bytes).unwrap();
+        let result_json: Value = serde_json::from_slice(&result_bytes).unwrap();
+        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v5"));
+        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v5"));
+        for json in [&full_json, &result_json] {
+            assert_eq!(json.get("unmatched_publication_scans"), Some(&json!(0)));
+            assert_eq!(json.get("matched_publication_scans"), Some(&json!({})));
+        }
+
+        for field in [
+            "unmatched_publication_scans",
+            "matched_publication_scans",
+            "options.selected_view",
+            "options.import_selections",
+            "options.overlay",
+            "options.limits",
+        ] {
+            let mut mutated = full_json.clone();
+            if let Some(sub) = field.strip_prefix("options.") {
+                mutated["options"].as_object_mut().unwrap().remove(sub);
+            } else {
+                mutated.as_object_mut().unwrap().remove(field);
+            }
+            let bytes = serde_json::to_vec(&mutated).unwrap();
+            assert!(
+                EvaluatedState::restore_host_checkpoint(&bytes, "host-checked").is_err(),
+                "missing {field} in full checkpoint must be rejected"
+            );
+
+            let mut mutated_res = result_json.clone();
+            if let Some(sub) = field.strip_prefix("options.") {
+                mutated_res["options"].as_object_mut().unwrap().remove(sub);
+            } else {
+                mutated_res.as_object_mut().unwrap().remove(field);
+            }
+            let res_bytes = serde_json::to_vec(&mutated_res).unwrap();
+            assert!(
+                EvaluatedState::restore_host_result_checkpoint(
+                    &res_bytes,
+                    "host-checked",
+                    records.clone()
+                )
+                .is_err(),
+                "missing {field} in result checkpoint must be rejected"
+            );
         }
     }
 }
