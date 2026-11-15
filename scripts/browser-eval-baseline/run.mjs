@@ -241,10 +241,28 @@ await writeFile(
 );
 
 async function prepare() {
+  const config = JSON.parse(
+    await readFile(join(data, "loaded-view.json"), "utf8"),
+  );
+  const limits = {
+    ...(config.state_traversal_limit !== undefined
+      ? { traversal: config.state_traversal_limit }
+      : {}),
+    claim_depth: 1024,
+  };
   const cached = join(out, "input.json");
   const old = await readCachedDataset(join(out, "dataset.json"));
   try {
-    if (old?.schema === 3) return old;
+    if (old?.schema === 3) {
+      if (JSON.stringify(old.limits) !== JSON.stringify(limits)) {
+        old.limits = limits;
+        await writeFile(
+          join(out, "dataset.json"),
+          JSON.stringify(old, null, 2),
+        );
+      }
+      return old;
+    }
     if (old?.schema === 2) {
       const { DatabaseSync } = await import("node:sqlite");
       const db = new DatabaseSync(join(data, "coordinator.sqlite"), {
@@ -266,6 +284,7 @@ async function prepare() {
         db.close();
       }
       old.schema = 3;
+      old.limits = limits;
       await writeFile(join(out, "dataset.json"), JSON.stringify(old, null, 2));
       return old;
     }
@@ -288,9 +307,6 @@ async function prepare() {
     ).evaluation;
     if (!evaluated?.available)
       throw Error("The copied evaluation is unavailable.");
-    const config = JSON.parse(
-      await readFile(join(data, "loaded-view.json"), "utf8"),
-    );
     const input = {
       events: [],
       bodies: {},
@@ -461,11 +477,7 @@ async function prepare() {
       checkpoint_sha256: pin.hash,
       input_bytes: Buffer.byteLength(serialized),
       input_sha256: sha(serialized),
-      limits: {
-        events: 200000,
-        traversal: config.state_traversal_limit ?? 1000000000,
-        claim_depth: 1024,
-      },
+      limits,
       sample,
     };
     await writeFile(
