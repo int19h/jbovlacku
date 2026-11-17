@@ -1,7 +1,7 @@
 /** Small local HTTP adapter for tests. It uses the product service. */
 import { createServer } from "node:http";
-import { createHash } from "node:crypto";
-import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { initializeCore, coreCheckpointVersion } from "../../packages/core/src/index.ts";
@@ -24,6 +24,7 @@ export async function startServer(directory: string, port: number, selectedView?
   // does not parse, or that does not say disposable: true, refuses
   // startup and never answers the marker endpoint.
   let markerValid = false;
+  let serverId: string | undefined;
   if (options.marker !== false) {
     const hasData = existsSync(join(directory, "coordinator.sqlite")) || existsSync(join(directory, "objects"));
     if (existsSync(markerPath)) {
@@ -31,11 +32,21 @@ export async function startServer(directory: string, port: number, selectedView?
       try { parsed = JSON.parse(await readFile(markerPath, "utf8")); } catch { parsed = null; }
       if (parsed?.disposable !== true)
         throw new Error("refused: disposable.json does not say disposable: true; the copy is not marked disposable");
+      // A marker written before server ids existed gets one now.
+      // The id stays with this data directory, including a copy of it.
+      if (typeof parsed.server_id !== "string" || !/^[0-9a-f]{32}$/.test(parsed.server_id)) {
+        parsed.server_id = randomBytes(16).toString("hex");
+        const tmp = `${markerPath}.tmp-${randomBytes(8).toString("hex")}`;
+        await writeFile(tmp, JSON.stringify(parsed) + "\n");
+        await rename(tmp, markerPath);
+      }
+      serverId = parsed.server_id;
       markerValid = true;
     } else if (hasData) {
       throw new Error("refused: data directory has no disposable marker; mark a disposable copy before it is served");
     } else {
-      await writeFile(markerPath, JSON.stringify({ disposable: true, created_at: new Date().toISOString() }) + "\n");
+      serverId = randomBytes(16).toString("hex");
+      await writeFile(markerPath, JSON.stringify({ disposable: true, server_id: serverId, created_at: new Date().toISOString() }) + "\n");
       markerValid = true;
     }
   }
@@ -79,7 +90,7 @@ export async function startServer(directory: string, port: number, selectedView?
       try {
         if (markerValid && req.method === "GET" && req.url === "/synthetic-disposable") {
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ disposable: true }));
+          res.end(JSON.stringify({ disposable: true, server_id: serverId }));
           return;
         }
         const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);

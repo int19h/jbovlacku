@@ -5,12 +5,12 @@ import { promisify } from "node:util";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, mkdir, writeFile, cp, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, rm, mkdir, writeFile, cp, readdir, symlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startServer } from "./server.ts";
-import { initializeCore, createEvent, utf8 } from "../../packages/core/src/index.ts";
+import { initializeCore, createEvent, utf8, wordId } from "../../packages/core/src/index.ts";
 const run = promisify(execFile);
 const cli = new URL("./cli.ts", import.meta.url).pathname;
 const tsx = new URL("../../node_modules/.bin/tsx", import.meta.url).pathname;
@@ -19,11 +19,27 @@ async function cmd(args: string[]): Promise<string> {
   const { stdout, stderr } = await run(tsx, [cli, ...args], { timeout: 180000 });
   return stdout + stderr;
 }
-async function cmdFail(args: string[]): Promise<string> {
-  try { await run(tsx, [cli, ...args], { timeout: 180000 }); } catch (e: any) { return (e.stdout ?? "") + (e.stderr ?? ""); }
+async function cmdFail(args: string[], extra?: { env?: NodeJS.ProcessEnv }): Promise<string> {
+  try { await run(tsx, [cli, ...args], { timeout: 180000, ...extra }); } catch (e: any) { return (e.stdout ?? "") + (e.stderr ?? ""); }
   throw new Error("expected failure");
 }
+async function cmdResult(args: string[], extra?: { env?: NodeJS.ProcessEnv; cwd?: string }): Promise<{ code: number; out: string }> {
+  try {
+    const r = await run(tsx, [cli, ...args], { timeout: 180000, ...extra });
+    return { code: 0, out: (r.stdout ?? "") + (r.stderr ?? "") };
+  } catch (e: any) {
+    return { code: typeof e.code === "number" ? e.code : -1, out: (e.stdout ?? "") + (e.stderr ?? "") };
+  }
+}
 const rootOf = async () => mkdtemp(join(process.env.JVC_TEST_ROOT ?? tmpdir(), "synthetic-smoke-"));
+/** Bind a test proxy. A busy port rejects, so the test can close its servers. */
+function listenLocal(server: { listen(port: number, host: string, cb: () => void): void; once(event: string, cb: (error: Error) => void): void; removeListener(event: string, cb: (error: Error) => void): void }, port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    server.once("error", onError);
+    server.listen(port, "127.0.0.1", () => { server.removeListener("error", onError); resolve(); });
+  });
+}
 
 test("two identities act, capture, restore and reuse-check", async () => {
   const root = await rootOf();
@@ -97,7 +113,7 @@ test("non-loopback URLs and redirects that leave the host are refused", async ()
   assert.match(await cmdFail(["--server", "https://example.com", "--state", "/tmp/x", "whoami"]), /refused: server must be a loopback URL/);
   assert.match(await cmdFail(["--server", "http://192.0.2.10:8795", "--state", "/tmp/x", "whoami"]), /refused: server must be a loopback URL/);
   const redirect = createServer((_req, res) => { res.writeHead(302, { location: "https://example.com/" }); res.end(); });
-  await new Promise<void>((r) => redirect.listen(8798, "127.0.0.1", r));
+  await listenLocal(redirect, 8798);
   try {
     assert.match(await cmdFail(["--server", "http://127.0.0.1:8798", "--state", "/tmp/x", "search", "word"]), /refused: redirect leaves the loopback server/);
   } finally { await new Promise<void>((r) => redirect.close(() => r())); }
@@ -133,7 +149,9 @@ test("foreign base, tampered inventory and superset are refused; a partial resto
     await cmd(["--server", "http://127.0.0.1:8795", "capture", "--state", a, "--out", cap]);
     // Foreign base: another server with one unrelated event and no synthetic events.
     const foreign = await startServer(join(root, "foreign"), 8796); servers.push(foreign);
-    const fstate = join(root, "foreign-state");
+    // The default pin sits in the parent of the state folder. A second
+    // server needs its own parent, or init reuses the first server's pin.
+    const fstate = join(root, "foreign-home", "id");
     await cmd(["--server", "http://127.0.0.1:8796", "--state", fstate, "init"]);
     await cmd(["--server", "http://127.0.0.1:8796", "--state", fstate, "define", "--word", "foreigntwo", "--text", "unrelated entry"]);
     assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "restore", "--capture", cap]), /refused: base inventory does not match the capture pin; refusing to write/);
@@ -151,7 +169,7 @@ test("foreign base, tampered inventory and superset are refused; a partial resto
     assert.ok(firstPost.ok);
     assert.match(await cmd(["--server", "http://127.0.0.1:8798", "restore", "--capture", cap]), /restored .* resumed=1/);
     // Superset: one more unrelated event, then the reuse check must fail.
-    const extra = join(root, "extra-state");
+    const extra = join(root, "extra-home", "id");
     await cmd(["--server", "http://127.0.0.1:8798", "--state", extra, "init"]);
     await cmd(["--server", "http://127.0.0.1:8798", "--state", extra, "define", "--word", "foreignthree", "--text", "extra entry"]);
     assert.match(await cmdFail(["--server", "http://127.0.0.1:8798", "reuse-check", "--capture", cap]), /not reusable: already restored inventory is not the pinned base plus the capture/);
@@ -185,6 +203,8 @@ test("a crash-remnant lock recovers, a live lock refuses, and a late init joins 
       const ticks = Number(statText.slice(statText.lastIndexOf(")") + 2).split(" ")[19]);
       await writeFile(join(a, "lock"), JSON.stringify({ pid: sleeper.pid, proc_start: ticks, started_at: new Date().toISOString(), token: "live" }));
       assert.match(await cmdFail(["--server", url, "--state", a, "define", "--word", "lockthree", "--text", "blocked"]), /refused: another write is in progress/);
+      const leftovers = (await readdir(a)).filter((name) => name.startsWith("lock.tmp-") || name.startsWith("lock.stale-"));
+      assert.deepEqual(leftovers, []);
       assert.match(await cmdFail(["--server", url, "--state", a, "unlock"]), /refused: the lock owner process .* is still running/);
     } finally { sleeper.kill(); await rm(join(a, "lock"), { force: true }); }
     // Late init: B starts after A has written, and still joins the capture.
@@ -383,7 +403,8 @@ test("a pin without evidence and a larger unrelated server are refused at init",
     const pinFile = join(root, "pins", "base-pin.json");
     await cmd(["--server", "http://127.0.0.1:8795", "--state", a, "--pin", pinFile, "pin-base"]);
     // The second server holds more events, and none of the pinned base.
-    const b = join(root, "b");
+    // Own parent: the pin from server 8795 lives beside state "a".
+    const b = join(root, "unrelated", "id");
     await cmd(["--server", "http://127.0.0.1:8796", "--state", b, "init"]);
     for (const w of ["unrelone", "unreltwo", "unrelthree"]) await cmd(["--server", "http://127.0.0.1:8796", "--state", b, "define", "--word", w, "--text", "unrelated event"]);
     const c = join(root, "c");
@@ -421,15 +442,16 @@ test("an inventory that changes during the manifest wait is refused with no post
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       res.end(Buffer.from(await upstream.arrayBuffer()));
     });
-    await new Promise<void>((r) => proxy.listen(8797, "127.0.0.1", r));
+    await listenLocal(proxy, 8797);
     try {
       const restore = run(tsx, [cli, "--server", "http://127.0.0.1:8797", "restore", "--capture", cap], { timeout: 180000 }).then((r) => r.stdout + r.stderr).catch((e: any) => (e.stdout ?? "") + (e.stderr ?? ""));
       // Land a foreign event on the target while the restore waits.
+      // Own parent, so this init does not reuse the source server's pin.
       await new Promise((r) => setTimeout(r, 400));
-      const f = join(root, "f");
+      const f = join(root, "wait-home", "id");
       await cmd(["--server", "http://127.0.0.1:8796", "--state", f, "init"]);
       await cmd(["--server", "http://127.0.0.1:8796", "--state", f, "define", "--word", "waitforeign", "--text", "lands during the wait"]);
-      assert.match(await restore, /refused: inventory changed while waiting for the manifest; refusing to write/);
+      assert.match(await restore, /refused: inventory changed while waiting for the manifest: events: server holds \d+ digest sha256:[0-9a-f]+, expected \d+ digest sha256:[0-9a-f]+/);
       const ids = ((await (await fetch("http://127.0.0.1:8796/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
       assert.equal(ids.length, 1);
     } finally { await new Promise<void>((r) => proxy.close(() => r())); }
@@ -459,7 +481,7 @@ test("envelope-only inventory is repaired and proved, foreign partial writes not
     assert.equal((await fetch(`http://127.0.0.1:8796/api/v1/bodies/${encodeURIComponent(hash)}`)).status, 200);
     // Foreign partial: a foreign event and one captured event. No write may happen.
     const s3 = await startServer(join(root, "foreign"), 8797); servers.push(s3);
-    const f = join(root, "f");
+    const f = join(root, "foreign-home", "id");
     await cmd(["--server", "http://127.0.0.1:8797", "--state", f, "init"]);
     await cmd(["--server", "http://127.0.0.1:8797", "--state", f, "define", "--word", "foreignword", "--text", "not the base"]);
     assert.ok((await fetch("http://127.0.0.1:8797/api/v1/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(transports[0]) })).ok);
@@ -481,7 +503,7 @@ test("envelope-only inventory is repaired and proved, foreign partial writes not
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       res.end(Buffer.from(await upstream.arrayBuffer()));
     });
-    await new Promise<void>((r) => proxy.listen(8799, "127.0.0.1", r));
+    await listenLocal(proxy, 8799);
     try {
       assert.match(await cmd(["--server", "http://127.0.0.1:8799", "restore", "--capture", cap]), /restored .* resumed=1/);
     } finally { await new Promise<void>((r) => proxy.close(() => r())); }
@@ -635,7 +657,7 @@ test("capture takes its snapshot from the admitted inventory, not the lagging ma
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       res.end(Buffer.from(await upstream.arrayBuffer()));
     });
-    await new Promise<void>((r) => proxy.listen(8796, "127.0.0.1", r));
+    await listenLocal(proxy, 8796);
     try {
       const cap = join(root, "capture");
       assert.match(await cmd(["--server", "http://127.0.0.1:8796", "capture", "--state", a, "--out", cap]), /captured 2 events/);
@@ -673,7 +695,7 @@ test("capture refuses when a writer admits after the first inventory page, and w
         await fetch("http://127.0.0.1:8795/api/v1/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(late) });
       }
     });
-    await new Promise<void>((r) => proxy.listen(8796, "127.0.0.1", r));
+    await listenLocal(proxy, 8796);
     try {
       const cap = join(root, "capture");
       assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "capture", "--state", a, "--out", cap]), /refused: writers are still active \(the admitted snapshot changed during capture\); stop them and capture again/);
@@ -734,7 +756,7 @@ test("a kit writer that starts during capture is refused, and the capture holds 
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       res.end(bytes);
     });
-    await new Promise<void>((r) => proxy.listen(8796, "127.0.0.1", r));
+    await listenLocal(proxy, 8796);
     try {
       const cap = join(root, "capture");
       const captureRun = run(tsx, [cli, "--server", "http://127.0.0.1:8796", "capture", "--state", a, "--out", cap], { timeout: 180000 })
@@ -982,12 +1004,190 @@ test("shared body supplied during the fresh manifest wait refuses, with zero res
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       res.end(bytes);
     });
-    await new Promise<void>((r) => proxy.listen(8797, "127.0.0.1", r));
+    await listenLocal(proxy, 8797);
     try {
-      assert.match(await cmdFail(["--server", "http://127.0.0.1:8797", "restore", "--capture", cap, "--wait-ms", "0"]), /refused: inventory changed while waiting for the manifest; refusing to write/);
+      const changed = await cmdFail(["--server", "http://127.0.0.1:8797", "restore", "--capture", cap, "--wait-ms", "0"]);
+      assert.match(changed, /refused: inventory changed while waiting for the manifest: bodies: server holds \d+ digest sha256:[0-9a-f]+, expected \d+ digest sha256:[0-9a-f]+/);
+      assert.doesNotMatch(changed, /events: server holds/);
       assert.equal(restorePosts, 0);
       const inv = await (await fetch("http://127.0.0.1:8796/api/v1/inventory?kind=events&limit=1000")).json() as any;
       assert.equal(inv.ids.length, 1);
     } finally { await new Promise<void>((r) => proxy.close(() => r())); }
   } finally { for (const s of servers) await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("a crash during identity backfill keeps the old identity file", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 9620);
+  try {
+    const url = "http://127.0.0.1:9620";
+    const state = join(root, "a");
+    await cmd(["--server", url, "--state", state, "init"]);
+    const path = join(state, "identity.json");
+    const original = JSON.parse(await readFile(path, "utf8"));
+    for (const key of ["base_event_count", "base_inventory_digest", "base_body_count", "base_body_digest", "base_selection_count", "base_selection_digest"]) delete original[key];
+    await writeFile(path, JSON.stringify(original, null, 2) + "\n");
+    const crashed = await cmdResult(["--server", url, "--state", state, "init"], { env: { ...process.env, SYNTHETIC_ACTIVITY_TEST_CRASH: "identity.json" } });
+    assert.equal(crashed.code, 86, crashed.out);
+    assert.match(crashed.out, /test crash: stopped before publishing the file/);
+    const kept = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(kept.identity, original.identity);
+    assert.equal(Object.hasOwn(kept, "base_event_count"), false);
+    const again = await cmd(["--server", url, "--state", state, "init"]);
+    assert.match(again, new RegExp(original.identity));
+    const filled = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(filled.base_event_count, 0);
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("capture of one folder under two names takes one lock", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 9621);
+  try {
+    const url = "http://127.0.0.1:9621";
+    const abs = join(root, "a");
+    await cmd(["--server", url, "--state", abs, "init"]);
+    await cmd(["--server", url, "--state", abs, "define", "--word", "captwo", "--text", "one folder"]);
+    const out1 = join(root, "cap1");
+    const relative = await cmdResult(["--server", url, "capture", "--state", "a", "--state", abs, "--out", out1], { cwd: root });
+    assert.equal(relative.code, 0, relative.out);
+    assert.match(relative.out, /captured/);
+    assert.doesNotMatch(relative.out, /another write is in progress/);
+    const link = join(root, "alink");
+    await symlink(abs, link);
+    const out2 = join(root, "cap2");
+    const viaLink = await cmd(["--server", url, "capture", "--state", abs, "--state", link, "--out", out2]);
+    assert.match(viaLink, /captured/);
+    assert.doesNotMatch(viaLink, /another write is in progress/);
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("an empty base pin refuses a larger unrelated server", async () => {
+  const root = await rootOf();
+  const s1 = await startServer(join(root, "a-data"), 9622);
+  const s2 = await startServer(join(root, "b-data"), 9623);
+  try {
+    const a = join(root, "home", "a");
+    const pin = join(root, "home", "base-pin.json");
+    await cmd(["--server", "http://127.0.0.1:9622", "--state", a, "init"]);
+    const pinJson = JSON.parse(await readFile(pin, "utf8"));
+    assert.match(pinJson.server_id, /^[0-9a-f]{32}$/);
+    assert.equal(pinJson.base_event_count, 0);
+    await cmd(["--server", "http://127.0.0.1:9622", "--state", a, "define", "--word", "laterone", "--text", "after the pin"]);
+    const a2 = join(root, "home", "a2");
+    assert.match(await cmd(["--server", "http://127.0.0.1:9622", "--state", a2, "init"]), /ed25519:[a-f0-9]{64}/);
+    const b = join(root, "away", "b");
+    await cmd(["--server", "http://127.0.0.1:9623", "--state", b, "init"]);
+    await cmd(["--server", "http://127.0.0.1:9623", "--state", b, "define", "--word", "otherone", "--text", "other server"]);
+    const c = join(root, "away", "c");
+    const foreign = await cmdFail(["--server", "http://127.0.0.1:9623", "--state", c, "--pin", pin, "init"]);
+    assert.match(foreign, /refused: empty base pin does not match this server/);
+    assert.equal(existsSync(join(c, "identity.json")), false);
+    const pin2 = join(root, "away", "noserver.json");
+    const bare = JSON.parse(await readFile(pin, "utf8"));
+    delete bare.server_id;
+    await writeFile(pin2, JSON.stringify(bare) + "\n");
+    for (const ext of [".ids", ".bodies", ".selections"]) await writeFile(pin2 + ext, await readFile(pin + ext));
+    const d = join(root, "away", "d");
+    const noId = await cmdFail(["--server", "http://127.0.0.1:9622", "--state", d, "--pin", pin2, "init"]);
+    assert.match(noId, /refused: an empty base pin has no server id/);
+    assert.equal(existsSync(join(d, "identity.json")), false);
+  } finally { await s1.close(); await s2.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("show keeps place variables in short definition text", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 9624);
+  try {
+    const url = "http://127.0.0.1:9624";
+    const state = join(root, "a");
+    await cmd(["--server", url, "--state", state, "init"]);
+    const idn = JSON.parse(await readFile(join(state, "identity.json"), "utf8"));
+    const spelling = "placeone";
+    const wid = wordId({ language: "jbo", spelling });
+    const body = {
+      word: { language: "jbo", spelling }, language: "en",
+      text: [[1, " goes to ", 2]],
+      frame: { role: "predicate", arity: { mode: "fixed", count: 2 }, places: [{ index: 1 }, { index: 2 }] },
+      glosses: [{ language: "en", text: "place", sense: null }],
+      notes: [], classification: { kind: "other", selmaho: [] },
+      license: { expression: "CC0-1.0", url: "https://creativecommons.org/publicdomain/zero/1.0/", attribution: "" }, legacy: null,
+    };
+    const ev = createEvent(new Uint8Array(Buffer.from(idn.seed, "hex")), [], "a".repeat(32), { kind: "definition.publish", word: wid, language: "en", parents: [], origin: "native" }, body);
+    const posted = await fetch(url + "/api/v1/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ev) });
+    const postedText = await posted.text();
+    assert.ok(posted.ok, postedText);
+    const viewOut = await cmd(["--server", url, "--state", state, "view", "--name", "Places"]);
+    const viewId = viewOut.match(/jve1:[a-f0-9]{64}/)![0];
+    const shown = await cmd(["--server", url, "--view", viewId, "show", spelling]);
+    assert.match(shown, /x1 goes to x2/);
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("a closed output pipe exits quietly", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 9625);
+  try {
+    const state = join(root, "a");
+    const child = spawn(tsx, [cli, "--server", "http://127.0.0.1:9625", "--state", state, "init"], { stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout!.destroy();
+    const chunks: Buffer[] = [];
+    child.stderr!.on("data", (chunk) => chunks.push(chunk as Buffer));
+    const code = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill(); reject(new Error("closed-pipe command hung")); }, 60000);
+      child.on("error", (err) => { clearTimeout(timer); reject(err); });
+      child.on("exit", (status) => { clearTimeout(timer); resolve(status ?? -1); });
+    });
+    const err = Buffer.concat(chunks).toString();
+    assert.equal(code, 0, err);
+    assert.equal(/EPIPE/.test(err), false, err);
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("view stores repeated import sets in sorted order", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 9626);
+  try {
+    const url = "http://127.0.0.1:9626";
+    const state = join(root, "a");
+    const created = await cmd(["--server", url, "--state", state, "init"]);
+    const importer = created.match(/ed25519:[a-f0-9]{64}/)![0];
+    await cmd(["--server", url, "--state", state, "define", "--word", "importone", "--text", "one imported word"]);
+    const records = await (await fetch(url + "/api/v1/records?limit=20")).json() as any;
+    const eventId = records.items.find((item: any) => item.envelope.header.action.kind === "definition.publish").id;
+    const selection = await fetch(url + "/api/v1/import-selections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([eventId]) });
+    const selectionText = await selection.text();
+    assert.ok(selection.ok, selectionText);
+    const hash = JSON.parse(selectionText).hash as string;
+    assert.match(hash, /^sha256:[a-f0-9]{64}$/);
+    const sourceA = "https://a.example";
+    const sourceB = "https://b.example";
+    const published = await cmd(["--server", url, "--state", state, "view", "--name", "Imported", "--import-set", `${sourceB}|${importer}|${hash}`, "--import-set", `${sourceA}|${importer}|${hash}`]);
+    const viewId = published.match(/jve1:[a-f0-9]{64}/)![0];
+    const env = await (await fetch(`${url}/api/v1/events/${viewId}`)).json() as any;
+    const body = await (await fetch(`${url}/api/v1/bodies/${encodeURIComponent(env.header.content.hash)}`)).json() as any;
+    assert.deepEqual(body.import_sets, [
+      { source: sourceA, importer, selection: hash },
+      { source: sourceB, importer, selection: hash },
+    ]);
+    const plain = await cmd(["--server", url, "--state", state, "view", "--name", "Local only"]);
+    const plainId = plain.match(/jve1:[a-f0-9]{64}/)![0];
+    const plainEnv = await (await fetch(`${url}/api/v1/events/${plainId}`)).json() as any;
+    const plainBody = await (await fetch(`${url}/api/v1/bodies/${encodeURIComponent(plainEnv.header.content.hash)}`)).json() as any;
+    assert.deepEqual(plainBody.import_sets, []);
+    const before = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids.length;
+    const bad = await cmdFail(["--server", url, "--state", state, "view", "--import-set", "nope"]);
+    assert.match(bad, /refused: --import-set must be source\|importer\|selection/);
+    const after = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids.length;
+    assert.equal(after, before);
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("the guide lists trust scope kinds and the view import set", async () => {
+  const text = await readFile(new URL("./README.md", import.meta.url), "utf8");
+  assert.match(text, /--scope-kind` is `definition`, `rafsi`, or `\*`/);
+  assert.match(text, /--scope-word` is `\*` or one `jvw1:` word id/);
+  assert.match(text, /--scope-language` is `\*` or one lowercase BCP 47 language tag/);
+  assert.match(text, /`--value` is `heed`,\s*`shun`, or `clear`/);
+  assert.match(text, /A persona\s+view of the imported dictionary must repeat the import sets/);
 });

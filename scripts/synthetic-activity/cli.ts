@@ -8,7 +8,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, writeFile, rm, rename, link } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, rename, link, realpath } from "node:fs/promises";
 import { existsSync, rmSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +20,39 @@ import {
 const sha256 = (b: Uint8Array | string) => "sha256:" + createHash("sha256").update(b as never).digest("hex");
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 const unhex = (s: string) => new Uint8Array(Buffer.from(s, "hex"));
-const plain = (rt: unknown): string => Array.isArray(rt) ? rt.map(plain).join("") : typeof rt === "string" ? rt : "";
+/** Plain text of one rich-text node. An integer is a place, printed as x1, x2, and so on. */
+function plainNode(node: unknown): string {
+  if (typeof node === "string") return node;
+  if (typeof node === "number" && Number.isInteger(node) && node > 0) return `x${node}`;
+  if (Array.isArray(node)) return node.map(plainNode).join("");
+  if (node && typeof node === "object") {
+    const rec = node as Record<string, unknown>;
+    if (typeof rec.label === "string") return rec.label;
+    if (typeof rec.code === "string") return rec.code;
+    if (typeof rec.operand === "string") return rec.operand;
+  }
+  return "";
+}
+/** Plain text of rich text. Paragraphs are arrays of nodes, joined by newlines. */
+function plain(rt: unknown): string {
+  if (Array.isArray(rt) && rt.every(Array.isArray)) return rt.map((paragraph) => plainNode(paragraph)).join("\n");
+  return plainNode(rt);
+}
+/**
+ * A closed output pipe, as when the command is piped to head, must
+ * end the process quietly. The pipe error is not a failure of the command.
+ */
+function exitQuietlyOnEpipe(): void {
+  const onError = (err: NodeJS.ErrnoException) => { if (err?.code === "EPIPE") process.exit(0); };
+  process.stdout.on("error", onError);
+  process.stderr.on("error", onError);
+  process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
+    if (err?.code === "EPIPE") process.exit(0);
+    console.error(err);
+    process.exit(1);
+  });
+}
+exitQuietlyOnEpipe();
 const digestIds = (ids: string[]) => sha256([...ids].sort().join("\n"));
 /** The service logical-inventory digest: one hash over the sorted
  * retained event IDs, body hashes and import selections. */
@@ -85,6 +117,7 @@ async function rawFetch(o: Opts, urlText: string, init?: RequestInit): Promise<R
   process.exit(3);
 }
 let markerChecked = false;
+let markerServerId: string | undefined;
 /** The target must prove that it serves a marked disposable copy. */
 async function checkMarker(o: Opts): Promise<void> {
   if (markerChecked) return;
@@ -94,6 +127,7 @@ async function checkMarker(o: Opts): Promise<void> {
     j = await r.json().catch(() => null);
     if (!r.ok || j?.disposable !== true) throw new Error("bad marker");
   } catch { console.error("refused: server does not prove it holds a disposable copy (missing disposable marker)"); process.exit(3); }
+  if (typeof j?.server_id === "string" && /^[0-9a-f]{32}$/.test(j.server_id)) markerServerId = j.server_id;
   markerChecked = true;
 }
 async function api(o: Opts, path: string, init?: RequestInit): Promise<any> {
@@ -106,7 +140,7 @@ async function api(o: Opts, path: string, init?: RequestInit): Promise<any> {
 }
 const refused = (e: any): never => { console.error(`refused: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); };
 
-interface Pin { base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string }
+interface Pin { base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string; server_id?: string }
 interface Identity { seed: string; identity: string; base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string }
 async function loadIdentity(o: Opts): Promise<Identity> {
   if (!o.state) { console.error("refused: --state is required"); process.exit(2); }
@@ -126,11 +160,35 @@ function pinHasEvidence(pin: Pin, path: string): boolean {
     && Number.isInteger(pin.base_selection_count) && typeof pin.base_selection_digest === "string"
     && existsSync(pinIdsPath(path)) && existsSync(pinBodiesPath(path)) && existsSync(pinSelectionsPath(path));
 }
-/** Write through a temp file and rename, so a crash keeps the old file whole. */
-async function writeAtomic(path: string, text: string): Promise<void> {
+/**
+ * Write through a temp file and rename, so a crash keeps the old
+ * file whole. A mode, when given, is the mode of the published file.
+ * Test hook: when SYNTHETIC_ACTIVITY_TEST_CRASH names a suffix, a
+ * write of a path with that suffix stops after the temp file is
+ * complete and before the rename. Normal runs never set it.
+ */
+async function writeAtomic(path: string, text: string, mode?: number): Promise<void> {
   const tmp = `${path}.tmp-${hex(randomBytes(8))}`;
-  await writeFile(tmp, text);
+  await writeFile(tmp, text, mode === undefined ? undefined : { mode });
+  const crash = process.env.SYNTHETIC_ACTIVITY_TEST_CRASH;
+  if (crash && path.endsWith(crash)) { console.error("test crash: stopped before publishing the file"); process.exit(86); }
   await rename(tmp, path);
+}
+/** An empty base has no event, body, or selection that could identify the server. */
+function baseIsEmpty(pin: Pin, lists: PinLists): boolean {
+  return lists.events.length === 0 && lists.bodies.length === 0 && lists.selections.length === 0
+    && pin.base_event_count === 0 && pin.base_body_count === 0 && pin.base_selection_count === 0;
+}
+/**
+ * An empty ID list is a subset of every server. The pin's server id,
+ * taken from the disposable marker, is what tells the server that
+ * made the pin from a larger unrelated server.
+ */
+async function refuseForeignEmptyPin(o: Opts, pin: Pin, lists: PinLists): Promise<void> {
+  if (!baseIsEmpty(pin, lists)) return;
+  if (!pin.server_id) { console.error("refused: an empty base pin has no server id, so it cannot tell this server from another; take a new pin with pin-base"); process.exit(3); }
+  await checkMarker(o);
+  if (markerServerId !== pin.server_id) { console.error("refused: empty base pin does not match this server; a new base needs a new pin file"); process.exit(3); }
 }
 interface PinLists { events: string[]; bodies: string[]; selections: string[] }
 /** Read the three pin lists and check each against its pinned count and digest. */
@@ -167,6 +225,7 @@ async function loadOrCreatePin(o: Opts): Promise<Pin> {
     base_event_count: ids.length, base_inventory_digest: digestIds(ids),
     base_body_count: bodies.length, base_body_digest: digestIds(bodies),
     base_selection_count: selections.length, base_selection_digest: digestIds(selections),
+    ...(markerServerId ? { server_id: markerServerId } : {}),
   };
   await mkdir(dirname(path), { recursive: true });
   await writeAtomic(pinIdsPath(path), ids.join("\n") + (ids.length ? "\n" : ""));
@@ -391,11 +450,12 @@ async function main(): Promise<void> {
             if (!lists.events.every((id) => serverEvents.has(id)) || !lists.bodies.every((h) => serverBodies.has(h)) || !lists.selections.every((s) => serverSelections.has(s))) {
               console.error("refused: base pin does not match this server; a new base needs a new pin file"); process.exit(3);
             }
+            await refuseForeignEmptyPin(o, pin, lists);
             j.base_event_count = pin.base_event_count; j.base_inventory_digest = pin.base_inventory_digest;
             j.base_body_count = pin.base_body_count; j.base_body_digest = pin.base_body_digest;
             j.base_selection_count = pin.base_selection_count; j.base_selection_digest = pin.base_selection_digest;
             j.base_snapshot ??= pin.base_snapshot; j.base_inventory ??= pin.base_inventory;
-            await writeFile(p, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 });
+            await writeAtomic(p, JSON.stringify(j, null, 2) + "\n", 0o600);
           }
         }
         console.log(`identity ${j.identity}`); return;
@@ -417,14 +477,15 @@ async function main(): Promise<void> {
         let serverIds: string[];
         try { serverIds = await inventoryIds(o); } catch (e: any) { console.error(`refused: cannot check the base pin against the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
         const serverSet = new Set(serverIds);
-        const baseIds = (await readPinEvidence(pin, pinPath(o))).events;
-        if (!baseIds.every((id) => serverSet.has(id))) {
+        const lists = await readPinEvidence(pin, pinPath(o));
+        if (!lists.events.every((id) => serverSet.has(id))) {
           console.error("refused: base pin does not match this server; a new base needs a new pin file"); process.exit(3);
         }
+        await refuseForeignEmptyPin(o, pin, lists);
       }
       const seed = randomBytes(32); const identity = identityFromSeed(new Uint8Array(seed));
       const rec: Identity = { seed: hex(new Uint8Array(seed)), identity, base_snapshot: pin.base_snapshot, base_inventory: pin.base_inventory, base_event_count: pin.base_event_count ?? null, base_inventory_digest: pin.base_inventory_digest, base_body_count: pin.base_body_count ?? null, base_body_digest: pin.base_body_digest, base_selection_count: pin.base_selection_count ?? null, base_selection_digest: pin.base_selection_digest };
-      await writeFile(p, JSON.stringify(rec, null, 2) + "\n", { mode: 0o600 });
+      await writeAtomic(p, JSON.stringify(rec, null, 2) + "\n", 0o600);
       console.log(`identity ${identity}`); console.log(`state ${resolve(o.state)}`);
     } else if (cmd === "unlock") {
       if (!o.state) throw new Error("--state is required");
@@ -524,7 +585,7 @@ async function main(): Promise<void> {
       const idn = await loadIdentity(o);
       const rootsRaw = o.multi.get("root") ?? [`${idn.identity}=1/1`];
       const roots = rootsRaw.map((r) => { const [identity, q] = r.split("="); const [n, d] = (q ?? "1/1").split("/"); return { identity, q: { numerator: Number(n), denominator: Number(d ?? 1) } }; }).sort((a, b) => a.identity.localeCompare(b.identity));
-      const body = { name: flag(o, "name", "Synthetic view")!, description: rich(flag(o, "description")), roots, rafsi_threshold: { numerator: 1, denominator: 1 }, H: { numerator: 3, denominator: 1 }, alpha: { numerator: 1, denominator: 2 }, excluded: [], calculation: flag(o, "calculation", "simple-routes-bounds-v1")!, work: Number(flag(o, "work", "1000000")), import_sets: [], account_witnesses: [], account_authority: false, notes: [] };
+      const body = { name: flag(o, "name", "Synthetic view")!, description: rich(flag(o, "description")), roots, rafsi_threshold: { numerator: 1, denominator: 1 }, H: { numerator: 3, denominator: 1 }, alpha: { numerator: 1, denominator: 2 }, excluded: [], calculation: flag(o, "calculation", "simple-routes-bounds-v1")!, work: Number(flag(o, "work", "1000000")), import_sets: importSets(o), account_witnesses: [], account_authority: false, notes: [] };
       await writeEvent(o, { kind: "view.publish", parents: (flag(o, "parents", "") ?? "").split(",").filter(Boolean) }, body);
     } else if (cmd === "merge") { await writeEvent(o, { kind: "identity.merge" }, null); }
     else if (cmd === "capture") { await capture(o); }
@@ -562,6 +623,41 @@ async function collectSynthetic(o: Opts, states: string[], snapshot?: string): P
   while (pending.size) { let progress = false; for (const [id, t] of pending) { const prev: string[] = t.envelope.header.previous ?? []; if (prev.every((p) => !byId.has(p) || done.has(p))) { out.push(t); done.add(id); pending.delete(id); progress = true; } } if (!progress) throw new Error("synthetic events have an unresolved predecessor cycle"); }
   return { transports: out, identities };
 }
+/** One directory named two ways is one directory. A relative path,
+ * an absolute path, and a symlink of the same folder collapse, so
+ * capture locks that folder once and does not refuse itself. */
+async function distinctStateDirs(states: string[]): Promise<string[]> {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const state of states) {
+    let key = resolve(state);
+    try { key = await realpath(state); } catch { /* a missing path stays as given */ }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(state);
+  }
+  return out;
+}
+interface ImportSet { source: string; importer: string; selection: string }
+/** Repeated --import-set values. Each value is source|importer|selection.
+ * The result is sorted and unique, as a view body requires. */
+function importSets(o: Opts): ImportSet[] {
+  const raw = o.multi.get("import-set") ?? [];
+  const entries: ImportSet[] = [];
+  for (const value of raw) {
+    const parts = value.split("|");
+    if (parts.length !== 3 || parts.some((part) => part.length === 0)) { console.error("refused: --import-set must be source|importer|selection, and the source must not contain |"); process.exit(3); }
+    const [source, importer, selection] = parts;
+    if (!/^ed25519:[0-9a-f]{64}$/.test(importer) || !/^sha256:[0-9a-f]{64}$/.test(selection)) { console.error("refused: --import-set importer must be an ed25519 identity and selection must be a sha256 hash"); process.exit(3); }
+    entries.push({ source, importer, selection });
+  }
+  entries.sort((a, b) => a.source.localeCompare(b.source) || a.importer.localeCompare(b.importer) || a.selection.localeCompare(b.selection));
+  for (let i = 1; i < entries.length; i++) {
+    const prev = entries[i - 1];
+    if (prev.source === entries[i].source && prev.importer === entries[i].importer && prev.selection === entries[i].selection) { console.error("refused: --import-set values must be unique"); process.exit(3); }
+  }
+  return entries;
+}
 /**
  * Capture holds the write lock of every state folder it captures,
  * from before its first read until its files are complete. A kit
@@ -571,7 +667,8 @@ async function collectSynthetic(o: Opts, states: string[], snapshot?: string): P
  * step releases them on success and on other errors.
  */
 async function capture(o: Opts): Promise<void> {
-  const states = [...new Set(o.multi.get("state") ?? [])];
+  const states = await distinctStateDirs(o.multi.get("state") ?? []);
+  o.multi.set("state", states);
   const handles: LockHandle[] = [];
   process.on("exit", () => { for (const h of handles) { try { h.releaseSync(); } catch {} } });
   try {
@@ -763,20 +860,26 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
     }
     // Read the whole inventory again after the wait, at one pinned
     // snapshot. It must still be the pinned base before anything posts.
+    let waitedIds: string[] = []; let waitedBodies: string[] = []; let waitedSelections: string[] = [];
     try {
       const waitedPage = await api(o, "/inventory?kind=events&limit=1000");
-      const waitedIds = await inventoryIds(o, waitedPage.snapshot);
-      const waitedBodies = await inventoryList(o, "bodies", waitedPage.snapshot);
-      const waitedSelections = await inventoryList(o, "import_selections", waitedPage.snapshot);
-      // This is the fresh case, so the waited body set must equal
-      // the pinned base bodies exactly, as in the first fresh
-      // check. The set-difference comparison belongs to the
-      // partial and already-restored cases only.
-      if (digestIds(waitedIds) !== manifest.base_inventory_digest
-        || digestIds(waitedBodies) !== manifest.base_body_digest
-        || digestIds(waitedSelections) !== manifest.base_selection_digest)
-        fail(`inventory changed while waiting for the manifest; refusing to write`);
+      waitedIds = await inventoryIds(o, waitedPage.snapshot);
+      waitedBodies = await inventoryList(o, "bodies", waitedPage.snapshot);
+      waitedSelections = await inventoryList(o, "import_selections", waitedPage.snapshot);
     } catch (e: any) { fail(`cannot read server inventory: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); }
+    // This is the fresh case, so the waited body set must equal
+    // the pinned base bodies exactly, as in the first fresh
+    // check. The set-difference comparison belongs to the
+    // partial and already-restored cases only. Name each
+    // component that differs, with both counts and both digests.
+    const changed: string[] = [];
+    if (digestIds(waitedIds) !== manifest.base_inventory_digest)
+      changed.push(`events: server holds ${waitedIds.length} digest ${digestIds(waitedIds)}, expected ${manifest.base_event_count} digest ${manifest.base_inventory_digest}`);
+    if (digestIds(waitedBodies) !== manifest.base_body_digest)
+      changed.push(`bodies: server holds ${waitedBodies.length} digest ${digestIds(waitedBodies)}, expected ${manifest.base_body_count} digest ${manifest.base_body_digest}`);
+    if (digestIds(waitedSelections) !== manifest.base_selection_digest)
+      changed.push(`import selections: server holds ${waitedSelections.length} digest ${digestIds(waitedSelections)}, expected ${manifest.base_selection_count} digest ${manifest.base_selection_digest}`);
+    if (changed.length) fail(`inventory changed while waiting for the manifest: ${changed.join("; ")}; refusing to write`);
   }
   // Post every captured transport, not only the missing ones. A
   // repost is idempotent. It makes the server validate each captured
