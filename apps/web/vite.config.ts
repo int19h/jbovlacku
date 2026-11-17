@@ -26,6 +26,9 @@ export default defineConfig({
     host: "127.0.0.1",
     port: Number(process.env.JVC_WEB_PORT ?? 5177),
     strictPort: true,
+    ...(process.env.JVC_PLAYWRIGHT_RUN_ROOT
+      ? { headers: { "Cache-Control": "no-store" } }
+      : {}),
     proxy: {
       "/api": process.env.JVC_WEB_API_TARGET ?? "http://127.0.0.1:8789",
     },
