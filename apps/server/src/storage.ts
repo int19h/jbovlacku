@@ -38,7 +38,7 @@ export async function durableDirectory(
 export class FileObjectStore implements ObjectStore {
   constructor(
     private directory: string,
-    private onIo?: (operation: "read" | "write") => void,
+    private onIo?: (operation: "read" | "write" | "sync") => void,
   ) {}
   private path(hash: string) {
     if (!/^(snapshot2?:sha256:|sha256:)[a-f0-9]{64}$/.test(hash))
@@ -58,16 +58,20 @@ export class FileObjectStore implements ObjectStore {
   async put(hash: string, bytes: Uint8Array): Promise<void> {
     await durableDirectory(this.directory);
     const path = this.path(hash);
-    // The content hash names the object. An identical object that is
-    // already present was synced before it was linked and its directory
-    // was synced after, so it is already durable: skip the write and the
-    // syncs. A different object under the same name stays a collision.
+    // The content hash names the object. Its file data was synced before
+    // it was linked, but a writer that crashed after the link and before
+    // its directory sync leaves the directory entry without a durability
+    // guarantee. Sync the directory before skipping the write, so a
+    // later commit never references an entry the next power loss can
+    // remove. A different object under the same name stays a collision.
     try {
       await stat(path);
       this.onIo?.("read");
       const old = await readFile(path);
       if (!Buffer.from(bytes).equals(old))
         throw new Error("Object hash collision.");
+      await syncDirectory(this.directory);
+      this.onIo?.("sync");
       return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -92,12 +96,8 @@ export class FileObjectStore implements ObjectStore {
       await file.close();
       await unlink(temporary);
     }
-    const directory = await open(this.directory, "r");
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
+    await syncDirectory(this.directory);
+    this.onIo?.("sync");
   }
 }
 export interface CheckpointPin {
