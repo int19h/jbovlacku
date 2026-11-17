@@ -1,9 +1,9 @@
 /** Small local HTTP adapter for tests. It uses the product service. */
 import { createServer } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
-import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
+import { readFile, mkdir, rename, open } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { initializeCore, coreCheckpointVersion } from "../../packages/core/src/index.ts";
 import { DictionaryService } from "../../packages/service/src/service.ts";
 import { FileObjectStore, SqliteCoordinator, SqliteIndexStore } from "../../apps/server/src/storage.ts";
@@ -12,6 +12,19 @@ import { FileCheckpointStore } from "../../apps/server/src/checkpoint.ts";
 import { readLoadedView, checkLoadedView, stateTraversalLimit } from "../../packages/importer/src/load-config.ts";
 import { lockDataDirectory } from "../../packages/importer/src/load-lock.ts";
 export interface ServerOptions { marker?: boolean; selectedView?: string }
+/** Store bytes, publish the name, then store the directory update. */
+async function writeDurable(path: string, text: string): Promise<void> {
+  const tmp = `${path}.tmp-${randomBytes(8).toString("hex")}`;
+  const handle = await open(tmp, "w");
+  try {
+    await handle.writeFile(text);
+    await handle.sync();
+  } finally { await handle.close(); }
+  await rename(tmp, path);
+  const dir = await open(dirname(path), "r");
+  try { await dir.sync(); }
+  finally { await dir.close(); }
+}
 /**
  * A server for synthetic activity must hold a disposable copy.
  * A fresh empty directory gets a marker. A directory that already
@@ -36,9 +49,7 @@ export async function startServer(directory: string, port: number, selectedView?
       // The id stays with this data directory, including a copy of it.
       if (typeof parsed.server_id !== "string" || !/^[0-9a-f]{32}$/.test(parsed.server_id)) {
         parsed.server_id = randomBytes(16).toString("hex");
-        const tmp = `${markerPath}.tmp-${randomBytes(8).toString("hex")}`;
-        await writeFile(tmp, JSON.stringify(parsed) + "\n");
-        await rename(tmp, markerPath);
+        await writeDurable(markerPath, JSON.stringify(parsed) + "\n");
       }
       serverId = parsed.server_id;
       markerValid = true;
@@ -46,7 +57,7 @@ export async function startServer(directory: string, port: number, selectedView?
       throw new Error("refused: data directory has no disposable marker; mark a disposable copy before it is served");
     } else {
       serverId = randomBytes(16).toString("hex");
-      await writeFile(markerPath, JSON.stringify({ disposable: true, server_id: serverId, created_at: new Date().toISOString() }) + "\n");
+      await writeDurable(markerPath, JSON.stringify({ disposable: true, server_id: serverId, created_at: new Date().toISOString() }) + "\n");
       markerValid = true;
     }
   }

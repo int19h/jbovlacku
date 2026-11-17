@@ -8,7 +8,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, writeFile, rm, rename, link, realpath } from "node:fs/promises";
+import { mkdir, open, readFile, writeFile, rm, rename, link, stat } from "node:fs/promises";
 import { existsSync, rmSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,9 +41,19 @@ function plain(rt: unknown): string {
 /**
  * A closed output pipe, as when the command is piped to head, must
  * end the process quietly. The pipe error is not a failure of the command.
+ * Any other output error is a failure. When the error stream still
+ * works, the process prints that error, then exits with status 1.
  */
 function exitQuietlyOnEpipe(): void {
-  const onError = (err: NodeJS.ErrnoException) => { if (err?.code === "EPIPE") process.exit(0); };
+  let failing = false;
+  const onError = (err: NodeJS.ErrnoException) => {
+    if (err?.code === "EPIPE") process.exit(0);
+    if (failing) process.exit(1);
+    failing = true;
+    const line = `error: ${err?.message ?? String(err)}\n`;
+    try { process.stderr.write(line, () => process.exit(1)); }
+    catch { process.exit(1); }
+  };
   process.stdout.on("error", onError);
   process.stderr.on("error", onError);
   process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
@@ -160,19 +170,32 @@ function pinHasEvidence(pin: Pin, path: string): boolean {
     && Number.isInteger(pin.base_selection_count) && typeof pin.base_selection_digest === "string"
     && existsSync(pinIdsPath(path)) && existsSync(pinBodiesPath(path)) && existsSync(pinSelectionsPath(path));
 }
+/** Store a directory entry update. The caller has already renamed into this directory. */
+async function syncDirectory(path: string): Promise<void> {
+  const dir = await open(dirname(path), "r");
+  try { await dir.sync(); }
+  finally { await dir.close(); }
+}
 /**
  * Write through a temp file and rename, so a crash keeps the old
- * file whole. A mode, when given, is the mode of the published file.
+ * file whole. The temp file is stored before the rename. The
+ * directory is stored after the rename. A mode, when given, is the
+ * mode of the published file.
  * Test hook: when SYNTHETIC_ACTIVITY_TEST_CRASH names a suffix, a
  * write of a path with that suffix stops after the temp file is
- * complete and before the rename. Normal runs never set it.
+ * stored and before the rename. Normal runs never set it.
  */
 async function writeAtomic(path: string, text: string, mode?: number): Promise<void> {
   const tmp = `${path}.tmp-${hex(randomBytes(8))}`;
-  await writeFile(tmp, text, mode === undefined ? undefined : { mode });
+  const handle = mode === undefined ? await open(tmp, "w") : await open(tmp, "w", mode);
+  try {
+    await handle.writeFile(text);
+    await handle.sync();
+  } finally { await handle.close(); }
   const crash = process.env.SYNTHETIC_ACTIVITY_TEST_CRASH;
   if (crash && path.endsWith(crash)) { console.error("test crash: stopped before publishing the file"); process.exit(86); }
   await rename(tmp, path);
+  await syncDirectory(path);
 }
 /** An empty base has no event, body, or selection that could identify the server. */
 function baseIsEmpty(pin: Pin, lists: PinLists): boolean {
@@ -235,20 +258,33 @@ async function loadOrCreatePin(o: Opts): Promise<Pin> {
   return pin;
 }
 
-/** Process start ticks from /proc, or null where /proc is absent. */
-async function procStartTicks(pid: number): Promise<number | null> {
+/** Process state and start ticks from /proc, or null where /proc is absent. */
+async function procStat(pid: number): Promise<{ state: string; ticks: number | null } | null> {
   try {
     const text = await readFile(`/proc/${pid}/stat`, "utf8");
     const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
     const ticks = Number(fields[19]);
-    return Number.isSafeInteger(ticks) ? ticks : null;
+    return { state: fields[0] ?? "", ticks: Number.isSafeInteger(ticks) ? ticks : null };
   } catch { return null; }
 }
-/** True only when the recorded owner is the process that now holds the PID. */
+/** Process start ticks from /proc, or null where /proc is absent. */
+async function procStartTicks(pid: number): Promise<number | null> {
+  return (await procStat(pid))?.ticks ?? null;
+}
+/** True only when the recorded owner is the process that now holds the PID.
+ * On Linux, state Z is a zombie. A signal probe still succeeds, and the
+ * start tick still matches, but the process is dead. */
 async function ownerLive(owner: any): Promise<boolean> {
   if (!owner || !Number.isInteger(owner.pid)) return false;
-  try { process.kill(owner.pid, 0); } catch (e: any) { return e?.code === "EPERM"; }
-  const ticks = await procStartTicks(owner.pid);
+  let denied = false;
+  try { process.kill(owner.pid, 0); } catch (e: any) {
+    if (e?.code !== "EPERM") return false;
+    denied = true;
+  }
+  const statInfo = await procStat(owner.pid);
+  if (statInfo?.state === "Z") return false;
+  if (denied) return true;
+  const ticks = statInfo?.ticks ?? null;
   if (ticks === null) return true; // No start identity to compare. Stay safe.
   if (Number.isSafeInteger(owner.proc_start)) return owner.proc_start === ticks;
   // Locks without a recorded start tick: compare the wall-clock start
@@ -623,15 +659,20 @@ async function collectSynthetic(o: Opts, states: string[], snapshot?: string): P
   while (pending.size) { let progress = false; for (const [id, t] of pending) { const prev: string[] = t.envelope.header.previous ?? []; if (prev.every((p) => !byId.has(p) || done.has(p))) { out.push(t); done.add(id); pending.delete(id); progress = true; } } if (!progress) throw new Error("synthetic events have an unresolved predecessor cycle"); }
   return { transports: out, identities };
 }
-/** One directory named two ways is one directory. A relative path,
- * an absolute path, and a symlink of the same folder collapse, so
- * capture locks that folder once and does not refuse itself. */
+/** One directory named two ways is one directory. The key is the
+ * device and inode after symlink resolution. A relative path, an
+ * absolute path, a symlink, and another spelling of that folder
+ * collapse, so capture locks the folder once. A missing path stays
+ * as its resolved spelling. */
 async function distinctStateDirs(states: string[]): Promise<string[]> {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const state of states) {
     let key = resolve(state);
-    try { key = await realpath(state); } catch { /* a missing path stays as given */ }
+    try {
+      const info = await stat(state, { bigint: true });
+      key = `${info.dev}:${info.ino}`;
+    } catch { /* a missing path stays as given */ }
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(state);

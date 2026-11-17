@@ -26,7 +26,9 @@ The tool refuses unsafe targets in code, before it sends any request.
 
 The test server in `server.ts` provides that proof. It writes a
 `disposable.json` marker into a fresh empty data folder. The
-marker includes a `server_id`. A marker that already says
+marker includes a `server_id`. The server stores the new marker
+bytes. It then gives the file its final name. It then stores the
+directory update. A marker that already says
 `disposable: true` and has no server id gets one at startup, and
 that id then stays with the data directory. If a data folder
 already holds data and has no marker, the server refuses to
@@ -65,7 +67,9 @@ Run every command from the repository root with `tsx`:
 npx tsx scripts/synthetic-activity/cli.ts --server http://127.0.0.1:8795 --state .cache/synthetic/a init
 ```
 
-One state folder holds one identity. Use one folder per identity.
+One state folder holds one identity. The tool stores the new
+identity bytes. It then gives the file its final name. It then
+stores the directory update. Use one folder per identity.
 Several identities can write at the same time to one server.
 The server serializes admission. One identity must use one state
 folder at a time. The tool locks the state folder during a write.
@@ -133,7 +137,9 @@ The owner check compares the process start tick, not only
 the process ID. A new process that reuses an old process ID
 has a different start tick, so its lock is stale, not live.
 Where `/proc` is absent, the tool cannot compare start
-ticks and it treats a running process ID as live. An
+ticks and it treats a running process ID as live. On Linux,
+a zombie process is dead. Recovery clears that lock. The
+`unlock` command clears it too. An
 unreadable lock record is treated as live, never as stale.
 
 Recovery works in steps. A recoverer reads the owner and
@@ -215,7 +221,9 @@ code span, and an operand contribute their text. The short form
 keeps those place numbers, and then keeps the first 160
 characters. If the output pipe closes early, the process exits
 quietly. A pipe to `head` closes the pipe early. The process
-prints no stack trace.
+prints no stack trace. When the error stream works, the
+process prints a full-disk error or another output failure.
+The process exits with status 1.
 A write by an identity with more than 64 heads first combines
 them with merge events in batches of 64.
 
@@ -283,7 +291,9 @@ is not in the capture.
 Capture collects only events by the identities in the given
 state folders. Naming one folder twice is the same folder. A
 relative path, an absolute path, and a symlink of that folder
-are one lock, and capture does not refuse itself. Capture needs
+are one lock, and capture does not refuse itself. The tool
+compares the device and the inode. Two names of one folder
+are one lock. Capture needs
 the run's pin file: pass `--pin`,
 or keep `base-pin.json` beside the first state folder. It
 writes `events.jsonl`, `manifest.json`, and

@@ -6,8 +6,8 @@ import { createServer } from "node:http";
 import { connect } from "node:net";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, mkdir, writeFile, cp, readdir, symlink } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, existsSync, openSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { startServer } from "./server.ts";
 import { initializeCore, createEvent, utf8, wordId } from "../../packages/core/src/index.ts";
@@ -1190,4 +1190,168 @@ test("the guide lists trust scope kinds and the view import set", async () => {
   assert.match(text, /--scope-language` is `\*` or one lowercase BCP 47 language tag/);
   assert.match(text, /`--value` is `heed`,\s*`shun`, or `clear`/);
   assert.match(text, /A persona\s+view of the imported dictionary must repeat the import sets/);
+});
+
+/** A published path must show a temp-file sync, then the rename, then a directory sync. */
+function assertSyncedReplace(trace: string, finalPath: string): void {
+  const events: { kind: "sync" | "rename"; at: number; path?: string; src?: string; dest?: string }[] = [];
+  for (const line of trace.split("\n")) {
+    const sync = line.match(/\b(?:fsync|fdatasync)\(\d+<([^>]+)>\)/);
+    if (sync) { events.push({ kind: "sync", at: events.length, path: sync[1] }); continue; }
+    const renamed = line.match(/\brenameat?\((.*)\) = 0/);
+    if (!renamed) continue;
+    const quoted = [...renamed[1].matchAll(/"((?:\\.|[^"\\])*)"/g)].map((m) => m[1]);
+    if (quoted.length >= 2) events.push({ kind: "rename", at: events.length, src: quoted[quoted.length - 2], dest: quoted[quoted.length - 1] });
+  }
+  const rename = events.find((event) => event.kind === "rename" && event.dest === finalPath);
+  assert.ok(rename, `no rename to ${finalPath}`);
+  const tempSync = events.findLast((event) => event.kind === "sync" && event.at < rename.at && event.path === rename.src);
+  assert.ok(tempSync, `no sync of ${rename.src} before the rename`);
+  const dirSync = events.find((event) => event.kind === "sync" && event.at > rename.at && event.path === dirname(finalPath));
+  assert.ok(dirSync, `no sync of ${dirname(finalPath)} after the rename`);
+}
+async function runTraced(tracePath: string, command: string[]): Promise<{ code: number; out: string; trace: string }> {
+  const args = ["-f", "-y", "-s", "400", "-e", "trace=fsync,fdatasync,rename,renameat", "-o", tracePath, ...command];
+  try {
+    const r = await run("strace", args, { timeout: 180000 });
+    return { code: 0, out: (r.stdout ?? "") + (r.stderr ?? ""), trace: await readFile(tracePath, "utf8") };
+  } catch (e: any) {
+    let trace = "";
+    try { trace = await readFile(tracePath, "utf8"); } catch { /* strace wrote nothing */ }
+    return { code: typeof e.code === "number" ? e.code : -1, out: (e.stdout ?? "") + (e.stderr ?? ""), trace };
+  }
+}
+
+test("a full output stream reports the write error and exits nonzero", async () => {
+  const root = await rootOf();
+  try {
+    const state = join(root, "a");
+    await mkdir(state);
+    await writeFile(join(state, "identity.json"), JSON.stringify({ identity: "ed25519:aa" }) + "\n");
+    const fd = openSync("/dev/full", "w");
+    const child = spawn(tsx, [cli, "--state", state, "whoami"], { stdio: ["ignore", fd, "pipe"] });
+    closeSync(fd);
+    const chunks: Buffer[] = [];
+    child.stderr!.on("data", (chunk) => chunks.push(chunk as Buffer));
+    const code = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill(); reject(new Error("full-disk command hung")); }, 60000);
+      child.on("error", (err) => { clearTimeout(timer); reject(err); });
+      child.on("exit", (status) => { clearTimeout(timer); resolve(status ?? -1); });
+    });
+    const err = Buffer.concat(chunks).toString();
+    assert.notEqual(code, 0, err);
+    assert.match(err, /ENOSPC/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("identity and marker replacement sync the temp file, then rename, then sync the directory", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 9627);
+  try {
+    const url = "http://127.0.0.1:9627";
+    const state = join(root, "a");
+    const identity = join(state, "identity.json");
+    const tracedInit = await runTraced(join(root, "trace-init.txt"), [tsx, cli, "--server", url, "--state", state, "init"]);
+    assert.equal(tracedInit.code, 0, tracedInit.out);
+    assertSyncedReplace(tracedInit.trace, identity);
+    const serverMod = new URL("./server.ts", import.meta.url).pathname;
+    await writeFile(join(root, "package.json"), "{\"type\":\"module\"}\n");
+    const probe = join(root, "marker-probe.ts");
+    await writeFile(probe, `import { startServer } from ${JSON.stringify(serverMod)};\nconst server = await startServer(process.argv[2], Number(process.argv[3]));\nawait server.close();\n`);
+    const fresh = join(root, "fresh");
+    const freshTrace = await runTraced(join(root, "trace-fresh.txt"), [tsx, probe, fresh, "9628"]);
+    assert.equal(freshTrace.code, 0, freshTrace.out);
+    assertSyncedReplace(freshTrace.trace, join(fresh, "disposable.json"));
+    const rewrite = join(root, "rewrite");
+    await mkdir(rewrite);
+    await writeFile(join(rewrite, "disposable.json"), "{\"disposable\":true}\n");
+    const rewriteTrace = await runTraced(join(root, "trace-rewrite.txt"), [tsx, probe, rewrite, "9629"]);
+    assert.equal(rewriteTrace.code, 0, rewriteTrace.out);
+    assertSyncedReplace(rewriteTrace.trace, join(rewrite, "disposable.json"));
+    const marker = JSON.parse(await readFile(join(rewrite, "disposable.json"), "utf8"));
+    assert.match(marker.server_id, /^[0-9a-f]{32}$/);
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("capture counts two names of one device and inode as one folder", async () => {
+  const root = await rootOf();
+  const s = await startServer(join(root, "data"), 9630);
+  try {
+    const url = "http://127.0.0.1:9630";
+    const abs = join(root, "a");
+    await cmd(["--server", url, "--state", abs, "init"]);
+    await cmd(["--server", url, "--state", abs, "define", "--word", "capinode", "--text", "one folder"]);
+    const alias = join(root, "alias");
+    await mkdir(alias);
+    const out = join(root, "cap");
+    const script = join(root, "one-inode.sh");
+    const uid = process.getuid?.();
+    const gid = process.getgid?.();
+    assert.equal(typeof uid, "number");
+    assert.equal(typeof gid, "number");
+    await writeFile(script, `#!/bin/bash
+set -eu
+abs=$1
+alias_path=$2
+node_bin=$3
+tsx_bin=$4
+cli_path=$5
+url=$6
+out=$7
+uid=$8
+gid=$9
+mount --bind "$abs" "$alias_path"
+"$node_bin" --input-type=module -e '
+import { stat } from "node:fs/promises";
+const [a, b] = process.argv.slice(1);
+const sa = await stat(a, { bigint: true });
+const sb = await stat(b, { bigint: true });
+if (sa.dev !== sb.dev || sa.ino !== sb.ino) { console.error("identity mismatch"); process.exit(2); }
+if (a === b) { console.error("paths are not two strings"); process.exit(2); }
+console.log("same-identity");
+' "$abs" "$alias_path"
+exec setpriv --reuid="$uid" --regid="$gid" --init-groups --inh-caps=-all -- "$tsx_bin" "$cli_path" --server "$url" capture --state "$abs" --state "$alias_path" --out "$out"
+`);
+    let code = 0;
+    let text = "";
+    try {
+      const r = await run("sudo", ["-n", "unshare", "--mount", "/bin/bash", script, abs, alias, process.execPath, tsx, cli, url, out, String(uid), String(gid)], { timeout: 180000 });
+      text = (r.stdout ?? "") + (r.stderr ?? "");
+    } catch (e: any) {
+      code = typeof e.code === "number" ? e.code : -1;
+      text = (e.stdout ?? "") + (e.stderr ?? "");
+    }
+    assert.match(text, /same-identity/);
+    assert.equal(code, 0, text);
+    assert.match(text, /captured/);
+    assert.doesNotMatch(text, /another write is in progress/);
+  } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("a zombie lock owner is dead", async () => {
+  const root = await rootOf();
+  const state = join(root, "a");
+  await mkdir(state);
+  const holder = spawn("python3", ["-c", "import os, time, sys\npid = os.fork()\nif pid == 0:\n    os._exit(0)\nsys.stdout.write(str(pid) + '\\n')\nsys.stdout.flush()\ntime.sleep(60)\n"], { stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    const pidText = await new Promise<string>((resolve, reject) => {
+      let buf = "";
+      const timer = setTimeout(() => reject(new Error("zombie holder produced no pid")), 10000);
+      holder.stdout!.on("data", (chunk) => {
+        buf += chunk;
+        if (buf.includes("\n")) { clearTimeout(timer); resolve(buf); }
+      });
+      holder.on("exit", () => { clearTimeout(timer); reject(new Error(`holder exited early: ${buf}`)); });
+    });
+    const pid = Number(pidText.trim());
+    const statText = await readFile(`/proc/${pid}/stat`, "utf8");
+    const fields = statText.slice(statText.lastIndexOf(")") + 2).split(" ");
+    assert.equal(fields[0], "Z");
+    const ticks = Number(fields[19]);
+    await writeFile(join(state, "lock"), JSON.stringify({ pid, proc_start: ticks, started_at: new Date().toISOString(), token: "dead-zombie" }) + "\n");
+    const cleared = await cmdResult(["--state", state, "unlock"]);
+    assert.equal(cleared.code, 0, cleared.out);
+    assert.match(cleared.out, /lock cleared/);
+    assert.equal(existsSync(join(state, "lock")), false);
+  } finally { holder.kill("SIGKILL"); await rm(root, { recursive: true, force: true }); }
 });
