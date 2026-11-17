@@ -582,6 +582,44 @@ test("a worker preparation over budget reports its limit through local search", 
   expect(message).toContain("preparation");
 });
 
+test("the worker continues the transferred budget state", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const entries = Array.from({ length: 10000 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    try {
+      await searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), entries },
+        "en",
+        ["book"],
+        { workLimit: 75000 },
+      );
+      return "resolved";
+    } catch (error) {
+      return `${(error as Error).constructor.name}: ${(error as Error).message}`;
+    }
+  }, corePath);
+  // The transfer, validation, preparation, maps, scan, grouping, and response
+  // mapping spend about 85,000 units against the shared budget, so the
+  // response mapping refuses. Without the transferred and mapped stages the
+  // same request costs about 60,000 units and completes.
+  expect(outcome).toContain("work or time limit");
+});
+
 test("an invalid cached package is reported and server search stays usable", async ({
   page,
 }) => {

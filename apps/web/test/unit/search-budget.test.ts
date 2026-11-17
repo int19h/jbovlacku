@@ -22,9 +22,12 @@ const searchModule: typeof import("../../src/data/search.ts") = await import(
   "../../src/data/search.ts"
 );
 const { localSearch, validateCachedPackage } = searchModule;
-const { workerReplyError, workerCrashError } = await import(
-  "../../src/data/package-search.ts"
-);
+const {
+  workerReplyError,
+  workerCrashReason,
+  workerErrorName,
+  resolvePackageHits,
+} = await import("../../src/data/package-search.ts");
 
 const packageEntry = (index: number): PackageEntry => ({
   event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
@@ -58,17 +61,70 @@ test("worker reply codes map to their documented errors", () => {
   assert.equal(other.message, "plain");
 });
 
-test("a worker crash during preparation reports does-not-fit", () => {
-  assert.match(workerCrashError(true, true).message, /does not fit/);
-  // A worker that never produced a reply may have failed to start instead.
+test("a worker crash is classified by cause, not timing", () => {
+  const generic = /could not start.*retry/;
+  // An ordinary code bug keeps the startup message on the first request and
+  // on a later one alike.
+  for (const pending of [false, true])
+    assert.match(
+      workerCrashReason({
+        hadPendingPreparation: pending,
+        memoryPressure: false,
+        errorName: "Error",
+      }).message,
+      generic,
+    );
+  // An allocation failure reports does-not-fit even on the first request.
+  for (const pending of [false, true])
+    assert.match(
+      workerCrashReason({
+        hadPendingPreparation: pending,
+        memoryPressure: false,
+        errorName: "RangeError",
+      }).message,
+      /does not fit/,
+    );
   assert.match(
-    workerCrashError(true, false).message,
-    /could not start.*retry/,
+    workerCrashReason({
+      hadPendingPreparation: true,
+      memoryPressure: false,
+      errorName: "QuotaExceededError",
+    }).message,
+    /does not fit/,
   );
+  // A load failure keeps the startup message.
   assert.match(
-    workerCrashError(false, true).message,
-    /could not start.*retry/,
+    workerCrashReason({
+      hadPendingPreparation: true,
+      memoryPressure: false,
+      errorName: "SyntaxError",
+    }).message,
+    generic,
   );
+  // A crash after a does-not-fit report with another preparation pending
+  // reports does-not-fit even for an ordinary error.
+  assert.match(
+    workerCrashReason({
+      hadPendingPreparation: true,
+      memoryPressure: true,
+      errorName: "Error",
+    }).message,
+    /does not fit/,
+  );
+});
+
+test("worker error names come from the event or its message", () => {
+  assert.equal(workerErrorName(new RangeError("x")), "RangeError");
+  assert.equal(
+    workerErrorName({ message: "Uncaught RangeError: Array buffer allocation failed" }),
+    "RangeError",
+  );
+  assert.equal(
+    workerErrorName({ message: "Uncaught Error: plain probe bug" }),
+    "Error",
+  );
+  assert.equal(workerErrorName({ message: "nothing useful" }), undefined);
+  assert.equal(workerErrorName(null), undefined);
 });
 
 test("cached-package validation charges the request budget", () => {
@@ -126,5 +182,77 @@ test("the request deadline covers grouping and sorting", () => {
       error instanceof Error &&
       error.constructor.name === "SearchBudgetError" &&
       /work or time limit/.test(error.message),
+  );
+});
+
+test("rafsi merging charges its linear cost with identical results", () => {
+  const rows = 8000;
+  const entries: PackageEntry[] = Array.from({ length: rows }, (_, index) => ({
+    ...packageEntry(index),
+    word: { language: "jbo", spelling: "broda" },
+    rafsi: [`r${index}`],
+  }));
+  const hits = localSearch(entries, "*", searchMetrics(), true, {
+    workLimit: Infinity,
+    deadlineMs: Infinity,
+  });
+  assert.equal(hits.length, 1);
+  const merged = [...(hits[0].matchingRafsi ?? [])].sort();
+  assert.equal(merged.length, rows);
+  assert.deepEqual(hits[0].matchingRafsi, merged);
+  // Scan and grouping charge two units per row, so a budget of two rows'
+  // worth refuses once the merge insertions and the final sort add more.
+  assert.throws(
+    () =>
+      localSearch(entries, "*", searchMetrics(), true, {
+        workLimit: rows * 2,
+        deadlineMs: Infinity,
+      }),
+    (error: unknown) =>
+      error instanceof Error && error.constructor.name === "SearchBudgetError",
+  );
+});
+
+test("page-side reference rebuild charges the continued budget", () => {
+  const entries = Array.from({ length: 10 }, (_, index) =>
+    packageEntry(index),
+  );
+  const pkg = {
+    snapshot: "sha256:" + "a".repeat(64),
+    entries,
+  };
+  const pages = [
+    [
+      {
+        word_id: "w1",
+        match: "headword" as const,
+        entries: entries.map((_, index) => index),
+        definitions: entries.map((_, index) => index),
+        preview: 0,
+      },
+    ],
+  ];
+  const complete = resolvePackageHits(
+    pkg,
+    pages,
+    new SearchRequestBudget(searchMetrics(), {
+      workLimit: Infinity,
+      deadlineMs: Infinity,
+    }),
+  );
+  assert.equal(complete[0][0].entries.length, 10);
+  assert.equal(complete[0][0].definitions.length, 10);
+  assert.throws(
+    () =>
+      resolvePackageHits(
+        pkg,
+        pages,
+        new SearchRequestBudget(searchMetrics(), {
+          workLimit: 10,
+          deadlineMs: Infinity,
+        }),
+      ),
+    (error: unknown) =>
+      error instanceof Error && error.constructor.name === "SearchBudgetError",
   );
 });

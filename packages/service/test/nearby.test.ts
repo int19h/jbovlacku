@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { nearbyQuery, rankNearby } from "../src/nearby.ts";
+import {
+  searchMetrics,
+  SearchBudgetError,
+  SearchRequestBudget,
+} from "../../search/src/index.ts";
 test("nearby queries remove place marks and punctuation, then cap distinct words", () => {
   assert.deepEqual(
     nearbyQuery(
@@ -67,4 +72,23 @@ test("circled and braced place markers separate adjacent words", () => {
     "4x4",
     "cu'i",
   ]);
+});
+
+test("nearby ranking charges every ranked hit against the request budget", () => {
+  const lists = Array.from({ length: 6 }, (_, group) =>
+    Array.from({ length: 100 }, (_, index) => ({
+      word_id: `w${group}-${index}`,
+    })),
+  );
+  const metrics = searchMetrics();
+  const shared = new SearchRequestBudget(metrics, {
+    workLimit: 100,
+    deadlineMs: Infinity,
+  });
+  assert.throws(
+    () => rankNearby(lists, shared),
+    (error: unknown) =>
+      error instanceof SearchBudgetError && error.phase === "search",
+  );
+  assert.equal(rankNearby(lists).length, 600);
 });
