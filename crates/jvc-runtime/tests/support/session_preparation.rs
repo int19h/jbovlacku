@@ -515,6 +515,7 @@ fn exact_profiles_skip_the_source_walk_and_float_unavailability_keeps_its_reason
     let mut tiny = policy();
     tiny.limits.records = Some(1);
     tiny.limits.setup_bytes = Some(1);
+    tiny.limits.setup_units = Some(1);
     tiny.limits.units = 1;
     let d = exact.ranking_descriptor_native(&tiny).unwrap();
     assert!(!d.available && d.reasons.contains("unsupported_calculation"));

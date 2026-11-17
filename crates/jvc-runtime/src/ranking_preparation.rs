@@ -394,6 +394,53 @@ fn parameters(e: &jvc_state::Evaluation, meter: &mut SetupMeter) -> Result<Prepa
         work,
     })
 }
+/// Policy reads without a meter. Only used to classify a session after
+/// a charged policy read has refused: an unsupported or unavailable
+/// session still returns its diagnostic descriptor, while an available
+/// float session returns the refusal. These reads are bounded by the
+/// signed view body, and no setup walk follows them on that path.
+fn parameters_uncharged(e: &jvc_state::Evaluation) -> Result<PreparationParameters> {
+    let p = e
+        .policy
+        .as_ref()
+        .ok_or_else(|| Error::new("policy_unavailable", "selected policy is unavailable"))?;
+    let work = e
+        .overlay
+        .as_ref()
+        .and_then(|o| o["work"].as_u64())
+        .or_else(|| p.view().index("work").as_u64())
+        .filter(|w| (1..=10_000_000).contains(w))
+        .ok_or_else(|| Error::new("ranking", "signed work budget is unavailable"))?;
+    let plain = |value: jvc_state::ValueView| -> Result<FloatParameter> {
+        let n = value
+            .index("numerator")
+            .as_i64()
+            .ok_or_else(|| Error::new("ranking", "signed numerator is unavailable"))?;
+        let d = value
+            .index("denominator")
+            .as_u64()
+            .filter(|d| *d > 0)
+            .ok_or_else(|| Error::new("ranking", "signed denominator is unavailable"))?;
+        let exact = jvc_rank::Rational::new(n.into(), d.into());
+        let converted = a::input(&exact, true).map_err(|_| {
+            Error::new(
+                "numeric_unavailable",
+                "signed parameter cannot become normal binary64",
+            )
+        })?;
+        Ok(FloatParameter {
+            numerator: exact.numer().to_string(),
+            denominator: exact.denom().to_string(),
+            bits: bits(converted),
+        })
+    };
+    Ok(PreparationParameters {
+        h: plain(p.view().index("H"))?,
+        alpha: plain(p.view().index("alpha"))?,
+        threshold: plain(p.view().index("rafsi_threshold"))?,
+        work,
+    })
+}
 /// Charges setup work before it runs, against an explicit quota or the
 /// scaled default for the entries and key bytes charged so far.
 struct SetupMeter {
@@ -431,26 +478,56 @@ impl SessionPreparation {
         // The meter exists before any policy field is read, and every
         // such lookup is charged through it before it runs.
         let mut meter = policy.setup_meter(0, 0);
-        let algorithm = match e.policy.as_ref() {
-            Some(p) => p
-                .view()
-                .get_metered("calculation", &mut |w| meter.charge(w, 0, 0))?
-                .and_then(|v| v.as_str().map(str::to_owned)),
-            None => None,
-        };
         let mut reasons = e.reasons.clone();
+        let read_charged = |meter: &mut SetupMeter,
+                            reasons: &mut BTreeSet<String>|
+         -> Result<(Option<String>, Option<PreparationParameters>)> {
+            let algorithm = match e.policy.as_ref() {
+                Some(p) => p
+                    .view()
+                    .get_metered("calculation", &mut |w| meter.charge(w, 0, 0))?
+                    .and_then(|v| v.as_str().map(str::to_owned)),
+                None => None,
+            };
+            let parameters = match parameters(e, meter) {
+                Ok(p) => Some(p),
+                Err(error) if error.code == "resource_unavailable" => return Err(error),
+                Err(error) => {
+                    reasons.insert(error.code);
+                    None
+                }
+            };
+            Ok((algorithm, parameters))
+        };
+        let (algorithm, parameters) = match read_charged(&mut meter, &mut reasons) {
+            Ok(pair) => pair,
+            Err(error) => {
+                // A charged policy read refused. Unsupported and
+                // unavailable sessions still return their diagnostic
+                // descriptor, so classify with uncharged reads; only an
+                // available float session returns the refusal.
+                let algorithm = e
+                    .policy
+                    .as_ref()
+                    .and_then(|p| p.view().index("calculation").as_str().map(str::to_owned));
+                let parameters = match parameters_uncharged(e) {
+                    Ok(p) => Some(p),
+                    Err(error) => {
+                        reasons.insert(error.code);
+                        None
+                    }
+                };
+                if e.available && algorithm.as_deref() == Some(a::ALGORITHM) && parameters.is_some()
+                {
+                    return Err(error);
+                }
+                (algorithm, parameters)
+            }
+        };
         let unsupported = algorithm.as_deref().is_some_and(|a| a != a::ALGORITHM);
         if unsupported {
             reasons.insert("unsupported_calculation".into());
         }
-        let parameters = match parameters(e, &mut meter) {
-            Ok(p) => Some(p),
-            Err(error) if error.code == "resource_unavailable" => return Err(error),
-            Err(error) => {
-                reasons.insert(error.code);
-                None
-            }
-        };
         let available =
             e.available && algorithm.as_deref() == Some(a::ALGORITHM) && parameters.is_some();
         // Unsupported profiles need no ranking input identity or dictionary walk.
