@@ -141,6 +141,14 @@ fn measure(name: &str, state: EvaluatedState) -> [usize; 2] {
     );
     allocations.nodes
 }
+fn seal_checkpoint(mut saved: Value) -> Vec<u8> {
+    saved.as_object_mut().unwrap().remove("digest");
+    let mut bytes = serde_json::to_vec(&saved).unwrap();
+    let digest = jvc_core::hash_id("sha256:", b"", &bytes);
+    bytes.pop();
+    bytes.extend_from_slice(format!(",\"digest\":\"{digest}\"}}").as_bytes());
+    bytes
+}
 fn synthetic(prototype: &Value, n: usize, grouped: bool, rules: bool) -> EvaluatedState {
     let input = EvaluationInput {
         events: vec![],
@@ -186,8 +194,7 @@ fn synthetic(prototype: &Value, n: usize, grouped: bool, rules: bool) -> Evaluat
         saved["evaluation"]["overlay"] = o.clone();
         saved["options"]["overlay"] = o;
     }
-    EvaluatedState::restore_host_checkpoint(&serde_json::to_vec(&saved).unwrap(), "synthetic")
-        .unwrap()
+    EvaluatedState::restore_host_checkpoint(&seal_checkpoint(saved), "synthetic").unwrap()
 }
 #[derive(Default)]
 pub struct AllocationCoverage {
@@ -316,8 +323,7 @@ fn small_state(prototype: &Value, n: usize, shape: &str) -> EvaluatedState {
     let overlay = json!({"version":2,"trust":private,"blocked":[],"root_changes":[],"public_shun_issuer":null});
     saved["evaluation"]["overlay"] = overlay.clone();
     saved["options"]["overlay"] = overlay;
-    EvaluatedState::restore_host_checkpoint(&serde_json::to_vec(&saved).unwrap(), "synthetic")
-        .unwrap()
+    EvaluatedState::restore_host_checkpoint(&seal_checkpoint(saved), "synthetic").unwrap()
 }
 
 pub fn run() {

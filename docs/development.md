@@ -1201,7 +1201,7 @@ Resource errors must expose unavailable results instead of fabricated zero score
 
 The state evaluator also has a work budget for history traversal, ancestor sets, and evaluator inner loops.
 The budget counts logical units across layout, dependency setup, closure construction, lifecycle, registers, retention, accounts, certificates, and downstream passes. The charge counts the exact interval layout and evaluator loop iterations - its records, edges, ranges, and loop steps - and no bitset words or pointer sizes, so the same input charges the same total in native and Wasm builds.
-The default budget grows linearly with the input record count: 10,000,000 base units plus 256 units per record. An explicit `Limits.traversal` value, `loaded-view.json` `state_traversal_limit`, or the Node loader flag overrides that default.
+The default budget grows linearly with the input (`10,000,000 + 256 * records + selection_ids`, counting each distinct valid import selection referenced by the selected view once). An explicit `Limits.traversal` value, `loaded-view.json` `state_traversal_limit`, `JVC_STATE_TRAVERSAL_LIMIT`, or the Node loader flag overrides that default.
 Ancestry range metadata also has a hard cap of 64 MiB, counted over every range vector a union copies or allocates. A history whose ranges pass the cap fails with `resource_unavailable` at any budget.
 Super-linear history shapes reach the work budget sooner, while ordinary histories grow linearly and pass the default budget.
 `Limits.events` is absent by default and serves as an optional event-count quota when configured.

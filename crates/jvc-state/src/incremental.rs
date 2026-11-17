@@ -1,10 +1,25 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v6";
-const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v6";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v7";
+const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v7";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
+
+#[cfg(test)]
+thread_local! {
+    static DIGEST_REJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_digest_rejections() {
+    DIGEST_REJECTIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn digest_rejections() -> usize {
+    DIGEST_REJECTIONS.with(std::cell::Cell::get)
+}
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct UpdateStatistics {
@@ -374,13 +389,16 @@ impl EvaluatedState {
 
     fn rebuild(&mut self) {
         self.judgment_changes = None;
+        // Discard this state's old ancestry before any early exit or replacement.
+        self.saved_ancestry_bytes = None;
+        self.checkpoint_restored = false;
+        self.graph = None;
         let resolved =
             policy::resolve_referenced_selections(&self.prepared.options, &self.prepared.nodes);
         self.selection_allowance = resolved.allowance;
         if self.prepared.arena_error().is_some() {
             self.evaluation = empty_evaluation(&self.prepared.options);
             resource_unavailable(&mut self.evaluation);
-            self.graph = None;
             self.remaining_work = self.traversal_budget();
             self.unresolved.clear();
             self.unmatched_publication_scans = 0;
@@ -389,16 +407,12 @@ impl EvaluatedState {
         }
         if self.prepared.event_limit_exceeded {
             self.evaluation = event_limit_evaluation(&self.prepared.options);
-            self.graph = None;
             self.remaining_work = self.traversal_budget();
             self.unresolved.clear();
             self.unmatched_publication_scans = 0;
             self.matched_publication_scans.clear();
             return;
         }
-        // Discard this state's old ancestry before allocating its replacement.
-        self.saved_ancestry_bytes = None;
-        self.graph = None;
         let graph = Graph::new_with_budget(self.prepared.nodes.clone(), self.traversal_budget());
         self.evaluation = evaluate_graph_with_selections(&self.prepared.options, &graph, &resolved);
         self.remaining_work = graph.budget.get();
@@ -1073,7 +1087,7 @@ impl EvaluatedState {
             .values()
             .map(|register| register.maxima_member_work)
             .collect();
-        if results_only {
+        let mut bytes = if results_only {
             serde_json::to_vec(&SavedResults {
                 version: RESULTS_CHECKPOINT_VERSION,
                 binding,
@@ -1107,7 +1121,13 @@ impl EvaluatedState {
                 matched_publication_scans: &self.matched_publication_scans,
             })
         }
-        .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))
+        .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
+        let digest = jvc_core::hash_id("sha256:", b"", &bytes);
+        bytes.pop();
+        bytes.extend_from_slice(b",\"digest\":\"");
+        bytes.extend_from_slice(digest.as_bytes());
+        bytes.extend_from_slice(b"\"}");
+        Ok(bytes)
     }
 
     /// Restore only bytes checked against an independent trusted host pin.
@@ -1127,6 +1147,12 @@ impl EvaluatedState {
         binding: &str,
         records: Option<Vec<HostVerifiedRecord>>,
     ) -> jvc_core::Result<Self> {
+        if !verify_checkpoint_digest(bytes) {
+            return Err(jvc_core::Error::new(
+                "checkpoint",
+                "checkpoint version or binding does not match",
+            ));
+        }
         let (saved, expected_version, nodes) = match records {
             Some(records) => {
                 let saved: SavedResultsCheckpoint = serde_json::from_slice(bytes)
@@ -1155,6 +1181,7 @@ impl EvaluatedState {
                     register_maxima_member_work: full.register_maxima_member_work,
                     unmatched_publication_scans: full.unmatched_publication_scans,
                     matched_publication_scans: full.matched_publication_scans,
+                    digest: full.digest,
                 };
                 (saved, CHECKPOINT_VERSION, nodes)
             }
@@ -1253,6 +1280,8 @@ struct SavedFullCheckpoint {
     register_maxima_member_work: Vec<usize>,
     unmatched_publication_scans: usize,
     matched_publication_scans: BTreeMap<String, usize>,
+    #[allow(dead_code)]
+    digest: String,
 }
 
 #[derive(Deserialize)]
@@ -1272,6 +1301,49 @@ struct SavedResultsCheckpoint {
     register_maxima_member_work: Vec<usize>,
     unmatched_publication_scans: usize,
     matched_publication_scans: BTreeMap<String, usize>,
+    #[allow(dead_code)]
+    digest: String,
+}
+
+fn verify_checkpoint_digest(bytes: &[u8]) -> bool {
+    const PREFIX: &[u8] = b",\"digest\":\"";
+    const SCHEME: &[u8] = b"sha256:";
+    const SUFFIX: &[u8] = b"\"}";
+    const DIGEST_VAL_LEN: usize = SCHEME.len() + 64;
+    const DIGEST_FIELD_LEN: usize = PREFIX.len() + DIGEST_VAL_LEN + SUFFIX.len();
+
+    let reject = || {
+        #[cfg(test)]
+        DIGEST_REJECTIONS.with(|count| count.set(count.get() + 1));
+        false
+    };
+
+    if bytes.len() <= DIGEST_FIELD_LEN + 1 || bytes.first() != Some(&b'{') {
+        return reject();
+    }
+    let split = bytes.len() - DIGEST_FIELD_LEN;
+    if &bytes[split..split + PREFIX.len()] != PREFIX
+        || &bytes[bytes.len() - SUFFIX.len()..] != SUFFIX
+    {
+        return reject();
+    }
+    let stored = &bytes[split + PREFIX.len()..bytes.len() - SUFFIX.len()];
+    if !stored.starts_with(SCHEME)
+        || !stored[SCHEME.len()..]
+            .iter()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return reject();
+    }
+    let mut writer = jvc_core::HashWriter::new(b"", usize::MAX);
+    use std::io::Write;
+    let _ = writer.write_all(&bytes[..split]);
+    let _ = writer.write_all(b"}");
+    let (actual, _) = writer.finish("sha256:");
+    if actual.as_bytes() != stored {
+        return reject();
+    }
+    true
 }
 
 fn valid_node_state(node: &Node) -> Result<(), &'static str> {
@@ -1670,6 +1742,23 @@ fn check_saved_state(
         if !resource_refused && receipt.reasons.contains("invalid_action") != !node.semantic {
             return Err("receipt_invalid_action");
         }
+        if !resource_refused
+            && node.semantic
+            && matches!(
+                node.kind.as_str(),
+                "judgment.set" | "status.set" | "import.status" | "bridge.set"
+            )
+        {
+            let target_view = node.action.view().index("target");
+            let target = target_view.as_str().unwrap_or_default();
+            if !target.starts_with("jvr1:")
+                && !nodes.contains_key(target)
+                && (!receipt.reasons.contains("target_pending")
+                    || receipt.interpretation != Interpretation::Pending)
+            {
+                return Err("receipt_direct_target_pending");
+            }
+        }
     }
 
     // Policy, policy_history, policies, and selections must match nodes and options.
@@ -1699,16 +1788,45 @@ fn check_saved_state(
         return Err("policies_len");
     }
     let mut history_digests: BTreeMap<String, usize> = BTreeMap::new();
+    let mut missing_policy_parent = false;
     for (vid, pol) in &saved.evaluation.policy_history {
-        let view_body = nodes
+        let Some(view_node) = nodes
             .get(vid)
             .filter(|n| n.semantic && n.kind == "view.publish")
-            .and_then(|n| n.body.as_ref());
-        if view_body != Some(pol) {
+        else {
             return Err("policy_history_entry");
+        };
+        if view_node.body.as_ref() != Some(pol) {
+            return Err("policy_history_entry");
+        }
+        for parent_view in view_node
+            .action
+            .view()
+            .index("parents")
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let Some(parent_id) = parent_view.as_str() else {
+                missing_policy_parent = true;
+                continue;
+            };
+            if !saved.evaluation.policy_history.contains_key(parent_id) {
+                missing_policy_parent = true;
+            }
         }
         let digest = compact_value_digest(pol)?;
         *history_digests.entry(digest).or_insert(0) += 1;
+    }
+    if !resource_refused
+        && saved.evaluation.policy.is_some()
+        && saved
+            .evaluation
+            .reasons
+            .contains("policy_ancestry_unavailable")
+            != missing_policy_parent
+    {
+        return Err("policy_parent_missing");
     }
     for pol in &saved.evaluation.policies {
         let digest = compact_value_digest(pol)?;
@@ -1789,7 +1907,11 @@ fn check_saved_state(
     let mut accept_edges: BTreeSet<(String, String)> = BTreeSet::new();
     let mut register_node_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut observed_claims_by_account: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut all_nodes_root_no_accept = true;
     for node in nodes.values() {
+        if !node.previous.is_empty() || (node.semantic && node.kind == "identity.accept") {
+            all_nodes_root_no_accept = false;
+        }
         if node.semantic {
             match node.kind.as_str() {
                 "identity.transfer" => {
@@ -2239,6 +2361,9 @@ fn check_saved_state(
         if state.controller != expected_controller {
             return Err("account_controller");
         }
+        if state.commands && state.controller.is_none() {
+            return Err("account_commands_without_controller");
+        }
         let expected_identity = if state.commands {
             state
                 .controller
@@ -2310,6 +2435,14 @@ fn check_saved_state(
                 return Err("register_single_member_counters");
             }
         }
+        if all_nodes_root_no_accept {
+            if member_work != 0 {
+                return Err("register_root_member_work");
+            }
+            if register_node_counts.get(key).copied() == Some(2) && (charge != 152 || work != 5) {
+                return Err("register_two_root_member_counters");
+            }
+        }
         total_maxima_charges = total_maxima_charges
             .checked_add(charge)
             .ok_or("register_charge_overflow")?;
@@ -2363,6 +2496,22 @@ fn check_saved_state(
                     .saturating_add(total_maxima_charges)
         {
             return Err("ancestry_bytes_too_small");
+        }
+        if !resource_refused
+            && all_nodes_root_no_accept
+            && saved.evaluation.accounts.is_empty()
+            && saved
+                .evaluation
+                .publications
+                .values()
+                .all(|p| p.status_frontier.is_empty())
+            && bytes
+                != nodes
+                    .len()
+                    .saturating_mul(72)
+                    .saturating_add(total_maxima_charges)
+        {
+            return Err("ancestry_bytes_root_exact");
         }
     }
     if saved.evaluation.judgments.values().any(BTreeMap::is_empty)
@@ -4879,7 +5028,16 @@ mod rebuild_tests {
 
         let mut value: serde_json::Value = serde_json::from_slice(&saved).unwrap();
         value["ancestry_bytes"] = serde_json::Value::Null;
-        let stripped = serde_json::to_vec(&value).unwrap();
+        let unsealed = serde_json::to_vec(&value).unwrap();
+        assert!(
+            EvaluatedState::restore_host_checkpoint(&unsealed, "host-checked").is_err(),
+            "mutated checkpoint without recomputed digest must be rejected"
+        );
+        value.as_object_mut().unwrap().remove("digest");
+        let mut stripped = serde_json::to_vec(&value).unwrap();
+        let digest = jvc_core::hash_id("sha256:", b"", &stripped);
+        stripped.pop();
+        stripped.extend_from_slice(format!(",\"digest\":\"{digest}\"}}").as_bytes());
         let restored = EvaluatedState::restore_host_checkpoint(&stripped, "host-checked").unwrap();
         let judgment = host(
             format!("jve1:{:064x}", 800_002usize),
@@ -6169,8 +6327,8 @@ mod rebuild_tests {
 
         let full_json: Value = serde_json::from_slice(&full_bytes).unwrap();
         let result_json: Value = serde_json::from_slice(&result_bytes).unwrap();
-        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v6"));
-        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v6"));
+        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v7"));
+        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v7"));
         assert!(result_json.get("nodes").is_none());
         for json in [&full_json, &result_json] {
             assert_eq!(json.get("unmatched_publication_scans"), Some(&json!(0)));
@@ -6809,6 +6967,7 @@ mod rebuild_tests {
         let mut nulled_rejected = 0usize;
         let mut nulled_rebuilt = 0usize;
         let mut failures = Vec::new();
+        reset_digest_rejections();
 
         for (is_results, raw_exact, raw_tight) in [
             (false, &saved_exact_full, &saved_tight_full),
@@ -7014,13 +7173,17 @@ mod rebuild_tests {
             }
         }
 
+        let digest_rejected = digest_rejections();
         eprintln!(
-            "checkpoint_schema_audit: deleted_checked={deleted_paths_checked} (rejected={deleted_rejected}, rebuilt={deleted_rebuilt}), nulled_checked={nulled_paths_checked} (rejected={nulled_rejected}, rebuilt={nulled_rebuilt}), failures={}",
+            "checkpoint_schema_audit: deleted_checked={deleted_paths_checked} (rejected={deleted_rejected}, rebuilt={deleted_rebuilt}), nulled_checked={nulled_paths_checked} (rejected={nulled_rejected}, rebuilt={nulled_rebuilt}), digest_rejected={digest_rejected}, failures={}",
             failures.len()
         );
         assert!(
-            failures.is_empty(),
-            "checkpoint schema audit failures ({}):\n{}",
+            failures.is_empty()
+                && deleted_rejected == deleted_paths_checked
+                && nulled_rejected == nulled_paths_checked
+                && digest_rejected == (deleted_paths_checked + nulled_paths_checked) * 2,
+            "checkpoint schema audit must reject every key deletion and null mutation at digest check (deleted_rebuilt={deleted_rebuilt}, nulled_rebuilt={nulled_rebuilt}, digest_rejected={digest_rejected}, failures={}):\n{}",
             failures.len(),
             failures.join("\n")
         );
@@ -8353,6 +8516,7 @@ mod rebuild_tests {
         let mut harmless_count = 0usize;
         let mut harmless_fields = Vec::new();
         let mut failures = Vec::new();
+        reset_digest_rejections();
 
         for (is_results, raw) in [(false, &saved_full), (true, &saved_results)] {
             let root: Value = serde_json::from_slice(raw).unwrap();
@@ -8459,16 +8623,752 @@ mod rebuild_tests {
             }
         }
 
+        let digest_rejected = digest_rejections();
         eprintln!(
-            "checkpoint_scalar_leaf_audit: total_checked={total_checked}, rejected={rejected_count}, harmless={harmless_count}, failures={}",
+            "checkpoint_scalar_leaf_audit: total_checked={total_checked}, rejected={rejected_count}, digest_rejected={digest_rejected}, harmless={harmless_count}, failures={}",
             failures.len()
         );
         for h in &harmless_fields {
             eprintln!("  HARMLESS: {h}");
         }
         assert!(
+            failures.is_empty()
+                && rejected_count == total_checked
+                && digest_rejected == total_checked
+                && harmless_count == 0,
+            "checkpoint scalar leaf audit must reject every scalar mutation at digest check (rejected={rejected_count}/{total_checked}, digest_rejected={digest_rejected}, harmless={harmless_count}, failures={}):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn r8_conflicted_register_reference_and_command_mutations_are_rejected() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let def_body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+
+        // 1. Conflicted 2-sibling judgment register counter mutations.
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"fork-counters",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let (pubn, pubn_body) = event(
+            2,
+            2,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            Some(def_body.clone()),
+        );
+        let (j_bless, _) = event(
+            1,
+            3,
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"bless"}),
+            None,
+        );
+        let (j_curse, _) = event(
+            1,
+            5,
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"curse"}),
+            None,
+        );
+        let fork_opts = EvaluationOptions {
+            selected_view: view.id().into(),
+            limits: Limits::default(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+        };
+        let mut fork_prep = PreparedEvaluationInput::new(fork_opts);
+        fork_prep.add_record(&view, view_body.as_deref());
+        fork_prep.add_record(&pubn, pubn_body.as_deref());
+        fork_prep.add_record(&j_bless, None);
+        fork_prep.add_record(&j_curse, None);
+        let fork_records: Vec<HostVerifiedRecord> = fork_prep
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let fork_state = fork_prep.into_state();
+        assert_eq!(fork_state.consumed_work(), 42);
+        let fork_full = fork_state.checkpoint("fork").unwrap();
+        let fork_res = fork_state.result_checkpoint("fork").unwrap();
+
+        let reseal = |mut cp: Value| -> Vec<u8> {
+            cp.as_object_mut().unwrap().remove("digest");
+            let mut bytes = serde_json::to_vec(&cp).unwrap();
+            let digest = jvc_core::hash_id("sha256:", b"", &bytes);
+            bytes.pop();
+            bytes.extend_from_slice(format!(",\"digest\":\"{digest}\"}}").as_bytes());
+            bytes
+        };
+
+        let mut failures = Vec::new();
+        let mut expected_digest_rejections = 0usize;
+        reset_digest_rejections();
+        for (is_results, raw) in [(false, &fork_full), (true, &fork_res)] {
+            for mode in [
+                "work_plus_one",
+                "work_minus_one",
+                "member_plus_one",
+                "charge_plus_eight",
+                "ancestry_plus_eight",
+            ] {
+                let mut cp: Value = serde_json::from_slice(raw).unwrap();
+                match mode {
+                    "work_plus_one" => {
+                        cp["register_maxima_work"][0] =
+                            json!(cp["register_maxima_work"][0].as_u64().unwrap() + 1);
+                    }
+                    "work_minus_one" => {
+                        cp["register_maxima_work"][0] =
+                            json!(cp["register_maxima_work"][0].as_u64().unwrap() - 1);
+                    }
+                    "member_plus_one" => {
+                        cp["register_maxima_member_work"][0] =
+                            json!(cp["register_maxima_member_work"][0].as_u64().unwrap() + 1);
+                    }
+                    "charge_plus_eight" => {
+                        cp["register_maxima_charges"][0] =
+                            json!(cp["register_maxima_charges"][0].as_u64().unwrap() + 8);
+                    }
+                    "ancestry_plus_eight" => {
+                        cp["ancestry_bytes"] = json!(cp["ancestry_bytes"].as_u64().unwrap() + 8);
+                    }
+                    _ => unreachable!(),
+                }
+                expected_digest_rejections += 1;
+                let bytes = serde_json::to_vec(&cp).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes,
+                        "fork",
+                        fork_records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes, "fork")
+                };
+                if restored.is_ok() {
+                    failures.push(format!(
+                        "fork counter mutation {mode} (is_results={is_results}) was accepted at digest check"
+                    ));
+                }
+                let resealed = reseal(cp);
+                let restored_resealed = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &resealed,
+                        "fork",
+                        fork_records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&resealed, "fork")
+                };
+                if restored_resealed.is_ok() {
+                    failures.push(format!(
+                        "fork counter mutation {mode} (is_results={is_results}) was accepted at cross-check"
+                    ));
+                }
+            }
+        }
+
+        // 2. Missing policy parent, missing judgment target (suspended issuer), missing status target (compromised cutoff), and commands without controller.
+        let (parent_view, parent_view_body) = event(
+            3,
+            10,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"parent-view",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[identity_from_seed(&[10;32]),identity_from_seed(&[11;32])],
+                "account_authority":true,
+                "notes":[]
+            })),
+        );
+        let (child_view, child_view_body) = event(
+            3,
+            11,
+            json!({"kind":"view.publish","parents":[parent_view.id()]}),
+            Some(json!({
+                "name":"child-view",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-shun-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[identity_from_seed(&[10;32]),identity_from_seed(&[11;32])],
+                "account_authority":true,
+                "notes":[]
+            })),
+        );
+        let mut ref_prep = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: child_view.id().into(),
+            limits: Limits::default(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+        });
+        ref_prep.add_record(&parent_view, parent_view_body.as_deref());
+        ref_prep.add_record(&child_view, child_view_body.as_deref());
+        ref_prep.add_record(&pubn, pubn_body.as_deref());
+
+        let (imported_pub, imported_bytes) = publication();
+        ref_prep.add_record(&imported_pub, imported_bytes.as_deref());
+
+        // Suspended issuer judgment on pubn.
+        let susp_issuer = identity_from_seed(&[16u8; 32]);
+        let susp_merge_id = format!("jve1:{:064x}", 20_001usize);
+        let susp_j_id = format!("jve1:{:064x}", 20_002usize);
+        ref_prep.add_host_verified_record(host(
+            susp_merge_id,
+            &susp_issuer,
+            vec![format!("jve1:{:064x}", 999_999usize)],
+            json!({"kind":"identity.merge"}),
+        ));
+        ref_prep.add_host_verified_record(host(
+            susp_j_id.clone(),
+            &susp_issuer,
+            vec![],
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"bless"}),
+        ));
+
+        // Compromised issuer status on pubn.
+        let pub_issuer = identity_from_seed(&[2u8; 32]);
+        let status_id = format!("jve1:{:064x}", 20_003usize);
+        let comp_id = format!("jve1:{:064x}", 20_004usize);
+        ref_prep.add_host_verified_record(host(
+            status_id.clone(),
+            &pub_issuer,
+            vec![pubn.id().to_owned()],
+            json!({"kind":"status.set","target":pubn.id(),"value":"deprecated"}),
+        ));
+        ref_prep.add_host_verified_record(host(
+            comp_id,
+            &pub_issuer,
+            vec![status_id.clone()],
+            json!({"kind":"identity.compromise","safe":[pubn.id()]}),
+        ));
+        ref_prep.add_host_verified_record(host(
+            format!("jve1:{:064x}", 20_005usize),
+            &pub_issuer,
+            vec![],
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+        ));
+
+        let ref_records: Vec<HostVerifiedRecord> = ref_prep
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let ref_state = ref_prep.into_state();
+        assert!(ref_state.evaluation().available);
+        assert!(
+            ref_state.evaluation().accounts["https://source.example#41"]
+                .controller
+                .is_none()
+        );
+        assert!(!ref_state.evaluation().accounts["https://source.example#41"].commands);
+
+        let ref_full = ref_state.checkpoint("refs").unwrap();
+        let ref_res = ref_state.result_checkpoint("refs").unwrap();
+        let absent_id = "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0b0";
+
+        for (name, path_kind) in [
+            ("missing_policy_parent", 0u8),
+            ("missing_judgment_target", 1u8),
+            ("missing_status_target", 2u8),
+        ] {
+            let mut cp: Value = serde_json::from_slice(&ref_full).unwrap();
+            match path_kind {
+                0 => {
+                    cp["nodes"][child_view.id()]["action"]["parents"][0] = json!(absent_id);
+                }
+                1 => {
+                    cp["nodes"][&susp_j_id]["action"]["target"] = json!(absent_id);
+                }
+                _ => {
+                    cp["nodes"][&status_id]["action"]["target"] = json!(absent_id);
+                }
+            }
+            expected_digest_rejections += 1;
+            let bytes = serde_json::to_vec(&cp).unwrap();
+            if EvaluatedState::restore_host_checkpoint(&bytes, "refs").is_ok() {
+                failures.push(format!(
+                    "{name} (full checkpoint) was accepted at digest check"
+                ));
+            }
+            let resealed = reseal(cp);
+            if EvaluatedState::restore_host_checkpoint(&resealed, "refs").is_ok() {
+                failures.push(format!(
+                    "{name} (full checkpoint) was accepted at cross-check"
+                ));
+            }
+        }
+
+        for (is_results, raw) in [(false, &ref_full), (true, &ref_res)] {
+            let mut cp: Value = serde_json::from_slice(raw).unwrap();
+            cp["evaluation"]["accounts"]["https://source.example#41"]["commands"] = json!(true);
+            expected_digest_rejections += 1;
+            let bytes = serde_json::to_vec(&cp).unwrap();
+            let restored = if is_results {
+                EvaluatedState::restore_host_result_checkpoint(&bytes, "refs", ref_records.clone())
+            } else {
+                EvaluatedState::restore_host_checkpoint(&bytes, "refs")
+            };
+            if restored.is_ok() {
+                failures.push(format!(
+                    "commands_without_controller (is_results={is_results}) was accepted at digest check"
+                ));
+            }
+            let resealed = reseal(cp);
+            let restored_resealed = if is_results {
+                EvaluatedState::restore_host_result_checkpoint(
+                    &resealed,
+                    "refs",
+                    ref_records.clone(),
+                )
+            } else {
+                EvaluatedState::restore_host_checkpoint(&resealed, "refs")
+            };
+            if restored_resealed.is_ok() {
+                failures.push(format!(
+                    "commands_without_controller (is_results={is_results}) was accepted at cross-check"
+                ));
+            }
+        }
+
+        let actual_digest_rejections = digest_rejections();
+        assert_eq!(actual_digest_rejections, expected_digest_rejections);
+        assert!(
             failures.is_empty(),
-            "checkpoint scalar leaf audit failures ({}):\n{}",
+            "r8 mutation failures ({}):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn quota_crossing_and_seeded_random_checkpoint_sequences_restore_and_match_full() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let def_body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"quota-transition",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let (pubn, pubn_body) = event(
+            2,
+            2,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            Some(def_body),
+        );
+        let (judgment, _) = event(
+            1,
+            3,
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"bless"}),
+            None,
+        );
+        let judge_issuer = identity_from_seed(&[1u8; 32]);
+        let next_judgment = host(
+            format!("jve1:{:064x}", 30_004usize),
+            &judge_issuer,
+            vec![judgment.id().to_owned()],
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"curse"}),
+        );
+
+        let base_opts = EvaluationOptions {
+            selected_view: view.id().into(),
+            limits: Limits::default(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+        };
+        let mut base_prep = PreparedEvaluationInput::new(base_opts.clone());
+        base_prep.add_record(&view, view_body.as_deref());
+        base_prep.add_record(&pubn, pubn_body.as_deref());
+        base_prep.add_record(&judgment, None);
+        let base_records: Vec<HostVerifiedRecord> = base_prep
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+
+        let build_quota_state = |opts: EvaluationOptions, append: bool| -> EvaluatedState {
+            let mut p = PreparedEvaluationInput::new(opts);
+            for r in &base_records {
+                p.add_host_verified_record(r.clone());
+            }
+            if append {
+                p.add_host_verified_record(next_judgment.clone());
+            }
+            p.into_state()
+        };
+
+        let mut failures = Vec::new();
+        let mut fixed_checks = 0usize;
+
+        // Part 1: Fixed quota-crossing cases (quota = 0, 2, 3 across direct, full restore, results restore, and recovery back to open quota).
+        for quota in [0usize, 2, 3] {
+            let mut opts = base_opts.clone();
+            if quota == 3 {
+                opts.limits.events = Some(3);
+            }
+            let base = build_quota_state(opts.clone(), false);
+            let fc = base.checkpoint("quota").unwrap();
+            let rc = base.result_checkpoint("quota").unwrap();
+            let restored_full = EvaluatedState::restore_host_checkpoint(&fc, "quota").unwrap();
+            let restored_res =
+                EvaluatedState::restore_host_result_checkpoint(&rc, "quota", base_records.clone())
+                    .unwrap();
+
+            for (label, state) in [
+                ("direct", base),
+                ("full", restored_full),
+                ("results", restored_res),
+            ] {
+                fixed_checks += 1;
+                let mut next_opts = opts.clone();
+                next_opts.limits.events = Some(quota);
+                let mut delta = PreparedEvaluationInput::new(next_opts.clone());
+                delta.add_host_verified_record(next_judgment.clone());
+                let after = state.advance(delta, &[]);
+                let full = build_quota_state(next_opts.clone(), true);
+
+                let mut after_records = base_records.clone();
+                after_records.push(next_judgment.clone());
+                after_records.sort_by(|a, b| a.id().cmp(b.id()));
+
+                let cp = after.checkpoint("after").unwrap();
+                let rp = after.result_checkpoint("after").unwrap();
+                let rf = EvaluatedState::restore_host_checkpoint(&cp, "after");
+                let rr = EvaluatedState::restore_host_result_checkpoint(
+                    &rp,
+                    "after",
+                    after_records.clone(),
+                );
+                if after.evaluation() != full.evaluation()
+                    || after.consumed_work() != full.consumed_work()
+                    || after.remaining_work != full.remaining_work
+                    || rf.is_err()
+                    || rr.is_err()
+                {
+                    failures.push(format!(
+                        "fixed quota={quota} path={label}: eval_eq={} work={}/{} full_restore={:?} res_restore={:?}",
+                        after.evaluation() == full.evaluation(),
+                        after.consumed_work(),
+                        full.consumed_work(),
+                        rf.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                        rr.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                    ));
+                } else if let (Ok(rf_state), Ok(rr_state)) = (rf, rr) {
+                    // Recover from over-quota back to open quota and verify restore again.
+                    for (rec_label, over_state) in [("rf", rf_state), ("rr", rr_state)] {
+                        fixed_checks += 1;
+                        let mut open_opts = next_opts.clone();
+                        open_opts.limits.events = Some(10);
+                        let recovered = over_state
+                            .advance(PreparedEvaluationInput::new(open_opts.clone()), &[]);
+                        let expected_rec = build_quota_state(open_opts, true);
+                        let rec_cp = recovered.checkpoint("rec").unwrap();
+                        let rec_rp = recovered.result_checkpoint("rec").unwrap();
+                        if recovered.evaluation() != expected_rec.evaluation()
+                            || recovered.consumed_work() != expected_rec.consumed_work()
+                            || EvaluatedState::restore_host_checkpoint(&rec_cp, "rec").is_err()
+                            || EvaluatedState::restore_host_result_checkpoint(
+                                &rec_rp,
+                                "rec",
+                                after_records.clone(),
+                            )
+                            .is_err()
+                        {
+                            failures.push(format!(
+                                "fixed recovery quota={quota} path={label}/{rec_label} failed"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Part 2: Seeded random sequences over handover and incremental fixtures.
+        let (proj_prep, _, _) = projection_fixture();
+        let (rich_prep, _) = rich_checkpoint_fixture();
+        let fixtures: Vec<(&str, PreparedEvaluationInput)> = vec![
+            ("base", base()),
+            ("projection", proj_prep),
+            ("rich_handover", rich_prep),
+            ("quota_base", base_prep),
+        ];
+
+        let mut rng_state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next_u64 = || -> u64 {
+            rng_state ^= rng_state << 13;
+            rng_state ^= rng_state >> 7;
+            rng_state ^= rng_state << 17;
+            rng_state
+        };
+
+        let mut sequences_run = 0usize;
+        let mut steps_run = 0usize;
+        let mut checkpoints_verified = 0usize;
+
+        for seq in 0..100usize {
+            let (fixture_name, start_prep) = &fixtures[seq % fixtures.len()];
+            let mut current_options = start_prep.options.clone();
+            let mut current_records: BTreeMap<String, HostVerifiedRecord> = start_prep
+                .nodes
+                .iter()
+                .map(|(id, n)| (id.clone(), HostVerifiedRecord { node: n.clone() }))
+                .collect();
+            let base_open = start_prep.clone().into_state();
+            let base_cost = base_open.consumed_work().max(20);
+            let mut state = base_open;
+            let mut append_seq = 0usize;
+            sequences_run += 1;
+
+            for step in 0..12usize {
+                steps_run += 1;
+                let op = (next_u64() % 6) as usize;
+                let binding = format!("seq-{seq}-step-{step}");
+                match op {
+                    0 => {
+                        // Save and restore full checkpoint.
+                        let cp = state.checkpoint(&binding).unwrap();
+                        match EvaluatedState::restore_host_checkpoint(&cp, &binding) {
+                            Ok(restored) => {
+                                checkpoints_verified += 1;
+                                state = restored;
+                            }
+                            Err(e) => {
+                                failures.push(format!(
+                                    "seq={seq} ({fixture_name}) step={step} op=restore_full failed: {e}"
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    1 => {
+                        // Save and restore results checkpoint.
+                        let rp = state.result_checkpoint(&binding).unwrap();
+                        let recs: Vec<HostVerifiedRecord> =
+                            current_records.values().cloned().collect();
+                        match EvaluatedState::restore_host_result_checkpoint(&rp, &binding, recs) {
+                            Ok(restored) => {
+                                checkpoints_verified += 1;
+                                state = restored;
+                            }
+                            Err(e) => {
+                                failures.push(format!(
+                                    "seq={seq} ({fixture_name}) step={step} op=restore_results failed: {e}"
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    2 => {
+                        // Append a fast-path record (native definition or judgment).
+                        append_seq += 1;
+                        let rec = if append_seq % 2 == 0 {
+                            let issuer_seed = (200 + (append_seq % 40)) as u8;
+                            let issuer = identity_from_seed(&[issuer_seed; 32]);
+                            let prev: Vec<String> = current_records
+                                .values()
+                                .filter(|r| r.node.issuer == issuer)
+                                .map(|r| r.node.id.clone())
+                                .collect();
+                            host_missing_body(
+                                format!("jve1:fe{:030x}{:032x}", seq, step * 100 + append_seq),
+                                &issuer,
+                                prev,
+                                json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+                            )
+                        } else {
+                            let issuer_seed = (150 + (append_seq % 40)) as u8;
+                            let issuer = identity_from_seed(&[issuer_seed; 32]);
+                            let prev: Vec<String> = current_records
+                                .values()
+                                .filter(|r| r.node.issuer == issuer)
+                                .map(|r| r.node.id.clone())
+                                .collect();
+                            let target = current_records
+                                .values()
+                                .find(|r| r.node.kind == "definition.publish")
+                                .map(|r| r.node.id.clone())
+                                .unwrap_or_else(|| pubn.id().to_owned());
+                            let val = if (next_u64() & 1) == 0 {
+                                "bless"
+                            } else {
+                                "curse"
+                            };
+                            host(
+                                format!("jve1:fd{:030x}{:032x}", seq, step * 100 + append_seq),
+                                &issuer,
+                                prev,
+                                json!({"kind":"judgment.set","target":target,"value":val}),
+                            )
+                        };
+                        current_records.insert(rec.id().to_owned(), rec.clone());
+                        let mut delta = PreparedEvaluationInput::new(current_options.clone());
+                        delta.add_host_verified_record(rec);
+                        state = state.advance(delta, &[]);
+                    }
+                    3 => {
+                        // Change the event quota.
+                        let n = current_records.len();
+                        current_options.limits.events = match next_u64() % 5 {
+                            0 => None,
+                            1 => Some(0),
+                            2 => Some(n.saturating_sub(1)),
+                            3 => Some(n),
+                            _ => Some(n + 2),
+                        };
+                        state = state
+                            .advance(PreparedEvaluationInput::new(current_options.clone()), &[]);
+                    }
+                    4 => {
+                        // Change the overlay.
+                        let new_overlay = match next_u64() % 4 {
+                            0 => None,
+                            1 => Some(json!({
+                                "version": 1,
+                                "base_view": current_options.selected_view,
+                                "root_changes": [],
+                                "trust": [],
+                                "blocked": [],
+                                "work": null
+                            })),
+                            2 => Some(json!({
+                                "version": 2,
+                                "root_changes": [],
+                                "trust": [],
+                                "blocked": [],
+                                "public_shun_issuer": null
+                            })),
+                            _ => Some(json!({"version": 3})),
+                        };
+                        current_options.overlay = new_overlay.clone();
+                        if (next_u64() & 1) == 0 {
+                            state = state.with_overlay(new_overlay);
+                        } else {
+                            state = state.advance(
+                                PreparedEvaluationInput::new(current_options.clone()),
+                                &[],
+                            );
+                        }
+                    }
+                    _ => {
+                        // Change the traversal budget.
+                        current_options.limits.traversal = match next_u64() % 5 {
+                            0 => None,
+                            1 => Some(0),
+                            2 => Some(base_cost.saturating_sub(1)),
+                            3 => Some(base_cost),
+                            _ => Some(base_cost + 500),
+                        };
+                        state = state
+                            .advance(PreparedEvaluationInput::new(current_options.clone()), &[]);
+                    }
+                }
+
+                // Verify against a fresh full evaluation and verify that both checkpoints restore.
+                let mut full_prep = PreparedEvaluationInput::new(current_options.clone());
+                for r in current_records.values() {
+                    full_prep.add_host_verified_record(r.clone());
+                }
+                let full_state = full_prep.into_state();
+                if state.evaluation().available != full_state.evaluation().available
+                    || state.consumed_work() != full_state.consumed_work()
+                    || state.remaining_work != full_state.remaining_work
+                    || serde_json::to_value(state.evaluation()).unwrap()
+                        != serde_json::to_value(full_state.evaluation()).unwrap()
+                {
+                    failures.push(format!(
+                        "seq={seq} ({fixture_name}) step={step} op={op}: state mismatch work={}/{} avail={}/{}",
+                        state.consumed_work(),
+                        full_state.consumed_work(),
+                        state.evaluation().available,
+                        full_state.evaluation().available,
+                    ));
+                    break;
+                }
+
+                let cp_full = state.checkpoint(&binding).unwrap();
+                let cp_res = state.result_checkpoint(&binding).unwrap();
+                let recs: Vec<HostVerifiedRecord> = current_records.values().cloned().collect();
+                match (
+                    EvaluatedState::restore_host_checkpoint(&cp_full, &binding),
+                    EvaluatedState::restore_host_result_checkpoint(&cp_res, &binding, recs),
+                ) {
+                    (Ok(rf), Ok(rr)) => {
+                        checkpoints_verified += 2;
+                        if (step + seq) % 2 == 0 {
+                            state = rf;
+                        } else {
+                            state = rr;
+                        }
+                    }
+                    (rf, rr) => {
+                        failures.push(format!(
+                            "seq={seq} ({fixture_name}) step={step} op={op}: checkpoint restore failed full={:?} res={:?}",
+                            rf.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                            rr.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+
+        eprintln!(
+            "checkpoint_random_sequences: fixed_checks={fixed_checks}, sequences={sequences_run}, steps={steps_run}, checkpoints_verified={checkpoints_verified}, failures={}",
+            failures.len()
+        );
+        assert!(
+            failures.is_empty(),
+            "checkpoint sequence failures ({}):\n{}",
             failures.len(),
             failures.join("\n")
         );

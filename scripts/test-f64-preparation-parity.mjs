@@ -241,6 +241,16 @@ try {
   );
   checkpoint.options.overlay = rawOverlay;
   checkpoint.evaluation.overlay = rawOverlay;
+  assert.throws(
+    () =>
+      wasm.EvaluationSession.restore_host_checkpoint(
+        utf8(checkpoint),
+        "raw-overlay",
+      ),
+    /checkpoint version or binding does not match/,
+  );
+  delete checkpoint.digest;
+  checkpoint.digest = wasm.content_hash(utf8(checkpoint));
   const restored = wasm.EvaluationSession.restore_host_checkpoint(
     utf8(checkpoint),
     "raw-overlay",
@@ -256,6 +266,8 @@ try {
   }
   checkpoint.evaluation.available = false;
   checkpoint.evaluation.reasons = ["resource_unavailable"];
+  delete checkpoint.digest;
+  checkpoint.digest = wasm.content_hash(utf8(checkpoint));
   assert.throws(
     () =>
       wasm.EvaluationSession.restore_host_checkpoint(

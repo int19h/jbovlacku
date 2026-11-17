@@ -852,11 +852,23 @@ fn restored_malformed_overlay_never_panics_in_setup() {
         serde_json::from_slice(&session.checkpoint("raw-overlay").unwrap()).unwrap();
     saved["evaluation"]["overlay"] = overlay.clone();
     saved["options"]["overlay"] = overlay;
-    let restored_avail = EvaluationSession::restore_host_checkpoint(
-        &serde_json::to_vec(&saved).unwrap(),
-        "raw-overlay",
-    )
-    .unwrap();
+    assert!(
+        jvc_state::EvaluatedState::restore_host_checkpoint(
+            &serde_json::to_vec(&saved).unwrap(),
+            "raw-overlay",
+        )
+        .is_err()
+    );
+    let seal = |mut cp: Value| -> Vec<u8> {
+        cp.as_object_mut().unwrap().remove("digest");
+        let mut bytes = serde_json::to_vec(&cp).unwrap();
+        let digest = jvc_core::hash_id("sha256:", b"", &bytes);
+        bytes.pop();
+        bytes.extend_from_slice(format!(",\"digest\":\"{digest}\"}}").as_bytes());
+        bytes
+    };
+    let restored_avail =
+        EvaluationSession::restore_host_checkpoint(&seal(saved.clone()), "raw-overlay").unwrap();
     assert_eq!(
         restored_avail
             .ranking_descriptor_native(&policy())
@@ -869,10 +881,6 @@ fn restored_malformed_overlay_never_panics_in_setup() {
     saved["evaluation"]["available"] = json!(false);
     saved["evaluation"]["reasons"] = json!(["resource_unavailable"]);
     assert!(
-        jvc_state::EvaluatedState::restore_host_checkpoint(
-            &serde_json::to_vec(&saved).unwrap(),
-            "raw-overlay",
-        )
-        .is_err()
+        jvc_state::EvaluatedState::restore_host_checkpoint(&seal(saved), "raw-overlay").is_err()
     );
 }
