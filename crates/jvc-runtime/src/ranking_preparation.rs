@@ -7,10 +7,12 @@ use std::{collections::BTreeSet, sync::Arc};
 pub const PREPARATION_CONTRACT: &str = "jvc-session-ranking-preparation-v5";
 /// Fixed part of the default setup-unit budget.
 pub const SETUP_UNITS_FIXED_ALLOWANCE: u64 = 100_000_000;
-/// Default setup-unit allowance per index entry.
-pub const SETUP_UNITS_PER_ENTRY: u64 = 512;
-/// Default setup-unit allowance per copied key byte.
-pub const SETUP_UNITS_PER_KEY_BYTE: u64 = 4;
+/// Default setup-unit allowance per index entry. It covers the widest
+/// charge per entry: `16 * 64 + 16` at bit length 64.
+pub const SETUP_UNITS_PER_ENTRY: u64 = 1040;
+/// Default setup-unit allowance per copied key byte. It covers the
+/// charge per key byte: 2 from the index term plus 4 from the walk term.
+pub const SETUP_UNITS_PER_KEY_BYTE: u64 = 6;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RankingPreparationLimits {
@@ -122,15 +124,16 @@ impl RankingPreparationPolicy {
             mul(key_bytes, SETUP_UNITS_PER_KEY_BYTE)?,
         )
     }
-    /// Budget known before a count walk, from map lengths alone.
-    fn provisional_setup_units(&self, hint_entries: u64) -> Result<u64> {
-        if let Some(limit) = self.limits.setup_units {
-            return Ok(limit);
+    /// A meter that charges setup work before it runs. Entry and key
+    /// totals only grow during a walk, so the scaled default computed
+    /// from them is a lower bound on the final default budget.
+    fn setup_meter(&self, entries: u64, key_bytes: u64) -> SetupMeter {
+        SetupMeter {
+            explicit: self.limits.setup_units,
+            spent: 0,
+            entries,
+            key_bytes,
         }
-        add(
-            SETUP_UNITS_FIXED_ALLOWANCE,
-            mul(hint_entries, SETUP_UNITS_PER_ENTRY)?,
-        )
     }
     fn validate(&self) -> Result<()> {
         let l = &self.limits;
@@ -376,32 +379,34 @@ fn parameters(e: &jvc_state::Evaluation) -> Result<PreparationParameters> {
         work,
     })
 }
-/// An entry-count hint from map lengths only. It bounds the setup walks.
-fn hint_entries(session: &EvaluationSession) -> Result<u64> {
-    let e = session.state.evaluation();
-    let mut hint = session.state.event_count() as u64;
-    for n in [
-        e.publications.len(),
-        e.receipts.len(),
-        e.registers.len(),
-        e.judgments.len(),
-        e.accounts.len(),
-        e.lifecycle.key_actor.len(),
-    ] {
-        hint = add(hint, n as u64)?;
-    }
-    if let Some(overlay) = &e.overlay {
-        for key in ["trust", "blocked", "root_changes"] {
-            hint = add(
-                hint,
-                overlay
-                    .get(key)
-                    .and_then(|v| v.as_array())
-                    .map_or(0, Vec::len) as u64,
-            )?;
+/// Charges setup work before it runs, against an explicit quota or the
+/// scaled default for the entries and key bytes charged so far.
+struct SetupMeter {
+    explicit: Option<u64>,
+    spent: u64,
+    entries: u64,
+    key_bytes: u64,
+}
+impl SetupMeter {
+    fn charge(&mut self, work: u64, entries: u64, key_bytes: u64) -> Result<()> {
+        self.spent = add(self.spent, work)?;
+        self.entries = add(self.entries, entries)?;
+        self.key_bytes = add(self.key_bytes, key_bytes)?;
+        let budget = match self.explicit {
+            Some(limit) => limit,
+            None => add(
+                add(
+                    SETUP_UNITS_FIXED_ALLOWANCE,
+                    mul(self.entries, SETUP_UNITS_PER_ENTRY)?,
+                )?,
+                mul(self.key_bytes, SETUP_UNITS_PER_KEY_BYTE)?,
+            )?,
+        };
+        if self.spent > budget {
+            return Err(resource("ranking setup envelope limit"));
         }
+        Ok(())
     }
-    Ok(hint)
 }
 impl SessionPreparation {
     fn new(session: &EvaluationSession, policy: &RankingPreparationPolicy) -> Result<Self> {
@@ -440,28 +445,25 @@ impl SessionPreparation {
                 0,
             )
         } else {
-            // Charge each setup walk against the setup-unit budget before it
-            // runs. The hint uses only map lengths, so it costs no walk. The
-            // advance charges are part of the walk term in `setup_estimate`.
-            let hint = if available { hint_entries(session)? } else { 0 };
-            let budget = policy.provisional_setup_units(hint)?;
-            let mut advance = 0u64;
-            if available {
-                advance = add(advance, add(mul(hint, 1)?, 1)?)?;
-                if advance > budget {
-                    return Err(resource("ranking setup envelope limit"));
-                }
-            }
-            let records = session.state.ranking_source_records()?;
+            // Every setup walk is charged to the setup-unit budget before
+            // it runs. The meter starts from the publication count, which
+            // costs no walk. Unavailable sessions skip the walks entirely
+            // and report zero setup counts.
+            let mut meter = policy.setup_meter(mul(e.publications.len() as u64, 2)?, 0);
+            let records = if available {
+                session
+                    .state
+                    .ranking_source_records_metered(&mut |w, en, k| meter.charge(w, en, k))?
+            } else {
+                0
+            };
             if limits.records.is_some_and(|limit| records > limit) {
                 return Err(resource("ranking setup record limit"));
             }
             let (setup_bytes, setup_units) = if available {
-                advance = add(advance, add(mul(hint, 8)?, 1)?)?;
-                if advance > budget {
-                    return Err(resource("ranking setup envelope limit"));
-                }
-                let counts = session.state.ranking_index_bound()?;
+                let counts = session
+                    .state
+                    .ranking_index_bound_metered(&mut |w, en, k| meter.charge(w, en, k))?;
                 policy.setup_estimate(&counts)?
             } else {
                 (0, 0)
@@ -1256,13 +1258,13 @@ mod tests {
             "resource_unavailable"
         );
     }
-    fn restored_with_judgments(
+    fn restored_with(
         mut session: EvaluationSession,
-        judgments: Value,
+        edit: impl FnOnce(&mut Value),
     ) -> EvaluationSession {
         let mut saved: Value =
             serde_json::from_slice(&session.checkpoint("synthetic").unwrap()).unwrap();
-        saved["evaluation"]["judgments"] = judgments;
+        edit(&mut saved);
         session.state = jvc_state::EvaluatedState::restore_host_checkpoint(
             &serde_json::to_vec(&saved).unwrap(),
             "synthetic",
@@ -1271,6 +1273,11 @@ mod tests {
         session.word_results.borrow_mut().take();
         *session.preparation.borrow_mut() = None;
         session
+    }
+    fn restored_with_judgments(session: EvaluationSession, judgments: Value) -> EvaluationSession {
+        restored_with(session, |saved| {
+            saved["evaluation"]["judgments"] = judgments;
+        })
     }
     #[test]
     fn setup_above_a_million_records_without_a_quota_completes() {
@@ -1326,10 +1333,14 @@ mod tests {
             session,
             json!({ format!("jve1:{}", "0".repeat(64)): inner }),
         );
-        let policy = RankingPreparationPolicy {
+        let mut policy = RankingPreparationPolicy {
             core_binding: format!("sha256:{}", "a".repeat(64)),
             limits: Default::default(),
         };
+        // This test checks the byte quota, not the clock. Give the large
+        // synthetic walk the widest time limit so parallel test load
+        // cannot trip it.
+        policy.limits.source_millis = 120_000;
         let descriptor = session.ranking_descriptor_native(&policy).unwrap();
         assert!(descriptor.available, "{:?}", descriptor.reasons);
         assert!(descriptor.setup.source_bytes > 256 * 1024 * 1024);
@@ -1339,6 +1350,148 @@ mod tests {
         assert_eq!(
             session.ranking_descriptor_native(&quota).unwrap_err().code,
             "resource_unavailable"
+        );
+    }
+    #[test]
+    fn mid_range_quota_refuses_before_the_count_walk() {
+        let (first, _word) = session();
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(65);
+        let error = first.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+        // A malformed private overlay makes a completed count walk return
+        // `invalid_overlay`. The same quota must still refuse first.
+        let (second, _word) = session();
+        let session = restored_with(second, |saved| {
+            let overlay = json!({"trust":[{"issuer":1}]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn count_walk_charges_trust_rules_and_scope_trees_first() {
+        // Many trust rules: the meter must stop inside the trust walk,
+        // before the malformed private overlay at its end can error.
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let rule = format!(
+            "{{\"actor\":\"{actor}\",\"subject\":\"{actor}\",\"scope\":{{\"kind\":\"definition\",\"word\":\"*\",\"language\":\"en\"}},\"values\":[\"heed\"]}}"
+        );
+        let trust: Value =
+            serde_json::from_str(&format!("[{}]", vec![rule; 1_000_000].join(","))).unwrap();
+        let restored = restored_with(first, |saved| {
+            saved["evaluation"]["trust"] = trust;
+            let overlay = json!({"trust":[{"issuer":1}]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(1_000_000);
+        let error = restored.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+        // One trust rule with a wide scope tree of numbers: the scope walk
+        // is charged per node, before the descriptor can succeed.
+        let (second, _word) = session();
+        let wide = json!({"kind":"definition","word":"*","language":"en","extra":vec![0; 100_000]});
+        let restored = restored_with(second, |saved| {
+            saved["evaluation"]["trust"] = json!([{
+                "actor": actor,
+                "subject": actor,
+                "scope": wide,
+                "values": ["heed"],
+            }]);
+        });
+        policy.limits.setup_units = Some(10_000);
+        let error = restored.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn unavailable_float_skips_the_records_walk() {
+        let (first, _word) = session();
+        let groups: serde_json::Map<String, Value> = (0..100u32)
+            .map(|n| (format!("jve1:{n:064x}"), json!({"a": "bless"})))
+            .collect();
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["judgments"] = Value::Object(groups);
+            saved["evaluation"]["available"] = json!(false);
+            saved["evaluation"]["reasons"] = json!(["resource_unavailable"]);
+        });
+        // Even a one-unit setup quota cannot refuse this path, because no
+        // setup walk runs: the descriptor reports zero setup counts.
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(1);
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(!descriptor.available);
+        assert_eq!(descriptor.setup.setup_records, 0);
+        assert_eq!(descriptor.setup.setup_units, 0);
+        assert_eq!(descriptor.setup.setup_bytes, 0);
+    }
+    #[test]
+    fn scaled_default_covers_uniform_growth_and_widest_bit_length() {
+        let base = jvc_state::RankingIndexCounts {
+            words: 89687,
+            word_publications: 89687,
+            target_groups: 89687,
+            targets: 93806,
+            judgment_groups: 89687,
+            key_bytes: 33432924,
+            ..Default::default()
+        };
+        let p = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        for scale in [64u64, 1024] {
+            let mut c = base.clone();
+            c.words *= scale;
+            c.word_publications *= scale;
+            c.target_groups *= scale;
+            c.targets *= scale;
+            c.judgment_groups *= scale;
+            c.key_bytes *= scale;
+            let (bytes, units) = p.setup_estimate(&c).unwrap();
+            let _ = bytes;
+            let entries = 452_554 * scale;
+            let budget = p
+                .effective_setup_units(entries, base.key_bytes * scale)
+                .unwrap();
+            assert!(budget - units >= SETUP_UNITS_FIXED_ALLOWANCE, "{scale}");
+        }
+        // At bit length 64 the charge per entry is 16 * 64 + 16 = 1040 and
+        // per key byte 6, exactly the default allowances, so the margin is
+        // the fixed allowance at any key-byte count. Counts that wide
+        // overflow the checked u64 arithmetic in `setup_estimate` itself,
+        // so this part checks the formula in u128.
+        for (entries, key_bytes) in [(1u128 << 62, 0u128), (1u128 << 62, 1u128 << 60)] {
+            let budget = SETUP_UNITS_FIXED_ALLOWANCE as u128 + 1040 * entries + 6 * key_bytes;
+            let charge = 1040 * entries + 6 * key_bytes;
+            assert_eq!(budget - charge, SETUP_UNITS_FIXED_ALLOWANCE as u128);
+        }
+        // A representable wide shape through the real estimate.
+        let wide = jvc_state::RankingIndexCounts {
+            words: 1 << 40,
+            key_bytes: 1 << 40,
+            ..Default::default()
+        };
+        let (_, units) = p.setup_estimate(&wide).unwrap();
+        assert!(
+            p.effective_setup_units(1 << 40, 1 << 40).unwrap() - units
+                >= SETUP_UNITS_FIXED_ALLOWANCE
         );
     }
     #[test]

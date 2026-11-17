@@ -254,7 +254,16 @@ impl EvaluatedState {
     }
     /// Count index inputs without cloning them. Policy checks precede index allocation.
     pub fn ranking_source_records(&self) -> jvc_core::Result<usize> {
+        self.ranking_source_records_metered(&mut |_, _, _| Ok(()))
+    }
+    /// Like `ranking_source_records`, but each judgment group and overlay
+    /// field is charged to the meter before it is visited.
+    pub fn ranking_source_records_metered(
+        &self,
+        meter: &mut policy::SetupMeter<'_>,
+    ) -> jvc_core::Result<usize> {
         let e = &self.evaluation;
+        meter(16, 0, 0)?;
         let mut count = self.prepared.nodes.len();
         for n in [
             e.publications.len(),
@@ -269,24 +278,32 @@ impl EvaluatedState {
                 jvc_core::Error::new("resource_unavailable", "ranking record count overflow")
             })?;
         }
-        for n in e
-            .judgments
-            .values()
-            .map(BTreeMap::len)
-            .chain(e.overlay.iter().flat_map(|v| {
-                ["trust", "blocked", "root_changes"]
-                    .into_iter()
-                    .map(move |k| v[k].as_array().map_or(0, Vec::len))
-            }))
-        {
-            count = count.checked_add(n).ok_or_else(|| {
+        for judgments in e.judgments.values() {
+            meter(8, 0, 0)?;
+            count = count.checked_add(judgments.len()).ok_or_else(|| {
                 jvc_core::Error::new("resource_unavailable", "ranking record count overflow")
             })?;
+        }
+        if let Some(overlay) = &e.overlay {
+            for key in ["trust", "blocked", "root_changes"] {
+                meter(8, 0, 0)?;
+                let n = overlay[key].as_array().map_or(0, Vec::len);
+                count = count.checked_add(n).ok_or_else(|| {
+                    jvc_core::Error::new("resource_unavailable", "ranking record count overflow")
+                })?;
+            }
         }
         Ok(count)
     }
     pub fn ranking_index_bound(&self) -> jvc_core::Result<policy::RankingIndexCounts> {
         policy::ranking_index_bound(&self.evaluation)
+    }
+    /// Like `ranking_index_bound`, with every walk step charged first.
+    pub fn ranking_index_bound_metered(
+        &self,
+        meter: &mut policy::SetupMeter<'_>,
+    ) -> jvc_core::Result<policy::RankingIndexCounts> {
+        policy::ranking_index_bound_metered(&self.evaluation, meter)
     }
     /// Diagnostic counts after index construction. This does not build an index.
     pub fn ranking_index_counts(&self) -> jvc_core::Result<Option<policy::RankingIndexCounts>> {

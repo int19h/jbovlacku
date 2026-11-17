@@ -20,7 +20,7 @@ pub use projection::{PROJECTION_ROW_VERSION, ProjectionRow};
 
 use jvc_core::{BodyAvailability, VerifiedEnvelope, inspect_body, validate_action};
 pub use policy::{
-    Context, ContextGraph, PositiveEdge, RankingIndexCounts, evaluate_context,
+    Context, ContextGraph, PositiveEdge, RankingIndexCounts, SetupMeter, evaluate_context,
     prepare_approximate_context,
 };
 use serde::{Deserialize, Serialize};

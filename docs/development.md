@@ -1182,7 +1182,7 @@ It also compares host-only extraction and trusted insertion with the original ve
 Ranking cases compare `rank_word`, session ranking, and `rank_with_reviewers`, including `public_shun_block` and `private_block` details.
 When `JVC_SHUN_PARITY_DIR` is set, the runner requires shun-profile cases and both block reasons, separately and together.
 Without that variable, the runner compares state only. CI sets both corpus variables before the native tests and browser comparison.
-Ranking preparation has no default whole-dictionary quota. Its record, setup-envelope, and source-byte limits are optional caller quotas. The default setup-unit budget is a fixed allowance plus a per-entry and per-key-byte allowance, so an ordinary dictionary passes at any size. An explicit policy value replaces that default.
+Ranking preparation has no default whole-dictionary quota. Its record, setup-envelope, and source-byte limits are optional caller quotas. The default setup-unit budget is a fixed allowance plus 1,040 per index entry and 6 per copied key byte. Those allowances cover the setup charge at the widest bit length, so the margin never falls below the fixed allowance as an ordinary dictionary grows. An explicit policy value replaces that default.
 The preparation comparison uses native fixtures across fresh, compact-record, forked, full-restore, and result-restore Wasm sessions.
 It compares descriptor bindings, effective targets, context graph metadata, and charged usage.
 It also requires stale requests to leave the current preparation unchanged.

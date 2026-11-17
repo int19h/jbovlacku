@@ -506,15 +506,39 @@ pub struct RankingIndexCounts {
     pub private_rules: u64,
     pub key_bytes: u64,
 }
-fn value_strings(value: &Value) -> u64 {
+/// A setup-work meter. Each call charges, before the work it covers:
+/// work steps, the index entries that work builds toward, and the copied
+/// key bytes it reads. Entry and key totals only grow during a walk, so a
+/// budget derived from them is a lower bound on the final budget.
+pub type SetupMeter<'a> = dyn FnMut(u64, u64, u64) -> jvc_core::Result<()> + 'a;
+
+fn value_strings_metered(value: &Value, meter: &mut SetupMeter<'_>) -> jvc_core::Result<u64> {
     match value {
-        Value::String(s) => s.len() as u64,
-        Value::Array(a) => a.iter().map(value_strings).sum(),
-        Value::Object(o) => o
-            .iter()
-            .map(|(k, v)| k.len() as u64 + value_strings(v))
-            .sum(),
-        _ => 0,
+        Value::String(s) => {
+            meter(1 + s.len() as u64, 0, 0)?;
+            Ok(s.len() as u64)
+        }
+        Value::Array(a) => {
+            meter(1, 0, 0)?;
+            let mut total = 0u64;
+            for item in a {
+                total += value_strings_metered(item, meter)?;
+            }
+            Ok(total)
+        }
+        Value::Object(o) => {
+            meter(1, 0, 0)?;
+            let mut total = 0u64;
+            for (k, v) in o {
+                meter(k.len() as u64, 0, 0)?;
+                total += k.len() as u64 + value_strings_metered(v, meter)?;
+            }
+            Ok(total)
+        }
+        _ => {
+            meter(1, 0, 0)?;
+            Ok(0)
+        }
     }
 }
 fn invalid_index_overlay() -> jvc_core::Error {
@@ -524,6 +548,13 @@ fn invalid_index_overlay() -> jvc_core::Error {
     )
 }
 fn index_private_rules(e: &Evaluation) -> jvc_core::Result<&[Value]> {
+    index_private_rules_metered(e, &mut |_, _, _| Ok(()))
+}
+
+fn index_private_rules_metered<'e>(
+    e: &'e Evaluation,
+    meter: &mut SetupMeter<'_>,
+) -> jvc_core::Result<&'e [Value]> {
     if e.reasons.contains("invalid_overlay") {
         return Ok(&[]);
     }
@@ -535,6 +566,7 @@ fn index_private_rules(e: &Evaluation) -> jvc_core::Result<&[Value]> {
         .and_then(Value::as_array)
         .ok_or_else(invalid_index_overlay)?;
     for rule in rules {
+        meter(24, 0, 0)?;
         if rule.get("issuer").and_then(Value::as_str).is_none()
             || rule.get("subject").and_then(Value::as_str).is_none()
             || !rule
@@ -554,6 +586,16 @@ fn index_private_rules(e: &Evaluation) -> jvc_core::Result<&[Value]> {
 }
 /// Upper bounds permit one bucket per input, including duplicate keys.
 pub(crate) fn ranking_index_bound(e: &Evaluation) -> jvc_core::Result<RankingIndexCounts> {
+    ranking_index_bound_metered(e, &mut |_, _, _| Ok(()))
+}
+
+/// Like `ranking_index_bound`, but every publication, trust rule, scope
+/// tree, private rule, and `key_actor` lookup is charged to the meter
+/// before it is processed.
+pub(crate) fn ranking_index_bound_metered(
+    e: &Evaluation,
+    meter: &mut SetupMeter<'_>,
+) -> jvc_core::Result<RankingIndexCounts> {
     let mut c = RankingIndexCounts::default();
     let mut bytes = 0u64;
     let mut add_bytes = |n: u64| -> jvc_core::Result<()> {
@@ -561,6 +603,21 @@ pub(crate) fn ranking_index_bound(e: &Evaluation) -> jvc_core::Result<RankingInd
         Ok(())
     };
     for p in e.publications.values() {
+        let entry_delta = 2
+            + if matches!(p.kind.as_str(), "definition.publish" | "rafsi.publish") {
+                3 + u64::from(p.assignment.is_some())
+            } else {
+                0
+            };
+        let key_delta = (p.word.len() + p.id.len()) as u64
+            + if matches!(p.kind.as_str(), "definition.publish" | "rafsi.publish") {
+                (2 * (10 + p.word.len() + p.language.as_ref().map_or(0, String::len))
+                    + p.id.len()
+                    + p.assignment.as_ref().map_or(0, String::len)) as u64
+            } else {
+                0
+            };
+        meter(24 + key_delta, entry_delta, key_delta)?;
         c.words += 1;
         c.word_publications += 1;
         add_bytes((p.word.len() + p.id.len()) as u64)?;
@@ -577,14 +634,19 @@ pub(crate) fn ranking_index_bound(e: &Evaluation) -> jvc_core::Result<RankingInd
     }
     let public = e.trust.len() as u64;
     for r in &e.trust {
-        add_bytes(
-            8 * (r.actor.len() as u64
-                + r.subject.len() as u64
-                + r.scope.view().string_bytes()
-                + r.values.iter().map(|v| v.len() as u64).sum::<u64>()),
-        )?;
+        let plain = (r.actor.len() + r.subject.len()) as u64
+            + r.values.iter().map(|v| v.len() as u64).sum::<u64>();
+        meter(24 + plain, 3, 8 * plain)?;
+        let scope_bytes = r
+            .scope
+            .view()
+            .string_bytes_metered(&mut |steps| meter(4 * steps, 0, 0))?;
+        meter(0, 0, 8 * scope_bytes)?;
+        add_bytes(8 * (plain + scope_bytes))?;
     }
-    for r in index_private_rules(e)? {
+    for r in index_private_rules_metered(e, meter)? {
+        // Two `key_actor` lookups, each logarithmic in the map size.
+        meter(88, 5, 0)?;
         c.private_rules += 1;
         c.private_weights += u64::from(r["value"] == "heed");
         // Continuity IDs can be longer than the issuer keys in the overlay.
@@ -594,12 +656,12 @@ pub(crate) fn ranking_index_bound(e: &Evaluation) -> jvc_core::Result<RankingInd
                 .get(key)
                 .map_or(key.len(), String::len) as u64
         };
-        add_bytes(
-            8 * (actor(r["issuer"].as_str().ok_or_else(invalid_index_overlay)?)
-                + actor(r["subject"].as_str().ok_or_else(invalid_index_overlay)?)
-                + value_strings(&r["scope"])
-                + 16),
-        )?;
+        let issuer = actor(r["issuer"].as_str().ok_or_else(invalid_index_overlay)?);
+        let subject = actor(r["subject"].as_str().ok_or_else(invalid_index_overlay)?);
+        let scope_bytes =
+            value_strings_metered(&r["scope"], &mut |steps, _, _| meter(4 * steps, 0, 0))?;
+        meter(0, 0, 8 * (issuer + subject + scope_bytes + 16))?;
+        add_bytes(8 * (issuer + subject + scope_bytes + 16))?;
     }
     c.private_pairs = c.private_weights;
     c.trust_rules = public

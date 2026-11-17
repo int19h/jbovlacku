@@ -109,16 +109,18 @@ setup_units = 2 * (8 * I * bit_length(I + 1) + K) + 16 * I + 4 * K
 ```
 
 The last two terms charge the record-count walk and the index-count walk.
-Setup charges each walk before it runs. A hint from map lengths alone gives an advance charge.
+Setup charges each walk before it runs. Each publication, trust rule, scope tree, private rule, and lookup is charged before it is processed.
 The index build itself runs only after `setup_estimate` accepts the counts.
-The default setup-unit budget is 100,000,000 plus 512 per index entry plus 4 per copied key byte.
-An ordinary dictionary shape fits that budget at any size. An explicit `setup_units` quota replaces it.
+The default setup-unit budget is 100,000,000 plus 1,040 per index entry plus 6 per copied key byte.
+Those per-entry and per-byte allowances cover the charge at the widest bit length: 16 * 64 + 16 per entry and 6 per key byte.
+The margin over the charge is therefore at least the fixed 100,000,000 at any size, and it grows as an ordinary shape grows.
+An explicit `setup_units` quota replaces the default.
 
 The measured dictionary has 269,350 structural records and 165,438,058 source bytes.
 Its indexes retain 64,033,159 requested heap bytes.
 The preflight envelope reserves 291,524,664 bytes and 345,414,824 units, walks included.
-The scaled default budget for that shape is 465,439,344 units. Word preparation retains its full 100,000,000-unit allowance.
-A uniform increase in dictionary counts and copied-key bytes keeps the same margin under the scaled default.
+The scaled default budget for that shape is 771,253,704 units. Word preparation retains its full 100,000,000-unit allowance.
+A uniform increase in dictionary counts and copied-key bytes keeps at least that fixed margin under the scaled default.
 These count-based growth figures assume the same shape and do not promise that every future word fits.
 The measurements do not guarantee capacity for every word or every future dictionary revision.
 

@@ -617,22 +617,43 @@ impl<'a> ValueView<'a> {
     }
 
     pub fn string_bytes(&self) -> u64 {
+        self.string_bytes_metered(&mut |_| Ok(())).unwrap()
+    }
+
+    /// Like `string_bytes`, but the meter is charged work steps before each
+    /// node is visited: one step per node plus one per string byte.
+    pub fn string_bytes_metered(
+        &self,
+        meter: &mut dyn FnMut(u64) -> jvc_core::Result<()>,
+    ) -> jvc_core::Result<u64> {
         match self.node() {
-            ValueNode::Null | ValueNode::Bool(_) | ValueNode::Number(_) => 0,
-            ValueNode::String(handle) => self.arena.string(*handle).len() as u64,
-            ValueNode::Array { .. } => self
-                .as_array()
-                .unwrap()
-                .map(|value| value.string_bytes())
-                .sum(),
+            ValueNode::Null | ValueNode::Bool(_) | ValueNode::Number(_) => {
+                meter(1)?;
+                Ok(0)
+            }
+            ValueNode::String(handle) => {
+                let len = self.arena.string(*handle).len() as u64;
+                meter(1 + len)?;
+                Ok(len)
+            }
+            ValueNode::Array { .. } => {
+                meter(1)?;
+                let mut total = 0u64;
+                for value in self.as_array().unwrap() {
+                    total += value.string_bytes_metered(meter)?;
+                }
+                Ok(total)
+            }
             ValueNode::Object { start, len } => {
+                meter(1)?;
                 let start = *start as usize;
-                self.arena.object_values[start..start + *len as usize]
-                    .iter()
-                    .map(|(key, value)| {
-                        self.arena.string(*key).len() as u64 + self.child(*value).string_bytes()
-                    })
-                    .sum()
+                let mut total = 0u64;
+                for (key, value) in &self.arena.object_values[start..start + *len as usize] {
+                    let key_len = self.arena.string(*key).len() as u64;
+                    meter(key_len)?;
+                    total += key_len + self.child(*value).string_bytes_metered(meter)?;
+                }
+                Ok(total)
             }
         }
     }
