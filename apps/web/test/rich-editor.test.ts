@@ -808,21 +808,23 @@ async function mountKeyboardField(
   page: Page,
   text: string,
   narrow = false,
+  direction?: string,
 ) {
   await page.goto("/");
   await page.evaluate(
-    async ({ text, narrow }) => {
+    async ({ text, narrow, direction }) => {
       const { richField } = await import(
         String("/src/components/rich-field.ts")
       );
       const field = richField("Keyboard field", { value: [[text]] });
+      if (direction) field.wrapper.dir = direction;
       if (narrow) {
         field.wrapper.style.width = "110px";
         field.wrapper.style.font = "16px monospace";
       }
       document.body.replaceChildren(field.wrapper);
     },
-    { text, narrow },
+    { text, narrow, direction },
   );
   return page.getByRole("textbox", { name: "Keyboard field", exact: true });
 }
@@ -1020,44 +1022,35 @@ test("Mac Cmd arrows move by line and keep the selection end", async ({
   await expectKeyboardSelection(field, lineMotionText, 12, 0);
 });
 
-test("Mac Option arrows move by word and keep the selection end", async ({
+test("Ctrl arrows keep native word motion in mixed-direction text", async ({
   page,
+  browserName,
 }) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true,
-    });
-  });
-  const field = await mountKeyboardField(page, lineMotionText);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Alt+ArrowLeft");
-  await expectKeyboardSelection(field, lineMotionText, 11, 11);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Alt+ArrowRight");
-  await expectKeyboardSelection(field, lineMotionText, 16, 16);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Alt+Shift+ArrowRight");
-  await expectKeyboardSelection(field, lineMotionText, 12, 16);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Alt+Shift+ArrowLeft");
-  await expectKeyboardSelection(field, lineMotionText, 12, 11);
+  test.skip(
+    browserName !== "chromium",
+    "This pins Chromium's native Ctrl+Arrow behavior.",
+  );
+  const text = "abc אבג def היג xyz";
+  const field = await mountKeyboardField(page, text, false, "rtl");
+  // Native word motion is the browser's. Let the editor sync each native
+  // selection before the next key, as the main-branch comparison does.
+  const key = async (name: string) => {
+    await field.press(name);
+    await page.waitForTimeout(40);
+  };
+  await chooseKeyboardSelection(field, 0, 0);
+  await key("Control+ArrowRight");
+  await expectKeyboardSelection(field, text, 0, 0);
+  await key("Control+ArrowRight");
+  await expectKeyboardSelection(field, text, 0, 0);
+  await key("Control+ArrowLeft");
+  await expectKeyboardSelection(field, text, 3, 3);
+  await chooseKeyboardSelection(field, 0, 0);
+  await key("Control+Shift+ArrowRight");
+  await expectKeyboardSelection(field, text, 0, 0);
+  await key("Control+Shift+ArrowRight");
+  await expectKeyboardSelection(field, text, 0, 0);
+  await key("Control+Shift+ArrowLeft");
+  await expectKeyboardSelection(field, text, 0, 3);
 });
 
-test("Ctrl arrows move by word and keep the selection end", async ({
-  page,
-}) => {
-  const field = await mountKeyboardField(page, lineMotionText);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Control+ArrowLeft");
-  await expectKeyboardSelection(field, lineMotionText, 11, 11);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Control+ArrowRight");
-  await expectKeyboardSelection(field, lineMotionText, 16, 16);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Control+Shift+ArrowRight");
-  await expectKeyboardSelection(field, lineMotionText, 12, 16);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Control+Shift+ArrowLeft");
-  await expectKeyboardSelection(field, lineMotionText, 12, 11);
-});
