@@ -206,20 +206,11 @@ function deletionRange(
 
 type NativeSelection = NonNullable<ReturnType<Document["getSelection"]>>;
 
-interface MotionRange extends RichDeleteRange {
-  /** Editor positions of the native anchor and focus, in native order. */
-  anchor: number;
-  head: number;
-  /** The native anchor and focus points themselves, in native order. */
-  anchorPoint: { node: Node; offset: number };
-  headPoint: { node: Node; offset: number };
-}
-
 /** Read the range a native selection motion produces, then restore it. */
 function motionRange(
   view: EditorView,
   move: (selection: NativeSelection) => void,
-): MotionRange | null {
+): RichDeleteRange | null {
   const selection = view.dom.ownerDocument.getSelection();
   if (!selection?.anchorNode || !selection.focusNode || !selection.modify)
     return null;
@@ -233,20 +224,12 @@ function motionRange(
     if (
       !range ||
       !view.dom.contains(range.startContainer) ||
-      !view.dom.contains(range.endContainer) ||
-      !selection.anchorNode ||
-      !selection.focusNode
+      !view.dom.contains(range.endContainer)
     )
       return null;
     return {
       from: view.posAtDOM(range.startContainer, range.startOffset, -1),
       to: view.posAtDOM(range.endContainer, range.endOffset, 1),
-      // Match how ProseMirror maps a native selection into its state, so a
-      // backward selection keeps its anchor and its active end.
-      anchor: view.posAtDOM(selection.anchorNode, selection.anchorOffset, 1),
-      head: view.posAtDOM(selection.focusNode, selection.focusOffset, 1),
-      anchorPoint: { node: selection.anchorNode, offset: selection.anchorOffset },
-      headPoint: { node: selection.focusNode, offset: selection.focusOffset },
     };
   } catch {
     return null;
@@ -277,27 +260,6 @@ function deletionMotion(
     );
   });
 }
-
-/**
- * The editor owns Home and End. A native line move that lands just after
- * the editor takes focus can be overwritten when ProseMirror writes its
- * tracked selection back to the DOM, which drops a following replacement
- * edit onto a caret at one end of the line.
- */
-function lineRange(
-  view: EditorView,
-  backward: boolean,
-  extend: boolean,
-): MotionRange | null {
-  return motionRange(view, (selection) =>
-    selection.modify(
-      extend ? "extend" : "move",
-      backward ? "backward" : "forward",
-      "lineboundary",
-    ),
-  );
-}
-
 
 /** Home and End scroll on macOS; they move the caret elsewhere. */
 function macPlatform(): boolean {
@@ -995,90 +957,6 @@ export function richField(label: string, options: RichFieldOptions) {
           paragraphCommand(
             event.shiftKey ? "insertLineBreak" : "insertParagraph",
           );
-          return true;
-        }
-        // Line motion is Home/End off macOS and Cmd+Arrow on macOS, where
-        // Home/End only scroll. ProseMirror leaves it to the browser in
-        // ordinary text, so the editor reads the native motion and
-        // dispatches it, or a focus-time write-back can restore the caret
-        // the reader just moved from. Word motion stays native: reading it
-        // through Selection.modify does not match Chromium's Ctrl+Arrow
-        // in mixed-direction text.
-        const mac = macPlatform();
-        const arrow = event.key === "ArrowLeft" || event.key === "ArrowRight";
-        const backward = event.key === "Home" || event.key === "ArrowLeft";
-        const lineMotion =
-          ((event.key === "Home" || event.key === "End") &&
-            !event.ctrlKey &&
-            !event.metaKey &&
-            !event.altKey &&
-            !mac) ||
-          (mac &&
-            arrow &&
-            event.metaKey &&
-            !event.ctrlKey &&
-            !event.altKey);
-        if (lineMotion) {
-          // A caret at the start of an inline container leaves it first,
-          // as the editor's own Home command has always done, so the next
-          // text is plain text before the container. Run that command in
-          // place of the line move, with the same sync and scrolling.
-          if (
-            event.key === "Home" &&
-            !event.shiftKey &&
-            !mac &&
-            view.state.selection.empty &&
-            view.state.selection.$from.parent.isInline &&
-            view.state.selection.$from.parentOffset === 0
-          ) {
-            event.preventDefault();
-            dispatchEdit(
-              view.state.tr
-                .setSelection(
-                  TextSelection.create(
-                    view.state.doc,
-                    view.state.selection.$from.before(),
-                  ),
-                )
-                .scrollIntoView(),
-            );
-            return true;
-          }
-          const range = lineRange(view, backward, event.shiftKey);
-          if (!range) return false;
-          event.preventDefault();
-          const selection =
-            range.anchor === range.head
-              ? editingSelection(view.state, range.from, range.to)
-              : TextSelection.between(
-                  view.state.doc.resolve(range.anchor),
-                  view.state.doc.resolve(range.head),
-                );
-          // Apply it even when it equals editor state: the browser
-          // selection can have moved before its selectionchange arrives,
-          // and motionRange restored that pending selection.
-          const unchanged = selection.eq(view.state.selection);
-          dispatchEdit(
-            view.state.tr.setSelection(selection).scrollIntoView(),
-          );
-          // An equal selection makes ProseMirror write nothing, so put
-          // the browser caret on the motion's native points directly
-          // when it still shows the pending selection.
-          const native = view.dom.ownerDocument.getSelection();
-          if (
-            unchanged &&
-            native &&
-            (native.anchorNode !== range.anchorPoint.node ||
-              native.anchorOffset !== range.anchorPoint.offset ||
-              native.focusNode !== range.headPoint.node ||
-              native.focusOffset !== range.headPoint.offset)
-          )
-            native.setBaseAndExtent(
-              range.anchorPoint.node,
-              range.anchorPoint.offset,
-              range.headPoint.node,
-              range.headPoint.offset,
-            );
           return true;
         }
         const type = deletionKey(event);
