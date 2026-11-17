@@ -2,11 +2,47 @@ use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Number, Value};
-use std::cell::{Ref, RefCell};
+use std::cell::{Cell, Ref, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+
+thread_local! {
+    static SETUP_LOOKUP_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many setup lookups have been charged through `lookup_work`.
+pub fn setup_lookup_calls() -> usize {
+    SETUP_LOOKUP_CALLS.with(Cell::get)
+}
+
+/// Reset the setup lookup counter.
+pub fn reset_setup_lookup_calls() {
+    SETUP_LOOKUP_CALLS.with(|calls| calls.set(0));
+}
+
+/// A proven upper bound on one map or set lookup, in setup work units.
+///
+/// A Rust `BTreeMap` node holds at most eleven keys and a lookup scans
+/// them linearly, so one level costs at most eleven comparisons. An
+/// arena object uses binary search, which costs fewer. The tree height
+/// is at most `floor(log2(collection_len)) + 1` under either scheme, and
+/// each comparison reads at most `key_len + 1` bytes, because it stops
+/// at the first differing byte or at the end of the shorter key. This
+/// holds whatever lengths the stored keys have.
+pub fn lookup_work(collection_len: u64, key_len: u64) -> u64 {
+    SETUP_LOOKUP_CALLS.with(|calls| calls.set(calls.get() + 1));
+    let depth = if collection_len == 0 {
+        1
+    } else {
+        u64::from(63 - collection_len.leading_zeros()) + 1
+    };
+    11u64
+        .saturating_mul(depth)
+        .saturating_mul(key_len.saturating_add(1))
+        .saturating_add(16)
+}
 
 #[derive(Clone, Copy, Debug)]
 enum CompactNumber {
@@ -545,6 +581,21 @@ impl<'a> ValueView<'a> {
             .binary_search_by(|(candidate, _)| self.arena.string(*candidate).cmp(key))
             .ok()
             .map(|index| self.child(pairs[index].1))
+    }
+
+    /// Like `get`, but the meter is charged the lookup bound before the
+    /// binary search runs.
+    pub fn get_metered(
+        &self,
+        key: &str,
+        meter: &mut dyn FnMut(u64) -> jvc_core::Result<()>,
+    ) -> jvc_core::Result<Option<Self>> {
+        let len = match *self.node() {
+            ValueNode::Object { len, .. } => len as u64,
+            _ => 0,
+        };
+        meter(lookup_work(len, key.len() as u64))?;
+        Ok(self.get(key))
     }
 
     pub fn index(&self, key: &str) -> Self {

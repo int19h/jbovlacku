@@ -337,14 +337,14 @@ pub(crate) fn encoded(value: &impl Serialize, max: usize) -> Result<Vec<u8>> {
 fn digest(domain: &[u8], value: &impl Serialize, max: usize) -> Result<String> {
     Ok(jvc_core::hash_id("sha256:", domain, &encoded(value, max)?))
 }
-fn parameter(value: jvc_state::ValueView) -> Result<FloatParameter> {
+fn parameter(value: jvc_state::ValueView, meter: &mut SetupMeter) -> Result<FloatParameter> {
     let n = value
-        .index("numerator")
-        .as_i64()
+        .get_metered("numerator", &mut |w| meter.charge(w, 0, 0))?
+        .and_then(|v| v.as_i64())
         .ok_or_else(|| Error::new("ranking", "signed numerator is unavailable"))?;
     let d = value
-        .index("denominator")
-        .as_u64()
+        .get_metered("denominator", &mut |w| meter.charge(w, 0, 0))?
+        .and_then(|v| v.as_u64())
         .filter(|d| *d > 0)
         .ok_or_else(|| Error::new("ranking", "signed denominator is unavailable"))?;
     let exact = jvc_rank::Rational::new(n.into(), d.into());
@@ -360,22 +360,37 @@ fn parameter(value: jvc_state::ValueView) -> Result<FloatParameter> {
         bits: bits(converted),
     })
 }
-fn parameters(e: &jvc_state::Evaluation) -> Result<PreparationParameters> {
+fn parameters(e: &jvc_state::Evaluation, meter: &mut SetupMeter) -> Result<PreparationParameters> {
     let p = e
         .policy
         .as_ref()
         .ok_or_else(|| Error::new("policy_unavailable", "selected policy is unavailable"))?;
-    let work = e
-        .overlay
-        .as_ref()
-        .and_then(|o| o["work"].as_u64())
-        .or_else(|| p.view().index("work").as_u64())
-        .filter(|w| (1..=10_000_000).contains(w))
-        .ok_or_else(|| Error::new("ranking", "signed work budget is unavailable"))?;
+    let mut work = None;
+    if let Some(overlay) = &e.overlay {
+        meter.charge(
+            jvc_state::lookup_work(overlay.as_object().map_or(0, |o| o.len()) as u64, 4),
+            0,
+            0,
+        )?;
+        work = overlay["work"].as_u64();
+    }
+    let view = p.view();
+    let work = match work {
+        Some(w) => Some(w),
+        None => view
+            .get_metered("work", &mut |w| meter.charge(w, 0, 0))?
+            .and_then(|v| v.as_u64()),
+    }
+    .filter(|w| (1..=10_000_000).contains(w))
+    .ok_or_else(|| Error::new("ranking", "signed work budget is unavailable"))?;
+    let field = |key: &str, meter: &mut SetupMeter| -> Result<jvc_state::ValueView> {
+        view.get_metered(key, &mut |w| meter.charge(w, 0, 0))?
+            .ok_or_else(|| Error::new("ranking", "signed parameter is unavailable"))
+    };
     Ok(PreparationParameters {
-        h: parameter(p.view().index("H"))?,
-        alpha: parameter(p.view().index("alpha"))?,
-        threshold: parameter(p.view().index("rafsi_threshold"))?,
+        h: parameter(field("H", meter)?, meter)?,
+        alpha: parameter(field("alpha", meter)?, meter)?,
+        threshold: parameter(field("rafsi_threshold", meter)?, meter)?,
         work,
     })
 }
@@ -413,17 +428,24 @@ impl SessionPreparation {
         policy.validate()?;
         let limits = &policy.limits;
         let e = session.state.evaluation();
-        let algorithm = e
-            .policy
-            .as_ref()
-            .and_then(|p| p.view().index("calculation").as_str().map(str::to_owned));
+        // The meter exists before any policy field is read, and every
+        // such lookup is charged through it before it runs.
+        let mut meter = policy.setup_meter(0, 0);
+        let algorithm = match e.policy.as_ref() {
+            Some(p) => p
+                .view()
+                .get_metered("calculation", &mut |w| meter.charge(w, 0, 0))?
+                .and_then(|v| v.as_str().map(str::to_owned)),
+            None => None,
+        };
         let mut reasons = e.reasons.clone();
         let unsupported = algorithm.as_deref().is_some_and(|a| a != a::ALGORITHM);
         if unsupported {
             reasons.insert("unsupported_calculation".into());
         }
-        let parameters = match parameters(e) {
+        let parameters = match parameters(e, &mut meter) {
             Ok(p) => Some(p),
+            Err(error) if error.code == "resource_unavailable" => return Err(error),
             Err(error) => {
                 reasons.insert(error.code);
                 None
@@ -450,7 +472,6 @@ impl SessionPreparation {
             // its exact entry and key-byte contribution, so the meter
             // totals never exceed the final counts. Unavailable sessions
             // skip the walks entirely and report zero setup counts.
-            let mut meter = policy.setup_meter(0, 0);
             let records = if available {
                 session
                     .state
@@ -1580,6 +1601,109 @@ mod tests {
         assert_eq!(error.message, "ranking setup envelope limit");
     }
     #[test]
+    fn setup_lookups_are_all_charged_through_the_helper() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let session = restored_with(first, |saved| {
+            let overlay = json!({"trust":[{
+                "issuer": actor,
+                "subject": actor,
+                "value": "heed",
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+            }]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let mut meter = policy.setup_meter(0, 0);
+        jvc_state::reset_setup_lookup_calls();
+        session
+            .state
+            .ranking_source_records_metered(&mut |w, e, k| meter.charge(w, e, k))
+            .unwrap();
+        session
+            .state
+            .ranking_index_bound_metered(&mut |w, e, k| meter.charge(w, e, k))
+            .unwrap();
+        // Records walk: 3 overlay field reads. Count walk: 1 reasons
+        // read, 1 overlay trust read, 7 rule validation reads, and 6
+        // bound reads (value, issuer, subject, scope, 2 key_actor).
+        assert_eq!(jvc_state::setup_lookup_calls(), 18);
+    }
+    #[test]
+    fn long_stored_key_overlay_and_rule_lookups_are_charged() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let prefix = "a".repeat(99_990);
+        let mut rule = json!({
+            "issuer": actor,
+            "subject": actor,
+            "value": "shun",
+            "scope": {"kind": "definition", "word": "*", "language": "en"},
+        });
+        for n in 0..1000u32 {
+            rule[format!("{prefix}:{n:04}")] = json!(n);
+        }
+        let mut overlay = json!({"trust": [rule]});
+        for n in 0..1000u32 {
+            overlay[format!("{prefix}:{n:04}")] = json!(n);
+        }
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(13_500);
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn policy_field_lookups_are_charged_before_the_walks() {
+        let (first, _word) = session();
+        let session = restored_with(first, |saved| {
+            let policy = saved["evaluation"]["policy"].as_object_mut().unwrap();
+            for n in 0..1000u32 {
+                policy.insert(format!("x{n}"), json!(n));
+            }
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(5_000);
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn reasons_lookup_is_charged_by_depth() {
+        let (first, _word) = session();
+        let prefix = "a".repeat(1000);
+        let reasons: Vec<String> = (0..1000u32).map(|n| format!("{prefix}:{n:04}")).collect();
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["reasons"] = json!(reasons);
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(1_000);
+        let mut meter = policy.setup_meter(0, 0);
+        let error = session
+            .state
+            .ranking_index_bound_metered(&mut |w, e, k| meter.charge(w, e, k))
+            .unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
     fn unavailable_float_skips_the_records_walk() {
         let (first, _word) = session();
         let groups: serde_json::Map<String, Value> = (0..100u32)
@@ -1590,13 +1714,12 @@ mod tests {
             saved["evaluation"]["available"] = json!(false);
             saved["evaluation"]["reasons"] = json!(["resource_unavailable"]);
         });
-        // Even a one-unit setup quota cannot refuse this path, because no
-        // setup walk runs: the descriptor reports zero setup counts.
-        let mut policy = RankingPreparationPolicy {
+        // No setup walk runs on this path: the descriptor reports zero
+        // setup counts.
+        let policy = RankingPreparationPolicy {
             core_binding: format!("sha256:{}", "a".repeat(64)),
             limits: Default::default(),
         };
-        policy.limits.setup_units = Some(1);
         let descriptor = session.ranking_descriptor_native(&policy).unwrap();
         assert!(!descriptor.available);
         assert_eq!(descriptor.setup.setup_records, 0);

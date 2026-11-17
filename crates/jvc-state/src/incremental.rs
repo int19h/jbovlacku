@@ -285,8 +285,13 @@ impl EvaluatedState {
             })?;
         }
         if let Some(overlay) = &e.overlay {
+            let obj_len = overlay.as_object().map_or(0, |o| o.len());
             for key in ["trust", "blocked", "root_changes"] {
-                meter(8, 0, 0)?;
+                meter(
+                    super::arena::lookup_work(obj_len as u64, key.len() as u64),
+                    0,
+                    0,
+                )?;
                 let n = overlay[key].as_array().map_or(0, Vec::len);
                 count = count.checked_add(n).ok_or_else(|| {
                     jvc_core::Error::new("resource_unavailable", "ranking record count overflow")

@@ -512,6 +512,20 @@ pub struct RankingIndexCounts {
 /// budget derived from them is a lower bound on the final budget.
 pub type SetupMeter<'a> = dyn FnMut(u64, u64, u64) -> jvc_core::Result<()> + 'a;
 
+/// Charge one map or set lookup to the meter before it runs, using the
+/// bound from `lookup_work` for the collection size and lookup key.
+fn charge_lookup(
+    meter: &mut SetupMeter<'_>,
+    collection_len: usize,
+    key: &str,
+) -> jvc_core::Result<()> {
+    meter(
+        super::arena::lookup_work(collection_len as u64, key.len() as u64),
+        0,
+        0,
+    )
+}
+
 fn value_strings_metered(value: &Value, meter: &mut SetupMeter<'_>) -> jvc_core::Result<u64> {
     match value {
         Value::String(s) => {
@@ -555,30 +569,43 @@ fn index_private_rules_metered<'e>(
     e: &'e Evaluation,
     meter: &mut SetupMeter<'_>,
 ) -> jvc_core::Result<&'e [Value]> {
+    charge_lookup(meter, e.reasons.len(), "invalid_overlay")?;
     if e.reasons.contains("invalid_overlay") {
         return Ok(&[]);
     }
     let Some(overlay) = &e.overlay else {
         return Ok(&[]);
     };
+    charge_lookup(meter, overlay.as_object().map_or(0, |o| o.len()), "trust")?;
     let rules = overlay
         .get("trust")
         .and_then(Value::as_array)
         .ok_or_else(invalid_index_overlay)?;
     for rule in rules {
-        meter(24, 0, 0)?;
-        if rule.get("issuer").and_then(Value::as_str).is_none()
-            || rule.get("subject").and_then(Value::as_str).is_none()
-            || !rule
-                .get("value")
-                .and_then(Value::as_str)
-                .is_some_and(|v| matches!(v, "heed" | "shun" | "clear"))
-            || !rule.get("scope").is_some_and(|v| {
-                ["kind", "word", "language"]
-                    .iter()
-                    .all(|k| v.get(*k).and_then(Value::as_str).is_some())
-            })
-        {
+        let obj_len = rule.as_object().map_or(0, |o| o.len());
+        charge_lookup(meter, obj_len, "issuer")?;
+        let issuer_ok = rule.get("issuer").and_then(Value::as_str).is_some();
+        charge_lookup(meter, obj_len, "subject")?;
+        let subject_ok = rule.get("subject").and_then(Value::as_str).is_some();
+        charge_lookup(meter, obj_len, "value")?;
+        let value_ok = rule
+            .get("value")
+            .and_then(Value::as_str)
+            .is_some_and(|v| matches!(v, "heed" | "shun" | "clear"));
+        charge_lookup(meter, obj_len, "scope")?;
+        let mut scope_ok = false;
+        if let Some(scope) = rule.get("scope") {
+            scope_ok = true;
+            let scope_len = scope.as_object().map_or(0, |o| o.len());
+            for key in ["kind", "word", "language"] {
+                charge_lookup(meter, scope_len, key)?;
+                if scope.get(key).and_then(Value::as_str).is_none() {
+                    scope_ok = false;
+                    break;
+                }
+            }
+        }
+        if !(issuer_ok && subject_ok && value_ok && scope_ok) {
             return Err(invalid_index_overlay());
         }
     }
@@ -655,48 +682,38 @@ pub(crate) fn ranking_index_bound_metered(
         meter(0, 0, 8 * scope_bytes)?;
         add_bytes(8 * (plain + scope_bytes))?;
     }
-    // Charge one overlay lookup before reading the private rules.
-    meter(64, 0, 0)?;
     for r in index_private_rules_metered(e, meter)? {
         // A private rule contributes four entries, plus two more for a
         // heed rule's pair and weight entries.
         meter(16, 4, 0)?;
-        if r["value"] == "heed" {
+        let obj_len = r.as_object().map_or(0, |o| o.len());
+        charge_lookup(meter, obj_len, "value")?;
+        let heed = r["value"] == "heed";
+        if heed {
             meter(0, 2, 0)?;
         }
         c.private_rules += 1;
-        c.private_weights += u64::from(r["value"] == "heed");
-        // Continuity IDs can be longer than the issuer keys in the overlay.
-        // A map lookup makes at most eight comparisons per tree level,
-        // and each comparison reads at most the lookup key's length plus
-        // one byte. Charge that bound before each lookup: it holds for
-        // keys that share a long prefix with stored keys of any length,
-        // because a comparison stops at the first differing byte or at
-        // the end of the shorter key.
-        let map_len = e.lifecycle.key_actor.len() as u64;
-        let depth = if map_len == 0 {
-            0
-        } else {
-            u64::from(63 - map_len.leading_zeros())
-        };
-        let lookup_work = |key: &str| -> jvc_core::Result<u64> {
-            let comparisons = 8 * (depth + 1);
-            Ok(comparisons * (key.len() as u64 + 1) + 16)
-        };
+        c.private_weights += u64::from(heed);
+        // Continuity IDs can be longer than the issuer keys in the
+        // overlay. Each field read and each `key_actor` lookup is
+        // charged through `charge_lookup` before it runs.
+        charge_lookup(meter, obj_len, "issuer")?;
         let issuer_key = r["issuer"].as_str().ok_or_else(invalid_index_overlay)?;
-        meter(lookup_work(issuer_key)?, 0, 0)?;
+        charge_lookup(meter, e.lifecycle.key_actor.len(), issuer_key)?;
         let issuer = e
             .lifecycle
             .key_actor
             .get(issuer_key)
             .map_or(issuer_key.len(), String::len) as u64;
+        charge_lookup(meter, obj_len, "subject")?;
         let subject_key = r["subject"].as_str().ok_or_else(invalid_index_overlay)?;
-        meter(lookup_work(subject_key)?, 0, 0)?;
+        charge_lookup(meter, e.lifecycle.key_actor.len(), subject_key)?;
         let subject = e
             .lifecycle
             .key_actor
             .get(subject_key)
             .map_or(subject_key.len(), String::len) as u64;
+        charge_lookup(meter, obj_len, "scope")?;
         let scope_bytes =
             value_strings_metered(&r["scope"], &mut |steps, _, _| meter(4 * steps, 0, 0))?;
         meter(0, 0, 8 * (issuer + subject + scope_bytes + 16))?;

@@ -11,7 +11,9 @@ mod projection;
 pub use api::{
     AccountControl, Authority, Certificate, PublicationStatus, account_control, publication_status,
 };
-pub use arena::{ArrayValues, CompactValue, ValueView};
+pub use arena::{
+    ArrayValues, CompactValue, ValueView, lookup_work, reset_setup_lookup_calls, setup_lookup_calls,
+};
 pub use incremental::{
     CHECKPOINT_VERSION, EvaluatedState, JudgmentChanges, MAX_INCREMENTAL_RECORDS,
     RankingContextBound, UpdateStatistics,
