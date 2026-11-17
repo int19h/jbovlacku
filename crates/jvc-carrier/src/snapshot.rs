@@ -18,6 +18,54 @@ fn error(code: &str, message: impl Into<String>) -> Error {
     Error::new(code, message)
 }
 
+/// The outcome of reading one line with a byte cap.
+pub(crate) struct CappedLine {
+    pub oversized: bool,
+    pub terminated: bool,
+}
+
+/// Read one LF-terminated line without retaining more than `cap` bytes.
+/// The rest of an over-cap line is consumed and discarded, so the caller
+/// can tell a terminated oversized line from an unterminated one.
+pub(crate) fn read_capped_line<R: std::io::BufRead + ?Sized>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    cap: usize,
+) -> Result<Option<CappedLine>> {
+    line.clear();
+    let mut total = 0usize;
+    let mut terminated = false;
+    let mut any = false;
+    loop {
+        let buffer = reader
+            .fill_buf()
+            .map_err(|e| error("filesystem", e.to_string()))?;
+        if buffer.is_empty() {
+            break;
+        }
+        any = true;
+        let (take, found) = match buffer.iter().position(|b| *b == b'\n') {
+            Some(position) => (position + 1, true),
+            None => (buffer.len(), false),
+        };
+        total += take;
+        let keep = cap.saturating_sub(line.len()).min(take);
+        line.extend_from_slice(&buffer[..keep]);
+        reader.consume(take);
+        if found {
+            terminated = true;
+            break;
+        }
+    }
+    if !any {
+        return Ok(None);
+    }
+    Ok(Some(CappedLine {
+        oversized: total > cap,
+        terminated,
+    }))
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetentionPolicy {
@@ -487,29 +535,22 @@ impl Snapshot {
         mut reader: R,
         verifier: &mut jvc_core::EnvelopeVerifier,
     ) -> Result<()> {
-        use std::io::{BufRead as _, Read};
         let mut line = Vec::new();
         let mut line_no = 0usize;
-        loop {
-            line.clear();
-            let read = (&mut reader)
-                .take((MAX_RECORD_BYTES + 2) as u64)
-                .read_until(b'\n', &mut line)
-                .map_err(|e| error("filesystem", e.to_string()))?;
-            if read == 0 {
-                break;
-            }
+        while let Some(capped) = read_capped_line(&mut reader, &mut line, MAX_RECORD_BYTES + 1)? {
             line_no += 1;
-            if line.len() > MAX_RECORD_BYTES + 1 {
-                return Err(error(
-                    "record_size",
-                    "carrier record exceeds its envelope and body limits",
-                ));
-            }
-            if !line.ends_with(b"\n") {
+            // A missing final LF keeps the precedence of the in-memory
+            // reader, which checks the final LF before any record size.
+            if !capped.terminated {
                 return Err(error(
                     "record_newline",
                     "every carrier record must end with LF",
+                ));
+            }
+            if capped.oversized {
+                return Err(error(
+                    "record_size",
+                    "carrier record exceeds its envelope and body limits",
                 ));
             }
             self.insert_jsonl_line(&line[..line.len() - 1], line_no, verifier)?;
@@ -655,7 +696,6 @@ impl Snapshot {
         mut read_file: impl FnMut(&str) -> Result<Vec<u8>>,
         mut open_reader: impl FnMut(&str) -> Result<Box<dyn std::io::BufRead>>,
     ) -> Result<Self> {
-        use std::io::{BufRead as _, Read};
         let mut listed: Vec<(String, usize)> = listed.to_vec();
         listed.sort_by(|a, b| {
             let key = |path: &str| -> String {
@@ -726,26 +766,20 @@ impl Snapshot {
                 let mut line_no = 0usize;
                 let mut part_len = 0usize;
                 let mut first_line = true;
-                loop {
-                    line.clear();
-                    let read = (&mut reader)
-                        .take((MAX_RECORD_BYTES + 2) as u64)
-                        .read_until(b'\n', &mut line)
-                        .map_err(|e| error("filesystem", e.to_string()))?;
-                    if read == 0 {
-                        break;
-                    }
+                while let Some(capped) =
+                    read_capped_line(&mut *reader, &mut line, MAX_RECORD_BYTES + 1)?
+                {
                     line_no += 1;
-                    if line.len() > MAX_RECORD_BYTES + 1 {
-                        return Err(error(
-                            "record_size",
-                            "carrier record exceeds its envelope and body limits",
-                        ));
-                    }
-                    if !line.ends_with(b"\n") {
+                    if !capped.terminated {
                         return Err(error(
                             "record_newline",
                             "every carrier record must end with LF",
+                        ));
+                    }
+                    if capped.oversized {
+                        return Err(error(
+                            "record_size",
+                            "carrier record exceeds its envelope and body limits",
                         ));
                     }
                     if first_line
@@ -915,9 +949,15 @@ pub fn validate_path(path: &str) -> Result<()> {
     let valid = parts.len() == 3
         && hex_lower(parts[1], 2)
         && match parts[0] {
-            "records" => parts[2]
-                .strip_suffix(".jsonl")
-                .is_some_and(|s| s.len() >= 6 && s.bytes().all(|b| b.is_ascii_digit())),
+            "records" => parts[2].strip_suffix(".jsonl").is_some_and(|s| {
+                // The canonical spelling is {index:06}: at least six digits,
+                // and more only when the index itself needs them.
+                s.len() >= 6
+                    && s.bytes().all(|b| b.is_ascii_digit())
+                    && s.parse::<usize>()
+                        .map(|index| s == format!("{index:06}"))
+                        .unwrap_or(false)
+            }),
             "import-selections" => parts[2]
                 .strip_suffix(".json")
                 .is_some_and(|s| hex_lower(s, 62)),

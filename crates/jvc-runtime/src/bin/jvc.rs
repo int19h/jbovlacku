@@ -25,7 +25,9 @@ fn read_bounded(
     let mut bytes = Vec::new();
     match limit {
         Some(limit) => {
-            reader.take(limit + 1).read_to_end(&mut bytes)?;
+            reader
+                .take(limit.saturating_add(1))
+                .read_to_end(&mut bytes)?;
             if bytes.len() as u64 > limit {
                 return Err("input exceeds the configured input limit".into());
             }
@@ -399,6 +401,25 @@ mod input_tests {
                 .to_string()
                 .contains("configured input limit")
         );
+    }
+
+    #[test]
+    fn input_limit_u64_max_does_not_overflow() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("input.json");
+        fs::write(&path, b"null").unwrap();
+        assert_eq!(
+            read(path.to_str().unwrap(), Some(u64::MAX)).unwrap(),
+            b"null"
+        );
+        let file = fs::File::open(&path).unwrap();
+        check_input(&file, Some(u64::MAX)).unwrap();
+        assert_eq!(read_bounded(file, Some(u64::MAX)).unwrap(), b"null");
+        // A streaming quota reader also accepts the maximum value.
+        let mut reader = quota_reader(std::io::Cursor::new(b"null".to_vec()), Some(u64::MAX));
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).unwrap();
+        assert_eq!(out, b"null");
     }
 
     #[cfg(unix)]

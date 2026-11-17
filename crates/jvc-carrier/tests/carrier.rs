@@ -876,3 +876,49 @@ fn carrier_above_250000_files_reads_with_no_quota_and_configured_quota_refuses()
         "resource_unavailable"
     );
 }
+
+#[test]
+fn native_readers_reject_noncanonical_part_names_and_accept_wide_indices() {
+    assert!(validate_path("records/02/1000000.jsonl").is_ok());
+    assert!(validate_path("records/02/0000000.jsonl").is_err());
+    assert!(validate_path("records/02/000000.jsonl").is_ok());
+    let (snapshot, _, _) = with_body();
+    let files = snapshot.to_files().unwrap();
+    let path = record_path(&files);
+    let renamed = path.replace("000000.jsonl", "0000000.jsonl");
+    assert_ne!(renamed, path);
+    // Directory reader.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("carrier");
+    write_directory(&root, &snapshot).unwrap();
+    std::fs::rename(root.join(&path), root.join(&renamed)).unwrap();
+    assert!(read_directory(&root).is_err());
+    // Git-tree and checkout readers share the same listed-file path.
+    let repo = temp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    for (name, bytes) in &files {
+        let target = repo.join(if name == &path { &renamed } else { name });
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, bytes).unwrap();
+    }
+    git(&repo, &["add", "--all"]);
+    let tree = git(&repo, &["write-tree"]);
+    let commit = git(
+        &repo,
+        &["commit-tree", &tree, "-m", "Disposable carrier fixture"],
+    );
+    assert!(read_git_tree(&repo, &commit).is_err());
+    assert!(validate_checkout(&repo, &commit).is_err());
+}
+
+#[test]
+fn streamed_reader_keeps_newline_precedence_over_record_size() {
+    let oversized = vec![b' '; 282_658];
+    let err = Snapshot::from_jsonl_reader(std::io::Cursor::new(oversized.clone())).unwrap_err();
+    assert_eq!(err.code, "record_newline");
+    let mut terminated = oversized;
+    terminated.push(b'\n');
+    let err = Snapshot::from_jsonl_reader(std::io::Cursor::new(terminated)).unwrap_err();
+    assert_eq!(err.code, "record_size");
+}
