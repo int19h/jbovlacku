@@ -268,57 +268,80 @@ function prepareEntry(
 export interface SearchIndex<T extends LexicalEntry> {
   rows: { entry: T; indexed: PreparedEntry }[];
 }
-/** Per-request overrides for the literal-search work budget and deadline. */
+/**
+ * Per-request overrides for the literal-search work budget and deadline.
+ * `requestBudget` shares one budget across a whole request: validation,
+ * preparation, maps, query parsing, scanning, grouping, and sorting. When it
+ * is absent, each call starts its own budget from `workLimit`/`deadlineMs`.
+ * A shared budget measures the metrics object it was created with; every
+ * stage of the request must pass that same object.
+ */
 export interface SearchBudgetOptions {
   workLimit?: number;
   deadlineMs?: number;
+  requestBudget?: SearchRequestBudget;
 }
-interface SearchBudget {
-  workLimit: number;
-  deadlineMs: number;
-  start: number;
-  entries: number;
-  comparisons: number;
-  parserWork: number;
-}
-const takeBudget = (
-  metrics: SearchMetrics,
-  options?: SearchBudgetOptions,
-): SearchBudget => ({
-  workLimit: options?.workLimit ?? SEARCH_LOCAL_WORK_LIMIT,
-  deadlineMs: options?.deadlineMs ?? SEARCH_LOCAL_DEADLINE_MS,
-  start: Date.now(),
-  entries: metrics.entries,
-  comparisons: metrics.componentComparisons,
-  parserWork: metrics.queryParserWork + metrics.headwordParserWork,
-});
-const chargeBudget = (
-  budget: SearchBudget,
-  metrics: SearchMetrics,
-  phase: SearchBudgetError["phase"],
-) => {
-  const work =
-    metrics.entries -
-    budget.entries +
-    (metrics.componentComparisons - budget.comparisons) +
-    (metrics.queryParserWork +
-      metrics.headwordParserWork -
-      budget.parserWork);
-  if (work > budget.workLimit)
-    throw new SearchBudgetError(
+/**
+ * One work budget and one deadline for a whole request. Each stage reserves
+ * its units before doing the work, so an exhausted budget stops the next
+ * unit instead of letting a batch run past it. The deadline starts when the
+ * budget is created and is checked on every reservation.
+ */
+export class SearchRequestBudget {
+  readonly workLimit: number;
+  readonly deadlineMs: number;
+  private start = Date.now();
+  private reserved = 0;
+  private entries: number;
+  private comparisons: number;
+  private parserWork: number;
+  constructor(
+    private metrics: SearchMetrics,
+    options?: SearchBudgetOptions,
+  ) {
+    this.workLimit = options?.workLimit ?? SEARCH_LOCAL_WORK_LIMIT;
+    this.deadlineMs = options?.deadlineMs ?? SEARCH_LOCAL_DEADLINE_MS;
+    this.entries = metrics.entries;
+    this.comparisons = metrics.componentComparisons;
+    this.parserWork = metrics.queryParserWork + metrics.headwordParserWork;
+  }
+  /** Use a shared budget when one is supplied, else start one for this call. */
+  static for(
+    metrics: SearchMetrics,
+    options?: SearchBudgetOptions,
+  ): SearchRequestBudget {
+    return options?.requestBudget ?? new SearchRequestBudget(metrics, options);
+  }
+  private total(): number {
+    return (
+      this.reserved +
+      (this.metrics.entries - this.entries) +
+      (this.metrics.componentComparisons - this.comparisons) +
+      (this.metrics.queryParserWork +
+        this.metrics.headwordParserWork -
+        this.parserWork)
+    );
+  }
+  private failure(phase: SearchBudgetError["phase"]): SearchBudgetError {
+    return new SearchBudgetError(
       phase,
       phase === "prepare"
         ? SEARCH_PREPARE_BUDGET_MESSAGE
         : SEARCH_BUDGET_MESSAGE,
     );
-  if (Date.now() - budget.start > budget.deadlineMs)
-    throw new SearchBudgetError(
-      phase,
-      phase === "prepare"
-        ? SEARCH_PREPARE_BUDGET_MESSAGE
-        : SEARCH_BUDGET_MESSAGE,
-    );
-};
+  }
+  /** Enforce the budget and the deadline before the next work runs. */
+  check(phase: SearchBudgetError["phase"]): void {
+    if (this.total() > this.workLimit) throw this.failure(phase);
+    if (Date.now() - this.start > this.deadlineMs)
+      throw this.failure(phase);
+  }
+  /** Charge `units` of work, then enforce before that work runs. */
+  reserve(units: number, phase: SearchBudgetError["phase"]): void {
+    this.reserved += units;
+    this.check(phase);
+  }
+}
 const preparedIndexes = new WeakMap<object, SearchIndex<LexicalEntry>>();
 /** The caller retains an immutable array for its package or materialized generation. */
 export function prepareIndex<T extends LexicalEntry>(
@@ -329,12 +352,14 @@ export function prepareIndex<T extends LexicalEntry>(
   const previous = preparedIndexes.get(entries);
   if (previous) return previous as SearchIndex<T>;
   const measured = metrics ?? searchMetrics();
-  const limit = takeBudget(measured, budget);
-  const rows = entries.map((entry, index) => {
-    if (index % 1024 === 0) chargeBudget(limit, measured, "prepare");
+  const limit = SearchRequestBudget.for(measured, budget);
+  const rows = entries.map((entry) => {
+    // Building one row costs one unit on top of its parser work, charged
+    // before the row is built so an exhausted budget builds nothing.
+    limit.reserve(1, "prepare");
     return { entry, indexed: prepareEntry(entry, measured) };
   });
-  chargeBudget(limit, measured, "prepare");
+  limit.check("prepare");
   const index = { rows };
   preparedIndexes.set(entries, index);
   return index;
@@ -362,6 +387,11 @@ export function prepareQuery(
   metrics?: SearchMetrics,
   options: SearchOptions = {},
 ): PreparedQuery {
+  // Query parsing belongs to the request budget, so a grouped query that
+  // parses before the scan still counts its parser work.
+  const measured = metrics ?? searchMetrics();
+  const limit = SearchRequestBudget.for(measured, options);
+  limit.check("search");
   const text = normalizeQuery(query);
   const headword = headwordKey(text);
   const result: PreparedQuery = {
@@ -381,12 +411,13 @@ export function prepareQuery(
     return result;
   }
   try {
-    if (metrics) metrics.queryParses++;
+    measured.queryParses++;
     const segmented = components(headword, SEARCH_SEGMENT_WORK_LIMIT);
-    if (metrics) {
-      metrics.queryParserWork += segmented.parsed.spent;
-      metrics.queryWords += segmented.value.words.length;
-    }
+    measured.queryParserWork += segmented.parsed.spent;
+    measured.queryWords += segmented.value.words.length;
+    // The parse work above belongs to the request budget; enforce it before
+    // the scan runs on the parsed query.
+    limit.check("search");
     if (segmented.value.words.length > SEARCH_QUERY_WORD_LIMIT) {
       result.segmentation = "limited";
       return result;
@@ -398,8 +429,9 @@ export function prepareQuery(
   } catch (error) {
     if (!(error instanceof BuilderError)) throw error;
     result.segmentation = "limited";
-    if (metrics && error.failure.measure === "text recognition work")
-      metrics.queryParserWork += error.failure.value ?? 0;
+    if (error.failure.measure === "text recognition work")
+      measured.queryParserWork += error.failure.value ?? 0;
+    limit.check("search");
   }
   return result;
 }
@@ -452,13 +484,12 @@ export function selectRafsiMatches<T extends LexicalEntry>(
       : null;
   const rows: LexicalMatch<T>[] = [];
   const measured = metrics ?? searchMetrics();
-  const limit = takeBudget(measured, options);
+  const limit = SearchRequestBudget.for(measured, options);
   try {
-    let scanned = 0;
     for (const entry of entries) {
+      // One scanned entry costs one unit, charged before the entry is read.
       measured.entries++;
-      if (scanned % 1024 === 0) chargeBudget(limit, measured, "search");
-      scanned++;
+      limit.check("search");
       const rafsi = (entry.rafsi ?? []).filter((spelling) =>
         pattern
           ? pattern.test(spelling)
@@ -467,7 +498,7 @@ export function selectRafsiMatches<T extends LexicalEntry>(
       if (rafsi.length)
         rows.push({ entry, match: "rafsi-pattern", position: 0, rafsi });
     }
-    chargeBudget(limit, measured, "search");
+    limit.check("search");
     return { rows, segmentation: "complete" as const };
   } finally {
     pattern?.free();
@@ -486,20 +517,24 @@ export function selectMatches<T extends LexicalEntry>(
   allLojban: boolean;
 } {
   const measured = metrics ?? searchMetrics();
-  const limit = takeBudget(measured, options);
+  const limit = SearchRequestBudget.for(measured, options);
+  // A grouped query parses before the scan on the same metrics; the shared
+  // budget keeps that parser work inside this request.
+  limit.check("search");
   const prepared =
-    typeof query === "string" ? prepareQuery(query, metrics, options) : query;
+    typeof query === "string"
+      ? prepareQuery(query, measured, { ...options, requestBudget: limit })
+      : query;
   const rows: LexicalMatch<T>[] = [];
   if (prepared.pattern !== undefined) {
     const pattern = compilePattern(prepared.pattern);
     try {
       const source =
         "rows" in entries ? entries.rows.map(({ entry }) => entry) : entries;
-      let scanned = 0;
       for (const entry of source) {
+        // One scanned entry costs one unit, charged before the entry is read.
         measured.entries++;
-        if (scanned % 1024 === 0) chargeBudget(limit, measured, "search");
-        scanned++;
+        limit.check("search");
         if (!accept(entry)) continue;
         const headword = pattern.test(entry.word.spelling);
         // Scan every retained rafsi, even after a match, under the same budget.
@@ -513,7 +548,7 @@ export function selectMatches<T extends LexicalEntry>(
             position: 0,
           });
       }
-      chargeBudget(limit, measured, "search");
+      limit.check("search");
       return {
         rows: options.group === "definitions" ? [] : rows,
         segmentation: "complete",
@@ -543,16 +578,18 @@ export function selectMatches<T extends LexicalEntry>(
     "rows" in entries
       ? entries.rows
       : Array.isArray(entries)
-        ? prepareIndex(entries, metrics, options).rows
+        ? prepareIndex(entries, measured, {
+            ...options,
+            requestBudget: limit,
+          }).rows
         : (function* () {
             for (const entry of entries as Iterable<T>)
-              yield { entry, indexed: prepareEntry(entry, metrics) };
+              yield { entry, indexed: prepareEntry(entry, measured) };
           })();
-  let scanned = 0;
   for (const { entry, indexed: index } of source) {
+    // One scanned entry costs one unit, charged before the entry is read.
     measured.entries++;
-    if (scanned % 1024 === 0) chargeBudget(limit, measured, "search");
-    scanned++;
+    limit.check("search");
     if (!accept(entry)) continue;
     if (!options.knownWord || options.knownWord(entry)) {
       if (index.knownSpelling && querySpellings.has(index.knownSpelling))
@@ -561,7 +598,7 @@ export function selectMatches<T extends LexicalEntry>(
         wholeKnown = true;
     }
     if (index.limited) segmentation = "limited";
-    const sequence = sequenceMatch(index, prepared, coverage, metrics);
+    const sequence = sequenceMatch(index, prepared, coverage, measured);
     const prefix = prepared.headword.replace(/[.,]/gu, "");
     const candidates: MatchKind[] = [];
     if (
@@ -620,7 +657,7 @@ export function selectMatches<T extends LexicalEntry>(
     )
       rows.push({ entry, match: "component", position });
   }
-  chargeBudget(limit, measured, "search");
+  limit.check("search");
   return {
     rows,
     segmentation,

@@ -14,6 +14,8 @@ import {
   matchRank,
   isPatternQuery,
   comparePatternSpelling,
+  searchMetrics,
+  SearchRequestBudget,
   type SearchOptions,
   type SegmentationStatus,
   type SearchMetrics,
@@ -277,6 +279,7 @@ export function validateEntry(
 export function validateCachedPackage(
   value: unknown,
   language: string,
+  budget?: SearchRequestBudget,
 ): asserts value is CachedPackage {
   if (
     !(
@@ -311,6 +314,8 @@ export function validateCachedPackage(
   const version = value.version === 2 ? 2 : 1;
   let previous = "";
   for (const entry of value.entries) {
+    // One validated entry costs one unit, charged before the entry is read.
+    budget?.reserve(1, "prepare");
     validateEntry(entry, language, version, value.search_view);
     if (value.search_view && typeof entry.search_status !== "string")
       throw invalidPackage();
@@ -535,12 +540,17 @@ export function localSearch(
   rafsiOnly = false,
   options: SearchOptions = {},
 ): LocalHit[] & { segmentation: SegmentationStatus; allLojban: boolean } {
+  // Grouping and sorting belong to the same request budget as the scan, so
+  // the deadline covers the whole product operation.
+  const measured = metrics ?? searchMetrics();
+  const limit = SearchRequestBudget.for(measured, options);
+  const childOptions = { ...options, requestBudget: limit };
   const queryText =
     typeof query === "string" ? query : (query.pattern ?? query.text);
   const selected = rafsiOnly
-    ? selectRafsiMatches(entries, queryText, metrics, options)
-    : selectMatches(entries, query, metrics, undefined, {
-        ...options,
+    ? selectRafsiMatches(entries, queryText, measured, childOptions)
+    : selectMatches(entries, query, measured, undefined, {
+        ...childOptions,
         knownWord: (entry) => {
           const evidence = entry.search_status;
           const view =
@@ -557,6 +567,8 @@ export function localSearch(
       });
   const grouped = new Map<string, LocalHit & { position: number }>();
   for (const { entry, match, position, rafsi } of selected.rows) {
+    // Grouping one hit costs one unit, charged before the hit is grouped.
+    limit.reserve(1, "search");
     const id = wordId({ language: "jbo", spelling: entry.word.spelling });
     const preview = {
       event: entry.event,
@@ -596,15 +608,18 @@ export function localSearch(
         ...(rafsi ? { matchingRafsi: rafsi } : {}),
       });
   }
-  const ordered = [...grouped.values()].sort(
-    (a, b) =>
+  const ordered = [...grouped.values()].sort((a, b) => {
+    // One comparison costs one unit, charged before the comparison runs.
+    limit.reserve(1, "search");
+    return (
       matchRank(a.match) - matchRank(b.match) ||
       a.position - b.position ||
       (options.patterns !== false && isPatternQuery(queryText)
         ? comparePatternSpelling(a.word.spelling, b.word.spelling)
         : 0) ||
-      (a.word_id < b.word_id ? -1 : a.word_id > b.word_id ? 1 : 0),
-  );
+      (a.word_id < b.word_id ? -1 : a.word_id > b.word_id ? 1 : 0)
+    );
+  });
   return withSegmentation(
     ordered.map(({ position, ...hit }) => {
       void position;

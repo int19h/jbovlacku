@@ -5,10 +5,12 @@ import {
   searchMetrics,
   PatternError,
   isPatternQuery,
+  SearchRequestBudget,
 } from "../../../../packages/search/src/index.ts";
 import {
   localSearch,
   validateCachedPackage,
+  PackageStorageError,
   type CachedPackage,
 } from "./search.ts";
 import { rankNearby } from "../../../../packages/service/src/nearby.ts";
@@ -53,14 +55,29 @@ self.onmessage = ({ data }) => {
         return;
       }
       const metrics = searchMetrics();
-      const budget = {
+      // One budget and one deadline cover the whole request: validation,
+      // preparation, maps, query parsing, scanning, grouping, and sorting.
+      const requestBudget = new SearchRequestBudget(metrics, {
         workLimit: data.options?.workLimit,
         deadlineMs: data.options?.deadlineMs,
-      };
+      });
+      const tooLarge = (request: number, key: string) =>
+        reply({
+          request,
+          key,
+          code: "package-too-large",
+          error: new PackageStorageError().message,
+        });
       if (data.pkg) {
         try {
-          validateCachedPackage(data.pkg, data.language);
+          validateCachedPackage(data.pkg, data.language, requestBudget);
         } catch (error) {
+          // A memory failure while a package is validated reports that the
+          // package does not fit instead of the raw allocation error.
+          if (error instanceof RangeError) {
+            tooLarge(data.request, data.key);
+            return;
+          }
           reply({
             request: data.request,
             key: data.key,
@@ -69,17 +86,38 @@ self.onmessage = ({ data }) => {
           });
           return;
         }
-        // Preparation shares the request's work budget and deadline, so an
-        // unbounded package fails here instead of hanging the worker.
-        prepareIndex(data.pkg.entries, metrics, budget);
+        try {
+          prepareIndex(data.pkg.entries, metrics, {
+            requestBudget,
+          });
+        } catch (error) {
+          // A memory failure while a package is prepared reports that the
+          // package does not fit instead of the raw allocation error.
+          if (error instanceof RangeError) {
+            tooLarge(data.request, data.key);
+            return;
+          }
+          throw error;
+        }
         const pkg: CachedPackage = data.pkg;
-        packages.set(data.key, {
-          pkg,
-          entries: new Map(pkg.entries.map((entry, index) => [entry, index])),
-          events: new Map(
-            pkg.entries.map((entry, index) => [entry.event, index]),
-          ),
-        });
+        try {
+          // One unit per map insertion, charged before the maps grow.
+          const entries = new Map<CachedPackage["entries"][number], number>();
+          const events = new Map<string, number>();
+          for (const [index, entry] of pkg.entries.entries()) {
+            requestBudget.reserve(1, "prepare");
+            entries.set(entry, index);
+            requestBudget.reserve(1, "prepare");
+            events.set(entry.event, index);
+          }
+          packages.set(data.key, { pkg, entries, events });
+        } catch (error) {
+          if (error instanceof RangeError) {
+            tooLarge(data.request, data.key);
+            return;
+          }
+          throw error;
+        }
       }
       const stored = packages.get(data.key);
       if (!stored) {
@@ -102,11 +140,12 @@ self.onmessage = ({ data }) => {
         data.queries.some(isPatternQuery)
       )
         reply({ request: data.request, started: true });
-      // Both groups share one bounded query parse.
+      // Both groups share one bounded query parse on the request budget.
       const queries = options.grouped
         ? data.queries.map((query: string) =>
             prepareQuery(query, metrics, {
               patterns: options.patterns !== false && !options.nearby,
+              requestBudget,
             }),
           )
         : data.queries;
@@ -122,6 +161,7 @@ self.onmessage = ({ data }) => {
             includeRetired: options.includeRetired,
             workLimit: options.workLimit,
             deadlineMs: options.deadlineMs,
+            requestBudget,
           }),
         ),
       );

@@ -1,6 +1,7 @@
 import { packageStorageKey } from "./store.ts";
 import {
   invalidPackage,
+  PackageStorageError,
   type CachedPackage,
   type LocalHit,
 } from "./search.ts";
@@ -60,11 +61,41 @@ export interface PackageHitReferences {
 }
 export class PackageValidationError extends Error {}
 class MissingPackageError extends Error {}
+/**
+ * Maps a worker reply to its rejection. A worker that reports `package-too-large`
+ * ran out of room while the package was validated, prepared, or indexed, so
+ * the request fails with the documented does-not-fit message.
+ */
+export function workerReplyError(code: unknown, message: unknown): Error {
+  const text = typeof message === "string" ? message : String(message);
+  if (code === "invalid-package") return new PackageValidationError(text);
+  if (code === "package-missing") return new MissingPackageError(text);
+  if (code === "package-too-large") return new PackageStorageError(text);
+  if (code === "pattern_timeout" || code === "pattern_invalid")
+    return new PatternError(code, text);
+  return new Error(text);
+}
+/**
+ * Error for a worker that dies mid-request. A crash in a worker that was
+ * already alive, while a package transfer was pending, most likely means the
+ * device could not fit that package, so it reports the does-not-fit outcome.
+ * A worker that never produced a reply may have failed to start instead, so
+ * it keeps the generic message, as does any other crash.
+ */
+export function workerCrashError(
+  hadPendingPreparation: boolean,
+  workerWasAlive: boolean,
+): Error {
+  if (hadPendingPreparation && workerWasAlive) return new PackageStorageError();
+  return new Error("Local search could not start. Reload the page to retry.");
+}
 interface Client {
   worker: Worker;
   canceledPatterns: Set<number>;
   retained: Set<string | number>;
   cacheRevision: number;
+  /** True once the worker has produced any reply, proving it started. */
+  hadReply: boolean;
   preparing: Map<number, string | number>;
   pending: Map<
     number,
@@ -108,9 +139,11 @@ function searchWorker(): Client {
     canceledPatterns: new Set(),
     retained: new Set(),
     cacheRevision: -1,
+    hadReply: false,
     preparing: new Map(),
   };
   worker.onmessage = ({ data }) => {
+    current.hadReply = true;
     // Cache acknowledgments also matter after that request's consumer aborts.
     const stale =
       Number.isSafeInteger(data.cacheRevision) &&
@@ -141,15 +174,7 @@ function searchWorker(): Client {
     }
     current.pending.delete(data.request);
     if (data.error) {
-      waiting.reject(
-        data.code === "invalid-package"
-          ? new PackageValidationError(data.error)
-          : data.code === "package-missing"
-            ? new MissingPackageError(data.error)
-            : data.code === "pattern_timeout" || data.code === "pattern_invalid"
-              ? new PatternError(data.code, data.error)
-              : new Error(data.error),
-      );
+      waiting.reject(workerReplyError(data.code, data.error));
     } else {
       latest = { metrics: data.result.metrics, prepared: data.result.prepared };
       waiting.resolve(data.result);
@@ -158,7 +183,10 @@ function searchWorker(): Client {
   worker.onerror = () => {
     stopWorker(
       current,
-      new Error("Local search could not start. Reload the page to retry."),
+      workerCrashError(
+        current.preparing.size > 0,
+        current.hadReply,
+      ),
     );
   };
   client = current;
