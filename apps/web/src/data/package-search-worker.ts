@@ -6,6 +6,7 @@ import {
   PatternError,
   isPatternQuery,
   SearchRequestBudget,
+  isSearchBudgetState,
 } from "../../../../packages/search/src/index.ts";
 import {
   localSearch,
@@ -57,10 +58,14 @@ self.onmessage = ({ data }) => {
       const metrics = searchMetrics();
       // One budget and one deadline cover the whole request: validation,
       // preparation, maps, query parsing, scanning, grouping, and sorting.
-      const requestBudget = new SearchRequestBudget(metrics, {
-        workLimit: data.options?.workLimit,
-        deadlineMs: data.options?.deadlineMs,
-      });
+      // The client sends its budget state with the request, so the deadline
+      // spans the transfer as well.
+      const requestBudget = isSearchBudgetState(data.budget)
+        ? SearchRequestBudget.resume(data.budget, metrics)
+        : new SearchRequestBudget(metrics, {
+            workLimit: data.options?.workLimit,
+            deadlineMs: data.options?.deadlineMs,
+          });
       const tooLarge = (request: number, key: string) =>
         reply({
           request,
@@ -178,18 +183,31 @@ self.onmessage = ({ data }) => {
         1000 - offset,
         Number.isSafeInteger(options.limit) ? Math.max(0, options.limit!) : 20,
       );
-      const ranked = options.nearby ? [rankNearby(hits)] : hits;
+      const ranked = options.nearby
+        ? [rankNearby(hits, requestBudget)]
+        : hits;
       const pages: PackageHitReferences[][] = ranked.map((rows) =>
-        rows.slice(offset, offset + limit).map((hit) => ({
-          word_id: hit.word_id,
-          match: hit.match,
-          entries: hit.entries.map((entry) => stored.entries.get(entry)!),
-          definitions: hit.definitions.map(
-            (event) => stored.events.get(event)!,
-          ),
-          preview: stored.events.get(hit.preview!.event)!,
-          ...(hit.matchingRafsi ? { rafsi: hit.matchingRafsi } : {}),
-        })),
+        rows.slice(offset, offset + limit).map((hit) => {
+          // One unit per reference mapped, charged before the mapping runs.
+          requestBudget.reserve(1, "search");
+          const entries = hit.entries.map((entry) => {
+            requestBudget.reserve(1, "search");
+            return stored.entries.get(entry)!;
+          });
+          const definitions = hit.definitions.map((event) => {
+            requestBudget.reserve(1, "search");
+            return stored.events.get(event)!;
+          });
+          requestBudget.reserve(1, "search");
+          return {
+            word_id: hit.word_id,
+            match: hit.match,
+            entries,
+            definitions,
+            preview: stored.events.get(hit.preview!.event)!,
+            ...(hit.matchingRafsi ? { rafsi: hit.matchingRafsi } : {}),
+          };
+        }),
       );
       reply({
         request: data.request,
@@ -200,6 +218,7 @@ self.onmessage = ({ data }) => {
           metrics,
           prepared: !!data.pkg,
           allLojban: hits[0]?.allLojban ?? false,
+          budget: requestBudget.snapshot(),
         },
       });
     } catch (error) {

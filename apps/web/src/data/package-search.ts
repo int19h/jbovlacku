@@ -8,6 +8,10 @@ import {
 import {
   isPatternQuery,
   PatternError,
+  searchMetrics,
+  SearchRequestBudget,
+  isSearchBudgetState,
+  type SearchBudgetState,
 } from "../../../../packages/search/src/index.ts";
 import {
   PATTERN_TIMEOUT_MESSAGE,
@@ -76,26 +80,55 @@ export function workerReplyError(code: unknown, message: unknown): Error {
   return new Error(text);
 }
 /**
- * Error for a worker that dies mid-request. A crash in a worker that was
- * already alive, while a package transfer was pending, most likely means the
- * device could not fit that package, so it reports the does-not-fit outcome.
- * A worker that never produced a reply may have failed to start instead, so
- * it keeps the generic message, as does any other crash.
+ * Evidence for classifying a worker crash. A worker that runs out of room
+ * reports an allocation failure through its error event (Chromium delivers
+ * `ErrorEvent` with e.g. "Uncaught RangeError: Array buffer allocation
+ * failed"); a script that never loads reports a syntax error instead.
  */
-export function workerCrashError(
-  hadPendingPreparation: boolean,
-  workerWasAlive: boolean,
-): Error {
-  if (hadPendingPreparation && workerWasAlive) return new PackageStorageError();
+export interface WorkerCrashEvidence {
+  hadPendingPreparation: boolean;
+  /** Set once this worker reported that a package does not fit. */
+  memoryPressure: boolean;
+  /** Parsed error name, e.g. "RangeError", "Error", or "SyntaxError". */
+  errorName?: string;
+}
+/**
+ * Classifies a worker crash by cause, not timing. An allocation failure, or a
+ * crash after the worker already reported that a package does not fit while
+ * another preparation is pending, reports does-not-fit. An ordinary error, a
+ * load failure, or a crash with no memory evidence keeps the generic startup
+ * message, even on a later request.
+ */
+export function workerCrashReason(evidence: WorkerCrashEvidence): Error {
+  if (
+    /^(RangeError|QuotaExceededError)$/i.test(evidence.errorName ?? "") ||
+    (evidence.memoryPressure && evidence.hadPendingPreparation)
+  )
+    return new PackageStorageError();
   return new Error("Local search could not start. Reload the page to retry.");
+}
+/**
+ * Reads the error name from a worker error event: the error object when the
+ * browser supplies one, else the `Uncaught Name:` prefix of its message.
+ */
+export function workerErrorName(event: unknown): string | undefined {
+  if (event instanceof Error) return event.name;
+  const anyEvent = event as {
+    error?: unknown;
+    message?: unknown;
+  } | null;
+  if (anyEvent?.error instanceof Error) return anyEvent.error.name;
+  const message =
+    typeof anyEvent?.message === "string" ? anyEvent.message : "";
+  return /^Uncaught ([A-Za-z]*Error):/.exec(message)?.[1];
 }
 interface Client {
   worker: Worker;
   canceledPatterns: Set<number>;
   retained: Set<string | number>;
   cacheRevision: number;
-  /** True once the worker has produced any reply, proving it started. */
-  hadReply: boolean;
+  /** Set once this worker reported that a package does not fit. */
+  memoryPressure: boolean;
   preparing: Map<number, string | number>;
   pending: Map<
     number,
@@ -139,11 +172,11 @@ function searchWorker(): Client {
     canceledPatterns: new Set(),
     retained: new Set(),
     cacheRevision: -1,
-    hadReply: false,
+    memoryPressure: false,
     preparing: new Map(),
   };
   worker.onmessage = ({ data }) => {
-    current.hadReply = true;
+    if (data.code === "package-too-large") current.memoryPressure = true;
     // Cache acknowledgments also matter after that request's consumer aborts.
     const stale =
       Number.isSafeInteger(data.cacheRevision) &&
@@ -180,13 +213,14 @@ function searchWorker(): Client {
       waiting.resolve(data.result);
     }
   };
-  worker.onerror = () => {
+  worker.onerror = (event) => {
     stopWorker(
       current,
-      workerCrashError(
-        current.preparing.size > 0,
-        current.hadReply,
-      ),
+      workerCrashReason({
+        hadPendingPreparation: current.preparing.size > 0,
+        memoryPressure: current.memoryPressure,
+        errorName: workerErrorName(event),
+      }),
     );
   };
   client = current;
@@ -210,6 +244,12 @@ export async function searchPackage(
     packageIds.set(pkg, identity);
   }
   const key = JSON.stringify([language, identity]);
+  // One client budget spans the transfer and the worker request below: the
+  // worker continues it from the posted state and the reply continues it back.
+  const clientBudget = SearchRequestBudget.for(searchMetrics(), {
+    workLimit: options.workLimit,
+    deadlineMs: options.deadlineMs,
+  });
   const send = (force = false) => {
     signal?.throwIfAborted();
     const current = searchWorker();
@@ -223,7 +263,10 @@ export async function searchPackage(
     // Announce a transfer without evicting any confirmed warm package.
     if (prepare) current.preparing.set(request, key);
     return new Promise<
-      Omit<PackageSearchResult, "hits"> & { hits: PackageHitReferences[][] }
+      Omit<PackageSearchResult, "hits"> & {
+        hits: PackageHitReferences[][];
+        budget?: SearchBudgetState;
+      }
     >((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let started = false;
@@ -272,6 +315,9 @@ export async function searchPackage(
       });
       signal?.addEventListener("abort", abort, { once: true });
       try {
+        // Transferring the package clones every entry onto the worker, so the
+        // transfer charges one unit per entry before it is posted.
+        if (prepare) clientBudget.reserve(pkg.entries.length, "prepare");
         current.worker.postMessage({
           request,
           key,
@@ -279,6 +325,7 @@ export async function searchPackage(
           queries,
           options: workerOptions,
           ...(prepare ? { pkg } : {}),
+          budget: clientBudget.snapshot(),
         });
       } catch (error) {
         clean();
@@ -296,29 +343,57 @@ export async function searchPackage(
     // An evicted or canceled queued preparation can require one captured retry.
     result = await send(true);
   }
+  const continued = isSearchBudgetState(result.budget)
+    ? SearchRequestBudget.resume(result.budget)
+    : SearchRequestBudget.for(searchMetrics(), {
+        workLimit: options.workLimit,
+        deadlineMs: options.deadlineMs,
+      });
   return {
     ...result,
-    hits: result.hits.map((rows) =>
-      rows.map((hit) => {
-        const selected = pkg.entries[hit.preview];
-        return {
-          word_id: hit.word_id,
-          match: hit.match,
-          word: selected.word,
-          entries: hit.entries.map((index) => pkg.entries[index]),
-          definitions: hit.definitions.map((index) => pkg.entries[index].event),
-          preview: {
-            event: selected.event,
-            word_kind: selected.classification.kind,
-            // A code point uses at most two UTF-16 units. Read only the preview.
-            plain_text: Array.from(selected.plain_text.slice(0, 480))
-              .slice(0, 240)
-              .join(""),
-            status: "unavailable",
-          },
-          ...(hit.rafsi ? { matchingRafsi: hit.rafsi } : {}),
-        };
-      }),
-    ),
+    hits: resolvePackageHits(pkg, result.hits, continued),
   };
+}
+/**
+ * Rebuilds full hits from the worker's entry references into the captured
+ * package. One unit per mapped hit, entry, definition, and preview, charged
+ * before the mapping runs, on the budget the worker reply continues.
+ */
+export function resolvePackageHits(
+  pkg: CachedPackage,
+  pages: PackageHitReferences[][],
+  budget: SearchRequestBudget,
+): LocalHit[][] {
+  return pages.map((rows) =>
+    rows.map((hit) => {
+      budget.reserve(1, "search");
+      const selected = pkg.entries[hit.preview];
+      const entries = hit.entries.map((index) => {
+        budget.reserve(1, "search");
+        return pkg.entries[index];
+      });
+      const definitions = hit.definitions.map((index) => {
+        budget.reserve(1, "search");
+        return pkg.entries[index].event;
+      });
+      budget.reserve(1, "search");
+      return {
+        word_id: hit.word_id,
+        match: hit.match,
+        word: selected.word,
+        entries,
+        definitions,
+        preview: {
+          event: selected.event,
+          word_kind: selected.classification.kind,
+          // A code point uses at most two UTF-16 units. Read only the preview.
+          plain_text: Array.from(selected.plain_text.slice(0, 480))
+            .slice(0, 240)
+            .join(""),
+          status: "unavailable",
+        },
+        ...(hit.rafsi ? { matchingRafsi: hit.rafsi } : {}),
+      };
+    }),
+  );
 }

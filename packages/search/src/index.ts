@@ -281,6 +281,27 @@ export interface SearchBudgetOptions {
   deadlineMs?: number;
   requestBudget?: SearchRequestBudget;
 }
+/** The transferable state of one request budget across a worker boundary. */
+export interface SearchBudgetState {
+  workLimit: number;
+  deadlineMs: number;
+  start: number;
+  spent: number;
+}
+/** True for a well-formed budget state carried by a worker message. */
+export function isSearchBudgetState(value: unknown): value is SearchBudgetState {
+  const state = value as SearchBudgetState;
+  const bound = (n: number) => typeof n === "number" && (Number.isFinite(n) || n === Infinity);
+  return (
+    !!value &&
+    typeof value === "object" &&
+    bound(state.workLimit) &&
+    bound(state.deadlineMs) &&
+    Number.isFinite(state.start) &&
+    Number.isFinite(state.spent) &&
+    state.spent >= 0
+  );
+}
 /**
  * One work budget and one deadline for a whole request. Each stage reserves
  * its units before doing the work, so an exhausted budget stops the next
@@ -311,6 +332,35 @@ export class SearchRequestBudget {
     options?: SearchBudgetOptions,
   ): SearchRequestBudget {
     return options?.requestBudget ?? new SearchRequestBudget(metrics, options);
+  }
+  /**
+   * Continue the same budget on the other side of a worker boundary. The
+   * reply carries the spent total and the original start, so the deadline
+   * still spans the whole request.
+   */
+  static resume(
+    state: SearchBudgetState,
+    metrics: SearchMetrics = searchMetrics(),
+  ): SearchRequestBudget {
+    const budget = new SearchRequestBudget(metrics, {
+      workLimit: state.workLimit,
+      deadlineMs: state.deadlineMs,
+    });
+    budget.start = state.start;
+    budget.reserved = state.spent;
+    budget.entries = metrics.entries;
+    budget.comparisons = metrics.componentComparisons;
+    budget.parserWork = metrics.queryParserWork + metrics.headwordParserWork;
+    return budget;
+  }
+  /** Transferable spent total plus the original start for the reply. */
+  snapshot(): SearchBudgetState {
+    return {
+      workLimit: this.workLimit,
+      deadlineMs: this.deadlineMs,
+      start: this.start,
+      spent: this.total(),
+    };
   }
   private total(): number {
     return (

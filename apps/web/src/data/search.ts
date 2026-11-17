@@ -566,6 +566,20 @@ export function localSearch(
         },
       });
   const grouped = new Map<string, LocalHit & { position: number }>();
+  // Retained rafsi per word accumulate in a set and sort once below, so the
+  // merge costs one unit per spelling instead of a sort per hit.
+  const rafsiSets = new Map<string, Set<string>>();
+  const takeRafsi = (id: string, spellings: readonly string[]) => {
+    let set = rafsiSets.get(id);
+    if (!set) {
+      set = new Set();
+      rafsiSets.set(id, set);
+    }
+    for (const spelling of spellings) {
+      limit.reserve(1, "search");
+      set.add(spelling);
+    }
+  };
   for (const { entry, match, position, rafsi } of selected.rows) {
     // Grouping one hit costs one unit, charged before the hit is grouped.
     limit.reserve(1, "search");
@@ -580,10 +594,7 @@ export function localSearch(
     if (old) {
       old.definitions.push(entry.event);
       old.entries.push(entry);
-      if (rafsi)
-        old.matchingRafsi = [
-          ...new Set([...(old.matchingRafsi ?? []), ...rafsi]),
-        ].sort();
+      if (rafsi) takeRafsi(id, rafsi);
       if (
         matchRank(match) < matchRank(old.match) ||
         (match === old.match && entry.event < old.preview!.event)
@@ -592,11 +603,19 @@ export function localSearch(
         old.position = position;
         old.preview = preview;
         old.word = entry.word;
-        old.entries.sort((a, b) =>
-          a.event === preview.event ? -1 : b.event === preview.event ? 1 : 0,
-        );
+        // Move the preview entry first, keeping the rest stable. Each
+        // comparison costs one unit, charged before the comparison runs.
+        old.entries.sort((a, b) => {
+          limit.reserve(1, "search");
+          return a.event === preview.event
+            ? -1
+            : b.event === preview.event
+              ? 1
+              : 0;
+        });
       }
-    } else
+    } else {
+      if (rafsi) takeRafsi(id, rafsi);
       grouped.set(id, {
         word: entry.word,
         word_id: id,
@@ -607,6 +626,16 @@ export function localSearch(
         entries: [entry],
         ...(rafsi ? { matchingRafsi: rafsi } : {}),
       });
+    }
+  }
+  for (const [id, set] of rafsiSets) {
+    const hit = grouped.get(id)!;
+    // Merging kept every spelling once; one sort per word finishes the list.
+    const merged = [...set].sort((a, b) => {
+      limit.reserve(1, "search");
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    hit.matchingRafsi = merged;
   }
   const ordered = [...grouped.values()].sort((a, b) => {
     // One comparison costs one unit, charged before the comparison runs.
@@ -623,6 +652,8 @@ export function localSearch(
   return withSegmentation(
     ordered.map(({ position, ...hit }) => {
       void position;
+      // One mapped row costs one unit, charged before the row is mapped.
+      limit.reserve(1, "search");
       return hit;
     }),
     selected.segmentation,
