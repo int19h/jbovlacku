@@ -1448,6 +1448,58 @@ fn compact_value_digest(value: &CompactValue) -> Result<String, &'static str> {
     Ok(writer.finish("sha256:").0)
 }
 
+fn register_key_for_node(node: &Node, lifecycle: &Lifecycle) -> Option<String> {
+    if !node.semantic {
+        return None;
+    }
+    let actor = lifecycle
+        .key_actor
+        .get(&node.issuer)
+        .map(String::as_str)
+        .unwrap_or(node.issuer.as_str());
+    let a = node.action.view();
+    let suffix = match node.kind.as_str() {
+        "judgment.set" => format!(
+            "judgment|{}",
+            a.index("target").as_str().unwrap_or_default()
+        ),
+        "trust.set" => {
+            let subj_view = a.index("subject");
+            let subj = subj_view.as_str().unwrap_or_default();
+            let subj_actor = lifecycle
+                .key_actor
+                .get(subj)
+                .map(String::as_str)
+                .unwrap_or(subj);
+            format!("trust|{subj_actor}|{}", a.index("scope"))
+        }
+        "identity.profile" => "profile".into(),
+        "report.set" => format!("report|{}|{}", a.index("subject"), a.index("category")),
+        "bridge.set" => format!(
+            "bridge|{}|{}",
+            a.index("origin"),
+            a.index("source_definition")
+        ),
+        "account.set" => format!("account|{}|{}", a.index("origin"), a.index("account")),
+        "account.observe" => format!("observe|{}|{}", a.index("origin"), a.index("account")),
+        _ => return None,
+    };
+    Some(format!("{actor}|{suffix}"))
+}
+
+fn register_value_for_node(node: &Node) -> String {
+    let a = node.action.view();
+    match node.kind.as_str() {
+        "identity.profile" => node.body_hash.clone().unwrap_or_default(),
+        "bridge.set" if a.index("value") == "managed" => {
+            format!("managed|{}", a.index("target"))
+        }
+        "account.observe" => format!("{}|{}", a.index("result"), a.index("claim")),
+        "account.set" if a.index("value") == "claim" => node.id.clone(),
+        _ => a.index("value").as_str().unwrap_or_default().into(),
+    }
+}
+
 fn valid_saved_state(
     saved: &SavedResultsCheckpoint,
     nodes: &BTreeMap<String, Node>,
@@ -1461,11 +1513,26 @@ fn check_saved_state(
     nodes: &BTreeMap<String, Node>,
     resolved: &policy::ResolvedSelections<'_>,
 ) -> Result<(), &'static str> {
+    if saved.evaluation.registers.len() != saved.register_maxima_charges.len()
+        || saved.evaluation.registers.len() != saved.register_maxima_work.len()
+        || saved.evaluation.registers.len() != saved.register_maxima_member_work.len()
+    {
+        return Err("register_counter_lens");
+    }
     for (id, node) in nodes {
         if id != &node.id {
             return Err("node_id");
         }
         valid_node_state(node)?;
+    }
+
+    let expected_event_limit_exceeded = saved
+        .options
+        .limits
+        .events
+        .is_some_and(|limit| nodes.len() > limit);
+    if saved.event_limit_exceeded != expected_event_limit_exceeded {
+        return Err("event_limit_exceeded");
     }
 
     let resource_refused =
@@ -1480,14 +1547,34 @@ fn check_saved_state(
     if saved.evaluation.available == has_blocking_reason {
         return Err("available_reasons");
     }
+    for reason in &saved.evaluation.reasons {
+        if !matches!(
+            reason.as_str(),
+            "resource_unavailable"
+                | "view_unavailable"
+                | "policy_ancestry_unavailable"
+                | "import_selection_unavailable"
+                | "selection_publications_pending"
+                | "conditional_on_suspension"
+                | "invalid_overlay"
+                | "public_shun_issuer_unavailable"
+        ) {
+            return Err("evaluation_reason");
+        }
+    }
+    if !resource_refused
+        && saved
+            .evaluation
+            .reasons
+            .contains("conditional_on_suspension")
+            != !saved.evaluation.lifecycle.suspended.is_empty()
+    {
+        return Err("conditional_on_suspension");
+    }
     if saved.event_limit_exceeded
-        && (!saved
-            .options
-            .limits
-            .events
-            .is_some_and(|limit| nodes.len() > limit)
-            || !saved.evaluation.reasons.contains("resource_unavailable")
+        && (!saved.evaluation.reasons.contains("resource_unavailable")
             || saved.consumed_work != 0
+            || saved.ancestry_bytes.is_some()
             || !saved.evaluation.receipts.is_empty()
             || !saved.evaluation.lifecycle.key_actor.is_empty()
             || !saved.evaluation.publications.is_empty()
@@ -1557,6 +1644,31 @@ fn check_saved_state(
         };
         if receipt.body != node.body_label {
             return Err("receipt_body");
+        }
+        for reason in &receipt.reasons {
+            if !matches!(
+                reason.as_str(),
+                "resource_unavailable"
+                    | "invalid_action"
+                    | "own_history_pending"
+                    | "outside_retained_history"
+                    | "cutoff_pending"
+                    | "incomplete_group"
+                    | "body_unavailable"
+                    | "invalid_target"
+                    | "target_pending"
+                    | "unauthorized_import_status"
+                    | "account_binding_unavailable"
+                    | "view_unavailable"
+                    | "account_authority_disabled"
+                    | "lineage_pending"
+                    | "lineage_invalid"
+            ) {
+                return Err("receipt_reason");
+            }
+        }
+        if !resource_refused && receipt.reasons.contains("invalid_action") != !node.semantic {
+            return Err("receipt_invalid_action");
         }
     }
 
@@ -1671,6 +1783,56 @@ fn check_saved_state(
     }
 
     // Lifecycle cross-checks.
+    let mut transfer_issuers = BTreeSet::new();
+    let mut compromise_issuers = BTreeSet::new();
+    let mut transfer_edges: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    let mut accept_edges: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut register_node_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut observed_claims_by_account: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for node in nodes.values() {
+        if node.semantic {
+            match node.kind.as_str() {
+                "identity.transfer" => {
+                    transfer_issuers.insert(node.issuer.as_str());
+                    let succ_view = node.action.view().index("successor");
+                    if let Some(succ) = succ_view.as_str() {
+                        transfer_edges
+                            .entry((node.issuer.clone(), succ.to_owned()))
+                            .or_default()
+                            .push(node.id.clone());
+                    }
+                }
+                "identity.compromise" => {
+                    compromise_issuers.insert(node.issuer.as_str());
+                }
+                "identity.accept" if node.previous.is_empty() => {
+                    let tid_view = node.action.view().index("transfer");
+                    if let Some(tid) = tid_view.as_str() {
+                        accept_edges.insert((node.issuer.clone(), tid.to_owned()));
+                    }
+                }
+                "account.observe" => {
+                    let a = node.action.view();
+                    if a.index("result") == "present"
+                        && let (Some(origin), Some(account), Some(claim)) = (
+                            a.index("origin").as_str(),
+                            a.index("account").as_u64(),
+                            a.index("claim").as_str(),
+                        )
+                    {
+                        observed_claims_by_account
+                            .entry(format!("{origin}#{account}"))
+                            .or_default()
+                            .insert(claim.to_owned());
+                    }
+                }
+                _ => {}
+            }
+            if let Some(rkey) = register_key_for_node(node, &saved.evaluation.lifecycle) {
+                *register_node_counts.entry(rkey).or_insert(0) += 1;
+            }
+        }
+    }
     if !resource_refused || !saved.evaluation.lifecycle.key_actor.is_empty() {
         for node in nodes.values() {
             if !saved
@@ -1685,10 +1847,26 @@ fn check_saved_state(
                 let Some(actor) = saved.evaluation.lifecycle.key_actor.get(&node.issuer) else {
                     return Err("lifecycle_suspended_actor");
                 };
-                if !saved.evaluation.lifecycle.suspended.contains_key(actor) {
+                if !saved
+                    .evaluation
+                    .lifecycle
+                    .suspended
+                    .get(actor)
+                    .is_some_and(|set| set.contains(&node.id))
+                {
                     return Err("lifecycle_suspended_missing");
                 }
             }
+        }
+    }
+    for key in &saved.evaluation.lifecycle.retired {
+        if !transfer_issuers.contains(key.as_str()) {
+            return Err("lifecycle_retired");
+        }
+    }
+    for key in &saved.evaluation.lifecycle.compromised {
+        if !compromise_issuers.contains(key.as_str()) {
+            return Err("lifecycle_compromised");
         }
     }
     for (key, actor) in &saved.evaluation.lifecycle.key_actor {
@@ -1724,6 +1902,14 @@ fn check_saved_state(
     for (old_key, new_key) in &saved.evaluation.lifecycle.successor {
         if saved.evaluation.lifecycle.key_actor.get(old_key)
             != saved.evaluation.lifecycle.key_actor.get(new_key)
+            || !saved.evaluation.lifecycle.retired.contains(old_key)
+            || saved.evaluation.lifecycle.compromised.contains(old_key)
+            || !transfer_edges
+                .get(&(old_key.clone(), new_key.clone()))
+                .is_some_and(|tids| {
+                    tids.iter()
+                        .any(|tid| accept_edges.contains(&(new_key.clone(), tid.clone())))
+                })
         {
             return Err("lifecycle_successor_actor");
         }
@@ -1731,6 +1917,14 @@ fn check_saved_state(
     for (actor, missing) in &saved.evaluation.lifecycle.suspended {
         if missing.is_empty() || !saved.evaluation.lifecycle.groups.contains_key(actor) {
             return Err("lifecycle_suspended_entry");
+        }
+        for sid in missing {
+            let Some(snode) = nodes.get(sid) else {
+                return Err("lifecycle_suspended_node");
+            };
+            if saved.evaluation.lifecycle.key_actor.get(&snode.issuer) != Some(actor) {
+                return Err("lifecycle_suspended_actor_match");
+            }
         }
     }
 
@@ -1760,6 +1954,47 @@ fn check_saved_state(
         {
             return Err("publication_fields");
         }
+        for reason in &p.reasons {
+            if !matches!(
+                reason.as_str(),
+                "resource_unavailable"
+                    | "view_unavailable"
+                    | "body_unavailable"
+                    | "own_history_pending"
+                    | "cutoff_pending"
+                    | "outside_retained_history"
+                    | "incomplete_group"
+                    | "source_attribution_pending"
+                    | "source_attribution_unavailable"
+                    | "import_selection_unavailable"
+                    | "source_selection_conflict"
+                    | "claim_pending"
+                    | "binding_unavailable"
+                    | "observation_pending"
+                    | "observation_body_invalid"
+                    | "historical_guard"
+                    | "policy_history_unavailable"
+                    | "witness_history_incomplete"
+                    | "policy_ancestry_unavailable"
+                    | "controller_dispute"
+                    | "current_authority_lost"
+                    | "carry_history_pending"
+                    | "carry_or_authority_pending"
+                    | "controller_authority_uncertain"
+                    | "contested_status_authority"
+            ) {
+                return Err("publication_reason");
+            }
+        }
+        for fid in &p.status_frontier {
+            let Some(fnode) = nodes.get(fid) else {
+                return Err("publication_frontier_node");
+            };
+            if !fnode.semantic || fnode.action.view().index("target").as_str() != Some(id.as_str())
+            {
+                return Err("publication_frontier_target");
+            }
+        }
         if !resource_refused {
             let expected_parents: BTreeSet<String> = a
                 .index("parents")
@@ -1770,6 +2005,23 @@ fn check_saved_state(
                 .collect();
             if p.lineage.keys().cloned().collect::<BTreeSet<_>>() != expected_parents {
                 return Err("publication_lineage");
+            }
+            for (parent_id, state) in &p.lineage {
+                let expected_state = match nodes.get(parent_id) {
+                    None => "pending",
+                    Some(parent)
+                        if !parent.semantic
+                            || parent.kind != "definition.publish"
+                            || parent.action.view().index("word") != a.index("word")
+                            || parent.action.view().index("language") != a.index("language") =>
+                    {
+                        "invalid"
+                    }
+                    Some(_) => "resolved",
+                };
+                if state != expected_state {
+                    return Err("publication_lineage_state");
+                }
             }
         }
         if !p.imported {
@@ -1903,11 +2155,88 @@ fn check_saved_state(
         if state.candidates != union_candidates {
             return Err("account_candidates");
         }
-        if !state.unavailable
-            && !state.disputed
-            && state.candidates.len() == 1
-            && state.controller != state.candidates.iter().next().cloned()
+        if state.disputed != (state.candidates.len() > 1) {
+            return Err("account_disputed");
+        }
+        if state.unavailable && (state.controller.is_some() || state.reasons.is_empty()) {
+            return Err("account_unavailable");
+        }
+        let max_chains = state
+            .candidates
+            .len()
+            .saturating_add(state.certificates.len())
+            .max(1);
+        if state.chain.len() > saved.options.limits.claim_depth.saturating_mul(max_chains)
+            || ((!state.candidates.is_empty() || !state.historical.is_empty())
+                && saved.options.limits.claim_depth == 0
+                && !state.reasons.contains("resource_unavailable"))
         {
+            return Err("account_claim_depth");
+        }
+        for cid in &state.chain {
+            let Some(cnode) = nodes.get(cid) else {
+                return Err("account_chain_missing_node");
+            };
+            let ca = cnode.action.view();
+            if !cnode.semantic
+                || cnode.kind != "account.set"
+                || ca.index("value") != "claim"
+                || ca.index("origin").as_str() != Some(state.account.origin.as_str())
+                || ca.index("account").as_u64() != Some(state.account.account)
+            {
+                return Err("account_claim_node");
+            }
+        }
+        for cid in &state.closed {
+            if !state.chain.contains(cid) {
+                return Err("account_closed_in_chain");
+            }
+        }
+        for cid in &state.historical {
+            if !observed_claims_by_account
+                .get(token)
+                .is_some_and(|set| set.contains(cid))
+            {
+                return Err("account_historical_observed");
+            }
+        }
+        if let Some(ctrl) = &state.controller
+            && !state.chain.contains(ctrl)
+        {
+            return Err("account_controller_in_chain");
+        }
+        for cert in &state.certificates {
+            if !saved.evaluation.policy_history.contains_key(&cert.policy)
+                || !state.historical.contains(&cert.claim)
+                || cert.observations.is_empty()
+            {
+                return Err("account_certificate");
+            }
+            for oid in &cert.observations {
+                let Some(onode) = nodes.get(oid) else {
+                    return Err("account_certificate_obs");
+                };
+                let oa = onode.action.view();
+                if !onode.semantic
+                    || onode.kind != "account.observe"
+                    || oa.index("origin").as_str() != Some(state.account.origin.as_str())
+                    || oa.index("account").as_u64() != Some(state.account.account)
+                    || oa.index("claim").as_str() != Some(cert.claim.as_str())
+                {
+                    return Err("account_certificate_obs");
+                }
+            }
+        }
+        let expected_controller = if !state.unavailable
+            && state.candidates.len() == 1
+            && !state.contributions.is_empty()
+            && state.contributions.values().all(|c| c.len() == 1)
+        {
+            state.candidates.iter().next().cloned()
+        } else {
+            None
+        };
+        if state.controller != expected_controller {
             return Err("account_controller");
         }
         let expected_identity = if state.commands {
@@ -1924,32 +2253,116 @@ fn check_saved_state(
         }
     }
 
-    // Registers, judgments, and trust cross-checks.
+    // Registers, judgments, trust, and register counter cross-checks.
     let mut judgment_registers = 0usize;
     let mut trust_registers = 0usize;
-    for (key, reg) in &saved.evaluation.registers {
-        if reg.key != *key || reg.heads.is_empty() || reg.values.is_empty() {
+    let mut total_maxima_charges = 0usize;
+    let mut total_maxima_work = 0usize;
+    for (((key, reg), &charge), (&work, &member_work)) in saved
+        .evaluation
+        .registers
+        .iter()
+        .zip(&saved.register_maxima_charges)
+        .zip(
+            saved
+                .register_maxima_work
+                .iter()
+                .zip(&saved.register_maxima_member_work),
+        )
+    {
+        if reg.key != *key
+            || reg.heads.is_empty()
+            || reg.values.is_empty()
+            || reg.conflicted != (reg.values.len() > 1)
+        {
             return Err("register_fields");
         }
-        if let Some((actor, target)) = key.split_once("|judgment|") {
-            if actor != reg.actor {
-                return Err("register_judgment_actor");
+        let Some((prefix_actor, _)) = key.split_once('|') else {
+            return Err("register_key");
+        };
+        if prefix_actor != reg.actor {
+            return Err("register_actor");
+        }
+        let mut expected_values = BTreeSet::new();
+        for head_id in &reg.heads {
+            let Some(hn) = nodes.get(head_id) else {
+                return Err("register_head_missing");
+            };
+            if register_key_for_node(hn, &saved.evaluation.lifecycle).as_deref()
+                != Some(key.as_str())
+            {
+                return Err("register_head_key");
             }
+            expected_values.insert(register_value_for_node(hn));
+        }
+        if reg.values != expected_values {
+            return Err("register_values");
+        }
+        if charge < 72 || charge % 8 != 0 || member_work > work {
+            return Err("register_counter_bounds");
+        }
+        if charge == 72 && reg.heads.len() == 1 && work != member_work {
+            return Err("register_single_union_work");
+        }
+        if register_node_counts.get(key).copied() == Some(1) {
+            let r = (charge - 64) / 8;
+            if member_work != r - 1 || work != (r - 1).saturating_mul(2) {
+                return Err("register_single_member_counters");
+            }
+        }
+        total_maxima_charges = total_maxima_charges
+            .checked_add(charge)
+            .ok_or("register_charge_overflow")?;
+        total_maxima_work = total_maxima_work
+            .checked_add(work)
+            .ok_or("register_work_overflow")?;
+
+        if let Some((_, target)) = key.split_once("|judgment|") {
             judgment_registers += 1;
+            let expected_judgment = if reg.values.len() > 1 {
+                Judgment::Conflicted
+            } else {
+                match reg.values.iter().next().map(String::as_str) {
+                    Some("bless") => Judgment::Bless,
+                    Some("curse") => Judgment::Curse,
+                    _ => Judgment::Clear,
+                }
+            };
             if saved
                 .evaluation
                 .judgments
                 .get(target)
                 .and_then(|m| m.get(&reg.actor))
-                .is_none()
+                != Some(&expected_judgment)
             {
                 return Err("register_judgment_entry");
             }
-        } else if let Some((actor, _)) = key.split_once("|trust|") {
-            if actor != reg.actor {
-                return Err("register_trust_actor");
-            }
+        } else if key.contains("|trust|") {
             trust_registers += 1;
+        }
+    }
+    if total_maxima_charges > super::ancestors::MAX_ANCESTOR_BYTES {
+        return Err("register_charge_cap");
+    }
+    if !resource_refused
+        && total_maxima_work
+            .checked_add(nodes.len().saturating_mul(2))
+            .is_none_or(|min_work| min_work > saved.consumed_work)
+    {
+        return Err("register_work_exceeds_consumed");
+    }
+    if let Some(bytes) = saved.ancestry_bytes {
+        if bytes > super::ancestors::MAX_ANCESTOR_BYTES || bytes % 8 != 0 {
+            return Err("ancestry_bytes_invalid");
+        }
+        if !resource_refused
+            && bytes
+                < nodes
+                    .len()
+                    .saturating_mul(72)
+                    .saturating_add(total_maxima_charges)
+        {
+            return Err("ancestry_bytes_too_small");
         }
     }
     if saved.evaluation.judgments.values().any(BTreeMap::is_empty)
@@ -1960,7 +2373,7 @@ fn check_saved_state(
             .map(BTreeMap::len)
             .sum::<usize>()
             != judgment_registers
-        || saved.evaluation.trust.len() < trust_registers
+        || saved.evaluation.trust.len() != trust_registers
     {
         return Err("registers_totals");
     }
@@ -1970,6 +2383,18 @@ fn check_saved_state(
         };
         if rule.values.is_empty() || jvc_core::validate_scope(&scope).is_err() {
             return Err("trust_rule");
+        }
+        let trust_key = format!(
+            "{}|trust|{}|{}",
+            rule.actor,
+            rule.subject,
+            rule.scope.view()
+        );
+        let Some(reg) = saved.evaluation.registers.get(&trust_key) else {
+            return Err("trust_register_missing");
+        };
+        if reg.values != rule.values {
+            return Err("trust_register_values");
         }
     }
 
@@ -7693,5 +8118,359 @@ mod rebuild_tests {
 
         eprintln!("incremental_fixtures_roundtrip_both_checkpoints_and_append: {count} fixtures");
         assert_eq!(count, 5);
+    }
+
+    fn collect_scalar_leaf_mutations(
+        value: &Value,
+        prefix: &mut Vec<JsonStep>,
+        out: &mut Vec<(Vec<JsonStep>, &'static str, Value)>,
+    ) {
+        match value {
+            Value::Object(map) => {
+                for (k, v) in map {
+                    prefix.push(JsonStep::Key(k.clone()));
+                    collect_scalar_leaf_mutations(v, prefix, out);
+                    prefix.pop();
+                }
+            }
+            Value::Array(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    prefix.push(JsonStep::Index(i));
+                    collect_scalar_leaf_mutations(item, prefix, out);
+                    prefix.pop();
+                }
+            }
+            Value::Number(n) => {
+                if let Some(u) = n.as_u64() {
+                    if u != 0 {
+                        out.push((prefix.clone(), "zero", json!(0u64)));
+                    }
+                    out.push((prefix.clone(), "plus_one", json!(u.saturating_add(1))));
+                    if u > 0 {
+                        out.push((prefix.clone(), "minus_one", json!(u - 1)));
+                    }
+                    let large = 100_000_000u64;
+                    if u != large {
+                        out.push((prefix.clone(), "large", json!(large)));
+                    }
+                }
+            }
+            Value::Bool(b) => {
+                out.push((prefix.clone(), "flip_bool", json!(!b)));
+            }
+            Value::String(s) => {
+                let mutated = if let Some(stripped) = s.strip_suffix('0') {
+                    format!("{stripped}1")
+                } else if !s.is_empty() {
+                    let mut chars: Vec<char> = s.chars().collect();
+                    *chars.last_mut().unwrap() = '0';
+                    chars.into_iter().collect()
+                } else {
+                    "0".to_owned()
+                };
+                out.push((prefix.clone(), "change_str", json!(mutated)));
+            }
+            Value::Null => {}
+        }
+    }
+
+    fn set_at_json_path(root: &mut Value, path: &[JsonStep], new_value: Value) {
+        let mut cursor = root;
+        for step in path {
+            cursor = match step {
+                JsonStep::Key(k) => cursor.get_mut(k).unwrap(),
+                JsonStep::Index(i) => cursor.get_mut(*i).unwrap(),
+            };
+        }
+        *cursor = new_value;
+    }
+
+    #[test]
+    fn refund_above_consumed_work_and_event_quota_below_node_count_are_rejected() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"mutation",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let def_body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        let (pubn, pubn_body) = event(
+            2,
+            2,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            Some(def_body),
+        );
+        let (judgment, _) = event(
+            1,
+            3,
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"bless"}),
+            None,
+        );
+        let options = EvaluationOptions {
+            selected_view: view.id().into(),
+            limits: Limits::default(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+        };
+        let mut prepared = PreparedEvaluationInput::new(options);
+        prepared.add_record(&view, view_body.as_deref());
+        prepared.add_record(&pubn, pubn_body.as_deref());
+        prepared.add_record(&judgment, None);
+        let records: Vec<HostVerifiedRecord> = prepared
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let state = prepared.into_state();
+        assert!(state.evaluation().available);
+        assert_eq!(state.consumed_work(), 28);
+
+        let full_cp = state.checkpoint("mutation").unwrap();
+        let res_cp = state.result_checkpoint("mutation").unwrap();
+        let mut failures = Vec::new();
+
+        for (is_results, raw) in [(false, &full_cp), (true, &res_cp)] {
+            for (name, field_value) in [
+                ("refund_over_consumed", json!(128u64)),
+                ("refund_plus_one", json!(1u64)),
+            ] {
+                let mut cp: Value = serde_json::from_slice(raw).unwrap();
+                cp["register_maxima_work"][0] = field_value;
+                let bytes = serde_json::to_vec(&cp).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes,
+                        "mutation",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes, "mutation")
+                };
+                if restored.is_ok() {
+                    failures.push(format!(
+                        "{name} (is_results={is_results}) was accepted on restore"
+                    ));
+                }
+            }
+
+            for (name, quota) in [("events_zero", 0u64), ("events_two", 2u64)] {
+                let mut cp: Value = serde_json::from_slice(raw).unwrap();
+                cp["options"]["limits"]["events"] = json!(quota);
+                let bytes = serde_json::to_vec(&cp).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes,
+                        "mutation",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes, "mutation")
+                };
+                if restored.is_ok() {
+                    failures.push(format!(
+                        "{name} (is_results={is_results}) was accepted on restore"
+                    ));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "refund/event-quota failures ({}):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn checkpoint_scalar_leaf_mutations_reject_or_are_harmless() {
+        let (prepared_open, appended_pub) = rich_checkpoint_fixture();
+        let judge = identity_from_seed(&[5u8; 32]);
+        let native_pub_id = prepared_open
+            .nodes
+            .values()
+            .find(|n| {
+                n.kind == "definition.publish"
+                    && n.action.view().index("origin") == "native"
+                    && n.body.is_some()
+            })
+            .unwrap()
+            .id
+            .clone();
+        let appended_judgment = host(
+            format!("jve1:{:064x}", 10_029usize),
+            &judge,
+            vec![
+                format!("jve1:{:064x}", 10_020usize),
+                format!("jve1:{:064x}", 10_021usize),
+                format!("jve1:{:064x}", 10_022usize),
+            ],
+            json!({"kind":"judgment.set","target":native_pub_id,"value":"curse"}),
+        );
+
+        let state_open = prepared_open.clone().into_state();
+        assert!(state_open.evaluation().available);
+        let records: Vec<HostVerifiedRecord> = prepared_open
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let mut after_records = records.clone();
+        after_records.push(appended_pub.clone());
+        after_records.push(appended_judgment.clone());
+        after_records.sort_by(|a, b| a.id().cmp(b.id()));
+
+        // Confirm the unmutated fast path works for both appended_pub and appended_judgment.
+        let mut control_delta = PreparedEvaluationInput::new(prepared_open.options.clone());
+        control_delta.add_host_verified_record(appended_pub.clone());
+        control_delta.add_host_verified_record(appended_judgment.clone());
+        let control_after = state_open.clone().advance(control_delta, &[]);
+        assert!(!control_after.statistics().rebuilt);
+        assert_eq!(control_after.statistics().incremental_records, 2);
+
+        let saved_full = state_open.checkpoint("scalar-audit").unwrap();
+        let saved_results = state_open.result_checkpoint("scalar-audit").unwrap();
+
+        let mut total_checked = 0usize;
+        let mut rejected_count = 0usize;
+        let mut harmless_count = 0usize;
+        let mut harmless_fields = Vec::new();
+        let mut failures = Vec::new();
+
+        for (is_results, raw) in [(false, &saved_full), (true, &saved_results)] {
+            let root: Value = serde_json::from_slice(raw).unwrap();
+            let mut mutations = Vec::new();
+            collect_scalar_leaf_mutations(&root, &mut Vec::new(), &mut mutations);
+
+            for (path, label, new_value) in mutations {
+                total_checked += 1;
+                let path_str = format_json_path(&path);
+                let mut mutated = root.clone();
+                set_at_json_path(&mut mutated, &path, new_value.clone());
+                let bytes = serde_json::to_vec(&mutated).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes,
+                        "scalar-audit",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes, "scalar-audit")
+                };
+
+                match restored {
+                    Err(_) => {
+                        rejected_count += 1;
+                    }
+                    Ok(state) => {
+                        let Ok(restored_opts) =
+                            serde_json::from_value::<EvaluationOptions>(mutated["options"].clone())
+                        else {
+                            failures.push(format!(
+                                "is_results={is_results} path={path_str} ({label} -> {new_value}): restored with unparseable options"
+                            ));
+                            continue;
+                        };
+                        let mut full_before_prep = prepared_open.clone();
+                        full_before_prep.options = restored_opts.clone();
+                        full_before_prep.event_limit_exceeded = restored_opts
+                            .limits
+                            .events
+                            .is_some_and(|limit| full_before_prep.nodes.len() > limit);
+                        let full_before = full_before_prep.clone().into_state();
+
+                        let mut full_after_prep = full_before_prep;
+                        full_after_prep.add_host_verified_record(appended_pub.clone());
+                        full_after_prep.add_host_verified_record(appended_judgment.clone());
+                        let full_after = full_after_prep.into_state();
+
+                        let before_ok = state.evaluation().available
+                            == full_before.evaluation().available
+                            && state.consumed_work() == full_before.consumed_work()
+                            && state.remaining_work == full_before.remaining_work
+                            && state.evaluation() == full_before.evaluation();
+
+                        let outcome =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let mut delta = PreparedEvaluationInput::new(restored_opts);
+                                delta.add_host_verified_record(appended_pub.clone());
+                                delta.add_host_verified_record(appended_judgment.clone());
+                                state.advance(delta, &[])
+                            }));
+
+                        match outcome {
+                            Err(_) => {
+                                failures.push(format!(
+                                    "is_results={is_results} path={path_str} ({label} -> {new_value}): advance panicked"
+                                ));
+                            }
+                            Ok(after) => {
+                                let after_ok = after.evaluation().available
+                                    == full_after.evaluation().available
+                                    && after.consumed_work() == full_after.consumed_work()
+                                    && after.remaining_work == full_after.remaining_work
+                                    && serde_json::to_value(after.evaluation()).unwrap()
+                                        == serde_json::to_value(full_after.evaluation()).unwrap();
+                                let next_cp_ok =
+                                    after.checkpoint("after").ok().is_some_and(|cp| {
+                                        EvaluatedState::restore_host_checkpoint(&cp, "after")
+                                            .is_ok()
+                                    }) && after.result_checkpoint("after").ok().is_some_and(|cp| {
+                                        EvaluatedState::restore_host_result_checkpoint(
+                                            &cp,
+                                            "after",
+                                            after_records.clone(),
+                                        )
+                                        .is_ok()
+                                    });
+                                if before_ok && after_ok && next_cp_ok {
+                                    harmless_count += 1;
+                                    harmless_fields.push(format!(
+                                        "is_results={is_results} path={path_str} ({label} -> {new_value})"
+                                    ));
+                                } else {
+                                    failures.push(format!(
+                                        "is_results={is_results} path={path_str} ({label} -> {new_value}): before_ok={before_ok} after_ok={after_ok} (after_work={} vs full={}) next_cp_ok={next_cp_ok}",
+                                        after.consumed_work(),
+                                        full_after.consumed_work(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        eprintln!(
+            "checkpoint_scalar_leaf_audit: total_checked={total_checked}, rejected={rejected_count}, harmless={harmless_count}, failures={}",
+            failures.len()
+        );
+        for h in &harmless_fields {
+            eprintln!("  HARMLESS: {h}");
+        }
+        assert!(
+            failures.is_empty(),
+            "checkpoint scalar leaf audit failures ({}):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 }
