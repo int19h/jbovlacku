@@ -7,6 +7,11 @@ import {
   durableDirectory,
   FileObjectStore,
 } from "../../../apps/server/src/storage.ts";
+import {
+  countObjectOperation,
+  emptyIoCounts,
+  totalObjectOperations,
+} from "../../../scripts/io-counts.ts";
 
 test("new object directories sync every ancestor before admission can continue", async () => {
   const root = process.env.JVC_TEST_ROOT ?? tmpdir();
@@ -27,6 +32,22 @@ test("new object directories sync every ancestor before admission can continue",
   } finally {
     await rm(directory, { recursive: true });
   }
+});
+
+test("object I/O counters count only writes as puts and syncs separately", () => {
+  const counts = emptyIoCounts();
+  // One new object put, then an identical duplicate put.
+  for (const operation of ["write", "sync", "read", "sync"])
+    countObjectOperation(counts, operation);
+  assert.equal(counts.object_get, 1);
+  assert.equal(counts.object_put, 1);
+  assert.equal(counts.object_sync, 2);
+  assert.equal(totalObjectOperations(counts), 4);
+  // A future operation kind cannot change object_put until it is
+  // counted on purpose.
+  countObjectOperation(counts, "some-future-operation");
+  assert.equal(counts.object_put, 1);
+  assert.equal(totalObjectOperations(counts), 4);
 });
 
 test("file object measurements count writes and the read that confirms an existing object", async () => {

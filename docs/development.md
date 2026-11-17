@@ -664,9 +664,10 @@ npx tsx scripts/test-server-security.ts
 The probe verifies real runtime WebAssembly, blocked JavaScript evaluation, blocked inline scripts, and blocked framing.
 `scripts/measure-service-io.ts` uses the same corpus variables to count object operations and sample Node and Wasm memory.
 `logical_get` and `logical_put` count calls to the object store.
-`object_get` counts file read attempts, including missing objects and existing-object checks after a link collision.
-`object_put` counts temporary-file write attempts, including duplicate puts. New objects need no read before the write.
-`operations` totals those file reads and writes. It excludes directory operations, links, file syncs, and metadata access.
+`object_get` counts file read attempts, including missing objects, the existing-object check before a skipped write, and existing-object checks after a link collision.
+`object_put` counts temporary-file write attempts only. An identical duplicate put makes no temporary-file write, so it does not count here.
+`object_sync` counts object-directory syncs, including the sync before a skipped write returns. A counter that is not a read, write, or sync counts in none of these until it is counted on purpose.
+`operations` totals those file reads, temporary-file writes, and directory syncs. It excludes links and other metadata access.
 `JVC_IO_REPORT` selects an output report file. Its disposable database is removed when the measurement finishes.
 The importer tests use pinned JSON captures and a small SQL fixture with source provenance.
 The importer converts supported explicit x-place forms and publishes known official and experimental rafsi as separate imported claims.

@@ -9,6 +9,12 @@ import {
   SqliteCoordinator,
 } from "../apps/server/src/storage.ts";
 import type { Snapshot, State } from "../packages/service/src/storage.ts";
+import {
+  countObjectOperation,
+  emptyIoCounts,
+  totalObjectOperations,
+  type IoCounts,
+} from "./io-counts.ts";
 
 assert(
   process.env.JVC_ADAPTER_CARRIER &&
@@ -22,11 +28,10 @@ const runtime = (await initializeCore(
     new URL("../packages/core/generated/jvc_runtime_bg.wasm", import.meta.url),
   ),
 )) as { memory: WebAssembly.Memory };
-let counts = { logical_get: 0, logical_put: 0, object_get: 0, object_put: 0 };
-const objects = new FileObjectStore(join(directory, "objects"), (operation) => {
-  if (operation === "read") counts.object_get++;
-  else counts.object_put++;
-});
+let counts: IoCounts = emptyIoCounts();
+const objects = new FileObjectStore(join(directory, "objects"), (operation) =>
+  countObjectOperation(counts, operation),
+);
 const rows = new SqliteCoordinator(join(directory, "coordinator.sqlite"), 3);
 const memory: unknown[] = [];
 const sample = (phase: string) =>
@@ -70,7 +75,7 @@ try {
   const batch = await service.admitMany(carriers);
   const batchCounts = {
     ...counts,
-    operations: counts.object_get + counts.object_put,
+    operations: totalObjectOperations(counts),
     milliseconds: performance.now() - started,
   };
   sample("after_batch");
@@ -83,7 +88,7 @@ try {
   );
   assert.equal(selection.status, 201);
   sample("after_selection");
-  counts = { logical_get: 0, logical_put: 0, object_get: 0, object_put: 0 };
+  counts = emptyIoCounts();
   const cold = new DictionaryService(counted, coordinator, {
     serverId: "measurement",
     policyUrl: "https://example.invalid/policy",
@@ -96,7 +101,7 @@ try {
   assert.equal(search.status, 200, await search.clone().text());
   const searchCounts = {
     ...counts,
-    operations: counts.object_get + counts.object_put,
+    operations: totalObjectOperations(counts),
     milliseconds: performance.now() - searchStarted,
   };
   sample("after_cold_search");
