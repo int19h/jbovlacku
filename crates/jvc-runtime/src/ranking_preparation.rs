@@ -430,104 +430,65 @@ impl SessionPreparation {
         let e = session.state.evaluation();
         // The meter exists before anything is read or copied from the
         // evaluation. Every lookup, clone, and copy below is charged
-        // through it before it runs.
+        // through it before it runs. After a charged read refuses, no
+        // further work over restored data happens: the session is
+        // classified only from what the reads before the refusal
+        // already learned, and anything else returns the refusal.
         let mut meter = policy.setup_meter(0, 0);
         let mut reasons = BTreeSet::new();
-        let mut refusal: Option<Error> = None;
         // The selected view identifier is cloned into the descriptor.
-        if let Err(error) = meter.charge(add(e.selected_view.len() as u64, 16)?, 0, 0) {
-            refusal = Some(error);
-        }
+        // A refusal here has learned nothing, so it returns at once.
+        meter.charge(add(e.selected_view.len() as u64, 16)?, 0, 0)?;
         // Build the reason set through the meter: each entry is charged
         // for its set insertion comparisons and its string copy before
-        // either happens.
-        if refusal.is_none() {
-            for reason in &e.reasons {
-                let work = add(
-                    add(
-                        jvc_state::lookup_work(e.reasons.len() as u64, reason.len() as u64),
-                        reason.len() as u64,
-                    )?,
-                    16,
-                )?;
-                if let Err(error) = meter.charge(work, 0, 0) {
-                    refusal = Some(error);
-                    break;
-                }
-                reasons.insert(reason.clone());
-            }
+        // either happens. A refusal here also returns at once.
+        for reason in &e.reasons {
+            let work = add(
+                add(
+                    jvc_state::lookup_work(e.reasons.len() as u64, reason.len() as u64),
+                    reason.len() as u64,
+                )?,
+                16,
+            )?;
+            meter.charge(work, 0, 0)?;
+            reasons.insert(reason.clone());
         }
-        let read_charged = |meter: &mut SetupMeter,
-                            reasons: &mut BTreeSet<String>|
-         -> Result<(Option<String>, Option<PreparationParameters>)> {
-            let algorithm = match e.policy.as_ref() {
-                Some(p) => p
-                    .view()
-                    .get_metered("calculation", &mut |w| meter.charge(w, 0, 0))?
-                    .and_then(|v| v.as_str().map(str::to_owned)),
-                None => None,
-            };
-            if let Some(algorithm) = &algorithm {
-                meter.charge(algorithm.len() as u64, 0, 0)?;
-            }
-            let parameters = match parameters(e, meter) {
-                Ok(p) => Some(p),
-                Err(error) if error.code == "resource_unavailable" => return Err(error),
-                Err(error) => {
-                    reasons.insert(error.code);
-                    None
-                }
-            };
-            Ok((algorithm, parameters))
+        // Read the calculation field borrowed, charge its length, and
+        // only then copy it. A refusal in either charge returns at
+        // once: without the copied name the descriptor cannot name
+        // the profile.
+        let calculation = match e.policy.as_ref() {
+            Some(policy) => policy
+                .view()
+                .get_metered("calculation", &mut |w| meter.charge(w, 0, 0))?,
+            None => None,
         };
-        let (algorithm, parameters) = if let Some(error) = refusal {
-            // A charged preamble read refused. Unsupported and
-            // unavailable sessions still return their diagnostic
-            // descriptor, so classify with reads charged to a discard
-            // meter that never refuses; only an available float session
-            // returns the refusal. No policy read runs uncharged.
-            let mut discard = policy.setup_meter(0, 0);
-            discard.explicit = Some(u64::MAX);
-            reasons.clear();
-            for reason in &e.reasons {
-                let _ = discard.charge(
-                    add(
-                        add(
-                            jvc_state::lookup_work(e.reasons.len() as u64, reason.len() as u64),
-                            reason.len() as u64,
-                        )?,
-                        16,
-                    )?,
-                    0,
-                    0,
-                );
-                reasons.insert(reason.clone());
+        let algorithm: Option<String> = match calculation.as_ref().and_then(|v| v.as_str()) {
+            Some(name) => {
+                meter.charge(name.len() as u64, 0, 0)?;
+                Some(name.to_owned())
             }
-            let (algorithm, parameters) = read_charged(&mut discard, &mut reasons)?;
-            if e.available && algorithm.as_deref() == Some(a::ALGORITHM) && parameters.is_some() {
-                return Err(error);
-            }
-            meter = discard;
-            (algorithm, parameters)
-        } else {
-            match read_charged(&mut meter, &mut reasons) {
-                Ok(pair) => pair,
-                Err(error) => {
-                    let mut discard = policy.setup_meter(0, 0);
-                    discard.explicit = Some(u64::MAX);
-                    let (algorithm, parameters) = read_charged(&mut discard, &mut reasons)?;
-                    if e.available
-                        && algorithm.as_deref() == Some(a::ALGORITHM)
-                        && parameters.is_some()
-                    {
-                        return Err(error);
-                    }
-                    meter = discard;
-                    (algorithm, parameters)
-                }
-            }
+            None => None,
         };
         let unsupported = algorithm.as_deref().is_some_and(|a| a != a::ALGORITHM);
+        // Parameters are read charged. If a charge refuses, the
+        // algorithm is already known: an exact or unavailable profile
+        // still returns its diagnostic descriptor with no parameters,
+        // while an available float session returns the refusal.
+        let parameters = match parameters(e, &mut meter) {
+            Ok(p) => Some(p),
+            Err(error) if error.code == "resource_unavailable" => {
+                if !unsupported && e.available && algorithm.as_deref() == Some(a::ALGORITHM) {
+                    return Err(error);
+                }
+                reasons.insert(error.code);
+                None
+            }
+            Err(error) => {
+                reasons.insert(error.code);
+                None
+            }
+        };
         if unsupported {
             reasons.insert("unsupported_calculation".into());
         }
@@ -1798,8 +1759,8 @@ mod tests {
             limits: Default::default(),
         };
         quota.limits.setup_units = Some(1);
-        // Available float: the refusal stands, and classification still
-        // charges every policy read it repeats.
+        // Available float at a one-unit quota refuses, and the refusal
+        // is the last work done: no classification reads follow it.
         let (available_session, _word) = session();
         let available_session = with_long_policy(available_session);
         jvc_state::reset_setup_lookup_calls();
@@ -1807,8 +1768,9 @@ mod tests {
             .ranking_descriptor_native(&quota)
             .unwrap_err();
         assert_eq!(error.code, "resource_unavailable");
-        assert!(jvc_state::setup_lookup_calls() >= 10);
-        // Unavailable float: the diagnostic descriptor still returns.
+        assert_eq!(jvc_state::setup_lookup_calls(), 0);
+        // Unavailable float returns its diagnostic descriptor at the
+        // default and at an ordinary quota.
         let (unavailable_session, _word) = session();
         let unavailable_session = restored_with(unavailable_session, |saved| {
             saved["evaluation"]["available"] = json!(false);
@@ -1818,14 +1780,27 @@ mod tests {
                 policy.insert(format!("x{n}"), json!(n));
             }
         });
-        jvc_state::reset_setup_lookup_calls();
-        let descriptor = unavailable_session
-            .ranking_descriptor_native(&quota)
-            .unwrap();
-        assert!(!descriptor.available);
-        assert_eq!(descriptor.setup.setup_records, 0);
-        assert!(jvc_state::setup_lookup_calls() >= 10);
-        // Exact profile: the diagnostic descriptor still returns.
+        for policy in [
+            RankingPreparationPolicy {
+                core_binding: format!("sha256:{}", "a".repeat(64)),
+                limits: Default::default(),
+            },
+            RankingPreparationPolicy {
+                core_binding: format!("sha256:{}", "a".repeat(64)),
+                limits: RankingPreparationLimits {
+                    setup_units: Some(1_000_000),
+                    ..Default::default()
+                },
+            },
+        ] {
+            let descriptor = unavailable_session
+                .ranking_descriptor_native(&policy)
+                .unwrap();
+            assert!(!descriptor.available);
+            assert_eq!(descriptor.setup.setup_records, 0);
+        }
+        // Exact profile returns its diagnostic descriptor at the
+        // default and at an ordinary quota.
         let (exact_session, _word) = session();
         let exact_session = restored_with(exact_session, |saved| {
             saved["evaluation"]["policy"]["calculation"] = json!("simple-routes-bounds-v1");
@@ -1834,12 +1809,24 @@ mod tests {
                 policy.insert(format!("x{n}"), json!(n));
             }
         });
-        jvc_state::reset_setup_lookup_calls();
-        let descriptor = exact_session.ranking_descriptor_native(&quota).unwrap();
-        assert!(!descriptor.available);
-        assert!(descriptor.reasons.contains("unsupported_calculation"));
-        assert_eq!(descriptor.setup.setup_records, 0);
-        assert!(jvc_state::setup_lookup_calls() >= 10);
+        for policy in [
+            RankingPreparationPolicy {
+                core_binding: format!("sha256:{}", "a".repeat(64)),
+                limits: Default::default(),
+            },
+            RankingPreparationPolicy {
+                core_binding: format!("sha256:{}", "a".repeat(64)),
+                limits: RankingPreparationLimits {
+                    setup_units: Some(1_000_000),
+                    ..Default::default()
+                },
+            },
+        ] {
+            let descriptor = exact_session.ranking_descriptor_native(&policy).unwrap();
+            assert!(!descriptor.available);
+            assert!(descriptor.reasons.contains("unsupported_calculation"));
+            assert_eq!(descriptor.setup.setup_records, 0);
+        }
     }
     #[test]
     fn long_reasons_clone_is_charged_before_cloning() {
@@ -1857,9 +1844,26 @@ mod tests {
         jvc_state::reset_setup_lookup_calls();
         let error = session.ranking_descriptor_native(&policy).unwrap_err();
         assert_eq!(error.code, "resource_unavailable");
-        // One charge per rebuilt reason in classification, plus the
-        // policy reads. An uncharged clone would leave the count near 1.
-        assert!(jvc_state::setup_lookup_calls() >= 1000);
+        // The first charge refuses, so no lookup or clone follows it.
+        assert_eq!(jvc_state::setup_lookup_calls(), 0);
+    }
+    #[test]
+    fn long_calculation_is_charged_before_it_is_copied() {
+        let (first, _word) = session();
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["policy"]["calculation"] = json!("a".repeat(100_000_000));
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(1_000);
+        jvc_state::reset_setup_lookup_calls();
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        // Only the charged calculation lookup ran. A copy before its
+        // charge, or any classification reread, would add lookups.
+        assert_eq!(jvc_state::setup_lookup_calls(), 1);
     }
     #[test]
     fn unavailable_float_skips_the_records_walk() {

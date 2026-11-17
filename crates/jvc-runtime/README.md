@@ -115,6 +115,9 @@ The default setup-unit budget is 100,000,000 plus 1,040 per index entry plus 6 p
 Those per-entry and per-byte allowances cover the charge at the widest bit length: 16 * 64 + 16 per entry and 6 per key byte.
 The margin over the charge is therefore at least the fixed 100,000,000 at any size, and it grows as an ordinary shape grows.
 An explicit `setup_units` quota replaces the default.
+After a charged read refuses, setup does no further work over restored data.
+It classifies the session only from what the reads before the refusal already learned.
+A profile that was not yet shown exact or unavailable therefore returns the refusal, even when it is one of those profiles.
 
 The measured dictionary has 269,350 structural records and 165,438,058 source bytes.
 Its indexes retain 64,033,159 requested heap bytes.

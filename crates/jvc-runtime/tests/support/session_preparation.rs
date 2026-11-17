@@ -517,6 +517,13 @@ fn exact_profiles_skip_the_source_walk_and_float_unavailability_keeps_its_reason
     tiny.limits.setup_bytes = Some(1);
     tiny.limits.setup_units = Some(1);
     tiny.limits.units = 1;
+    // A one-unit setup quota refuses in the preamble, before the exact
+    // profile is classified. Without it, the diagnostic returns.
+    assert_eq!(
+        exact.ranking_descriptor_native(&tiny).unwrap_err().code,
+        "resource_unavailable"
+    );
+    tiny.limits.setup_units = None;
     let d = exact.ranking_descriptor_native(&tiny).unwrap();
     assert!(!d.available && d.reasons.contains("unsupported_calculation"));
     assert_eq!(d.setup.setup_bytes, 0);
@@ -818,6 +825,13 @@ fn unavailable_evaluations_skip_setup_bounds_for_raw_overlays() {
         let mut tiny = policy();
         tiny.limits.setup_bytes = Some(1);
         tiny.limits.setup_units = Some(1);
+        // A one-unit setup quota refuses in the preamble. Without it,
+        // the unavailable diagnostic returns with zero setup counts.
+        assert_eq!(
+            session.ranking_descriptor_native(&tiny).unwrap_err().code,
+            "resource_unavailable"
+        );
+        tiny.limits.setup_units = None;
         let descriptor = session.ranking_descriptor_native(&tiny).unwrap();
         assert!(!descriptor.available, "{name}");
         assert!(descriptor.reasons.contains("resource_unavailable"));
