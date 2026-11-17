@@ -620,6 +620,44 @@ test("the worker continues the transferred budget state", async ({
   expect(outcome).toContain("work or time limit");
 });
 
+test("the worker charges the response transfer it posts", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    // One word shared by every entry keeps the whole response in a single
+    // hit: the transfer of its 20 references is what exceeds the budget.
+    const entries = Array.from({ length: 20 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    try {
+      await searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), entries },
+        "en",
+        ["/.*/"],
+        { workLimit: 200 },
+      );
+      return "resolved";
+    } catch (error) {
+      return `${(error as Error).constructor.name}: ${(error as Error).message}`;
+    }
+  }, corePath);
+  // A pattern query spends no parser work, so only the transfer and rebuild
+  // charges can refuse: the old code resolves the same request.
+  expect(outcome).toContain("work or time limit");
+});
+
 test("an invalid cached package is reported and server search stays usable", async ({
   page,
 }) => {

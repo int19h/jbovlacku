@@ -92,3 +92,17 @@ test("nearby ranking charges every ranked hit against the request budget", () =>
   );
   assert.equal(rankNearby(lists).length, 600);
 });
+
+test("nearby ranking charges the final mapping pass", () => {
+  const metrics = searchMetrics();
+  const shared = new SearchRequestBudget(metrics, {
+    workLimit: 1,
+    deadlineMs: Infinity,
+  });
+  // One input hit passes the scan, but copying it to the output exceeds it.
+  assert.throws(
+    () => rankNearby([[{ word_id: "a" }]], shared),
+    (error: unknown) => error instanceof SearchBudgetError,
+  );
+  assert.deepEqual(rankNearby([[{ word_id: "a" }]]), [{ word_id: "a" }]);
+});

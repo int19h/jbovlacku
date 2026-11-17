@@ -38,19 +38,23 @@ export function rankNearby<T extends { word_id: string }>(
       scored.set(hit.word_id, row);
     });
   }
-  return [...scored.values()]
-    .sort((a, b) => {
-      // One comparison costs one unit, charged before the comparison runs.
-      budget?.reserve(1, "search");
-      return (
-        b.score - a.score ||
-        a.rank - b.rank ||
-        (a.hit.word_id < b.hit.word_id
-          ? -1
-          : a.hit.word_id > b.hit.word_id
-            ? 1
-            : 0)
-      );
-    })
-    .map((row) => row.hit);
+  const ordered = [...scored.values()].sort((a, b) => {
+    // One comparison costs one unit, charged before the comparison runs.
+    budget?.reserve(1, "search");
+    return (
+      b.score - a.score ||
+      a.rank - b.rank ||
+      (a.hit.word_id < b.hit.word_id
+        ? -1
+        : a.hit.word_id > b.hit.word_id
+          ? 1
+          : 0)
+    );
+  });
+  return ordered.map((row) => {
+    // The final mapping copies every distinct hit, so it charges one unit
+    // per row before the copy runs.
+    budget?.reserve(1, "search");
+    return row.hit;
+  });
 }

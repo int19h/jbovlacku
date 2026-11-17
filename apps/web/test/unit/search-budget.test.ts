@@ -61,62 +61,50 @@ test("worker reply codes map to their documented errors", () => {
   assert.equal(other.message, "plain");
 });
 
-test("a worker crash is classified by cause, not timing", () => {
+test("a worker crash is classified by cause, not history", () => {
   const generic = /could not start.*retry/;
-  // An ordinary code bug keeps the startup message on the first request and
-  // on a later one alike.
-  for (const pending of [false, true])
-    assert.match(
-      workerCrashReason({
-        hadPendingPreparation: pending,
-        memoryPressure: false,
-        errorName: "Error",
-      }).message,
-      generic,
-    );
-  // An allocation failure reports does-not-fit even on the first request.
-  for (const pending of [false, true])
-    assert.match(
-      workerCrashReason({
-        hadPendingPreparation: pending,
-        memoryPressure: false,
-        errorName: "RangeError",
-      }).message,
-      /does not fit/,
-    );
+  // An ordinary code bug keeps the startup message, before or after any
+  // earlier reply: a prior memory failure must not launder it.
+  assert.match(workerCrashReason({ errorName: "Error" }).message, generic);
   assert.match(
-    workerCrashReason({
-      hadPendingPreparation: true,
-      memoryPressure: false,
-      errorName: "QuotaExceededError",
-    }).message,
+    workerCrashReason({ errorName: undefined }).message,
+    generic,
+  );
+  // An allocation failure reports does-not-fit on its own evidence.
+  assert.match(
+    workerCrashReason({ errorName: "RangeError" }).message,
+    /does not fit/,
+  );
+  assert.match(
+    workerCrashReason({ errorName: "QuotaExceededError" }).message,
     /does not fit/,
   );
   // A load failure keeps the startup message.
   assert.match(
-    workerCrashReason({
-      hadPendingPreparation: true,
-      memoryPressure: false,
-      errorName: "SyntaxError",
-    }).message,
+    workerCrashReason({ errorName: "SyntaxError" }).message,
     generic,
   );
-  // A crash after a does-not-fit report with another preparation pending
-  // reports does-not-fit even for an ordinary error.
-  assert.match(
-    workerCrashReason({
-      hadPendingPreparation: true,
-      memoryPressure: true,
-      errorName: "Error",
-    }).message,
-    /does not fit/,
-  );
+  // A stale memory report cannot classify a later crash: the old positional
+  // call that mapped two truthy flags to does-not-fit now reports the
+  // startup message.
+  const staleEvidence = {
+    hadPendingPreparation: true,
+    memoryPressure: true,
+    errorName: "Error",
+  } as unknown as Parameters<typeof workerCrashReason>[0];
+  assert.match(workerCrashReason(staleEvidence).message, generic);
 });
 
-test("worker error names come from the event or its message", () => {
+test("worker error names cover both engines' event shapes", () => {
   assert.equal(workerErrorName(new RangeError("x")), "RangeError");
+  // Chromium prefixes the name with "Uncaught".
   assert.equal(
     workerErrorName({ message: "Uncaught RangeError: Array buffer allocation failed" }),
+    "RangeError",
+  );
+  // Firefox reports the bare name with a null error object.
+  assert.equal(
+    workerErrorName({ message: "RangeError: review allocation failure", error: null }),
     "RangeError",
   );
   assert.equal(

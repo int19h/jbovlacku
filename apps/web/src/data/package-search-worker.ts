@@ -186,19 +186,26 @@ self.onmessage = ({ data }) => {
       const ranked = options.nearby
         ? [rankNearby(hits, requestBudget)]
         : hits;
+      // The structured clone below copies every mapped reference to the
+      // client, so the mapping also counts the transfer units up front.
+      let transferUnits = 0;
       const pages: PackageHitReferences[][] = ranked.map((rows) =>
         rows.slice(offset, offset + limit).map((hit) => {
           // One unit per reference mapped, charged before the mapping runs.
           requestBudget.reserve(1, "search");
+          transferUnits += 1;
           const entries = hit.entries.map((entry) => {
             requestBudget.reserve(1, "search");
+            transferUnits += 1;
             return stored.entries.get(entry)!;
           });
           const definitions = hit.definitions.map((event) => {
             requestBudget.reserve(1, "search");
+            transferUnits += 1;
             return stored.events.get(event)!;
           });
           requestBudget.reserve(1, "search");
+          transferUnits += 1;
           return {
             word_id: hit.word_id,
             match: hit.match,
@@ -209,6 +216,8 @@ self.onmessage = ({ data }) => {
           };
         }),
       );
+      // Charge the reply transfer before it is posted.
+      requestBudget.reserve(transferUnits, "search");
       reply({
         request: data.request,
         result: {

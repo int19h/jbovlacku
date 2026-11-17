@@ -81,35 +81,32 @@ export function workerReplyError(code: unknown, message: unknown): Error {
 }
 /**
  * Evidence for classifying a worker crash. A worker that runs out of room
- * reports an allocation failure through its error event (Chromium delivers
+ * reports an allocation failure through its error event. Chromium delivers an
  * `ErrorEvent` with e.g. "Uncaught RangeError: Array buffer allocation
- * failed"); a script that never loads reports a syntax error instead.
+ * failed"; Firefox delivers an `ErrorEvent` with the bare "RangeError: ..."
+ * form and a null error object. A script that never loads reports a syntax
+ * error instead.
  */
 export interface WorkerCrashEvidence {
-  hadPendingPreparation: boolean;
-  /** Set once this worker reported that a package does not fit. */
-  memoryPressure: boolean;
   /** Parsed error name, e.g. "RangeError", "Error", or "SyntaxError". */
   errorName?: string;
 }
 /**
- * Classifies a worker crash by cause, not timing. An allocation failure, or a
- * crash after the worker already reported that a package does not fit while
- * another preparation is pending, reports does-not-fit. An ordinary error, a
- * load failure, or a crash with no memory evidence keeps the generic startup
- * message, even on a later request.
+ * Classifies a worker crash by its own cause. Only an allocation failure
+ * reports does-not-fit. Every other crash — an ordinary error, a load
+ * failure, or a crash with no error information — keeps the generic startup
+ * message, no matter what the worker reported before.
  */
 export function workerCrashReason(evidence: WorkerCrashEvidence): Error {
-  if (
-    /^(RangeError|QuotaExceededError)$/i.test(evidence.errorName ?? "") ||
-    (evidence.memoryPressure && evidence.hadPendingPreparation)
-  )
+  if (/^(RangeError|QuotaExceededError)$/i.test(evidence.errorName ?? ""))
     return new PackageStorageError();
   return new Error("Local search could not start. Reload the page to retry.");
 }
 /**
  * Reads the error name from a worker error event: the error object when the
- * browser supplies one, else the `Uncaught Name:` prefix of its message.
+ * browser supplies one, else the `NAME:` message prefix. Chromium prefixes
+ * the message with `Uncaught` while Firefox reports the bare `NAME:` form
+ * with a null error object.
  */
 export function workerErrorName(event: unknown): string | undefined {
   if (event instanceof Error) return event.name;
@@ -118,17 +115,14 @@ export function workerErrorName(event: unknown): string | undefined {
     message?: unknown;
   } | null;
   if (anyEvent?.error instanceof Error) return anyEvent.error.name;
-  const message =
-    typeof anyEvent?.message === "string" ? anyEvent.message : "";
-  return /^Uncaught ([A-Za-z]*Error):/.exec(message)?.[1];
+  const message = typeof anyEvent?.message === "string" ? anyEvent.message : "";
+  return /^(?:Uncaught )?([A-Za-z]*Error):/.exec(message)?.[1];
 }
 interface Client {
   worker: Worker;
   canceledPatterns: Set<number>;
   retained: Set<string | number>;
   cacheRevision: number;
-  /** Set once this worker reported that a package does not fit. */
-  memoryPressure: boolean;
   preparing: Map<number, string | number>;
   pending: Map<
     number,
@@ -172,11 +166,9 @@ function searchWorker(): Client {
     canceledPatterns: new Set(),
     retained: new Set(),
     cacheRevision: -1,
-    memoryPressure: false,
     preparing: new Map(),
   };
   worker.onmessage = ({ data }) => {
-    if (data.code === "package-too-large") current.memoryPressure = true;
     // Cache acknowledgments also matter after that request's consumer aborts.
     const stale =
       Number.isSafeInteger(data.cacheRevision) &&
@@ -214,14 +206,7 @@ function searchWorker(): Client {
     }
   };
   worker.onerror = (event) => {
-    stopWorker(
-      current,
-      workerCrashReason({
-        hadPendingPreparation: current.preparing.size > 0,
-        memoryPressure: current.memoryPressure,
-        errorName: workerErrorName(event),
-      }),
-    );
+    stopWorker(current, workerCrashReason({ errorName: workerErrorName(event) }));
   };
   client = current;
   return current;
