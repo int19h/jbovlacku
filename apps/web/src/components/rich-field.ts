@@ -1084,12 +1084,6 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       focus(view) {
-        // This handler runs before ProseMirror's own focus handler.
-        // Reading the browser selection into state here means the
-        // focus-time write ProseMirror schedules about 20 ms later
-        // starts from the caret the reader actually has; the keyup and
-        // selectionchange syncs below then keep state ahead of it.
-        syncNativeSelection();
         const reset =
           resetSelection?.doc === view.state.doc ? resetSelection : null;
         const before =
@@ -1131,6 +1125,13 @@ export function richField(label: string, options: RichFieldOptions) {
           if (repair) view.focus();
         }
         pointerFocus = false;
+        // This handler runs before ProseMirror's own focus handler.
+        // With any caret repair above settled, read the browser selection
+        // into state, so the focus-time write ProseMirror schedules
+        // about 20 ms later starts from the caret the reader actually
+        // has; the keyup and selectionchange syncs then keep state
+        // ahead of it.
+        syncNativeSelection();
         return false;
       },
       pointerdown() {
