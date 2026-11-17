@@ -1198,20 +1198,28 @@ function assertSyncedReplace(trace: string, finalPath: string): void {
   for (const line of trace.split("\n")) {
     const sync = line.match(/\b(?:fsync|fdatasync)\(\d+<([^>]+)>\)/);
     if (sync) { events.push({ kind: "sync", at: events.length, path: sync[1] }); continue; }
-    const renamed = line.match(/\brenameat?\((.*)\) = 0/);
+    // renameat2 is the call this kernel records. rename and renameat remain covered.
+    const renamed = line.match(/\brename(?:at2?)?\((.*)\) = 0/);
     if (!renamed) continue;
     const quoted = [...renamed[1].matchAll(/"((?:\\.|[^"\\])*)"/g)].map((m) => m[1]);
-    if (quoted.length >= 2) events.push({ kind: "rename", at: events.length, src: quoted[quoted.length - 2], dest: quoted[quoted.length - 1] });
+    if (quoted.length < 2) continue;
+    let src = quoted[quoted.length - 2];
+    let dest = quoted[quoted.length - 1];
+    const parent = renamed[1].match(/\d+<([^>]+)>/)?.[1];
+    if (parent && !src.startsWith("/")) src = join(parent, src);
+    if (parent && !dest.startsWith("/")) dest = join(parent, dest);
+    events.push({ kind: "rename", at: events.length, src, dest });
   }
   const rename = events.find((event) => event.kind === "rename" && event.dest === finalPath);
-  assert.ok(rename, `no rename to ${finalPath}`);
+  const seen = trace.split("\n").filter((line) => /rename|fsync|fdatasync/.test(line)).slice(0, 8).join("\n");
+  assert.ok(rename, `no rename to ${finalPath}\n${seen}`);
   const tempSync = events.findLast((event) => event.kind === "sync" && event.at < rename.at && event.path === rename.src);
   assert.ok(tempSync, `no sync of ${rename.src} before the rename`);
   const dirSync = events.find((event) => event.kind === "sync" && event.at > rename.at && event.path === dirname(finalPath));
   assert.ok(dirSync, `no sync of ${dirname(finalPath)} after the rename`);
 }
 async function runTraced(tracePath: string, command: string[]): Promise<{ code: number; out: string; trace: string }> {
-  const args = ["-f", "-y", "-s", "400", "-e", "trace=fsync,fdatasync,rename,renameat", "-o", tracePath, ...command];
+  const args = ["-f", "-y", "-s", "400", "-e", "trace=fsync,fdatasync,rename,renameat,renameat2", "-o", tracePath, ...command];
   try {
     const r = await run("strace", args, { timeout: 180000 });
     return { code: 0, out: (r.stdout ?? "") + (r.stderr ?? ""), trace: await readFile(tracePath, "utf8") };
@@ -1344,9 +1352,15 @@ test("a zombie lock owner is dead", async () => {
       holder.on("exit", () => { clearTimeout(timer); reject(new Error(`holder exited early: ${buf}`)); });
     });
     const pid = Number(pidText.trim());
-    const statText = await readFile(`/proc/${pid}/stat`, "utf8");
-    const fields = statText.slice(statText.lastIndexOf(")") + 2).split(" ");
-    assert.equal(fields[0], "Z");
+    let statText = "";
+    let fields: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      try { statText = await readFile(`/proc/${pid}/stat`, "utf8"); } catch { statText = ""; }
+      fields = statText ? statText.slice(statText.lastIndexOf(")") + 2).split(" ") : [];
+      if (fields[0] === "Z") break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(fields[0], "Z", statText || `pid ${pid} has no process state`);
     const ticks = Number(fields[19]);
     await writeFile(join(state, "lock"), JSON.stringify({ pid, proc_start: ticks, started_at: new Date().toISOString(), token: "dead-zombie" }) + "\n");
     const cleared = await cmdResult(["--state", state, "unlock"]);
