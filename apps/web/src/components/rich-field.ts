@@ -204,17 +204,13 @@ function deletionRange(
   }
 }
 
-/** Ask only for selection motion. Never let the browser delete text. */
-function deletionMotion(
+type NativeSelection = NonNullable<ReturnType<Document["getSelection"]>>;
+
+/** Read the range a native selection motion produces, then restore it. */
+function motionRange(
   view: EditorView,
-  type: RichDeleteType,
+  move: (selection: NativeSelection) => void,
 ): RichDeleteRange | null {
-  if (
-    !type.startsWith("deleteWord") &&
-    !type.startsWith("deleteSoftLine") &&
-    type !== "deleteEntireSoftLine"
-  )
-    return null;
   const selection = view.dom.ownerDocument.getSelection();
   if (!selection?.anchorNode || !selection.focusNode || !selection.modify)
     return null;
@@ -223,13 +219,7 @@ function deletionMotion(
   const anchorOffset = selection.anchorOffset,
     headOffset = selection.focusOffset;
   try {
-    if (type === "deleteEntireSoftLine")
-      selection.modify("move", "backward", "lineboundary");
-    selection.modify(
-      "extend",
-      type.endsWith("Backward") ? "backward" : "forward",
-      type.startsWith("deleteWord") ? "word" : "lineboundary",
-    );
+    move(selection);
     const range = selection.rangeCount ? selection.getRangeAt(0) : null;
     if (
       !range ||
@@ -247,6 +237,48 @@ function deletionMotion(
     // Queued selectionchange events must observe the restored or dispatched caret.
     selection.setBaseAndExtent(anchor, anchorOffset, head, headOffset);
   }
+}
+
+/** Ask only for selection motion. Never let the browser delete text. */
+function deletionMotion(
+  view: EditorView,
+  type: RichDeleteType,
+): RichDeleteRange | null {
+  if (
+    !type.startsWith("deleteWord") &&
+    !type.startsWith("deleteSoftLine") &&
+    type !== "deleteEntireSoftLine"
+  )
+    return null;
+  return motionRange(view, (selection) => {
+    if (type === "deleteEntireSoftLine")
+      selection.modify("move", "backward", "lineboundary");
+    selection.modify(
+      "extend",
+      type.endsWith("Backward") ? "backward" : "forward",
+      type.startsWith("deleteWord") ? "word" : "lineboundary",
+    );
+  });
+}
+
+/**
+ * The editor owns Home and End. A native line move that lands just after
+ * the editor takes focus can be overwritten when ProseMirror writes its
+ * tracked selection back to the DOM, which drops a following replacement
+ * edit onto a caret at one end of the line.
+ */
+function lineRange(
+  view: EditorView,
+  backward: boolean,
+  extend: boolean,
+): RichDeleteRange | null {
+  return motionRange(view, (selection) =>
+    selection.modify(
+      extend ? "extend" : "move",
+      backward ? "backward" : "forward",
+      "lineboundary",
+    ),
+  );
 }
 
 function deletionKey(event: KeyboardEvent): RichDeleteType | null {
@@ -940,6 +972,24 @@ export function richField(label: string, options: RichFieldOptions) {
           paragraphCommand(
             event.shiftKey ? "insertLineBreak" : "insertParagraph",
           );
+          return true;
+        }
+        if (
+          (event.key === "Home" || event.key === "End") &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.altKey
+        ) {
+          const range = lineRange(
+            view,
+            event.key === "Home",
+            event.shiftKey,
+          );
+          if (!range) return false;
+          event.preventDefault();
+          const selection = editingSelection(view.state, range.from, range.to);
+          if (!selection.eq(view.state.selection))
+            dispatchEdit(view.state.tr.setSelection(selection));
           return true;
         }
         const type = deletionKey(event);
