@@ -1105,6 +1105,40 @@ test("line keys reveal a caret the reader scrolled away from", async ({
   }
 });
 
+test("a selected chip keeps its node selection for Cmd arrows", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+  });
+  for (const [key, after] of [
+    ["Meta+ArrowRight", [[1, "x alpha beta"]]],
+    ["Meta+ArrowLeft", [["x", 1, " alpha beta"]]],
+  ] as const) {
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts")
+      );
+      const field = richField("Chip field", { value: [[1, " alpha beta"]] });
+      document.body.replaceChildren(field.wrapper);
+    });
+    const field = page.getByRole("textbox", {
+      name: "Chip field",
+      exact: true,
+    });
+    await field.locator(".rich-chip").click();
+    await field.press(key);
+    await field.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual(after);
+  }
+});
+
 test("a line selection made right after focus is kept", async ({ page }) => {
   const field = await mountKeyboardField(page, "Sense: new meaning");
   await chooseKeyboardSelection(field, 18, 18);
