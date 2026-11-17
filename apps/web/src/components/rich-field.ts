@@ -293,6 +293,21 @@ function lineRange(
   );
 }
 
+/** The native range a word motion produces, read the same way as a line. */
+function wordRange(
+  view: EditorView,
+  backward: boolean,
+  extend: boolean,
+): MotionRange | null {
+  return motionRange(view, (selection) =>
+    selection.modify(
+      extend ? "extend" : "move",
+      backward ? "backward" : "forward",
+      "word",
+    ),
+  );
+}
+
 /** Home and End scroll on macOS; they move the caret elsewhere. */
 function macPlatform(): boolean {
   return /Mac|iP(hone|[oa]d)/u.test(navigator.platform);
@@ -991,21 +1006,35 @@ export function richField(label: string, options: RichFieldOptions) {
           );
           return true;
         }
-        if (
-          (event.key === "Home" || event.key === "End") &&
-          !event.ctrlKey &&
-          !event.metaKey &&
-          !event.altKey &&
-          // On macOS these keys scroll the document and never move the
-          // caret, so there is no native line selection to lose. Keep the
-          // native action there.
-          !macPlatform()
-        ) {
-          const range = lineRange(
-            view,
-            event.key === "Home",
-            event.shiftKey,
-          );
+        // Line motion is Home/End off macOS and Cmd+Arrow on macOS, where
+        // Home/End only scroll. Word motion is Ctrl+Arrow off macOS and
+        // Option+Arrow on macOS. ProseMirror leaves each of these to the
+        // browser in ordinary text, so the editor reads the native motion
+        // and dispatches it, or a focus-time write-back can restore the
+        // caret the reader just moved from.
+        const mac = macPlatform();
+        const arrow = event.key === "ArrowLeft" || event.key === "ArrowRight";
+        const backward = event.key === "Home" || event.key === "ArrowLeft";
+        const lineMotion =
+          ((event.key === "Home" || event.key === "End") &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            !event.altKey &&
+            !mac) ||
+          (mac &&
+            arrow &&
+            event.metaKey &&
+            !event.ctrlKey &&
+            !event.altKey);
+        const wordMotion =
+          arrow &&
+          (mac
+            ? event.altKey && !event.metaKey && !event.ctrlKey
+            : event.ctrlKey && !event.metaKey && !event.altKey);
+        if (lineMotion || wordMotion) {
+          const range = wordMotion
+            ? wordRange(view, backward, event.shiftKey)
+            : lineRange(view, backward, event.shiftKey);
           if (!range) return false;
           event.preventDefault();
           const selection =

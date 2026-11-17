@@ -995,3 +995,69 @@ test("Home stays native on a Mac platform and is editor-owned elsewhere", async 
   expect(outcome.mac).toEqual({ notPrevented: true, anchor: 12, focus: 12 });
   expect(outcome.other).toEqual({ notPrevented: false, anchor: 0, focus: 0 });
 });
+
+test("Mac Cmd arrows move by line and keep the selection end", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+  });
+  const field = await mountKeyboardField(page, lineMotionText);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Meta+ArrowLeft");
+  await expectKeyboardSelection(field, lineMotionText, 0, 0);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Meta+ArrowRight");
+  await expectKeyboardSelection(field, lineMotionText, 22, 22);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Meta+Shift+ArrowRight");
+  await expectKeyboardSelection(field, lineMotionText, 12, 22);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Meta+Shift+ArrowLeft");
+  await expectKeyboardSelection(field, lineMotionText, 12, 0);
+});
+
+test("Mac Option arrows move by word and keep the selection end", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+  });
+  const field = await mountKeyboardField(page, lineMotionText);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Alt+ArrowLeft");
+  await expectKeyboardSelection(field, lineMotionText, 11, 11);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Alt+ArrowRight");
+  await expectKeyboardSelection(field, lineMotionText, 16, 16);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Alt+Shift+ArrowRight");
+  await expectKeyboardSelection(field, lineMotionText, 12, 16);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Alt+Shift+ArrowLeft");
+  await expectKeyboardSelection(field, lineMotionText, 12, 11);
+});
+
+test("Ctrl arrows move by word and keep the selection end", async ({
+  page,
+}) => {
+  const field = await mountKeyboardField(page, lineMotionText);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Control+ArrowLeft");
+  await expectKeyboardSelection(field, lineMotionText, 11, 11);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Control+ArrowRight");
+  await expectKeyboardSelection(field, lineMotionText, 16, 16);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Control+Shift+ArrowRight");
+  await expectKeyboardSelection(field, lineMotionText, 12, 16);
+  await chooseKeyboardSelection(field, 12, 12);
+  await field.press("Control+Shift+ArrowLeft");
+  await expectKeyboardSelection(field, lineMotionText, 12, 11);
+});
