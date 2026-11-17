@@ -1160,3 +1160,129 @@ test("Ctrl arrows keep native word motion in mixed-direction text", async ({
   await key("Control+Shift+ArrowLeft");
   await expectKeyboardSelection(field, text, 0, 3);
 });
+
+const inlineHomeCases = [
+  {
+    name: "leading code",
+    value: [[{ code: "alpha beta" }, " tail"]],
+    selector: ".rich-code",
+    offset: 4,
+    after: [["x", { code: "alpha beta" }, " tail"]],
+  },
+  {
+    name: "only code",
+    value: [[{ code: "alpha beta" }]],
+    selector: ".rich-code",
+    offset: 4,
+    after: [["x", { code: "alpha beta" }]],
+  },
+  {
+    name: "leading web link",
+    value: [[{ url: "https://example.org", label: "alpha beta" }, " tail"]],
+    selector: ".rich-web-link",
+    offset: 4,
+    after: [
+      ["x", { url: "https://example.org", label: "alpha beta" }, " tail"],
+    ],
+  },
+  {
+    name: "leading word link",
+    value: [
+      [
+        { word: { language: "jbo", spelling: "klama" }, label: "alpha beta" },
+        " tail",
+      ],
+    ],
+    selector: ".rich-word-link",
+    offset: 4,
+    after: [
+      [
+        "x",
+        { word: { language: "jbo", spelling: "klama" }, label: "alpha beta" },
+        " tail",
+      ],
+    ],
+  },
+  {
+    name: "empty leading code",
+    value: [[{ code: "" }, "tail"]],
+    selector: ".rich-code",
+    offset: 0,
+    // An empty container's caret point resolves differently per engine.
+    afterChromium: [[{ code: "" }, "xtail"]],
+    afterFirefox: [["x", { code: "" }, "tail"]],
+  },
+  {
+    name: "empty leading web link",
+    value: [[{ url: "https://example.org", label: "" }, "tail"]],
+    selector: ".rich-web-link",
+    offset: 0,
+    afterChromium: [[{ url: "https://example.org", label: "" }, "xtail"]],
+    afterFirefox: [["x", { url: "https://example.org", label: "" }, "tail"]],
+  },
+  {
+    name: "place selection",
+    value: [[1, " tail"]],
+    selector: ".rich-chip",
+    offset: 0,
+    click: true,
+    after: [["x", 1, " tail"]],
+  },
+  {
+    name: "operand selection",
+    value: [[{ operand: "A" }, " tail"]],
+    selector: ".rich-chip",
+    offset: 0,
+    click: true,
+    after: [["x", { operand: "A" }, " tail"]],
+  },
+] as const;
+
+for (const inlineCase of inlineHomeCases) {
+  test(`repeated Home leaves a leading inline node: ${inlineCase.name}`, async ({
+    page,
+    browserName,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async (value) => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts")
+      );
+      const field = richField("Inline Home field", { value });
+      document.body.replaceChildren(field.wrapper);
+    }, inlineCase.value as unknown as RichText);
+    const field = page.getByRole("textbox", {
+      name: "Inline Home field",
+      exact: true,
+    });
+    if ("click" in inlineCase && inlineCase.click)
+      await field.locator(inlineCase.selector).click();
+    else {
+      await field.focus();
+      await field.evaluate(
+        (node, { selector, offset }) => {
+          const container = node.querySelector(selector)!;
+          const point = container.firstChild ?? container;
+          getSelection()!.setBaseAndExtent(point, offset, point, offset);
+          document.dispatchEvent(new Event("selectionchange"));
+        },
+        inlineCase,
+      );
+    }
+    await page.waitForTimeout(60);
+    await field.press("Home");
+    await page.waitForTimeout(40);
+    await field.press("Home");
+    await field.press("x");
+    const stored = () => field.evaluate((node: any) => node.value);
+    const after =
+      "after" in inlineCase
+        ? inlineCase.after
+        : browserName === "firefox"
+          ? inlineCase.afterFirefox
+          : inlineCase.afterChromium;
+    await expect.poll(stored).toEqual(after);
+    await field.press("Control+z");
+    await expect.poll(stored).toEqual(inlineCase.value);
+  });
+}

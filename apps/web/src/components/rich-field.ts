@@ -1019,6 +1019,31 @@ export function richField(label: string, options: RichFieldOptions) {
             !event.ctrlKey &&
             !event.altKey);
         if (lineMotion) {
+          // A caret at the start of an inline container leaves it first,
+          // as the editor's own Home command has always done, so the next
+          // text is plain text before the container. Run that command in
+          // place of the line move, with the same sync and scrolling.
+          if (
+            event.key === "Home" &&
+            !event.shiftKey &&
+            !mac &&
+            view.state.selection.empty &&
+            view.state.selection.$from.parent.isInline &&
+            view.state.selection.$from.parentOffset === 0
+          ) {
+            event.preventDefault();
+            dispatchEdit(
+              view.state.tr
+                .setSelection(
+                  TextSelection.create(
+                    view.state.doc,
+                    view.state.selection.$from.before(),
+                  ),
+                )
+                .scrollIntoView(),
+            );
+            return true;
+          }
           const range = lineRange(view, backward, event.shiftKey);
           if (!range) return false;
           event.preventDefault();
