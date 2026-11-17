@@ -115,6 +115,7 @@ A settled meaning update includes those lexical counts before its meaning count.
 Each expansion preserves keyboard focus. Search cards keep votes beside attribution and omit reviewer disclosures.
 Word pages fold snapshot and view IDs and the local score comparison into Source and scores. Reading language lists show names and omit the test tag unless it is active.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
+A package has no per-language totals: any part, entry, or byte count downloads, and each part keeps its 4 MiB and 2,000-entry bound. An optional package download quota (`packageQuota`: parts, entries, bytes) can cap one download. It is off by default.
 
 Local and server search share TypeScript morphology and match ranking. Compound cmavo match exact component sequences, contiguous runs, and ordered subsequences.
 For example, `i seri'a bo`, `ise ri'abo`, and `iseri'abo` find the same compound. `i bo` also finds `iseri'abo`.
@@ -127,6 +128,7 @@ Long lists offer "show all". Case and acute headword stress marks do not change 
 
 Queries permit 512 recognized words and 300,000 parser steps, with 128 phonemes per run. The index covers dictionary headwords through 256 bytes.
 A limit notice preserves ordinary text search and states incomplete sequence coverage.
+Ordinary local search and package preparation share a per-request work budget (200,000,000 work units) and deadline (300,000 milliseconds), in the style of the pattern-search bounds. The defaults complete an ordinary query on a package five times the base data. A configured value overrides them. A valid large package is never reported as malformed: malformed input reports an invalid package, while storage-full or out-of-memory reports that the package does not fit, and a configured quota reports the quota.
 
 Saved-package validation and search run in a static module worker. Search pages, nearby lookup, and lujvo part lookup share two prepared package revisions.
 Local search transfers references for 20 results per group initially. Show all fetches only the remaining results through the 1,000-word browser limit.

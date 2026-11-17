@@ -349,6 +349,13 @@ If a headword reaches its indexing limit, ordinary matching remains available an
 The response and interface expose either limit through `segmentation: "limited"`.
 The interface preserves that notice through pagination and browser Back.
 
+Ordinary local search and package preparation share a per-request work budget and deadline, in the style of the pattern-search bounds.
+The default budget is 200,000,000 work units, where one unit is one scanned entry, one component comparison, or one morphology parser step.
+The default deadline is 300,000 milliseconds. Both cover the one-time index preparation and each query.
+The defaults complete an ordinary query on a package five times the base data. A configured `workLimit` or `deadlineMs` value overrides them.
+A scan that exceeds either reports “Local search reached its work or time limit. Use a shorter or more specific query.”
+A preparation that exceeds either reports that the package index is too costly to build on this device and suggests server search instead.
+
 Sequence matching never enumerates query subsets.
 For E entries, Q query tokens, and H maximum headword components, its comparison cost is O(E × (Q + H)).
 Tokens include foreign barriers. Consecutive barriers count once, so Q is at most 1,025 under the word limit.
@@ -2097,6 +2104,11 @@ Each part contains `hash`, `bytes`, and `count`. Its hash identifies a canonical
 Each part holds at most 2,000 rows and 4 MiB uncompressed. Split larger data into additional parts.
 The manifest hash covers its canonical bytes. Compression remains outside the hashes.
 These derived parts use their dedicated endpoint, rather than the 256 KiB event-body limit.
+There is no per-language total for parts, rows, or bytes: a valid package of any size downloads, and only the per-artifact bounds above reject a download.
+An optional client download quota can cap one download. It is off by default.
+Malformed input rejects the package as invalid. A valid package is never reported as malformed for its size.
+A download that the device cannot fit reports that the package does not fit in this browser's storage or memory.
+A download that a configured quota stops names the quota.
 
 `search_view` is the selected signed view ID that binds ordering evidence for every row in that snapshot.
 The browser retains that binding once per saved package and passes it to local search.
