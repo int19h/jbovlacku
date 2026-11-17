@@ -177,7 +177,7 @@ test("offline load accepts any carrier order and preserves receipts on rerun", a
     serverId: "loader-test",
     selectedView: loaded.view,
     policyUrl: "https://example.invalid/policy",
-    stateLimits: { events: 200_000, traversal: 1, claim_depth: 1024 },
+    stateLimits: { traversal: 1, claim_depth: 1024 },
   });
   assert.equal(
     (
@@ -729,6 +729,26 @@ test("server and loader exclude each other, and startup restores the loaded view
   }
   const again = await loadImportProposal(f);
   assert.equal(again.accepted, 0);
+});
+
+test("configured loader quotas refuse with their configured messages and no quota is the default", async () => {
+  const byEvents = await fixture();
+  await assert.rejects(
+    loadImportProposal({ ...byEvents, maxAdmittedEvents: 2 }),
+    /data directory exceeds the configured limit of 2 admitted events/,
+  );
+  const byRecords = await fixture();
+  await assert.rejects(
+    loadImportProposal({ ...byRecords, maxCarrierRecords: 2 }),
+    /import proposal exceeds the configured limit of 2 carrier records/,
+  );
+  const unquotaed = await fixture();
+  const loaded = await loadImportProposal(unquotaed);
+  assert.equal(loaded.accepted, unquotaed.imported.carriers.length);
+  await assert.rejects(
+    loadImportProposal({ ...unquotaed, maxAdmittedEvents: 0 }),
+    /positive safe integer/,
+  );
 });
 
 test("operator traversal limit is explicit and bounded", () => {

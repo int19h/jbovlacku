@@ -20,9 +20,14 @@ async function main() {
       continue;
     }
     if (
-      !["--source", "--manifest", "--seed", "--roots", "--output"].includes(
-        args[i],
-      ) ||
+      ![
+        "--source",
+        "--manifest",
+        "--seed",
+        "--roots",
+        "--output",
+        "--budget-bytes",
+      ].includes(args[i]) ||
       flags.has(args[i]) ||
       !args[i + 1] ||
       args[i + 1].startsWith("--")
@@ -64,6 +69,13 @@ async function main() {
   const roots = parseProtocolJson<ImportOptions["roots"]>(
     await readFile(flags.get("--roots")!),
   );
+  const budgetText = flags.get("--budget-bytes");
+  if (
+    budgetText !== undefined &&
+    (!/^[1-9][0-9]*$/.test(budgetText) ||
+      !Number.isSafeInteger(Number(budgetText)))
+  )
+    throw new Error("--budget-bytes must be a positive safe integer.");
   const started = performance.now();
   const result = await importSqlSnapshot({
     sourcePath: flags.get("--source")!,
@@ -72,6 +84,7 @@ async function main() {
     seed: Buffer.from(seedText, "hex"),
     roots,
     checkExisting,
+    budgetBytes: budgetText === undefined ? undefined : Number(budgetText),
     estimate: (estimate) =>
       process.stderr.write(
         JSON.stringify({ stage: "before-signing", ...estimate }) + "\n",

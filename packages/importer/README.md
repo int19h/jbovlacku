@@ -170,7 +170,9 @@ New carrier bytes and the loaded-copy projection include new definitions, new cl
 Observation growth still uses every staged definition row.
 
 It uses measured SQL v2 costs and file-allocation allowances. It is not a strict filesystem upper bound.
-The normal SQL command stops when that estimate exceeds 3,000,000,000 bytes.
+The estimate has no budget by default, so the SQL command does not stop for total size.
+Pass `--budget-bytes N` to the SQL command, or `budgetBytes` to the library call, to set an optional budget.
+Only then does the command stop when the estimate exceeds that budget, before it signs any publication.
 The final output compares measured proposal files with their estimate and reports a miss above ten percent.
 It labels the projected loaded copy separately because extraction does not create that copy.
 
@@ -181,7 +183,7 @@ It refuses before opening or migrating the journal, so a retained proposal stays
 This mode reparses the full source, refuses every new signed publication or view, and retains the original envelopes.
 It writes observations and exported proposal files only in that scratch directory.
 For another comparison, copy the retained journal into another new scratch directory.
-Its estimate covers the proposal and staging only, with a 1,500,000,000-byte budget.
+Its estimate covers the proposal and staging only. It also has no budget unless you pass `--budget-bytes`.
 It does not load or start a service. Compare the exported carriers before using the result.
 
 Both commands append a run record and retain separate observations for source reversions.
@@ -226,6 +228,14 @@ Large imports also need enough memory. A higher work budget does not guarantee s
 The loader saves this limit in `loaded-view.json` with the selected view and selection.
 Without the flag, a new directory retains the core's default limit.
 `JVC_VIEW` overrides the saved view. `JVC_STATE_TRAVERSAL_LIMIT` overrides the saved traversal limit.
+
+The loader has no limit on the number of admitted events in a data directory and no limit on the number of carrier records in a proposal.
+Each carrier record still has its per-record byte limit.
+An operator can set optional quotas with `--max-admitted-events N` and `--max-carrier-records N` on the load command, or with `maxAdmittedEvents` and `maxCarrierRecords` in the library call.
+A quota is off by default. When a quota is set and the load passes it, the loader stops and names the configured limit.
+A host that cannot fit the data fails with a physical error, such as out of memory or a full disk. That is not a loader quota.
+The loader reads carriers one at a time. It keeps only the events that the proposal changes in memory and stages verified records in batches of 256.
+One final transaction promotes the staged records and the accepted events together.
 
 The loader requires exclusive local access. It is not an online import endpoint.
 Source account management, cross-post marker reconciliation, and model-assisted place conversion remain outside this importer.
