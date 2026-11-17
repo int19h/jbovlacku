@@ -471,19 +471,13 @@ impl SessionPreparation {
             None => None,
         };
         let unsupported = algorithm.as_deref().is_some_and(|a| a != a::ALGORITHM);
-        // Parameters are read charged. If a charge refuses, the
-        // algorithm is already known: an exact or unavailable profile
-        // still returns its diagnostic descriptor with no parameters,
-        // while an available float session returns the refusal.
+        // Parameters are read charged. A charged refusal returns at
+        // once, on every profile: no source hash, serialization, or
+        // descriptor work over restored data follows it. A diagnostic
+        // descriptor is returned only when no charged read refused.
         let parameters = match parameters(e, &mut meter) {
             Ok(p) => Some(p),
-            Err(error) if error.code == "resource_unavailable" => {
-                if !unsupported && e.available && algorithm.as_deref() == Some(a::ALGORITHM) {
-                    return Err(error);
-                }
-                reasons.insert(error.code);
-                None
-            }
+            Err(error) if error.code == "resource_unavailable" => return Err(error),
             Err(error) => {
                 reasons.insert(error.code);
                 None
@@ -1864,6 +1858,28 @@ mod tests {
         // Only the charged calculation lookup ran. A copy before its
         // charge, or any classification reread, would add lookups.
         assert_eq!(jvc_state::setup_lookup_calls(), 1);
+    }
+    #[test]
+    fn unavailable_parameter_refusal_reads_no_source_bytes() {
+        let (first, _word) = session();
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["available"] = json!(false);
+            saved["evaluation"]["reasons"] = json!([]);
+            let policy = saved["evaluation"]["policy"].as_object_mut().unwrap();
+            for n in 0..1000u32 {
+                policy.insert(format!("x{n}"), json!(n));
+            }
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        // The view, clone, and work lookups spend just over this quota
+        // during the parameter reads, before any source hash may run.
+        policy.limits.setup_units = Some(1_500);
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
     }
     #[test]
     fn unavailable_float_skips_the_records_walk() {
