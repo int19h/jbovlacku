@@ -3,6 +3,7 @@ import "prosemirror-view/style/prosemirror.css";
 import { Slice, type Node as EditorNode } from "prosemirror-model";
 import {
   EditorState,
+  NodeSelection,
   Plugin,
   TextSelection,
   type Selection,
@@ -1482,6 +1483,31 @@ export function richField(label: string, options: RichFieldOptions) {
    */
   function syncNativeSelection() {
     if (view.isDestroyed || view.composing) return;
+    const current = view.state.selection;
+    if (current instanceof NodeSelection) {
+      // A selected chip is editor state of its own kind. Leave it while
+      // the browser selection still covers that node; mapping the range
+      // to text would demote it and lose the selected-node commands.
+      const native = input.ownerDocument.getSelection();
+      if (
+        native?.anchorNode &&
+        native.focusNode &&
+        input.contains(native.anchorNode) &&
+        input.contains(native.focusNode)
+      ) {
+        try {
+          if (
+            view.posAtDOM(native.anchorNode, native.anchorOffset, -1) ===
+              current.from &&
+            view.posAtDOM(native.focusNode, native.focusOffset, 1) ===
+              current.to
+          )
+            return;
+        } catch {
+          return;
+        }
+      }
+    }
     const selection = readNativeSelection();
     if (selection && !selection.eq(view.state.selection))
       view.dispatch(view.state.tr.setSelection(selection));
