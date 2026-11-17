@@ -2081,12 +2081,20 @@ mod tests {
             limits: Default::default(),
         };
         policy.limits.setup_units = Some(200_000);
+        // This test checks the unit quota, not the clock.
+        policy.limits.source_millis = 120_000;
         let descriptor = session.ranking_descriptor_native(&policy).unwrap();
         assert!(descriptor.available, "{:?}", descriptor.reasons);
     }
-    /// Every map or set read in the metered setup functions must be
-    /// preceded, within twelve lines, by a charge for the same key.
-    /// Reads that cannot take that form are listed here with a reason.
+    /// A partial source guard for the metered setup functions. It
+    /// catches a map or set read whose key is a string literal or a
+    /// plain identifier - after `[`, `.get(`, `.contains(`,
+    /// `.contains_key(`, or `.index(` - when no charge for the same
+    /// key appears within the twelve lines above it. It does not
+    /// catch helpers outside the listed functions, reads whose charge
+    /// is not in that window, or reads inside closures and iterator
+    /// adapters that borrow an earlier charge; those are covered by
+    /// the operation-level tests, not by this scan.
     #[test]
     fn setup_source_has_no_unmetered_map_reads() {
         let allow: &[(&str, &str)] = &[
@@ -2096,6 +2104,19 @@ mod tests {
             // context reads under the per-word charges.
             ("let n = v[\"numerator\"]", "charged at setup call sites"),
             ("let d = v[\"denominator\"]", "charged at setup call sites"),
+            // Inside the lookup helper itself: get_metered charges
+            // before it delegates to get.
+            ("pairs[index]", "inside the lookup helper"),
+            // Interning is charged by the pack charge that every
+            // packing call site takes before packing.
+            (
+                "string_hashes.get(string)",
+                "interning is charged by the pack charge",
+            ),
+            (
+                "string_hashes.get(&hash)",
+                "interning is charged by the pack charge",
+            ),
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let files: Vec<(std::path::PathBuf, &[&str])> = vec![
@@ -2121,20 +2142,38 @@ mod tests {
                 ],
             ),
             (
+                root.join("../jvc-state/src/arena.rs"),
+                &[
+                    "fn lookup_work",
+                    "fn intern",
+                    "fn pack_serde",
+                    "fn get(",
+                    "fn get_metered",
+                    "fn string_bytes_metered",
+                ],
+            ),
+            (
                 root.join("src/ranking_preparation.rs"),
                 &["fn parameter(", "fn parameters(", "fn new(session"],
             ),
         ];
         let read_key = |line: &str| -> Option<String> {
-            for open in ["[\"", ".get(\"", ".contains(\"", ".index(\""] {
+            for open in [
+                "[\"",
+                ".get(\"",
+                ".contains(\"",
+                ".contains_key(\"",
+                ".index(\"",
+            ] {
                 if let Some(at) = line.find(open) {
                     let rest = &line[at + open.len()..];
                     return rest.find('"').map(|end| rest[..end].to_string());
                 }
             }
-            for open in [".get(", ".contains("] {
+            for open in [".get(", ".contains(", ".contains_key("] {
                 if let Some(at) = line.find(open) {
                     let rest = &line[at + open.len()..];
+                    let rest = rest.trim_start_matches(['&', '(', ' ']);
                     let ident: String = rest
                         .chars()
                         .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -2142,6 +2181,27 @@ mod tests {
                     if !ident.is_empty() {
                         return Some(ident);
                     }
+                }
+            }
+            // Indexing with a variable key: `map[key]`.
+            let bytes = line.as_bytes();
+            for at in 0..bytes.len() {
+                if bytes[at] != b'[' || at == 0 {
+                    continue;
+                }
+                let before = bytes[at - 1] as char;
+                if !(before.is_alphanumeric() || before == '_' || before == ')' || before == ']') {
+                    continue;
+                }
+                let Some(end) = line[at + 1..].find(']') else {
+                    continue;
+                };
+                let inner = line[at + 1..at + 1 + end].trim();
+                if !inner.is_empty()
+                    && inner.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    && !inner.chars().next().unwrap().is_numeric()
+                {
+                    return Some(inner.to_string());
                 }
             }
             None
@@ -2178,7 +2238,9 @@ mod tests {
                             && (trimmed.contains("[\"")
                                 || trimmed.contains(".get(")
                                 || trimmed.contains(".contains(")
-                                || trimmed.contains(".index("));
+                                || trimmed.contains(".contains_key(")
+                                || trimmed.contains(".index(")
+                                || read_key(trimmed).is_some());
                         if !is_read || trimmed.contains("get_metered") {
                             continue;
                         }
@@ -2188,12 +2250,12 @@ mod tests {
                         let Some(key) = read_key(trimmed) else {
                             continue;
                         };
-                        let charged = lines[index.saturating_sub(12)..index].iter().any(|prior| {
-                            (prior.contains("charge_lookup")
+                        let window = &lines[index.saturating_sub(12)..index];
+                        let charged = window.iter().any(|prior| {
+                            prior.contains("charge_lookup")
                                 || prior.contains("lookup_work")
-                                || prior.contains("get_metered"))
-                                && prior.contains(&key)
-                        });
+                                || prior.contains("get_metered")
+                        }) && window.iter().any(|prior| prior.contains(&key));
                         if !charged {
                             failures.push(format!("{} in {name}: {trimmed}", path.display()));
                         }
@@ -2220,6 +2282,73 @@ mod tests {
             }
         }
         None
+    }
+    #[test]
+    fn records_walk_overlay_reads_are_charged() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let prefix = "a".repeat(99_990);
+        let mut overlay = json!({"trust": [{
+            "issuer": actor,
+            "subject": actor,
+            "value": "shun",
+            "scope": {"kind": "definition", "word": "*", "language": "en"},
+        }]});
+        for n in 0..1000u32 {
+            overlay[format!("{prefix}:{n:04}")] = json!(n);
+        }
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let mut meter = policy.setup_meter(0, 0);
+        jvc_state::reset_setup_lookup_calls();
+        session
+            .state
+            .ranking_source_records_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
+            .unwrap();
+        // Exactly the three overlay field reads go through the helper.
+        assert_eq!(jvc_state::setup_lookup_calls(), 3);
+    }
+    #[test]
+    fn construction_contains_key_read_is_charged() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["trust"] = json!([{
+                "actor": actor,
+                "subject": actor,
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+                "values": ["heed"],
+            }]);
+            let overlay = json!({"trust": [{
+                "issuer": actor,
+                "subject": actor,
+                "value": "shun",
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+            }]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let mut meter = policy.setup_meter(0, 0);
+        jvc_state::reset_setup_lookup_calls();
+        session
+            .state
+            .ensure_ranking_index_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
+            .unwrap();
+        // Construction makes exactly 37 charged lookup calls for this
+        // fixture, one of them the charge taken before the retained
+        // rules' `contains_key` read. Removing that charge drops the
+        // count to 36 and fails this test.
+        assert_eq!(jvc_state::setup_lookup_calls(), 37);
     }
     #[test]
     fn unavailable_float_skips_the_records_walk() {
