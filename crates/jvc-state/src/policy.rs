@@ -634,9 +634,20 @@ pub(crate) fn ranking_index_bound_metered(
     }
     let public = e.trust.len() as u64;
     for r in &e.trust {
-        let plain = (r.actor.len() + r.subject.len()) as u64
-            + r.values.iter().map(|v| v.len() as u64).sum::<u64>();
-        meter(24 + plain, 3, 8 * plain)?;
+        // A public rule contributes exactly five entries: one trust rule,
+        // two scope rules, and two scope buckets.
+        let fixed = (r.actor.len() + r.subject.len()) as u64;
+        meter(24 + fixed, 5, 8 * fixed)?;
+        // Charge each value before the set walk visits it.
+        let mut values = 0u64;
+        let mut iter = r.values.iter();
+        loop {
+            meter(4, 0, 0)?;
+            let Some(value) = iter.next() else { break };
+            meter(value.len() as u64, 0, 8 * value.len() as u64)?;
+            values += value.len() as u64;
+        }
+        let plain = fixed + values;
         let scope_bytes = r
             .scope
             .view()
@@ -646,7 +657,12 @@ pub(crate) fn ranking_index_bound_metered(
     }
     for r in index_private_rules_metered(e, meter)? {
         // Two `key_actor` lookups, each logarithmic in the map size.
-        meter(88, 5, 0)?;
+        // A private rule contributes four entries, plus two more for a
+        // heed rule's pair and weight entries.
+        meter(88, 4, 0)?;
+        if r["value"] == "heed" {
+            meter(0, 2, 0)?;
+        }
         c.private_rules += 1;
         c.private_weights += u64::from(r["value"] == "heed");
         // Continuity IDs can be longer than the issuer keys in the overlay.

@@ -446,10 +446,11 @@ impl SessionPreparation {
             )
         } else {
             // Every setup walk is charged to the setup-unit budget before
-            // it runs. The meter starts from the publication count, which
-            // costs no walk. Unavailable sessions skip the walks entirely
-            // and report zero setup counts.
-            let mut meter = policy.setup_meter(mul(e.publications.len() as u64, 2)?, 0);
+            // it runs. The meter starts from zero: each walk item charges
+            // its exact entry and key-byte contribution, so the meter
+            // totals never exceed the final counts. Unavailable sessions
+            // skip the walks entirely and report zero setup counts.
+            let mut meter = policy.setup_meter(0, 0);
             let records = if available {
                 session
                     .state
@@ -464,6 +465,12 @@ impl SessionPreparation {
                 let counts = session
                     .state
                     .ranking_index_bound_metered(&mut |w, en, k| meter.charge(w, en, k))?;
+                // Safeguard: total spent work must also fit the final
+                // default for the true counts, not only each provisional
+                // budget seen during the walk.
+                if meter.spent > policy.effective_setup_units(meter.entries, meter.key_bytes)? {
+                    return Err(resource("ranking setup envelope limit"));
+                }
                 policy.setup_estimate(&counts)?
             } else {
                 (0, 0)
@@ -1413,6 +1420,132 @@ mod tests {
             }]);
         });
         policy.limits.setup_units = Some(10_000);
+        let error = restored.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn count_walk_charges_public_values_before_visiting_them() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let values: Vec<String> = (0..1_000_000u32).map(|n| format!("v{n:06}")).collect();
+        let restored = restored_with(first, |saved| {
+            saved["evaluation"]["trust"] = json!([{
+                "actor": actor,
+                "subject": actor,
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+                "values": values,
+            }]);
+            let overlay = json!({"trust":[{"issuer":1}]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        // Enough for the post-walk charge of the old code, which then ran
+        // into the malformed overlay; the per-value charge must stop first.
+        policy.limits.setup_units = Some(8_000_000);
+        let error = restored.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    fn final_entries(c: &jvc_state::RankingIndexCounts) -> u64 {
+        c.words
+            + c.word_publications
+            + c.target_groups
+            + c.targets
+            + c.judgment_groups
+            + c.trust_rules
+            + c.scope_buckets
+            + c.scope_rules
+            + c.private_pairs
+            + c.private_weights
+            + c.private_rules
+    }
+    #[test]
+    fn meter_totals_equal_the_final_counts_for_each_rule_kind() {
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let mut scenarios: Vec<EvaluationSession> = Vec::new();
+        let (base, _word) = session();
+        scenarios.push(base);
+        let (with_public, _word) = session();
+        scenarios.push(restored_with(with_public, |saved| {
+            saved["evaluation"]["trust"] = json!([{
+                "actor": actor,
+                "subject": actor,
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+                "values": ["heed"],
+            }]);
+        }));
+        for value in ["heed", "shun"] {
+            let (with_private, _word) = session();
+            scenarios.push(restored_with(with_private, |saved| {
+                let overlay = json!({"trust":[{
+                    "issuer": actor,
+                    "subject": actor,
+                    "value": value,
+                    "scope": {"kind": "definition", "word": "*", "language": "en"},
+                }]});
+                saved["evaluation"]["overlay"] = overlay.clone();
+                saved["options"]["overlay"] = overlay;
+            }));
+        }
+        for scenario in &scenarios {
+            let mut meter = policy.setup_meter(0, 0);
+            let counts = scenario
+                .state
+                .ranking_index_bound_metered(&mut |w, e, k| meter.charge(w, e, k))
+                .unwrap();
+            assert_eq!(meter.entries, final_entries(&counts));
+            assert_eq!(meter.key_bytes, counts.key_bytes);
+            assert!(
+                meter.spent
+                    <= policy
+                        .effective_setup_units(meter.entries, meter.key_bytes)
+                        .unwrap()
+            );
+        }
+    }
+    #[test]
+    fn wide_scope_with_many_publications_refuses_at_the_default() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let restored = restored_with(first, |saved| {
+            let publications = saved["evaluation"]["publications"].as_object().unwrap();
+            let definition = publications
+                .values()
+                .find(|p| p["kind"] == "definition.publish")
+                .unwrap()
+                .clone();
+            let publications = saved["evaluation"]["publications"].as_object_mut().unwrap();
+            for n in 0..100u32 {
+                let id = format!("jve1:{n:064x}");
+                let mut publication = definition.clone();
+                publication["id"] = json!(id);
+                publications.insert(id, publication);
+            }
+            saved["evaluation"]["trust"] = json!([{
+                "actor": actor,
+                "subject": actor,
+                "scope": {
+                    "kind": "definition",
+                    "word": "*",
+                    "language": "en",
+                    "extra": vec![0; 25_200_000],
+                },
+                "values": ["heed"],
+            }]);
+        });
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
         let error = restored.ranking_descriptor_native(&policy).unwrap_err();
         assert_eq!(error.code, "resource_unavailable");
         assert_eq!(error.message, "ranking setup envelope limit");
