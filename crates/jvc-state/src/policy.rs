@@ -389,9 +389,10 @@ fn private_trust_metered(
                 );
                 charge_lookup(meter, obj_len, "value")?;
                 let value = rule["value"].as_str().unwrap();
-                if rule["value"] == "heed" {
+                if value == "heed" {
                     charge_lookup(meter, obj_len, "weight")?;
-                    let weight_len = rule["weight"].as_object().map_or(0, |o| o.len());
+                    let weight = &rule["weight"];
+                    let weight_len = weight.as_object().map_or(0, |o| o.len());
                     charge_lookup(meter, weight_len, "numerator")?;
                     charge_lookup(meter, weight_len, "denominator")?;
                     meter(
@@ -408,7 +409,7 @@ fn private_trust_metered(
                         .or_default()
                         .push((
                             scope.clone(),
-                            overlay_rational(&rule["weight"]).unwrap_or_else(Rational::one),
+                            overlay_rational(weight).unwrap_or_else(Rational::one),
                         ));
                 }
                 meter(json_text_bound(raw, scope_bytes), 0, 0, 0)?;
@@ -457,7 +458,12 @@ fn private_trust_metered(
                 }
             }
             for ((issuer, subject, _), (scope, values)) in private {
-                meter(super::arena::lookup_work(values.len() as u64, 5), 0, 0, 0)?;
+                meter(
+                    super::arena::lookup_work(values.len() as u64, "clear".len() as u64),
+                    0,
+                    0,
+                    0,
+                )?;
                 if values.len() != 1 || !values.contains("clear") {
                     trust.push(TrustRule {
                         actor: issuer,
@@ -723,10 +729,8 @@ fn index_private_rules_metered<'e>(
         charge_lookup(meter, obj_len, "subject")?;
         let subject_ok = rule.get("subject").and_then(Value::as_str).is_some();
         charge_lookup(meter, obj_len, "value")?;
-        let value_ok = rule
-            .get("value")
-            .and_then(Value::as_str)
-            .is_some_and(|v| matches!(v, "heed" | "shun" | "clear"));
+        let value = rule.get("value").and_then(Value::as_str);
+        let value_ok = value.is_some_and(|v| matches!(v, "heed" | "shun" | "clear"));
         charge_lookup(meter, obj_len, "scope")?;
         let mut scope_ok = false;
         if let Some(scope) = rule.get("scope") {
@@ -743,7 +747,7 @@ fn index_private_rules_metered<'e>(
         if !(issuer_ok && subject_ok && value_ok && scope_ok) {
             return Err(invalid_index_overlay());
         }
-        if rule["value"] == "heed" {
+        if value == Some("heed") {
             meter(0, 2, 0, 0)?;
         }
     }

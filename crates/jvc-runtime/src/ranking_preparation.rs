@@ -376,7 +376,10 @@ fn parameters(e: &jvc_state::Evaluation, meter: &mut SetupMeter) -> Result<Prepa
     let mut work = None;
     if let Some(overlay) = &e.overlay {
         meter.charge(
-            jvc_state::lookup_work(overlay.as_object().map_or(0, |o| o.len()) as u64, 4),
+            jvc_state::lookup_work(
+                overlay.as_object().map_or(0, |o| o.len()) as u64,
+                "work".len() as u64,
+            ),
             0,
             0,
             0,
@@ -2050,6 +2053,173 @@ mod tests {
         // packed the scope into an arena or serialized it.
         assert_eq!(jvc_state::packed_value_nodes(), 0);
         assert_eq!(jvc_state::serialized_value_bytes(), 0);
+    }
+    #[test]
+    fn long_stored_key_rule_completes_at_an_ordinary_quota() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let prefix = "a".repeat(99_990);
+        let mut rule = json!({
+            "issuer": actor,
+            "subject": actor,
+            "value": "shun",
+            "scope": {"kind": "definition", "word": "*", "language": "en"},
+        });
+        for n in 0..1000u32 {
+            rule[format!("{prefix}:{n:04}")] = json!(n);
+        }
+        let mut overlay = json!({"trust": [rule]});
+        for n in 0..1000u32 {
+            overlay[format!("{prefix}:{n:04}")] = json!(n);
+        }
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(200_000);
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(descriptor.available, "{:?}", descriptor.reasons);
+    }
+    /// Every map or set read in the metered setup functions must be
+    /// preceded, within twelve lines, by a charge for the same key.
+    /// Reads that cannot take that form are listed here with a reason.
+    #[test]
+    fn setup_source_has_no_unmetered_map_reads() {
+        let allow: &[(&str, &str)] = &[
+            // overlay_rational is charged at its setup call sites
+            // (weight, numerator, and denominator reads in
+            // private_trust_metered); its other callers are per-word
+            // context reads under the per-word charges.
+            ("let n = v[\"numerator\"]", "charged at setup call sites"),
+            ("let d = v[\"denominator\"]", "charged at setup call sites"),
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let files: Vec<(std::path::PathBuf, &[&str])> = vec![
+            (
+                root.join("../jvc-state/src/policy.rs"),
+                &[
+                    "fn charge_lookup",
+                    "fn scope_measure",
+                    "fn value_strings_metered",
+                    "fn overlay_rational",
+                    "fn private_trust_metered",
+                    "fn new_metered",
+                    "fn index_private_rules_metered",
+                    "fn ranking_index_bound_metered",
+                ],
+            ),
+            (
+                root.join("../jvc-state/src/incremental.rs"),
+                &[
+                    "fn ranking_source_records_metered",
+                    "fn ranking_index_bound_metered",
+                    "fn ensure_ranking_index_metered",
+                ],
+            ),
+            (
+                root.join("src/ranking_preparation.rs"),
+                &["fn parameter(", "fn parameters(", "fn new(session"],
+            ),
+        ];
+        let read_key = |line: &str| -> Option<String> {
+            for open in ["[\"", ".get(\"", ".contains(\"", ".index(\""] {
+                if let Some(at) = line.find(open) {
+                    let rest = &line[at + open.len()..];
+                    return rest.find('"').map(|end| rest[..end].to_string());
+                }
+            }
+            for open in [".get(", ".contains("] {
+                if let Some(at) = line.find(open) {
+                    let rest = &line[at + open.len()..];
+                    let ident: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !ident.is_empty() {
+                        return Some(ident);
+                    }
+                }
+            }
+            None
+        };
+        let mut failures = Vec::new();
+        for (path, functions) in &files {
+            let text = std::fs::read_to_string(path).unwrap();
+            for name in *functions {
+                let mut regions = Vec::new();
+                let mut rest = text.as_str();
+                // "fn new_metered" names two construction functions;
+                // every other name names one.
+                let limit = if *name == "fn new_metered" { 2 } else { 1 };
+                while regions.len() < limit {
+                    let Some(region) = extract_fn(rest, name) else {
+                        break;
+                    };
+                    let offset = rest.find(name).unwrap() + region.len();
+                    regions.push(region);
+                    rest = &rest[offset.min(rest.len())..];
+                }
+                if regions.is_empty() {
+                    failures.push(format!("{}: missing function {name}", path.display()));
+                    continue;
+                }
+                for region in regions {
+                    let lines: Vec<&str> = region.lines().collect();
+                    for (index, line) in lines.iter().enumerate() {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("//") {
+                            continue;
+                        }
+                        let is_read = !trimmed.contains("in [\"")
+                            && (trimmed.contains("[\"")
+                                || trimmed.contains(".get(")
+                                || trimmed.contains(".contains(")
+                                || trimmed.contains(".index("));
+                        if !is_read || trimmed.contains("get_metered") {
+                            continue;
+                        }
+                        if allow.iter().any(|(part, _)| trimmed.contains(part)) {
+                            continue;
+                        }
+                        let Some(key) = read_key(trimmed) else {
+                            continue;
+                        };
+                        let charged = lines[index.saturating_sub(12)..index].iter().any(|prior| {
+                            (prior.contains("charge_lookup")
+                                || prior.contains("lookup_work")
+                                || prior.contains("get_metered"))
+                                && prior.contains(&key)
+                        });
+                        if !charged {
+                            failures.push(format!("{} in {name}: {trimmed}", path.display()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+    fn extract_fn<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+        let start = text.find(name)?;
+        let body = start + text[start..].find('{')?;
+        let mut depth = 0i32;
+        for (offset, ch) in text[body..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&text[start..body + offset + 1]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
     #[test]
     fn unavailable_float_skips_the_records_walk() {
