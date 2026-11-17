@@ -237,7 +237,7 @@ test("a valid package above the old per-language totals downloads and searches",
       "jve1:" + index.toString(16).padStart(64, "0");
     // 200 parts of one entry each: above the old 128-part total.
     const parts: { hash: string; bytes: number; count: number }[] = [];
-    const partByHash = new Map<string, Uint8Array>();
+    const partByHash = new Map<string, Uint8Array<ArrayBuffer>>();
     for (let index = 0; index < 200; index++) {
       const partBytes = bytes([
         {
@@ -318,7 +318,7 @@ test("a valid package above 200,000 entries and 128 MiB downloads", async ({
     const padding = "x".repeat(480);
     let serial = 0;
     const partBlobs: { hash: string; bytes: number; count: number }[] = [];
-    const partByHash = new Map<string, Uint8Array>();
+    const partByHash = new Map<string, Uint8Array<ArrayBuffer>>();
     // 101 parts of 2,000 entries: 202,000 entries and about 140 MiB,
     // above both old totals while each part keeps the 4 MiB bound.
     let totalBytes = 0;
