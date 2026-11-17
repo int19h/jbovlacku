@@ -998,6 +998,113 @@ test("Home stays native on a Mac platform and is editor-owned elsewhere", async 
   expect(outcome.other).toEqual({ notPrevented: false, anchor: 0, focus: 0 });
 });
 
+for (const platform of ["Linux x86_64", "MacIntel"]) {
+  test(`a pending native caret does not swallow line motion: ${platform}`, async ({
+    page,
+  }) => {
+    const field = await mountKeyboardField(page, "alpha beta");
+    await field.evaluate((node, platform) => {
+      Object.defineProperty(navigator, "platform", {
+        value: platform,
+        configurable: true,
+      });
+    }, platform);
+    await chooseKeyboardSelection(field, 0, 0);
+    await page.waitForTimeout(40);
+    const immediate = await field.evaluate((node, platform) => {
+      const text = node.querySelector("p .rich-literal")!.firstChild!;
+      const selection = getSelection()!;
+      const snap = () => ({
+        anchor: selection.anchorOffset,
+        focus: selection.focusOffset,
+        text: selection.toString(),
+      });
+      // Move the native caret and send both line keys in one task, before
+      // the browser delivers the pending selectionchange.
+      selection.setBaseAndExtent(text, 5, text, 5);
+      const command = (backward: boolean, shift: boolean) => {
+        const mac = platform === "MacIntel";
+        const key = mac
+          ? backward
+            ? "ArrowLeft"
+            : "ArrowRight"
+          : backward
+            ? "Home"
+            : "End";
+        const unhandled = node.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key,
+            keyCode: mac ? (backward ? 37 : 39) : backward ? 36 : 35,
+            bubbles: true,
+            cancelable: true,
+            shiftKey: shift,
+            metaKey: mac,
+          }),
+        );
+        if (unhandled)
+          selection.modify(
+            shift ? "extend" : "move",
+            backward ? "backward" : "forward",
+            "lineboundary",
+          );
+        return snap();
+      };
+      const start = snap();
+      const home = command(true, false);
+      const end = command(false, true);
+      return { start, home, end };
+    }, platform);
+    expect(immediate.home).toEqual({ anchor: 0, focus: 0, text: "" });
+    expect(immediate.end).toEqual({ anchor: 0, focus: 10, text: "alpha beta" });
+    await field.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual([["x"]]);
+  });
+}
+
+test("line keys reveal a caret the reader scrolled away from", async ({
+  page,
+}) => {
+  const value = Array.from({ length: 45 }, (_, index) => [
+    `line ${index} alpha beta`,
+  ]);
+  await page.goto("/");
+  await page.evaluate(async (value) => {
+    const { richField } = await import(String("/src/components/rich-field.ts"));
+    const field = richField("Long keyboard field", { value });
+    document.body.replaceChildren(field.wrapper);
+  }, value);
+  const field = page.getByRole("textbox", {
+    name: "Long keyboard field",
+    exact: true,
+  });
+  for (const key of ["Home", "End", "Shift+Home", "Shift+End"]) {
+    await field.evaluate((node) => {
+      const text =
+        node.querySelectorAll("p")[30].querySelector(".rich-literal")!
+          .firstChild!;
+      getSelection()!.setBaseAndExtent(text, 8, text, 8);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForTimeout(40);
+    await page.evaluate(() => scrollTo(0, 0));
+    await field.press(key);
+    await expect
+      .poll(() =>
+        field.evaluate(() => {
+          const selection = getSelection()!;
+          const range = document.createRange();
+          range.setStart(selection.focusNode!, selection.focusOffset);
+          range.collapse(true);
+          const rect = range.getBoundingClientRect();
+          return scrollY > 0 && rect.top >= 0 && rect.top <= innerHeight;
+        }),
+      )
+      .toBe(true);
+  }
+});
+
 test("Mac Cmd arrows move by line and keep the selection end", async ({
   page,
 }) => {
@@ -1053,4 +1160,3 @@ test("Ctrl arrows keep native word motion in mixed-direction text", async ({
   await key("Control+Shift+ArrowLeft");
   await expectKeyboardSelection(field, text, 0, 3);
 });
-

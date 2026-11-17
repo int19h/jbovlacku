@@ -210,6 +210,9 @@ interface MotionRange extends RichDeleteRange {
   /** Editor positions of the native anchor and focus, in native order. */
   anchor: number;
   head: number;
+  /** The native anchor and focus points themselves, in native order. */
+  anchorPoint: { node: Node; offset: number };
+  headPoint: { node: Node; offset: number };
 }
 
 /** Read the range a native selection motion produces, then restore it. */
@@ -242,6 +245,8 @@ function motionRange(
       // backward selection keeps its anchor and its active end.
       anchor: view.posAtDOM(selection.anchorNode, selection.anchorOffset, 1),
       head: view.posAtDOM(selection.focusNode, selection.focusOffset, 1),
+      anchorPoint: { node: selection.anchorNode, offset: selection.anchorOffset },
+      headPoint: { node: selection.focusNode, offset: selection.focusOffset },
     };
   } catch {
     return null;
@@ -1024,8 +1029,31 @@ export function richField(label: string, options: RichFieldOptions) {
                   view.state.doc.resolve(range.anchor),
                   view.state.doc.resolve(range.head),
                 );
-          if (!selection.eq(view.state.selection))
-            dispatchEdit(view.state.tr.setSelection(selection));
+          // Apply it even when it equals editor state: the browser
+          // selection can have moved before its selectionchange arrives,
+          // and motionRange restored that pending selection.
+          const unchanged = selection.eq(view.state.selection);
+          dispatchEdit(
+            view.state.tr.setSelection(selection).scrollIntoView(),
+          );
+          // An equal selection makes ProseMirror write nothing, so put
+          // the browser caret on the motion's native points directly
+          // when it still shows the pending selection.
+          const native = view.dom.ownerDocument.getSelection();
+          if (
+            unchanged &&
+            native &&
+            (native.anchorNode !== range.anchorPoint.node ||
+              native.anchorOffset !== range.anchorPoint.offset ||
+              native.focusNode !== range.headPoint.node ||
+              native.focusOffset !== range.headPoint.offset)
+          )
+            native.setBaseAndExtent(
+              range.anchorPoint.node,
+              range.anchorPoint.offset,
+              range.headPoint.node,
+              range.headPoint.offset,
+            );
           return true;
         }
         const type = deletionKey(event);
