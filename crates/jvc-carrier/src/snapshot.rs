@@ -462,13 +462,12 @@ impl Snapshot {
     /// Insert one canonical carrier record line (without its LF) into this
     /// snapshot. This is the per-record path used by streamed readers; the
     /// record stays within the envelope and body bounds.
-    /// Returns the event ID and whether the record carried its body inline.
     pub(crate) fn insert_jsonl_line(
         &mut self,
         line: &[u8],
         line_no: usize,
         verifier: &mut jvc_core::EnvelopeVerifier,
-    ) -> Result<(String, bool)> {
+    ) -> Result<String> {
         if line.is_empty() {
             return Err(error(
                 "record_blank",
@@ -519,10 +518,9 @@ impl Snapshot {
             }
             self.insert_body(&c.hash, &bytes)?;
         }
-        let carried_body = !record["body"].is_null();
         let id = event.id().to_owned();
         self.insert_verified(event)?;
-        Ok((id, carried_body))
+        Ok(id)
     }
     /// Read canonical carrier records from a buffered reader, one line at a
     /// time. Only one record line is retained at a time.
@@ -742,11 +740,6 @@ impl Snapshot {
         let mut next_index: usize = 0;
         let mut previous_part_len: Option<usize> = None;
         let mut last_id: Option<String> = None;
-        // Events whose record carried its body inline. A retained body may
-        // arrive in a later record, so the filling check runs after all
-        // records are read.
-        let mut filled: BTreeSet<String> = BTreeSet::new();
-        let mut event_parts: BTreeMap<String, String> = BTreeMap::new();
         for (path, _size) in &listed {
             if let Some(rest) = path.strip_prefix("records/") {
                 let partition = &rest[..2];
@@ -812,15 +805,11 @@ impl Snapshot {
                             format!("{path} is empty or exceeds 8 MiB"),
                         ));
                     }
-                    let (id, carried_body) = snapshot.insert_jsonl_line(
+                    let id = snapshot.insert_jsonl_line(
                         &line[..line.len() - 1],
                         line_no,
                         &mut verifier,
                     )?;
-                    if carried_body {
-                        filled.insert(id.clone());
-                    }
-                    event_parts.insert(id.clone(), path.clone());
                     if &id[5..7] != partition {
                         return Err(error(
                             "partition",
@@ -859,23 +848,39 @@ impl Snapshot {
         // Canonical filling: every record whose descriptor matches a
         // retained body must carry that body inline. A body matches only
         // when the retained bytes have the descriptor's exact byte count.
-        for event in snapshot.events.values() {
-            if let Some(content) = &event.header().content {
+        // This second pass does not verify signatures again. It reads one
+        // line at a time and keeps no per-event state, because whether a
+        // body is retained is known only after every record is read.
+        for (path, _size) in &listed {
+            if !path.starts_with("records/") {
+                continue;
+            }
+            let mut reader = open_reader(path)?;
+            let mut line = Vec::new();
+            while let Some(_capped) =
+                read_capped_line(&mut *reader, &mut line, MAX_RECORD_BYTES + 1)?
+            {
+                let record = parse_transport_json(&line[..line.len().saturating_sub(1)])?;
+                if !record["body"].is_null() {
+                    continue;
+                }
+                let content = &record["envelope"]["header"]["content"];
+                let (Some(hash), Some(bytes)) =
+                    (content["hash"].as_str(), content["bytes"].as_u64())
+                else {
+                    continue;
+                };
                 let retained = snapshot
                     .bodies
-                    .get(&content.hash)
-                    .is_some_and(|bytes| bytes.len() as u64 == content.bytes)
-                    && !snapshot.refused_bodies.contains(&content.hash)
-                    && !snapshot.quarantined_bodies.contains(&content.hash);
-                if retained && !filled.contains(event.id()) {
-                    let part = event_parts
-                        .get(event.id())
-                        .map(String::as_str)
-                        .unwrap_or("records");
+                    .get(hash)
+                    .is_some_and(|retained| retained.len() as u64 == bytes)
+                    && !snapshot.refused_bodies.contains(hash)
+                    && !snapshot.quarantined_bodies.contains(hash);
+                if retained {
                     return Err(error(
                         "carrier_noncanonical",
                         format!(
-                            "{part} differs from canonical sorting, filling, or greedy partitioning"
+                            "{path} differs from canonical sorting, filling, or greedy partitioning"
                         ),
                     ));
                 }
