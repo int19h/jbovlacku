@@ -291,13 +291,25 @@ impl Snapshot {
         bodies
     }
     pub fn manifest(&self) -> Result<Manifest> {
-        let events = self.envelope_stream()?;
+        // Hash the envelope stream incrementally so a manifest does not
+        // retain a second copy of every envelope.
+        use std::io::Write;
+        let mut hasher = jvc_core::HashWriter::new(b"", usize::MAX);
+        for event in self.events.values() {
+            hasher
+                .write_all(&event.canonical_envelope()?)
+                .map_err(|e| error("hash", e.to_string()))?;
+            hasher
+                .write_all(b"\n")
+                .map_err(|e| error("hash", e.to_string()))?;
+        }
+        let (events_hash, _) = hasher.finish("sha256:");
         let bodies = self.retained_bodies();
         Ok(Manifest {
             version: 1,
             events: Inventory {
                 count: self.events.len(),
-                hash: hash_id("sha256:", b"", &events),
+                hash: events_hash,
             },
             bodies: Inventory {
                 count: bodies.len(),
@@ -365,10 +377,17 @@ impl Snapshot {
     }
     pub fn to_jsonl(&self) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        for event in self.events.values() {
-            bytes.extend(self.record_line(event)?);
-        }
+        self.write_jsonl(&mut bytes)?;
         Ok(bytes)
+    }
+    /// Write canonical carrier records one at a time to a writer.
+    pub fn write_jsonl(&self, mut writer: impl std::io::Write) -> Result<()> {
+        for event in self.events.values() {
+            writer
+                .write_all(&self.record_line(event)?)
+                .map_err(|e| error("filesystem", e.to_string()))?;
+        }
+        Ok(())
     }
     pub fn from_jsonl(bytes: &[u8]) -> Result<Self> {
         Self::from_jsonl_with_verifier(bytes, &mut jvc_core::EnvelopeVerifier::default())
@@ -388,61 +407,126 @@ impl Snapshot {
             ));
         }
         for (line_no, line) in bytes[..bytes.len() - 1].split(|b| *b == b'\n').enumerate() {
-            if line.is_empty() {
+            snapshot.insert_jsonl_line(line, line_no + 1, verifier)?;
+        }
+        Ok(snapshot)
+    }
+    /// Insert one canonical carrier record line (without its LF) into this
+    /// snapshot. This is the per-record path used by streamed readers; the
+    /// record stays within the envelope and body bounds.
+    pub(crate) fn insert_jsonl_line(
+        &mut self,
+        line: &[u8],
+        line_no: usize,
+        verifier: &mut jvc_core::EnvelopeVerifier,
+    ) -> Result<String> {
+        if line.is_empty() {
+            return Err(error(
+                "record_blank",
+                format!("record line {line_no} is empty"),
+            ));
+        }
+        if line.len() > MAX_RECORD_BYTES {
+            return Err(error(
+                "record_size",
+                "carrier record exceeds its envelope and body limits",
+            ));
+        }
+        let record = parse_transport_json(line)?;
+        let canonical = serde_json_canonicalizer::to_vec(&record)
+            .map_err(|e| error("canonical", e.to_string()))?;
+        if canonical != line {
+            return Err(error("canonical", "carrier record bytes are not canonical"));
+        }
+        let o = record
+            .as_object()
+            .ok_or_else(|| error("record_shape", "carrier record must be an object"))?;
+        if o.len() != 2 || !o.contains_key("envelope") || !o.contains_key("body") {
+            return Err(error(
+                "record_shape",
+                "carrier record requires exactly body and envelope",
+            ));
+        }
+        let event = verifier.verify(&canonical_value(&record["envelope"])?)?;
+        if self.events.contains_key(event.id()) {
+            return Err(error(
+                "duplicate_event",
+                "carrier contains a duplicate event identifier",
+            ));
+        }
+        if !record["body"].is_null() {
+            let c = event.header().content.as_ref().ok_or_else(|| {
+                error(
+                    "body_descriptor",
+                    "null content descriptor requires null body",
+                )
+            })?;
+            let bytes = canonical_value(&record["body"])?;
+            if bytes.len() as u64 != c.bytes {
                 return Err(error(
-                    "record_blank",
-                    format!("record line {} is empty", line_no + 1),
+                    "body_length",
+                    "inline body length differs from its descriptor",
                 ));
             }
-            if line.len() > MAX_RECORD_BYTES {
+            self.insert_body(&c.hash, &bytes)?;
+        }
+        let id = event.id().to_owned();
+        self.insert_verified(event)?;
+        Ok(id)
+    }
+    /// Read canonical carrier records from a buffered reader, one line at a
+    /// time. Only one record line is retained at a time.
+    pub fn from_jsonl_reader<R: std::io::BufRead>(reader: R) -> Result<Self> {
+        let mut snapshot = Self::new();
+        let mut verifier = jvc_core::EnvelopeVerifier::default();
+        snapshot.read_jsonl_lines(reader, &mut verifier)?;
+        Ok(snapshot)
+    }
+    pub(crate) fn read_jsonl_lines<R: std::io::BufRead>(
+        &mut self,
+        mut reader: R,
+        verifier: &mut jvc_core::EnvelopeVerifier,
+    ) -> Result<()> {
+        use std::io::{BufRead as _, Read};
+        let mut line = Vec::new();
+        let mut line_no = 0usize;
+        loop {
+            line.clear();
+            let read = (&mut reader)
+                .take((MAX_RECORD_BYTES + 2) as u64)
+                .read_until(b'\n', &mut line)
+                .map_err(|e| error("filesystem", e.to_string()))?;
+            if read == 0 {
+                break;
+            }
+            line_no += 1;
+            if line.len() > MAX_RECORD_BYTES + 1 {
                 return Err(error(
                     "record_size",
                     "carrier record exceeds its envelope and body limits",
                 ));
             }
-            let record = parse_transport_json(line)?;
-            let canonical = serde_json_canonicalizer::to_vec(&record)
-                .map_err(|e| error("canonical", e.to_string()))?;
-            if canonical != line {
-                return Err(error("canonical", "carrier record bytes are not canonical"));
-            }
-            let o = record
-                .as_object()
-                .ok_or_else(|| error("record_shape", "carrier record must be an object"))?;
-            if o.len() != 2 || !o.contains_key("envelope") || !o.contains_key("body") {
+            if !line.ends_with(b"\n") {
                 return Err(error(
-                    "record_shape",
-                    "carrier record requires exactly body and envelope",
+                    "record_newline",
+                    "every carrier record must end with LF",
                 ));
             }
-            let event = verifier.verify(&canonical_value(&record["envelope"])?)?;
-            if snapshot.events.contains_key(event.id()) {
-                return Err(error(
-                    "duplicate_event",
-                    "carrier contains a duplicate event identifier",
-                ));
-            }
-            if !record["body"].is_null() {
-                let c = event.header().content.as_ref().ok_or_else(|| {
-                    error(
-                        "body_descriptor",
-                        "null content descriptor requires null body",
-                    )
-                })?;
-                let bytes = canonical_value(&record["body"])?;
-                if bytes.len() as u64 != c.bytes {
-                    return Err(error(
-                        "body_length",
-                        "inline body length differs from its descriptor",
-                    ));
-                }
-                snapshot.insert_body(&c.hash, &bytes)?;
-            }
-            snapshot.insert_verified(event)?;
+            self.insert_jsonl_line(&line[..line.len() - 1], line_no, verifier)?;
         }
-        Ok(snapshot)
+        Ok(())
     }
     pub fn to_files(&self) -> Result<BTreeMap<String, Vec<u8>>> {
+        self.to_files_with_partition_limit(None)
+    }
+    /// Write carrier files with an optional local quota on the number of
+    /// parts in one digest partition. `None` (the default through
+    /// `to_files`) sets no quota. A configured quota returns
+    /// `partition_limit`. The 8 MiB per-part bound always applies.
+    pub fn to_files_with_partition_limit(
+        &self,
+        max_parts_per_partition: Option<usize>,
+    ) -> Result<BTreeMap<String, Vec<u8>>> {
         let mut files = BTreeMap::new();
         files.insert("format.json".into(), FORMAT_BYTES.to_vec());
         files.insert(".gitattributes".into(), ATTRIBUTES_BYTES.to_vec());
@@ -459,12 +543,7 @@ impl Snapshot {
             if values.last().unwrap().len() + line.len() > PART_BYTES {
                 values.push(Vec::new());
             }
-            if values.len() > 1_000_000 {
-                return Err(error(
-                    "partition_limit",
-                    "partition exceeds one million parts",
-                ));
-            }
+            check_partition_part_count(values.len(), max_parts_per_partition)?;
             values.last_mut().unwrap().extend(line);
         }
         for (partition, parts) in parts {
@@ -567,6 +646,175 @@ impl Snapshot {
         }
         Ok(snapshot)
     }
+    /// Build a snapshot from a listed carrier without retaining every file
+    /// at once. `read_file` returns one small or selection file.
+    /// `open_reader` streams one record part line by line. The listed paths
+    /// must carry their byte sizes and are sorted here.
+    pub(crate) fn from_listed_files(
+        listed: &[(String, usize)],
+        mut read_file: impl FnMut(&str) -> Result<Vec<u8>>,
+        mut open_reader: impl FnMut(&str) -> Result<Box<dyn std::io::BufRead>>,
+    ) -> Result<Self> {
+        use std::io::{BufRead as _, Read};
+        let mut listed: Vec<(String, usize)> = listed.to_vec();
+        listed.sort_by(|a, b| {
+            let key = |path: &str| -> String {
+                if let Some(rest) = path.strip_prefix("records/") {
+                    let index = rest[3..].strip_suffix(".jsonl").unwrap_or("0");
+                    let numeric = index.parse::<usize>().unwrap_or(0);
+                    format!("records/{}/{numeric:012}", &rest[..2])
+                } else {
+                    path.to_owned()
+                }
+            };
+            key(&a.0).cmp(&key(&b.0))
+        });
+        for (path, _) in &listed {
+            validate_path(path)?;
+        }
+        let present: BTreeSet<&str> = listed.iter().map(|(p, _)| p.as_str()).collect();
+        for (path, wanted) in [
+            ("format.json", FORMAT_BYTES),
+            (".gitattributes", ATTRIBUTES_BYTES),
+        ] {
+            if !present.contains(path) || read_file(path)? != wanted {
+                return Err(error(
+                    "fixed_file",
+                    format!("{path} must contain its exact format bytes"),
+                ));
+            }
+        }
+        if !present.contains("manifest.json") {
+            return Err(error("manifest_missing", "manifest.json is missing"));
+        }
+        let declared = read_file("manifest.json")?;
+        parse_stored_json(&declared)?;
+        if !present.contains("README.md") {
+            return Err(error("readme_missing", "README.md is missing"));
+        }
+        let mut snapshot = Self::new();
+        snapshot.readme = read_file("README.md")?;
+        let mut verifier = jvc_core::EnvelopeVerifier::default();
+        let mut current_partition: Option<String> = None;
+        let mut next_index: usize = 0;
+        let mut previous_part_len: Option<usize> = None;
+        let mut last_id: Option<String> = None;
+        for (path, _size) in &listed {
+            if let Some(rest) = path.strip_prefix("records/") {
+                let partition = &rest[..2];
+                let index: usize = rest[3..]
+                    .strip_suffix(".jsonl")
+                    .unwrap()
+                    .parse()
+                    .map_err(|_| error("path", format!("unexpected carrier path: {path}")))?;
+                if current_partition.as_deref() != Some(partition) {
+                    current_partition = Some(partition.to_owned());
+                    next_index = 0;
+                    previous_part_len = None;
+                    last_id = None;
+                }
+                if index != next_index {
+                    return Err(error(
+                        "carrier_noncanonical",
+                        format!(
+                            "{path} differs from canonical sorting, filling, or greedy partitioning"
+                        ),
+                    ));
+                }
+                let mut reader = open_reader(path)?;
+                let mut line = Vec::new();
+                let mut line_no = 0usize;
+                let mut part_len = 0usize;
+                let mut first_line = true;
+                loop {
+                    line.clear();
+                    let read = (&mut reader)
+                        .take((MAX_RECORD_BYTES + 2) as u64)
+                        .read_until(b'\n', &mut line)
+                        .map_err(|e| error("filesystem", e.to_string()))?;
+                    if read == 0 {
+                        break;
+                    }
+                    line_no += 1;
+                    if line.len() > MAX_RECORD_BYTES + 1 {
+                        return Err(error(
+                            "record_size",
+                            "carrier record exceeds its envelope and body limits",
+                        ));
+                    }
+                    if !line.ends_with(b"\n") {
+                        return Err(error(
+                            "record_newline",
+                            "every carrier record must end with LF",
+                        ));
+                    }
+                    if first_line
+                        && let Some(prev) = previous_part_len
+                        && prev + line.len() <= PART_BYTES
+                    {
+                        return Err(error(
+                            "carrier_noncanonical",
+                            format!(
+                                "{path} differs from canonical sorting, filling, or greedy partitioning"
+                            ),
+                        ));
+                    }
+                    first_line = false;
+                    part_len += line.len();
+                    if part_len > PART_BYTES {
+                        return Err(error(
+                            "part_size",
+                            format!("{path} is empty or exceeds 8 MiB"),
+                        ));
+                    }
+                    let id = snapshot.insert_jsonl_line(
+                        &line[..line.len() - 1],
+                        line_no,
+                        &mut verifier,
+                    )?;
+                    if &id[5..7] != partition {
+                        return Err(error(
+                            "partition",
+                            format!("{path} contains an event from another partition"),
+                        ));
+                    }
+                    if last_id.as_deref().is_some_and(|last| last >= id.as_str()) {
+                        return Err(error(
+                            "carrier_noncanonical",
+                            format!(
+                                "{path} differs from canonical sorting, filling, or greedy partitioning"
+                            ),
+                        ));
+                    }
+                    last_id = Some(id);
+                }
+                if line_no == 0 {
+                    return Err(error(
+                        "part_size",
+                        format!("{path} is empty or exceeds 8 MiB"),
+                    ));
+                }
+                previous_part_len = Some(part_len);
+                next_index += 1;
+            } else if path.starts_with("import-selections/") {
+                let pieces: Vec<_> = path.split('/').collect();
+                let id = format!(
+                    "sha256:{}{}",
+                    pieces[1],
+                    pieces[2].strip_suffix(".json").unwrap()
+                );
+                let bytes = read_file(path)?;
+                snapshot.insert_selection(&id, &bytes)?;
+            }
+        }
+        if canonical_value(&serde_json::to_value(snapshot.manifest()?).unwrap())? != declared {
+            return Err(error(
+                "manifest_mismatch",
+                "declared manifest differs from authenticated inventory",
+            ));
+        }
+        Ok(snapshot)
+    }
     pub fn validation_report(&self) -> Result<ValidationReport> {
         let mut diagnostics = Vec::new();
         for event in self.events.values() {
@@ -638,6 +886,20 @@ fn hex_lower(s: &str, n: usize) -> bool {
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
+/// Enforce an optional per-partition part-count quota. `None` sets no
+/// quota, so any count passes. This takes a count only, so a test can
+/// exercise counts above 1,000,000 without allocating that many parts.
+pub fn check_partition_part_count(count: usize, max: Option<usize>) -> Result<()> {
+    if let Some(max) = max
+        && count > max
+    {
+        return Err(error(
+            "partition_limit",
+            "partition exceeds its configured part limit",
+        ));
+    }
+    Ok(())
+}
 pub fn validate_path(path: &str) -> Result<()> {
     if [
         "format.json",
@@ -655,7 +917,7 @@ pub fn validate_path(path: &str) -> Result<()> {
         && match parts[0] {
             "records" => parts[2]
                 .strip_suffix(".jsonl")
-                .is_some_and(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_digit())),
+                .is_some_and(|s| s.len() >= 6 && s.bytes().all(|b| b.is_ascii_digit())),
             "import-selections" => parts[2]
                 .strip_suffix(".json")
                 .is_some_and(|s| hex_lower(s, 62)),

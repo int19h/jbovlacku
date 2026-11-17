@@ -1547,8 +1547,8 @@ Partition records by the first two digest digits after the `jve1:` prefix. Sort 
 Pack consecutive canonical JSON lines greedily into parts of at most 8 MiB. Each line ends with LF.
 The size includes each final LF. Canonical key order puts body before envelope, regardless of illustrative field order elsewhere.
 
-Number parts from `000000` without gaps. Empty partitions have no files. Duplicate IDs, blank lines, and comment lines are invalid.
-Reject a partition that needs more than 1,000,000 parts. This is a carrier limit, not an identity rule.
+Number parts from `000000` without gaps. Part numbers use at least six digits and more digits when needed. Empty partitions have no files. Duplicate IDs, blank lines, and comment lines are invalid.
+There is no limit on the number of parts in a partition. A reader or writer may set a local part-count quota, but that quota is off by default and is not a format rule. The 8 MiB limit for each part stays a format rule.
 
 The layout avoids one indefinitely growing Git blob. Consumers can run `jq '.body.text' records/*/*.jsonl` directly.
 The export command also provides a single JSONL stream. No separate dictionary projection is required.

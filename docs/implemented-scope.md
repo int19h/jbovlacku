@@ -40,6 +40,7 @@ The Node.js server uses local object files and SQLite for admission, receipts, s
 The search index retains the current copy, one rollback copy, active staged copies, and copies that retained aliases reference.
 An alias points to unchanged entries without copying them. Index publication removes obsolete copies and aliases in the same transaction as the current pointer.
 The native `jvc` command reads, writes, validates, and merges dictionary carriers. It also reads exact committed Git trees locally.
+Carrier reads and `jvc` file inputs have no total size quota by default. Optional local quotas can be set with the carrier `*_with_limits` forms or with `--input-limit BYTES` before a `jvc` command. Per-file and per-record bounds stay in force, and JSONL inputs are read one record at a time.
 The [carrier guide](../crates/jvc-carrier/README.md) describes canonical files, import selections, retention policies, and read limits.
 
 The Node adapter serves the revised SQL import with 59,125 definitions in 44 languages.

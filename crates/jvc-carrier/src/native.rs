@@ -9,17 +9,20 @@ use std::{
 };
 
 /// These local read limits do not change carrier format validity.
+/// `max_total_bytes` and `max_files` are optional quotas. They are off
+/// (`None`) by default. A configured quota returns `resource_unavailable`.
+/// The per-file bounds and the README bound always apply.
 #[derive(Clone, Copy, Debug)]
 pub struct ReadLimits {
-    pub max_total_bytes: usize,
-    pub max_files: usize,
+    pub max_total_bytes: Option<usize>,
+    pub max_files: Option<usize>,
     pub max_readme_bytes: usize,
 }
 impl Default for ReadLimits {
     fn default() -> Self {
         Self {
-            max_total_bytes: 128 * 1024 * 1024,
-            max_files: 250_000,
+            max_total_bytes: None,
+            max_files: None,
             max_readme_bytes: 1024 * 1024,
         }
     }
@@ -55,10 +58,14 @@ fn check_size(
             Error::new("file_size", format!("{path} exceeds its format limit"))
         });
     }
-    if count >= limits.max_files {
+    if let Some(max_files) = limits.max_files
+        && count >= max_files
+    {
         return Err(resource("file count exceeds its limit"));
     }
-    if size > limits.max_total_bytes.saturating_sub(total) {
+    if let Some(max_total) = limits.max_total_bytes
+        && size > max_total.saturating_sub(total)
+    {
         return Err(resource("total file bytes exceed their limit"));
     }
     Ok(())
@@ -110,7 +117,8 @@ fn open_regular(path: &Path) -> Result<fs::File> {
     regular(path, &file.metadata().map_err(|e| io_error(path, e))?)?;
     Ok(file)
 }
-fn read_files(root: &Path, limits: ReadLimits) -> Result<BTreeMap<String, Vec<u8>>> {
+type ListedFile = (String, usize);
+fn list_files(root: &Path, limits: ReadLimits) -> Result<Vec<ListedFile>> {
     let metadata = fs::symlink_metadata(root).map_err(|e| io_error(root, e))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(Error::new(
@@ -118,11 +126,11 @@ fn read_files(root: &Path, limits: ReadLimits) -> Result<BTreeMap<String, Vec<u8
             "carrier root must be a real directory",
         ));
     }
-    let mut files = BTreeMap::new();
+    let mut files: Vec<ListedFile> = Vec::new();
     fn visit(
         root: &Path,
         dir: &Path,
-        files: &mut BTreeMap<String, Vec<u8>>,
+        files: &mut Vec<ListedFile>,
         total: &mut usize,
         limits: ReadLimits,
     ) -> Result<()> {
@@ -152,28 +160,49 @@ fn read_files(root: &Path, limits: ReadLimits) -> Result<BTreeMap<String, Vec<u8
                 let size = usize::try_from(meta.len())
                     .map_err(|_| resource("file size exceeds address space"))?;
                 check_size(&relative, size, *total, files.len(), limits)?;
-                let file = open_regular(&path)?;
-                let max = file_limit(&relative, limits)
-                    .min(limits.max_total_bytes.saturating_sub(*total));
-                let mut bytes = Vec::new();
-                file.take((max as u64).saturating_add(1))
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| io_error(&path, e))?;
-                check_size(&relative, bytes.len(), *total, files.len(), limits)?;
-                *total += bytes.len();
-                files.insert(relative, bytes);
+                *total += size;
+                files.push((relative, size));
             }
         }
         Ok(())
     }
     visit(root, root, &mut files, &mut 0, limits)?;
+    files.sort();
     Ok(files)
+}
+fn read_small_file(root: &Path, relative: &str, limits: ReadLimits) -> Result<Vec<u8>> {
+    let path = root.join(relative);
+    let file = open_regular(&path)?;
+    let max = file_limit(relative, limits);
+    let mut bytes = Vec::new();
+    file.take((max as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| io_error(&path, e))?;
+    if bytes.len() > max {
+        return Err(if relative == "README.md" {
+            resource("README.md exceeds its byte limit")
+        } else {
+            Error::new("file_size", format!("{relative} exceeds its format limit"))
+        });
+    }
+    Ok(bytes)
+}
+fn snapshot_from_directory(root: &Path, limits: ReadLimits) -> Result<Snapshot> {
+    let listed = list_files(root, limits)?;
+    Snapshot::from_listed_files(
+        &listed,
+        |relative| read_small_file(root, relative, limits),
+        |relative| {
+            let file = open_regular(&root.join(relative))?;
+            Ok(Box::new(std::io::BufReader::new(file)) as Box<dyn std::io::BufRead>)
+        },
+    )
 }
 pub fn read_directory(root: impl AsRef<Path>) -> Result<Snapshot> {
     read_directory_with_limits(root, ReadLimits::default())
 }
 pub fn read_directory_with_limits(root: impl AsRef<Path>, limits: ReadLimits) -> Result<Snapshot> {
-    Snapshot::from_files(&read_files(root.as_ref(), limits)?)
+    snapshot_from_directory(root.as_ref(), limits)
 }
 
 /// Write a new directory. An existing output path returns output_exists.
@@ -292,7 +321,25 @@ fn run_git(repo: &Path, args: &[&OsStr], max_output: usize) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn git_files(repo: &Path, commit: &str, limits: ReadLimits) -> Result<BTreeMap<String, Vec<u8>>> {
+struct GitSource {
+    listed: Vec<ListedFile>,
+    oids: BTreeMap<String, String>,
+}
+fn git_blob(repo: &Path, oid: &str, size: usize) -> Result<Vec<u8>> {
+    let body = run_git(
+        repo,
+        &[OsStr::new("cat-file"), OsStr::new("blob"), OsStr::new(oid)],
+        size,
+    )?;
+    if body.len() != size {
+        return Err(Error::new(
+            "git_blob",
+            "Git blob length differs from its reported size",
+        ));
+    }
+    Ok(body)
+}
+fn git_source(repo: &Path, commit: &str, limits: ReadLimits) -> Result<GitSource> {
     // Only full object identifiers enter Git arguments. No ref expression is evaluated.
     if ![40, 64].contains(&commit.len())
         || !commit
@@ -330,9 +377,10 @@ fn git_files(repo: &Path, commit: &str, limits: ReadLimits) -> Result<BTreeMap<S
             OsStr::new("--full-tree"),
             OsStr::new(commit),
         ],
-        limits.max_total_bytes,
+        limits.max_total_bytes.unwrap_or(usize::MAX),
     )?;
-    let mut files = BTreeMap::new();
+    let mut listed: Vec<ListedFile> = Vec::new();
+    let mut oids = BTreeMap::new();
     let mut total = 0;
     for entry in listing.split(|b| *b == 0).filter(|e| !e.is_empty()) {
         let tab = entry
@@ -380,22 +428,38 @@ fn git_files(repo: &Path, commit: &str, limits: ReadLimits) -> Result<BTreeMap<S
             .trim()
             .parse::<usize>()
             .map_err(|_| Error::new("git_blob", "Git returned an invalid blob size"))?;
-        check_size(path, size, total, files.len(), limits)?;
-        let body = run_git(
-            repo,
-            &[OsStr::new("cat-file"), OsStr::new("blob"), OsStr::new(oid)],
-            size,
-        )?;
-        if body.len() != size {
-            return Err(Error::new(
-                "git_blob",
-                "Git blob length differs from its reported size",
-            ));
-        }
+        check_size(path, size, total, listed.len(), limits)?;
         total += size;
-        files.insert(path.to_owned(), body);
+        listed.push((path.to_owned(), size));
+        oids.insert(path.to_owned(), oid.to_owned());
     }
-    Ok(files)
+    listed.sort();
+    Ok(GitSource { listed, oids })
+}
+fn snapshot_from_git(repo: &Path, source: &GitSource) -> Result<Snapshot> {
+    let sizes: BTreeMap<&str, usize> = source
+        .listed
+        .iter()
+        .map(|(p, s)| (p.as_str(), *s))
+        .collect();
+    Snapshot::from_listed_files(
+        &source.listed,
+        |relative| {
+            let oid = source
+                .oids
+                .get(relative)
+                .ok_or_else(|| Error::new("git_blob", format!("{relative} has no Git blob")))?;
+            git_blob(repo, oid, sizes[relative])
+        },
+        |relative| {
+            let oid = source
+                .oids
+                .get(relative)
+                .ok_or_else(|| Error::new("git_blob", format!("{relative} has no Git blob")))?;
+            let bytes = git_blob(repo, oid, sizes[relative])?;
+            Ok(Box::new(std::io::Cursor::new(bytes)) as Box<dyn std::io::BufRead>)
+        },
+    )
 }
 pub fn read_git_tree(repo: impl AsRef<Path>, commit: &str) -> Result<Snapshot> {
     read_git_tree_with_limits(repo, commit, ReadLimits::default())
@@ -405,7 +469,9 @@ pub fn read_git_tree_with_limits(
     commit: &str,
     limits: ReadLimits,
 ) -> Result<Snapshot> {
-    Snapshot::from_files(&git_files(repo.as_ref(), commit, limits)?)
+    let repo = repo.as_ref();
+    let source = git_source(repo, commit, limits)?;
+    snapshot_from_git(repo, &source)
 }
 pub fn validate_checkout(repo: impl AsRef<Path>, commit: &str) -> Result<Snapshot> {
     validate_checkout_with_limits(repo, commit, ReadLimits::default())
@@ -416,15 +482,26 @@ pub fn validate_checkout_with_limits(
     limits: ReadLimits,
 ) -> Result<Snapshot> {
     let repo = repo.as_ref();
-    let blobs = git_files(repo, commit, limits)?;
-    let checkout = read_files(repo, limits)?;
-    if blobs != checkout {
+    let source = git_source(repo, commit, limits)?;
+    let checkout = list_files(repo, limits)?;
+    if checkout != source.listed {
         return Err(Error::new(
             "checkout_transformed",
             "checkout files differ from the exact committed Git blob bytes",
         ));
     }
-    Snapshot::from_files(&checkout)
+    // Compare one file at a time so neither side is held in full.
+    for (relative, size) in &source.listed {
+        let oid = &source.oids[relative];
+        let blob = git_blob(repo, oid, *size)?;
+        if read_small_file(repo, relative, limits)? != blob {
+            return Err(Error::new(
+                "checkout_transformed",
+                "checkout files differ from the exact committed Git blob bytes",
+            ));
+        }
+    }
+    snapshot_from_directory(repo, limits)
 }
 
 #[cfg(all(test, unix))]

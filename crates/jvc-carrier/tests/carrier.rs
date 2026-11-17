@@ -717,7 +717,7 @@ fn native_read_limits_are_local_policy_and_can_be_raised() {
         "resource_unavailable"
     );
     let small_total = ReadLimits {
-        max_total_bytes: 64,
+        max_total_bytes: Some(64),
         ..ReadLimits::default()
     };
     assert_eq!(
@@ -727,7 +727,7 @@ fn native_read_limits_are_local_policy_and_can_be_raised() {
         "resource_unavailable"
     );
     let small_count = ReadLimits {
-        max_files: 1,
+        max_files: Some(1),
         ..ReadLimits::default()
     };
     assert_eq!(
@@ -737,12 +737,10 @@ fn native_read_limits_are_local_policy_and_can_be_raised() {
         "resource_unavailable"
     );
     assert!(read_directory(&repo).is_ok());
-    let unlimited = ReadLimits {
-        max_total_bytes: usize::MAX,
-        max_readme_bytes: usize::MAX,
-        max_files: usize::MAX,
-    };
-    assert!(read_directory_with_limits(&repo, unlimited).is_ok());
+    // The default has no total-byte or file-count quota.
+    assert_eq!(ReadLimits::default().max_total_bytes, None);
+    assert_eq!(ReadLimits::default().max_files, None);
+    assert!(read_directory_with_limits(&repo, ReadLimits::default()).is_ok());
     git(&repo, &["init", "-q"]);
     let with_readme = read_directory(&repo).unwrap();
     let id = commit_fixture(&repo, &with_readme, None);
@@ -764,9 +762,117 @@ fn native_read_limits_are_local_policy_and_can_be_raised() {
             .code,
         "resource_unavailable"
     );
-    assert!(read_git_tree_with_limits(&repo, &id, unlimited).is_ok());
+    assert!(read_git_tree_with_limits(&repo, &id, ReadLimits::default()).is_ok());
     assert_eq!(
         read_git_tree(&repo, &id).unwrap().snapshot_id().unwrap(),
         with_readme.snapshot_id().unwrap()
+    );
+}
+
+#[test]
+fn partition_part_count_above_one_million_needs_no_allocation_and_no_quota_by_default() {
+    // The count check takes a number only, so this does not allocate the
+    // parts that 1,000,001 parts at 8 MiB each would imply.
+    assert!(check_partition_part_count(1_000_001, None).is_ok());
+    assert!(check_partition_part_count(1_000_000, Some(1_000_000)).is_ok());
+    assert_eq!(
+        check_partition_part_count(1_000_001, Some(1_000_000))
+            .unwrap_err()
+            .code,
+        "partition_limit"
+    );
+    let (snapshot, _, _) = with_body();
+    assert!(snapshot.to_files().is_ok());
+    assert_eq!(
+        snapshot
+            .to_files_with_partition_limit(Some(0))
+            .unwrap_err()
+            .code,
+        "partition_limit"
+    );
+}
+
+fn large_body_snapshot(records: usize, body_bytes: usize) -> Snapshot {
+    let mut snapshot = Snapshot::new();
+    for index in 0..records {
+        let padding = body_bytes - 16;
+        let body =
+            canonical_value(&json!({"x": format!("{index:08}{}", "a".repeat(padding))})).unwrap();
+        let e = event(
+            7,
+            u8::try_from(index % 251).unwrap(),
+            Some(&body),
+            vec![],
+            json!({"kind":"identity.profile"}),
+        );
+        // Nonces above vary by construction through the signed header; use
+        // distinct bodies so every event and body is retained.
+        let mut e = e;
+        if index >= 251 {
+            let mut header = e.header().clone();
+            header.nonce = format!("{index:032x}");
+            e = sign_header(&[7; 32], header).unwrap();
+        }
+        add(&mut snapshot, &e);
+        snapshot
+            .insert_body(&body_descriptor(&body).unwrap().hash, &body)
+            .unwrap();
+    }
+    snapshot
+}
+
+#[test]
+fn carrier_above_128_mib_reads_with_no_quota_and_configured_quota_refuses() {
+    // 550 records with bodies near the 256 KiB per-body bound pass 128 MiB
+    // of carrier file bytes without a single record breaking its bound.
+    let snapshot = large_body_snapshot(550, 260_000);
+    let files = snapshot.to_files().unwrap();
+    let total: usize = files.values().map(Vec::len).sum();
+    assert!(total > 128 * 1024 * 1024, "fixture is only {total} bytes");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("carrier");
+    write_directory(&root, &snapshot).unwrap();
+    assert_eq!(
+        read_directory(&root).unwrap().events().len(),
+        snapshot.events().len()
+    );
+    let quota = ReadLimits {
+        max_total_bytes: Some(128 * 1024 * 1024),
+        ..ReadLimits::default()
+    };
+    assert_eq!(
+        read_directory_with_limits(&root, quota).unwrap_err().code,
+        "resource_unavailable"
+    );
+}
+
+#[test]
+fn carrier_above_250000_files_reads_with_no_quota_and_configured_quota_refuses() {
+    let (mut snapshot, _, _) = with_body();
+    for index in 0..250_001usize {
+        let id = format!("jve1:{index:064x}");
+        let selection = canonical_value(&json!([id])).unwrap();
+        snapshot
+            .insert_selection(&hash_id("sha256:", b"", &selection), &selection)
+            .unwrap();
+    }
+    let files = snapshot.to_files().unwrap();
+    assert!(files.len() > 250_000, "fixture has {} files", files.len());
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("carrier");
+    std::fs::create_dir(&root).unwrap();
+    for (name, bytes) in &files {
+        let path = root.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    assert_eq!(read_directory(&root).unwrap().selections().len(), 250_001);
+    let quota = ReadLimits {
+        max_files: Some(250_000),
+        ..ReadLimits::default()
+    };
+    assert_eq!(
+        read_directory_with_limits(&root, quota).unwrap_err().code,
+        "resource_unavailable"
     );
 }

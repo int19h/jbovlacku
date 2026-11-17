@@ -275,3 +275,100 @@ fn definition_defaults_keep_original_bytes_through_carrier_round_trip() {
     assert_eq!(reimported.events().len(), 2);
     assert_eq!(reimported.to_jsonl().unwrap(), records);
 }
+
+#[test]
+fn cli_streams_jsonl_above_the_old_64_mib_input_cap() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let mut snapshot = Snapshot::new();
+    for index in 0..300usize {
+        let body =
+            canonical_value(&json!({"x": format!("{index:08}{}", "a".repeat(250_000))})).unwrap();
+        let descriptor = body_descriptor(&body).unwrap();
+        let event = sign_header(
+            &[9; 32],
+            Header {
+                version: 1,
+                issuer: identity_from_seed(&[9; 32]),
+                previous: vec![],
+                nonce: format!("{index:032x}"),
+                action: json!({"kind":"identity.profile"}),
+                content: Some(descriptor.clone()),
+            },
+        )
+        .unwrap();
+        snapshot
+            .insert_envelope(&event.canonical_envelope().unwrap())
+            .unwrap();
+        snapshot.insert_body(&descriptor.hash, &body).unwrap();
+    }
+    let records = snapshot.to_jsonl().unwrap();
+    assert!(records.len() > 64 * 1024 * 1024);
+    fs::write(root.join("records.jsonl"), &records).unwrap();
+    success(cli(
+        root,
+        &[
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "full",
+        ],
+    ));
+    assert_eq!(
+        read_directory(root.join("full")).unwrap().events().len(),
+        300
+    );
+    let exported = cli(root, &["export", "full", "--format", "jsonl"]);
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    assert_eq!(exported.stdout, records);
+    // A configured quota still refuses the same streamed input.
+    let refused = cli(
+        root,
+        &[
+            "--input-limit",
+            "67108864",
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "refused",
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("configured input limit"));
+    assert!(!root.join("refused").exists());
+}
+
+#[test]
+fn cli_rejects_a_carrier_record_above_the_per_record_bound() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let (snapshot, _, _) = fixture();
+    let jsonl = snapshot.to_jsonl().unwrap();
+    let line = &jsonl[..jsonl.iter().position(|b| *b == b'\n').unwrap()];
+    let mut record: serde_json::Value = serde_json::from_slice(line).unwrap();
+    record["body"] = json!({"x": "a".repeat(300_000)});
+    let mut oversized = canonical_value(&record).unwrap();
+    oversized.push(b'\n');
+    fs::write(root.join("oversized.jsonl"), oversized).unwrap();
+    let output = cli(
+        root,
+        &[
+            "import",
+            "oversized.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "full",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(!root.join("full").exists());
+}
