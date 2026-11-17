@@ -532,12 +532,101 @@ pub fn validate_checkout_with_limits(
             ));
         }
     }
-    snapshot_from_directory(repo, limits)
+    // Build the result from the compared Git blobs, not from the working
+    // files. Later working-file changes cannot change the result, and the
+    // filling pass reads the same content-addressed bytes as the first.
+    snapshot_from_git(repo, &source)
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn second_pass_rejects_a_part_that_changes_after_the_first_pass() {
+        use jvc_core::{Header, body_descriptor, canonical_value, identity_from_seed, sign_header};
+        use serde_json::{Value, json};
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        let body =
+            canonical_value(&json!({"name":"Disposable fixture","bio":[],"links":[]})).unwrap();
+        let descriptor = body_descriptor(&body).unwrap();
+        let sign = |nonce: u32| {
+            sign_header(
+                &[4; 32],
+                Header {
+                    version: 1,
+                    issuer: identity_from_seed(&[4; 32]),
+                    previous: vec![],
+                    nonce: format!("{nonce:032x}"),
+                    action: json!({"kind":"identity.profile"}),
+                    content: Some(descriptor.clone()),
+                },
+            )
+            .unwrap()
+        };
+        let a = sign(0);
+        let b = (1..100_000u32)
+            .map(sign)
+            .find(|e| e.id()[5..7] == a.id()[5..7])
+            .expect("fixture must find two records in one partition");
+        let mut snapshot = Snapshot::new();
+        for e in [&a, &b] {
+            snapshot
+                .insert_envelope(&e.canonical_envelope().unwrap())
+                .unwrap();
+        }
+        snapshot.insert_body(&descriptor.hash, &body).unwrap();
+        let canonical = snapshot.to_files().unwrap();
+        let record_path = canonical
+            .keys()
+            .find(|p| p.starts_with("records/"))
+            .unwrap()
+            .clone();
+        // The missing-body variant keeps the canonical manifest, because
+        // the other copy retains the body.
+        let mut missing = canonical.clone();
+        let bytes = missing.get(&record_path).unwrap();
+        let mut lines: Vec<Vec<u8>> = bytes[..bytes.len() - 1]
+            .split(|c| *c == b'\n')
+            .map(<[u8]>::to_vec)
+            .collect();
+        let mut record: Value = serde_json::from_slice(&lines[1]).unwrap();
+        record["body"] = Value::Null;
+        lines[1] = canonical_value(&record).unwrap();
+        let mut missing_bytes = Vec::new();
+        for line in lines {
+            missing_bytes.extend(line);
+            missing_bytes.push(b'\n');
+        }
+        missing.insert(record_path.clone(), missing_bytes);
+        let listed: Vec<(String, usize)> = canonical
+            .iter()
+            .map(|(p, b)| (p.clone(), b.len()))
+            .collect();
+        let opens = RefCell::new(HashMap::<String, usize>::new());
+        let err = Snapshot::from_listed_files(
+            &listed,
+            |path| Ok(missing.get(path).cloned().unwrap()),
+            |path| {
+                let mut counts = opens.borrow_mut();
+                let count = counts.entry(path.to_owned()).or_insert(0);
+                *count += 1;
+                // The first open reads the missing-body part. The filling
+                // pass opens it again and finds the canonical part.
+                let bytes = if path == record_path && *count > 1 {
+                    canonical.get(path).cloned().unwrap()
+                } else {
+                    missing.get(path).cloned().unwrap()
+                };
+                Ok(Box::new(std::io::Cursor::new(bytes)) as Box<dyn std::io::BufRead>)
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "input_changed");
+    }
+
     #[test]
     fn final_open_refuses_a_file_swapped_for_a_symlink() {
         let temp = tempfile::tempdir().unwrap();

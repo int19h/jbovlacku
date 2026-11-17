@@ -736,6 +736,10 @@ impl Snapshot {
         let mut snapshot = Self::new();
         snapshot.readme = read_file("README.md")?;
         let mut verifier = jvc_core::EnvelopeVerifier::default();
+        // One digest per record part, recorded in the first pass and
+        // checked in the filling pass. This is state per listed file,
+        // not per event.
+        let mut part_digests: BTreeMap<String, String> = BTreeMap::new();
         let mut current_partition: Option<String> = None;
         let mut next_index: usize = 0;
         let mut previous_part_len: Option<usize> = None;
@@ -770,9 +774,14 @@ impl Snapshot {
                 let mut line_no = 0usize;
                 let mut part_len = 0usize;
                 let mut first_line = true;
+                let mut hasher = jvc_core::HashWriter::new(b"", usize::MAX);
                 while let Some(capped) =
                     read_capped_line(&mut *reader, &mut line, MAX_RECORD_BYTES + 1)?
                 {
+                    use std::io::Write;
+                    hasher
+                        .write_all(&line)
+                        .map_err(|e| error("hash", e.to_string()))?;
                     line_no += 1;
                     if !capped.terminated {
                         return Err(error(
@@ -832,6 +841,8 @@ impl Snapshot {
                         format!("{path} is empty or exceeds 8 MiB"),
                     ));
                 }
+                let (digest, _) = hasher.finish("sha256:");
+                part_digests.insert(path.clone(), digest);
                 previous_part_len = Some(part_len);
                 next_index += 1;
             } else if path.starts_with("import-selections/") {
@@ -857,9 +868,14 @@ impl Snapshot {
             }
             let mut reader = open_reader(path)?;
             let mut line = Vec::new();
+            let mut hasher = jvc_core::HashWriter::new(b"", usize::MAX);
             while let Some(_capped) =
                 read_capped_line(&mut *reader, &mut line, MAX_RECORD_BYTES + 1)?
             {
+                use std::io::Write;
+                hasher
+                    .write_all(&line)
+                    .map_err(|e| error("hash", e.to_string()))?;
                 let record = parse_transport_json(&line[..line.len().saturating_sub(1)])?;
                 if !record["body"].is_null() {
                     continue;
@@ -884,6 +900,14 @@ impl Snapshot {
                         ),
                     ));
                 }
+            }
+            // The filling pass must read the bytes the first pass accepted.
+            let (digest, _) = hasher.finish("sha256:");
+            if part_digests.get(path) != Some(&digest) {
+                return Err(error(
+                    "input_changed",
+                    format!("{path} changed during the read"),
+                ));
             }
         }
         if canonical_value(&serde_json::to_value(snapshot.manifest()?).unwrap())? != declared {
