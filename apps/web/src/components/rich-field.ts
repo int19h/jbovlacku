@@ -962,9 +962,11 @@ export function richField(label: string, options: RichFieldOptions) {
         }
         const type = deletionKey(event);
         if (!type) {
-          // The browser moves the selection for this key after the event.
-          // Sync it into editor state as soon as that move lands, before
-          // the focus-time write-back can restore the previous caret.
+          // Sync once this key's native motion lands. The microtask runs
+          // after the move in Firefox; in Chromium it can run before the
+          // caret moves and then reads the old selection, so the keyup
+          // sync below covers that engine. Either way, state must hold
+          // the reader's selection before the focus-time write-back.
           if (
             /^(?:Home|End|PageUp|PageDown|Arrow(?:Left|Right|Up|Down))$/u.test(
               event.key,
@@ -984,6 +986,19 @@ export function richField(label: string, options: RichFieldOptions) {
         const { transaction } = prepareDeletion(type, undefined, selection);
         if (transaction) dispatchEdit(transaction);
         return true;
+      },
+      keyup(_view, event) {
+        // The native motion for this key has landed by keyup. Read the
+        // resulting selection into state now, before the focus-time
+        // write-back can restore the previous caret. (A microtask queued
+        // from keydown would run before Chromium moves the caret.)
+        if (
+          /^(?:Home|End|PageUp|PageDown|Arrow(?:Left|Right|Up|Down))$/u.test(
+            event.key,
+          )
+        )
+          syncNativeSelection();
+        return false;
       },
       input(_view, event) {
         const stage = deleteRecovery;
@@ -1069,6 +1084,12 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       focus(view) {
+        // This handler runs before ProseMirror's own focus handler.
+        // Reading the browser selection into state here means the
+        // focus-time write ProseMirror schedules about 20 ms later
+        // starts from the caret the reader actually has; the keyup and
+        // selectionchange syncs below then keep state ahead of it.
+        syncNativeSelection();
         const reset =
           resetSelection?.doc === view.state.doc ? resetSelection : null;
         const before =
@@ -1480,9 +1501,17 @@ export function richField(label: string, options: RichFieldOptions) {
    * focus; a native selection made in that window (a click, Home, an arrow)
    * is newer than the tracked one and must be in state before the write
    * runs, or the write restores the caret the reader just moved from.
+   * The sync runs at focus (before ProseMirror's own focus handler), on
+   * keyup after a motion key's native move has landed, and on
+   * selectionchange for moves that arrive without a key.
    */
   function syncNativeSelection() {
     if (view.isDestroyed || view.composing) return;
+    // Firefox can hold several ranges (Ctrl+drag). ProseMirror normalizes
+    // those to their outer bounds itself; mapping only the anchor and
+    // focus here would record just the last range, so leave them to it.
+    const ranges = input.ownerDocument.getSelection();
+    if (ranges && ranges.rangeCount > 1) return;
     const current = view.state.selection;
     if (current instanceof NodeSelection) {
       // A selected chip is editor state of its own kind. Leave it while

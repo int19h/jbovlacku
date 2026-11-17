@@ -1105,6 +1105,98 @@ test("line keys reveal a caret the reader scrolled away from", async ({
   }
 });
 
+test("trusted line keys replace the paragraph after a slow Home handler", async ({
+  page,
+}) => {
+  for (let trial = 0; trial < 6; trial++) {
+    const field = await mountKeyboardField(page, "Sense: new meaning");
+    await field.evaluate((node) => {
+      node.addEventListener("keydown", (event) => {
+        if ((event as KeyboardEvent).key !== "Home") return;
+        const until = performance.now() + 35;
+        while (performance.now() < until) {
+          // Model slow browser work during this one key.
+        }
+      });
+    });
+    await chooseKeyboardSelection(field, 18, 18);
+    await page.waitForTimeout(60);
+    await field.blur();
+    await field.focus();
+    await page.keyboard.press("Home");
+    await page.keyboard.press("Shift+End");
+    await page.waitForTimeout(60);
+    await field.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual([["x"]]);
+  }
+});
+
+test("Firefox Ctrl-drag keeps ProseMirror's normalized selection", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "firefox", "Only Firefox holds several ranges.");
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { richField } = await import(String("/src/components/rich-field.ts"));
+    const field = richField("Ranges field", {
+      value: [["alpha beta"], ["middle"], ["omega end"]],
+    });
+    document.body.replaceChildren(field.wrapper);
+  });
+  const field = page.getByRole("textbox", {
+    name: "Ranges field",
+    exact: true,
+  });
+  await field.focus();
+  const points = await field.evaluate((node) =>
+    [0, 2].map((paragraph) =>
+      [1, 4].map((offset) => {
+        const text =
+          node
+            .querySelectorAll("p")
+            [paragraph].querySelector(".rich-literal")!.firstChild!;
+        const range = document.createRange();
+        range.setStart(text, offset);
+        range.collapse(true);
+        const box = range.getBoundingClientRect();
+        return { x: box.left, y: (box.top + box.bottom) / 2 };
+      }),
+    ),
+  );
+  const drag = async (from: { x: number; y: number }, to: { x: number; y: number }) => {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 4 });
+    await page.mouse.up();
+  };
+  await drag(points[0][0], points[0][1]);
+  await page.keyboard.down("Control");
+  await drag(points[1][0], points[1][1]);
+  await page.keyboard.up("Control");
+  const selected = () =>
+    field.evaluate(() => ({
+      text: getSelection()!.toString(),
+      ranges: getSelection()!.rangeCount,
+    }));
+  await expect
+    .poll(selected)
+    .toEqual({ text: "lpha beta\n\nmiddle\n\nomeg", ranges: 1 });
+  await field.press("Delete");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["aa end"]]);
+  await field.press("Control+z");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["alpha beta"], ["middle"], ["omega end"]]);
+  await expect
+    .poll(selected)
+    .toEqual({ text: "lpha beta\n\nmiddle\n\nomeg", ranges: 1 });
+});
+
 test("a selected chip keeps its node selection for Cmd arrows", async ({
   page,
 }) => {
