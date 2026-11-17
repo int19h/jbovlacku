@@ -646,7 +646,7 @@ test("the worker charges the response transfer it posts", async ({
         { snapshot: "sha256:" + "a".repeat(64), entries },
         "en",
         ["/.*/"],
-        { workLimit: 200 },
+        { workLimit: 225 },
       );
       return "resolved";
     } catch (error) {
@@ -654,7 +654,54 @@ test("the worker charges the response transfer it posts", async ({
     }
   }, corePath);
   // A pattern query spends no parser work, so only the transfer and rebuild
-  // charges can refuse: the old code resolves the same request.
+  // charges can refuse. At this boundary the previous head still resolves:
+  // only the worker's reply-transfer charge refuses the same request.
+  expect(outcome).toContain("work or time limit");
+});
+
+test("the worker charges every matching rafsi in the response transfer", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    // One word shared by every entry keeps the whole response in a single
+    // hit; each entry carries four distinct retained rafsi, so the hit
+    // reports 80 matching rafsi. A rafsi-only pattern query matches them
+    // all without parser work.
+    const entries = Array.from({ length: 20 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+      issuer: "ed25519:" + "a".repeat(64),
+      notes: false,
+      rafsi: Array.from({ length: 4 }, (_, j) => `raf${index}x${j}`),
+      rafsi_complete: true,
+      attribution: null,
+    }));
+    try {
+      await searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), version: 2, entries },
+        "en",
+        ["/raf/"],
+        { rafsiOnly: true, workLimit: 470 },
+      );
+      return "resolved";
+    } catch (error) {
+      return `${(error as Error).constructor.name}: ${(error as Error).message}`;
+    }
+  }, corePath);
+  // The mapping and rebuild charges alone leave the request under the limit,
+  // so only the per-spelling reply-transfer charge refuses it. The previous
+  // head, which clones the 80 spellings for free, resolves the same request.
   expect(outcome).toContain("work or time limit");
 });
 

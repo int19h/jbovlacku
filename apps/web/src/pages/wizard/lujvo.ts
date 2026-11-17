@@ -49,7 +49,10 @@ import type { App } from "../../app/context.ts";
 import { getWord, RequestError } from "../../data/api.ts";
 import type { Draft } from "../../model/draft.ts";
 import type { CachedPackage, LocalHit } from "../../data/search.ts";
-import { searchPackage } from "../../data/package-search.ts";
+import {
+  cappedHitEntries,
+  searchPackage,
+} from "../../data/package-search.ts";
 import { isV2 } from "../../data/search.ts";
 import {
   cachedPackage,
@@ -360,7 +363,11 @@ export async function lujvoPage(
       const entry = hit.entries[0];
       const kind =
         (entry.classification as { kind?: string } | null)?.kind ?? "other";
-      const rafsi = hit.entries.flatMap((e) => (isV2(e) ? e.rafsi : []));
+      // The request bounds hits, not the entries inside each hit: one word
+      // can carry entries for the whole package, so the page reads at most
+      // HIT_CONTENT_LIMIT entries per hit. Real words keep far fewer.
+      const shown = cappedHitEntries(hit);
+      const rafsi = shown.flatMap((e) => (isV2(e) ? e.rafsi : []));
       const item = el("li", { class: "similar-item" });
       item.append(
         el("span", { class: "hw", lang: "jbo", text: hit.word.spelling }),
@@ -383,11 +390,16 @@ export async function lujvoPage(
                 kind,
                 // A specific definition is recorded only when the author chooses one below.
                 definition: null,
-                definitions: hit.entries.map((e) => ({
+                definitions: shown.map((e) => ({
                   event: e.event,
                   summary:
                     e.glosses.map((g) => g.text).join(", ") ||
-                    Array.from(e.plain_text).slice(0, 60).join(""),
+                    // The first 60 code points occupy at most 120 UTF-16
+                    // units, so reading that prefix first is exact and keeps
+                    // a long entry from stalling the page.
+                    Array.from(e.plain_text.slice(0, 120))
+                      .slice(0, 60)
+                      .join(""),
                 })),
                 gloss: entry.glosses[0]?.text ?? "",
                 claims: [...new Set(rafsi)].map((r) => ({

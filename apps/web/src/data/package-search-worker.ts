@@ -188,6 +188,16 @@ self.onmessage = ({ data }) => {
         : hits;
       // The structured clone below copies every mapped reference to the
       // client, so the mapping also counts the transfer units up front.
+      // Reply field audit: each hit charges one unit for its fixed-size
+      // shell (word_id, match, preview index) plus one unit per entry
+      // index, one per definition index, and one per matching rafsi
+      // spelling, which the clone copies string by string. The remaining
+      // reply fields are fixed-size scalars or small bounded structures
+      // covered by those per-hit units: totals (one number per group),
+      // segmentation, prepared, allLojban, the metrics counters, and the
+      // budget snapshot. The client rebuild maps hits, entries, and
+      // definitions one unit each and passes the rafsi array through by
+      // reference, so it needs no per-spelling charge of its own.
       let transferUnits = 0;
       const pages: PackageHitReferences[][] = ranked.map((rows) =>
         rows.slice(offset, offset + limit).map((hit) => {
@@ -204,6 +214,10 @@ self.onmessage = ({ data }) => {
             transferUnits += 1;
             return stored.events.get(event)!;
           });
+          // The clone copies every matching rafsi string, so the transfer
+          // charges one unit per spelling. The mapping itself only copies
+          // the reference, which the per-hit unit above already covers.
+          if (hit.matchingRafsi) transferUnits += hit.matchingRafsi.length;
           requestBudget.reserve(1, "search");
           transferUnits += 1;
           return {

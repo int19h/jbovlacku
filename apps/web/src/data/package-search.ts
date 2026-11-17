@@ -5,6 +5,7 @@ import {
   type CachedPackage,
   type LocalHit,
 } from "./search.ts";
+import type { PackageEntry } from "../model/types.ts";
 import {
   isPatternQuery,
   PatternError,
@@ -381,4 +382,61 @@ export function resolvePackageHits(
       };
     }),
   );
+}
+
+/**
+ * Per-hit content bound for page work after the response. The request cap
+ * bounds hits, not the entries inside each hit: one word can carry entries
+ * for the whole package. Pages stop their per-hit loops here, so their work
+ * stays bounded by what they render. Real words keep far fewer entries, so
+ * ordinary displays are unchanged.
+ */
+export const HIT_CONTENT_LIMIT = 1000;
+/**
+ * The entries of one hit that a page may read. Longer lists keep their
+ * first HIT_CONTENT_LIMIT entries; the request already ordered the strongest
+ * match first.
+ */
+export function cappedHitEntries(
+  hit: Pick<LocalHit, "entries">,
+): readonly PackageEntry[] {
+  return hit.entries.length > HIT_CONTENT_LIMIT
+    ? hit.entries.slice(0, HIT_CONTENT_LIMIT)
+    : hit.entries;
+}
+/**
+ * A hit's own entry for a result row. Local grouping keeps the preview
+ * entry first, so the page reads it in O(1) instead of scanning every entry
+ * of the hit. Anything else reports no entry, the same as a missed scan.
+ */
+export function previewEntryForHit(
+  hit: Pick<LocalHit, "entries">,
+  eventId: string,
+): PackageEntry | undefined {
+  const first = hit.entries?.[0];
+  return first?.event === eventId ? first : undefined;
+}
+/**
+ * Rows the rafsi page collects from result hits, at most `limit` in visit
+ * order, deduplicated across calls through `found`. Returns true when a
+ * further spelling exists past the limit, so the caller stops the whole
+ * accumulation instead of visiting every remaining spelling through a
+ * continue. Hits stay bounded by the request limit and rows by the display
+ * limit, so the page's work is bounded by what it renders.
+ */
+export function takeRafsiRows(
+  hits: readonly Pick<LocalHit, "word_id" | "word" | "matchingRafsi">[],
+  language: string,
+  found: Map<string, { spelling: string; language: string; rafsi: string }>,
+  limit: number,
+): boolean {
+  for (const hit of hits) {
+    for (const spelling of hit.matchingRafsi ?? []) {
+      const key = `${hit.word_id}|${spelling}`;
+      if (found.has(key)) continue;
+      if (found.size >= limit) return true;
+      found.set(key, { spelling: hit.word.spelling, language, rafsi: spelling });
+    }
+  }
+  return false;
 }

@@ -6,6 +6,7 @@ import {
 } from "../../../../packages/search/src/index.ts";
 import { naturalLanguageNote } from "../../../../packages/search/src/pattern.ts";
 import {
+  previewEntryForHit,
   searchPackage,
   PackageValidationError,
   type PackageSearchResult,
@@ -1010,7 +1011,9 @@ function hitRow(
     controlSlot.replaceChildren(
       judgmentControl(app, target, { score: null, unavailable: true }),
     );
-    const entry = (hit as LocalHit).entries?.find((e) => e.event === previewId);
+    // Local grouping keeps the preview entry first, so the row reads it in
+    // O(1) instead of scanning every entry of the hit.
+    const entry = previewEntryForHit(hit as LocalHit, previewId);
     if (entry && isV2(entry)) {
       if (entry.attribution) {
         const author = entry.attribution.author;

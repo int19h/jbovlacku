@@ -28,7 +28,7 @@ import {
   comparePatternSpelling,
   patternKey,
 } from "../../../../packages/search/src/pattern.ts";
-import { searchPackage } from "../data/package-search.ts";
+import { searchPackage, takeRafsiRows } from "../data/package-search.ts";
 
 /** Loads the version 2 package for a language, from cache or the server. */
 async function packageFor(
@@ -94,21 +94,19 @@ export async function wordsWithRafsi(
       signal,
     });
     limited ||= result.totals[0] > 1000;
-    for (const hit of result.hits[0]) {
+    for (const hit of result.hits[0])
       identities.set(hit.word.spelling, hit.word_id);
-      for (const spelling of hit.matchingRafsi ?? []) {
-        const key = `${hit.word_id}|${spelling}`;
-        if (!found.has(key) && found.size >= 1000) {
-          limited = true;
-          continue;
-        }
-        found.set(key, {
-          spelling: hit.word.spelling,
-          language,
-          rafsi: spelling,
-        });
-      }
-    }
+    // Rows stay capped at what the page renders: once 1,000 rows are
+    // collected, later spellings add nothing, so the page stops visiting
+    // them instead of continuing through every remaining spelling. Reaching
+    // the display cap marks the list limited, like the hit-total check
+    // above. Later languages still run their own package checks because the
+    // loop continues.
+    if (
+      found.size >= 1000 ||
+      takeRafsiRows(result.hits[0], language, found, 1000)
+    )
+      limited = true;
   }
   return Object.assign(
     [...found.values()].sort(
