@@ -50,14 +50,13 @@ pub struct EvaluationOptions {
     pub limits: Limits,
 }
 impl EvaluationOptions {
-    pub fn selection_id_count(&self) -> usize {
-        self.import_selections
-            .values()
-            .fold(0usize, |acc, ids| acc.saturating_add(ids.len()))
-    }
-    pub fn traversal_budget(&self, records: usize) -> usize {
+    pub(crate) fn traversal_budget_for_nodes(
+        &self,
+        nodes: &BTreeMap<String, graph::Node>,
+    ) -> usize {
+        let resolved = policy::resolve_referenced_selections(self, nodes);
         self.limits
-            .traversal_budget_with_selections(records, self.selection_id_count())
+            .traversal_budget_with_selections(nodes.len(), resolved.allowance)
     }
 }
 /// An opaque projection held only in the trusted host's private storage.
@@ -574,8 +573,12 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
         arena,
         ..
     } = prepared;
-    let graph = graph::Graph::new_with_options(nodes, &input);
-    let result = evaluate_graph(&input, &graph);
+    let resolved = policy::resolve_referenced_selections(&input, &nodes);
+    let budget = input
+        .limits
+        .traversal_budget_with_selections(nodes.len(), resolved.allowance);
+    let graph = graph::Graph::new_with_budget(nodes, budget);
+    let result = evaluate_graph_with_selections(&input, &graph, &resolved);
     arena.borrow_mut().finish_load();
     result
 }
@@ -613,7 +616,16 @@ fn event_limit_evaluation(input: &EvaluationOptions) -> Evaluation {
     result.reasons.insert("resource_unavailable".into());
     result
 }
+#[allow(dead_code)]
 fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation {
+    let resolved = policy::resolve_referenced_selections(input, &graph.nodes);
+    evaluate_graph_with_selections(input, graph, &resolved)
+}
+fn evaluate_graph_with_selections(
+    input: &EvaluationOptions,
+    graph: &graph::Graph,
+    resolved: &policy::ResolvedSelections<'_>,
+) -> Evaluation {
     let mut result = empty_evaluation(input);
     if graph.resource.get() {
         resource_unavailable(&mut result);
@@ -664,7 +676,7 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
             },
         );
     }
-    policy::select(graph, input, &mut result);
+    policy::select(graph, input, resolved, &mut result);
     if graph.resource.get() || result.reasons.contains("resource_unavailable") {
         resource_unavailable(&mut result);
         return result;

@@ -29,6 +29,7 @@ pub struct EvaluatedState {
     evaluation: Evaluation,
     graph: Option<Graph>,
     unresolved: BTreeSet<String>,
+    selection_allowance: usize,
     remaining_work: usize,
     unmatched_publication_scans: usize,
     matched_publication_scans: BTreeMap<String, usize>,
@@ -67,6 +68,7 @@ impl Clone for EvaluatedState {
             evaluation: self.evaluation.clone(),
             graph: self.graph.clone(),
             unresolved: self.unresolved.clone(),
+            selection_allowance: self.selection_allowance,
             remaining_work: self.remaining_work,
             unmatched_publication_scans: self.unmatched_publication_scans,
             matched_publication_scans: self.matched_publication_scans.clone(),
@@ -98,6 +100,7 @@ impl EvaluatedState {
             prepared,
             graph: None,
             unresolved: BTreeSet::new(),
+            selection_allowance: 0,
             remaining_work: 0,
             unmatched_publication_scans: 0,
             matched_publication_scans: BTreeMap::new(),
@@ -189,11 +192,15 @@ impl EvaluatedState {
         self.prepared.nodes.len()
     }
 
-    pub fn consumed_work(&self) -> usize {
+    pub fn traversal_budget(&self) -> usize {
         self.prepared
             .options
-            .traversal_budget(self.prepared.nodes.len())
-            .saturating_sub(self.remaining_work)
+            .limits
+            .traversal_budget_with_selections(self.prepared.nodes.len(), self.selection_allowance)
+    }
+
+    pub fn consumed_work(&self) -> usize {
+        self.traversal_budget().saturating_sub(self.remaining_work)
     }
 
     pub fn statistics(&self) -> &UpdateStatistics {
@@ -367,14 +374,14 @@ impl EvaluatedState {
 
     fn rebuild(&mut self) {
         self.judgment_changes = None;
+        let resolved =
+            policy::resolve_referenced_selections(&self.prepared.options, &self.prepared.nodes);
+        self.selection_allowance = resolved.allowance;
         if self.prepared.arena_error().is_some() {
             self.evaluation = empty_evaluation(&self.prepared.options);
             resource_unavailable(&mut self.evaluation);
             self.graph = None;
-            self.remaining_work = self
-                .prepared
-                .options
-                .traversal_budget(self.prepared.nodes.len());
+            self.remaining_work = self.traversal_budget();
             self.unresolved.clear();
             self.unmatched_publication_scans = 0;
             self.matched_publication_scans.clear();
@@ -383,10 +390,7 @@ impl EvaluatedState {
         if self.prepared.event_limit_exceeded {
             self.evaluation = event_limit_evaluation(&self.prepared.options);
             self.graph = None;
-            self.remaining_work = self
-                .prepared
-                .options
-                .traversal_budget(self.prepared.nodes.len());
+            self.remaining_work = self.traversal_budget();
             self.unresolved.clear();
             self.unmatched_publication_scans = 0;
             self.matched_publication_scans.clear();
@@ -395,8 +399,8 @@ impl EvaluatedState {
         // Discard this state's old ancestry before allocating its replacement.
         self.saved_ancestry_bytes = None;
         self.graph = None;
-        let graph = Graph::new_with_options(self.prepared.nodes.clone(), &self.prepared.options);
-        self.evaluation = evaluate_graph(&self.prepared.options, &graph);
+        let graph = Graph::new_with_budget(self.prepared.nodes.clone(), self.traversal_budget());
+        self.evaluation = evaluate_graph_with_selections(&self.prepared.options, &graph, &resolved);
         self.remaining_work = graph.budget.get();
         if !self.evaluation.reasons.contains("resource_unavailable") {
             self.unmatched_publication_scans = graph.unmatched_publication_scans.get();
@@ -477,7 +481,7 @@ impl EvaluatedState {
                 rebuild_reason = Some("checkpoint_ancestry_unknown".into());
             } else {
                 let graph =
-                    Graph::new_with_options(self.prepared.nodes.clone(), &self.prepared.options);
+                    Graph::new_with_budget(self.prepared.nodes.clone(), self.traversal_budget());
                 if let Some(bytes) = self.saved_ancestry_bytes.take() {
                     graph.ancestry.restore_bytes(bytes);
                 }
@@ -1155,13 +1159,18 @@ impl EvaluatedState {
                 (saved, CHECKPOINT_VERSION, nodes)
             }
         };
+        let resolved = policy::resolve_referenced_selections(&saved.options, &nodes);
+        let selection_allowance = resolved.allowance;
+        let expected_budget = saved
+            .options
+            .limits
+            .traversal_budget_with_selections(nodes.len(), selection_allowance);
         if saved.version != expected_version
             || saved.binding != binding
             || saved.evaluation.selected_view != saved.options.selected_view
             || saved.evaluation.overlay != saved.options.overlay
-            || saved.consumed_work.checked_add(saved.remaining_work)
-                != Some(saved.options.traversal_budget(nodes.len()))
-            || !valid_saved_state(&saved, &nodes)
+            || saved.consumed_work.checked_add(saved.remaining_work) != Some(expected_budget)
+            || !valid_saved_state(&saved, &nodes, &resolved)
         {
             return Err(jvc_core::Error::new(
                 "checkpoint",
@@ -1213,6 +1222,7 @@ impl EvaluatedState {
             prepared,
             evaluation,
             graph: None,
+            selection_allowance,
             remaining_work: saved.remaining_work,
             unmatched_publication_scans: saved.unmatched_publication_scans,
             matched_publication_scans: saved.matched_publication_scans,
@@ -1438,13 +1448,18 @@ fn compact_value_digest(value: &CompactValue) -> Result<String, &'static str> {
     Ok(writer.finish("sha256:").0)
 }
 
-fn valid_saved_state(saved: &SavedResultsCheckpoint, nodes: &BTreeMap<String, Node>) -> bool {
-    check_saved_state(saved, nodes).is_ok()
+fn valid_saved_state(
+    saved: &SavedResultsCheckpoint,
+    nodes: &BTreeMap<String, Node>,
+    resolved: &policy::ResolvedSelections<'_>,
+) -> bool {
+    check_saved_state(saved, nodes, resolved).is_ok()
 }
 
 fn check_saved_state(
     saved: &SavedResultsCheckpoint,
     nodes: &BTreeMap<String, Node>,
+    resolved: &policy::ResolvedSelections<'_>,
 ) -> Result<(), &'static str> {
     for (id, node) in nodes {
         if id != &node.id {
@@ -1598,8 +1613,8 @@ fn check_saved_state(
     }
     if !resource_refused {
         if let Some(pol) = &saved.evaluation.policy {
-            let mut expected_selections = BTreeMap::new();
-            let mut invalid_selections = BTreeSet::new();
+            let mut seen_valid = BTreeSet::new();
+            let mut invalid_selections = resolved.invalid.clone();
             let mut missing_selection = false;
             for entry in pol
                 .view()
@@ -1613,19 +1628,27 @@ fn check_saved_state(
                     missing_selection = true;
                     continue;
                 };
-                if expected_selections.contains_key(sel_id) {
+                if seen_valid.contains(sel_id) {
                     continue;
                 }
                 if invalid_selections.contains(sel_id) {
                     missing_selection = true;
                     continue;
                 }
-                match policy::valid_selection(&saved.options, sel_id) {
+                let valid_ids = resolved
+                    .valid
+                    .get(sel_id)
+                    .copied()
+                    .or_else(|| policy::valid_selection(&saved.options, sel_id));
+                match valid_ids {
                     Some(ids) => {
-                        expected_selections.insert(
-                            sel_id.to_owned(),
-                            ids.iter().cloned().collect::<BTreeSet<_>>(),
-                        );
+                        let Some(saved_set) = saved.evaluation.selections.get(sel_id) else {
+                            return Err("selections");
+                        };
+                        if saved_set.len() != ids.len() || !saved_set.iter().eq(ids.iter()) {
+                            return Err("selections");
+                        }
+                        seen_valid.insert(sel_id.to_owned());
                     }
                     None => {
                         invalid_selections.insert(sel_id.to_owned());
@@ -1633,7 +1656,7 @@ fn check_saved_state(
                     }
                 }
             }
-            if saved.evaluation.selections != expected_selections
+            if saved.evaluation.selections.len() != seen_valid.len()
                 || saved
                     .evaluation
                     .reasons
@@ -7259,6 +7282,14 @@ mod rebuild_tests {
                 "notes":[]
             })),
         );
+        let two_selections: BTreeMap<String, Vec<String>> = distinct_sets[..2]
+            .iter()
+            .map(|entry| {
+                let h = entry["selection"].as_str().unwrap().to_owned();
+                let ids = distinct_selections[&h].clone();
+                (h, ids)
+            })
+            .collect();
         let mut distinct_input = PreparedEvaluationInput::new(EvaluationOptions {
             selected_view: distinct_view.id().into(),
             import_selections: distinct_selections,
@@ -7272,7 +7303,297 @@ mod rebuild_tests {
             "distinct selections must pass default budget; reasons={:?}",
             distinct_state.evaluation().reasons
         );
-        assert!(distinct_state.consumed_work() > 10_000_000);
+        assert!(distinct_state.consumed_work() > 10_000_256);
+
+        let (two_view, two_body) = event(
+            1,
+            205,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"two-distinct-selections",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":&distinct_sets[..2],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let mut two_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: two_view.id().into(),
+            import_selections: two_selections,
+            overlay: None,
+            limits: Limits::default(),
+        });
+        two_input.add_record(&two_view, two_body.as_deref());
+        let two_records: Vec<HostVerifiedRecord> = two_input
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let two_state = two_input.into_state();
+        assert!(two_state.evaluation().available);
+        assert_eq!(two_state.traversal_budget(), 10_200_256);
+        let distinct_full_cp = two_state.checkpoint("distinct-sel").unwrap();
+        let distinct_res_cp = two_state.result_checkpoint("distinct-sel").unwrap();
+        let restored_distinct_full =
+            EvaluatedState::restore_host_checkpoint(&distinct_full_cp, "distinct-sel").unwrap();
+        let restored_distinct_res = EvaluatedState::restore_host_result_checkpoint(
+            &distinct_res_cp,
+            "distinct-sel",
+            two_records,
+        )
+        .unwrap();
+        assert_eq!(
+            restored_distinct_full.consumed_work(),
+            two_state.consumed_work()
+        );
+        assert_eq!(
+            restored_distinct_res.consumed_work(),
+            two_state.consumed_work()
+        );
+        assert_eq!(restored_distinct_full.traversal_budget(), 10_200_256);
+        assert_eq!(restored_distinct_res.traversal_budget(), 10_200_256);
+    }
+
+    #[test]
+    fn unused_invalid_selection_padding_refuses_like_unpadded_reused_selection() {
+        let importer = identity_from_seed(&[7u8; 32]);
+        let shared_ids: Vec<String> = (0..100_000usize)
+            .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
+            .collect();
+        let shared_bytes = jvc_core::canonical_value(&json!(shared_ids)).unwrap();
+        let shared_hash = jvc_core::hash_id("sha256:", b"", &shared_bytes);
+        let reused_sets: Vec<Value> = (0..160usize)
+            .map(|i| {
+                json!({
+                    "source": format!("source-{i:04}"),
+                    "importer": importer,
+                    "selection": shared_hash,
+                })
+            })
+            .collect();
+        let (reused_view, reused_body) = event(
+            1,
+            202,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"reused-selection-invalid-padded",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":reused_sets,
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let mut padded_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: reused_view.id().into(),
+            import_selections: BTreeMap::from([
+                (shared_hash, shared_ids),
+                ("sha256:unused".to_owned(), vec![String::new(); 6_000_000]),
+            ]),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        padded_input.add_record(&reused_view, reused_body.as_deref());
+        let padded_records: Vec<HostVerifiedRecord> = padded_input
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let padded_state = padded_input.into_state();
+        assert!(
+            !padded_state.evaluation().available,
+            "unused invalid selection padding must not expand default budget; consumed={}",
+            padded_state.consumed_work()
+        );
+        assert!(
+            padded_state
+                .evaluation()
+                .reasons
+                .contains("resource_unavailable")
+        );
+        assert_eq!(padded_state.consumed_work(), 10_100_256);
+        let full_cp = padded_state.checkpoint("invalid-pad").unwrap();
+        let res_cp = padded_state.result_checkpoint("invalid-pad").unwrap();
+        let restored_full =
+            EvaluatedState::restore_host_checkpoint(&full_cp, "invalid-pad").unwrap();
+        let restored_res =
+            EvaluatedState::restore_host_result_checkpoint(&res_cp, "invalid-pad", padded_records)
+                .unwrap();
+        assert_eq!(restored_full.evaluation(), padded_state.evaluation());
+        assert_eq!(restored_res.evaluation(), padded_state.evaluation());
+        assert_eq!(restored_full.consumed_work(), 10_100_256);
+        assert_eq!(restored_res.consumed_work(), 10_100_256);
+    }
+
+    #[test]
+    fn unused_valid_selection_padding_and_referenced_invalid_selection_refuse_at_default_budget() {
+        let importer = identity_from_seed(&[7u8; 32]);
+        let shared_ids: Vec<String> = (0..100_000usize)
+            .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
+            .collect();
+        let shared_bytes = jvc_core::canonical_value(&json!(shared_ids)).unwrap();
+        let shared_hash = jvc_core::hash_id("sha256:", b"", &shared_bytes);
+        let reused_sets: Vec<Value> = (0..160usize)
+            .map(|i| {
+                json!({
+                    "source": format!("source-{i:04}"),
+                    "importer": importer,
+                    "selection": shared_hash,
+                })
+            })
+            .collect();
+        let (reused_view, reused_body) = event(
+            1,
+            203,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"reused-selection-valid-padded",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":reused_sets,
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+
+        // 1. Add 60 unused valid 100,000-ID selections (6,000,000 valid IDs not referenced by the selected view).
+        let mut selections = BTreeMap::from([(shared_hash.clone(), shared_ids.clone())]);
+        let mut template_ids = shared_ids.clone();
+        let mut template_bytes = shared_bytes.clone();
+        for i in 0..60usize {
+            let first_id = format!("jve1:{:064x}", i + 1);
+            template_ids[0] = first_id.clone();
+            template_bytes[2..71].copy_from_slice(first_id.as_bytes());
+            let unused_valid_hash = jvc_core::hash_id("sha256:", b"", &template_bytes);
+            selections.insert(unused_valid_hash, template_ids.clone());
+        }
+        let mut valid_padded_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: reused_view.id().into(),
+            import_selections: selections,
+            overlay: None,
+            limits: Limits::default(),
+        });
+        valid_padded_input.add_record(&reused_view, reused_body.as_deref());
+        let valid_padded_records: Vec<HostVerifiedRecord> = valid_padded_input
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let valid_padded_state = valid_padded_input.into_state();
+        assert!(
+            !valid_padded_state.evaluation().available,
+            "unused valid selection padding must not expand default budget; consumed={}",
+            valid_padded_state.consumed_work()
+        );
+        assert!(
+            valid_padded_state
+                .evaluation()
+                .reasons
+                .contains("resource_unavailable")
+        );
+        assert_eq!(valid_padded_state.consumed_work(), 10_100_256);
+        let full_cp = valid_padded_state.checkpoint("valid-pad").unwrap();
+        let res_cp = valid_padded_state.result_checkpoint("valid-pad").unwrap();
+        let restored_full = EvaluatedState::restore_host_checkpoint(&full_cp, "valid-pad").unwrap();
+        let restored_res = EvaluatedState::restore_host_result_checkpoint(
+            &res_cp,
+            "valid-pad",
+            valid_padded_records,
+        )
+        .unwrap();
+        assert_eq!(restored_full.evaluation(), valid_padded_state.evaluation());
+        assert_eq!(restored_res.evaluation(), valid_padded_state.evaluation());
+        assert_eq!(restored_full.consumed_work(), 10_100_256);
+        assert_eq!(restored_res.consumed_work(), 10_100_256);
+
+        // 2. A referenced invalid selection (wrong hash for 100,000 sorted jve1 IDs) adds 0 allowance.
+        let bad_hash = format!("sha256:{}", "f".repeat(64));
+        let mut mixed_sets = Vec::with_capacity(160);
+        for i in 0..160usize {
+            let sel = if i < 100 { &shared_hash } else { &bad_hash };
+            mixed_sets.push(json!({
+                "source": format!("source-{i:04}"),
+                "importer": importer,
+                "selection": sel,
+            }));
+        }
+        let (mixed_view, mixed_body) = event(
+            1,
+            204,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"referenced-invalid-selection",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":mixed_sets,
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let mut mixed_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: mixed_view.id().into(),
+            import_selections: BTreeMap::from([
+                (shared_hash, shared_ids.clone()),
+                (bad_hash, shared_ids),
+            ]),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        mixed_input.add_record(&mixed_view, mixed_body.as_deref());
+        let mixed_records: Vec<HostVerifiedRecord> = mixed_input
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let mixed_state = mixed_input.into_state();
+        assert!(!mixed_state.evaluation().available);
+        assert!(
+            mixed_state
+                .evaluation()
+                .reasons
+                .contains("resource_unavailable")
+        );
+        assert_eq!(mixed_state.consumed_work(), 10_100_256);
+        let mixed_full_cp = mixed_state.checkpoint("mixed-invalid").unwrap();
+        let mixed_res_cp = mixed_state.result_checkpoint("mixed-invalid").unwrap();
+        assert!(EvaluatedState::restore_host_checkpoint(&mixed_full_cp, "mixed-invalid").is_ok());
+        assert!(
+            EvaluatedState::restore_host_result_checkpoint(
+                &mixed_res_cp,
+                "mixed-invalid",
+                mixed_records,
+            )
+            .is_ok()
+        );
     }
 
     fn assert_state_roundtrips_and_appends(

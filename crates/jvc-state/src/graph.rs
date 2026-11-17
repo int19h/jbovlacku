@@ -295,15 +295,16 @@ impl Graph {
         let budget = limits.traversal_budget(nodes.len());
         Self::new_with_budget(nodes, budget)
     }
+    #[allow(dead_code)]
     pub fn new_with_options(
         nodes: impl Into<Rc<BTreeMap<String, Node>>>,
         options: &EvaluationOptions,
     ) -> Self {
         let nodes = nodes.into();
-        let budget = options.traversal_budget(nodes.len());
+        let budget = options.traversal_budget_for_nodes(&nodes);
         Self::new_with_budget(nodes, budget)
     }
-    fn new_with_budget(nodes: Rc<BTreeMap<String, Node>>, budget: usize) -> Self {
+    pub(crate) fn new_with_budget(nodes: Rc<BTreeMap<String, Node>>, budget: usize) -> Self {
         #[cfg(test)]
         CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
         // The layout scan costs one unit per record and per predecessor

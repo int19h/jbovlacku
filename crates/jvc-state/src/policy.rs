@@ -32,7 +32,81 @@ pub struct ContextGraph<T = Rational> {
     pub available: bool,
     pub reasons: BTreeSet<String>,
 }
-pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &mut Evaluation) {
+pub(crate) struct ResolvedSelections<'a> {
+    pub allowance: usize,
+    pub valid: BTreeMap<String, &'a Vec<String>>,
+    pub invalid: BTreeSet<String>,
+}
+
+pub(crate) fn resolve_referenced_selections<'a>(
+    input: &'a EvaluationOptions,
+    nodes: &BTreeMap<String, graph::Node>,
+) -> ResolvedSelections<'a> {
+    let mut resolved = ResolvedSelections {
+        allowance: 0,
+        valid: BTreeMap::new(),
+        invalid: BTreeSet::new(),
+    };
+    if input.limits.traversal.is_some() {
+        return resolved;
+    }
+    let Some(node) = nodes.get(&input.selected_view) else {
+        return resolved;
+    };
+    if !node.semantic || node.kind != "view.publish" {
+        return resolved;
+    }
+    let Some(body) = node.body.as_ref() else {
+        return resolved;
+    };
+    let base_budget = DEFAULT_TRAVERSAL_BASE
+        .saturating_add(nodes.len().saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD));
+    let mut invalid_work = 0usize;
+    for entry in body
+        .view()
+        .index("import_sets")
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        invalid_work = invalid_work.saturating_add(1);
+        if invalid_work > base_budget {
+            break;
+        }
+        let selection_field = entry.index("selection");
+        let Some(selection_id) = selection_field.as_str() else {
+            continue;
+        };
+        if resolved.valid.contains_key(selection_id) || resolved.invalid.contains(selection_id) {
+            continue;
+        }
+        let Some(ids) = input.import_selections.get(selection_id) else {
+            resolved.invalid.insert(selection_id.to_owned());
+            continue;
+        };
+        match valid_selection(input, selection_id) {
+            Some(valid_ids) => {
+                resolved.allowance = resolved.allowance.saturating_add(valid_ids.len());
+                resolved.valid.insert(selection_id.to_owned(), valid_ids);
+            }
+            None => {
+                resolved.invalid.insert(selection_id.to_owned());
+                invalid_work = invalid_work.saturating_add(ids.len());
+                if invalid_work > base_budget {
+                    break;
+                }
+            }
+        }
+    }
+    resolved
+}
+
+pub(crate) fn select(
+    graph: &graph::Graph,
+    input: &EvaluationOptions,
+    resolved: &ResolvedSelections<'_>,
+    result: &mut Evaluation,
+) {
     let mut todo = vec![input.selected_view.clone()];
     let mut seen = BTreeSet::new();
     while let Some(id) = todo.pop() {
@@ -99,7 +173,7 @@ pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &m
         }
         todo.extend(parents);
         if id == input.selected_view {
-            let mut invalid_selections = BTreeSet::new();
+            let mut invalid_selections = resolved.invalid.clone();
             for entry in body
                 .view()
                 .index("import_sets")
@@ -137,7 +211,12 @@ pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &m
                     result.reasons.insert("import_selection_unavailable".into());
                     continue;
                 }
-                match valid_selection(input, selection_id) {
+                let valid_ids = resolved
+                    .valid
+                    .get(selection_id)
+                    .copied()
+                    .or_else(|| valid_selection(input, selection_id));
+                match valid_ids {
                     None => {
                         invalid_selections.insert(selection_id.to_owned());
                         result.reasons.insert("import_selection_unavailable".into());
@@ -1146,10 +1225,15 @@ pub(crate) fn valid_selection<'a>(
 ) -> Option<&'a Vec<String>> {
     use std::io::Write;
     let ids = input.import_selections.get(id)?;
-    jvc_core::sorted_ids(ids, "jve1:", usize::MAX).ok()?;
     let mut writer = jvc_core::HashWriter::new(b"", 16 * 1024 * 1024);
     writer.write_all(b"[").ok()?;
+    let mut previous: Option<&str> = None;
     for (index, item) in ids.iter().enumerate() {
+        if !jvc_core::valid_id(item, "jve1:") || previous.is_some_and(|prev| prev >= item.as_str())
+        {
+            return None;
+        }
+        previous = Some(item.as_str());
         if index > 0 {
             writer.write_all(b",").ok()?;
         }

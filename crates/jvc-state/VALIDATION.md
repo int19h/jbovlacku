@@ -18,7 +18,7 @@ A separate case with 401 accounts sharing witnesses finishes evaluation and expo
 These timings come from single runs on the development machine. They do not guarantee performance on another host.
 A separate 5,000-event history reaches an explicit smaller budget without recursive traversal.
 `Limits.events` is absent by default and serves as an optional event-count quota when configured.
-The default work budget is 10,000,000 units plus 256 units per record plus 1 unit per supplied import-selection ID (`10,000,000 + 256 * records + selection_ids`), unless an explicit `Limits.traversal` override is supplied. It counts records, dependency edges, propagated missing IDs, copied ranges, and evaluator inner-loop steps across registers, retention, accounts, certificates, and downstream passes. Range metadata is capped at 64 MiB over all copied or allocated range vectors, and histories past the cap refuse at any budget.
+The default work budget is 10,000,000 units plus 256 units per record plus 1 unit per ID in each distinct valid import selection referenced by the selected view (`10,000,000 + 256 * records + selection_ids`), unless an explicit `Limits.traversal` override is supplied. It counts records, dependency edges, propagated missing IDs, copied ranges, and evaluator inner-loop steps across registers, retention, accounts, certificates, and downstream passes. Range metadata is capped at 64 MiB over all copied or allocated range vectors, and histories past the cap refuse at any budget.
 Super-linear history shapes reach the work budget sooner. Exhaustion makes the entire evaluation unavailable, including unrelated accounts and native results.
 
 The crate passes native and standalone wasm32-unknown-unknown build checks.
