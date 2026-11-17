@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   prepareIndex,
+  prepareQuery,
   selectMatches,
   selectRafsiMatches,
   searchMetrics,
   SearchBudgetError,
+  SearchRequestBudget,
   SEARCH_LOCAL_WORK_LIMIT,
   SEARCH_LOCAL_DEADLINE_MS,
   type LexicalEntry,
@@ -104,6 +106,113 @@ test("a tiny budget also refuses rafsi scans that ordinary defaults accept", () 
   assert.equal(accepted.rows.length, 100);
   assert.throws(
     () => selectRafsiMatches(entries, "cku", undefined, { workLimit: 10 }),
+    (error: unknown) => error instanceof SearchBudgetError,
+  );
+});
+
+test("preparation charges every row it builds, even with no parser work", () => {
+  const entries = Array.from({ length: 20_000 }, (_, index) =>
+    entry(`broda${index}`),
+  );
+  const metrics = searchMetrics();
+  assert.throws(
+    () =>
+      prepareIndex(entries, metrics, {
+        workLimit: 0,
+        deadlineMs: Infinity,
+      }),
+    (error: unknown) =>
+      error instanceof SearchBudgetError && error.phase === "prepare",
+  );
+  assert.ok(metrics.headwordsParsed < 20_000);
+});
+
+test("a scan charges each entry before reading it, not in batches", () => {
+  const entries = Array.from({ length: 2_000 }, (_, index) =>
+    entry(`broda${index}`),
+  );
+  // A prepared query and a built index isolate the scan: parsing and
+  // preparation are already paid for.
+  const prepared = prepareQuery("no-match", searchMetrics(), {
+    workLimit: Infinity,
+    deadlineMs: Infinity,
+  });
+  const built = prepareIndex(entries, searchMetrics(), {
+    workLimit: Infinity,
+    deadlineMs: Infinity,
+  });
+  let accepted = 0;
+  assert.throws(
+    () =>
+      selectMatches(
+        built,
+        prepared,
+        undefined,
+        () => {
+          accepted++;
+          return true;
+        },
+        { workLimit: 10, deadlineMs: Infinity },
+      ),
+    (error: unknown) => error instanceof SearchBudgetError,
+  );
+  assert.equal(accepted, 10);
+});
+
+test("one shared budget covers preparation and its query together", () => {
+  const spelling = (prefix: string, index: number) =>
+    `${prefix}${"i".repeat(40)}${"a".repeat(index % 7)}`;
+  const shared = Array.from({ length: 50 }, (_, index) =>
+    entry(spelling("te", index), `Definition number ${index} about books.`),
+  );
+  const metrics = searchMetrics();
+  const sharedBudget = new SearchRequestBudget(metrics, {
+    workLimit: 50,
+    deadlineMs: Infinity,
+  });
+  // Preparation of 50 rows costs 50 units plus parser work, so 50 is too
+  // tight once the parser work is counted. A roomier shared budget completes
+  // preparation and then refuses the query that exceeds what is left.
+  assert.throws(
+    () => prepareIndex(shared, metrics, { requestBudget: sharedBudget }),
+    (error: unknown) => error instanceof SearchBudgetError,
+  );
+  const roomyMetrics = searchMetrics();
+  const roomy = new SearchRequestBudget(roomyMetrics, {
+    workLimit: 150_000,
+    deadlineMs: Infinity,
+  });
+  prepareIndex(shared, roomyMetrics, { requestBudget: roomy });
+  assert.throws(
+    () =>
+      selectMatches(shared, "i ".repeat(500), roomyMetrics, undefined, {
+        requestBudget: roomy,
+      }),
+    (error: unknown) =>
+      error instanceof SearchBudgetError && error.phase === "search",
+  );
+});
+
+test("a grouped query parse counts against the shared request budget", () => {
+  const metrics = searchMetrics();
+  const shared = new SearchRequestBudget(metrics, {
+    workLimit: 250_000,
+    deadlineMs: Infinity,
+  });
+  const parsed = prepareQuery("i ".repeat(500), metrics, {
+    requestBudget: shared,
+  });
+  assert.ok(parsed.components !== null);
+  // The parse spent about two hundred thousand units on the shared budget, so
+  // a large scan after it exceeds the quarter-million limit.
+  const many = Array.from({ length: 100_000 }, (_, index) =>
+    entry(`broda${index}`),
+  );
+  assert.throws(
+    () =>
+      selectMatches(many, parsed, metrics, undefined, {
+        requestBudget: shared,
+      }),
     (error: unknown) => error instanceof SearchBudgetError,
   );
 });

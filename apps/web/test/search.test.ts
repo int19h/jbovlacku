@@ -396,9 +396,7 @@ test("storage-full and configured-quota failures name their own cause", async ({
   const result = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
     await core.initializeCore();
-    const { downloadPackage, reportPackageError } = await import(
-      String("/src/data/search.ts")
-    );
+    const { downloadPackage } = await import(String("/src/data/search.ts"));
     const snapshot = "sha256:" + "a".repeat(64);
     const entry = {
       event: "jve1:" + "b".repeat(64),
@@ -477,11 +475,23 @@ test("storage-full and configured-quota failures name their own cause", async ({
         packageQuota: { parts: 4, entries: 10, bytes: 1 << 20 },
       });
       outcomes.push(`unlimited: ${pkg.entries.length}`);
-      // The save path maps the same platform failure to the same message.
-      outcomes.push(
-        `save: ${reportPackageError(new DOMException("Full.", "QuotaExceededError")).message}`,
-      );
-      outcomes.push(`passthrough: ${reportPackageError(new Error("Nope.")).message}`);
+      // An allocation failure while a part decodes reports the storage
+      // message instead of the raw error.
+      const realParse = JSON.parse;
+      let parses = 0;
+      JSON.parse = ((text: string, reviver?: unknown) => {
+        if (++parses === 3)
+          throw new RangeError("Invalid string length");
+        return realParse(text, reviver as undefined);
+      }) as typeof JSON.parse;
+      try {
+        await downloadPackage("en");
+        outcomes.push("range: resolved");
+      } catch (error) {
+        outcomes.push(`range: ${(error as Error).message}`);
+      } finally {
+        JSON.parse = realParse;
+      }
       return outcomes;
     } finally {
       window.fetch = oldFetch;
@@ -492,7 +502,84 @@ test("storage-full and configured-quota failures name their own cause", async ({
   expect(result[1]).toContain("quota");
   expect(result[2]).toBe("unlimited: 2");
   expect(result[3]).toContain("does not fit");
-  expect(result[4]).toBe("passthrough: Nope.");
+});
+
+test("a full store reports does-not-fit when saving a downloaded package", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const snapshot = "sha256:" + "a".repeat(64);
+  const fixture = await page.evaluate(
+    async ({ corePath, snapshot, helpers }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const build = new Function("core", helpers + "return { build, v1 };")(
+        core,
+      );
+      return { v1: build.build(1, snapshot, [build.v1("cukta", "1")]) };
+    },
+    { corePath, snapshot, helpers: packageFixture },
+  );
+  await servePackages(page, snapshot, {
+    v1: fixture.v1 as Built,
+    v2: null,
+  });
+  await page.goto("/preferences");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const real = LocalStore.prototype.put;
+    LocalStore.prototype.put = function (store: string, id: string, value: unknown) {
+      if (store === "packages")
+        return Promise.reject(
+          new DOMException(
+            "Persistent storage is full.",
+            "QuotaExceededError",
+          ),
+        );
+      return real.call(this, store, id, value);
+    };
+  });
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  // The platform reports no room while the downloaded package is saved.
+  await expect(page.locator("#app > [role=status]")).toContainText(
+    "does not fit",
+  );
+});
+
+test("a worker preparation over budget reports its limit through local search", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const message = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    try {
+      await searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), entries },
+        "en",
+        ["book"],
+        { workLimit: 1 },
+      );
+      return "resolved";
+    } catch (error) {
+      return (error as Error).message;
+    }
+  }, corePath);
+  // Validation charges the shared request budget before preparation runs, so
+  // the failure names the preparation phase instead of the scan.
+  expect(message).toContain("preparation");
 });
 
 test("an invalid cached package is reported and server search stays usable", async ({

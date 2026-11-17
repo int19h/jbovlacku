@@ -349,12 +349,12 @@ If a headword reaches its indexing limit, ordinary matching remains available an
 The response and interface expose either limit through `segmentation: "limited"`.
 The interface preserves that notice through pagination and browser Back.
 
-Ordinary local search and package preparation share a per-request work budget and deadline, in the style of the pattern-search bounds.
-The default budget is 200,000,000 work units, where one unit is one scanned entry, one component comparison, or one morphology parser step.
-The default deadline is 300,000 milliseconds. Both cover the one-time index preparation and each query.
+One work budget and one deadline cover a whole ordinary local-search request, in the style of the pattern-search bounds: package validation, index preparation, map building, query parsing, scanning, grouping, and sorting.
+The default budget is 200,000,000 work units, where one unit is one validated, prepared, scanned, or grouped entry, one map insertion, one sort comparison, one component comparison, or one morphology parser step.
+The default deadline is 300,000 milliseconds from the start of the request.
 The defaults complete an ordinary query on a package five times the base data. A configured `workLimit` or `deadlineMs` value overrides them.
 A scan that exceeds either reports “Local search reached its work or time limit. Use a shorter or more specific query.”
-A preparation that exceeds either reports that the package index is too costly to build on this device and suggests server search instead.
+A preparation, validation, grouping, or sorting stage that exceeds either reports that the package index is too costly to build on this device and suggests server search instead.
 
 Sequence matching never enumerates query subsets.
 For E entries, Q query tokens, and H maximum headword components, its comparison cost is O(E × (Q + H)).
@@ -2109,6 +2109,7 @@ An optional client download quota can cap one download. It is off by default.
 Malformed input rejects the package as invalid. A valid package is never reported as malformed for its size.
 A download that the device cannot fit reports that the package does not fit in this browser's storage or memory.
 A download that a configured quota stops names the quota.
+A package that fails worker validation, preparation, or indexing reports the same does-not-fit outcome instead of a raw allocation error, as does a live worker that crashes while preparing it. A worker that never starts keeps the startup message.
 
 `search_view` is the selected signed view ID that binds ordering evidence for every row in that snapshot.
 The browser retains that binding once per saved package and passes it to local search.
