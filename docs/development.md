@@ -301,7 +301,8 @@ Observation growth still covers all staged definition rows.
 The normal estimate includes a projected loaded copy, while `--check-existing` covers only its scratch proposal and staging.
 That check reparses the source with retained envelopes and refuses new publications.
 Use a new scratch directory with a copied journal. The command refuses existing `carriers.jsonl` or `source-archive` paths before opening the journal.
-Its 1.5 GB budget does not authorize a service load.
+The estimate has no size budget by default. Pass `--budget-bytes` to set an optional budget.
+A check with no budget does not authorize a service load.
 
 After preparing a signed proposal, stop the Node server for the target data directory.
 From the repository root, load the proposal into that directory:
@@ -326,9 +327,10 @@ The SQL archive records the digest and path of the external dump instead of copy
 Rights remain unknown in this extraction. Local loading grants no publication authority.
 
 Large imports need a larger explicit state work budget and enough memory.
-The traversal flag changes the work limit only. It does not remove memory or event limits.
+The traversal flag changes the work limit only.
+The loader sets no event-count limit. An operator can set `--max-admitted-events` and `--max-carrier-records` quotas on the load command. Both quotas are off by default.
 The loader completes admission before the server builds its snapshot, indexes, and search packages.
-The SQL loader projects only final changed event bindings and stages at most 256 compact records per batch.
+The SQL loader reads carriers one at a time, projects only final changed event bindings, and stages at most 256 compact records per batch.
 One admission transaction promotes staged rows and accepted events together. Failed admission removes its own staged rows.
 The Node server and top-level loader clear abandoned stages only while they hold the exclusive data directory lock.
 Generic test coordinators without SQL staging retain changed projections in memory.
@@ -661,9 +663,10 @@ npx tsx scripts/test-server-security.ts
 The probe verifies real runtime WebAssembly, blocked JavaScript evaluation, blocked inline scripts, and blocked framing.
 `scripts/measure-service-io.ts` uses the same corpus variables to count object operations and sample Node and Wasm memory.
 `logical_get` and `logical_put` count calls to the object store.
-`object_get` counts file read attempts, including missing objects and existing-object checks after a link collision.
-`object_put` counts temporary-file write attempts, including duplicate puts. New objects need no read before the write.
-`operations` totals those file reads and writes. It excludes directory operations, links, file syncs, and metadata access.
+`object_get` counts file read attempts, including missing objects, the existing-object check before a skipped write, and existing-object checks after a link collision.
+`object_put` counts temporary-file write attempts only. An identical duplicate put makes no temporary-file write, so it does not count here.
+`object_sync` counts object-directory syncs, including the sync before a skipped write returns. A counter that is not a read, write, or sync counts in none of these until it is counted on purpose.
+`operations` totals those file reads, temporary-file writes, and directory syncs. It excludes links and other metadata access.
 `JVC_IO_REPORT` selects an output report file. Its disposable database is removed when the measurement finishes.
 The importer tests use pinned JSON captures and a small SQL fixture with source provenance.
 The importer converts supported explicit x-place forms and publishes known official and experimental rafsi as separate imported claims.
