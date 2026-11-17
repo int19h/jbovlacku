@@ -206,11 +206,17 @@ function deletionRange(
 
 type NativeSelection = NonNullable<ReturnType<Document["getSelection"]>>;
 
+interface MotionRange extends RichDeleteRange {
+  /** Editor positions of the native anchor and focus, in native order. */
+  anchor: number;
+  head: number;
+}
+
 /** Read the range a native selection motion produces, then restore it. */
 function motionRange(
   view: EditorView,
   move: (selection: NativeSelection) => void,
-): RichDeleteRange | null {
+): MotionRange | null {
   const selection = view.dom.ownerDocument.getSelection();
   if (!selection?.anchorNode || !selection.focusNode || !selection.modify)
     return null;
@@ -224,12 +230,18 @@ function motionRange(
     if (
       !range ||
       !view.dom.contains(range.startContainer) ||
-      !view.dom.contains(range.endContainer)
+      !view.dom.contains(range.endContainer) ||
+      !selection.anchorNode ||
+      !selection.focusNode
     )
       return null;
     return {
       from: view.posAtDOM(range.startContainer, range.startOffset, -1),
       to: view.posAtDOM(range.endContainer, range.endOffset, 1),
+      // Match how ProseMirror maps a native selection into its state, so a
+      // backward selection keeps its anchor and its active end.
+      anchor: view.posAtDOM(selection.anchorNode, selection.anchorOffset, 1),
+      head: view.posAtDOM(selection.focusNode, selection.focusOffset, 1),
     };
   } catch {
     return null;
@@ -271,7 +283,7 @@ function lineRange(
   view: EditorView,
   backward: boolean,
   extend: boolean,
-): RichDeleteRange | null {
+): MotionRange | null {
   return motionRange(view, (selection) =>
     selection.modify(
       extend ? "extend" : "move",
@@ -281,8 +293,13 @@ function lineRange(
   );
 }
 
+/** Home and End scroll on macOS; they move the caret elsewhere. */
+function macPlatform(): boolean {
+  return /Mac|iP(hone|[oa]d)/u.test(navigator.platform);
+}
+
 function deletionKey(event: KeyboardEvent): RichDeleteType | null {
-  const mac = /Mac|iP(hone|[oa]d)/u.test(navigator.platform);
+  const mac = macPlatform();
   const {
     key,
     ctrlKey: ctrl,
@@ -978,7 +995,11 @@ export function richField(label: string, options: RichFieldOptions) {
           (event.key === "Home" || event.key === "End") &&
           !event.ctrlKey &&
           !event.metaKey &&
-          !event.altKey
+          !event.altKey &&
+          // On macOS these keys scroll the document and never move the
+          // caret, so there is no native line selection to lose. Keep the
+          // native action there.
+          !macPlatform()
         ) {
           const range = lineRange(
             view,
@@ -987,7 +1008,13 @@ export function richField(label: string, options: RichFieldOptions) {
           );
           if (!range) return false;
           event.preventDefault();
-          const selection = editingSelection(view.state, range.from, range.to);
+          const selection =
+            range.anchor === range.head
+              ? editingSelection(view.state, range.from, range.to)
+              : TextSelection.between(
+                  view.state.doc.resolve(range.anchor),
+                  view.state.doc.resolve(range.head),
+                );
           if (!selection.eq(view.state.selection))
             dispatchEdit(view.state.tr.setSelection(selection));
           return true;

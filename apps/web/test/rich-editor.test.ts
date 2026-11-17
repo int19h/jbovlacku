@@ -803,3 +803,195 @@ test("a fully declared manual frame with 17 places reaches Publish without AI", 
   ).toBeEnabled();
   expect(requests).toBe(0);
 });
+
+async function mountKeyboardField(
+  page: Page,
+  text: string,
+  narrow = false,
+) {
+  await page.goto("/");
+  await page.evaluate(
+    async ({ text, narrow }) => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts")
+      );
+      const field = richField("Keyboard field", { value: [[text]] });
+      if (narrow) {
+        field.wrapper.style.width = "110px";
+        field.wrapper.style.font = "16px monospace";
+      }
+      document.body.replaceChildren(field.wrapper);
+    },
+    { text, narrow },
+  );
+  return page.getByRole("textbox", { name: "Keyboard field", exact: true });
+}
+
+async function keyboardSelection(field: Locator) {
+  return field.evaluate((node) => {
+    const text = node.querySelector("p .rich-literal")!.firstChild!;
+    const selection = getSelection()!;
+    const offset = (point: Node | null, at: number) =>
+      point === text ? at : -1;
+    return {
+      anchor: offset(selection.anchorNode, selection.anchorOffset),
+      focus: offset(selection.focusNode, selection.focusOffset),
+      selected: selection.toString(),
+    };
+  });
+}
+
+async function chooseKeyboardSelection(
+  field: Locator,
+  anchor: number,
+  focus: number,
+) {
+  await field.focus();
+  await field.evaluate(
+    (node, { anchor, focus }) => {
+      const text = node.querySelector("p .rich-literal")!.firstChild!;
+      getSelection()!.setBaseAndExtent(text, anchor, text, focus);
+      document.dispatchEvent(new Event("selectionchange"));
+    },
+    { anchor, focus },
+  );
+}
+
+async function expectKeyboardSelection(
+  field: Locator,
+  text: string,
+  anchor: number,
+  focus: number,
+) {
+  const selected = text.slice(Math.min(anchor, focus), Math.max(anchor, focus));
+  await expect
+    .poll(async () => {
+      const now = await keyboardSelection(field);
+      return [now.anchor, now.focus, now.selected];
+    })
+    .toEqual([anchor, focus, selected]);
+}
+
+const lineMotionText = "alpha beta gamma delta";
+const lineMotionCases = [
+  {
+    name: "a backward selection extended Home keeps its anchor",
+    anchor: 12,
+    focus: 6,
+    key: "Shift+Home",
+    after: [12, 0],
+    steps: [
+      ["Shift+ArrowRight", [12, 1]],
+      ["Shift+ArrowLeft", [12, 0]],
+    ],
+  },
+  {
+    name: "a backward selection extended End keeps its anchor",
+    anchor: 12,
+    focus: 6,
+    key: "Shift+End",
+    after: [12, 22],
+    steps: [
+      ["Shift+ArrowLeft", [12, 21]],
+      ["Shift+ArrowRight", [12, 22]],
+    ],
+  },
+  {
+    name: "a forward selection extended Home keeps its anchor",
+    anchor: 6,
+    focus: 12,
+    key: "Shift+Home",
+    after: [6, 0],
+    steps: [
+      ["Shift+ArrowRight", [6, 1]],
+      ["Shift+ArrowLeft", [6, 0]],
+    ],
+  },
+  {
+    name: "a forward selection extended End keeps its anchor",
+    anchor: 6,
+    focus: 12,
+    key: "Shift+End",
+    after: [6, 22],
+    steps: [
+      ["Shift+ArrowLeft", [6, 21]],
+      ["Shift+ArrowRight", [6, 22]],
+    ],
+  },
+] as const;
+
+for (const lineCase of lineMotionCases) {
+  test(lineCase.name, async ({ page }) => {
+    const field = await mountKeyboardField(page, lineMotionText);
+    await chooseKeyboardSelection(field, lineCase.anchor, lineCase.focus);
+    await expectKeyboardSelection(
+      field,
+      lineMotionText,
+      lineCase.anchor,
+      lineCase.focus,
+    );
+    await field.press(lineCase.key);
+    await expectKeyboardSelection(
+      field,
+      lineMotionText,
+      lineCase.after[0],
+      lineCase.after[1],
+    );
+    for (const [key, after] of lineCase.steps) {
+      await field.press(key);
+      await expectKeyboardSelection(field, lineMotionText, after[0], after[1]);
+    }
+  });
+}
+
+test("Home and End move by visual line in wrapped text", async ({ page }) => {
+  const text = "one two three four five six seven eight nine ten";
+  const field = await mountKeyboardField(page, text, true);
+  await chooseKeyboardSelection(field, 24, 24);
+  await field.press("Home");
+  await expectKeyboardSelection(field, text, 19, 19);
+  await field.press("End");
+  await expectKeyboardSelection(field, text, 28, 28);
+});
+
+test("Home stays native on a Mac platform and is editor-owned elsewhere", async ({
+  page,
+}) => {
+  const field = await mountKeyboardField(page, lineMotionText);
+  await chooseKeyboardSelection(field, 12, 12);
+  const outcome = await field.evaluate((node) => {
+    const dispatch = (platform: string) => {
+      const original = navigator.platform;
+      Object.defineProperty(navigator, "platform", {
+        value: platform,
+        configurable: true,
+      });
+      try {
+        const notPrevented = node.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Home",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        const selection = getSelection()!;
+        const text = node.querySelector("p .rich-literal")!.firstChild!;
+        return {
+          notPrevented,
+          anchor: selection.anchorNode === text ? selection.anchorOffset : -1,
+          focus: selection.focusNode === text ? selection.focusOffset : -1,
+        };
+      } finally {
+        Object.defineProperty(navigator, "platform", {
+          value: original,
+          configurable: true,
+        });
+      }
+    };
+    return { mac: dispatch("MacIntel"), other: dispatch("Linux x86_64") };
+  });
+  // On macOS Home scrolls and never moves the caret, so the editor leaves
+  // the key alone. Elsewhere the editor owns the line move.
+  expect(outcome.mac).toEqual({ notPrevented: true, anchor: 12, focus: 12 });
+  expect(outcome.other).toEqual({ notPrevented: false, anchor: 0, focus: 0 });
+});
