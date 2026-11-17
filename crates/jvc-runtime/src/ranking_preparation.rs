@@ -1551,6 +1551,35 @@ mod tests {
         assert_eq!(error.message, "ranking setup envelope limit");
     }
     #[test]
+    fn private_lookup_charges_long_shared_prefix_keys() {
+        let (first, _word) = session();
+        let prefix = "a".repeat(99_990);
+        let actor = format!("ed25519:{}", "b".repeat(64));
+        let key_actor: serde_json::Map<String, Value> = (0..1000u32)
+            .map(|n| (format!("{prefix}:{n:04}"), json!(actor)))
+            .collect();
+        let long_key = format!("{prefix}:0999");
+        let restored = restored_with(first, |saved| {
+            saved["evaluation"]["lifecycle"]["key_actor"] = Value::Object(key_actor);
+            let overlay = json!({"trust":[{
+                "issuer": long_key,
+                "subject": long_key,
+                "value": "shun",
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+            }]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(20_000);
+        let error = restored.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
     fn unavailable_float_skips_the_records_walk() {
         let (first, _word) = session();
         let groups: serde_json::Map<String, Value> = (0..100u32)

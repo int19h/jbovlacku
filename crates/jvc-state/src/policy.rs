@@ -655,25 +655,48 @@ pub(crate) fn ranking_index_bound_metered(
         meter(0, 0, 8 * scope_bytes)?;
         add_bytes(8 * (plain + scope_bytes))?;
     }
+    // Charge one overlay lookup before reading the private rules.
+    meter(64, 0, 0)?;
     for r in index_private_rules_metered(e, meter)? {
-        // Two `key_actor` lookups, each logarithmic in the map size.
         // A private rule contributes four entries, plus two more for a
         // heed rule's pair and weight entries.
-        meter(88, 4, 0)?;
+        meter(16, 4, 0)?;
         if r["value"] == "heed" {
             meter(0, 2, 0)?;
         }
         c.private_rules += 1;
         c.private_weights += u64::from(r["value"] == "heed");
         // Continuity IDs can be longer than the issuer keys in the overlay.
-        let actor = |key: &str| {
-            e.lifecycle
-                .key_actor
-                .get(key)
-                .map_or(key.len(), String::len) as u64
+        // A map lookup makes at most eight comparisons per tree level,
+        // and each comparison reads at most the lookup key's length plus
+        // one byte. Charge that bound before each lookup: it holds for
+        // keys that share a long prefix with stored keys of any length,
+        // because a comparison stops at the first differing byte or at
+        // the end of the shorter key.
+        let map_len = e.lifecycle.key_actor.len() as u64;
+        let depth = if map_len == 0 {
+            0
+        } else {
+            u64::from(63 - map_len.leading_zeros())
         };
-        let issuer = actor(r["issuer"].as_str().ok_or_else(invalid_index_overlay)?);
-        let subject = actor(r["subject"].as_str().ok_or_else(invalid_index_overlay)?);
+        let lookup_work = |key: &str| -> jvc_core::Result<u64> {
+            let comparisons = 8 * (depth + 1);
+            Ok(comparisons * (key.len() as u64 + 1) + 16)
+        };
+        let issuer_key = r["issuer"].as_str().ok_or_else(invalid_index_overlay)?;
+        meter(lookup_work(issuer_key)?, 0, 0)?;
+        let issuer = e
+            .lifecycle
+            .key_actor
+            .get(issuer_key)
+            .map_or(issuer_key.len(), String::len) as u64;
+        let subject_key = r["subject"].as_str().ok_or_else(invalid_index_overlay)?;
+        meter(lookup_work(subject_key)?, 0, 0)?;
+        let subject = e
+            .lifecycle
+            .key_actor
+            .get(subject_key)
+            .map_or(subject_key.len(), String::len) as u64;
         let scope_bytes =
             value_strings_metered(&r["scope"], &mut |steps, _, _| meter(4 * steps, 0, 0))?;
         meter(0, 0, 8 * (issuer + subject + scope_bytes + 16))?;
