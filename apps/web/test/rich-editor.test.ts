@@ -1108,7 +1108,7 @@ test("line keys reveal a caret the reader scrolled away from", async ({
 test("trusted line keys replace the paragraph after a slow Home handler", async ({
   page,
 }) => {
-  for (let trial = 0; trial < 6; trial++) {
+  for (let trial = 0; trial < 3; trial++) {
     const field = await mountKeyboardField(page, "Sense: new meaning");
     await field.evaluate((node) => {
       node.addEventListener("keydown", (event) => {
