@@ -187,6 +187,29 @@ fn read_small_file(root: &Path, relative: &str, limits: ReadLimits) -> Result<Ve
     }
     Ok(bytes)
 }
+fn check_tail_bytes(bytes: &[u8]) -> Result<()> {
+    if bytes.is_empty() || bytes.ends_with(b"\n") {
+        Ok(())
+    } else {
+        Err(Error::new(
+            "record_newline",
+            "every carrier record must end with LF",
+        ))
+    }
+}
+fn check_file_tail(path: &Path) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = open_regular(path)?;
+    let len = file.metadata().map_err(|e| io_error(path, e))?.len();
+    if len == 0 {
+        return Ok(());
+    }
+    file.seek(SeekFrom::End(-1))
+        .map_err(|e| io_error(path, e))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last).map_err(|e| io_error(path, e))?;
+    check_tail_bytes(&last)
+}
 fn snapshot_from_directory(root: &Path, limits: ReadLimits) -> Result<Snapshot> {
     let listed = list_files(root, limits)?;
     Snapshot::from_listed_files(
@@ -196,6 +219,7 @@ fn snapshot_from_directory(root: &Path, limits: ReadLimits) -> Result<Snapshot> 
             let file = open_regular(&root.join(relative))?;
             Ok(Box::new(std::io::BufReader::new(file)) as Box<dyn std::io::BufRead>)
         },
+        |relative| check_file_tail(&root.join(relative)),
     )
 }
 pub fn read_directory(root: impl AsRef<Path>) -> Result<Snapshot> {
@@ -458,6 +482,13 @@ fn snapshot_from_git(repo: &Path, source: &GitSource) -> Result<Snapshot> {
                 .ok_or_else(|| Error::new("git_blob", format!("{relative} has no Git blob")))?;
             let bytes = git_blob(repo, oid, sizes[relative])?;
             Ok(Box::new(std::io::Cursor::new(bytes)) as Box<dyn std::io::BufRead>)
+        },
+        |relative| {
+            let oid = source
+                .oids
+                .get(relative)
+                .ok_or_else(|| Error::new("git_blob", format!("{relative} has no Git blob")))?;
+            check_tail_bytes(&git_blob(repo, oid, sizes[relative])?)
         },
     )
 }

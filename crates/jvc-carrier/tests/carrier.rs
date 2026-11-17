@@ -922,3 +922,186 @@ fn streamed_reader_keeps_newline_precedence_over_record_size() {
     let err = Snapshot::from_jsonl_reader(std::io::Cursor::new(terminated)).unwrap_err();
     assert_eq!(err.code, "record_size");
 }
+
+fn signed_event(seed: u8, nonce: u32, descriptor: &ContentDescriptor) -> VerifiedEnvelope {
+    sign_header(
+        &[seed; 32],
+        Header {
+            version: 1,
+            issuer: identity_from_seed(&[seed; 32]),
+            previous: vec![],
+            nonce: format!("{nonce:032x}"),
+            action: json!({"kind":"identity.profile"}),
+            content: Some(descriptor.clone()),
+        },
+    )
+    .unwrap()
+}
+fn shared_body_snapshot(events: Vec<VerifiedEnvelope>, body: &[u8]) -> Snapshot {
+    let mut snapshot = Snapshot::new();
+    for e in &events {
+        add(&mut snapshot, e);
+    }
+    snapshot
+        .insert_body(&body_descriptor(body).unwrap().hash, body)
+        .unwrap();
+    snapshot
+}
+fn shared_body_pair(other_partition: bool) -> Snapshot {
+    let body = profile();
+    let descriptor = body_descriptor(&body).unwrap();
+    let a = signed_event(4, 0, &descriptor);
+    let b = (1..100_000u32)
+        .map(|nonce| signed_event(4, nonce, &descriptor))
+        .find(|e| (e.id()[5..7] != a.id()[5..7]) == other_partition)
+        .expect("fixture must find a second event");
+    shared_body_snapshot(vec![a, b], &body)
+}
+fn shared_body_many_parts() -> Snapshot {
+    let body = canonical_value(&json!({"x": "a".repeat(260_000)})).unwrap();
+    let descriptor = body_descriptor(&body).unwrap();
+    let first = signed_event(8, 0, &descriptor);
+    let partition = first.id()[5..7].to_owned();
+    let mut events = vec![first];
+    let mut nonce = 1u32;
+    while events.len() < 34 {
+        let e = signed_event(8, nonce, &descriptor);
+        nonce += 1;
+        if e.id()[5..7] == partition {
+            events.push(e);
+        }
+    }
+    shared_body_snapshot(events, &body)
+}
+fn null_body_at(
+    files: &BTreeMap<String, Vec<u8>>,
+    path: &str,
+    line_index: usize,
+) -> BTreeMap<String, Vec<u8>> {
+    let mut files = files.clone();
+    let bytes = files.remove(path).unwrap();
+    let mut lines: Vec<Vec<u8>> = bytes[..bytes.len() - 1]
+        .split(|b| *b == b'\n')
+        .map(<[u8]>::to_vec)
+        .collect();
+    let mut record = parse_json(&lines[line_index]).unwrap();
+    record["body"] = Value::Null;
+    lines[line_index] = canonical_value(&record).unwrap();
+    let mut out = Vec::new();
+    for line in lines {
+        out.extend(line);
+        out.push(b'\n');
+    }
+    files.insert(path.to_owned(), out);
+    files
+}
+fn write_carrier_files(root: &std::path::Path, files: &BTreeMap<String, Vec<u8>>) {
+    std::fs::create_dir_all(root).unwrap();
+    for (name, bytes) in files {
+        let path = root.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+}
+fn record_paths(files: &BTreeMap<String, Vec<u8>>) -> Vec<String> {
+    files
+        .keys()
+        .filter(|p| p.starts_with("records/"))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn native_readers_reject_omitted_body_copies() {
+    // One retained body, one omitted copy, in both orders and across
+    // partitions. Every variant keeps the original manifest.
+    for snapshot in [
+        shared_body_pair(false),
+        shared_body_pair(true),
+        shared_body_many_parts(),
+    ] {
+        let files = snapshot.to_files().unwrap();
+        let paths = record_paths(&files);
+        for path in &paths {
+            let line_count = files[path].iter().filter(|b| **b == b'\n').count();
+            for line in [0, line_count - 1] {
+                let variant = null_body_at(&files, path, line);
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path().join("carrier");
+                write_carrier_files(&root, &variant);
+                assert_eq!(
+                    read_directory(&root).unwrap_err().code,
+                    "carrier_noncanonical",
+                    "path {path} line {line}"
+                );
+            }
+        }
+    }
+    // The Git-tree and checkout readers share the same path.
+    let snapshot = shared_body_pair(false);
+    let files = snapshot.to_files().unwrap();
+    let path = record_path(&files);
+    let variant = null_body_at(&files, &path, 1);
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    write_carrier_files(&repo, &variant);
+    git(&repo, &["add", "--all"]);
+    let tree = git(&repo, &["write-tree"]);
+    let commit = git(
+        &repo,
+        &["commit-tree", &tree, "-m", "Disposable carrier fixture"],
+    );
+    assert_eq!(
+        read_git_tree(&repo, &commit).unwrap_err().code,
+        "carrier_noncanonical"
+    );
+    assert_eq!(
+        validate_checkout(&repo, &commit).unwrap_err().code,
+        "carrier_noncanonical"
+    );
+}
+
+#[test]
+fn native_readers_round_trip_accepted_carriers() {
+    for snapshot in [
+        with_body().0,
+        shared_body_pair(false),
+        shared_body_pair(true),
+        shared_body_many_parts(),
+    ] {
+        let files = snapshot.to_files().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("carrier");
+        write_carrier_files(&root, &files);
+        assert_eq!(read_directory(&root).unwrap().to_files().unwrap(), files);
+        let repo = temp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        let commit = commit_fixture(&repo, &snapshot, None);
+        assert_eq!(
+            read_git_tree(&repo, &commit).unwrap().to_files().unwrap(),
+            files
+        );
+        assert_eq!(
+            validate_checkout(&repo, &commit)
+                .unwrap()
+                .to_files()
+                .unwrap(),
+            files
+        );
+    }
+}
+
+#[test]
+fn native_reader_reports_record_newline_for_unterminated_part() {
+    let (snapshot, _, _) = with_body();
+    let mut files = snapshot.to_files().unwrap();
+    let path = record_path(&files);
+    files.insert(path, b"null\nx".to_vec());
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("carrier");
+    write_carrier_files(&root, &files);
+    assert_eq!(read_directory(&root).unwrap_err().code, "record_newline");
+}

@@ -462,12 +462,13 @@ impl Snapshot {
     /// Insert one canonical carrier record line (without its LF) into this
     /// snapshot. This is the per-record path used by streamed readers; the
     /// record stays within the envelope and body bounds.
+    /// Returns the event ID and whether the record carried its body inline.
     pub(crate) fn insert_jsonl_line(
         &mut self,
         line: &[u8],
         line_no: usize,
         verifier: &mut jvc_core::EnvelopeVerifier,
-    ) -> Result<String> {
+    ) -> Result<(String, bool)> {
         if line.is_empty() {
             return Err(error(
                 "record_blank",
@@ -518,9 +519,10 @@ impl Snapshot {
             }
             self.insert_body(&c.hash, &bytes)?;
         }
+        let carried_body = !record["body"].is_null();
         let id = event.id().to_owned();
         self.insert_verified(event)?;
-        Ok(id)
+        Ok((id, carried_body))
     }
     /// Read canonical carrier records from a buffered reader, one line at a
     /// time. Only one record line is retained at a time.
@@ -695,6 +697,7 @@ impl Snapshot {
         listed: &[(String, usize)],
         mut read_file: impl FnMut(&str) -> Result<Vec<u8>>,
         mut open_reader: impl FnMut(&str) -> Result<Box<dyn std::io::BufRead>>,
+        mut check_tail: impl FnMut(&str) -> Result<()>,
     ) -> Result<Self> {
         let mut listed: Vec<(String, usize)> = listed.to_vec();
         listed.sort_by(|a, b| {
@@ -739,6 +742,11 @@ impl Snapshot {
         let mut next_index: usize = 0;
         let mut previous_part_len: Option<usize> = None;
         let mut last_id: Option<String> = None;
+        // Events whose record carried its body inline. A retained body may
+        // arrive in a later record, so the filling check runs after all
+        // records are read.
+        let mut filled: BTreeSet<String> = BTreeSet::new();
+        let mut event_parts: BTreeMap<String, String> = BTreeMap::new();
         for (path, _size) in &listed {
             if let Some(rest) = path.strip_prefix("records/") {
                 let partition = &rest[..2];
@@ -761,6 +769,9 @@ impl Snapshot {
                         ),
                     ));
                 }
+                // A record part is a file: its last byte must be LF before
+                // any of its records are parsed, as in the in-memory reader.
+                check_tail(path)?;
                 let mut reader = open_reader(path)?;
                 let mut line = Vec::new();
                 let mut line_no = 0usize;
@@ -801,11 +812,15 @@ impl Snapshot {
                             format!("{path} is empty or exceeds 8 MiB"),
                         ));
                     }
-                    let id = snapshot.insert_jsonl_line(
+                    let (id, carried_body) = snapshot.insert_jsonl_line(
                         &line[..line.len() - 1],
                         line_no,
                         &mut verifier,
                     )?;
+                    if carried_body {
+                        filled.insert(id.clone());
+                    }
+                    event_parts.insert(id.clone(), path.clone());
                     if &id[5..7] != partition {
                         return Err(error(
                             "partition",
@@ -839,6 +854,31 @@ impl Snapshot {
                 );
                 let bytes = read_file(path)?;
                 snapshot.insert_selection(&id, &bytes)?;
+            }
+        }
+        // Canonical filling: every record whose descriptor matches a
+        // retained body must carry that body inline. A body matches only
+        // when the retained bytes have the descriptor's exact byte count.
+        for event in snapshot.events.values() {
+            if let Some(content) = &event.header().content {
+                let retained = snapshot
+                    .bodies
+                    .get(&content.hash)
+                    .is_some_and(|bytes| bytes.len() as u64 == content.bytes)
+                    && !snapshot.refused_bodies.contains(&content.hash)
+                    && !snapshot.quarantined_bodies.contains(&content.hash);
+                if retained && !filled.contains(event.id()) {
+                    let part = event_parts
+                        .get(event.id())
+                        .map(String::as_str)
+                        .unwrap_or("records");
+                    return Err(error(
+                        "carrier_noncanonical",
+                        format!(
+                            "{part} differs from canonical sorting, filling, or greedy partitioning"
+                        ),
+                    ));
+                }
             }
         }
         if canonical_value(&serde_json::to_value(snapshot.manifest()?).unwrap())? != declared {

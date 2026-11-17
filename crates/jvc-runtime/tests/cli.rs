@@ -372,3 +372,28 @@ fn cli_rejects_a_carrier_record_above_the_per_record_bound() {
     assert!(!output.status.success());
     assert!(!root.join("full").exists());
 }
+
+#[test]
+fn cli_file_input_reports_record_newline_before_record_shape() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(root.join("precedence.jsonl"), b"null\nx").unwrap();
+    let output = cli(
+        root,
+        &[
+            "import",
+            "precedence.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "full",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("record_newline"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!root.join("full").exists());
+}

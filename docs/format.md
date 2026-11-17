@@ -1528,7 +1528,7 @@ A conforming checkout has this layout:
 format.json
 manifest.json
 .gitattributes
-records/<first-two-hex>/<six-digit-part>.jsonl
+records/<first-two-hex>/<part-number>.jsonl
 import-selections/<first-two-hex>/<remaining-hex>.json
 README.md
 ```

@@ -98,7 +98,26 @@ fn read_jsonl_snapshot(
     path: &str,
     limit: Option<u64>,
 ) -> Result<jvc_carrier::Snapshot, Box<dyn std::error::Error>> {
-    let reader = io::BufReader::new(quota_reader(open_input(path, limit)?, limit));
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = open_input(path, limit)?;
+    // A JSONL file must end with LF before any record is parsed, as the
+    // in-memory reader requires. A streamed (non-file) reader can only
+    // report this when its end is reached.
+    let len = file.metadata()?.len();
+    if len > 0 {
+        file.seek(SeekFrom::End(-1))?;
+        let mut last = [0u8; 1];
+        file.read_exact(&mut last)?;
+        if last != *b"\n" {
+            return Err(jvc_core::Error::new(
+                "record_newline",
+                "every carrier record must end with LF",
+            )
+            .into());
+        }
+        file.seek(SeekFrom::Start(0))?;
+    }
+    let reader = io::BufReader::new(quota_reader(file, limit));
     Ok(jvc_carrier::Snapshot::from_jsonl_reader(reader)?)
 }
 fn read_envelope_events(
