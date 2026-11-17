@@ -10,6 +10,18 @@ use std::rc::Rc;
 
 thread_local! {
     static SETUP_LOOKUP_CALLS: Cell<usize> = const { Cell::new(0) };
+    static VALIDATED_STRING_BYTES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many arena string bytes have been validated at load time.
+/// String access after that validation validates nothing.
+pub fn validated_string_bytes() -> usize {
+    VALIDATED_STRING_BYTES.with(Cell::get)
+}
+
+/// Reset the validated-string-byte counter.
+pub fn reset_validated_string_bytes() {
+    VALIDATED_STRING_BYTES.with(|bytes| bytes.set(0));
 }
 
 /// How many setup lookups have been charged through `lookup_work`.
@@ -198,7 +210,15 @@ impl RecordArena {
         let segment = self.strings[handle as usize];
         let start = segment.start as usize;
         let end = start + segment.len as usize;
-        std::str::from_utf8(&self.string_bytes[start..end]).unwrap()
+        // SAFETY: every byte run in `string_bytes` entered through
+        // `intern(&str)`, so it is valid UTF-8, and `finish_load`
+        // validates the whole buffer once after a load. Access is
+        // therefore constant time and never rescans the bytes.
+        unsafe { std::str::from_utf8_unchecked(&self.string_bytes[start..end]) }
+    }
+
+    fn string_len(&self, handle: u32) -> usize {
+        self.strings[handle as usize].len as usize
     }
 
     fn intern(&mut self, value: &str) -> u32 {
@@ -316,6 +336,19 @@ impl RecordArena {
     }
 
     pub(crate) fn finish_load(&mut self) {
+        // Validate every stored string once, here at load time. After
+        // this, `string` may borrow any segment without rescanning it:
+        // each segment is one `&str` appended by `intern`, so a valid
+        // whole buffer means every segment is valid UTF-8.
+        VALIDATED_STRING_BYTES.with(|bytes| {
+            bytes.set(bytes.get() + self.string_bytes.len());
+        });
+        if std::str::from_utf8(&self.string_bytes).is_err() {
+            self.set_error(jvc_core::Error::new(
+                "checkpoint",
+                "record arena strings are not valid UTF-8",
+            ));
+        }
         self.values.shrink_to_fit();
         self.array_values.shrink_to_fit();
         self.object_values.shrink_to_fit();
@@ -683,7 +716,7 @@ impl<'a> ValueView<'a> {
                 Ok(0)
             }
             ValueNode::String(handle) => {
-                let len = self.arena.string(*handle).len() as u64;
+                let len = self.arena.string_len(*handle) as u64;
                 meter(1 + len)?;
                 Ok(len)
             }
@@ -700,7 +733,7 @@ impl<'a> ValueView<'a> {
                 let start = *start as usize;
                 let mut total = 0u64;
                 for (key, value) in &self.arena.object_values[start..start + *len as usize] {
-                    let key_len = self.arena.string(*key).len() as u64;
+                    let key_len = self.arena.string_len(*key) as u64;
                     meter(key_len)?;
                     total += key_len + self.child(*value).string_bytes_metered(meter)?;
                 }

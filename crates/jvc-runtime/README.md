@@ -105,14 +105,17 @@ M = nz(words) + nz(target_groups) + nz(judgment_groups)
 S = target_groups + private_rules
 B = 1536 * M + 384 * S
 setup_bytes = 2 * (sum(count * base_bytes) + K + B)
-setup_units = 2 * (8 * I * bit_length(I + 1) + K) + 16 * I + 4 * K
+setup_units = 2 * (8 * I * bit_length(I + 1) + K) + 16 * I + 4 * K + 11 * K * bit_length(I + 1)
 ```
 
-The last two terms charge the record-count walk and the index-count walk.
+The `16 * I + 4 * K` term charges the record-count walk and the index-count walk. The last term charges key comparison bytes during index construction.
 Setup charges each walk before it runs. Each publication, trust rule, scope tree, private rule, and lookup is charged before it is processed.
+Arena strings are validated once when the arena is loaded; after that, string access borrows the stored length and bytes in constant time and validates nothing.
+Each linear walk credits its own allowance for the items it visits before it charges them, so a walk never exhausts a budget that its own input would raise.
 The index build itself runs only after `setup_estimate` accepts the counts.
-The default setup-unit budget is 100,000,000 plus 1,040 per index entry plus 6 per copied key byte.
-Those per-entry and per-byte allowances cover the charge at the widest bit length: 16 * 64 + 16 per entry and 6 per key byte.
+The default setup-unit budget is 100,000,000 plus 1,040 per index entry plus 6 per copied key byte plus 11 per copied key byte per tree level.
+Those allowances cover the charge at the widest bit length: 16 * 64 + 16 per entry, 6 per key byte, and the comparison term 11 * K * bit_length(I + 1) for index construction.
+Index construction is charged through the same meter as the walks, before each lookup, insertion, and comparison.
 The margin over the charge is therefore at least the fixed 100,000,000 at any size, and it grows as an ordinary shape grows.
 An explicit `setup_units` quota replaces the default.
 After a charged read refuses, setup does no further work over restored data.
@@ -121,8 +124,8 @@ A profile that was not yet shown exact or unavailable therefore returns the refu
 
 The measured dictionary has 269,350 structural records and 165,438,058 source bytes.
 Its indexes retain 64,033,159 requested heap bytes.
-The preflight envelope reserves 291,524,664 bytes and 345,414,824 units, walks included.
-The scaled default budget for that shape is 771,253,704 units. Word preparation retains its full 100,000,000-unit allowance.
+The preflight envelope reserves 291,524,664 bytes and 7,332,895,940 units, walks and comparison bytes included.
+The scaled default budget for that shape is 7,758,734,820 units. Word preparation retains its full 100,000,000-unit allowance.
 A uniform increase in dictionary counts and copied-key bytes keeps at least that fixed margin under the scaled default.
 These count-based growth figures assume the same shape and do not promise that every future word fits.
 The measurements do not guarantee capacity for every word or every future dictionary revision.

@@ -124,24 +124,24 @@ fn measure(name: &str, state: EvaluatedState) -> [usize; 2] {
         "{name}: peak={peak}, charge={modeled_bytes}"
     );
     let entries_total = [
-        entries.words,
-        entries.word_publications,
-        entries.target_groups,
-        entries.targets,
-        entries.judgment_groups,
-        entries.trust_rules,
-        entries.scope_buckets,
-        entries.scope_rules,
-        entries.private_pairs,
-        entries.private_weights,
-        entries.private_rules,
+        bound.words,
+        bound.word_publications,
+        bound.target_groups,
+        bound.targets,
+        bound.judgment_groups,
+        bound.trust_rules,
+        bound.scope_buckets,
+        bound.scope_rules,
+        bound.private_pairs,
+        bound.private_weights,
+        bound.private_rules,
     ]
     .iter()
     .sum::<u64>();
     assert!(
         modeled_units + 1_000_000
             < policy
-                .effective_setup_units(entries_total, entries.key_bytes)
+                .effective_setup_units(entries_total, bound.key_bytes)
                 .unwrap()
     );
 

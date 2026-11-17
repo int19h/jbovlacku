@@ -254,7 +254,7 @@ impl EvaluatedState {
     }
     /// Count index inputs without cloning them. Policy checks precede index allocation.
     pub fn ranking_source_records(&self) -> jvc_core::Result<usize> {
-        self.ranking_source_records_metered(&mut |_, _, _| Ok(()))
+        self.ranking_source_records_metered(&mut |_, _, _, _| Ok(()))
     }
     /// Like `ranking_source_records`, but each judgment group and overlay
     /// field is charged to the meter before it is visited.
@@ -263,7 +263,7 @@ impl EvaluatedState {
         meter: &mut policy::SetupMeter<'_>,
     ) -> jvc_core::Result<usize> {
         let e = &self.evaluation;
-        meter(16, 0, 0)?;
+        meter(16, 0, 0, 0)?;
         let mut count = self.prepared.nodes.len();
         for n in [
             e.publications.len(),
@@ -279,7 +279,10 @@ impl EvaluatedState {
             })?;
         }
         for judgments in e.judgments.values() {
-            meter(8, 0, 0)?;
+            // Each group credits its own allowance before its charge,
+            // so this walk never exhausts a budget its input would raise.
+            meter(0, 0, 0, 1)?;
+            meter(8, 0, 0, 0)?;
             count = count.checked_add(judgments.len()).ok_or_else(|| {
                 jvc_core::Error::new("resource_unavailable", "ranking record count overflow")
             })?;
@@ -287,8 +290,10 @@ impl EvaluatedState {
         if let Some(overlay) = &e.overlay {
             let obj_len = overlay.as_object().map_or(0, |o| o.len());
             for key in ["trust", "blocked", "root_changes"] {
+                meter(0, 0, 0, 1)?;
                 meter(
                     super::arena::lookup_work(obj_len as u64, key.len() as u64),
+                    0,
                     0,
                     0,
                 )?;
@@ -319,8 +324,16 @@ impl EvaluatedState {
             .transpose()
     }
     pub fn ensure_ranking_index(&self) -> jvc_core::Result<()> {
+        self.ensure_ranking_index_metered(&mut |_, _, _, _| Ok(()))
+    }
+    /// Like `ensure_ranking_index`, with every construction lookup,
+    /// insertion, and comparison charged to the meter before it runs.
+    pub fn ensure_ranking_index_metered(
+        &self,
+        meter: &mut policy::SetupMeter<'_>,
+    ) -> jvc_core::Result<()> {
         if self.ranking_index.borrow().is_none() {
-            let index = policy::ApproximateContextIndex::new(&self.evaluation)?;
+            let index = policy::ApproximateContextIndex::new_metered(&self.evaluation, meter)?;
             *self.ranking_index.borrow_mut() = Some(index);
         }
         Ok(())

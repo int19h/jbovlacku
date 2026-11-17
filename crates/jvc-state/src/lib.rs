@@ -12,7 +12,8 @@ pub use api::{
     AccountControl, Authority, Certificate, PublicationStatus, account_control, publication_status,
 };
 pub use arena::{
-    ArrayValues, CompactValue, ValueView, lookup_work, reset_setup_lookup_calls, setup_lookup_calls,
+    ArrayValues, CompactValue, ValueView, lookup_work, reset_setup_lookup_calls,
+    reset_validated_string_bytes, setup_lookup_calls, validated_string_bytes,
 };
 pub use incremental::{
     CHECKPOINT_VERSION, EvaluatedState, JudgmentChanges, MAX_INCREMENTAL_RECORDS,

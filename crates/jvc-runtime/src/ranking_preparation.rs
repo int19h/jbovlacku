@@ -95,12 +95,16 @@ impl RankingPreparationPolicy {
         // Measured roots and first split nodes fit these base allowances.
         // The outer factor also covers allocator overhead and transient maps.
         let bytes = mul(add(bytes, fixed)?, 2)?;
-        let log = u64::from(64 - add(entries, 1)?.leading_zeros());
+        let log = bit_length(entries);
         let base = mul(add(mul(mul(entries, 8)?, log)?, c.key_bytes)?, 2)?;
         // The record-count walk and the index-count walk scan these entries
         // and key bytes. Charge them in the same total, before index build.
         let walk = add(mul(entries, 16)?, mul(c.key_bytes, 4)?)?;
-        let units = add(base, walk)?;
+        // Index construction compares keys that can share long prefixes:
+        // each key byte can be read in at most eleven comparisons per
+        // tree level, over at most `log` levels.
+        let comparison = mul(mul(11, c.key_bytes)?, log)?;
+        let units = add(add(base, walk)?, comparison)?;
         if self
             .limits
             .setup_bytes
@@ -121,7 +125,10 @@ impl RankingPreparationPolicy {
                 SETUP_UNITS_FIXED_ALLOWANCE,
                 mul(entries, SETUP_UNITS_PER_ENTRY)?,
             )?,
-            mul(key_bytes, SETUP_UNITS_PER_KEY_BYTE)?,
+            mul(
+                key_bytes,
+                add(SETUP_UNITS_PER_KEY_BYTE, mul(11, bit_length(entries))?)?,
+            )?,
         )
     }
     /// A meter that charges setup work before it runs. Entry and key
@@ -133,6 +140,7 @@ impl RankingPreparationPolicy {
             spent: 0,
             entries,
             key_bytes,
+            credited: 0,
         }
     }
     fn validate(&self) -> Result<()> {
@@ -339,11 +347,11 @@ fn digest(domain: &[u8], value: &impl Serialize, max: usize) -> Result<String> {
 }
 fn parameter(value: jvc_state::ValueView, meter: &mut SetupMeter) -> Result<FloatParameter> {
     let n = value
-        .get_metered("numerator", &mut |w| meter.charge(w, 0, 0))?
+        .get_metered("numerator", &mut |w| meter.charge(w, 0, 0, 0))?
         .and_then(|v| v.as_i64())
         .ok_or_else(|| Error::new("ranking", "signed numerator is unavailable"))?;
     let d = value
-        .get_metered("denominator", &mut |w| meter.charge(w, 0, 0))?
+        .get_metered("denominator", &mut |w| meter.charge(w, 0, 0, 0))?
         .and_then(|v| v.as_u64())
         .filter(|d| *d > 0)
         .ok_or_else(|| Error::new("ranking", "signed denominator is unavailable"))?;
@@ -371,6 +379,7 @@ fn parameters(e: &jvc_state::Evaluation, meter: &mut SetupMeter) -> Result<Prepa
             jvc_state::lookup_work(overlay.as_object().map_or(0, |o| o.len()) as u64, 4),
             0,
             0,
+            0,
         )?;
         work = overlay["work"].as_u64();
     }
@@ -378,13 +387,13 @@ fn parameters(e: &jvc_state::Evaluation, meter: &mut SetupMeter) -> Result<Prepa
     let work = match work {
         Some(w) => Some(w),
         None => view
-            .get_metered("work", &mut |w| meter.charge(w, 0, 0))?
+            .get_metered("work", &mut |w| meter.charge(w, 0, 0, 0))?
             .and_then(|v| v.as_u64()),
     }
     .filter(|w| (1..=10_000_000).contains(w))
     .ok_or_else(|| Error::new("ranking", "signed work budget is unavailable"))?;
     let field = |key: &str, meter: &mut SetupMeter| -> Result<jvc_state::ValueView> {
-        view.get_metered(key, &mut |w| meter.charge(w, 0, 0))?
+        view.get_metered(key, &mut |w| meter.charge(w, 0, 0, 0))?
             .ok_or_else(|| Error::new("ranking", "signed parameter is unavailable"))
     };
     Ok(PreparationParameters {
@@ -394,6 +403,10 @@ fn parameters(e: &jvc_state::Evaluation, meter: &mut SetupMeter) -> Result<Prepa
         work,
     })
 }
+fn bit_length(entries: u64) -> u64 {
+    u64::from(64 - entries.saturating_add(1).leading_zeros())
+}
+
 /// Charges setup work before it runs, against an explicit quota or the
 /// scaled default for the entries and key bytes charged so far.
 struct SetupMeter {
@@ -401,26 +414,46 @@ struct SetupMeter {
     spent: u64,
     entries: u64,
     key_bytes: u64,
+    credited: u64,
 }
 impl SetupMeter {
-    fn charge(&mut self, work: u64, entries: u64, key_bytes: u64) -> Result<()> {
+    fn charge(&mut self, work: u64, entries: u64, key_bytes: u64, credited: u64) -> Result<()> {
         self.spent = add(self.spent, work)?;
         self.entries = add(self.entries, entries)?;
         self.key_bytes = add(self.key_bytes, key_bytes)?;
+        self.credited = add(self.credited, credited)?;
         let budget = match self.explicit {
             Some(limit) => limit,
-            None => add(
-                add(
-                    SETUP_UNITS_FIXED_ALLOWANCE,
-                    mul(self.entries, SETUP_UNITS_PER_ENTRY)?,
-                )?,
-                mul(self.key_bytes, SETUP_UNITS_PER_KEY_BYTE)?,
-            )?,
+            None => self.default_budget()?,
         };
         if self.spent > budget {
             return Err(resource("ranking setup envelope limit"));
         }
         Ok(())
+    }
+    /// The scaled default for the totals charged so far, including the
+    /// comparison-byte term and one entry allowance per credited item.
+    fn default_budget(&self) -> Result<u64> {
+        add(
+            add(
+                add(
+                    SETUP_UNITS_FIXED_ALLOWANCE,
+                    mul(self.entries, SETUP_UNITS_PER_ENTRY)?,
+                )?,
+                mul(
+                    self.key_bytes,
+                    add(SETUP_UNITS_PER_KEY_BYTE, mul(11, bit_length(self.entries))?)?,
+                )?,
+            )?,
+            mul(self.credited, SETUP_UNITS_PER_ENTRY)?,
+        )
+    }
+    /// The final default plus one entry allowance per credited item.
+    fn final_budget(&self, policy: &RankingPreparationPolicy) -> Result<u64> {
+        add(
+            policy.effective_setup_units(self.entries, self.key_bytes)?,
+            mul(self.credited, SETUP_UNITS_PER_ENTRY)?,
+        )
     }
 }
 impl SessionPreparation {
@@ -438,7 +471,7 @@ impl SessionPreparation {
         let mut reasons = BTreeSet::new();
         // The selected view identifier is cloned into the descriptor.
         // A refusal here has learned nothing, so it returns at once.
-        meter.charge(add(e.selected_view.len() as u64, 16)?, 0, 0)?;
+        meter.charge(add(e.selected_view.len() as u64, 16)?, 0, 0, 0)?;
         // Build the reason set through the meter: each entry is charged
         // for its set insertion comparisons and its string copy before
         // either happens. A refusal here also returns at once.
@@ -450,7 +483,7 @@ impl SessionPreparation {
                 )?,
                 16,
             )?;
-            meter.charge(work, 0, 0)?;
+            meter.charge(work, 0, 0, 0)?;
             reasons.insert(reason.clone());
         }
         // Read the calculation field borrowed, charge its length, and
@@ -460,12 +493,12 @@ impl SessionPreparation {
         let calculation = match e.policy.as_ref() {
             Some(policy) => policy
                 .view()
-                .get_metered("calculation", &mut |w| meter.charge(w, 0, 0))?,
+                .get_metered("calculation", &mut |w| meter.charge(w, 0, 0, 0))?,
             None => None,
         };
         let algorithm: Option<String> = match calculation.as_ref().and_then(|v| v.as_str()) {
             Some(name) => {
-                meter.charge(name.len() as u64, 0, 0)?;
+                meter.charge(name.len() as u64, 0, 0, 0)?;
                 Some(name.to_owned())
             }
             None => None,
@@ -510,7 +543,7 @@ impl SessionPreparation {
             let records = if available {
                 session
                     .state
-                    .ranking_source_records_metered(&mut |w, en, k| meter.charge(w, en, k))?
+                    .ranking_source_records_metered(&mut |w, en, k, c| meter.charge(w, en, k, c))?
             } else {
                 0
             };
@@ -520,11 +553,11 @@ impl SessionPreparation {
             let (setup_bytes, setup_units) = if available {
                 let counts = session
                     .state
-                    .ranking_index_bound_metered(&mut |w, en, k| meter.charge(w, en, k))?;
+                    .ranking_index_bound_metered(&mut |w, en, k, c| meter.charge(w, en, k, c))?;
                 // Safeguard: total spent work must also fit the final
                 // default for the true counts, not only each provisional
                 // budget seen during the walk.
-                if meter.spent > policy.effective_setup_units(meter.entries, meter.key_bytes)? {
+                if meter.spent > meter.final_budget(policy)? {
                     return Err(resource("ranking setup envelope limit"));
                 }
                 policy.setup_estimate(&counts)?
@@ -533,7 +566,14 @@ impl SessionPreparation {
             };
             let (binding, bytes) = source_binding(&session.state, limits)?;
             if available {
-                session.state.ensure_ranking_index()?;
+                session
+                    .state
+                    .ensure_ranking_index_metered(&mut |w, en, k, c| meter.charge(w, en, k, c))?;
+                // Construction work must also fit the final budget for
+                // the true counts, plus credited walk items.
+                if meter.spent > meter.final_budget(policy)? {
+                    return Err(resource("ranking setup envelope limit"));
+                }
             }
             (binding, records, setup_bytes, setup_units, bytes as u64)
         };
@@ -1278,7 +1318,7 @@ mod tests {
         assert_eq!(p.limits.setup_units, None);
         assert_eq!(p.limits.source_bytes, None);
         let (bytes, units) = p.setup_estimate(&c).unwrap();
-        assert_eq!((bytes, units), (291_524_664, 345_414_824));
+        assert_eq!((bytes, units), (291_524_664, 7_332_895_940));
         assert!(units + 50_000_000 < p.effective_setup_units(452_554, 33_432_924).unwrap());
         assert_eq!(p.limits.units, 100_000_000);
         let mut grown = serde_json::to_value(&c).unwrap();
@@ -1556,7 +1596,7 @@ mod tests {
             let mut meter = policy.setup_meter(0, 0);
             let counts = scenario
                 .state
-                .ranking_index_bound_metered(&mut |w, e, k| meter.charge(w, e, k))
+                .ranking_index_bound_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
                 .unwrap();
             assert_eq!(meter.entries, final_entries(&counts));
             assert_eq!(meter.key_bytes, counts.key_bytes);
@@ -1593,7 +1633,7 @@ mod tests {
                     "kind": "definition",
                     "word": "*",
                     "language": "en",
-                    "extra": vec![0; 25_200_000],
+                    "extra": vec![0; 30_000_000],
                 },
                 "values": ["heed"],
             }]);
@@ -1657,11 +1697,11 @@ mod tests {
         jvc_state::reset_setup_lookup_calls();
         session
             .state
-            .ranking_source_records_metered(&mut |w, e, k| meter.charge(w, e, k))
+            .ranking_source_records_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
             .unwrap();
         session
             .state
-            .ranking_index_bound_metered(&mut |w, e, k| meter.charge(w, e, k))
+            .ranking_index_bound_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
             .unwrap();
         // Records walk: 3 overlay field reads. Count walk: 1 reasons
         // read, 1 overlay trust read, 7 rule validation reads, and 6
@@ -1733,7 +1773,7 @@ mod tests {
         let mut meter = policy.setup_meter(0, 0);
         let error = session
             .state
-            .ranking_index_bound_metered(&mut |w, e, k| meter.charge(w, e, k))
+            .ranking_index_bound_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
             .unwrap_err();
         assert_eq!(error.code, "resource_unavailable");
         assert_eq!(error.message, "ranking setup envelope limit");
@@ -1882,6 +1922,102 @@ mod tests {
         assert_eq!(error.message, "ranking setup envelope limit");
     }
     #[test]
+    fn arena_strings_are_not_revalidated_during_setup() {
+        let mut quota = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        // A long calculation: its length charge refuses, and no arena
+        // string bytes are validated on the way.
+        let (first, _word) = session();
+        let restored = restored_with(first, |saved| {
+            saved["evaluation"]["policy"]["calculation"] = json!("a".repeat(10_000_000));
+        });
+        quota.limits.setup_units = Some(1_000);
+        jvc_state::reset_validated_string_bytes();
+        assert_eq!(
+            restored.ranking_descriptor_native(&quota).unwrap_err().code,
+            "resource_unavailable"
+        );
+        assert_eq!(jvc_state::validated_string_bytes(), 0);
+        // Long policy keys: the calculation lookup's candidate keys are
+        // borrowed without validation before the next lookup refuses.
+        let (second, _word) = session();
+        let restored = restored_with(second, |saved| {
+            let policy = saved["evaluation"]["policy"].as_object_mut().unwrap();
+            for n in 0..1000u32 {
+                policy.insert(format!("{}-{n}", "a".repeat(10_000)), json!(n));
+            }
+        });
+        quota.limits.setup_units = Some(1_500);
+        jvc_state::reset_validated_string_bytes();
+        assert_eq!(
+            restored.ranking_descriptor_native(&quota).unwrap_err().code,
+            "resource_unavailable"
+        );
+        assert_eq!(jvc_state::validated_string_bytes(), 0);
+    }
+    #[test]
+    fn index_comparison_bytes_are_in_the_model_and_default() {
+        let (first, _word) = session();
+        let session = restored_with(first, |saved| {
+            let publications = saved["evaluation"]["publications"].as_object().unwrap();
+            let definition = publications
+                .values()
+                .find(|p| p["kind"] == "definition.publish")
+                .unwrap()
+                .clone();
+            let publications = saved["evaluation"]["publications"].as_object_mut().unwrap();
+            for n in 0..10_000u32 {
+                let id = format!("jve1:{n:064x}");
+                let mut publication = definition.clone();
+                publication["id"] = json!(id);
+                publication["word"] = json!(format!("{}:{n:06}", "x".repeat(4096)));
+                publications.insert(id, publication);
+            }
+        });
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(descriptor.available, "{:?}", descriptor.reasons);
+        // The word map alone reads at least 1,281,368,064 comparison
+        // bytes for this shape; the modelled charge must cover it.
+        assert!(descriptor.setup.setup_units > 1_281_368_064);
+        let mut quota = policy;
+        quota.limits.setup_units = Some(1_000_000_000);
+        assert_eq!(
+            session.ranking_descriptor_native(&quota).unwrap_err().code,
+            "resource_unavailable"
+        );
+    }
+    #[test]
+    fn descriptor_with_12_5m_judgment_groups_passes_at_the_default() {
+        let (first, _word) = session();
+        let session = restored_with(first, |saved| {
+            let mut text = String::with_capacity(160_000_000);
+            text.push('{');
+            for n in 0..12_500_001u32 {
+                if n > 0 {
+                    text.push(',');
+                }
+                text.push_str(&format!("\"k{n}\":{{}}"));
+            }
+            text.push('}');
+            saved["evaluation"]["judgments"] = serde_json::from_str(&text).unwrap();
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        // This test checks the unit budget, not the clock.
+        policy.limits.source_millis = 120_000;
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(descriptor.available, "{:?}", descriptor.reasons);
+        assert!(descriptor.setup.setup_records >= 12_500_001);
+    }
+    #[test]
     fn unavailable_float_skips_the_records_walk() {
         let (first, _word) = session();
         let groups: serde_json::Map<String, Value> = (0..100u32)
@@ -1990,7 +2126,7 @@ mod tests {
             key_bytes: 434,
             ..Default::default()
         };
-        assert_eq!(p.setup_estimate(&c).unwrap(), (12_772, 2_988));
+        assert_eq!(p.setup_estimate(&c).unwrap(), (12_772, 17_310));
     }
     #[test]
     fn setup_units_do_not_spend_the_context_allowance() {
