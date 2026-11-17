@@ -1105,6 +1105,82 @@ test("line keys reveal a caret the reader scrolled away from", async ({
   }
 });
 
+const resetFocusCases = [
+  {
+    name: "prepend paragraph",
+    before: [["alpha beta"]],
+    after: [["reset prefix"], ["alpha beta"]],
+    typed: [["reset prefix"], ["alpha betax"]],
+    typedFirefox: [["reset prefixx"], ["alpha beta"]],
+  },
+  {
+    name: "shorten first paragraph",
+    before: [["alpha beta"], ["omega end"]],
+    after: [["new"], ["omega end"]],
+    typed: [["new"], ["omega endx"]],
+    typedFirefox: [["newx"], ["omega end"]],
+  },
+] as const;
+
+for (const resetCase of resetFocusCases) {
+  for (const route of ["button", "direct"] as const) {
+    test(`reset then focus keeps the intended caret: ${resetCase.name} ${route}`, async ({
+      page,
+      browserName,
+    }) => {
+      await page.goto("/");
+      await page.evaluate(async (before) => {
+        const { richField } = await import(
+          String("/src/components/rich-field.ts")
+        );
+        const field = richField("Reset field", { value: before });
+        const button = document.createElement("button");
+        button.textContent = "Replace value";
+        document.body.replaceChildren(field.wrapper, button);
+        (window as any).__resetField = field;
+        (window as any).__resetButton = button;
+      }, resetCase.before as unknown as RichText);
+      const field = page.getByRole("textbox", {
+        name: "Reset field",
+        exact: true,
+      });
+      await field.focus();
+      await field.evaluate((node) => {
+        const text = node.querySelector(".rich-literal")!.firstChild!;
+        getSelection()!.setBaseAndExtent(text, 4, text, 4);
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      await page.waitForTimeout(60);
+      if (route === "button") {
+        await page.evaluate((after) => {
+          const w = window as any;
+          w.__resetButton.onclick = () => {
+            w.__resetField.input.value = after;
+            w.__resetField.input.focus();
+          };
+        }, resetCase.after as unknown as RichText);
+        await page
+          .getByRole("button", { name: "Replace value", exact: true })
+          .click();
+      } else {
+        await field.evaluate((node, after) => {
+          const input = node as any;
+          input.blur();
+          input.value = after;
+          input.focus();
+        }, resetCase.after as unknown as RichText);
+      }
+      await page.waitForTimeout(60);
+      await field.press("x");
+      await expect
+        .poll(() => field.evaluate((node: any) => node.value))
+        .toEqual(
+          browserName === "firefox" ? resetCase.typedFirefox : resetCase.typed,
+        );
+    });
+  }
+}
+
 test("trusted line keys replace the paragraph after a slow Home handler", async ({
   page,
 }) => {

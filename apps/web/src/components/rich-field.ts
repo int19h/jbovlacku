@@ -371,6 +371,9 @@ export function richField(label: string, options: RichFieldOptions) {
   let current = options.value;
   let moved = false;
   let resetSelection: { doc: EditorNode; selection: Selection } | null = null;
+  // The same intended caret, kept until a reader caret choice supersedes
+  // it, so selection syncs do not adopt a browser-adjusted caret instead.
+  let resetGuard: { doc: EditorNode; selection: Selection } | null = null;
   let pointerFocus = false;
   let tabSelection: boolean | null = null;
   let tabTimer: number | undefined;
@@ -965,14 +968,16 @@ export function richField(label: string, options: RichFieldOptions) {
           // Sync once this key's native motion lands. The microtask runs
           // after the move in Firefox; in Chromium it can run before the
           // caret moves and then reads the old selection, so the keyup
-          // sync below covers that engine. Either way, state must hold
-          // the reader's selection before the focus-time write-back.
+          // sync below covers that engine in ordinary delivery. Under
+          // slow execution an overdue focus timer can still fire between
+          // a motion keydown and its keyup, as it can on main; no public
+          // hook runs in that gap.
           if (
             /^(?:Home|End|PageUp|PageDown|Arrow(?:Left|Right|Up|Down))$/u.test(
               event.key,
             )
           )
-            queueMicrotask(syncNativeSelection);
+            queueMicrotask(() => syncNativeSelection(true));
           return false;
         }
         const selection = readNativeSelection();
@@ -988,16 +993,17 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       keyup(_view, event) {
-        // The native motion for this key has landed by keyup. Read the
-        // resulting selection into state now, before the focus-time
-        // write-back can restore the previous caret. (A microtask queued
-        // from keydown would run before Chromium moves the caret.)
+        // The native motion for this key has landed by keyup, so read
+        // the resulting selection into state now; in ordinary delivery
+        // that is before the focus-time write-back can restore the
+        // previous caret. (A microtask queued from keydown would run
+        // before Chromium moves the caret.)
         if (
           /^(?:Home|End|PageUp|PageDown|Arrow(?:Left|Right|Up|Down))$/u.test(
             event.key,
           )
         )
-          syncNativeSelection();
+          syncNativeSelection(true);
         return false;
       },
       input(_view, event) {
@@ -1124,14 +1130,15 @@ export function richField(label: string, options: RichFieldOptions) {
             dispatchEdit(view.state.tr.setSelection(chosen));
           if (repair) view.focus();
         }
-        pointerFocus = false;
         // This handler runs before ProseMirror's own focus handler.
         // With any caret repair above settled, read the browser selection
         // into state, so the focus-time write ProseMirror schedules
         // about 20 ms later starts from the caret the reader actually
         // has; the keyup and selectionchange syncs then keep state
-        // ahead of it.
-        syncNativeSelection();
+        // ahead of it. A pending reset selection is the intended caret
+        // after a rewrite; only a new reader choice supersedes it.
+        if (!reset || chosen || pointerFocus) syncNativeSelection(true);
+        pointerFocus = false;
         return false;
       },
       pointerdown() {
@@ -1502,12 +1509,35 @@ export function richField(label: string, options: RichFieldOptions) {
    * focus; a native selection made in that window (a click, Home, an arrow)
    * is newer than the tracked one and must be in state before the write
    * runs, or the write restores the caret the reader just moved from.
-   * The sync runs at focus (before ProseMirror's own focus handler), on
-   * keyup after a motion key's native move has landed, and on
-   * selectionchange for moves that arrive without a key.
+   * The sync runs at focus (after that handler's caret repair, before
+   * ProseMirror's own focus handler), on keyup after a motion key's
+   * native move has landed, and on selectionchange for moves that
+   * arrive without a key.
    */
-  function syncNativeSelection() {
+  function syncNativeSelection(readerChoice = false) {
     if (view.isDestroyed || view.composing) return;
+    // A reader caret choice supersedes the intended caret a rewrite
+    // recorded; anything code or the browser adjusted does not.
+    if (readerChoice) resetGuard = null;
+    else if (resetGuard?.doc === view.state.doc) {
+      // An external rewrite records its intended caret for focus repair.
+      // A caret the browser adjusted inside the rewritten text is not a
+      // reader choice; do not adopt it over the recorded selection.
+      // Once the browser caret is the recorded one again, fall through.
+      const native = input.ownerDocument.getSelection();
+      if (!native?.anchorNode || !native.focusNode) return;
+      try {
+        if (
+          view.posAtDOM(native.anchorNode, native.anchorOffset, -1) !==
+            resetGuard.selection.anchor ||
+          view.posAtDOM(native.focusNode, native.focusOffset, 1) !==
+            resetGuard.selection.head
+        )
+          return;
+      } catch {
+        return;
+      }
+    }
     // Firefox can hold several ranges (Ctrl+drag). ProseMirror normalizes
     // those to their outer bounds itself; mapping only the anchor and
     // focus here would record just the last range, so leave them to it.
@@ -1626,6 +1656,7 @@ export function richField(label: string, options: RichFieldOptions) {
         const next = state();
         view.updateState(next);
         resetSelection = { doc: next.doc, selection: next.selection };
+        resetGuard = resetSelection;
       } else if (enabled() !== previousMode) {
         // Mode changes start a new undo boundary without moving the caret.
         deletionCaret = null;
@@ -1640,9 +1671,10 @@ export function richField(label: string, options: RichFieldOptions) {
   // Keep editor state current with the browser selection, so the
   // focus-time write-back described at syncNativeSelection restores the
   // selection the reader actually made.
+  const syncFromSelectionChange = () => syncNativeSelection();
   view.dom.ownerDocument.addEventListener(
     "selectionchange",
-    syncNativeSelection,
+    syncFromSelectionChange,
   );
   labelNode.addEventListener("click", () => view.focus());
   const insert = (
@@ -2192,7 +2224,7 @@ export function richField(label: string, options: RichFieldOptions) {
   onDisconnect(wrapper, () => {
     view.dom.ownerDocument.removeEventListener(
       "selectionchange",
-      syncNativeSelection,
+      syncFromSelectionChange,
     );
     settlingComposition = false;
     clearOperation();
