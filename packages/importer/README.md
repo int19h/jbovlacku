@@ -234,8 +234,16 @@ Each carrier record still has its per-record byte limit.
 An operator can set optional quotas with `--max-admitted-events N` and `--max-carrier-records N` on the load command, or with `maxAdmittedEvents` and `maxCarrierRecords` in the library call.
 A quota is off by default. When a quota is set and the load passes it, the loader stops and names the configured limit.
 A host that cannot fit the data fails with a physical error, such as out of memory or a full disk. That is not a loader quota.
-The loader reads carriers one at a time. It keeps only the events that the proposal changes in memory and stages verified records in batches of 256.
+The loader reads carriers one at a time and stages verified records in batches of 256.
 One final transaction promotes the staged records and the accepted events together.
+Memory use still grows with the whole data directory, so size the host for the full dictionary plus the proposal.
+The loader loads the complete coordinator state before it reads carriers.
+It does not deep-copy that state, and it builds no index over the whole dictionary before loading.
+It keeps the changed events, their IDs, new journal entries, and small per-proposal body maps beside the loaded state.
+At commit it builds one shallow copy of the event map and journal that shares the retained event objects.
+A proposal that changes every event therefore holds the loaded state, the changed events, and the commit copy at the same time.
+Retained-body checks can also build a set of the content tokens that retained events map to bodies.
+That set holds one small token per retained body, not a copy of each event.
 
 The loader requires exclusive local access. It is not an online import endpoint.
 Source account management, cross-post marker reconciliation, and model-assisted place conversion remain outside this importer.

@@ -1,5 +1,5 @@
 import { sqliteConnection } from "../../../packages/service/src/sqlite.ts";
-import { mkdir, open, readFile, link, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, link, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
@@ -58,6 +58,20 @@ export class FileObjectStore implements ObjectStore {
   async put(hash: string, bytes: Uint8Array): Promise<void> {
     await durableDirectory(this.directory);
     const path = this.path(hash);
+    // The content hash names the object. An identical object that is
+    // already present was synced before it was linked and its directory
+    // was synced after, so it is already durable: skip the write and the
+    // syncs. A different object under the same name stays a collision.
+    try {
+      await stat(path);
+      this.onIo?.("read");
+      const old = await readFile(path);
+      if (!Buffer.from(bytes).equals(old))
+        throw new Error("Object hash collision.");
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     const temporary = join(this.directory, `.pending-${randomUUID()}`);
     const file = await open(temporary, "wx", 0o600);
     try {

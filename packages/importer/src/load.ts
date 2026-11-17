@@ -103,10 +103,11 @@ function preferredSignature(left: number[], right: number[]) {
 
 /**
  * Admit once without per-record snapshots, receipts, or full evaluation.
- * Carriers stream in one at a time. Only events this proposal changes are
- * held in memory; retained events are read from the loaded state and are
- * never deep-cloned. Verified and semantic records stage in batches of
- * 256 inside the coordinator, and one final transaction promotes them.
+ * Carriers stream in one at a time. Changes are held in a pending map
+ * beside the loaded state; retained events are never deep-cloned, and no
+ * whole-dictionary index is built before loading. Verified and semantic
+ * records stage in batches of 256 inside the coordinator, and one final
+ * transaction promotes them.
  */
 export async function admitImportProposal(
   proposal: string,
@@ -159,7 +160,24 @@ export async function admitImportProposal(
   const journal: { position: number; id: string }[] = [];
   let position = state.position;
   const suppliedBodies = new Map<string, string>();
-  const bodyAvailability = new Map<string, boolean>();
+  // Body mappings come only from retained events or from bodies this
+  // proposal supplies. An object in the store with no mapping (for
+  // example from a proposal that failed before its commit) does not make
+  // a body available. The retained token set builds lazily, on the first
+  // envelope-only carrier, and holds content tokens only.
+  let retainedBodyTokens: Set<string> | undefined;
+  const retainedAvailable = (token: string) => {
+    if (!retainedBodyTokens) {
+      retainedBodyTokens = new Set();
+      for (const id in state.events) {
+        const event = state.events[id];
+        const descriptor = event.header.content;
+        if (descriptor && event.body_hash)
+          retainedBodyTokens.add(key(descriptor.hash, descriptor.bytes));
+      }
+    }
+    return retainedBodyTokens.has(token);
+  };
   const waiting = new Map<string, string[]>();
   const key = (hash: string, bytes: number) => `${hash}/${bytes}`;
   const changedIds = new Set<string>();
@@ -190,7 +208,6 @@ export async function admitImportProposal(
     if (p.body !== null) {
       await objects.put(descriptor!.hash, utf8(p.body));
       suppliedBodies.set(token!, descriptor!.hash);
-      bodyAvailability.set(token!, true);
       for (const id of waiting.get(token!) ?? []) {
         const event = pending.get(id);
         if (event && !event.body_hash) {
@@ -208,15 +225,9 @@ export async function admitImportProposal(
         });
       }
     }
-    let available = token ? bodyAvailability.get(token) : undefined;
-    if (p.body === null && token && available === undefined && !old?.body_hash) {
-      // A retained body for this content is already in the object store.
-      // Cache the answer per content token seen in this proposal only.
-      available = (await objects.get(descriptor!.hash)) !== null;
-      bodyAvailability.set(token, available);
-    }
     const body =
-      p.body !== null || (token && available)
+      p.body !== null ||
+      (token && (suppliedBodies.has(token) || retainedAvailable(token)))
         ? descriptor!.hash
         : (old?.body_hash ?? null);
     const preferred =
@@ -251,7 +262,8 @@ export async function admitImportProposal(
   // Fill retained events whose body this proposal supplied. One scan at
   // the end replaces a whole-dictionary waiting map built up front.
   if (suppliedBodies.size) {
-    for (const [id, event] of Object.entries(state.events)) {
+    for (const id in state.events) {
+      const event = state.events[id];
       if (pending.has(id) || event.body_hash) continue;
       const descriptor = event.header.content;
       if (!descriptor) continue;

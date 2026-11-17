@@ -29,7 +29,7 @@ test("new object directories sync every ancestor before admission can continue",
   }
 });
 
-test("file object measurements count real writes and collision reads without adding I/O", async () => {
+test("file object measurements count writes and the read that confirms an existing object", async () => {
   const root = process.env.JVC_TEST_ROOT ?? tmpdir();
   await mkdir(root, { recursive: true });
   const directory = await mkdtemp(join(root, "object-io-"));
@@ -44,22 +44,24 @@ test("file object measurements count real writes and collision reads without add
     await objects.put(hash, bytes);
     assert.deepEqual(operations, ["write"]);
 
+    // The identical object already exists, so the second put only reads
+    // it to confirm the bytes and skips the write and the syncs.
     await objects.put(hash, bytes);
-    assert.deepEqual(operations, ["write", "write", "read"]);
+    assert.deepEqual(operations, ["write", "read"]);
 
     await assert.rejects(
       objects.put(hash, new Uint8Array([4, 5, 6])),
       /Object hash collision/,
     );
-    assert.deepEqual(operations, ["write", "write", "read", "write", "read"]);
+    assert.deepEqual(operations, ["write", "read", "read"]);
     assert.deepEqual(await objects.get(hash), Buffer.from(bytes));
     assert.equal(await objects.get("sha256:" + "b".repeat(64)), null);
     assert.deepEqual(operations.slice(-2), ["read", "read"]);
-    assert.equal(operations.length, 7);
+    assert.equal(operations.length, 5);
     assert.deepEqual(await readdir(directory), [hash.replaceAll(":", "-")]);
 
     await assert.rejects(objects.get("invalid"), /Invalid object key/);
-    assert.equal(operations.length, 7);
+    assert.equal(operations.length, 5);
   } finally {
     await rm(directory, { recursive: true });
   }
