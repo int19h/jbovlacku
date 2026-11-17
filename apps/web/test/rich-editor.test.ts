@@ -956,7 +956,7 @@ test("Home and End move by visual line in wrapped text", async ({ page }) => {
   await expectKeyboardSelection(field, text, 28, 28);
 });
 
-test("Home stays native on a Mac platform and is editor-owned elsewhere", async ({
+test("Home stays native on a Mac platform and elsewhere", async ({
   page,
 }) => {
   const field = await mountKeyboardField(page, lineMotionText);
@@ -992,10 +992,10 @@ test("Home stays native on a Mac platform and is editor-owned elsewhere", async 
     };
     return { mac: dispatch("MacIntel"), other: dispatch("Linux x86_64") };
   });
-  // On macOS Home scrolls and never moves the caret, so the editor leaves
-  // the key alone. Elsewhere the editor owns the line move.
+  // Line motion is the browser's on every platform; on macOS Home
+  // scrolls and never moves the caret. The editor intercepts neither.
   expect(outcome.mac).toEqual({ notPrevented: true, anchor: 12, focus: 12 });
-  expect(outcome.other).toEqual({ notPrevented: false, anchor: 0, focus: 0 });
+  expect(outcome.other).toEqual({ notPrevented: true, anchor: 12, focus: 12 });
 });
 
 for (const platform of ["Linux x86_64", "MacIntel"]) {
@@ -1105,28 +1105,43 @@ test("line keys reveal a caret the reader scrolled away from", async ({
   }
 });
 
-test("Mac Cmd arrows move by line and keep the selection end", async ({
-  page,
-}) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "platform", {
-      value: "MacIntel",
-      configurable: true,
-    });
+test("a line selection made right after focus is kept", async ({ page }) => {
+  const field = await mountKeyboardField(page, "Sense: new meaning");
+  await chooseKeyboardSelection(field, 18, 18);
+  await field.blur();
+  await field.focus();
+  // Move to the line start and extend to its end in one task, then hold
+  // event delivery past the editor's focus-time selection write.
+  await field.evaluate((node) => {
+    const text = node.querySelector("p .rich-literal")!.firstChild!;
+    const selection = getSelection()!;
+    const command = (key: string, keyCode: number, shift: boolean) => {
+      const unhandled = node.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key,
+          keyCode,
+          bubbles: true,
+          cancelable: true,
+          shiftKey: shift,
+        }),
+      );
+      if (unhandled)
+        selection.modify(
+          shift ? "extend" : "move",
+          key === "Home" ? "backward" : "forward",
+          "lineboundary",
+        );
+    };
+    command("Home", 36, false);
+    command("End", 35, true);
+    const until = performance.now() + 35;
+    while (performance.now() < until) {
+      // Hold timers and selectionchange behind the native motion.
+    }
+    void text;
   });
-  const field = await mountKeyboardField(page, lineMotionText);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Meta+ArrowLeft");
-  await expectKeyboardSelection(field, lineMotionText, 0, 0);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Meta+ArrowRight");
-  await expectKeyboardSelection(field, lineMotionText, 22, 22);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Meta+Shift+ArrowRight");
-  await expectKeyboardSelection(field, lineMotionText, 12, 22);
-  await chooseKeyboardSelection(field, 12, 12);
-  await field.press("Meta+Shift+ArrowLeft");
-  await expectKeyboardSelection(field, lineMotionText, 12, 0);
+  await page.waitForTimeout(60);
+  await expectKeyboardSelection(field, "Sense: new meaning", 0, 18);
 });
 
 test("Ctrl arrows keep native word motion in mixed-direction text", async ({

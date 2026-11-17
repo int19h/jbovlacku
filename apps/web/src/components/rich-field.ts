@@ -960,7 +960,18 @@ export function richField(label: string, options: RichFieldOptions) {
           return true;
         }
         const type = deletionKey(event);
-        if (!type) return false;
+        if (!type) {
+          // The browser moves the selection for this key after the event.
+          // Sync it into editor state as soon as that move lands, before
+          // the focus-time write-back can restore the previous caret.
+          if (
+            /^(?:Home|End|PageUp|PageDown|Arrow(?:Left|Right|Up|Down))$/u.test(
+              event.key,
+            )
+          )
+            queueMicrotask(syncNativeSelection);
+          return false;
+        }
         const selection = readNativeSelection();
         if (deleteRecovery)
           settleDeleteRecovery(
@@ -1462,6 +1473,19 @@ export function richField(label: string, options: RichFieldOptions) {
   });
   rememberDOM();
   const input = view.dom as RichInput;
+  /**
+   * Read the browser selection into editor state. ProseMirror writes its
+   * tracked selection back to the DOM about 20 ms after the editor takes
+   * focus; a native selection made in that window (a click, Home, an arrow)
+   * is newer than the tracked one and must be in state before the write
+   * runs, or the write restores the caret the reader just moved from.
+   */
+  function syncNativeSelection() {
+    if (view.isDestroyed || view.composing) return;
+    const selection = readNativeSelection();
+    if (selection && !selection.eq(view.state.selection))
+      view.dispatch(view.state.tr.setSelection(selection));
+  }
   function readNativeSelection(): Selection | null {
     const selection = input.ownerDocument.getSelection();
     if (
@@ -1557,6 +1581,13 @@ export function richField(label: string, options: RichFieldOptions) {
       syncLinkAction();
     },
   });
+  // Keep editor state current with the browser selection, so the
+  // focus-time write-back described at syncNativeSelection restores the
+  // selection the reader actually made.
+  view.dom.ownerDocument.addEventListener(
+    "selectionchange",
+    syncNativeSelection,
+  );
   labelNode.addEventListener("click", () => view.focus());
   const insert = (
     node: ReturnType<typeof richEditorSchema.node>,
@@ -2103,6 +2134,10 @@ export function richField(label: string, options: RichFieldOptions) {
     node.showModal();
   }
   onDisconnect(wrapper, () => {
+    view.dom.ownerDocument.removeEventListener(
+      "selectionchange",
+      syncNativeSelection,
+    );
     settlingComposition = false;
     clearOperation();
     if (ownedInput) clearTimeout(ownedInput.timer);
