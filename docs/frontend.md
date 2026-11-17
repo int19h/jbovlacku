@@ -689,7 +689,7 @@ An acute on a recognized nonname or a misplaced acute blocks signing, including 
 An unknown spelling with a valid name mark follows the ordinary experimental classification rules.
 An accented spelling requires the `cmevla` classification, or `lujvo` under the format's [bounded `zei` rule](format.md#definition-payload).
 The app compares its `wordId` with the local language package. Remote lookup requires explicit consent for that word and language.
-An existing word shows “Already exists”, its linked word page, its definitions, and “Add a definition”.
+An existing word shows “Already exists”, its linked word page, its first 100 definitions with a Show all action when it has more, and “Add a definition”.
 Conversion-shaped typed headwords also follow the [place conversion flow](#place-conversions), without an AI request.
 The conversion offer reads “Use te vecnu” for either `te vecnu` or an unambiguous `tervecnu` analysis.
 The author can inspect the conversion, edit the base places, or write a different meaning through the ordinary lujvo or Other path.

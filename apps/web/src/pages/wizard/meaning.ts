@@ -48,7 +48,11 @@ import {
   DRAFT_KEY,
 } from "./common.ts";
 import { assistanceVisibility } from "../../components/assistance.ts";
-import type { DefinitionBody, SearchHit } from "../../model/types.ts";
+import type {
+  DefinitionBody,
+  PackageEntry,
+  SearchHit,
+} from "../../model/types.ts";
 
 function highlightPlaceholders(meaning: string): HTMLElement {
   const node = el("p", { style: "margin-top:4px" });
@@ -360,12 +364,14 @@ export async function meaningPage(
       );
       return;
     }
-    // The status area renders at most this many existing definitions. A word
-    // can carry entries for the whole package, so longer lists offer the
-    // rest on demand instead of rendering every row up front.
+    // The status area renders at most this many existing definitions up
+    // front. A word can carry entries for the whole package, so longer
+    // lists offer the rest on demand and build only the rows they render.
+    // Further rows render in the app's usual 50-row batches.
     const MAX_SHOWN_DEFINITIONS = 100;
+    const SHOW_BATCH = 50;
     const showExisting = (
-      definitions: { event: string; text: string }[],
+      entries: readonly PackageEntry[],
       coverage: string,
     ) => {
       typedStatus.append(
@@ -377,33 +383,70 @@ export async function meaningPage(
           text(`. ${coverage}`),
         ),
       );
-      const appendRows = (rows: { event: string; text: string }[]) => {
-        for (const definition of rows)
-          definitionsList.append(
-            el(
-              "li",
-              {},
-              link(
-                definition.text || "Open this definition",
-                routes.definition(definition.event),
-              ),
-            ),
-          );
-      };
+      // Only rendered rows are built, so initial page work stays bounded by
+      // what the page shows no matter how many entries the word carries.
+      const toRow = (entry: PackageEntry) =>
+        el(
+          "li",
+          { tabindex: "-1" },
+          link(
+            entry.plain_text || "Open this definition",
+            routes.definition(entry.event),
+          ),
+        );
       const definitionsList = el("ul", { class: "small" });
-      appendRows(definitions.slice(0, MAX_SHOWN_DEFINITIONS));
-      if (definitions.length > MAX_SHOWN_DEFINITIONS) {
+      let shown = 0;
+      for (const entry of entries.slice(0, MAX_SHOWN_DEFINITIONS)) {
+        definitionsList.append(toRow(entry));
+        shown += 1;
+      }
+      if (entries.length > MAX_SHOWN_DEFINITIONS) {
         const showAll = button(
-          `Show all ${definitions.length} definitions`,
+          `Show all ${entries.length} definitions`,
           () => {
-            appendRows(definitions.slice(MAX_SHOWN_DEFINITIONS));
-            showAll.remove();
+            void renderRest();
           },
           { class: "btn btn-quiet" },
         );
-        definitionsList.append(
-          el("li", { class: "small" }, showAll),
+        definitionsList.append(el("li", { class: "small" }, showAll));
+      }
+      // One activation renders everything that is left in the app's usual
+      // 50-row batches. Each batch lands in one fragment append, and the
+      // first new row of each batch takes focus — including the final
+      // batch — so keyboard activation never leaves focus on the removed
+      // button or the body. Tasks yield every few batches: yielding after
+      // every batch would pay a paint and layout pass per 50 rows, which
+      // turns a hundred-thousand-row render quadratic.
+      async function renderRest() {
+        const holder = definitionsList.querySelector(
+          ":scope > li:last-child",
         );
+        let opened = false;
+        let sinceYield = 0;
+        while (shown < entries.length) {
+          if (!valid()) return;
+          const fragment = document.createDocumentFragment();
+          let firstRow: HTMLElement | undefined;
+          for (const entry of entries.slice(shown, shown + SHOW_BATCH)) {
+            const row = toRow(entry);
+            if (!firstRow) firstRow = row;
+            fragment.append(row);
+            shown += 1;
+          }
+          definitionsList.append(fragment);
+          if (!opened) {
+            opened = true;
+            holder?.remove();
+          }
+          // Focus stays on the new rows without scrolling the page for
+          // every batch.
+          firstRow?.focus({ preventScroll: true });
+          sinceYield += 1;
+          if (shown < entries.length && sinceYield >= 10) {
+            sinceYield = 0;
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+        }
       }
       typedStatus.append(
         definitionsList,
@@ -422,10 +465,7 @@ export async function meaningPage(
       const entries = packageWordEntries(packageData, id);
       if (entries.length)
         showExisting(
-          entries.map((entry) => ({
-            event: entry.event,
-            text: entry.plain_text,
-          })),
+          entries,
           `Local package for ${draft.language}, snapshot ${packageData.snapshot}.`,
         );
       else

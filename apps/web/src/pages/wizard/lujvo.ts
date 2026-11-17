@@ -52,7 +52,6 @@ import type { CachedPackage, LocalHit } from "../../data/search.ts";
 import {
   cappedHitEntries,
   distinctHitRafsi,
-  HIT_CONTENT_LIMIT,
   searchPackage,
   summarizeHitEntries,
 } from "../../data/package-search.ts";
@@ -373,11 +372,12 @@ export async function lujvoPage(
       const shown = cappedHitEntries(hit);
       const displayRafsi = distinctHitRafsi(shown);
       const hidden = hit.entries.length - shown.length;
-      const pushPart = (
-        definitions: { event: string; summary: string }[],
-        claims: string[],
-      ) => {
+      // The action needs the whole set, as on main: one synchronous step,
+      // so concurrent Adds keep their click order and the component
+      // survives immediate navigation. Nothing is silently truncated.
+      const pushPart = () => {
         const id = wordId({ language: "jbo", spelling: hit.word.spelling });
+        const claims = distinctHitRafsi(hit.entries);
         editLujvoRows(state, (rows) =>
           rows.push({
             id: componentId(),
@@ -385,7 +385,7 @@ export async function lujvoPage(
             kind,
             // A specific definition is recorded only when the author chooses one below.
             definition: null,
-            definitions,
+            definitions: summarizeHitEntries(hit.entries),
             gloss: entry.glosses[0]?.text ?? "",
             claims: claims.map((r) => ({
               rafsi: r,
@@ -416,47 +416,8 @@ export async function lujvoPage(
           : []),
         button(
           "Add",
-          (event) => {
-            // The action needs the whole set, as on main: small hits build
-            // synchronously, large ones in bounded chunks that yield to the
-            // event loop. Nothing is silently truncated either way.
-            if (hit.entries.length <= HIT_CONTENT_LIMIT) {
-              pushPart(
-                summarizeHitEntries(hit.entries),
-                distinctHitRafsi(hit.entries),
-              );
-              return;
-            }
-            const target = event.currentTarget;
-            if (target instanceof HTMLButtonElement) target.disabled = true;
-            const built: { event: string; summary: string }[] = [];
-            const seen = new Set<string>();
-            const claims: string[] = [];
-            void (async () => {
-              try {
-                for (
-                  let start = 0;
-                  start < hit.entries.length;
-                  start += 500
-                ) {
-                  const chunk = hit.entries.slice(start, start + 500);
-                  built.push(...summarizeHitEntries(chunk));
-                  for (const spelling of distinctHitRafsi(chunk)) {
-                    if (seen.has(spelling)) continue;
-                    seen.add(spelling);
-                    claims.push(spelling);
-                  }
-                  await new Promise((resolve) => setTimeout(resolve, 0));
-                }
-                pushPart(built, claims);
-              } finally {
-                addField.input.value = "";
-                addResults.replaceChildren();
-                saver.touch();
-                renderRows();
-                rebuild();
-              }
-            })();
+          () => {
+            pushPart();
           },
           {
             class: "btn btn-quiet",
