@@ -11,6 +11,28 @@ use std::rc::Rc;
 thread_local! {
     static SETUP_LOOKUP_CALLS: Cell<usize> = const { Cell::new(0) };
     static VALIDATED_STRING_BYTES: Cell<usize> = const { Cell::new(0) };
+    static PACKED_VALUE_NODES: Cell<usize> = const { Cell::new(0) };
+    static SERIALIZED_VALUE_BYTES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many serde value nodes have been packed into arenas.
+pub fn packed_value_nodes() -> usize {
+    PACKED_VALUE_NODES.with(Cell::get)
+}
+
+/// Reset the packed-node counter.
+pub fn reset_packed_value_nodes() {
+    PACKED_VALUE_NODES.with(|nodes| nodes.set(0));
+}
+
+/// How many bytes compact-value display serialization produced.
+pub fn serialized_value_bytes() -> usize {
+    SERIALIZED_VALUE_BYTES.with(Cell::get)
+}
+
+/// Reset the serialized-byte counter.
+pub fn reset_serialized_value_bytes() {
+    SERIALIZED_VALUE_BYTES.with(|bytes| bytes.set(0));
 }
 
 /// How many arena string bytes have been validated at load time.
@@ -301,6 +323,7 @@ impl RecordArena {
     }
 
     fn pack_serde(&mut self, value: &Value) -> u32 {
+        PACKED_VALUE_NODES.with(|nodes| nodes.set(nodes.get() + 1));
         if self.error.is_some() {
             return 0;
         }
@@ -798,6 +821,7 @@ impl fmt::Debug for ValueView<'_> {
 impl fmt::Display for ValueView<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let json = serde_json::to_string(self).map_err(|_| fmt::Error)?;
+        SERIALIZED_VALUE_BYTES.with(|bytes| bytes.set(bytes.get() + json.len()));
         formatter.write_str(&json)
     }
 }

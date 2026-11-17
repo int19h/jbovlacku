@@ -350,13 +350,13 @@ fn private_trust_metered(
     };
     let mut trust = Vec::with_capacity(evaluation.trust.len());
     for rule in &evaluation.trust {
-        let values_work: u64 = rule.values.iter().map(|v| v.len() as u64).sum();
-        meter(
-            16 + (rule.actor.len() + rule.subject.len()) as u64 + values_work,
-            0,
-            0,
-            0,
-        )?;
+        meter(16 + (rule.actor.len() + rule.subject.len()) as u64, 0, 0, 0)?;
+        let mut iter = rule.values.iter();
+        loop {
+            meter(4, 0, 0, 0)?;
+            let Some(value) = iter.next() else { break };
+            meter(value.len() as u64, 0, 0, 0)?;
+        }
         trust.push(rule.clone());
     }
     let mut private_weights_by_pair: PrivateWeights = BTreeMap::new();
@@ -373,17 +373,27 @@ fn private_trust_metered(
                 let issuer = resolve(meter, rule["issuer"].as_str().unwrap())?;
                 charge_lookup(meter, obj_len, "subject")?;
                 let subject = resolve(meter, rule["subject"].as_str().unwrap())?;
+                charge_lookup(meter, obj_len, "scope")?;
+                let scope_value = &rule["scope"];
+                let (raw, scope_bytes) = scope_measure(scope_value, meter)?;
+                // Pack and intern repeat this walk; charge their bound
+                // from the counts just measured, before packing.
+                meter(4 * (raw + scope_bytes), 0, 0, 0)?;
                 let scope = CompactValue::from_arena(
                     scope_arena
                         .get_or_insert_with(|| {
                             std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default()))
                         })
                         .clone(),
-                    &rule["scope"],
+                    scope_value,
                 );
                 charge_lookup(meter, obj_len, "value")?;
                 let value = rule["value"].as_str().unwrap();
                 if rule["value"] == "heed" {
+                    charge_lookup(meter, obj_len, "weight")?;
+                    let weight_len = rule["weight"].as_object().map_or(0, |o| o.len());
+                    charge_lookup(meter, weight_len, "numerator")?;
+                    charge_lookup(meter, weight_len, "denominator")?;
                     meter(
                         super::arena::lookup_work(
                             private_weights_by_pair.len() as u64,
@@ -401,9 +411,8 @@ fn private_trust_metered(
                             overlay_rational(&rule["weight"]).unwrap_or_else(Rational::one),
                         ));
                 }
-                charge_lookup(meter, obj_len, "scope")?;
-                let scope_text = rule["scope"].to_string();
-                meter(scope_text.len() as u64, 0, 0, 0)?;
+                meter(json_text_bound(raw, scope_bytes), 0, 0, 0)?;
+                let scope_text = scope_value.to_string();
                 meter(
                     super::arena::lookup_work(
                         private.len() as u64,
@@ -427,8 +436,13 @@ fn private_trust_metered(
             // Remove replaced public registers once before adding private registers.
             let retained = std::mem::take(&mut trust);
             for rule in retained {
+                let mut raw = 0u64;
+                let scope_bytes = rule.scope.view().string_bytes_metered(&mut |steps| {
+                    raw += steps;
+                    meter(4 * steps, 0, 0, 0)
+                })?;
+                meter(json_text_bound(raw, scope_bytes), 0, 0, 0)?;
                 let scope_text = rule.scope.to_string();
-                meter(scope_text.len() as u64, 0, 0, 0)?;
                 meter(
                     super::arena::lookup_work(
                         private.len() as u64,
@@ -605,6 +619,28 @@ pub struct RankingIndexCounts {
 /// key bytes it reads, and walk items that credit their own allowance
 /// without being index entries.
 pub type SetupMeter<'a> = dyn FnMut(u64, u64, u64, u64) -> jvc_core::Result<()> + 'a;
+
+/// Walk a serde scope once, charging four units per meter step before
+/// each node is visited, and return the raw step total and the string
+/// byte total. A later pack, intern, or serialization of the same
+/// scope is bounded by these counts.
+fn scope_measure(value: &Value, meter: &mut SetupMeter<'_>) -> jvc_core::Result<(u64, u64)> {
+    let mut raw = 0u64;
+    let bytes = value_strings_metered(value, &mut |steps, _, _, _| {
+        raw += steps;
+        meter(4 * steps, 0, 0, 0)
+    })?;
+    Ok((raw, bytes))
+}
+
+/// An upper bound on a scope's JSON text length: at most six bytes
+/// per string byte (worst-case escapes) plus 24 bytes of syntax,
+/// digits, and punctuation per walked node.
+fn json_text_bound(raw_steps: u64, string_bytes: u64) -> u64 {
+    raw_steps
+        .saturating_mul(24)
+        .saturating_add(string_bytes.saturating_mul(6))
+}
 
 /// Charge one map or set lookup to the meter before it runs, using the
 /// bound from `lookup_work` for the collection size and lookup key.
@@ -879,20 +915,25 @@ impl ApproximateContextIndex {
             } else {
                 "rafsi"
             };
-            let language = if kind == "definition" {
-                p.language.clone()
+            let language_len = if kind == "definition" {
+                p.language.as_ref().map_or(0, String::len)
             } else {
-                None
+                0
             };
             meter(
                 super::arena::lookup_work(
                     index.targets.len() as u64,
-                    (kind.len() + p.word.len() + language.as_ref().map_or(0, String::len)) as u64,
+                    (kind.len() + p.word.len() + language_len) as u64,
                 ),
                 0,
                 0,
                 0,
             )?;
+            let language = if kind == "definition" {
+                p.language.clone()
+            } else {
+                None
+            };
             let targets = index
                 .targets
                 .entry((kind.into(), p.word.clone(), language))

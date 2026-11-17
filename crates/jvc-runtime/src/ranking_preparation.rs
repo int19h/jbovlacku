@@ -2018,6 +2018,40 @@ mod tests {
         assert!(descriptor.setup.setup_records >= 12_500_001);
     }
     #[test]
+    fn private_scope_pack_and_serialize_are_charged_before_they_run() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let session = restored_with(first, |saved| {
+            let overlay = json!({"trust":[{
+                "issuer": actor,
+                "subject": actor,
+                "value": "heed",
+                "weight": {"numerator": 1, "denominator": 1},
+                "scope": {
+                    "kind": "definition",
+                    "word": "*",
+                    "language": "en",
+                    "extra": vec![0; 100_000],
+                },
+            }]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(500_000);
+        jvc_state::reset_packed_value_nodes();
+        jvc_state::reset_serialized_value_bytes();
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        // The refusal lands on the pack charge, so construction never
+        // packed the scope into an arena or serialized it.
+        assert_eq!(jvc_state::packed_value_nodes(), 0);
+        assert_eq!(jvc_state::serialized_value_bytes(), 0);
+    }
+    #[test]
     fn unavailable_float_skips_the_records_walk() {
         let (first, _word) = session();
         let groups: serde_json::Map<String, Value> = (0..100u32)
