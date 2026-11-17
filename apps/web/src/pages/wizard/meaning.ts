@@ -360,6 +360,10 @@ export async function meaningPage(
       );
       return;
     }
+    // The status area renders at most this many existing definitions. A word
+    // can carry entries for the whole package, so longer lists offer the
+    // rest on demand instead of rendering every row up front.
+    const MAX_SHOWN_DEFINITIONS = 100;
     const showExisting = (
       definitions: { event: string; text: string }[],
       coverage: string,
@@ -373,18 +377,34 @@ export async function meaningPage(
           text(`. ${coverage}`),
         ),
       );
-      const definitionsList = el("ul", { class: "small" });
-      for (const definition of definitions)
-        definitionsList.append(
-          el(
-            "li",
-            {},
-            link(
-              definition.text || "Open this definition",
-              routes.definition(definition.event),
+      const appendRows = (rows: { event: string; text: string }[]) => {
+        for (const definition of rows)
+          definitionsList.append(
+            el(
+              "li",
+              {},
+              link(
+                definition.text || "Open this definition",
+                routes.definition(definition.event),
+              ),
             ),
-          ),
+          );
+      };
+      const definitionsList = el("ul", { class: "small" });
+      appendRows(definitions.slice(0, MAX_SHOWN_DEFINITIONS));
+      if (definitions.length > MAX_SHOWN_DEFINITIONS) {
+        const showAll = button(
+          `Show all ${definitions.length} definitions`,
+          () => {
+            appendRows(definitions.slice(MAX_SHOWN_DEFINITIONS));
+            showAll.remove();
+          },
+          { class: "btn btn-quiet" },
         );
+        definitionsList.append(
+          el("li", { class: "small" }, showAll),
+        );
+      }
       typedStatus.append(
         definitionsList,
         button(

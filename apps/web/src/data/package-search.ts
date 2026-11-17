@@ -1,6 +1,7 @@
 import { packageStorageKey } from "./store.ts";
 import {
   invalidPackage,
+  isV2,
   PackageStorageError,
   type CachedPackage,
   type LocalHit,
@@ -405,6 +406,32 @@ export function cappedHitEntries(
     : hit.entries;
 }
 /**
+ * One definition summary per entry, in entry order. The lujvo Add action
+ * builds from the whole hit, never from a silently truncated list.
+ */
+export function summarizeHitEntries(
+  entries: readonly PackageEntry[],
+): { event: string; summary: string }[] {
+  return entries.map((entry) => ({
+    event: entry.event,
+    summary:
+      entry.glosses.map((gloss) => gloss.text).join(", ") ||
+      // The first 60 code points occupy at most 120 UTF-16 units, so reading
+      // that prefix first is exact and keeps a long entry from stalling the
+      // page.
+      Array.from(entry.plain_text.slice(0, 120)).slice(0, 60).join(""),
+  }));
+}
+/**
+ * Every distinct retained rafsi across entries, in first-occurrence order.
+ * The lujvo claims use the whole hit, so no spelling is silently dropped.
+ */
+export function distinctHitRafsi(entries: readonly PackageEntry[]): string[] {
+  return [
+    ...new Set(entries.flatMap((entry) => (isV2(entry) ? entry.rafsi : []))),
+  ];
+}
+/**
  * A hit's own entry for a result row. Local grouping keeps the preview
  * entry first, so the page reads it in O(1) instead of scanning every entry
  * of the hit. Anything else reports no entry, the same as a missed scan.
@@ -418,11 +445,11 @@ export function previewEntryForHit(
 }
 /**
  * Rows the rafsi page collects from result hits, at most `limit` in visit
- * order, deduplicated across calls through `found`. Returns true when a
- * further spelling exists past the limit, so the caller stops the whole
- * accumulation instead of visiting every remaining spelling through a
- * continue. Hits stay bounded by the request limit and rows by the display
- * limit, so the page's work is bounded by what it renders.
+ * order, deduplicated across calls through `found`. Returns true only when
+ * a further spelling exists past the limit, so the page marks its list
+ * limited exactly when a row was left out. The call stops at that first
+ * omitted spelling and otherwise visits the same spellings as an uncapped
+ * scan, so it never visits more than main would.
  */
 export function takeRafsiRows(
   hits: readonly Pick<LocalHit, "word_id" | "word" | "matchingRafsi">[],

@@ -19,7 +19,9 @@ await initializeCore(
 );
 const {
   cappedHitEntries,
+  distinctHitRafsi,
   previewEntryForHit,
+  summarizeHitEntries,
   takeRafsiRows,
   HIT_CONTENT_LIMIT,
 } = await import("../../src/data/package-search.ts");
@@ -118,6 +120,40 @@ test("rafsi rows deduplicate repeat spellings without filling", () => {
   const refilled = takeRafsiRows(hits as never, "fr", found, 1000);
   assert.equal(refilled, false);
   assert.equal(found.size, 2);
+});
+
+test("part summaries keep every entry in order with bounded text", () => {
+  const entries = [
+    entry(0),
+    { ...entry(1), glosses: [] },
+    { ...entry(2), glosses: [], plain_text: "x".repeat(10000) },
+  ];
+  const rows = summarizeHitEntries(entries as never);
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows[0], {
+    event: entries[0].event,
+    summary: "book",
+  });
+  assert.equal(rows[1].event, entries[1].event);
+  assert.equal(rows[1].summary, "x1 is a book");
+  assert.equal(rows[2].summary, "x".repeat(60));
+  assert.equal(rows[2].summary.length, 60);
+});
+
+test("part rafsi keep every distinct spelling in first-occurrence order", () => {
+  const v2 = (index: number, rafsi: string[]) => ({
+    ...entry(index),
+    issuer: "ed25519:" + "a".repeat(64),
+    notes: false,
+    rafsi,
+    rafsi_complete: true,
+    attribution: null,
+  });
+  const rafsi = distinctHitRafsi(
+    [v2(0, ["raf0", "raf1"]), v2(1, ["raf1", "raf2"]), v2(2, [])] as never,
+  );
+  assert.deepEqual(rafsi, ["raf0", "raf1", "raf2"]);
+  assert.deepEqual(distinctHitRafsi([entry(0)] as never), []);
 });
 
 test("the row entry is the hit's first entry when it previews", () => {

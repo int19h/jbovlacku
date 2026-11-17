@@ -51,9 +51,12 @@ import type { Draft } from "../../model/draft.ts";
 import type { CachedPackage, LocalHit } from "../../data/search.ts";
 import {
   cappedHitEntries,
+  distinctHitRafsi,
+  HIT_CONTENT_LIMIT,
   searchPackage,
+  summarizeHitEntries,
 } from "../../data/package-search.ts";
-import { isV2 } from "../../data/search.ts";
+import { plural } from "../../lib/format.ts";
 import {
   cachedPackage,
   componentId,
@@ -364,10 +367,39 @@ export async function lujvoPage(
       const kind =
         (entry.classification as { kind?: string } | null)?.kind ?? "other";
       // The request bounds hits, not the entries inside each hit: one word
-      // can carry entries for the whole package, so the page reads at most
-      // HIT_CONTENT_LIMIT entries per hit. Real words keep far fewer.
+      // can carry entries for the whole package, so the display reads at
+      // most HIT_CONTENT_LIMIT entries per hit and names how many more the
+      // hit carries. Real words keep far fewer, so their rows are unchanged.
       const shown = cappedHitEntries(hit);
-      const rafsi = shown.flatMap((e) => (isV2(e) ? e.rafsi : []));
+      const displayRafsi = distinctHitRafsi(shown);
+      const hidden = hit.entries.length - shown.length;
+      const pushPart = (
+        definitions: { event: string; summary: string }[],
+        claims: string[],
+      ) => {
+        const id = wordId({ language: "jbo", spelling: hit.word.spelling });
+        editLujvoRows(state, (rows) =>
+          rows.push({
+            id: componentId(),
+            spelling: hit.word.spelling,
+            kind,
+            // A specific definition is recorded only when the author chooses one below.
+            definition: null,
+            definitions,
+            gloss: entry.glosses[0]?.text ?? "",
+            claims: claims.map((r) => ({
+              rafsi: r,
+              pair: rafsiPairId(id, r),
+            })),
+            locked: null,
+          }),
+        );
+        addField.input.value = "";
+        addResults.replaceChildren();
+        saver.touch();
+        renderRows();
+        rebuild();
+      };
       const item = el("li", { class: "similar-item" });
       item.append(
         el("span", { class: "hw", lang: "jbo", text: hit.word.spelling }),
@@ -376,44 +408,55 @@ export async function lujvoPage(
           ` · ${entry.glosses.map((g) => g.text).join(", ") || entry.plain_text.slice(0, 60)}`,
           "meta",
         ),
-        rafsi.length
-          ? text(` · rafsi ${[...new Set(rafsi)].join(", ")}`, "meta")
+        displayRafsi.length
+          ? text(` · rafsi ${displayRafsi.join(", ")}`, "meta")
           : text(" · no listed rafsi", "meta"),
+        ...(hidden > 0
+          ? [text(` · also: ${plural(hidden, "other matching definition")}`, "meta")]
+          : []),
         button(
           "Add",
-          () => {
-            const id = wordId({ language: "jbo", spelling: hit.word.spelling });
-            editLujvoRows(state, (rows) =>
-              rows.push({
-                id: componentId(),
-                spelling: hit.word.spelling,
-                kind,
-                // A specific definition is recorded only when the author chooses one below.
-                definition: null,
-                definitions: shown.map((e) => ({
-                  event: e.event,
-                  summary:
-                    e.glosses.map((g) => g.text).join(", ") ||
-                    // The first 60 code points occupy at most 120 UTF-16
-                    // units, so reading that prefix first is exact and keeps
-                    // a long entry from stalling the page.
-                    Array.from(e.plain_text.slice(0, 120))
-                      .slice(0, 60)
-                      .join(""),
-                })),
-                gloss: entry.glosses[0]?.text ?? "",
-                claims: [...new Set(rafsi)].map((r) => ({
-                  rafsi: r,
-                  pair: rafsiPairId(id, r),
-                })),
-                locked: null,
-              }),
-            );
-            addField.input.value = "";
-            addResults.replaceChildren();
-            saver.touch();
-            renderRows();
-            rebuild();
+          (event) => {
+            // The action needs the whole set, as on main: small hits build
+            // synchronously, large ones in bounded chunks that yield to the
+            // event loop. Nothing is silently truncated either way.
+            if (hit.entries.length <= HIT_CONTENT_LIMIT) {
+              pushPart(
+                summarizeHitEntries(hit.entries),
+                distinctHitRafsi(hit.entries),
+              );
+              return;
+            }
+            const target = event.currentTarget;
+            if (target instanceof HTMLButtonElement) target.disabled = true;
+            const built: { event: string; summary: string }[] = [];
+            const seen = new Set<string>();
+            const claims: string[] = [];
+            void (async () => {
+              try {
+                for (
+                  let start = 0;
+                  start < hit.entries.length;
+                  start += 500
+                ) {
+                  const chunk = hit.entries.slice(start, start + 500);
+                  built.push(...summarizeHitEntries(chunk));
+                  for (const spelling of distinctHitRafsi(chunk)) {
+                    if (seen.has(spelling)) continue;
+                    seen.add(spelling);
+                    claims.push(spelling);
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+                pushPart(built, claims);
+              } finally {
+                addField.input.value = "";
+                addResults.replaceChildren();
+                saver.touch();
+                renderRows();
+                rebuild();
+              }
+            })();
           },
           {
             class: "btn btn-quiet",
