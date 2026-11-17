@@ -17,6 +17,9 @@ const entry = (
 });
 async function seed(page: Page) {
   await page.goto("/");
+  await expect(
+    page.getByText("Type a word or a meaning to search.", { exact: true }),
+  ).toBeVisible();
   await page.evaluate(
     async (entries) => {
       const { LocalStore } = await import(String("/src/data/store.ts"));
