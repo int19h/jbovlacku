@@ -91,6 +91,10 @@ export function watchReaderFocus(
     )
       chosen.add(event.target);
   };
+  // Focus moves made by focus() below are the page's own choice, not the
+  // reader's. Their focusin arrives while focus() runs, so mark the target
+  // first and let onFocus consume the mark instead of recording a choice.
+  const helperFocus = new Set<Element>();
   const onFocus = (event: FocusEvent) => {
     const target = event.target;
     if (
@@ -99,6 +103,7 @@ export function watchReaderFocus(
       target.closest("dialog[open]")
     )
       return;
+    if (helperFocus.delete(target)) return;
     if (!main.contains(target) || readerEvent || isEditable(target))
       chosen.add(target);
   };
@@ -128,8 +133,14 @@ export function watchReaderFocus(
         document.activeElement?.closest("dialog[open]")
       )
         return false;
+      // No focusin fires when the target already has the focus, so only
+      // mark a target that the call will actually move the focus to.
+      if (document.activeElement !== target) helperFocus.add(target);
       target.focus(options);
-      if (document.activeElement !== target) return false;
+      if (document.activeElement !== target) {
+        helperFocus.delete(target);
+        return false;
+      }
       intended.add(target);
       return true;
     },
