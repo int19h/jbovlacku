@@ -329,7 +329,6 @@ Rights remain unknown in this extraction. Local loading grants no publication au
 Large imports need a larger explicit state work budget and enough memory.
 The traversal flag changes the work limit only.
 The loader sets no event-count limit. An operator can set `--max-admitted-events` and `--max-carrier-records` quotas on the load command. Both quotas are off by default.
-When the loader sets a traversal budget for evaluation, it passes only that budget. It does not add an event count.
 The loader completes admission before the server builds its snapshot, indexes, and search packages.
 The SQL loader reads carriers one at a time, projects only final changed event bindings, and stages at most 256 compact records per batch.
 One admission transaction promotes staged rows and accepted events together. Failed admission removes its own staged rows.

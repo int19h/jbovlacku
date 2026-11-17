@@ -177,7 +177,7 @@ test("offline load accepts any carrier order and preserves receipts on rerun", a
     serverId: "loader-test",
     selectedView: loaded.view,
     policyUrl: "https://example.invalid/policy",
-    stateLimits: { traversal: 1, claim_depth: 1024 },
+    stateLimits: { events: 200_000, traversal: 1, claim_depth: 1024 },
   });
   assert.equal(
     (

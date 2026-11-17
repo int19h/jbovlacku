@@ -265,7 +265,7 @@ The SQL `--check-existing` mode requires a copied journal in fresh scratch outpu
 An offline command loads signed carriers, their selection, and their view into a Node data directory. Repeat loads preserve receipt positions.
 The loader sets no total event or carrier-record limit. Optional `--max-admitted-events` and `--max-carrier-records` quotas are off by default.
 The SQL estimate also has no budget by default. An operator can set one with `--budget-bytes`.
-Node startup restores the loaded view and its explicit state work budget. It adds no event count to that budget. The server and loader require exclusive access to that directory.
+Node startup restores the loaded view and its explicit state work budget. The server and loader require exclusive access to that directory.
 Full-capture runs remain separate development evidence, not part of the committed fixture tests.
 The [importer guide](../packages/importer/README.md) describes its input, journal, signing command, and limits.
 

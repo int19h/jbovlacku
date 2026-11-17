@@ -135,7 +135,7 @@ async function withSemanticService<T>(
       stateLimits:
         traversal === undefined
           ? undefined
-          : { traversal, claim_depth: 1024 },
+          : { events: 200000, traversal, claim_depth: 1024 },
       index,
       evaluationRuntime: runtime,
       asyncMaterialization: true,
