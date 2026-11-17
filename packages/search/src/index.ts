@@ -15,6 +15,38 @@ export const SEARCH_QUERY_BYTE_LIMIT = 16_384;
 export const SEARCH_QUERY_WORD_LIMIT = 512;
 export const SEARCH_SEGMENT_WORK_LIMIT = 300_000;
 export const SEARCH_HEADWORD_WORK_LIMIT = 300_000;
+/**
+ * A literal local scan or package preparation may use this much work before
+ * it reports a budget failure instead of running unbounded. One unit is one
+ * scanned entry, one component comparison, or one morphology parser step.
+ * The default completes an ordinary query on a package five times the base
+ * data with wide headroom. A caller can lower or raise it per request.
+ */
+export const SEARCH_LOCAL_WORK_LIMIT = 200_000_000;
+/**
+ * Wall-clock bound for one literal local scan or package preparation, in
+ * milliseconds. Pattern queries keep their own shorter worker deadline.
+ * Preparation runs once per package and dominates the cost: on the measured
+ * host it takes about 70 seconds for a package five times the base data, so
+ * the default keeps wide headroom above that instead of racing it. The work
+ * budget above remains the tight deterministic guard; this deadline only
+ * stops runs whose cost the work count cannot see (a much slower device or
+ * pathological platform behavior).
+ */
+export const SEARCH_LOCAL_DEADLINE_MS = 300_000;
+/** A scan or preparation stopped by its work budget or deadline. */
+export class SearchBudgetError extends Error {
+  constructor(
+    public phase: "prepare" | "search",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+export const SEARCH_BUDGET_MESSAGE =
+  "Local search reached its work or time limit. Use a shorter or more specific query.";
+export const SEARCH_PREPARE_BUDGET_MESSAGE =
+  "Search package preparation reached its work or time limit. The package index is too costly to build on this device. Search this server instead.";
 export type SegmentationStatus = "complete" | "limited";
 export const matchKinds = [
   "headword",
@@ -236,24 +268,78 @@ function prepareEntry(
 export interface SearchIndex<T extends LexicalEntry> {
   rows: { entry: T; indexed: PreparedEntry }[];
 }
+/** Per-request overrides for the literal-search work budget and deadline. */
+export interface SearchBudgetOptions {
+  workLimit?: number;
+  deadlineMs?: number;
+}
+interface SearchBudget {
+  workLimit: number;
+  deadlineMs: number;
+  start: number;
+  entries: number;
+  comparisons: number;
+  parserWork: number;
+}
+const takeBudget = (
+  metrics: SearchMetrics,
+  options?: SearchBudgetOptions,
+): SearchBudget => ({
+  workLimit: options?.workLimit ?? SEARCH_LOCAL_WORK_LIMIT,
+  deadlineMs: options?.deadlineMs ?? SEARCH_LOCAL_DEADLINE_MS,
+  start: Date.now(),
+  entries: metrics.entries,
+  comparisons: metrics.componentComparisons,
+  parserWork: metrics.queryParserWork + metrics.headwordParserWork,
+});
+const chargeBudget = (
+  budget: SearchBudget,
+  metrics: SearchMetrics,
+  phase: SearchBudgetError["phase"],
+) => {
+  const work =
+    metrics.entries -
+    budget.entries +
+    (metrics.componentComparisons - budget.comparisons) +
+    (metrics.queryParserWork +
+      metrics.headwordParserWork -
+      budget.parserWork);
+  if (work > budget.workLimit)
+    throw new SearchBudgetError(
+      phase,
+      phase === "prepare"
+        ? SEARCH_PREPARE_BUDGET_MESSAGE
+        : SEARCH_BUDGET_MESSAGE,
+    );
+  if (Date.now() - budget.start > budget.deadlineMs)
+    throw new SearchBudgetError(
+      phase,
+      phase === "prepare"
+        ? SEARCH_PREPARE_BUDGET_MESSAGE
+        : SEARCH_BUDGET_MESSAGE,
+    );
+};
 const preparedIndexes = new WeakMap<object, SearchIndex<LexicalEntry>>();
 /** The caller retains an immutable array for its package or materialized generation. */
 export function prepareIndex<T extends LexicalEntry>(
   entries: readonly T[],
   metrics?: SearchMetrics,
+  budget?: SearchBudgetOptions,
 ): SearchIndex<T> {
   const previous = preparedIndexes.get(entries);
   if (previous) return previous as SearchIndex<T>;
-  const index = {
-    rows: entries.map((entry) => ({
-      entry,
-      indexed: prepareEntry(entry, metrics),
-    })),
-  };
+  const measured = metrics ?? searchMetrics();
+  const limit = takeBudget(measured, budget);
+  const rows = entries.map((entry, index) => {
+    if (index % 1024 === 0) chargeBudget(limit, measured, "prepare");
+    return { entry, indexed: prepareEntry(entry, measured) };
+  });
+  chargeBudget(limit, measured, "prepare");
+  const index = { rows };
   preparedIndexes.set(entries, index);
   return index;
 }
-export interface SearchOptions {
+export interface SearchOptions extends SearchBudgetOptions {
   patterns?: boolean;
   group?: SearchGroup;
   includeRetired?: boolean;
@@ -365,9 +451,14 @@ export function selectRafsiMatches<T extends LexicalEntry>(
       ? compilePattern(query)
       : null;
   const rows: LexicalMatch<T>[] = [];
+  const measured = metrics ?? searchMetrics();
+  const limit = takeBudget(measured, options);
   try {
+    let scanned = 0;
     for (const entry of entries) {
-      if (metrics) metrics.entries++;
+      measured.entries++;
+      if (scanned % 1024 === 0) chargeBudget(limit, measured, "search");
+      scanned++;
       const rafsi = (entry.rafsi ?? []).filter((spelling) =>
         pattern
           ? pattern.test(spelling)
@@ -376,6 +467,7 @@ export function selectRafsiMatches<T extends LexicalEntry>(
       if (rafsi.length)
         rows.push({ entry, match: "rafsi-pattern", position: 0, rafsi });
     }
+    chargeBudget(limit, measured, "search");
     return { rows, segmentation: "complete" as const };
   } finally {
     pattern?.free();
@@ -393,6 +485,8 @@ export function selectMatches<T extends LexicalEntry>(
   segmentation: SegmentationStatus;
   allLojban: boolean;
 } {
+  const measured = metrics ?? searchMetrics();
+  const limit = takeBudget(measured, options);
   const prepared =
     typeof query === "string" ? prepareQuery(query, metrics, options) : query;
   const rows: LexicalMatch<T>[] = [];
@@ -401,8 +495,11 @@ export function selectMatches<T extends LexicalEntry>(
     try {
       const source =
         "rows" in entries ? entries.rows.map(({ entry }) => entry) : entries;
+      let scanned = 0;
       for (const entry of source) {
-        if (metrics) metrics.entries++;
+        measured.entries++;
+        if (scanned % 1024 === 0) chargeBudget(limit, measured, "search");
+        scanned++;
         if (!accept(entry)) continue;
         const headword = pattern.test(entry.word.spelling);
         // Scan every retained rafsi, even after a match, under the same budget.
@@ -416,6 +513,7 @@ export function selectMatches<T extends LexicalEntry>(
             position: 0,
           });
       }
+      chargeBudget(limit, measured, "search");
       return {
         rows: options.group === "definitions" ? [] : rows,
         segmentation: "complete",
@@ -445,13 +543,16 @@ export function selectMatches<T extends LexicalEntry>(
     "rows" in entries
       ? entries.rows
       : Array.isArray(entries)
-        ? prepareIndex(entries, metrics).rows
+        ? prepareIndex(entries, metrics, options).rows
         : (function* () {
             for (const entry of entries as Iterable<T>)
               yield { entry, indexed: prepareEntry(entry, metrics) };
           })();
+  let scanned = 0;
   for (const { entry, indexed: index } of source) {
-    if (metrics) metrics.entries++;
+    measured.entries++;
+    if (scanned % 1024 === 0) chargeBudget(limit, measured, "search");
+    scanned++;
     if (!accept(entry)) continue;
     if (!options.knownWord || options.knownWord(entry)) {
       if (index.knownSpelling && querySpellings.has(index.knownSpelling))
@@ -519,6 +620,7 @@ export function selectMatches<T extends LexicalEntry>(
     )
       rows.push({ entry, match: "component", position });
   }
+  chargeBudget(limit, measured, "search");
   return {
     rows,
     segmentation,

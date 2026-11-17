@@ -121,9 +121,9 @@ test("hash-correct packages reject malformed descriptors and every entry field b
         { name: "negative count", descriptor: { count: -1 } },
         { name: "fractional count", descriptor: { count: 1.5 } },
         { name: "missing hash", descriptor: { hash: null } },
-        { name: "too many parts", parts: 129 },
-        { name: "too many bytes", parts: 33, huge: true },
-        { name: "too many entries", parts: 101, many: true },
+        { name: "part over 4 MiB", descriptor: { bytes: 4194305 } },
+        { name: "part over 2000 entries", descriptor: { count: 2001 } },
+        { name: "manifest over 1 MiB", manifestBytes: 1048577 },
         ...[
           "event",
           "word",
@@ -173,7 +173,7 @@ test("hash-correct packages reject malformed descriptors and every entry field b
             {
               language: "en",
               hash: core.contentHash(pkgBytes),
-              bytes: pkgBytes.length,
+              bytes: scenario.manifestBytes ?? pkgBytes.length,
             },
           ],
         };
@@ -217,6 +217,282 @@ test("hash-correct packages reject malformed descriptors and every entry field b
       result.name !== "valid",
   ))
     expect(result.partRequests, result.name).toBe(0);
+});
+
+test("a valid package above the old per-language totals downloads and searches", async ({
+  page,
+}) => {
+  test.setTimeout(240000);
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { downloadPackage, localSearch } = await import(
+      String("/src/data/search.ts")
+    );
+    const snapshot = "sha256:" + "a".repeat(64);
+    const bytes = (value: unknown) =>
+      core.utf8(core.canonicalize(core.utf8(JSON.stringify(value))));
+    const event = (index: number) =>
+      "jve1:" + index.toString(16).padStart(64, "0");
+    // 200 parts of one entry each: above the old 128-part total.
+    const parts: { hash: string; bytes: number; count: number }[] = [];
+    const partByHash = new Map<string, Uint8Array>();
+    for (let index = 0; index < 200; index++) {
+      const partBytes = bytes([
+        {
+          event: event(index + 1),
+          word: { language: "jbo", spelling: "broda" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "x1 is a book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        },
+      ]);
+      parts.push({
+        hash: core.contentHash(partBytes),
+        bytes: partBytes.length,
+        count: 1,
+      });
+      partByHash.set(core.contentHash(partBytes), partBytes);
+    }
+    const pkgBytes = core.utf8(
+      JSON.stringify({ version: 1, language: "en", snapshot, parts }),
+    );
+    const manifest = {
+      snapshot,
+      packages: [
+        {
+          language: "en",
+          hash: core.contentHash(pkgBytes),
+          bytes: pkgBytes.length,
+        },
+      ],
+    };
+    const oldFetch = window.fetch;
+    let partRequests = 0;
+    window.fetch = async (url) => {
+      if (String(url).endsWith("/manifest"))
+        return new Response(JSON.stringify(manifest));
+      if (String(url).includes("/package-parts/")) {
+        partRequests++;
+        const hash = decodeURIComponent(String(url).split("/package-parts/")[1]);
+        return new Response(partByHash.get(hash) ?? new Uint8Array());
+      }
+      return new Response(pkgBytes);
+    };
+    try {
+      const pkg = await downloadPackage("en");
+      const hits = localSearch(pkg.entries, "book");
+      return {
+        entries: pkg.entries.length,
+        partRequests,
+        groups: hits.length,
+        definitions: hits[0]?.definitions.length ?? 0,
+      };
+    } finally {
+      window.fetch = oldFetch;
+    }
+  }, corePath);
+  expect(result.entries).toBe(200);
+  expect(result.partRequests).toBe(200);
+  expect(result.groups).toBe(1);
+  expect(result.definitions).toBe(200);
+});
+
+test("a valid package above 200,000 entries and 128 MiB downloads", async ({
+  page,
+}) => {
+  test.setTimeout(300000);
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { downloadPackage, localSearch } = await import(
+      String("/src/data/search.ts")
+    );
+    const snapshot = "sha256:" + "a".repeat(64);
+    const bytes = (value: unknown) =>
+      core.utf8(core.canonicalize(core.utf8(JSON.stringify(value))));
+    const padding = "x".repeat(480);
+    let serial = 0;
+    const partBlobs: { hash: string; bytes: number; count: number }[] = [];
+    const partByHash = new Map<string, Uint8Array>();
+    // 101 parts of 2,000 entries: 202,000 entries and about 140 MiB,
+    // above both old totals while each part keeps the 4 MiB bound.
+    let totalBytes = 0;
+    for (let part = 0; part < 101; part++) {
+      const data = [];
+      for (let index = 0; index < 2000; index++) {
+        serial++;
+        data.push({
+          event: "jve1:" + serial.toString(16).padStart(64, "0"),
+          word: { language: "jbo", spelling: "broda" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: `x1 is a book ${padding}`,
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        });
+      }
+      const partBytes = bytes(data);
+      totalBytes += partBytes.length;
+      partBlobs.push({
+        hash: core.contentHash(partBytes),
+        bytes: partBytes.length,
+        count: data.length,
+      });
+      partByHash.set(core.contentHash(partBytes), partBytes);
+    }
+    const pkgBytes = core.utf8(
+      JSON.stringify({ version: 1, language: "en", snapshot, parts: partBlobs }),
+    );
+    const manifest = {
+      snapshot,
+      packages: [
+        {
+          language: "en",
+          hash: core.contentHash(pkgBytes),
+          bytes: pkgBytes.length,
+        },
+      ],
+    };
+    const oldFetch = window.fetch;
+    let partRequests = 0;
+    window.fetch = async (url) => {
+      if (String(url).endsWith("/manifest"))
+        return new Response(JSON.stringify(manifest));
+      if (String(url).includes("/package-parts/")) {
+        partRequests++;
+        const hash = decodeURIComponent(String(url).split("/package-parts/")[1]);
+        return new Response(partByHash.get(hash) ?? new Uint8Array());
+      }
+      return new Response(pkgBytes);
+    };
+    try {
+      const pkg = await downloadPackage("en");
+      const hits = localSearch(pkg.entries, "book");
+      return {
+        entries: pkg.entries.length,
+        partRequests,
+        totalBytes,
+        groups: hits.length,
+      };
+    } finally {
+      window.fetch = oldFetch;
+    }
+  }, corePath);
+  expect(result.entries).toBe(202000);
+  expect(result.partRequests).toBe(101);
+  expect(result.totalBytes).toBeGreaterThan(134217728);
+  expect(result.groups).toBe(1);
+});
+
+test("storage-full and configured-quota failures name their own cause", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { downloadPackage, reportPackageError } = await import(
+      String("/src/data/search.ts")
+    );
+    const snapshot = "sha256:" + "a".repeat(64);
+    const entry = {
+      event: "jve1:" + "b".repeat(64),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    };
+    const second = { ...entry, event: "jve1:" + "c".repeat(64) };
+    const bytes = (value: unknown) =>
+      core.utf8(core.canonicalize(core.utf8(JSON.stringify(value))));
+    const partBytes = bytes([entry, second]);
+    const pkgBytes = core.utf8(
+      core.canonicalize(
+        core.utf8(
+          JSON.stringify({
+            version: 1,
+            language: "en",
+            snapshot,
+            parts: [
+              {
+                hash: core.contentHash(partBytes),
+                bytes: partBytes.length,
+                count: 2,
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    const manifest = {
+      snapshot,
+      packages: [
+        {
+          language: "en",
+          hash: core.contentHash(pkgBytes),
+          bytes: pkgBytes.length,
+        },
+      ],
+    };
+    const oldFetch = window.fetch;
+    const outcomes: string[] = [];
+    try {
+      // The platform reports no room mid-download.
+      window.fetch = async (url) => {
+        if (String(url).endsWith("/manifest"))
+          return new Response(JSON.stringify(manifest));
+        if (String(url).includes("/package-parts/"))
+          throw new DOMException("Persistent storage is full.", "QuotaExceededError");
+        return new Response(pkgBytes);
+      };
+      try {
+        await downloadPackage("en");
+        outcomes.push("storage: resolved");
+      } catch (error) {
+        outcomes.push(`storage: ${(error as Error).message}`);
+      }
+      // A configured quota below the package size.
+      window.fetch = async (url) => {
+        if (String(url).endsWith("/manifest"))
+          return new Response(JSON.stringify(manifest));
+        if (String(url).includes("/package-parts/"))
+          return new Response(partBytes);
+        return new Response(pkgBytes);
+      };
+      try {
+        await downloadPackage("en", { packageQuota: { entries: 1 } });
+        outcomes.push("quota: resolved");
+      } catch (error) {
+        outcomes.push(`quota: ${(error as Error).message}`);
+      }
+      // A quota above the package size changes nothing.
+      const pkg = await downloadPackage("en", {
+        packageQuota: { parts: 4, entries: 10, bytes: 1 << 20 },
+      });
+      outcomes.push(`unlimited: ${pkg.entries.length}`);
+      // The save path maps the same platform failure to the same message.
+      outcomes.push(
+        `save: ${reportPackageError(new DOMException("Full.", "QuotaExceededError")).message}`,
+      );
+      outcomes.push(`passthrough: ${reportPackageError(new Error("Nope.")).message}`);
+      return outcomes;
+    } finally {
+      window.fetch = oldFetch;
+    }
+  }, corePath);
+  expect(result[0]).toContain("does not fit");
+  expect(result[0]).not.toContain("invalid");
+  expect(result[1]).toContain("quota");
+  expect(result[2]).toBe("unlimited: 2");
+  expect(result[3]).toContain("does not fit");
+  expect(result[4]).toBe("passthrough: Nope.");
 });
 
 test("an invalid cached package is reported and server search stays usable", async ({

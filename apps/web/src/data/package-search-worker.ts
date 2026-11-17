@@ -53,6 +53,10 @@ self.onmessage = ({ data }) => {
         return;
       }
       const metrics = searchMetrics();
+      const budget = {
+        workLimit: data.options?.workLimit,
+        deadlineMs: data.options?.deadlineMs,
+      };
       if (data.pkg) {
         try {
           validateCachedPackage(data.pkg, data.language);
@@ -65,7 +69,9 @@ self.onmessage = ({ data }) => {
           });
           return;
         }
-        prepareIndex(data.pkg.entries, metrics);
+        // Preparation shares the request's work budget and deadline, so an
+        // unbounded package fails here instead of hanging the worker.
+        prepareIndex(data.pkg.entries, metrics, budget);
         const pkg: CachedPackage = data.pkg;
         packages.set(data.key, {
           pkg,
@@ -114,6 +120,8 @@ self.onmessage = ({ data }) => {
             view: options.view,
             packageView: stored.pkg.search_view,
             includeRetired: options.includeRetired,
+            workLimit: options.workLimit,
+            deadlineMs: options.deadlineMs,
           }),
         ),
       );

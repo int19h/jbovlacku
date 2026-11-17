@@ -1,5 +1,10 @@
 import { packageStorageKey } from "./store.ts";
 import {
+  invalidPackage,
+  type CachedPackage,
+  type LocalHit,
+} from "./search.ts";
+import {
   isPatternQuery,
   PatternError,
 } from "../../../../packages/search/src/index.ts";
@@ -8,7 +13,6 @@ import {
   PATTERN_WORKER_TIMEOUT_MS,
 } from "../../../../packages/search/src/pattern.ts";
 /** Saved-package validation and lexical work run in one static module worker. */
-import type { CachedPackage, LocalHit } from "./search.ts";
 import type {
   SegmentationStatus,
   SearchMetrics,
@@ -35,6 +39,14 @@ export interface PackageSearchOptions {
   patterns?: boolean;
   /** Match retained rafsi spellings instead of headwords. */
   rafsiOnly?: boolean;
+  /**
+   * Per-request literal-search work budget in work units. Defaults to
+   * SEARCH_LOCAL_WORK_LIMIT, which completes an ordinary query on a package
+   * five times the base data with wide headroom.
+   */
+  workLimit?: number;
+  /** Per-request literal-search and preparation deadline in milliseconds. */
+  deadlineMs?: number;
   signal?: AbortSignal;
 }
 /** References belong to the exact immutable package captured by the request. */
@@ -161,9 +173,7 @@ export async function searchPackage(
 ): Promise<PackageSearchResult> {
   options.signal?.throwIfAborted();
   if (!pkg || typeof pkg !== "object" || Array.isArray(pkg))
-    throw new PackageValidationError(
-      "The search package is invalid or exceeds the browser limit. Search this server or download another package.",
-    );
+    throw new PackageValidationError(invalidPackage().message);
   const { signal, ...workerOptions } = options;
   let identity: string | number | undefined =
     packageStorageKey(pkg) ?? packageIds.get(pkg);

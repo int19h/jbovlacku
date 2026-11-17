@@ -94,7 +94,15 @@ export const PACKAGE_RAFSI_LIMIT = 64;
 export function isV2(entry: PackageEntry): entry is PackageEntryV2 {
   return "issuer" in entry;
 }
-const PACKAGE_LIMITS = { parts: 128, bytes: 134217728, entries: 200000 };
+/**
+ * Per-artifact bounds (W07). A package manifest is one HTTP object of at most
+ * 1 MiB. A part is one HTTP object of at most 4 MiB and 2,000 entries. There
+ * is no per-language total: a valid package of any part, entry, or byte count
+ * downloads. An optional download quota can cap one download when configured.
+ */
+const MANIFEST_BYTE_LIMIT = 1048576;
+const PART_BYTE_LIMIT = 4194304;
+const PART_ENTRY_LIMIT = 2000;
 function fields(value: unknown, names: string[]): value is Record<string, any> {
   return (
     value !== null &&
@@ -109,10 +117,53 @@ const count = (value: unknown, maximum: number): value is number =>
   Number.isSafeInteger(value) &&
   value >= 0 &&
   value <= maximum;
-const invalidPackage = () =>
+/**
+ * A downloaded package that fails shape checks is malformed. This error never
+ * covers a valid large package: per-language totals were removed, so size
+ * alone never rejects a package. A package that fails for a physical reason
+ * (storage full, out of memory) reports PackageStorageError instead, and a
+ * configured quota reports PackageQuotaError.
+ */
+export const invalidPackage = () =>
   new Error(
-    "The search package is invalid or exceeds the browser limit. Search this server or download another package.",
+    "The search package is invalid. Search this server or download another package.",
   );
+/** A package download or save that the device cannot fit. */
+export class PackageStorageError extends Error {
+  constructor(
+    message = "The search package does not fit in this browser's storage or memory. Free space and try again, or search this server.",
+  ) {
+    super(message);
+  }
+}
+/** A package download that a configured quota stops. */
+export class PackageQuotaError extends Error {}
+const quotaMessage = (kind: string, used: number, allowed: number) =>
+  new PackageQuotaError(
+    `The search package exceeds the configured package quota of ${allowed} ${kind} (has ${used}). Raise the quota or search this server.`,
+  );
+/** Maps a platform failure to its own message; every other error passes through. */
+export function reportPackageError(error: unknown): Error {
+  if (
+    error instanceof Error &&
+    (error as { name?: string } | null)?.name === "QuotaExceededError"
+  )
+    return new PackageStorageError();
+  return error instanceof Error ? error : new Error(String(error));
+}
+/**
+ * Optional per-download package quota. Every bound is off by default
+ * (undefined). Set a bound to cap one download; the download then fails with
+ * PackageQuotaError instead of consuming unbounded memory or storage.
+ */
+export interface PackageQuota {
+  parts?: number;
+  entries?: number;
+  bytes?: number;
+}
+export interface PackageDownloadOptions extends RequestOptions {
+  packageQuota?: PackageQuota;
+}
 const V1_FIELDS = [
   "event",
   "word",
@@ -243,7 +294,6 @@ export function validateCachedPackage(
     ) ||
     !hashId(value.snapshot) ||
     !Array.isArray(value.entries) ||
-    value.entries.length > PACKAGE_LIMITS.entries ||
     !(
       value.version === undefined ||
       value.version === 1 ||
@@ -274,21 +324,21 @@ export function validateCachedPackage(
  */
 export async function downloadPackage(
   language: string,
-  options: RequestOptions = {},
+  options: PackageDownloadOptions = {},
 ): Promise<CachedPackage> {
   try {
     return await downloadVersion(language, options, null);
   } catch (error) {
     // A version 2 package that the server advertised and that failed its
     // checks does not block search. The version 1 package is used instead,
-    // and the cached package records why. A network failure or a cancel is
-    // reported as it is.
+    // and the cached package records why. A network failure, a cancel, a
+    // physical failure, or a configured quota is reported as it is.
     if (
       !(error instanceof PackageVersionError) ||
       error.version !== 2 ||
       options.signal?.aborted
     )
-      throw error;
+      throw reportPackageError(error);
     const reason = error.message;
     return downloadVersion(language, options, reason);
   }
@@ -304,7 +354,7 @@ export class PackageVersionError extends Error {
 }
 async function downloadVersion(
   language: string,
-  options: RequestOptions,
+  options: PackageDownloadOptions,
   downgrade: string | null,
 ): Promise<CachedPackage> {
   const deadline = AbortSignal.timeout(120000);
@@ -317,7 +367,7 @@ async function downloadVersion(
       "Search packages are temporarily unavailable. The service cannot evaluate publication receipts.",
     );
   for (const descriptor of manifest.packages)
-    if (!count(descriptor.bytes, 1048576)) throw invalidPackage();
+    if (!count(descriptor.bytes, MANIFEST_BYTE_LIMIT)) throw invalidPackage();
   const versions = Array.isArray(manifest.package_versions)
     ? manifest.package_versions
     : [];
@@ -327,7 +377,7 @@ async function downloadVersion(
       !fields(descriptor, ["language", "version", "hash", "bytes"]) ||
       !languageTag(descriptor.language) ||
       !hashId(descriptor.hash) ||
-      !count(descriptor.bytes, 1048576) ||
+      !count(descriptor.bytes, MANIFEST_BYTE_LIMIT) ||
       !Number.isSafeInteger(descriptor.version)
     )
       throw invalidPackage();
@@ -353,14 +403,18 @@ async function downloadVersion(
     return { snapshot: manifest.snapshot, version, ...downloaded, downgrade };
   } catch (error) {
     // Only a package that fails its checks names a version. A transport
-    // failure, a server error, or a cancel is reported as it is, and no
-    // other version is requested in its place.
+    // failure, a server error, a cancel, a physical failure, or a configured
+    // quota is reported as it is, and no other version is requested in its
+    // place.
+    const reported = reportPackageError(error);
     if (
-      error instanceof TransportError ||
-      error instanceof RequestError ||
-      (error instanceof Error && error.name === "AbortError")
+      reported instanceof TransportError ||
+      reported instanceof RequestError ||
+      reported instanceof PackageStorageError ||
+      reported instanceof PackageQuotaError ||
+      (reported instanceof Error && reported.name === "AbortError")
     )
-      throw error;
+      throw reported;
     throw new PackageVersionError(
       version,
       error instanceof Error ? error.message : String(error),
@@ -373,13 +427,14 @@ async function downloadEntries(
   version: 1 | 2,
   snapshot: string,
   advertised: { hash: string; bytes: number },
-  options: RequestOptions,
+  options: PackageDownloadOptions,
 ): Promise<Pick<CachedPackage, "entries" | "search_view">> {
   const signal = options.signal;
+  const quota = options.packageQuota;
   const manifest = { snapshot };
   const raw = await objectBytes(
     `/packages/${encodeURIComponent(language)}?snapshot=${encodeURIComponent(manifest.snapshot)}${version === 2 ? "&version=2" : ""}`,
-    1048576,
+    MANIFEST_BYTE_LIMIT,
     { ...options, signal },
   );
   if (raw.length !== advertised.bytes || contentHash(raw) !== advertised.hash)
@@ -403,10 +458,12 @@ async function downloadEntries(
     pkg.version !== version ||
     pkg.language !== language ||
     pkg.snapshot !== manifest.snapshot ||
-    !Array.isArray(pkg.parts) ||
-    pkg.parts.length > PACKAGE_LIMITS.parts
+    !Array.isArray(pkg.parts)
   )
     throw invalidPackage();
+  // No per-language totals: any part count downloads unless a quota caps it.
+  if (quota?.parts !== undefined && pkg.parts.length > quota.parts)
+    throw quotaMessage("parts", pkg.parts.length, quota.parts);
   let totalBytes = 0;
   let totalEntries = 0;
   const hashes = new Set<string>();
@@ -414,44 +471,51 @@ async function downloadEntries(
     if (
       !fields(part, ["hash", "bytes", "count"]) ||
       !hashId(part.hash) ||
-      !count(part.bytes, 4194304) ||
+      !count(part.bytes, PART_BYTE_LIMIT) ||
       part.bytes < 2 ||
-      !count(part.count, 2000) ||
+      !count(part.count, PART_ENTRY_LIMIT) ||
       hashes.has(part.hash)
     )
       throw invalidPackage();
     hashes.add(part.hash);
     totalBytes += part.bytes;
     totalEntries += part.count;
-    if (
-      totalBytes > PACKAGE_LIMITS.bytes ||
-      totalEntries > PACKAGE_LIMITS.entries
-    )
-      throw invalidPackage();
+    if (quota?.bytes !== undefined && totalBytes > quota.bytes)
+      throw quotaMessage("bytes", totalBytes, quota.bytes);
+    if (quota?.entries !== undefined && totalEntries > quota.entries)
+      throw quotaMessage("entries", totalEntries, quota.entries);
   }
   const entries: PackageEntry[] = [];
   let previous = "";
-  for (const part of pkg.parts) {
-    const bytes = await objectBytes(
-      `/package-parts/${encodeURIComponent(part.hash)}`,
-      4194304,
-      { ...options, signal },
-    );
-    if (bytes.length !== part.bytes || contentHash(bytes) !== part.hash)
-      throw new Error(
-        "The search part hash did not match. Search this server or download another package.",
+  try {
+    for (const part of pkg.parts) {
+      const bytes = await objectBytes(
+        `/package-parts/${encodeURIComponent(part.hash)}`,
+        PART_BYTE_LIMIT,
+        { ...options, signal },
       );
-    const data = JSON.parse(canonicalize(bytes));
-    if (!Array.isArray(data) || data.length !== part.count)
-      throw invalidPackage();
-    for (const entry of data) {
-      validateEntry(entry, language, version, pkg.search_view);
-      if (pkg.search_view && typeof entry.search_status !== "string")
+      if (bytes.length !== part.bytes || contentHash(bytes) !== part.hash)
+        throw new Error(
+          "The search part hash did not match. Search this server or download another package.",
+        );
+      const data = JSON.parse(canonicalize(bytes));
+      if (!Array.isArray(data) || data.length !== part.count)
         throw invalidPackage();
-      if (entry.event <= previous) throw invalidPackage();
-      previous = entry.event;
-      entries.push(entry);
+      for (const entry of data) {
+        validateEntry(entry, language, version, pkg.search_view);
+        if (pkg.search_view && typeof entry.search_status !== "string")
+          throw invalidPackage();
+        if (entry.event <= previous) throw invalidPackage();
+        previous = entry.event;
+        entries.push(entry);
+      }
     }
+  } catch (error) {
+    // Growing the retained entry array without a per-language total can
+    // exhaust memory on a small device. That physical failure keeps its own
+    // message instead of looking malformed.
+    if (error instanceof RangeError) throw new PackageStorageError();
+    throw error;
   }
   return {
     entries,
