@@ -210,6 +210,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         args.remove(0);
     }
+    // The flag is supported only before the command. A later occurrence
+    // gets a clear error, before any other argument parsing sees it.
+    if args
+        .iter()
+        .any(|a| a == "--input-limit" || a.starts_with("--input-limit="))
+    {
+        return Err("--input-limit must come before the command".into());
+    }
     if args.len() >= 6
         && args[0] == "import"
         && args[2] == "--format"

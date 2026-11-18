@@ -496,3 +496,88 @@ fn cli_input_limit_is_rejected_without_a_file_argument() {
         ],
     ));
 }
+
+#[test]
+fn cli_input_limit_after_the_command_names_the_flag() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let (snapshot, _, _) = fixture();
+    fs::write(root.join("records.jsonl"), snapshot.to_jsonl().unwrap()).unwrap();
+    fs::write(root.join("null.json"), b"null").unwrap();
+    fs::write(root.join("policy.json"), b"{}").unwrap();
+    fs::write(root.join("selection.json"), b"[]").unwrap();
+    success(cli(
+        root,
+        &[
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "full",
+        ],
+    ));
+    for args in [
+        vec!["canonicalize", "null.json", "--input-limit", "0"],
+        vec!["canonicalize", "null.json", "--input-limit=0"],
+        vec!["canonicalize", "--input-limit", "0", "null.json"],
+        vec!["canonicalize", "--input-limit=0", "null.json"],
+        vec!["validate", "full", "--input-limit", "0"],
+        vec!["validate", "full", "--input-limit=0"],
+        vec!["--help", "--input-limit", "0"],
+        vec!["--help", "--input-limit=0"],
+        vec![
+            "retain",
+            "full",
+            "--policy",
+            "policy.json",
+            "--output",
+            "filtered",
+            "--input-limit",
+            "1",
+        ],
+        vec![
+            "retain",
+            "full",
+            "--policy",
+            "policy.json",
+            "--output",
+            "filtered",
+            "--input-limit=1",
+        ],
+        vec![
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "again",
+            "--selection",
+            "selection.json",
+            "--input-limit",
+            "1",
+        ],
+        vec![
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "again",
+            "--selection",
+            "selection.json",
+            "--input-limit=1",
+        ],
+    ] {
+        let output = cli(root, &args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("--input-limit must come before the command"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(!root.join("filtered").exists());
+    assert!(!root.join("again").exists());
+}
