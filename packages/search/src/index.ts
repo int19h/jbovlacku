@@ -293,22 +293,20 @@ function indexedComponents(
   let sequence: Components | null = null;
   let limited = false;
   if (metrics) metrics.headwordsParsed++;
+  // The parser runs on at most the remaining shared allowance, never on its
+  // own independent cap alone. The parser counts a refusing step in its own
+  // totals, so only the allowance is added to the shared budget.
+  const cap = Math.min(SEARCH_HEADWORD_WORK_LIMIT, allowance);
   try {
-    // The parser runs on at most the remaining shared allowance, never on
-    // its own independent cap alone: with no allowance left, the first step
-    // already refuses and charges nothing.
-    const result = components(
-      spelling,
-      Math.min(SEARCH_HEADWORD_WORK_LIMIT, allowance),
-      256,
-    );
-    if (metrics) metrics.headwordParserWork += result.parsed.spent;
+    const result = components(spelling, cap, 256);
+    if (metrics) metrics.headwordParserWork += Math.min(result.parsed.spent, cap);
     if (!result.parsed.foreign.length && result.value.cmavo)
       sequence = result.value;
   } catch (error) {
     if (!(error instanceof BuilderError)) throw error;
     limited = error.failure.kind === "resource-limit";
-    if (metrics) metrics.headwordParserWork += error.failure.value ?? 0;
+    if (metrics)
+      metrics.headwordParserWork += Math.min(error.failure.value ?? 0, cap);
   }
   const result = { components: sequence, limited };
   // A limit reached under a tight allowance must not poison later requests:
@@ -548,15 +546,15 @@ export function prepareQuery(
     result.segmentation = "limited";
     return result;
   }
+  // The query parser runs on at most the remaining shared allowance, so an
+  // exhausted budget stops it instead of running its own cap alone. Only
+  // the allowance is added to the shared budget; a refusing step is the
+  // parser's own accounting.
+  const allowance = Math.min(SEARCH_SEGMENT_WORK_LIMIT, limit.remaining());
   try {
     measured.queryParses++;
-    // The query parser runs on at most the remaining shared allowance, so
-    // an exhausted budget stops it instead of running its own cap alone.
-    const segmented = components(
-      headword,
-      Math.min(SEARCH_SEGMENT_WORK_LIMIT, limit.remaining()),
-    );
-    measured.queryParserWork += segmented.parsed.spent;
+    const segmented = components(headword, allowance);
+    measured.queryParserWork += Math.min(segmented.parsed.spent, allowance);
     measured.queryWords += segmented.value.words.length;
     // The parse work above belongs to the request budget; enforce it before
     // the scan runs on the parsed query.
@@ -573,7 +571,7 @@ export function prepareQuery(
     if (!(error instanceof BuilderError)) throw error;
     result.segmentation = "limited";
     if (error.failure.measure === "text recognition work")
-      measured.queryParserWork += error.failure.value ?? 0;
+      measured.queryParserWork += Math.min(error.failure.value ?? 0, allowance);
     limit.check("search");
   }
   return result;

@@ -35,12 +35,8 @@ export function readPeggyWords(input: string, limit: number, textMode = false) {
       textMode,
       tracer: {
         trace(event) {
-          // The allowance is checked before each step, so the parser never
-          // performs a step past it: a refused step is not charged either.
-          if (event.type === "rule.enter") {
-            if (spent >= limit) resource("recognition work", spent, limit);
-            spent += 1;
-          }
+          if (event.type === "rule.enter" && ++spent > limit)
+            resource("recognition work", spent, limit);
         },
       },
     });
