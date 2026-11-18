@@ -601,14 +601,14 @@ test("marker content, capture base proof, pin evidence, manifest fields, unlock,
     await writeFile(join(a, "lock"), "garbage-not-json");
     assert.match(await cmdFail(["--server", url, "--state", a, "unlock"]), /refused: the lock record cannot be read/);
     assert.match(await cmd(["--server", url, "--state", a, "unlock", "--force"]), /lock cleared/);
-    // Truncated pin evidence refuses init and pin-base.
+    // A pin list that disagrees with the saved manifest refuses init and pin-base.
     const pinFile = join(root, "base-pin.json");
     const idsPath = pinFile + ".ids";
     const idsText = await readFile(idsPath, "utf8");
     await writeFile(idsPath, "jve1:" + "0".repeat(64) + "\n");
     const late = join(root, "late");
-    assert.match(await cmdFail(["--server", url, "--state", late, "--pin", pinFile, "init"]), /refused: base pin evidence does not match its lists/);
-    assert.match(await cmdFail(["--server", url, "--state", a, "--pin", pinFile, "pin-base"]), /refused: base pin evidence does not match its lists/);
+    assert.match(await cmdFail(["--server", url, "--state", late, "--pin", pinFile, "init"]), /refused: pin base_event_count does not match the saved manifest/);
+    assert.match(await cmdFail(["--server", url, "--state", a, "--pin", pinFile, "pin-base"]), /refused: pin base_event_count does not match the saved manifest/);
     await writeFile(idsPath, idsText);
     // An explicit missing pin refuses init.
     assert.match(await cmdFail(["--server", url, "--state", late, "--pin", join(root, "missing.json"), "init"]), /refused: base pin file not found/);
@@ -1111,7 +1111,7 @@ test("an empty base pin refuses a larger unrelated server", async () => {
     const bare = JSON.parse(await readFile(pin, "utf8"));
     delete bare.server_id;
     await writeFile(pin2, JSON.stringify(bare) + "\n");
-    for (const ext of [".ids", ".bodies", ".selections"]) await writeFile(pin2 + ext, await readFile(pin + ext));
+    for (const ext of [".ids", ".bodies", ".selections", ".manifest"]) await writeFile(pin2 + ext, await readFile(pin + ext));
     const d = join(root, "away", "d");
     const noId = await cmdFail(["--server", "http://127.0.0.1:9622", "--state", d, "--pin", pin2, "init"]);
     assert.match(noId, /refused: pin has no server id; make a new pin with the current kit/);
@@ -1869,7 +1869,10 @@ test("an explicit pin is checked and an old default pin is not", async () => {
     const run = await runOnDefaultPin(root, 9651);
     servers.push(run);
     const explicit = join(root, "good-pin.json");
-    await writeFile(explicit, await readFile(run.pin, "utf8"));
+    await writeFile(explicit, await readFile(run.pin));
+    for (const ext of [".ids", ".bodies", ".selections", ".manifest"]) {
+      await writeFile(explicit + ext, await readFile(run.pin + ext));
+    }
     const pinJson = JSON.parse(await readFile(run.pin, "utf8"));
     delete pinJson.server_id;
     await writeFile(run.pin, JSON.stringify(pinJson, null, 2) + "\n");
@@ -2031,7 +2034,7 @@ test("one edited field is refused before a post or a write", async () => {
     const copyPin = async (dest: string) => {
       await mkdir(dirname(dest), { recursive: true });
       await writeFile(dest, await readFile(pin));
-      for (const ext of [".ids", ".bodies", ".selections"]) await writeFile(dest + ext, await readFile(pin + ext));
+      for (const ext of [".ids", ".bodies", ".selections", ".manifest"]) await writeFile(dest + ext, await readFile(pin + ext));
     };
     const pinRows: Array<[string, (pinJson: any) => void]> = [
       ["new:pin.base_snapshot", (pinJson) => { pinJson.base_snapshot = flipHash(pinJson.base_snapshot); }],
@@ -2331,7 +2334,7 @@ test("one edited field is refused before a post or a write", async () => {
       const pinJson = JSON.parse(await readFile(sourcePin, "utf8"));
       pinJson.base_snapshot = 7;
       await writeFile(badPin, JSON.stringify(pinJson, null, 2) + "\n");
-      for (const ext of [".ids", ".bodies", ".selections"]) await writeFile(badPin + ext, await readFile(sourcePin + ext));
+      for (const ext of [".ids", ".bodies", ".selections", ".manifest"]) await writeFile(badPin + ext, await readFile(sourcePin + ext));
       const late = join(root, "numeric", "late");
       const created = await cmdResult(["--server", numericUrl, "--state", late, "--pin", badPin, "init"]);
       assert.equal(created.code, 3, created.out);
@@ -2353,7 +2356,7 @@ test("one edited field is refused before a post or a write", async () => {
       assert.deepEqual(after, before);
       assert.equal(existsSync(join(state, "lock")), false);
     });
-    await row("snapshot matches the server but the lists differ", async () => {
+    await row("edited snapshot while the saved manifest stays", async () => {
       const bindPort = 9690;
       const bindUrl = `http://127.0.0.1:${bindPort}`;
       const bindServer = await startServer(join(root, "bind-src"), bindPort);
@@ -2370,11 +2373,11 @@ test("one edited field is refused before a post or a write", async () => {
       assert.notEqual(pinJson.base_snapshot, advanced.snapshot);
       pinJson.base_snapshot = advanced.snapshot;
       await writeFile(badPin, JSON.stringify(pinJson, null, 2) + "\n");
-      for (const ext of [".ids", ".bodies", ".selections"]) await writeFile(badPin + ext, await readFile(goodPin + ext));
+      for (const ext of [".ids", ".bodies", ".selections", ".manifest"]) await writeFile(badPin + ext, await readFile(goodPin + ext));
       const late = join(root, "bind", "late");
       const created = await cmdResult(["--server", bindUrl, "--state", late, "--pin", badPin, "init"]);
       assert.equal(created.code, 3, created.out);
-      assert.match(created.out, /refused: base pin snapshot matches the server but the lists differ/);
+      assert.match(created.out, /refused: pin base_snapshot does not match the saved manifest/);
       assert.equal(existsSync(join(late, "identity.json")), false);
       assert.equal(existsSync(join(late, "lock")), false);
       const joined = join(root, "bind", "joined");
@@ -2420,7 +2423,7 @@ test("one edited field is refused before a post or a write", async () => {
         const created = await cmdResult(["--server", "http://127.0.0.1:9692", "--pin", pinFile, "pin-base"]);
         assert.equal(created.code, 3, created.out);
         assert.match(created.out, /refused: pin has no server id/);
-        for (const file of [pinFile, pinFile + ".ids", pinFile + ".bodies", pinFile + ".selections"]) {
+        for (const file of [pinFile, pinFile + ".ids", pinFile + ".bodies", pinFile + ".selections", pinFile + ".manifest"]) {
           assert.equal(existsSync(file), false, file);
         }
       } finally {
@@ -2480,6 +2483,92 @@ test("one edited field is refused before a post or a write", async () => {
       assert.doesNotMatch(reuse.out, /^reusable$/m);
       const afterReuse = ((await (await fetch(resumedTargetUrl + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
       assert.deepEqual(afterReuse, beforeIds);
+    });
+    await row("edited snapshot after the server moves past both", async () => {
+      const port = 9695;
+      const rowUrl = `http://127.0.0.1:${port}`;
+      const rowServer = await startServer(join(root, "move-src"), port);
+      servers.push(rowServer);
+      const first = join(root, "move", "a");
+      await cmd(["--server", rowUrl, "--state", first, "init"]);
+      await cmd(["--server", rowUrl, "--state", first, "profile", "--name", "One"]);
+      const goodPin = join(root, "move", "good.json");
+      await cmd(["--server", rowUrl, "--state", first, "--pin", goodPin, "pin-base"]);
+      await cmd(["--server", rowUrl, "--state", first, "profile", "--name", "Two"]);
+      const advanced = await (await fetch(rowUrl + "/api/v1/inventory?kind=events&limit=1")).json() as any;
+      const badPin = join(root, "move", "bad.json");
+      const pinJson = JSON.parse(await readFile(goodPin, "utf8"));
+      assert.notEqual(pinJson.base_snapshot, advanced.snapshot);
+      assert.equal(pinJson.base_event_count, 1);
+      pinJson.base_snapshot = advanced.snapshot;
+      await writeFile(badPin, JSON.stringify(pinJson, null, 2) + "\n");
+      for (const ext of [".ids", ".bodies", ".selections", ".manifest"]) {
+        if (existsSync(goodPin + ext)) await writeFile(badPin + ext, await readFile(goodPin + ext));
+      }
+      await cmd(["--server", rowUrl, "--state", first, "profile", "--name", "Three"]);
+      const late = join(root, "move", "late");
+      const created = await cmdResult(["--server", rowUrl, "--state", late, "--pin", badPin, "init"]);
+      assert.equal(created.code, 3, created.out);
+      assert.match(created.out, /refused: pin base_snapshot does not match the saved manifest/);
+      assert.equal(existsSync(join(late, "identity.json")), false);
+      assert.equal(existsSync(join(late, "lock")), false);
+    });
+    await row("edited manifest bytes", async () => {
+      const port = 9696;
+      const rowUrl = `http://127.0.0.1:${port}`;
+      const rowServer = await startServer(join(root, "bytes-src"), port);
+      servers.push(rowServer);
+      const first = join(root, "bytes", "a");
+      await cmd(["--server", rowUrl, "--state", first, "init"]);
+      const goodPin = join(root, "bytes", "good.json");
+      await cmd(["--server", rowUrl, "--state", first, "--pin", goodPin, "pin-base"]);
+      const badPin = join(root, "bytes", "bad.json");
+      await writeFile(badPin, await readFile(goodPin));
+      for (const ext of [".ids", ".bodies", ".selections"]) await writeFile(badPin + ext, await readFile(goodPin + ext));
+      const manifest = goodPin + ".manifest";
+      if (existsSync(manifest)) {
+        const text = await readFile(manifest, "utf8");
+        const at = text.indexOf("sha256:") + "sha256:".length;
+        const flipped = text[at] === "0" ? "1" : "0";
+        await writeFile(badPin + ".manifest", text.slice(0, at) + flipped + text.slice(at + 1));
+      }
+      const late = join(root, "bytes", "late");
+      const created = await cmdResult(["--server", rowUrl, "--state", late, "--pin", badPin, "init"]);
+      assert.equal(created.code, 3, created.out);
+      assert.match(created.out, /refused: pin base_snapshot does not match the saved manifest/);
+      assert.equal(existsSync(join(late, "identity.json")), false);
+    });
+    await row("late join after the original snapshot is gone", async () => {
+      const port = 9697;
+      const rowUrl = `http://127.0.0.1:${port}`;
+      const rowServer = await startServer(join(root, "gone-src"), port);
+      servers.push(rowServer);
+      const first = join(root, "gone", "a");
+      await cmd(["--server", rowUrl, "--state", first, "init"]);
+      await cmd(["--server", rowUrl, "--state", first, "profile", "--name", "One"]);
+      const goodPin = join(root, "gone", "good.json");
+      await cmd(["--server", rowUrl, "--state", first, "--pin", goodPin, "pin-base"]);
+      const snap = JSON.parse(await readFile(goodPin, "utf8")).base_snapshot as string;
+      let gone = false;
+      for (let i = 0; i < 20 && !gone; i++) {
+        await cmd(["--server", rowUrl, "--state", first, "profile", "--name", `extra${i}`]);
+        const status = (await fetch(rowUrl + "/api/v1/inventory?kind=events&limit=1&snapshot=" + encodeURIComponent(snap))).status;
+        gone = status === 410;
+      }
+      if (!gone) {
+        // pin-base reads the manifest, and the server keeps that snapshot
+        // until a later manifest read names a newer snapshot.
+        await fetch(rowUrl + "/api/v1/manifest");
+        const status = (await fetch(rowUrl + "/api/v1/inventory?kind=events&limit=1&snapshot=" + encodeURIComponent(snap))).status;
+        gone = status === 410;
+      }
+      assert.equal(gone, true);
+      const joined = join(root, "gone", "b");
+      const ok = await cmdResult(["--server", rowUrl, "--state", joined, "--pin", goodPin, "init"]);
+      assert.equal(ok.code, 0, ok.out);
+      assert.match(ok.out, /identity ed25519:/);
+      const identity = JSON.parse(await readFile(join(joined, "identity.json"), "utf8"));
+      assert.equal(identity.base_snapshot, snap);
     });
     assert.equal(problems.length, 0, problems.join("\n\n"));
   } finally {

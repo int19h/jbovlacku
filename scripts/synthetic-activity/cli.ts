@@ -74,12 +74,16 @@ function sameCounts(recorded: unknown, actual: Record<string, number>): boolean 
   for (const key of keys) if (rec[key] !== actual[key]) return false;
   return true;
 }
+/** The service digest of one JSON value: canonical bytes, then sha256. */
+function hashJson(value: unknown): string {
+  return contentHash(utf8(canonicalize(utf8(JSON.stringify(value)))));
+}
 /** The service logical-inventory digest: one hash over the sorted
  * retained event IDs, body hashes and import selections. */
 function logicalInventoryDigest(events: string[], bodies: string[], selections: string[]): string {
-  return contentHash(utf8(canonicalize(utf8(JSON.stringify({
+  return hashJson({
     events: [...events].sort(), bodies: [...bodies].sort(), import_selections: [...selections].sort(),
-  })))));
+  });
 }
 
 interface Opts { server: string; state: string; view?: string; full: boolean; limit: number; args: string[]; flags: Map<string, string>; multi: Map<string, string[]> }
@@ -180,7 +184,11 @@ async function refusePinInUse(o: Opts): Promise<void> {
     }
     return;
   }
-  requirePinServerId(JSON.parse(await readFile(path, "utf8")));
+  const pin = JSON.parse(await readFile(path, "utf8"));
+  // Name a missing or mistyped field before the manifest compare.
+  // An old pin with no manifest then gets the manifest refusal.
+  refuseShape(localShapeError(pin, "pin", false));
+  await refuseSavedManifest(pin, path);
 }
 async function loadIdentity(o: Opts): Promise<Identity> {
   if (!o.state) { console.error("refused: --state is required"); process.exit(2); }
@@ -198,6 +206,7 @@ function pinPath(o: Opts): string {
 const pinIdsPath = (path: string) => path + ".ids";
 const pinBodiesPath = (path: string) => path + ".bodies";
 const pinSelectionsPath = (path: string) => path + ".selections";
+const pinManifestPath = (path: string) => path + ".manifest";
 /** A usable pin carries evidence for the whole logical inventory:
  * counts, digests, and the retained lists of all three components. */
 function pinHasEvidence(pin: Pin, path: string): boolean {
@@ -325,6 +334,64 @@ function localShapeError(record: object, kind: "pin" | "identity", presentOnly: 
 function refuseShape(reason: string | null): void {
   if (reason) { console.error(`refused: ${reason}`); process.exit(3); }
 }
+interface ManifestPart { count: number; hash: string }
+/** One component of the canonical snapshot manifest. */
+function manifestPart(value: unknown): ManifestPart | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const rec = value as Record<string, unknown>;
+  if (!isNonNegativeInteger(rec.count) || !isSha256Digest(rec.hash)) return null;
+  return { count: rec.count as number, hash: rec.hash as string };
+}
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+function refuseManifestField(field: string): never {
+  console.error(`refused: pin ${field} does not match the saved manifest`);
+  process.exit(3);
+}
+/**
+ * The snapshot id is the sha256 of the canonical manifest bytes.
+ * The pin keeps those bytes. This check is local. It runs before a
+ * lock, a post, or a write, including after the server has discarded
+ * the snapshot itself.
+ */
+async function refuseSavedManifest(pin: Pin, path: string): Promise<void> {
+  const manifestPath = pinManifestPath(path);
+  if (!existsSync(manifestPath)) {
+    console.error("refused: pin base manifest is missing; make a new pin with the current kit");
+    process.exit(3);
+  }
+  const bytes = new Uint8Array(await readFile(manifestPath));
+  if (!isSha256Digest(pin.base_snapshot) || contentHash(bytes) !== pin.base_snapshot) refuseManifestField("base_snapshot");
+  let parsed: unknown;
+  try { parsed = JSON.parse(Buffer.from(bytes).toString("utf8")); }
+  catch { console.error("refused: pin base manifest is not the canonical snapshot manifest"); process.exit(3); }
+  const canonical = utf8(canonicalize(utf8(JSON.stringify(parsed))));
+  if (!sameBytes(canonical, bytes)) {
+    console.error("refused: pin base manifest is not the canonical snapshot manifest");
+    process.exit(3);
+  }
+  const rec = parsed as Record<string, unknown>;
+  const events = manifestPart(rec.events);
+  const bodies = manifestPart(rec.bodies);
+  const selections = manifestPart(rec.import_selections);
+  if (rec.version !== 1 || !events || !bodies || !selections) {
+    console.error("refused: pin base manifest is not the canonical snapshot manifest");
+    process.exit(3);
+  }
+  if (events.count !== pin.base_event_count) refuseManifestField("base_event_count");
+  if (bodies.count !== pin.base_body_count) refuseManifestField("base_body_count");
+  if (selections.count !== pin.base_selection_count) refuseManifestField("base_selection_count");
+  const readList = async (listPath: string) => existsSync(listPath) ? (await readFile(listPath, "utf8")).split("\n").filter(Boolean) : null;
+  const eventList = await readList(pinIdsPath(path));
+  const bodyList = await readList(pinBodiesPath(path));
+  const selectionList = await readList(pinSelectionsPath(path));
+  if (eventList && eventList.length !== events.count) refuseManifestField("base_event_count");
+  if (bodyList && (bodyList.length !== bodies.count || hashJson([...bodyList].sort()) !== bodies.hash)) refuseManifestField(bodyList.length !== bodies.count ? "base_body_count" : "base_body_digest");
+  if (selectionList && (selectionList.length !== selections.count || hashJson([...selectionList].sort()) !== selections.hash)) refuseManifestField(selectionList.length !== selections.count ? "base_selection_count" : "base_selection_digest");
+}
 /** Object.is on the parsed values. A one-element array is not equal to that string. */
 function localConsistencyError(pin: object, identities: readonly object[]): string | null {
   const pinRecord = pin as Record<string, unknown>;
@@ -360,10 +427,14 @@ function checkHeldConsistency(pin: object, identity: object): void {
 }
 async function checkPinInUse(o: Opts, identities: readonly object[]): Promise<void> {
   // The identity shape does not need a pin file. The compare does.
+  // whoami, history, and the init backfill path do not call this.
   for (const identity of identities) refuseShape(localShapeError(identity, "identity", false));
   const path = pinPath(o);
   if (!existsSync(path)) return;
-  checkLocalConsistency(JSON.parse(await readFile(path, "utf8")), identities);
+  const pin = JSON.parse(await readFile(path, "utf8"));
+  refuseShape(localShapeError(pin, "pin", false));
+  await refuseSavedManifest(pin, path);
+  checkLocalConsistency(pin, identities);
 }
 /**
  * An empty ID list is a subset of every server. The pin's server id,
@@ -447,11 +518,60 @@ async function refusePinSnapshot(o: Opts, pin: Pin, lists: PinLists): Promise<vo
     process.exit(3);
   }
 }
+/**
+ * The snapshot id is the sha256 of the canonical manifest bytes.
+ * Rebuild those bytes from the admitted snapshot. The event hash
+ * covers each stored envelope plus LF, in event-ID order. This does
+ * not read /manifest. That route builds packages and keeps the snapshot.
+ */
+async function canonicalManifestText(o: Opts, snapshot: string, ids: string[], bodies: string[], selections: string[]): Promise<string> {
+  const ordered = [...ids].sort();
+  const chunks: Uint8Array[] = [];
+  for (const id of ordered) {
+    let response: Response;
+    try {
+      response = await rawFetch(o, `${o.server}/api/v1/events/${encodeURIComponent(id)}?snapshot=${encodeURIComponent(snapshot)}`);
+    } catch (e: any) {
+      console.error(`refused: cannot read the base manifest from the server: ${e.message ?? String(e)}`);
+      process.exit(3);
+    }
+    if (!response.ok) {
+      const detail = (await response.text()).trim();
+      console.error(`refused: cannot read the base manifest from the server: ${detail || response.status}`);
+      process.exit(3);
+    }
+    chunks.push(new Uint8Array(await response.arrayBuffer()));
+  }
+  let total = 0;
+  for (const chunk of chunks) total += chunk.length + 1;
+  const lines = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    lines.set(chunk, offset);
+    offset += chunk.length;
+    lines[offset++] = 10;
+  }
+  const bodyIds = [...bodies].sort();
+  const selectionIds = [...selections].sort();
+  const manifest = {
+    version: 1,
+    events: { count: ordered.length, hash: contentHash(lines) },
+    bodies: { count: bodyIds.length, hash: hashJson(bodyIds) },
+    import_selections: { count: selectionIds.length, hash: hashJson(selectionIds) },
+  };
+  const bytes = utf8(canonicalize(utf8(JSON.stringify(manifest))));
+  if (contentHash(bytes) !== snapshot) {
+    console.error("refused: cannot read the base pin from the server: the manifest bytes do not hash to the snapshot");
+    process.exit(3);
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
 async function loadOrCreatePin(o: Opts): Promise<Pin> {
   const path = pinPath(o);
   if (existsSync(path)) {
     const pin = JSON.parse(await readFile(path, "utf8"));
     refuseShape(localShapeError(pin, "pin", false));
+    await refuseSavedManifest(pin, path);
     return pin;
   }
   // Pin the whole logical inventory at one admitted snapshot. The
@@ -470,12 +590,16 @@ async function loadOrCreatePin(o: Opts): Promise<Pin> {
     base_selection_count: selections.length, base_selection_digest: digestIds(selections),
     ...(markerServerId ? { server_id: markerServerId } : {}),
   };
-  // A new pin must already have all nine fields. Refuse before any of the four files is written.
+  // A new pin must already have all nine fields. The server id check
+  // stays ahead of the manifest read, so a marker with no server id
+  // still refuses before any file is written. The manifest is the fifth file.
   refuseShape(localShapeError(pin, "pin", false));
+  const manifestText = await canonicalManifestText(o, snapshot, ids, bodies, selections);
   await mkdir(dirname(path), { recursive: true });
   await writeAtomic(pinIdsPath(path), ids.join("\n") + (ids.length ? "\n" : ""));
   await writeAtomic(pinBodiesPath(path), bodies.join("\n") + (bodies.length ? "\n" : ""));
   await writeAtomic(pinSelectionsPath(path), selections.join("\n") + (selections.length ? "\n" : ""));
+  await writeAtomic(pinManifestPath(path), manifestText);
   await writeAtomic(path, JSON.stringify(pin, null, 2) + "\n");
   return pin;
 }
@@ -704,6 +828,7 @@ async function main(): Promise<void> {
           } else {
             const pin = JSON.parse(await readFile(path, "utf8"));
             checkHeldConsistency(pin, j);
+            await refuseSavedManifest(pin, path);
             if (!pinHasEvidence(pin, path)) { console.error("refused: base pin file has no base evidence; a new base needs a new pin file"); process.exit(3); }
             requirePinServerId(pin);
             const lists = await readPinEvidence(pin, path);
@@ -727,7 +852,8 @@ async function main(): Promise<void> {
           const path = pinPath(o);
           if (existsSync(path)) {
             const pin = JSON.parse(await readFile(path, "utf8"));
-            requirePinServerId(pin);
+            refuseShape(localShapeError(pin, "pin", false));
+            await refuseSavedManifest(pin, path);
             if (j.base_snapshot === pin.base_snapshot && j.base_inventory === pin.base_inventory) {
               j.server_id = pin.server_id;
               await writeAtomic(p, JSON.stringify(j, null, 2) + "\n", 0o600);
@@ -977,7 +1103,10 @@ async function capture(o: Opts): Promise<void> {
   if (!states.length) { console.error("refused: --state is required (repeat for each identity)"); process.exit(2); }
   const capturePinPath = capturePinFile(o, states);
   if (!existsSync(capturePinPath)) { console.error(`refused: capture needs the base pin file with its full evidence lists (expected ${capturePinPath}); run pin-base for this run first`); process.exit(3); }
-  checkLocalConsistency(JSON.parse(await readFile(capturePinPath, "utf8")), await captureIdentities(states));
+  const capturePin = JSON.parse(await readFile(capturePinPath, "utf8"));
+  refuseShape(localShapeError(capturePin, "pin", false));
+  await refuseSavedManifest(capturePin, capturePinPath);
+  checkLocalConsistency(capturePin, await captureIdentities(states));
   const handles: LockHandle[] = [];
   process.on("exit", () => { for (const h of handles) { try { h.releaseSync(); } catch {} } });
   try {
@@ -1006,7 +1135,10 @@ async function captureBody(o: Opts): Promise<void> {
   if (!existsSync(capturePinPath)) { console.error(`refused: capture needs the base pin file with its full evidence lists (expected ${capturePinPath}); run pin-base for this run first`); process.exit(3); }
   const capturePin: Pin = JSON.parse(await readFile(capturePinPath, "utf8"));
   // Before records are combined by public key. The same key in a
-  // second folder is still compared.
+  // second folder is still compared. The saved manifest is checked
+  // again here, before any capture file is written.
+  refuseShape(localShapeError(capturePin, "pin", false));
+  await refuseSavedManifest(capturePin, capturePinPath);
   checkLocalConsistency(capturePin, rawIdentities);
   const identities = rawIdentities.filter((v, i, a) => a.findIndex((x) => x.identity === v.identity) === i);
   if (!identities[0]?.base_snapshot || !identities[0]?.base_inventory) { console.error("refused: identity has no base pin; run init again with a base pin"); process.exit(3); }

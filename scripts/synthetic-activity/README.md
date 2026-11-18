@@ -91,7 +91,9 @@ the counts and digests of all three components of the base
 logical inventory: retained events, bodies, and import
 selections. Three list files hold the base entries:
 `<pin>.ids` for event IDs, `<pin>.bodies` for body hashes, and
-`<pin>.selections` for import selections. They go beside the
+`<pin>.selections` for import selections. `<pin>.manifest`
+holds the canonical manifest bytes. The canonical manifest is
+the byte form of the snapshot manifest. They go beside the
 state folders, or to the paths from `--pin`. Every `init`
 reads that same pin. An identity that starts later gets the
 same base, even after other identities have written. If no
@@ -99,13 +101,23 @@ pin file exists, `init` reads the server and creates the
 pin. If it cannot read a base, `init` fails and writes no
 identity. It never creates an identity with an empty base.
 `pin-base` checks a new pin before it writes the first of the
-four pin files. A pin that fails that check writes nothing.
+five pin files. A pin that fails that check writes nothing.
+The sha256 prefix form of the manifest bytes equals
+`base_snapshot`. `pin-base` saves those bytes beside the pin.
+A command that reads the pin checks those bytes before a
+lock, a post, or a write. When the sha256 differs, the
+refusal names `base_snapshot`. When a saved manifest list or
+count differs from the pin, the refusal names that field.
+The check uses the saved bytes. The server can discard that
+snapshot.
 
 An explicit `--pin` path that does not exist is refused for every identity command.
 Every command that loads an identity refuses that path.
 `init` of a new identity refuses it too.
 An absent default `base-pin.json` is not a refusal.
-The loaded identity must still hold every base field.
+A command that writes requires every base field on the loaded identity.
+`whoami` and `history` read an identity that omits a base field.
+When `init` finds an identity that omits a base field, `init` can copy the pin fields into that identity.
 A wrong path must not create a new pin late in a run.
 `init` creates a pin only on the default pin path.
 
