@@ -152,8 +152,20 @@ const refused = (e: any): never => { console.error(`refused: ${e.code ? e.code +
 
 interface Pin { base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string; server_id?: string }
 interface Identity { seed: string; identity: string; base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string; server_id?: string }
+/**
+ * An explicit pin is an input of this command. Refuse an old pin
+ * before the identity is used, so the command cannot post an event
+ * or rewrite the identity.
+ */
+async function refuseGivenPin(o: Opts): Promise<void> {
+  if (!flag(o, "pin")) return;
+  const path = pinPath(o);
+  if (!existsSync(path)) return;
+  requirePinServerId(JSON.parse(await readFile(path, "utf8")));
+}
 async function loadIdentity(o: Opts): Promise<Identity> {
   if (!o.state) { console.error("refused: --state is required"); process.exit(2); }
+  await refuseGivenPin(o);
   return JSON.parse(await readFile(join(o.state, "identity.json"), "utf8"));
 }
 function pinPath(o: Opts): string {
@@ -515,7 +527,7 @@ async function main(): Promise<void> {
       await mkdir(o.state, { recursive: true });
       const p = join(o.state, "identity.json");
       if (existsSync(p)) {
-        const j = JSON.parse(await readFile(p, "utf8"));
+        const j = await loadIdentity(o);
         // Backfill the base evidence from the pin for identities
         // that were created before capture required it. The
         // backfill runs the same checks as a new identity: the

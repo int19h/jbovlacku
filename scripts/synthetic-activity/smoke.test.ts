@@ -1710,3 +1710,61 @@ test("a non-empty pin without a server id is refused", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+/** A current identity, then the same non-empty pin with its server id removed. */
+async function identityWithOldPin(root: string, port: number): Promise<{ url: string; pin: string; state: string; close(): Promise<void> }> {
+  const server = await startServer(join(root, "src"), port);
+  const url = `http://127.0.0.1:${port}`;
+  const base = join(root, "base");
+  await cmd(["--server", url, "--state", base, "init"]);
+  await cmd(["--server", url, "--state", base, "profile", "--name", "base"]);
+  const pin = join(root, "old-pin.json");
+  await cmd(["--server", url, "--pin", pin, "pin-base"]);
+  const pinJson = JSON.parse(await readFile(pin, "utf8"));
+  assert.ok(pinJson.base_event_count > 0);
+  const state = join(root, "run");
+  await cmd(["--server", url, "--state", state, "--pin", pin, "init"]);
+  delete pinJson.server_id;
+  await writeFile(pin, JSON.stringify(pinJson, null, 2) + "\n");
+  return { url, pin, state, close: () => server.close() };
+}
+
+test("init of an existing identity refuses an old pin", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const run = await identityWithOldPin(root, 9647);
+    servers.push(run);
+    const identityPath = join(run.state, "identity.json");
+    const before = await readFile(identityPath, "utf8");
+    const again = await cmdResult(["--server", run.url, "--state", run.state, "--pin", run.pin, "init"]);
+    assert.equal(again.code, 3, again.out);
+    assert.match(again.out, /refused: pin has no server id; make a new pin with the current kit/);
+    assert.equal(await readFile(identityPath, "utf8"), before);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("profile refuses an old pin", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const run = await identityWithOldPin(root, 9648);
+    servers.push(run);
+    const identityPath = join(run.state, "identity.json");
+    const before = await readFile(identityPath, "utf8");
+    const beforeIds = ((await (await fetch(run.url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    const posted = await cmdResult(["--server", run.url, "--state", run.state, "--pin", run.pin, "profile", "--name", "late"]);
+    assert.equal(posted.code, 3, posted.out);
+    assert.match(posted.out, /refused: pin has no server id; make a new pin with the current kit/);
+    assert.equal(await readFile(identityPath, "utf8"), before);
+    assert.equal(existsSync(join(run.state, "lock")), false);
+    const afterIds = ((await (await fetch(run.url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    assert.deepEqual(afterIds, beforeIds);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
