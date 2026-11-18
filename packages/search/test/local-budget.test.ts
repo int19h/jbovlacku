@@ -361,10 +361,10 @@ test("a later parser failure still bills the runs before it", () => {
 
 test("component comparisons stop at the shared allowance", () => {
   // The review input: a two-word headword against a 512-word query at a
-  // 207,362-unit limit. Query parsing consumes 207,360 units and the row
-  // one more, so the row content reserve would pass the limit and the
-  // request refuses before the 1,023 comparisons the scan would otherwise
-  // perform.
+  // 207,362-unit limit. Query parsing consumes 207,360 units, the row one
+  // more, and its single content unit fits exactly, so the 1,025-unit
+  // comparison-block reservation is what refuses — before any of the 1,023
+  // comparisons the scan would otherwise perform.
   const short = {
     word: { spelling: "a a" },
     glosses: [],

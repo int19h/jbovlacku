@@ -21,7 +21,8 @@ export const SEARCH_HEADWORD_WORK_LIMIT = 300_000;
  * in units: a validated, prepared, transferred, or scanned entry costs
  * `1 + items + ceil(chars / 64)`, where items counts its glosses, rafsi
  * spellings, selmaho names, and attribution dates, and chars counts the
- * characters of its spelling, texts, senses, IDs, and attribution strings.
+ * characters of its spelling, plain text, event ID, issuer, gloss texts
+ * and senses, rafsi spellings, selmaho names, and attribution strings.
  * All other work costs one unit each: a component comparison, a map
  * insertion, a sort comparison, a morphology parser step, or a mapped reply
  * reference. A comparison block reserves its upper bound before it runs,
