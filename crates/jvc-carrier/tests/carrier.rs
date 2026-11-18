@@ -745,7 +745,7 @@ fn native_read_limits_are_local_policy_and_can_be_raised() {
         "resource_unavailable"
     );
     let small_total = ReadLimits {
-        max_total_bytes: 64,
+        max_total_bytes: Some(64),
         ..ReadLimits::default()
     };
     assert_eq!(
@@ -755,7 +755,7 @@ fn native_read_limits_are_local_policy_and_can_be_raised() {
         "resource_unavailable"
     );
     let small_count = ReadLimits {
-        max_files: 1,
+        max_files: Some(1),
         ..ReadLimits::default()
     };
     assert_eq!(
@@ -765,12 +765,9 @@ fn native_read_limits_are_local_policy_and_can_be_raised() {
         "resource_unavailable"
     );
     assert!(read_directory(&repo).is_ok());
-    let unlimited = ReadLimits {
-        max_total_bytes: usize::MAX,
-        max_readme_bytes: usize::MAX,
-        max_files: usize::MAX,
-    };
-    assert!(read_directory_with_limits(&repo, unlimited).is_ok());
+    // The default has no total-byte or file-count quota.
+    assert_eq!(ReadLimits::default().max_total_bytes, None);
+    assert_eq!(ReadLimits::default().max_files, None);
     git(&repo, &["init", "-q"]);
     let with_readme = read_directory(&repo).unwrap();
     let id = commit_fixture(&repo, &with_readme, None);
@@ -792,9 +789,384 @@ fn native_read_limits_are_local_policy_and_can_be_raised() {
             .code,
         "resource_unavailable"
     );
-    assert!(read_git_tree_with_limits(&repo, &id, unlimited).is_ok());
     assert_eq!(
         read_git_tree(&repo, &id).unwrap().snapshot_id().unwrap(),
         with_readme.snapshot_id().unwrap()
     );
+}
+
+#[test]
+fn partition_part_count_above_one_million_needs_no_allocation_and_no_quota_by_default() {
+    // The count check takes a number only, so this does not allocate the
+    // parts that 1,000,001 parts at 8 MiB each would imply.
+    assert!(check_partition_part_count(1_000_001, None).is_ok());
+    assert!(check_partition_part_count(1_000_000, Some(1_000_000)).is_ok());
+    assert_eq!(
+        check_partition_part_count(1_000_001, Some(1_000_000))
+            .unwrap_err()
+            .code,
+        "partition_limit"
+    );
+    let (snapshot, _, _) = with_body();
+    assert!(snapshot.to_files().is_ok());
+    assert_eq!(
+        snapshot
+            .to_files_with_partition_limit(Some(0))
+            .unwrap_err()
+            .code,
+        "partition_limit"
+    );
+}
+
+fn large_body_snapshot(records: usize, body_bytes: usize) -> Snapshot {
+    let mut snapshot = Snapshot::new();
+    for index in 0..records {
+        let padding = body_bytes - 16;
+        let body =
+            canonical_value(&json!({"x": format!("{index:08}{}", "a".repeat(padding))})).unwrap();
+        let e = event(
+            7,
+            u8::try_from(index % 251).unwrap(),
+            Some(&body),
+            vec![],
+            json!({"kind":"identity.profile"}),
+        );
+        // Nonces above vary by construction through the signed header; use
+        // distinct bodies so every event and body is retained.
+        let mut e = e;
+        if index >= 251 {
+            let mut header = e.header().clone();
+            header.nonce = format!("{index:032x}");
+            e = sign_header(&[7; 32], header).unwrap();
+        }
+        add(&mut snapshot, &e);
+        snapshot
+            .insert_body(&body_descriptor(&body).unwrap().hash, &body)
+            .unwrap();
+    }
+    snapshot
+}
+
+#[test]
+fn carrier_above_128_mib_reads_with_no_quota_and_configured_quota_refuses() {
+    // 550 records with bodies near the 256 KiB per-body bound pass 128 MiB
+    // of carrier file bytes without a single record breaking its bound.
+    let snapshot = large_body_snapshot(550, 260_000);
+    let files = snapshot.to_files().unwrap();
+    let total: usize = files.values().map(Vec::len).sum();
+    assert!(total > 128 * 1024 * 1024, "fixture is only {total} bytes");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("carrier");
+    write_directory(&root, &snapshot).unwrap();
+    assert_eq!(
+        read_directory(&root).unwrap().events().len(),
+        snapshot.events().len()
+    );
+    let quota = ReadLimits {
+        max_total_bytes: Some(128 * 1024 * 1024),
+        ..ReadLimits::default()
+    };
+    assert_eq!(
+        read_directory_with_limits(&root, quota).unwrap_err().code,
+        "resource_unavailable"
+    );
+}
+
+#[test]
+fn carrier_above_250000_files_reads_with_no_quota_and_configured_quota_refuses() {
+    let (mut snapshot, _, _) = with_body();
+    for index in 0..250_001usize {
+        let id = format!("jve1:{index:064x}");
+        let selection = canonical_value(&json!([id])).unwrap();
+        snapshot
+            .insert_selection(&hash_id("sha256:", b"", &selection), &selection)
+            .unwrap();
+    }
+    let files = snapshot.to_files().unwrap();
+    assert!(files.len() > 250_000, "fixture has {} files", files.len());
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("carrier");
+    std::fs::create_dir(&root).unwrap();
+    for (name, bytes) in &files {
+        let path = root.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    assert_eq!(read_directory(&root).unwrap().selections().len(), 250_001);
+    let quota = ReadLimits {
+        max_files: Some(250_000),
+        ..ReadLimits::default()
+    };
+    assert_eq!(
+        read_directory_with_limits(&root, quota).unwrap_err().code,
+        "resource_unavailable"
+    );
+}
+
+#[test]
+fn native_readers_reject_noncanonical_part_names_and_accept_wide_indices() {
+    assert!(validate_path("records/02/1000000.jsonl").is_ok());
+    assert!(validate_path("records/02/0000000.jsonl").is_err());
+    assert!(validate_path("records/02/000000.jsonl").is_ok());
+    let (snapshot, _, _) = with_body();
+    let files = snapshot.to_files().unwrap();
+    let path = record_path(&files);
+    let renamed = path.replace("000000.jsonl", "0000000.jsonl");
+    assert_ne!(renamed, path);
+    // Directory reader.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("carrier");
+    write_directory(&root, &snapshot).unwrap();
+    std::fs::rename(root.join(&path), root.join(&renamed)).unwrap();
+    assert!(read_directory(&root).is_err());
+    // Git-tree and checkout readers share the same listed-file path.
+    let repo = temp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    for (name, bytes) in &files {
+        let target = repo.join(if name == &path { &renamed } else { name });
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, bytes).unwrap();
+    }
+    git(&repo, &["add", "--all"]);
+    let tree = git(&repo, &["write-tree"]);
+    let commit = git(
+        &repo,
+        &["commit-tree", &tree, "-m", "Disposable carrier fixture"],
+    );
+    assert!(read_git_tree(&repo, &commit).is_err());
+    assert!(validate_checkout(&repo, &commit).is_err());
+}
+
+#[test]
+fn streamed_reader_keeps_newline_precedence_over_record_size() {
+    let oversized = vec![b' '; 282_658];
+    let err = Snapshot::from_jsonl_reader(std::io::Cursor::new(oversized.clone())).unwrap_err();
+    assert_eq!(err.code, "record_newline");
+    let mut terminated = oversized;
+    terminated.push(b'\n');
+    let err = Snapshot::from_jsonl_reader(std::io::Cursor::new(terminated)).unwrap_err();
+    assert_eq!(err.code, "record_size");
+}
+
+fn signed_event(seed: u8, nonce: u32, descriptor: &ContentDescriptor) -> VerifiedEnvelope {
+    sign_header(
+        &[seed; 32],
+        Header {
+            version: 1,
+            issuer: identity_from_seed(&[seed; 32]),
+            previous: vec![],
+            nonce: format!("{nonce:032x}"),
+            action: json!({"kind":"identity.profile"}),
+            content: Some(descriptor.clone()),
+        },
+    )
+    .unwrap()
+}
+fn shared_body_snapshot(events: Vec<VerifiedEnvelope>, body: &[u8]) -> Snapshot {
+    let mut snapshot = Snapshot::new();
+    for e in &events {
+        add(&mut snapshot, e);
+    }
+    snapshot
+        .insert_body(&body_descriptor(body).unwrap().hash, body)
+        .unwrap();
+    snapshot
+}
+fn shared_body_pair(other_partition: bool) -> Snapshot {
+    let body = profile();
+    let descriptor = body_descriptor(&body).unwrap();
+    let a = signed_event(4, 0, &descriptor);
+    let b = (1..100_000u32)
+        .map(|nonce| signed_event(4, nonce, &descriptor))
+        .find(|e| (e.id()[5..7] != a.id()[5..7]) == other_partition)
+        .expect("fixture must find a second event");
+    shared_body_snapshot(vec![a, b], &body)
+}
+fn shared_body_many_parts() -> Snapshot {
+    let body = canonical_value(&json!({"x": "a".repeat(260_000)})).unwrap();
+    let descriptor = body_descriptor(&body).unwrap();
+    let first = signed_event(8, 0, &descriptor);
+    let partition = first.id()[5..7].to_owned();
+    let mut events = vec![first];
+    let mut nonce = 1u32;
+    while events.len() < 34 {
+        let e = signed_event(8, nonce, &descriptor);
+        nonce += 1;
+        if e.id()[5..7] == partition {
+            events.push(e);
+        }
+    }
+    shared_body_snapshot(events, &body)
+}
+fn null_body_at(
+    files: &BTreeMap<String, Vec<u8>>,
+    path: &str,
+    line_index: usize,
+) -> BTreeMap<String, Vec<u8>> {
+    let mut files = files.clone();
+    let bytes = files.remove(path).unwrap();
+    let mut lines: Vec<Vec<u8>> = bytes[..bytes.len() - 1]
+        .split(|b| *b == b'\n')
+        .map(<[u8]>::to_vec)
+        .collect();
+    let mut record = parse_json(&lines[line_index]).unwrap();
+    record["body"] = Value::Null;
+    lines[line_index] = canonical_value(&record).unwrap();
+    let mut out = Vec::new();
+    for line in lines {
+        out.extend(line);
+        out.push(b'\n');
+    }
+    files.insert(path.to_owned(), out);
+    files
+}
+fn write_carrier_files(root: &std::path::Path, files: &BTreeMap<String, Vec<u8>>) {
+    std::fs::create_dir_all(root).unwrap();
+    for (name, bytes) in files {
+        let path = root.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+}
+fn record_paths(files: &BTreeMap<String, Vec<u8>>) -> Vec<String> {
+    files
+        .keys()
+        .filter(|p| p.starts_with("records/"))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn native_readers_reject_omitted_body_copies() {
+    // One retained body, one omitted copy, in both orders and across
+    // partitions. Every variant keeps the original manifest.
+    for snapshot in [
+        shared_body_pair(false),
+        shared_body_pair(true),
+        shared_body_many_parts(),
+    ] {
+        let files = snapshot.to_files().unwrap();
+        let paths = record_paths(&files);
+        for path in &paths {
+            let line_count = files[path].iter().filter(|b| **b == b'\n').count();
+            for line in [0, line_count - 1] {
+                let variant = null_body_at(&files, path, line);
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path().join("carrier");
+                write_carrier_files(&root, &variant);
+                assert_eq!(
+                    read_directory(&root).unwrap_err().code,
+                    "carrier_noncanonical",
+                    "path {path} line {line}"
+                );
+            }
+        }
+    }
+    // The Git-tree and checkout readers share the same path.
+    let snapshot = shared_body_pair(false);
+    let files = snapshot.to_files().unwrap();
+    let path = record_path(&files);
+    let variant = null_body_at(&files, &path, 1);
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    write_carrier_files(&repo, &variant);
+    git(&repo, &["add", "--all"]);
+    let tree = git(&repo, &["write-tree"]);
+    let commit = git(
+        &repo,
+        &["commit-tree", &tree, "-m", "Disposable carrier fixture"],
+    );
+    assert_eq!(
+        read_git_tree(&repo, &commit).unwrap_err().code,
+        "carrier_noncanonical"
+    );
+    assert_eq!(
+        validate_checkout(&repo, &commit).unwrap_err().code,
+        "carrier_noncanonical"
+    );
+}
+
+#[test]
+fn native_readers_round_trip_accepted_carriers() {
+    for snapshot in [
+        with_body().0,
+        shared_body_pair(false),
+        shared_body_pair(true),
+        shared_body_many_parts(),
+    ] {
+        let files = snapshot.to_files().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("carrier");
+        write_carrier_files(&root, &files);
+        assert_eq!(read_directory(&root).unwrap().to_files().unwrap(), files);
+        let repo = temp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        let commit = commit_fixture(&repo, &snapshot, None);
+        assert_eq!(
+            read_git_tree(&repo, &commit).unwrap().to_files().unwrap(),
+            files
+        );
+        assert_eq!(
+            validate_checkout(&repo, &commit)
+                .unwrap()
+                .to_files()
+                .unwrap(),
+            files
+        );
+    }
+}
+
+#[test]
+fn native_reader_reports_record_newline_for_unterminated_part() {
+    let (snapshot, _, _) = with_body();
+    let mut files = snapshot.to_files().unwrap();
+    let path = record_path(&files);
+    files.insert(path, b"null\nx".to_vec());
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("carrier");
+    write_carrier_files(&root, &files);
+    assert_eq!(read_directory(&root).unwrap_err().code, "record_newline");
+}
+
+#[test]
+fn readme_above_one_mib_needs_a_raised_readme_limit() {
+    let (s, _, _) = with_body();
+    let large_readme = vec![b'x'; 1024 * 1024 + 1];
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("carrier");
+    write_directory(&root, &s).unwrap();
+    std::fs::write(root.join("README.md"), &large_readme).unwrap();
+    assert_eq!(
+        read_directory(&root).unwrap_err().code,
+        "resource_unavailable"
+    );
+    let raised = ReadLimits {
+        max_readme_bytes: 2 * 1024 * 1024,
+        ..ReadLimits::default()
+    };
+    let read = read_directory_with_limits(&root, raised).unwrap();
+    let mut expected = s.to_files().unwrap();
+    expected.insert("README.md".into(), large_readme.clone());
+    assert_eq!(read.to_files().unwrap(), expected);
+    // The Git reader applies the same configurable bound.
+    let repo = temp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    write_carrier_files(&repo, &expected);
+    git(&repo, &["add", "--all"]);
+    let tree = git(&repo, &["write-tree"]);
+    let commit = git(
+        &repo,
+        &["commit-tree", &tree, "-m", "Disposable carrier fixture"],
+    );
+    assert_eq!(
+        read_git_tree(&repo, &commit).unwrap_err().code,
+        "resource_unavailable"
+    );
+    let read = read_git_tree_with_limits(&repo, &commit, raised).unwrap();
+    assert_eq!(read.to_files().unwrap(), expected);
 }

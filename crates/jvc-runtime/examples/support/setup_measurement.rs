@@ -123,7 +123,27 @@ fn measure(name: &str, state: EvaluatedState) -> [usize; 2] {
         modeled_bytes >= 2 * peak as u64,
         "{name}: peak={peak}, charge={modeled_bytes}"
     );
-    assert!(modeled_units + 1_000_000 < policy.limits.setup_units);
+    let entries_total = [
+        bound.words,
+        bound.word_publications,
+        bound.target_groups,
+        bound.targets,
+        bound.judgment_groups,
+        bound.trust_rules,
+        bound.scope_buckets,
+        bound.scope_rules,
+        bound.private_pairs,
+        bound.private_weights,
+        bound.private_rules,
+    ]
+    .iter()
+    .sum::<u64>();
+    assert!(
+        modeled_units + 1_000_000
+            < policy
+                .effective_setup_units(entries_total, bound.key_bytes)
+                .unwrap()
+    );
 
     begin_window();
     let start = Instant::now();

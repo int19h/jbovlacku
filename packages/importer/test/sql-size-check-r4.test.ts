@@ -175,6 +175,20 @@ for (const conflicting of [false, true]) {
   });
 }
 
+test("an opt-in estimate budget refuses before signing and no budget is the default", async () => {
+  const input = await setup();
+  await updateSource(input, fixture);
+  await assert.rejects(
+    importSqlSnapshot({ ...input, budgetBytes: 1024 }),
+    /exceed the 1024 byte limit\. No publications were signed\./,
+  );
+  assert.equal(versionCount(input.output), 0);
+  const result = await importSqlSnapshot(input);
+  assert.equal(result.size_estimate.budget_bytes, undefined);
+  assert.equal(result.size_estimate.within_budget, true);
+  assert.ok(versionCount(input.output) > 0);
+});
+
 test("a check refuses retained output before any journal migration or write", async () => {
   const input = await setup();
   await updateSource(input, fixture);

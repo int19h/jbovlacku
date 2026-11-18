@@ -40,6 +40,7 @@ The Node.js server uses local object files and SQLite for admission, receipts, s
 The search index retains the current copy, one rollback copy, active staged copies, and copies that retained aliases reference.
 An alias points to unchanged entries without copying them. Index publication removes obsolete copies and aliases in the same transaction as the current pointer.
 The native `jvc` command reads, writes, validates, and merges dictionary carriers. It also reads exact committed Git trees locally.
+Carrier reads and `jvc` file inputs have no total size quota by default. Optional local quotas can be set with the carrier `*_with_limits` forms. The `jvc --input-limit BYTES` flag applies only to direct FILE arguments, including `--selection FILE` and `--policy FILE` arguments. Carrier DIRECTORY and REPOSITORY reads use `ReadLimits`, not that flag. Per-file and per-record bounds stay in force, and JSONL inputs are read one record at a time.
 The [carrier guide](../crates/jvc-carrier/README.md) describes canonical files, import selections, retention policies, and read limits.
 
 The Node adapter serves the revised SQL import with 59,125 definitions in 44 languages.
@@ -263,6 +264,8 @@ Split rows retain their owner across breaks in different fields. The size estima
 The SQL `--check-existing` mode requires a copied journal in fresh scratch output and refuses an existing proposal.
 
 An offline command loads signed carriers, their selection, and their view into a Node data directory. Repeat loads preserve receipt positions.
+The loader sets no total event or carrier-record limit. Optional `--max-admitted-events` and `--max-carrier-records` quotas are off by default.
+The SQL estimate also has no budget by default. An operator can set one with `--budget-bytes`.
 Node startup restores the loaded view and its explicit state work budget. The server and loader require exclusive access to that directory.
 Full-capture runs remain separate development evidence, not part of the committed fixture tests.
 The [importer guide](../packages/importer/README.md) describes its input, journal, signing command, and limits.
@@ -639,7 +642,7 @@ Owned Rust tasks retain their graph and numerical workspace between bounded call
 The Rust API returns approximate actor estimates, work counters, margin details, support and threshold decisions, and stable layers.
 It counts tiny propagated terms that it flushes to zero and keeps structural zeros separate from computed zeros.
 The existing evaluation session also supports [bounded float graph preparation](../crates/jvc-runtime/README.md).
-Setup admission uses measured index-entry costs. Source hashing has separate byte and time limits.
+Setup admission uses measured index-entry costs. It has no default whole-dictionary quota. A caller can set record, envelope, or source-byte quotas. The default setup-unit budget grows with the index counts. Source hashing has a separate time limit.
 
 It supports owned word-result slices, float decisions, optional reviewer details, and a bounded serialized word cache.
 Ready tickets retain their bytes for a fixed 60 seconds under the 32 MiB session budget.

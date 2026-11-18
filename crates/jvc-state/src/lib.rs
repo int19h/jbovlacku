@@ -11,7 +11,12 @@ mod projection;
 pub use api::{
     AccountControl, Authority, Certificate, PublicationStatus, account_control, publication_status,
 };
-pub use arena::{ArrayValues, CompactValue, ValueView};
+pub use arena::{
+    ArrayValues, CompactValue, ValueView, lookup_work, packed_value_nodes,
+    reset_packed_value_nodes, reset_serialized_value_bytes, reset_setup_lookup_calls,
+    reset_validated_string_bytes, serialized_value_bytes, setup_lookup_calls,
+    validated_string_bytes,
+};
 pub use incremental::{
     CHECKPOINT_VERSION, EvaluatedState, JudgmentChanges, MAX_INCREMENTAL_RECORDS,
     RankingContextBound, UpdateStatistics,
@@ -20,7 +25,7 @@ pub use projection::{PROJECTION_ROW_VERSION, ProjectionRow};
 
 use jvc_core::{BodyAvailability, VerifiedEnvelope, inspect_body, validate_action};
 pub use policy::{
-    Context, ContextGraph, PositiveEdge, RankingIndexCounts, evaluate_context,
+    Context, ContextGraph, PositiveEdge, RankingIndexCounts, SetupMeter, evaluate_context,
     prepare_approximate_context,
 };
 use serde::{Deserialize, Serialize};

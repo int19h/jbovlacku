@@ -9,17 +9,20 @@ use std::{
 };
 
 /// These local read limits do not change carrier format validity.
+/// `max_total_bytes` and `max_files` are optional quotas. They are off
+/// (`None`) by default. A configured quota returns `resource_unavailable`.
+/// The per-file bounds and the README bound always apply.
 #[derive(Clone, Copy, Debug)]
 pub struct ReadLimits {
-    pub max_total_bytes: usize,
-    pub max_files: usize,
+    pub max_total_bytes: Option<usize>,
+    pub max_files: Option<usize>,
     pub max_readme_bytes: usize,
 }
 impl Default for ReadLimits {
     fn default() -> Self {
         Self {
-            max_total_bytes: 128 * 1024 * 1024,
-            max_files: 250_000,
+            max_total_bytes: None,
+            max_files: None,
             max_readme_bytes: 1024 * 1024,
         }
     }
@@ -55,10 +58,14 @@ fn check_size(
             Error::new("file_size", format!("{path} exceeds its format limit"))
         });
     }
-    if count >= limits.max_files {
+    if let Some(max_files) = limits.max_files
+        && count >= max_files
+    {
         return Err(resource("file count exceeds its limit"));
     }
-    if size > limits.max_total_bytes.saturating_sub(total) {
+    if let Some(max_total) = limits.max_total_bytes
+        && size > max_total.saturating_sub(total)
+    {
         return Err(resource("total file bytes exceed their limit"));
     }
     Ok(())
@@ -110,7 +117,8 @@ fn open_regular(path: &Path) -> Result<fs::File> {
     regular(path, &file.metadata().map_err(|e| io_error(path, e))?)?;
     Ok(file)
 }
-fn read_files(root: &Path, limits: ReadLimits) -> Result<BTreeMap<String, Vec<u8>>> {
+type ListedFile = (String, usize);
+fn list_files(root: &Path, limits: ReadLimits) -> Result<Vec<ListedFile>> {
     let metadata = fs::symlink_metadata(root).map_err(|e| io_error(root, e))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(Error::new(
@@ -118,11 +126,11 @@ fn read_files(root: &Path, limits: ReadLimits) -> Result<BTreeMap<String, Vec<u8
             "carrier root must be a real directory",
         ));
     }
-    let mut files = BTreeMap::new();
+    let mut files: Vec<ListedFile> = Vec::new();
     fn visit(
         root: &Path,
         dir: &Path,
-        files: &mut BTreeMap<String, Vec<u8>>,
+        files: &mut Vec<ListedFile>,
         total: &mut usize,
         limits: ReadLimits,
     ) -> Result<()> {
@@ -152,28 +160,73 @@ fn read_files(root: &Path, limits: ReadLimits) -> Result<BTreeMap<String, Vec<u8
                 let size = usize::try_from(meta.len())
                     .map_err(|_| resource("file size exceeds address space"))?;
                 check_size(&relative, size, *total, files.len(), limits)?;
-                let file = open_regular(&path)?;
-                let max = file_limit(&relative, limits)
-                    .min(limits.max_total_bytes.saturating_sub(*total));
-                let mut bytes = Vec::new();
-                file.take((max as u64).saturating_add(1))
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| io_error(&path, e))?;
-                check_size(&relative, bytes.len(), *total, files.len(), limits)?;
-                *total += bytes.len();
-                files.insert(relative, bytes);
+                *total += size;
+                files.push((relative, size));
             }
         }
         Ok(())
     }
     visit(root, root, &mut files, &mut 0, limits)?;
+    files.sort();
     Ok(files)
+}
+fn read_small_file(root: &Path, relative: &str, limits: ReadLimits) -> Result<Vec<u8>> {
+    let path = root.join(relative);
+    let file = open_regular(&path)?;
+    let max = file_limit(relative, limits);
+    let mut bytes = Vec::new();
+    file.take((max as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| io_error(&path, e))?;
+    if bytes.len() > max {
+        return Err(if relative == "README.md" {
+            resource("README.md exceeds its byte limit")
+        } else {
+            Error::new("file_size", format!("{relative} exceeds its format limit"))
+        });
+    }
+    Ok(bytes)
+}
+fn check_tail_bytes(bytes: &[u8]) -> Result<()> {
+    if bytes.is_empty() || bytes.ends_with(b"\n") {
+        Ok(())
+    } else {
+        Err(Error::new(
+            "record_newline",
+            "every carrier record must end with LF",
+        ))
+    }
+}
+fn check_file_tail(path: &Path) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = open_regular(path)?;
+    let len = file.metadata().map_err(|e| io_error(path, e))?.len();
+    if len == 0 {
+        return Ok(());
+    }
+    file.seek(SeekFrom::End(-1))
+        .map_err(|e| io_error(path, e))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last).map_err(|e| io_error(path, e))?;
+    check_tail_bytes(&last)
+}
+fn snapshot_from_directory(root: &Path, limits: ReadLimits) -> Result<Snapshot> {
+    let listed = list_files(root, limits)?;
+    Snapshot::from_listed_files(
+        &listed,
+        |relative| read_small_file(root, relative, limits),
+        |relative| {
+            let file = open_regular(&root.join(relative))?;
+            Ok(Box::new(std::io::BufReader::new(file)) as Box<dyn std::io::BufRead>)
+        },
+        |relative| check_file_tail(&root.join(relative)),
+    )
 }
 pub fn read_directory(root: impl AsRef<Path>) -> Result<Snapshot> {
     read_directory_with_limits(root, ReadLimits::default())
 }
 pub fn read_directory_with_limits(root: impl AsRef<Path>, limits: ReadLimits) -> Result<Snapshot> {
-    Snapshot::from_files(&read_files(root.as_ref(), limits)?)
+    snapshot_from_directory(root.as_ref(), limits)
 }
 
 /// Write a new directory. An existing output path returns output_exists.
@@ -292,7 +345,25 @@ fn run_git(repo: &Path, args: &[&OsStr], max_output: usize) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn git_files(repo: &Path, commit: &str, limits: ReadLimits) -> Result<BTreeMap<String, Vec<u8>>> {
+struct GitSource {
+    listed: Vec<ListedFile>,
+    oids: BTreeMap<String, String>,
+}
+fn git_blob(repo: &Path, oid: &str, size: usize) -> Result<Vec<u8>> {
+    let body = run_git(
+        repo,
+        &[OsStr::new("cat-file"), OsStr::new("blob"), OsStr::new(oid)],
+        size,
+    )?;
+    if body.len() != size {
+        return Err(Error::new(
+            "git_blob",
+            "Git blob length differs from its reported size",
+        ));
+    }
+    Ok(body)
+}
+fn git_source(repo: &Path, commit: &str, limits: ReadLimits) -> Result<GitSource> {
     // Only full object identifiers enter Git arguments. No ref expression is evaluated.
     if ![40, 64].contains(&commit.len())
         || !commit
@@ -330,9 +401,10 @@ fn git_files(repo: &Path, commit: &str, limits: ReadLimits) -> Result<BTreeMap<S
             OsStr::new("--full-tree"),
             OsStr::new(commit),
         ],
-        limits.max_total_bytes,
+        limits.max_total_bytes.unwrap_or(usize::MAX),
     )?;
-    let mut files = BTreeMap::new();
+    let mut listed: Vec<ListedFile> = Vec::new();
+    let mut oids = BTreeMap::new();
     let mut total = 0;
     for entry in listing.split(|b| *b == 0).filter(|e| !e.is_empty()) {
         let tab = entry
@@ -380,22 +452,45 @@ fn git_files(repo: &Path, commit: &str, limits: ReadLimits) -> Result<BTreeMap<S
             .trim()
             .parse::<usize>()
             .map_err(|_| Error::new("git_blob", "Git returned an invalid blob size"))?;
-        check_size(path, size, total, files.len(), limits)?;
-        let body = run_git(
-            repo,
-            &[OsStr::new("cat-file"), OsStr::new("blob"), OsStr::new(oid)],
-            size,
-        )?;
-        if body.len() != size {
-            return Err(Error::new(
-                "git_blob",
-                "Git blob length differs from its reported size",
-            ));
-        }
+        check_size(path, size, total, listed.len(), limits)?;
         total += size;
-        files.insert(path.to_owned(), body);
+        listed.push((path.to_owned(), size));
+        oids.insert(path.to_owned(), oid.to_owned());
     }
-    Ok(files)
+    listed.sort();
+    Ok(GitSource { listed, oids })
+}
+fn snapshot_from_git(repo: &Path, source: &GitSource) -> Result<Snapshot> {
+    let sizes: BTreeMap<&str, usize> = source
+        .listed
+        .iter()
+        .map(|(p, s)| (p.as_str(), *s))
+        .collect();
+    Snapshot::from_listed_files(
+        &source.listed,
+        |relative| {
+            let oid = source
+                .oids
+                .get(relative)
+                .ok_or_else(|| Error::new("git_blob", format!("{relative} has no Git blob")))?;
+            git_blob(repo, oid, sizes[relative])
+        },
+        |relative| {
+            let oid = source
+                .oids
+                .get(relative)
+                .ok_or_else(|| Error::new("git_blob", format!("{relative} has no Git blob")))?;
+            let bytes = git_blob(repo, oid, sizes[relative])?;
+            Ok(Box::new(std::io::Cursor::new(bytes)) as Box<dyn std::io::BufRead>)
+        },
+        |relative| {
+            let oid = source
+                .oids
+                .get(relative)
+                .ok_or_else(|| Error::new("git_blob", format!("{relative} has no Git blob")))?;
+            check_tail_bytes(&git_blob(repo, oid, sizes[relative])?)
+        },
+    )
 }
 pub fn read_git_tree(repo: impl AsRef<Path>, commit: &str) -> Result<Snapshot> {
     read_git_tree_with_limits(repo, commit, ReadLimits::default())
@@ -405,7 +500,9 @@ pub fn read_git_tree_with_limits(
     commit: &str,
     limits: ReadLimits,
 ) -> Result<Snapshot> {
-    Snapshot::from_files(&git_files(repo.as_ref(), commit, limits)?)
+    let repo = repo.as_ref();
+    let source = git_source(repo, commit, limits)?;
+    snapshot_from_git(repo, &source)
 }
 pub fn validate_checkout(repo: impl AsRef<Path>, commit: &str) -> Result<Snapshot> {
     validate_checkout_with_limits(repo, commit, ReadLimits::default())
@@ -416,20 +513,120 @@ pub fn validate_checkout_with_limits(
     limits: ReadLimits,
 ) -> Result<Snapshot> {
     let repo = repo.as_ref();
-    let blobs = git_files(repo, commit, limits)?;
-    let checkout = read_files(repo, limits)?;
-    if blobs != checkout {
+    let source = git_source(repo, commit, limits)?;
+    let checkout = list_files(repo, limits)?;
+    if checkout != source.listed {
         return Err(Error::new(
             "checkout_transformed",
             "checkout files differ from the exact committed Git blob bytes",
         ));
     }
-    Snapshot::from_files(&checkout)
+    // Compare one file at a time so neither side is held in full.
+    for (relative, size) in &source.listed {
+        let oid = &source.oids[relative];
+        let blob = git_blob(repo, oid, *size)?;
+        if read_small_file(repo, relative, limits)? != blob {
+            return Err(Error::new(
+                "checkout_transformed",
+                "checkout files differ from the exact committed Git blob bytes",
+            ));
+        }
+    }
+    // Build the result from the compared Git blobs, not from the working
+    // files. Later working-file changes cannot change the result, and the
+    // filling pass reads the same content-addressed bytes as the first.
+    snapshot_from_git(repo, &source)
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn second_pass_rejects_a_part_that_changes_after_the_first_pass() {
+        use jvc_core::{Header, body_descriptor, canonical_value, identity_from_seed, sign_header};
+        use serde_json::{Value, json};
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        let body =
+            canonical_value(&json!({"name":"Disposable fixture","bio":[],"links":[]})).unwrap();
+        let descriptor = body_descriptor(&body).unwrap();
+        let sign = |nonce: u32| {
+            sign_header(
+                &[4; 32],
+                Header {
+                    version: 1,
+                    issuer: identity_from_seed(&[4; 32]),
+                    previous: vec![],
+                    nonce: format!("{nonce:032x}"),
+                    action: json!({"kind":"identity.profile"}),
+                    content: Some(descriptor.clone()),
+                },
+            )
+            .unwrap()
+        };
+        let a = sign(0);
+        let b = (1..100_000u32)
+            .map(sign)
+            .find(|e| e.id()[5..7] == a.id()[5..7])
+            .expect("fixture must find two records in one partition");
+        let mut snapshot = Snapshot::new();
+        for e in [&a, &b] {
+            snapshot
+                .insert_envelope(&e.canonical_envelope().unwrap())
+                .unwrap();
+        }
+        snapshot.insert_body(&descriptor.hash, &body).unwrap();
+        let canonical = snapshot.to_files().unwrap();
+        let record_path = canonical
+            .keys()
+            .find(|p| p.starts_with("records/"))
+            .unwrap()
+            .clone();
+        // The missing-body variant keeps the canonical manifest, because
+        // the other copy retains the body.
+        let mut missing = canonical.clone();
+        let bytes = missing.get(&record_path).unwrap();
+        let mut lines: Vec<Vec<u8>> = bytes[..bytes.len() - 1]
+            .split(|c| *c == b'\n')
+            .map(<[u8]>::to_vec)
+            .collect();
+        let mut record: Value = serde_json::from_slice(&lines[1]).unwrap();
+        record["body"] = Value::Null;
+        lines[1] = canonical_value(&record).unwrap();
+        let mut missing_bytes = Vec::new();
+        for line in lines {
+            missing_bytes.extend(line);
+            missing_bytes.push(b'\n');
+        }
+        missing.insert(record_path.clone(), missing_bytes);
+        let listed: Vec<(String, usize)> = canonical
+            .iter()
+            .map(|(p, b)| (p.clone(), b.len()))
+            .collect();
+        let opens = RefCell::new(HashMap::<String, usize>::new());
+        let err = Snapshot::from_listed_files(
+            &listed,
+            |path| Ok(missing.get(path).cloned().unwrap()),
+            |path| {
+                let mut counts = opens.borrow_mut();
+                let count = counts.entry(path.to_owned()).or_insert(0);
+                *count += 1;
+                // The first open reads the missing-body part. The filling
+                // pass opens it again and finds the canonical part.
+                let bytes = if path == record_path && *count > 1 {
+                    canonical.get(path).cloned().unwrap()
+                } else {
+                    missing.get(path).cloned().unwrap()
+                };
+                Ok(Box::new(std::io::Cursor::new(bytes)) as Box<dyn std::io::BufRead>)
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "input_changed");
+    }
+
     #[test]
     fn final_open_refuses_a_file_swapped_for_a_symlink() {
         let temp = tempfile::tempdir().unwrap();

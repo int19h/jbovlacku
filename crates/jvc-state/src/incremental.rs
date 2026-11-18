@@ -291,7 +291,16 @@ impl EvaluatedState {
     }
     /// Count index inputs without cloning them. Policy checks precede index allocation.
     pub fn ranking_source_records(&self) -> jvc_core::Result<usize> {
+        self.ranking_source_records_metered(&mut |_, _, _, _| Ok(()))
+    }
+    /// Like `ranking_source_records`, but each judgment group and overlay
+    /// field is charged to the meter before it is visited.
+    pub fn ranking_source_records_metered(
+        &self,
+        meter: &mut policy::SetupMeter<'_>,
+    ) -> jvc_core::Result<usize> {
         let e = &self.evaluation;
+        meter(16, 0, 0, 0)?;
         let mut count = self.prepared.nodes.len();
         for n in [
             e.publications.len(),
@@ -306,24 +315,42 @@ impl EvaluatedState {
                 jvc_core::Error::new("resource_unavailable", "ranking record count overflow")
             })?;
         }
-        for n in e
-            .judgments
-            .values()
-            .map(BTreeMap::len)
-            .chain(e.overlay.iter().flat_map(|v| {
-                ["trust", "blocked", "root_changes"]
-                    .into_iter()
-                    .map(move |k| v[k].as_array().map_or(0, Vec::len))
-            }))
-        {
-            count = count.checked_add(n).ok_or_else(|| {
+        for judgments in e.judgments.values() {
+            // Each group credits its own allowance before its charge,
+            // so this walk never exhausts a budget its input would raise.
+            meter(0, 0, 0, 1)?;
+            meter(8, 0, 0, 0)?;
+            count = count.checked_add(judgments.len()).ok_or_else(|| {
                 jvc_core::Error::new("resource_unavailable", "ranking record count overflow")
             })?;
+        }
+        if let Some(overlay) = &e.overlay {
+            let obj_len = overlay.as_object().map_or(0, |o| o.len());
+            for key in ["trust", "blocked", "root_changes"] {
+                meter(0, 0, 0, 1)?;
+                meter(
+                    super::arena::lookup_work(obj_len as u64, key.len() as u64),
+                    0,
+                    0,
+                    0,
+                )?;
+                let n = overlay[key].as_array().map_or(0, Vec::len);
+                count = count.checked_add(n).ok_or_else(|| {
+                    jvc_core::Error::new("resource_unavailable", "ranking record count overflow")
+                })?;
+            }
         }
         Ok(count)
     }
     pub fn ranking_index_bound(&self) -> jvc_core::Result<policy::RankingIndexCounts> {
         policy::ranking_index_bound(&self.evaluation)
+    }
+    /// Like `ranking_index_bound`, with every walk step charged first.
+    pub fn ranking_index_bound_metered(
+        &self,
+        meter: &mut policy::SetupMeter<'_>,
+    ) -> jvc_core::Result<policy::RankingIndexCounts> {
+        policy::ranking_index_bound_metered(&self.evaluation, meter)
     }
     /// Diagnostic counts after index construction. This does not build an index.
     pub fn ranking_index_counts(&self) -> jvc_core::Result<Option<policy::RankingIndexCounts>> {
@@ -334,11 +361,25 @@ impl EvaluatedState {
             .transpose()
     }
     pub fn ensure_ranking_index(&self) -> jvc_core::Result<()> {
+        self.ensure_ranking_index_metered(&mut |_, _, _, _| Ok(()))
+    }
+    /// Like `ensure_ranking_index`, with every construction lookup,
+    /// insertion, and comparison charged to the meter before it runs.
+    pub fn ensure_ranking_index_metered(
+        &self,
+        meter: &mut policy::SetupMeter<'_>,
+    ) -> jvc_core::Result<()> {
         if self.ranking_index.borrow().is_none() {
-            let index = policy::ApproximateContextIndex::new(&self.evaluation)?;
+            let index = policy::ApproximateContextIndex::new_metered(&self.evaluation, meter)?;
             *self.ranking_index.borrow_mut() = Some(index);
         }
         Ok(())
+    }
+    #[doc(hidden)]
+    pub fn replace_evaluation_for_test(&mut self, evaluation: Evaluation, overlay: Option<Value>) {
+        self.prepared.options.overlay = overlay;
+        self.evaluation = evaluation;
+        *self.ranking_index.borrow_mut() = None;
     }
     /// Borrow publications from this state, using its own bounded derived index.
     pub fn ranking_publications(
@@ -1209,10 +1250,10 @@ impl EvaluatedState {
             .into_iter()
             .map(|(id, node)| (id, node.repack(&arena)))
             .collect();
+        arena.borrow_mut().finish_load();
         if let Some(error) = arena.borrow().error() {
             return Err(jvc_core::Error::new("checkpoint", error.to_string()));
         }
-        arena.borrow_mut().finish_load();
         let prepared = PreparedEvaluationInput {
             options: saved.options,
             nodes: std::rc::Rc::new(nodes),

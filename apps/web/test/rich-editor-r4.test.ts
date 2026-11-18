@@ -409,3 +409,53 @@ for (const kind of ["word", "web"] as const) {
     expect(await richNodes(field)).toEqual([[...neighbor, changed]]);
   });
 }
+
+test("Firefox remounts skip 304 module revalidation while Chromium keeps it", async ({
+  page,
+  browserName,
+}) => {
+  let mainEtag = "";
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname === "/src/main.ts" && !mainEtag)
+      mainEtag = response.headers()["etag"] ?? "";
+  });
+  await expect(await mount(page, [["prose"]])).toBeVisible();
+  expect(mainEtag).not.toBe("");
+  const remountResponses: {
+    path: string;
+    status: number;
+    contentType: string | undefined;
+  }[] = [];
+  page.on("response", (response) => {
+    const path = new URL(response.url()).pathname;
+    if (/\.(?:m?[jt]s)$/u.test(path))
+      remountResponses.push({
+        path,
+        status: response.status(),
+        contentType: response.headers()["content-type"],
+      });
+  });
+  await expect(await mount(page, [["prose"]])).toBeVisible();
+  const remountMain = remountResponses.find(
+    (entry) => entry.path === "/src/main.ts",
+  );
+  expect(remountMain).toBeDefined();
+  expect(
+    remountResponses.some(
+      (entry) => entry.path === "/src/components/rich-field.ts",
+    ),
+  ).toBe(true);
+  const userAgent = await page.evaluate(() => navigator.userAgent);
+  const revalidated = await page.request.get("/src/main.ts", {
+    headers: { "if-none-match": mainEtag, "user-agent": userAgent },
+  });
+  if (browserName === "firefox") {
+    expect(remountResponses.filter((entry) => entry.status === 304)).toEqual(
+      [],
+    );
+    expect(remountMain?.contentType).toContain("javascript");
+    expect(revalidated.status()).toBe(200);
+  } else {
+    expect(revalidated.status()).toBe(304);
+  }
+});

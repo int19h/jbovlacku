@@ -275,3 +275,309 @@ fn definition_defaults_keep_original_bytes_through_carrier_round_trip() {
     assert_eq!(reimported.events().len(), 2);
     assert_eq!(reimported.to_jsonl().unwrap(), records);
 }
+
+#[test]
+fn cli_streams_jsonl_above_the_old_64_mib_input_cap() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let mut snapshot = Snapshot::new();
+    for index in 0..300usize {
+        let body =
+            canonical_value(&json!({"x": format!("{index:08}{}", "a".repeat(250_000))})).unwrap();
+        let descriptor = body_descriptor(&body).unwrap();
+        let event = sign_header(
+            &[9; 32],
+            Header {
+                version: 1,
+                issuer: identity_from_seed(&[9; 32]),
+                previous: vec![],
+                nonce: format!("{index:032x}"),
+                action: json!({"kind":"identity.profile"}),
+                content: Some(descriptor.clone()),
+            },
+        )
+        .unwrap();
+        snapshot
+            .insert_envelope(&event.canonical_envelope().unwrap())
+            .unwrap();
+        snapshot.insert_body(&descriptor.hash, &body).unwrap();
+    }
+    let records = snapshot.to_jsonl().unwrap();
+    assert!(records.len() > 64 * 1024 * 1024);
+    fs::write(root.join("records.jsonl"), &records).unwrap();
+    success(cli(
+        root,
+        &[
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "full",
+        ],
+    ));
+    assert_eq!(
+        read_directory(root.join("full")).unwrap().events().len(),
+        300
+    );
+    let exported = cli(root, &["export", "full", "--format", "jsonl"]);
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    assert_eq!(exported.stdout, records);
+    // A configured quota still refuses the same streamed input.
+    let refused = cli(
+        root,
+        &[
+            "--input-limit",
+            "67108864",
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "refused",
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("configured input limit"));
+    assert!(!root.join("refused").exists());
+}
+
+#[test]
+fn cli_rejects_a_carrier_record_above_the_per_record_bound() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let (snapshot, _, _) = fixture();
+    let jsonl = snapshot.to_jsonl().unwrap();
+    let line = &jsonl[..jsonl.iter().position(|b| *b == b'\n').unwrap()];
+    let mut record: serde_json::Value = serde_json::from_slice(line).unwrap();
+    record["body"] = json!({"x": "a".repeat(300_000)});
+    let mut oversized = canonical_value(&record).unwrap();
+    oversized.push(b'\n');
+    fs::write(root.join("oversized.jsonl"), oversized).unwrap();
+    let output = cli(
+        root,
+        &[
+            "import",
+            "oversized.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "full",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("record_size"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!root.join("full").exists());
+}
+
+#[test]
+fn cli_file_input_reports_record_newline_before_record_shape() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(root.join("precedence.jsonl"), b"null\nx").unwrap();
+    let output = cli(
+        root,
+        &[
+            "import",
+            "precedence.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "full",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("record_newline"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!root.join("full").exists());
+}
+
+#[test]
+fn cli_input_limit_is_rejected_without_a_file_argument() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let (snapshot, _, _) = fixture();
+    fs::write(root.join("records.jsonl"), snapshot.to_jsonl().unwrap()).unwrap();
+    success(cli(
+        root,
+        &[
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "full",
+        ],
+    ));
+    let commit = "0000000000000000000000000000000000000000";
+    for args in [
+        vec!["--input-limit", "0", "validate", "full"],
+        vec!["--input-limit", "0", "inventory", "full"],
+        vec!["--input-limit", "0", "validate-git", "full", commit],
+        vec!["--input-limit", "0", "validate-checkout", "full", commit],
+        vec!["--input-limit", "0", "export", "full", "--format", "jsonl"],
+        vec![
+            "--input-limit",
+            "0",
+            "merge",
+            "full",
+            "full",
+            "--output",
+            "merged",
+        ],
+        vec!["--input-limit", "0", "--help"],
+    ] {
+        let output = cli(root, &args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("--input-limit"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(!root.join("merged").exists());
+    // The flag stays enforced on the FILE argument of policy commands.
+    fs::write(root.join("policy.json"), b"{}").unwrap();
+    let refused = cli(
+        root,
+        &[
+            "--input-limit",
+            "1",
+            "retain",
+            "full",
+            "--policy",
+            "policy.json",
+            "--output",
+            "filtered",
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("configured input limit"));
+    assert!(!root.join("filtered").exists());
+    let refused_merge = cli(
+        root,
+        &[
+            "--input-limit",
+            "1",
+            "merge",
+            "full",
+            "full",
+            "--output",
+            "remerged",
+            "--policy",
+            "policy.json",
+        ],
+    );
+    assert!(!refused_merge.status.success());
+    assert!(String::from_utf8_lossy(&refused_merge.stderr).contains("configured input limit"));
+    assert!(!root.join("remerged").exists());
+    success(cli(
+        root,
+        &[
+            "--input-limit",
+            "100000",
+            "retain",
+            "full",
+            "--policy",
+            "policy.json",
+            "--output",
+            "filtered",
+        ],
+    ));
+}
+
+#[test]
+fn cli_input_limit_after_the_command_names_the_flag() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let (snapshot, _, _) = fixture();
+    fs::write(root.join("records.jsonl"), snapshot.to_jsonl().unwrap()).unwrap();
+    fs::write(root.join("null.json"), b"null").unwrap();
+    fs::write(root.join("policy.json"), b"{}").unwrap();
+    fs::write(root.join("selection.json"), b"[]").unwrap();
+    success(cli(
+        root,
+        &[
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "full",
+        ],
+    ));
+    for args in [
+        vec!["canonicalize", "null.json", "--input-limit", "0"],
+        vec!["canonicalize", "null.json", "--input-limit=0"],
+        vec!["canonicalize", "--input-limit", "0", "null.json"],
+        vec!["canonicalize", "--input-limit=0", "null.json"],
+        vec!["validate", "full", "--input-limit", "0"],
+        vec!["validate", "full", "--input-limit=0"],
+        vec!["--help", "--input-limit", "0"],
+        vec!["--help", "--input-limit=0"],
+        vec![
+            "retain",
+            "full",
+            "--policy",
+            "policy.json",
+            "--output",
+            "filtered",
+            "--input-limit",
+            "1",
+        ],
+        vec![
+            "retain",
+            "full",
+            "--policy",
+            "policy.json",
+            "--output",
+            "filtered",
+            "--input-limit=1",
+        ],
+        vec![
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "again",
+            "--selection",
+            "selection.json",
+            "--input-limit",
+            "1",
+        ],
+        vec![
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "again",
+            "--selection",
+            "selection.json",
+            "--input-limit=1",
+        ],
+    ] {
+        let output = cli(root, &args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("--input-limit must come before the command"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(!root.join("filtered").exists());
+    assert!(!root.join("again").exists());
+}

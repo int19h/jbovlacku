@@ -228,7 +228,7 @@ fn binding_changes_and_forks_drop_native_work_without_touching_evaluation() {
         core_binding: format!("sha256:{}", "a".repeat(64)),
         limits: RankingPreparationLimits::default(),
     };
-    policy.limits.records = 1;
+    policy.limits.records = Some(1);
     assert!(s.ranking_descriptor_native(&policy).is_err());
     assert_eq!(s.word_result_progress().unwrap(), "null");
 }

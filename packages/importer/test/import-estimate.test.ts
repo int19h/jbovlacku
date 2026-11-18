@@ -30,7 +30,7 @@ test("an unchanged proposal check includes the existing ledger and stays within 
   assert.equal(estimate.scope, "proposal");
   assert.equal(estimate.components.loaded_copy_bytes, 0);
   assert.equal(estimate.estimated_total_bytes, 1_174_486_493);
-  assert.equal(estimate.budget_bytes, 1_500_000_000);
+  assert.equal(estimate.budget_bytes, undefined);
   assert.equal(estimate.within_budget, true);
   assert.ok(estimate.estimated_proposal_bytes >= 853_782_528);
 });
@@ -73,8 +73,41 @@ test("check budget refusal includes a large retained ledger even when no new pub
     retained_carrier_count: 59_126,
     existing_output_carrier_bytes: 0,
     check_existing: true,
+    budget_bytes: 1_500_000_000,
   });
   assert.equal(estimate.within_budget, false);
+});
+
+test("no budget is configured by default and an opt-in budget still refuses", () => {
+  const input = {
+    stage_bytes: 143_433_728,
+    definition_rows: 65_224,
+  };
+  const unbudgeted = estimateImportArtifacts(input);
+  assert.equal(unbudgeted.budget_bytes, undefined);
+  assert.equal(unbudgeted.within_budget, true);
+  const budgeted = estimateImportArtifacts({
+    ...input,
+    budget_bytes: 1_000_000_000,
+  });
+  assert.equal(budgeted.budget_bytes, 1_000_000_000);
+  assert.equal(budgeted.within_budget, false);
+  const measured = compareImportSize(unbudgeted, {
+    proposal_bytes: unbudgeted.estimated_proposal_bytes,
+    stage_bytes: input.stage_bytes,
+    loaded_copy_bytes: 10_000_000_000,
+  });
+  assert.equal(measured.budget_exceeded, false);
+  assert.equal(
+    measured.warnings.some(
+      (warning) => warning.code === "import_budget_exceeded",
+    ),
+    false,
+  );
+  assert.throws(
+    () => estimateImportArtifacts({ ...input, budget_bytes: 0 }),
+    /must be positive/,
+  );
 });
 
 test("a verified committed repeat budgets one new view and fits the normal full-run budget", () => {
@@ -88,6 +121,7 @@ test("a verified committed repeat budgets one new view and fits the normal full-
   });
   assert.equal(estimate.scope, "proposal-and-load");
   assert.ok(estimate.estimated_total_bytes < 3_000_000_000);
+  assert.equal(estimate.budget_bytes, undefined);
   assert.equal(estimate.within_budget, true);
 });
 
@@ -102,10 +136,12 @@ test("a changed full snapshot budgets only definitions that need new publication
   const few = estimateImportArtifacts({
     ...retained,
     new_publication_count: 3,
+    budget_bytes: 3_000_000_000,
   });
   const all = estimateImportArtifacts({
     ...retained,
     new_publication_count: 65_224,
+    budget_bytes: 3_000_000_000,
   });
   assert.equal(few.new_publication_count, 3);
   assert.equal(few.within_budget, true);
@@ -148,6 +184,7 @@ test("post-run audit detects the old full-run miss and a budget breach", () => {
   const estimate = estimateImportArtifacts({
     stage_bytes: 143_433_728,
     definition_rows: 65_224,
+    budget_bytes: 3_000_000_000,
   });
   const old = { ...estimate, estimated_total_bytes: 1_108_049_920 };
   const measured = compareImportSize(old, {
