@@ -1124,7 +1124,7 @@ const resetFocusCases = [
 
 for (const resetCase of resetFocusCases) {
   for (const route of ["button", "direct"] as const) {
-    test(`reset then focus keeps the intended caret: ${resetCase.name} ${route}`, async ({
+    test(`reset then focus types where the engine leaves the caret: ${resetCase.name} ${route}`, async ({
       page,
       browserName,
     }) => {
@@ -1182,7 +1182,7 @@ for (const resetCase of resetFocusCases) {
 }
 
 for (const route of ["helper", "plain", "blur"] as const) {
-  test(`repeated page-owned focus after a reset keeps the recorded caret: ${route}`, async ({
+  test(`repeated page-owned focus after a reset types at the settled caret: ${route}`, async ({
     page,
     browserName,
   }) => {
@@ -1312,6 +1312,71 @@ test("tab into the field after a reset types at the document end once focus sett
   await expect
     .poll(() => field.evaluate((node: any) => node.value))
     .toEqual([["reset prefix"], ["alpha beta"]]);
+});
+
+test("a motion key pressed before Tab and released in the field moves no caret", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { richField } = await import(String("/src/components/rich-field.ts"));
+    const field = richField("Held key field", { value: [["alpha beta"]] });
+    const button = document.createElement("button");
+    button.textContent = "Rewrite without focusing";
+    document.body.replaceChildren(button, field.wrapper);
+    button.onclick = () => {
+      field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+    };
+  });
+  const field = page.getByRole("textbox", {
+    name: "Held key field",
+    exact: true,
+  });
+  await field.focus();
+  await field.evaluate((node) => {
+    const text = node.querySelector(".rich-literal")!.firstChild!;
+    getSelection()!.setBaseAndExtent(text, 4, text, 4);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.waitForTimeout(60);
+  await page
+    .getByRole("button", { name: "Rewrite without focusing", exact: true })
+    .click();
+  // The button receives the ArrowDown press; the field receives only
+  // its release, after Tab moves the focus. That release moved no caret
+  // in the field, so the field keeps the selection the rewrite chose,
+  // the document end, as it does without the held key.
+  await page.keyboard.down("ArrowDown");
+  await page.keyboard.down("Tab");
+  await page.keyboard.up("ArrowDown");
+  await page.keyboard.up("Tab");
+  await expect(field).toBeFocused();
+  // Wait for the browser caret to settle at the document end, however
+  // long the focus-time selection write takes, before typing.
+  await expect
+    .poll(() =>
+      field.evaluate((node) => {
+        const selection = getSelection()!;
+        const paragraph =
+          selection.focusNode?.nodeType === 3
+            ? selection.focusNode.parentElement?.closest("p")
+            : (selection.focusNode as Element)?.closest?.("p");
+        if (!paragraph || !selection.isCollapsed)
+          return { paragraph: -1, offset: -1 };
+        const range = document.createRange();
+        range.setStart(paragraph, 0);
+        range.setEnd(selection.focusNode!, selection.focusOffset);
+        return {
+          paragraph: [...node.querySelectorAll("p")].indexOf(paragraph),
+          offset: range.toString().length,
+        };
+      }),
+    )
+    .toEqual({ paragraph: 1, offset: 10 });
+  await page.keyboard.press("x");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["reset prefix"], ["alpha betax"]]);
 });
 
 for (const route of ["click", "selectall"] as const) {
@@ -1611,11 +1676,15 @@ test("a line selection made right after focus is kept", async ({ page }) => {
   await chooseKeyboardSelection(field, 18, 18);
   await field.blur();
   await field.focus();
-  // Move to the line start and extend to its end in one task, as a
-  // real key sequence does: each keydown is followed, after the native
-  // selection move, by its keyup, whose sync reads the moved selection
-  // into editor state before the focus-time write can restore the old
-  // caret. Then hold event delivery past that write.
+  // Move to the line start and extend to its end. The test sends each
+  // keydown, its native selection move, and its keyup in one task on
+  // purpose, so the keyup sync reads the moved selection into editor
+  // state before the focus-time write can run; then it holds event
+  // delivery past that write. Real keys arrive in separate tasks, and
+  // the focus timer can fire between a keydown and its keyup (a traced
+  // Home: keydown, then the focus timer about 5 ms later, then keyup
+  // about 80 ms after that). This test fixes the order instead of
+  // relying on that timing.
   await field.evaluate((node) => {
     const text = node.querySelector("p .rich-literal")!.firstChild!;
     const selection = getSelection()!;
