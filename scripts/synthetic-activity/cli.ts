@@ -64,6 +64,16 @@ function exitQuietlyOnEpipe(): void {
 }
 exitQuietlyOnEpipe();
 const digestIds = (ids: string[]) => sha256([...ids].sort().join("\n"));
+function sameMembers(server: string[], pinned: string[]): boolean {
+  return server.length === pinned.length && digestIds(server) === digestIds(pinned);
+}
+function sameCounts(recorded: unknown, actual: Record<string, number>): boolean {
+  if (!recorded || typeof recorded !== "object" || Array.isArray(recorded)) return false;
+  const rec = recorded as Record<string, unknown>;
+  const keys = new Set([...Object.keys(rec), ...Object.keys(actual)]);
+  for (const key of keys) if (rec[key] !== actual[key]) return false;
+  return true;
+}
 /** The service logical-inventory digest: one hash over the sorted
  * retained event IDs, body hashes and import selections. */
 function logicalInventoryDigest(events: string[], bodies: string[], selections: string[]): string {
@@ -255,6 +265,17 @@ function runSourceId(pin: Pin, identities: Identity[]): string {
   }
   return pinId;
 }
+/** The recorded public key is the key of this seed. Either field
+ * alone is refused before a post or a capture file is written. */
+function requireSeedMatchesIdentity(idn: Identity): void {
+  let derived = "";
+  try { derived = identityFromSeed(unhex(idn.seed)); }
+  catch { derived = ""; }
+  if (derived !== idn.identity) {
+    console.error("refused: identity seed does not match the recorded identity");
+    process.exit(3);
+  }
+}
 /**
  * An empty ID list is a subset of every server. The pin's server id,
  * taken from the disposable marker, is what tells the server that
@@ -307,6 +328,30 @@ async function readPinEvidence(pin: Pin, path: string): Promise<PinLists> {
     console.error("refused: base pin evidence does not match its lists; take a new pin with pin-base"); process.exit(3);
   }
   return { events, bodies, selections };
+}
+/**
+ * The snapshot id is the hash of the carrier manifest, not of the
+ * three ID lists. While the server still holds exactly those lists,
+ * its admitted snapshot must be the pinned snapshot. A later event
+ * changes the lists. That late join keeps the original pin, and this
+ * compare does not run.
+ */
+async function refusePinSnapshot(o: Opts, pin: Pin, lists: PinLists): Promise<void> {
+  let page: any;
+  try { page = await api(o, "/inventory?kind=events&limit=1000"); }
+  catch (e: any) {
+    console.error(`refused: cannot check the base pin against the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`);
+    process.exit(3);
+  }
+  const snapshot: string = page.snapshot;
+  const events = await inventoryIds(o, snapshot);
+  const bodies = await inventoryList(o, "bodies", snapshot);
+  const selections = await inventoryList(o, "import_selections", snapshot);
+  if (!sameMembers(events, lists.events) || !sameMembers(bodies, lists.bodies) || !sameMembers(selections, lists.selections)) return;
+  if (snapshot !== pin.base_snapshot) {
+    console.error("refused: base pin snapshot does not match the server; take a new pin with pin-base");
+    process.exit(3);
+  }
 }
 async function loadOrCreatePin(o: Opts): Promise<Pin> {
   const path = pinPath(o);
@@ -499,7 +544,9 @@ async function fitHeads(o: Opts, seed: Uint8Array, identity: string, verify?: ()
   return current;
 }
 async function writeEvent(o: Opts, action: Record<string, unknown>, body: unknown | null): Promise<void> {
-  const idn = await loadIdentity(o); const handle = await lock(o);
+  const idn = await loadIdentity(o);
+  requireSeedMatchesIdentity(idn);
+  const handle = await lock(o);
   try {
     const seed = unhex(idn.seed);
     const prev = await fitHeads(o, seed, idn.identity, handle.verify);
@@ -536,7 +583,8 @@ async function main(): Promise<void> {
       const pin = await loadOrCreatePin(o);
       if (!pinHasEvidence(pin, pinPath(o))) { console.error("refused: base pin file has no base evidence; delete it or use a new --pin path, then run pin-base again"); process.exit(3); }
       requirePinServerId(pin);
-      await readPinEvidence(pin, pinPath(o));
+      const pinned = await readPinEvidence(pin, pinPath(o));
+      await refusePinSnapshot(o, pin, pinned);
       console.log(`base_snapshot ${pin.base_snapshot}`);
       console.log(`base_inventory ${pin.base_inventory}`);
     } else if (cmd === "init") {
@@ -570,6 +618,7 @@ async function main(): Promise<void> {
               console.error("refused: base pin does not match this server; a new base needs a new pin file"); process.exit(3);
             }
             await refuseForeignEmptyPin(o, pin, lists);
+            await refusePinSnapshot(o, pin, lists);
             j.base_event_count = pin.base_event_count; j.base_inventory_digest = pin.base_inventory_digest;
             j.base_body_count = pin.base_body_count; j.base_body_digest = pin.base_body_digest;
             j.base_selection_count = pin.base_selection_count; j.base_selection_digest = pin.base_selection_digest;
@@ -613,6 +662,7 @@ async function main(): Promise<void> {
           console.error("refused: base pin does not match this server; a new base needs a new pin file"); process.exit(3);
         }
         await refuseForeignEmptyPin(o, pin, lists);
+        await refusePinSnapshot(o, pin, lists);
       }
       const seed = randomBytes(32); const identity = identityFromSeed(new Uint8Array(seed));
       const runId = requirePinServerId(pin);
@@ -735,7 +785,11 @@ async function main(): Promise<void> {
 
 async function collectSynthetic(o: Opts, states: string[], snapshot?: string): Promise<{ transports: any[]; identities: Identity[] }> {
   const identities: Identity[] = [];
-  for (const s of [...new Set(states)]) identities.push(JSON.parse(await readFile(join(s, "identity.json"), "utf8")));
+  for (const s of [...new Set(states)]) {
+    const idn = JSON.parse(await readFile(join(s, "identity.json"), "utf8"));
+    requireSeedMatchesIdentity(idn);
+    identities.push(idn);
+  }
   const byId = new Map<string, any>();
   const snap = snapshot ? `&snapshot=${encodeURIComponent(snapshot)}` : "";
   for (const idn of identities) {
@@ -854,6 +908,12 @@ async function captureBody(o: Opts): Promise<void> {
     || identities.some((i) => i.base_body_digest !== capturePin.base_body_digest || i.base_selection_digest !== capturePin.base_selection_digest)) {
     console.error("refused: state folders do not match the base pin file; use the pin file of this run"); process.exit(3);
   }
+  if (identities.some((i) => i.base_body_count !== capturePin.base_body_count)) {
+    console.error("refused: identity base body count does not match the pin"); process.exit(3);
+  }
+  if (identities.some((i) => i.base_selection_count !== capturePin.base_selection_count)) {
+    console.error("refused: identity base selection count does not match the pin"); process.exit(3);
+  }
   const allIds = await inventoryIds(o, sourceSnapshot);
   const allBodies = await inventoryList(o, "bodies", sourceSnapshot);
   const allSelections = await inventoryList(o, "import_selections", sourceSnapshot);
@@ -875,6 +935,13 @@ async function captureBody(o: Opts): Promise<void> {
   }
   if (digestIds(allSelections) !== capturePin.base_selection_digest) {
     console.error(`refused: capture base import selections do not match the pin: server holds ${allSelections.length} selections digest ${digestIds(allSelections)}, pin holds ${capturePin.base_selection_count} digest ${capturePin.base_selection_digest}; a base selection changed after the pin`);
+    process.exit(3);
+  }
+  // The admitted snapshot matches the pin only while the three lists
+  // are still exactly the pinned base. A capture after later events
+  // is a late join: the snapshot has moved, and the pin stays valid.
+  if (sameMembers(allIds, pinLists.events) && sameMembers(allBodies, pinLists.bodies) && sameMembers(allSelections, pinLists.selections) && sourceSnapshot !== capturePin.base_snapshot) {
+    console.error("refused: base pin snapshot does not match the server; take a new pin with pin-base");
     process.exit(3);
   }
   // Read the admitted snapshot once more. If it moved, a writer is
@@ -935,6 +1002,7 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   if (!manifest.base_snapshot || !manifest.base_inventory || !Number.isInteger(manifest.base_event_count) || !manifest.base_inventory_digest || !Number.isInteger(manifest.expected_final_event_count) || !manifest.expected_final_inventory_digest || !manifest.event_file_sha256 || !Number.isInteger(manifest.event_count)
     || !Number.isInteger(manifest.base_body_count) || !manifest.base_body_digest || !Number.isInteger(manifest.base_selection_count) || !manifest.base_selection_digest || !manifest.base_minus_captured_body_digest
     || !Number.isInteger(manifest.expected_final_body_count) || !manifest.expected_final_body_digest || !Number.isInteger(manifest.expected_final_selection_count) || !manifest.expected_final_selection_digest || !manifest.expected_final_logical_inventory) fail(`capture manifest is missing a required field`);
+  if (manifest.format !== 1) fail("capture format is not 1");
   // Each captured identity states the manifest base and the source
   // id. One edited field is a mismatch. A capture with no such
   // records is from an older kit and must be captured again.
@@ -974,6 +1042,15 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
       fail("capture does not have one identity record for each captured identity; capture it again with the current kit");
   }
   for (const t of transports) { try { const p = prepareAdmission(utf8(JSON.stringify(t))); if (!p.action_valid || p.body_status === "invalid") fail(`current code refuses event ${t.envelope?.id ?? "?"}: invalid action or body`); } catch (e: any) { fail(`current code refuses event ${t.envelope?.id ?? "?"}: ${e.message ?? String(e)}`); } }
+  const byKind: Record<string, number> = {}, byIssuer: Record<string, number> = {};
+  for (const t of transports) {
+    const kind = t.envelope?.header?.action?.kind;
+    const issuer = t.envelope?.header?.issuer;
+    if (typeof kind === "string") byKind[kind] = (byKind[kind] ?? 0) + 1;
+    if (typeof issuer === "string") byIssuer[issuer] = (byIssuer[issuer] ?? 0) + 1;
+  }
+  if (!sameCounts(manifest.by_kind, byKind)) fail("by_kind does not match the captured events");
+  if (!sameCounts(manifest.by_issuer, byIssuer)) fail("by_issuer does not match the captured events");
   // Prove the whole logical inventory before any post: retained
   // events, bodies and import selections, each read at one pinned
   // admitted snapshot. Event IDs alone are not proof. The manifest
@@ -991,11 +1068,12 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   const beforeSet = new Set(before);
   const present = transports.filter((t: any) => beforeSet.has(t.envelope.id));
   let resumed = 0;
+  let rest: string[] = [];
   {
     // Events outside the capture must be exactly the pinned base.
     // A wrong set is refused below. A matching digest does not
     // imply the manifest base count, so the count is checked too.
-    const rest = before.filter((id) => !synthetic.has(id));
+    rest = before.filter((id) => !synthetic.has(id));
     const baseCountMismatch = rest.length !== manifest.base_event_count;
     if (digestIds(rest) !== manifest.base_inventory_digest) {
       if (present.length === transports.length && transports.length > 0)
@@ -1016,6 +1094,8 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
       fail(`base bodies do not match the pin: server holds ${restBodies.length} non-captured bodies digest ${digestIds(restBodies)}, expected digest ${manifest.base_minus_captured_body_digest}; refusing to write`);
     if (digestIds(beforeSelections) !== manifest.base_selection_digest)
       fail(`base import selections do not match the pin: server holds ${beforeSelections.length} selections digest ${digestIds(beforeSelections)}, expected ${manifest.base_selection_count} digest ${manifest.base_selection_digest}; refusing to write`);
+    if (beforeSelections.length !== manifest.base_selection_count)
+      fail(`base selection count does not match the capture pin: server holds ${beforeSelections.length} selections, manifest says ${manifest.base_selection_count}; refusing to write`);
     resumed = present.length;
   }
   if (present.length === 0) {
@@ -1028,6 +1108,12 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
     // partial and already-restored cases above.
     if (digestIds(beforeBodies) !== manifest.base_body_digest)
       fail(`base bodies do not match the pin: server holds ${beforeBodies.length} bodies digest ${digestIds(beforeBodies)}, expected ${manifest.base_body_count} digest ${manifest.base_body_digest}; refusing to write`);
+    // A resumed restore keeps the set-difference rule above. A body
+    // can belong to both the base and the capture, so the resumed
+    // count is not the base body count. A fresh target holds the
+    // complete base, and that count is checked here.
+    if (beforeBodies.length !== manifest.base_body_count)
+      fail(`base body count does not match the capture pin: server holds ${beforeBodies.length} bodies, manifest says ${manifest.base_body_count}; refusing to write`);
     // Fresh copy. Give a lagged manifest a bounded time to reach the pin.
     const waitMs = Number(flag(o, "wait-ms", "10000"));
     const deadline = Date.now() + (Number.isFinite(waitMs) && waitMs >= 0 ? waitMs : 10000);
@@ -1066,6 +1152,20 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
       changed.push(`import selections: server holds ${waitedSelections.length} digest ${digestIds(waitedSelections)}, expected ${manifest.base_selection_count} digest ${manifest.base_selection_digest}`);
     if (changed.length) fail(`inventory changed while waiting for the manifest: ${changed.join("; ")}; refusing to write`);
   }
+  // The expected final values name the pinned base plus the capture.
+  // Event ids do not overlap that base. Bodies can. Selections are
+  // not posted by restore, so the final selection list is the base.
+  // Each compare runs after its base proof and before any post.
+  const finalEventIds = [...new Set([...rest, ...synthetic])].sort();
+  if (finalEventIds.length !== manifest.expected_final_event_count || digestIds(finalEventIds) !== manifest.expected_final_inventory_digest)
+    fail(`expected final events do not match the pinned base plus the capture: ${finalEventIds.length} events digest ${digestIds(finalEventIds)}, manifest says ${manifest.expected_final_event_count} digest ${manifest.expected_final_inventory_digest}; refusing to write`);
+  const finalBodies = [...new Set([...beforeBodies, ...capturedBodies])].sort();
+  if (finalBodies.length !== manifest.expected_final_body_count || digestIds(finalBodies) !== manifest.expected_final_body_digest)
+    fail(`expected final bodies do not match the pinned base plus the capture: ${finalBodies.length} bodies digest ${digestIds(finalBodies)}, manifest says ${manifest.expected_final_body_count} digest ${manifest.expected_final_body_digest}; refusing to write`);
+  if (beforeSelections.length !== manifest.expected_final_selection_count || digestIds(beforeSelections) !== manifest.expected_final_selection_digest)
+    fail(`expected final import selections do not match the pinned base: server holds ${beforeSelections.length} selections digest ${digestIds(beforeSelections)}, manifest says ${manifest.expected_final_selection_count} digest ${manifest.expected_final_selection_digest}; refusing to write`);
+  if (logicalInventoryDigest(finalEventIds, finalBodies, beforeSelections) !== manifest.expected_final_logical_inventory)
+    fail("expected final logical inventory does not match the pinned base plus the capture; refusing to write");
   // Post every captured transport, not only the missing ones. A
   // repost is idempotent. It makes the server validate each captured
   // representation and supplies any body that an earlier admission

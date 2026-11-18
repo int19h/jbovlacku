@@ -2000,3 +2000,185 @@ test("an explicit pin path that does not exist is refused", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("one edited field is refused before a post or a write", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  const problems: string[] = [];
+  const row = async (name: string, fn: () => Promise<void>) => {
+    try { await fn(); }
+    catch (error: any) { problems.push(`${name}: ${error.message ?? error}`); }
+  };
+  const flip = (value: string) => (value[0] === "0" ? "1" : "0") + value.slice(1);
+  const flipHash = (value: string) => "sha256:" + flip(value.slice("sha256:".length));
+  const flipKey = (value: string) => "ed25519:" + flip(value.slice("ed25519:".length));
+  try {
+    const source = await startServer(join(root, "src"), 9658);
+    servers.push(source);
+    const url = "http://127.0.0.1:9658";
+    const state = join(root, "a");
+    await cmd(["--server", url, "--state", state, "init"]);
+    const pin = join(root, "base-pin.json");
+    const identityJson = JSON.parse(await readFile(join(state, "identity.json"), "utf8"));
+    const copyPin = async (dest: string) => {
+      await mkdir(dirname(dest), { recursive: true });
+      await writeFile(dest, await readFile(pin));
+      for (const ext of [".ids", ".bodies", ".selections"]) await writeFile(dest + ext, await readFile(pin + ext));
+    };
+    const pinRows: Array<[string, (pinJson: any) => void]> = [
+      ["new:pin.base_snapshot", (pinJson) => { pinJson.base_snapshot = flipHash(pinJson.base_snapshot); }],
+      ["pin.base_inventory", (pinJson) => { pinJson.base_inventory = flipHash(pinJson.base_inventory); }],
+      ["pin.base_event_count", (pinJson) => { pinJson.base_event_count += 1; }],
+      ["pin.base_inventory_digest", (pinJson) => { pinJson.base_inventory_digest = flipHash(pinJson.base_inventory_digest); }],
+      ["pin.base_body_count", (pinJson) => { pinJson.base_body_count += 1; }],
+      ["pin.base_body_digest", (pinJson) => { pinJson.base_body_digest = flipHash(pinJson.base_body_digest); }],
+      ["pin.base_selection_count", (pinJson) => { pinJson.base_selection_count += 1; }],
+      ["pin.base_selection_digest", (pinJson) => { pinJson.base_selection_digest = flipHash(pinJson.base_selection_digest); }],
+      ["pin.server_id", (pinJson) => { pinJson.server_id = flip(pinJson.server_id); }],
+    ];
+    for (const [name, edit] of pinRows) {
+      await row(name, async () => {
+        const dest = join(root, "rows", name, "pin.json");
+        const next = join(root, "rows", name, "state");
+        await copyPin(dest);
+        const pinJson = JSON.parse(await readFile(dest, "utf8"));
+        edit(pinJson);
+        await writeFile(dest, JSON.stringify(pinJson, null, 2) + "\n");
+        const created = await cmdResult(["--server", url, "--state", next, "--pin", dest, "init"]);
+        assert.equal(created.code, 3, created.out);
+        assert.match(created.out, /refused:/);
+        assert.equal(existsSync(join(next, "identity.json")), false);
+      });
+    }
+    for (const ext of [".ids", ".bodies", ".selections"]) {
+      const name = `pin.list${ext}`;
+      await row(name, async () => {
+        const dest = join(root, "rows", name, "pin.json");
+        const next = join(root, "rows", name, "state");
+        await copyPin(dest);
+        await writeFile(dest + ext, (await readFile(dest + ext, "utf8")) + "sha256:" + "ab".repeat(32) + "\n");
+        const created = await cmdResult(["--server", url, "--state", next, "--pin", dest, "init"]);
+        assert.equal(created.code, 3, created.out);
+        assert.match(created.out, /refused:/);
+        assert.equal(existsSync(join(next, "identity.json")), false);
+      });
+    }
+    const identityRows: Array<[string, (record: any) => void]> = [
+      ["new:identity.seed", (record) => { record.seed = flip(record.seed); }],
+      ["new:identity.identity", (record) => { record.identity = flipKey(record.identity); }],
+      ["identity.base_snapshot", (record) => { record.base_snapshot = flipHash(record.base_snapshot); }],
+      ["identity.base_inventory", (record) => { record.base_inventory = flipHash(record.base_inventory); }],
+      ["identity.base_event_count", (record) => { record.base_event_count += 1; }],
+      ["identity.base_inventory_digest", (record) => { record.base_inventory_digest = flipHash(record.base_inventory_digest); }],
+      ["new:identity.base_body_count", (record) => { record.base_body_count += 1; }],
+      ["identity.base_body_digest", (record) => { record.base_body_digest = flipHash(record.base_body_digest); }],
+      ["new:identity.base_selection_count", (record) => { record.base_selection_count += 1; }],
+      ["identity.base_selection_digest", (record) => { record.base_selection_digest = flipHash(record.base_selection_digest); }],
+      ["identity.server_id", (record) => { record.server_id = flip(record.server_id); }],
+    ];
+    for (const [name, edit] of identityRows) {
+      await row(name, async () => {
+        const copyState = join(root, "rows", name, "a");
+        await mkdir(copyState, { recursive: true });
+        const record = structuredClone(identityJson);
+        edit(record);
+        await writeFile(join(copyState, "identity.json"), JSON.stringify(record, null, 2) + "\n");
+        const out = join(root, "rows", name, "cap");
+        const captured = await cmdResult(["--server", url, "capture", "--state", copyState, "--pin", pin, "--out", out]);
+        assert.equal(captured.code, 3, captured.out);
+        assert.match(captured.out, /refused:/);
+        assert.equal(existsSync(join(out, "manifest.json")), false);
+        assert.equal(existsSync(join(out, "events.jsonl")), false);
+      });
+    }
+    await cmd(["--server", url, "--state", state, "profile", "--name", "one"]);
+    const cap = join(root, "cap");
+    await cmd(["--server", url, "capture", "--state", state, "--out", cap]);
+    const manifest = JSON.parse(await readFile(join(cap, "manifest.json"), "utf8"));
+    const manifestRows: Array<[string, (body: any) => void, boolean]> = [
+      ["new:manifest.format", (body) => { body.format = 2; }, false],
+      ["manifest.base_snapshot", (body) => { body.base_snapshot = flipHash(body.base_snapshot); }, false],
+      ["manifest.base_inventory", (body) => { body.base_inventory = flipHash(body.base_inventory); }, false],
+      ["manifest.source_server_id", (body) => { body.source_server_id = flip(body.source_server_id); }, false],
+      ["manifest.identity", (body) => { body.identity_states[0].identity = flipKey(body.identity_states[0].identity); }, false],
+      ["manifest.identity.base_snapshot", (body) => { body.identity_states[0].base_snapshot = flipHash(body.identity_states[0].base_snapshot); }, false],
+      ["manifest.identity.base_inventory", (body) => { body.identity_states[0].base_inventory = flipHash(body.identity_states[0].base_inventory); }, false],
+      ["manifest.identity.server_id", (body) => { body.identity_states[0].server_id = flip(body.identity_states[0].server_id); }, false],
+      ["manifest.event_count", (body) => { body.event_count += 1; }, false],
+      ["new:manifest.by_kind", (body) => { body.by_kind = { ...body.by_kind, tampered: 1 }; }, false],
+      ["new:manifest.by_issuer", (body) => { body.by_issuer = { ...body.by_issuer, tampered: 1 }; }, false],
+      ["manifest.public_keys", (body) => { body.public_keys[0] = flipKey(body.public_keys[0]); }, false],
+      ["manifest.event_file_sha256", (body) => { body.event_file_sha256 = flipHash(body.event_file_sha256); }, false],
+      ["manifest.base_event_count", (body) => { body.base_event_count += 1; }, false],
+      ["manifest.base_inventory_digest", (body) => { body.base_inventory_digest = flipHash(body.base_inventory_digest); }, false],
+      ["new:manifest.base_body_count", (body) => { body.base_body_count += 1; }, true],
+      ["manifest.base_body_digest", (body) => { body.base_body_digest = flipHash(body.base_body_digest); }, false],
+      ["new:manifest.base_selection_count", (body) => { body.base_selection_count += 1; }, true],
+      ["manifest.base_selection_digest", (body) => { body.base_selection_digest = flipHash(body.base_selection_digest); }, false],
+      ["manifest.base_minus_captured_body_digest", (body) => { body.base_minus_captured_body_digest = flipHash(body.base_minus_captured_body_digest); }, false],
+      ["new:manifest.expected_final_event_count", (body) => { body.expected_final_event_count += 1; }, false],
+      ["new:manifest.expected_final_inventory_digest", (body) => { body.expected_final_inventory_digest = flipHash(body.expected_final_inventory_digest); }, false],
+      ["new:manifest.expected_final_body_count", (body) => { body.expected_final_body_count += 1; }, false],
+      ["new:manifest.expected_final_body_digest", (body) => { body.expected_final_body_digest = flipHash(body.expected_final_body_digest); }, false],
+      ["new:manifest.expected_final_selection_count", (body) => { body.expected_final_selection_count += 1; }, false],
+      ["new:manifest.expected_final_selection_digest", (body) => { body.expected_final_selection_digest = flipHash(body.expected_final_selection_digest); }, false],
+      ["new:manifest.expected_final_logical_inventory", (body) => { body.expected_final_logical_inventory = flipHash(body.expected_final_logical_inventory); }, false],
+    ];
+    let manifestPort = 9660;
+    for (const [name, edit, alsoReuse] of manifestRows) {
+      const port = manifestPort++;
+      await row(name, async () => {
+        const data = join(root, "rows", name, "dst");
+        const rowServer = await startServer(data, port);
+        servers.push(rowServer);
+        const dest = join(root, "rows", name, "cap");
+        await cp(cap, dest, { recursive: true });
+        const manifestPath = join(dest, "manifest.json");
+        const body = JSON.parse(await readFile(manifestPath, "utf8"));
+        edit(body);
+        await writeFile(manifestPath, JSON.stringify(body, null, 2) + "\n");
+        const rowUrl = `http://127.0.0.1:${port}`;
+        const restored = await cmdResult(["--server", rowUrl, "restore", "--capture", dest, "--wait-ms", "0"]);
+        assert.equal(restored.code, 3, restored.out);
+        assert.match(restored.out, /refused:/);
+        const ids = ((await (await fetch(rowUrl + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+        assert.deepEqual(ids, []);
+        assert.equal(existsSync(join(data, "restored-runs.json")), false);
+        if (alsoReuse) {
+          const reuse = await cmdResult(["--server", rowUrl, "reuse-check", "--capture", dest, "--wait-ms", "0"]);
+          assert.equal(reuse.code, 3, reuse.out);
+          assert.match(reuse.out, /not reusable:/);
+          const afterReuse = ((await (await fetch(rowUrl + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+          assert.deepEqual(afterReuse, []);
+          assert.equal(existsSync(join(data, "restored-runs.json")), false);
+        }
+      });
+    }
+    await row("new:identity.seed profile", async () => {
+      const before = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids.length;
+      const copyState = join(root, "rows", "seed-profile", "a");
+      await mkdir(copyState, { recursive: true });
+      const record = structuredClone(identityJson);
+      record.seed = flip(record.seed);
+      await writeFile(join(copyState, "identity.json"), JSON.stringify(record, null, 2) + "\n");
+      const posted = await cmdResult(["--server", url, "--state", copyState, "--pin", pin, "profile", "--name", "late"]);
+      assert.equal(posted.code, 3, posted.out);
+      assert.match(posted.out, /refused: identity seed does not match the recorded identity/);
+      const after = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids.length;
+      assert.equal(after, before);
+      assert.equal(existsSync(join(copyState, "lock")), false);
+    });
+    const target = await startServer(join(root, "dst"), 9659);
+    servers.push(target);
+    const targetUrl = "http://127.0.0.1:9659";
+    const restored = await cmdResult(["--server", targetUrl, "restore", "--capture", cap, "--wait-ms", "0"]);
+    assert.equal(restored.code, 0, restored.out);
+    assert.match(restored.out, /restored/);
+    const ids = ((await (await fetch(targetUrl + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+    assert.equal(ids.length, manifest.expected_final_event_count);
+    assert.equal(problems.length, 0, problems.join("\n\n"));
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

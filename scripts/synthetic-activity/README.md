@@ -99,7 +99,7 @@ pin file exists, `init` reads the server and creates the
 pin. If it cannot read a base, `init` fails and writes no
 identity. It never creates an identity with an empty base.
 
-An explicit `--pin` path that does not exist is refused.
+An explicit `--pin` path that does not exist is refused for every identity command.
 Every command that loads an identity refuses that path.
 `init` of a new identity refuses it too.
 An absent default `base-pin.json` is not a refusal.
