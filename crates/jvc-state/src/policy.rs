@@ -44,11 +44,12 @@ pub(crate) fn resolve_referenced_selections<'a>(
     nodes: &BTreeMap<String, graph::Node>,
 ) -> ResolvedSelections<'a> {
     let mut cache = BTreeMap::new();
-    resolve_referenced_selections_cached(input, nodes, &mut cache)
+    resolve_referenced_selections_cached(input, &input.import_selections, nodes, &mut cache)
 }
 
 pub(crate) fn resolve_referenced_selections_cached<'a>(
-    input: &'a EvaluationOptions,
+    input: &EvaluationOptions,
+    import_selections: &'a BTreeMap<String, Vec<String>>,
     nodes: &BTreeMap<String, graph::Node>,
     cache: &mut BTreeMap<String, bool>,
 ) -> ResolvedSelections<'a> {
@@ -90,11 +91,11 @@ pub(crate) fn resolve_referenced_selections_cached<'a>(
         if resolved.valid.contains_key(selection_id) || resolved.invalid.contains(selection_id) {
             continue;
         }
-        let Some(ids) = input.import_selections.get(selection_id) else {
+        let Some(ids) = import_selections.get(selection_id) else {
             resolved.invalid.insert(selection_id.to_owned());
             continue;
         };
-        match valid_selection_cached(input, selection_id, cache) {
+        match valid_selection_cached(import_selections, selection_id, cache) {
             Some(valid_ids) => {
                 resolved.allowance = resolved.allowance.saturating_add(valid_ids.len());
                 resolved.valid.insert(selection_id.to_owned(), valid_ids);
@@ -114,6 +115,7 @@ pub(crate) fn resolve_referenced_selections_cached<'a>(
 pub(crate) fn select(
     graph: &graph::Graph,
     input: &EvaluationOptions,
+    import_selections: &BTreeMap<String, Vec<String>>,
     resolved: &ResolvedSelections<'_>,
     cache: &mut BTreeMap<String, bool>,
     result: &mut Evaluation,
@@ -207,7 +209,7 @@ pub(crate) fn select(
                     result.reasons.insert("import_selection_unavailable".into());
                     continue;
                 };
-                if let Some(ids) = input.import_selections.get(selection_id)
+                if let Some(ids) = import_selections.get(selection_id)
                     && !ids.is_empty()
                     && !graph.charge(ids.len())
                 {
@@ -226,7 +228,7 @@ pub(crate) fn select(
                     .valid
                     .get(selection_id)
                     .copied()
-                    .or_else(|| valid_selection_cached(input, selection_id, cache));
+                    .or_else(|| valid_selection_cached(import_selections, selection_id, cache));
                 match valid_ids {
                     None => {
                         invalid_selections.insert(selection_id.to_owned());
@@ -1561,25 +1563,25 @@ pub(crate) fn selection_hash_validations() -> usize {
 }
 
 pub(crate) fn valid_selection_cached<'a>(
-    input: &'a EvaluationOptions,
+    import_selections: &'a BTreeMap<String, Vec<String>>,
     id: &str,
     cache: &mut BTreeMap<String, bool>,
 ) -> Option<&'a Vec<String>> {
-    let ids = input.import_selections.get(id)?;
+    let ids = import_selections.get(id)?;
     if let Some(&is_valid) = cache.get(id) {
         return is_valid.then_some(ids);
     }
-    let valid = valid_selection(input, id);
+    let valid = valid_selection_map(import_selections, id);
     cache.insert(id.to_owned(), valid.is_some());
     valid
 }
 
-pub(crate) fn valid_selection<'a>(
-    input: &'a EvaluationOptions,
+pub(crate) fn valid_selection_map<'a>(
+    import_selections: &'a BTreeMap<String, Vec<String>>,
     id: &str,
 ) -> Option<&'a Vec<String>> {
     use std::io::Write;
-    let ids = input.import_selections.get(id)?;
+    let ids = import_selections.get(id)?;
     #[cfg(test)]
     SELECTION_HASH_VALIDATIONS.with(|count| count.set(count.get() + 1));
     let mut writer = jvc_core::HashWriter::new(b"", 16 * 1024 * 1024);

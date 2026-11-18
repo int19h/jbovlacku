@@ -1,8 +1,8 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v7";
-const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v7";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v8";
+const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v8";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
 
@@ -37,6 +37,14 @@ pub struct JudgmentChanges {
     pub actors: BTreeSet<String>,
 }
 
+#[derive(Serialize)]
+struct SavedOptions<'a> {
+    selected_view: &'a str,
+    import_selections: &'a BTreeMap<String, Vec<String>>,
+    overlay: &'a Option<Value>,
+    limits: &'a Limits,
+}
+
 /// Retained authenticated input and its evaluated state.
 /// A fork owns its result and shares the record projection and immutable ancestor payloads.
 pub struct EvaluatedState {
@@ -44,6 +52,7 @@ pub struct EvaluatedState {
     evaluation: Evaluation,
     graph: Option<Graph>,
     unresolved: BTreeSet<String>,
+    rafsi_word_publications: std::rc::Rc<BTreeMap<String, BTreeSet<String>>>,
     selection_allowance: usize,
     remaining_work: usize,
     unmatched_publication_scans: usize,
@@ -83,6 +92,7 @@ impl Clone for EvaluatedState {
             evaluation: self.evaluation.clone(),
             graph: self.graph.clone(),
             unresolved: self.unresolved.clone(),
+            rafsi_word_publications: self.rafsi_word_publications.clone(),
             selection_allowance: self.selection_allowance,
             remaining_work: self.remaining_work,
             unmatched_publication_scans: self.unmatched_publication_scans,
@@ -115,6 +125,7 @@ impl EvaluatedState {
             prepared,
             graph: None,
             unresolved: BTreeSet::new(),
+            rafsi_word_publications: Default::default(),
             selection_allowance: 0,
             remaining_work: 0,
             unmatched_publication_scans: 0,
@@ -135,11 +146,26 @@ impl EvaluatedState {
     }
 
     pub fn import_selections(&self) -> &BTreeMap<String, Vec<String>> {
-        &self.prepared.options.import_selections
+        &self.prepared.import_selections
     }
 
-    pub(crate) fn validated_selections(&self) -> std::cell::Ref<'_, BTreeMap<String, bool>> {
-        self.prepared.validated_selections.borrow()
+    pub(crate) fn shared_import_selections(&self) -> &std::rc::Rc<BTreeMap<String, Vec<String>>> {
+        &self.prepared.import_selections
+    }
+
+    pub(crate) fn shared_validated_selections(
+        &self,
+    ) -> &std::rc::Rc<std::cell::RefCell<BTreeMap<String, bool>>> {
+        &self.prepared.validated_selections
+    }
+
+    fn saved_options(&self) -> SavedOptions<'_> {
+        SavedOptions {
+            selected_view: &self.prepared.options.selected_view,
+            import_selections: &self.prepared.import_selections,
+            overlay: &self.prepared.options.overlay,
+            limits: &self.prepared.options.limits,
+        }
     }
 
     #[doc(hidden)]
@@ -173,6 +199,7 @@ impl EvaluatedState {
         self.graph = None;
         observe("graph_cleared");
         self.unresolved.clear();
+        self.rafsi_word_publications = Default::default();
         self.matched_publication_scans.clear();
         observe("unresolved_cleared");
     }
@@ -200,6 +227,10 @@ impl EvaluatedState {
                     .unwrap_or_else(|| issuer.into());
                 lifecycle.suspended.contains_key(&actor)
             });
+            if !self.evaluation.available && state.evaluation.available {
+                state.unresolved = unresolved(&state.prepared, &state.evaluation);
+                state.rafsi_word_publications = rafsi_word_publications(&state.evaluation);
+            }
         }
         state.statistics = self.statistics.clone();
         state.judgment_changes = None;
@@ -275,10 +306,11 @@ impl EvaluatedState {
             check: &mut within_deadline,
             remaining: 256 * 1024,
         };
+        let saved_options = self.saved_options();
         serde_json::to_writer(
             &mut writer,
             &(
-                &self.prepared.options,
+                &saved_options,
                 self.prepared.nodes.as_ref(),
                 self.prepared.event_limit_exceeded,
                 &self.evaluation,
@@ -444,6 +476,7 @@ impl EvaluatedState {
             resource_unavailable(&mut self.evaluation);
             self.remaining_work = self.traversal_budget();
             self.unresolved.clear();
+            self.rafsi_word_publications = Default::default();
             self.unmatched_publication_scans = 0;
             self.matched_publication_scans.clear();
             return;
@@ -453,6 +486,7 @@ impl EvaluatedState {
             self.evaluation = event_limit_evaluation(&self.prepared.options);
             self.remaining_work = self.traversal_budget();
             self.unresolved.clear();
+            self.rafsi_word_publications = Default::default();
             self.unmatched_publication_scans = 0;
             self.matched_publication_scans.clear();
             return;
@@ -460,6 +494,7 @@ impl EvaluatedState {
         let mut selection_cache = self.prepared.validated_selections.borrow_mut();
         let resolved = policy::resolve_referenced_selections_cached(
             &self.prepared.options,
+            &self.prepared.import_selections,
             &self.prepared.nodes,
             &mut selection_cache,
         );
@@ -472,6 +507,7 @@ impl EvaluatedState {
         let graph = Graph::new_with_budget(self.prepared.nodes.clone(), budget);
         self.evaluation = evaluate_graph_with_selections_cached(
             &self.prepared.options,
+            &self.prepared.import_selections,
             &graph,
             &resolved,
             &mut selection_cache,
@@ -487,6 +523,7 @@ impl EvaluatedState {
         }
         self.graph = Some(graph);
         self.unresolved = unresolved(&self.prepared, &self.evaluation);
+        self.rafsi_word_publications = rafsi_word_publications(&self.evaluation);
     }
 
     /// Advance from original records that already passed record preparation.
@@ -496,25 +533,6 @@ impl EvaluatedState {
         let mut rebuild_reason =
             (self.prepared.options != delta.options).then(|| "configuration_changed".to_owned());
         let arena_error = delta.arena_error();
-        if self.prepared.options.import_selections != delta.options.import_selections {
-            let prev_selections = &self.prepared.options.import_selections;
-            let next_selections = &delta.options.import_selections;
-            let mut merged = delta.validated_selections.into_inner();
-            for (id, valid) in self.prepared.validated_selections.borrow().iter() {
-                if !merged.contains_key(id) && prev_selections.get(id) == next_selections.get(id) {
-                    merged.insert(id.clone(), *valid);
-                }
-            }
-            *self.prepared.validated_selections.borrow_mut() = merged;
-        } else {
-            let delta_cache = delta.validated_selections.into_inner();
-            if !delta_cache.is_empty() {
-                self.prepared
-                    .validated_selections
-                    .borrow_mut()
-                    .extend(delta_cache);
-            }
-        }
         self.prepared.options = delta.options;
         if let Some(error) = arena_error {
             self.prepared.arena_error = Some(error);
@@ -546,6 +564,49 @@ impl EvaluatedState {
                 || self.prepared.options.limits.events.is_some_and(|limit| {
                     self.prepared.nodes.len().saturating_add(added.len()) > limit
                 });
+        if !std::rc::Rc::ptr_eq(&self.prepared.import_selections, &delta.import_selections) {
+            if !self.prepared.event_limit_exceeded
+                && self.prepared.options.limits.traversal != Some(0)
+            {
+                let view_node = added.get(&self.prepared.options.selected_view).or_else(|| {
+                    self.prepared
+                        .nodes
+                        .get(&self.prepared.options.selected_view)
+                });
+                if let Some(body) = view_node
+                    .filter(|n| n.semantic && n.kind == "view.publish")
+                    .and_then(|n| n.body.as_ref())
+                {
+                    let prev_selections = &self.prepared.import_selections;
+                    let next_selections = &delta.import_selections;
+                    let prev_cache = self.prepared.validated_selections.borrow();
+                    let mut next_cache = delta.validated_selections.borrow_mut();
+                    for entry in body
+                        .view()
+                        .index("import_sets")
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                    {
+                        let sel_field = entry.index("selection");
+                        let Some(sel_id) = sel_field.as_str() else {
+                            continue;
+                        };
+                        if prev_selections.get(sel_id) != next_selections.get(sel_id) {
+                            if rebuild_reason.is_none() {
+                                rebuild_reason = Some("configuration_changed".into());
+                            }
+                        } else if !next_cache.contains_key(sel_id)
+                            && let Some(&valid) = prev_cache.get(sel_id)
+                        {
+                            next_cache.insert(sel_id.to_owned(), valid);
+                        }
+                    }
+                }
+            }
+            self.prepared.import_selections = delta.import_selections;
+            self.prepared.validated_selections = delta.validated_selections;
+        }
         self.statistics = UpdateStatistics::default();
         self.judgment_changes = Some(JudgmentChanges::default());
         if self.prepared.event_limit_exceeded {
@@ -1091,26 +1152,15 @@ impl EvaluatedState {
             action_targets_for(graph, &mut self.evaluation, Some(&node.id));
             // Pair gates consume eligibility before the gate itself. Restore
             // that input before evaluating a changed word's gate again.
-            if self
-                .evaluation
-                .publications
-                .values()
-                .any(|p| p.kind == "rafsi.publish")
-            {
-                for publication in
-                    self.evaluation.publications.values_mut().filter(|p| {
-                        p.kind == "rafsi.publish" && p.eligible != Eligibility::NotSelected
-                    })
-                {
-                    publication.eligible = if publication.content_available
-                        && !publication.reasons.contains("import_selection_unavailable")
-                    {
-                        Eligibility::Eligible
-                    } else {
-                        Eligibility::Unknown
-                    };
-                }
-                rafsi_gate(&mut self.evaluation);
+            let word = self.evaluation.publications[&node.id].word.clone();
+            if self.rafsi_word_publications.contains_key(&word) {
+                std::rc::Rc::make_mut(&mut self.rafsi_word_publications)
+                    .get_mut(&word)
+                    .unwrap()
+                    .insert(node.id.clone());
+                let word_ids = &self.rafsi_word_publications[&word];
+                let empty_word_ids = self.rafsi_word_publications.get("");
+                rafsi_gate_for_word(&mut self.evaluation, word_ids, empty_word_ids);
             }
         }
         self.remaining_work = graph.budget.get();
@@ -1132,7 +1182,7 @@ impl EvaluatedState {
         struct SavedFull<'a> {
             version: &'static str,
             binding: &'a str,
-            options: &'a EvaluationOptions,
+            options: SavedOptions<'a>,
             nodes: &'a BTreeMap<String, Node>,
             evaluation: &'a Evaluation,
             event_limit_exceeded: bool,
@@ -1149,7 +1199,7 @@ impl EvaluatedState {
         struct SavedResults<'a> {
             version: &'static str,
             binding: &'a str,
-            options: &'a EvaluationOptions,
+            options: SavedOptions<'a>,
             evaluation: &'a Evaluation,
             event_limit_exceeded: bool,
             consumed_work: usize,
@@ -1185,11 +1235,12 @@ impl EvaluatedState {
             .values()
             .map(|register| register.maxima_member_work)
             .collect();
+        let saved_options = self.saved_options();
         let mut bytes = if results_only {
             serde_json::to_vec(&SavedResults {
                 version: RESULTS_CHECKPOINT_VERSION,
                 binding,
-                options: &self.prepared.options,
+                options: saved_options,
                 evaluation: &self.evaluation,
                 event_limit_exceeded: self.prepared.event_limit_exceeded,
                 consumed_work,
@@ -1205,7 +1256,7 @@ impl EvaluatedState {
             serde_json::to_vec(&SavedFull {
                 version: CHECKPOINT_VERSION,
                 binding,
-                options: &self.prepared.options,
+                options: saved_options,
                 nodes: &self.prepared.nodes,
                 evaluation: &self.evaluation,
                 event_limit_exceeded: self.prepared.event_limit_exceeded,
@@ -1284,12 +1335,14 @@ impl EvaluatedState {
                 (saved, CHECKPOINT_VERSION, nodes)
             }
         };
+        let mut saved = saved;
         let mut validated_selections = BTreeMap::new();
         let resolved = if saved.event_limit_exceeded {
             policy::ResolvedSelections::default()
         } else {
             policy::resolve_referenced_selections_cached(
                 &saved.options,
+                &saved.options.import_selections,
                 &nodes,
                 &mut validated_selections,
             )
@@ -1311,6 +1364,7 @@ impl EvaluatedState {
                 "checkpoint version or binding does not match",
             ));
         }
+        drop(resolved);
         let arena = std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default()));
         let nodes = nodes
             .into_iter()
@@ -1320,13 +1374,16 @@ impl EvaluatedState {
         if let Some(error) = arena.borrow().error() {
             return Err(jvc_core::Error::new("checkpoint", error.to_string()));
         }
+        let import_selections =
+            std::rc::Rc::new(std::mem::take(&mut saved.options.import_selections));
         let prepared = PreparedEvaluationInput {
             options: saved.options,
+            import_selections,
             nodes: std::rc::Rc::new(nodes),
             arena,
             arena_error: None,
             event_limit_exceeded: saved.event_limit_exceeded,
-            validated_selections: std::cell::RefCell::new(validated_selections),
+            validated_selections: std::rc::Rc::new(std::cell::RefCell::new(validated_selections)),
         };
         // The registers' charge fields are not serialized with
         // them; the checkpoint's array restores them in register
@@ -1352,8 +1409,10 @@ impl EvaluatedState {
             register.maxima_work = *work;
             register.maxima_member_work = *member_work;
         }
+        let rafsi_word_publications = rafsi_word_publications(&evaluation);
         Ok(Self {
             unresolved: unresolved(&prepared, &evaluation),
+            rafsi_word_publications,
             prepared,
             evaluation,
             graph: None,
@@ -1976,7 +2035,11 @@ fn check_saved_state(
                     continue;
                 }
                 let valid_ids = resolved.valid.get(sel_id).copied().or_else(|| {
-                    policy::valid_selection_cached(&saved.options, sel_id, validated_selections)
+                    policy::valid_selection_cached(
+                        &saved.options.import_selections,
+                        sel_id,
+                        validated_selections,
+                    )
                 });
                 match valid_ids {
                     Some(ids) => {
@@ -2864,6 +2927,31 @@ fn unresolved(prepared: &PreparedEvaluationInput, evaluation: &Evaluation) -> BT
         add_unresolved_node_references(node, &prepared.nodes, &mut result);
     }
     result
+}
+
+fn rafsi_word_publications(
+    evaluation: &Evaluation,
+) -> std::rc::Rc<BTreeMap<String, BTreeSet<String>>> {
+    if !evaluation.available {
+        return Default::default();
+    }
+    let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for p in evaluation.publications.values() {
+        if p.kind == "rafsi.publish" {
+            map.entry(p.word.clone()).or_default();
+        }
+    }
+    if map.is_empty() {
+        return Default::default();
+    }
+    for (id, p) in &evaluation.publications {
+        if p.word.is_empty() {
+            map.entry(String::new()).or_default().insert(id.clone());
+        } else if let Some(ids) = map.get_mut(&p.word) {
+            ids.insert(id.clone());
+        }
+    }
+    std::rc::Rc::new(map)
 }
 
 #[cfg(test)]
@@ -6442,8 +6530,8 @@ mod rebuild_tests {
 
         let full_json: Value = serde_json::from_slice(&full_bytes).unwrap();
         let result_json: Value = serde_json::from_slice(&result_bytes).unwrap();
-        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v7"));
-        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v7"));
+        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v8"));
+        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v8"));
         assert!(result_json.get("nodes").is_none());
         for json in [&full_json, &result_json] {
             assert_eq!(json.get("unmatched_publication_scans"), Some(&json!(0)));
@@ -7134,13 +7222,15 @@ mod rebuild_tests {
                     (Ok(state_e), Ok(state_t)) => {
                         let outcome =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                let mut delta_e =
-                                    PreparedEvaluationInput::new(prepared_exact.options.clone());
+                                let mut delta_e = PreparedEvaluationInput::new(
+                                    prepared_exact.options_with_selections(),
+                                );
                                 delta_e.add_host_verified_record(appended_pub.clone());
                                 let adv_e = state_e.advance(delta_e, &[]);
 
-                                let mut delta_t =
-                                    PreparedEvaluationInput::new(prepared_tight.options.clone());
+                                let mut delta_t = PreparedEvaluationInput::new(
+                                    prepared_tight.options_with_selections(),
+                                );
                                 delta_t.add_host_verified_record(appended_pub.clone());
                                 let adv_t = state_t.advance(delta_t, &[]);
 
@@ -7228,13 +7318,15 @@ mod rebuild_tests {
                     (Ok(state_e), Ok(state_t)) => {
                         let outcome =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                let mut delta_e =
-                                    PreparedEvaluationInput::new(prepared_exact.options.clone());
+                                let mut delta_e = PreparedEvaluationInput::new(
+                                    prepared_exact.options_with_selections(),
+                                );
                                 delta_e.add_host_verified_record(appended_pub.clone());
                                 let adv_e = state_e.advance(delta_e, &[]);
 
-                                let mut delta_t =
-                                    PreparedEvaluationInput::new(prepared_tight.options.clone());
+                                let mut delta_t = PreparedEvaluationInput::new(
+                                    prepared_tight.options_with_selections(),
+                                );
                                 delta_t.add_host_verified_record(appended_pub.clone());
                                 let adv_t = state_t.advance(delta_t, &[]);
 
@@ -7797,7 +7889,7 @@ mod rebuild_tests {
         full_after_input.add_host_verified_record(appended.clone());
         let full_after = full_after_input.into_state();
 
-        let mut delta = PreparedEvaluationInput::new(prepared.options);
+        let mut delta = PreparedEvaluationInput::new(prepared.options_with_selections());
         delta.add_host_verified_record(appended);
         let adv_full = restored_full.advance(delta.clone(), &[]);
         let adv_res = restored_res.advance(delta, &[]);
@@ -8334,9 +8426,9 @@ mod rebuild_tests {
             vec![],
             json!({"kind":"definition.publish","word":append_word,"language":"en","parents":[],"origin":"native"}),
         );
-        let mut delta_full = PreparedEvaluationInput::new(prepared.options.clone());
+        let mut delta_full = PreparedEvaluationInput::new(prepared.options_with_selections());
         delta_full.add_host_verified_record(append_record.clone());
-        let mut delta_res = PreparedEvaluationInput::new(prepared.options.clone());
+        let mut delta_res = PreparedEvaluationInput::new(prepared.options_with_selections());
         delta_res.add_host_verified_record(append_record.clone());
         let mut expected_prepared = prepared.clone();
         expected_prepared.add_host_verified_record(append_record);
@@ -8616,7 +8708,8 @@ mod rebuild_tests {
         after_records.sort_by(|a, b| a.id().cmp(b.id()));
 
         // Confirm the unmutated fast path works for both appended_pub and appended_judgment.
-        let mut control_delta = PreparedEvaluationInput::new(prepared_open.options.clone());
+        let mut control_delta =
+            PreparedEvaluationInput::new(prepared_open.options_with_selections());
         control_delta.add_host_verified_record(appended_pub.clone());
         control_delta.add_host_verified_record(appended_judgment.clone());
         let control_after = state_open.clone().advance(control_delta, &[]);
@@ -8668,7 +8761,12 @@ mod rebuild_tests {
                             continue;
                         };
                         let mut full_before_prep = prepared_open.clone();
-                        full_before_prep.options = restored_opts.clone();
+                        let mut stripped_opts = restored_opts.clone();
+                        full_before_prep.import_selections =
+                            std::rc::Rc::new(std::mem::take(&mut stripped_opts.import_selections));
+                        full_before_prep.validated_selections =
+                            std::rc::Rc::new(std::cell::RefCell::new(BTreeMap::new()));
+                        full_before_prep.options = stripped_opts;
                         full_before_prep.event_limit_exceeded = restored_opts
                             .limits
                             .events
@@ -9378,7 +9476,7 @@ mod rebuild_tests {
 
         for seq in 0..100usize {
             let (fixture_name, start_prep) = &fixtures[seq % fixtures.len()];
-            let mut current_options = start_prep.options.clone();
+            let mut current_options = start_prep.options_with_selections();
             let mut current_records: BTreeMap<String, HostVerifiedRecord> = start_prep
                 .nodes
                 .iter()
@@ -10185,5 +10283,434 @@ mod rebuild_tests {
             1,
             "advance on a refused state with unchanged selections must reuse the cached selection validity"
         );
+    }
+
+    #[test]
+    fn overlay_recovery_restores_pending_selection_and_target_references() {
+        let (pubn, pubn_body) = publication();
+        let pub_id = pubn.id().to_owned();
+
+        // 1. Pending selection publication: view references a valid selection containing absent `pub_id`.
+        let sel_ids = vec![pub_id.clone()];
+        let sel_digest =
+            jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(sel_ids)).unwrap());
+        let issuer = identity_from_seed(&[3; 32]);
+        let (sel_view, sel_view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"selection-overlay",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[{"source":"fixture","importer":issuer,"selection":sel_digest}],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let sel_opts = EvaluationOptions {
+            selected_view: sel_view.id().into(),
+            overlay: Some(json!({})),
+            import_selections: BTreeMap::from([(sel_digest, sel_ids)]),
+            limits: Limits::default(),
+        };
+        for mode in 0..3usize {
+            let mut input = PreparedEvaluationInput::new(sel_opts.clone());
+            input.add_record(&sel_view, sel_view_body.as_deref());
+            let mut base = input.into_state();
+            if mode == 1 {
+                base = EvaluatedState::restore_host_checkpoint(
+                    &base.checkpoint("sel").unwrap(),
+                    "sel",
+                )
+                .unwrap();
+            } else if mode == 2 {
+                let rec = HostVerifiedRecord::extract_with(
+                    sel_view.id(),
+                    sel_view.header(),
+                    jvc_core::inspect_body(&sel_view, sel_view_body.as_deref()),
+                    |_| (),
+                )
+                .0;
+                base = EvaluatedState::restore_host_result_checkpoint(
+                    &base.result_checkpoint("sel").unwrap(),
+                    "sel",
+                    vec![rec],
+                )
+                .unwrap();
+            }
+            assert!(!base.evaluation().available);
+            assert!(base.evaluation().reasons.contains("invalid_overlay"));
+
+            let repaired = base.with_overlay(None);
+            assert!(repaired.evaluation().available);
+            assert!(
+                repaired
+                    .evaluation()
+                    .reasons
+                    .contains("selection_publications_pending")
+            );
+
+            let mut open = sel_opts.clone();
+            open.overlay = None;
+            let mut delta = PreparedEvaluationInput::new(open.clone());
+            delta.add_record(&pubn, pubn_body.as_deref());
+            let next = repaired.advance(delta, &[]);
+
+            let mut full_input = PreparedEvaluationInput::new(open);
+            full_input.add_record(&sel_view, sel_view_body.as_deref());
+            full_input.add_record(&pubn, pubn_body.as_deref());
+            let full = full_input.into_state();
+
+            assert_eq!(
+                next.statistics().reason.as_deref(),
+                Some("reference_completed"),
+                "mode={mode}: expected reference_completed rebuild when pending selection publication arrives"
+            );
+            assert_eq!(next.statistics().incremental_records, 0);
+            assert!(
+                !next
+                    .evaluation()
+                    .reasons
+                    .contains("selection_publications_pending"),
+                "mode={mode}: selection_publications_pending must clear when publication arrives"
+            );
+            assert_eq!(next.consumed_work(), full.consumed_work());
+            assert_eq!(next.evaluation(), full.evaluation());
+        }
+
+        // 2. Pending judgment target and status target after removing an invalid overlay.
+        let (no_import_view, no_import_view_body) = event(
+            3,
+            2,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"no-imports",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        for mode in 0..3usize {
+            for kind in ["judgment", "status"] {
+                let (pending, _) = if kind == "judgment" {
+                    event(
+                        11,
+                        17,
+                        json!({"kind":"judgment.set","target":pub_id,"value":"bless"}),
+                        None,
+                    )
+                } else {
+                    event(
+                        1,
+                        17,
+                        json!({"kind":"status.set","target":pub_id,"value":"deprecated"}),
+                        None,
+                    )
+                };
+                let opts = EvaluationOptions {
+                    selected_view: no_import_view.id().into(),
+                    overlay: Some(json!({})),
+                    import_selections: BTreeMap::new(),
+                    limits: Limits::default(),
+                };
+                let mut input = PreparedEvaluationInput::new(opts.clone());
+                input.add_record(&no_import_view, no_import_view_body.as_deref());
+                input.add_record(&pending, None);
+                let mut base = input.into_state();
+                if mode == 1 {
+                    base = EvaluatedState::restore_host_checkpoint(
+                        &base.checkpoint("host").unwrap(),
+                        "host",
+                    )
+                    .unwrap();
+                } else if mode == 2 {
+                    let recs = [
+                        (&no_import_view, no_import_view_body.as_deref()),
+                        (&pending, None),
+                    ]
+                    .into_iter()
+                    .map(|(e, b)| {
+                        HostVerifiedRecord::extract_with(
+                            e.id(),
+                            e.header(),
+                            jvc_core::inspect_body(e, b),
+                            |_| (),
+                        )
+                        .0
+                    })
+                    .collect();
+                    base = EvaluatedState::restore_host_result_checkpoint(
+                        &base.result_checkpoint("host").unwrap(),
+                        "host",
+                        recs,
+                    )
+                    .unwrap();
+                }
+                assert!(base.evaluation().reasons.contains("invalid_overlay"));
+                let repaired = base.with_overlay(None);
+                assert!(repaired.evaluation().available);
+
+                let mut open = opts;
+                open.overlay = None;
+                let mut full_input = PreparedEvaluationInput::new(open.clone());
+                full_input.add_record(&no_import_view, no_import_view_body.as_deref());
+                full_input.add_record(&pending, None);
+                full_input.add_record(&pubn, pubn_body.as_deref());
+                let full = full_input.into_state();
+
+                let mut delta = PreparedEvaluationInput::new(open);
+                delta.add_record(&pubn, pubn_body.as_deref());
+                let next = repaired.advance(delta, &[]);
+
+                assert_eq!(
+                    next.evaluation().receipts[pending.id()].interpretation,
+                    Interpretation::Effective,
+                    "mode={mode} kind={kind}: pending record must become Effective when target arrives"
+                );
+                assert_eq!(next.consumed_work(), full.consumed_work());
+                assert_eq!(next.evaluation(), full.evaluation());
+            }
+        }
+    }
+
+    #[test]
+    fn with_overlay_and_empty_advance_share_selections_without_copying_or_scanning_unused_ids() {
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"no-imports",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let ids: Vec<String> = (0..4_096usize).map(|n| format!("jve1:{n:064x}")).collect();
+        let digest = jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(ids)).unwrap());
+
+        for limit in [None, Some(0)] {
+            let options = EvaluationOptions {
+                selected_view: view.id().into(),
+                overlay: None,
+                limits: Limits {
+                    traversal: limit,
+                    ..Limits::default()
+                },
+                import_selections: BTreeMap::from([(digest.clone(), ids.clone())]),
+            };
+            let mut input = PreparedEvaluationInput::new(options.clone());
+            input.add_record(&view, view_body.as_deref());
+            let base = input.into_state();
+            let before_map_ptr = base.import_selections() as *const BTreeMap<String, Vec<String>>;
+            let before_first_str_ptr = base.import_selections()[&digest][0].as_ptr();
+
+            let overlaid = base.with_overlay(None);
+            let after_map_ptr =
+                overlaid.import_selections() as *const BTreeMap<String, Vec<String>>;
+            let after_first_str_ptr = overlaid.import_selections()[&digest][0].as_ptr();
+            assert_eq!(
+                before_map_ptr, after_map_ptr,
+                "with_overlay must share immutable import_selections storage (limit={limit:?})"
+            );
+            assert_eq!(
+                before_first_str_ptr, after_first_str_ptr,
+                "with_overlay must not clone selection strings (limit={limit:?})"
+            );
+
+            // Empty advance with modified last ID in an unreferenced selection must not scan or trigger configuration_changed.
+            let old_work = overlaid.consumed_work();
+            let mut modified_options = options;
+            *modified_options
+                .import_selections
+                .get_mut(&digest)
+                .unwrap()
+                .last_mut()
+                .unwrap() = format!("jve1:{:064x}", 4_096usize);
+            let delta = PreparedEvaluationInput::new(modified_options);
+            let advanced = overlaid.advance(delta, &[]);
+            assert_eq!(advanced.consumed_work(), old_work);
+            assert!(
+                advanced.statistics().reason.is_none(),
+                "changing an unused selection in an empty advance must not trigger configuration_changed (limit={limit:?}, got {:?})",
+                advanced.statistics().reason
+            );
+            assert!(!advanced.statistics().rebuilt);
+        }
+    }
+
+    #[test]
+    fn fast_append_preserves_shared_ancestry_closure_map_without_cloning_old_entries() {
+        let mut prepared = base();
+        let (pubn, pubn_body) = publication();
+        let pub_id = pubn.id().to_owned();
+        prepared.add_record(&pubn, pubn_body.as_deref());
+        let filler_issuer = identity_from_seed(&[9; 32]);
+        for i in 0..128usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", i + 10),
+                &filler_issuer,
+                vec![],
+                json!({"kind":"identity.merge"}),
+            ));
+        }
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+        let before_graph = state.graph.as_ref().unwrap();
+        assert!(std::rc::Rc::ptr_eq(
+            &before_graph.own,
+            &before_graph.structural
+        ));
+        assert!(std::rc::Rc::ptr_eq(
+            &before_graph.own,
+            &before_graph.accepted
+        ));
+        let before_own_ptr = std::rc::Rc::as_ptr(&before_graph.own);
+
+        let judge = identity_from_seed(&[11; 32]);
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(host(
+            format!("jve1:{:064x}", 1_000_000usize),
+            &judge,
+            vec![],
+            json!({"kind":"judgment.set","target":pub_id,"value":"bless"}),
+        ));
+        let next = state.advance(delta, &[]);
+        assert!(next.evaluation().available);
+        assert!(!next.statistics().rebuilt);
+        assert_eq!(next.statistics().incremental_records, 1);
+
+        let after_graph = next.graph.as_ref().unwrap();
+        assert!(std::rc::Rc::ptr_eq(
+            &after_graph.own,
+            &after_graph.structural
+        ));
+        assert!(std::rc::Rc::ptr_eq(&after_graph.own, &after_graph.accepted));
+        let after_own_ptr = std::rc::Rc::as_ptr(&after_graph.own);
+        assert_eq!(
+            before_own_ptr, after_own_ptr,
+            "fast judgment append on a live session must mutate the shared closure map in place without cloning old entries"
+        );
+    }
+
+    #[test]
+    fn fast_append_native_definition_does_not_run_rafsi_gate_across_unrelated_words() {
+        let mut prepared = base();
+        let abc = b"bdfgjklmnprstvxz";
+        let word_value = |i: usize| {
+            json!({
+                "language": "jbo",
+                "spelling": format!("ba{}a{}a", abc[i / 16] as char, abc[i % 16] as char)
+            })
+        };
+        let def_template: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        let w0 = word_value(0);
+        let w0_id = jvc_core::word_id(&w0).unwrap();
+        let rafsi_pair = jvc_core::rafsi_pair_id(&w0_id, "bab").unwrap();
+        let (rafsi_claim, rafsi_body) = event(
+            13,
+            1,
+            json!({"kind":"rafsi.publish","word":w0_id,"assignment":rafsi_pair,"origin":"native"}),
+            Some(json!({
+                "word": w0,
+                "rafsi": "bab",
+                "rationale": [["fixture"]],
+                "sources": [],
+                "legacy": null
+            })),
+        );
+        prepared.add_record(&rafsi_claim, rafsi_body.as_deref());
+
+        for i in 0..128usize {
+            let w = word_value(i);
+            let wid = jvc_core::word_id(&w).unwrap();
+            let mut body = def_template.clone();
+            body["word"] = w;
+            let (def_ev, def_bytes) = event(
+                14,
+                (i % 250) as u8 + 2,
+                json!({"kind":"definition.publish","word":wid,"language":"en","parents":[],"origin":"native"}),
+                Some(body),
+            );
+            prepared.add_record(&def_ev, def_bytes.as_deref());
+        }
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+
+        // 1. Appending a native definition for an unrelated word (no rafsi claim on that word) must do 0 rafsi_gate publication visits.
+        let w_unrelated = json!({"language":"jbo","spelling":"banli"});
+        let wid_unrelated = jvc_core::word_id(&w_unrelated).unwrap();
+        let (unrelated_def, unrelated_bytes) = event(
+            15,
+            1,
+            json!({"kind":"definition.publish","word":wid_unrelated,"language":"en","parents":[],"origin":"native"}),
+            Some(def_template.clone()),
+        );
+        let mut delta_unrelated = PreparedEvaluationInput::new(prepared.options.clone());
+        delta_unrelated.add_record(&unrelated_def, unrelated_bytes.as_deref());
+        reset_rafsi_gate_publication_visits();
+        let next_unrelated = state.clone().advance(delta_unrelated, &[]);
+        assert!(next_unrelated.evaluation().available);
+        assert!(!next_unrelated.statistics().rebuilt);
+        assert_eq!(next_unrelated.statistics().incremental_records, 1);
+        assert_eq!(
+            rafsi_gate_publication_visits(),
+            0,
+            "fast definition append for a word without rafsi claims must not run rafsi_gate"
+        );
+
+        // 2. Appending a native definition for word(0) (which has 1 rafsi claim and 1 existing definition) must visit only word(0)'s publications (3), not the 127 unrelated words.
+        let mut w0_body = def_template;
+        w0_body["word"] = w0;
+        let (same_word_def, same_word_bytes) = event(
+            16,
+            1,
+            json!({"kind":"definition.publish","word":w0_id,"language":"en","parents":[],"origin":"native"}),
+            Some(w0_body),
+        );
+        let mut delta_same = PreparedEvaluationInput::new(prepared.options.clone());
+        delta_same.add_record(&same_word_def, same_word_bytes.as_deref());
+        reset_rafsi_gate_publication_visits();
+        let next_same = state.advance(delta_same, &[]);
+        assert!(next_same.evaluation().available);
+        assert!(!next_same.statistics().rebuilt);
+        assert_eq!(next_same.statistics().incremental_records, 1);
+        assert_eq!(
+            rafsi_gate_publication_visits(),
+            3,
+            "fast definition append for a word with a rafsi claim must visit only that word's publications"
+        );
+        let mut full_same = prepared;
+        full_same.add_record(&same_word_def, same_word_bytes.as_deref());
+        assert_eq!(next_same.evaluation(), &full_same.evaluate());
     }
 }

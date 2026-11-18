@@ -91,22 +91,31 @@ impl HostVerifiedRecord {
 #[derive(Clone)]
 pub struct PreparedEvaluationInput {
     options: EvaluationOptions,
+    import_selections: std::rc::Rc<BTreeMap<String, Vec<String>>>,
     nodes: std::rc::Rc<BTreeMap<String, graph::Node>>,
     arena: arena::SharedArena,
     arena_error: Option<jvc_core::Error>,
     event_limit_exceeded: bool,
-    validated_selections: std::cell::RefCell<BTreeMap<String, bool>>,
+    validated_selections: std::rc::Rc<std::cell::RefCell<BTreeMap<String, bool>>>,
 }
 impl PreparedEvaluationInput {
-    pub fn new(options: EvaluationOptions) -> Self {
+    pub fn new(mut options: EvaluationOptions) -> Self {
+        let import_selections = std::rc::Rc::new(std::mem::take(&mut options.import_selections));
         Self {
             options,
+            import_selections,
             nodes: std::rc::Rc::new(BTreeMap::new()),
             arena: std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default())),
             arena_error: None,
             event_limit_exceeded: false,
             validated_selections: Default::default(),
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn options_with_selections(&self) -> EvaluationOptions {
+        let mut options = self.options.clone();
+        options.import_selections = (*self.import_selections).clone();
+        options
     }
     /// Inspect the original body before retaining its state fields.
     /// Duplicate event IDs keep their first record, as in ordinary evaluation.
@@ -172,16 +181,18 @@ impl PreparedEvaluationInput {
         self.add_projection_node(row.node);
     }
     pub fn clear_import_selections(&mut self) {
-        self.options.import_selections.clear();
-        self.validated_selections.borrow_mut().clear();
+        self.import_selections = Default::default();
+        self.validated_selections = Default::default();
     }
     pub fn insert_import_selection(&mut self, hash: String, ids: Vec<String>) {
-        self.validated_selections.borrow_mut().remove(&hash);
-        self.options.import_selections.insert(hash, ids);
+        std::rc::Rc::make_mut(&mut self.validated_selections)
+            .get_mut()
+            .remove(&hash);
+        std::rc::Rc::make_mut(&mut self.import_selections).insert(hash, ids);
     }
     pub fn inherit_import_selections(&mut self, base: &EvaluatedState) {
-        self.options.import_selections = base.import_selections().clone();
-        *self.validated_selections.borrow_mut() = base.validated_selections().clone();
+        self.import_selections = base.shared_import_selections().clone();
+        self.validated_selections = base.shared_validated_selections().clone();
     }
     pub(crate) fn arena_error(&self) -> Option<jvc_core::Error> {
         self.arena_error.clone()
@@ -579,18 +590,31 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
     }
     let PreparedEvaluationInput {
         options: input,
+        import_selections,
         nodes,
         arena,
         validated_selections,
         ..
     } = prepared;
-    let mut cache = validated_selections.into_inner();
-    let resolved = policy::resolve_referenced_selections_cached(&input, &nodes, &mut cache);
+    let mut cache = validated_selections.borrow_mut();
+    let resolved = policy::resolve_referenced_selections_cached(
+        &input,
+        &import_selections,
+        &nodes,
+        &mut cache,
+    );
     let budget = input
         .limits
         .traversal_budget_with_selections(nodes.len(), resolved.allowance);
     let graph = graph::Graph::new_with_budget(nodes, budget);
-    let result = evaluate_graph_with_selections_cached(&input, &graph, &resolved, &mut cache);
+    let result = evaluate_graph_with_selections_cached(
+        &input,
+        &import_selections,
+        &graph,
+        &resolved,
+        &mut cache,
+    );
+    drop(cache);
     arena.borrow_mut().finish_load();
     result
 }
@@ -631,11 +655,23 @@ fn event_limit_evaluation(input: &EvaluationOptions) -> Evaluation {
 #[allow(dead_code)]
 fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation {
     let mut cache = BTreeMap::new();
-    let resolved = policy::resolve_referenced_selections_cached(input, &graph.nodes, &mut cache);
-    evaluate_graph_with_selections_cached(input, graph, &resolved, &mut cache)
+    let resolved = policy::resolve_referenced_selections_cached(
+        input,
+        &input.import_selections,
+        &graph.nodes,
+        &mut cache,
+    );
+    evaluate_graph_with_selections_cached(
+        input,
+        &input.import_selections,
+        graph,
+        &resolved,
+        &mut cache,
+    )
 }
 fn evaluate_graph_with_selections_cached(
     input: &EvaluationOptions,
+    import_selections: &BTreeMap<String, Vec<String>>,
     graph: &graph::Graph,
     resolved: &policy::ResolvedSelections<'_>,
     cache: &mut BTreeMap<String, bool>,
@@ -690,7 +726,14 @@ fn evaluate_graph_with_selections_cached(
             },
         );
     }
-    policy::select(graph, input, resolved, cache, &mut result);
+    policy::select(
+        graph,
+        input,
+        import_selections,
+        resolved,
+        cache,
+        &mut result,
+    );
     if graph.resource.get() || result.reasons.contains("resource_unavailable") {
         resource_unavailable(&mut result);
         return result;
@@ -1197,6 +1240,21 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
         );
     }
 }
+#[cfg(test)]
+thread_local! {
+    static RAFSI_GATE_PUBLICATION_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_rafsi_gate_publication_visits() {
+    RAFSI_GATE_PUBLICATION_VISITS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn rafsi_gate_publication_visits() -> usize {
+    RAFSI_GATE_PUBLICATION_VISITS.with(std::cell::Cell::get)
+}
+
 fn rafsi_gate(result: &mut Evaluation) {
     let receipts = &result.receipts;
     let effective = |id: &str| {
@@ -1223,9 +1281,122 @@ fn rafsi_gate(result: &mut Evaluation) {
     let mut uncertain_words = BTreeSet::new();
     let mut updates = Vec::new();
     for (id, p) in &result.publications {
+        #[cfg(test)]
+        RAFSI_GATE_PUBLICATION_VISITS.with(|count| count.set(count.get() + 1));
         if p.kind == "definition.publish" && p.eligible != Eligibility::NotSelected {
             if !effective(id) {
                 // Missing evidence blocks an all-deprecated result. Excluded history does not.
+                if !excluded(id) {
+                    uncertain_words.insert(p.word.clone());
+                }
+                continue;
+            }
+            let (active, deprecated) = definition_gates
+                .entry(p.word.clone())
+                .or_insert((false, true));
+            *active |= p.eligible == Eligibility::Eligible
+                && p.content_available
+                && p.status == Status::Active;
+            *deprecated &= p.eligible == Eligibility::Eligible && p.status == Status::Deprecated;
+        }
+        if p.kind == "rafsi.publish" {
+            if let Some(a) = &p.assignment {
+                assignments.entry(a.clone()).or_default().push(id.clone());
+            }
+        }
+    }
+    for ids in assignments.values() {
+        let word = &result.publications[&ids[0]].word;
+        let (active_definition, deprecated) =
+            definition_gates.get(word).copied().unwrap_or_default();
+        let all_deprecated =
+            deprecated && !uncertain_words.contains(word) && !missing_selection && !unknown_word;
+        let retained_claims: Vec<_> = ids.iter().filter(|id| !excluded(id)).collect();
+        let active_claim = retained_claims.iter().any(|id| {
+            let p = &result.publications[id.as_str()];
+            effective(id)
+                && p.content_available
+                && p.eligible == Eligibility::Eligible
+                && p.status == Status::Active
+        });
+        let all_claims_deprecated = !retained_claims.is_empty()
+            && retained_claims.iter().all(|id| {
+                let p = &result.publications[id.as_str()];
+                effective(id)
+                    && p.content_available
+                    && p.eligible == Eligibility::Eligible
+                    && p.status == Status::Deprecated
+            });
+        let eligibility = if active_claim && active_definition {
+            Eligibility::Eligible
+        } else if all_deprecated || all_claims_deprecated {
+            Eligibility::Inactive
+        } else {
+            Eligibility::Unknown
+        };
+        for id in ids {
+            if result.publications[id].eligible != Eligibility::NotSelected {
+                updates.push((id.clone(), eligibility.clone()));
+            }
+        }
+    }
+    for (id, eligibility) in updates {
+        result.publications.get_mut(&id).unwrap().eligible = eligibility;
+    }
+}
+
+pub(crate) fn rafsi_gate_for_word(
+    result: &mut Evaluation,
+    word_ids: &BTreeSet<String>,
+    empty_word_ids: Option<&BTreeSet<String>>,
+) {
+    for id in word_ids {
+        if let Some(publication) = result.publications.get_mut(id)
+            && publication.kind == "rafsi.publish"
+            && publication.eligible != Eligibility::NotSelected
+        {
+            publication.eligible = if publication.content_available
+                && !publication.reasons.contains("import_selection_unavailable")
+            {
+                Eligibility::Eligible
+            } else {
+                Eligibility::Unknown
+            };
+        }
+    }
+    let receipts = &result.receipts;
+    let effective = |id: &str| {
+        receipts
+            .get(id)
+            .is_some_and(|r| r.interpretation == Interpretation::Effective)
+    };
+    let excluded = |id: &str| {
+        receipts.get(id).is_some_and(|r| {
+            r.interpretation == Interpretation::Inert
+                || r.reasons.contains("outside_retained_history")
+        })
+    };
+    let missing_selection = result.reasons.contains("import_selection_unavailable")
+        || result.reasons.contains("selection_publications_pending");
+    let unknown_word = empty_word_ids.is_some_and(|ids| {
+        ids.iter().any(|id| {
+            let p = &result.publications[id];
+            p.kind == "definition.publish"
+                && !excluded(&p.id)
+                && p.word.is_empty()
+                && p.eligible == Eligibility::Unknown
+        })
+    });
+    let mut assignments: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut definition_gates: BTreeMap<String, (bool, bool)> = BTreeMap::new();
+    let mut uncertain_words = BTreeSet::new();
+    let mut updates = Vec::new();
+    for id in word_ids {
+        let p = &result.publications[id];
+        #[cfg(test)]
+        RAFSI_GATE_PUBLICATION_VISITS.with(|count| count.set(count.get() + 1));
+        if p.kind == "definition.publish" && p.eligible != Eligibility::NotSelected {
+            if !effective(id) {
                 if !excluded(id) {
                     uncertain_words.insert(p.word.clone());
                 }

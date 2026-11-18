@@ -2,6 +2,14 @@ use super::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
+thread_local! {
+    static EMPTY_CLOSURES: Rc<BTreeMap<String, Closure>> = Rc::new(BTreeMap::new());
+}
+
+fn empty_closures() -> Rc<BTreeMap<String, Closure>> {
+    EMPTY_CLOSURES.with(Rc::clone)
+}
+
 #[cfg(test)]
 thread_local! {
     static CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
@@ -324,9 +332,9 @@ impl Graph {
             appended_rank: BTreeMap::new(),
             unmatched_publication_scans: Cell::new(0),
             matched_publication_scans: std::cell::RefCell::new(BTreeMap::new()),
-            own: Rc::default(),
-            structural: Rc::default(),
-            accepted: Rc::default(),
+            own: empty_closures(),
+            structural: empty_closures(),
+            accepted: empty_closures(),
             lifecycle: Lifecycle {
                 key_actor: BTreeMap::new(),
                 groups: BTreeMap::new(),
@@ -1026,6 +1034,11 @@ impl Graph {
         let mut new_ranges: Vec<(u32, u32)> = own.ids.ranges().collect();
         for closure in &others {
             new_ranges.extend(closure.ids.ranges());
+        }
+        if shared {
+            let empty = empty_closures();
+            self.structural = empty.clone();
+            self.accepted = empty;
         }
         Rc::make_mut(&mut self.own).insert(node.id.clone(), own);
         if shared {
