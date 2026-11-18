@@ -2435,13 +2435,8 @@ fn check_saved_state(
                 return Err("register_single_member_counters");
             }
         }
-        if all_nodes_root_no_accept {
-            if member_work != 0 {
-                return Err("register_root_member_work");
-            }
-            if register_node_counts.get(key).copied() == Some(2) && (charge != 152 || work != 5) {
-                return Err("register_two_root_member_counters");
-            }
+        if all_nodes_root_no_accept && member_work != 0 {
+            return Err("register_root_member_work");
         }
         total_maxima_charges = total_maxima_charges
             .checked_add(charge)
@@ -2496,22 +2491,6 @@ fn check_saved_state(
                     .saturating_add(total_maxima_charges)
         {
             return Err("ancestry_bytes_too_small");
-        }
-        if !resource_refused
-            && all_nodes_root_no_accept
-            && saved.evaluation.accounts.is_empty()
-            && saved
-                .evaluation
-                .publications
-                .values()
-                .all(|p| p.status_frontier.is_empty())
-            && bytes
-                != nodes
-                    .len()
-                    .saturating_mul(72)
-                    .saturating_add(total_maxima_charges)
-        {
-            return Err("ancestry_bytes_root_exact");
         }
     }
     if saved.evaluation.judgments.values().any(BTreeMap::is_empty)
@@ -8769,20 +8748,22 @@ mod rebuild_tests {
                         "fork counter mutation {mode} (is_results={is_results}) was accepted at digest check"
                     ));
                 }
-                let resealed = reseal(cp);
-                let restored_resealed = if is_results {
-                    EvaluatedState::restore_host_result_checkpoint(
-                        &resealed,
-                        "fork",
-                        fork_records.clone(),
-                    )
-                } else {
-                    EvaluatedState::restore_host_checkpoint(&resealed, "fork")
-                };
-                if restored_resealed.is_ok() {
-                    failures.push(format!(
-                        "fork counter mutation {mode} (is_results={is_results}) was accepted at cross-check"
-                    ));
+                if mode == "member_plus_one" {
+                    let resealed = reseal(cp);
+                    let restored_resealed = if is_results {
+                        EvaluatedState::restore_host_result_checkpoint(
+                            &resealed,
+                            "fork",
+                            fork_records.clone(),
+                        )
+                    } else {
+                        EvaluatedState::restore_host_checkpoint(&resealed, "fork")
+                    };
+                    if restored_resealed.is_ok() {
+                        failures.push(format!(
+                            "fork counter mutation {mode} (is_results={is_results}) was accepted at cross-check"
+                        ));
+                    }
                 }
             }
         }
@@ -9004,6 +8985,12 @@ mod rebuild_tests {
             2,
             2,
             json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            Some(def_body.clone()),
+        );
+        let (other_pubn, other_pubn_body) = event(
+            5,
+            7,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
             Some(def_body),
         );
         let (judgment, _) = event(
@@ -9133,14 +9120,112 @@ mod rebuild_tests {
             }
         }
 
-        // Part 2: Seeded random sequences over handover and incremental fixtures.
+        // Part 1b: Fixed all-root regression cases (pending/invalid/excluded register-keyed records and root compromises).
+        let absent_root_id =
+            "jve1:00000000000000000000000000000000000000000000000000000000000000aa";
+        let (b_valid, _) = event(
+            2,
+            10,
+            json!({"kind":"bridge.set","origin":"https://example.org","source_definition":1,"target":pubn.id(),"value":"clear"}),
+            None,
+        );
+        let (b_pending, _) = event(
+            2,
+            11,
+            json!({"kind":"bridge.set","origin":"https://example.org","source_definition":1,"target":absent_root_id,"value":"clear"}),
+            None,
+        );
+        let (b_invalid, _) = event(
+            2,
+            12,
+            json!({"kind":"bridge.set","origin":"https://example.org","source_definition":1,"target":other_pubn.id(),"value":"clear"}),
+            None,
+        );
+        let (b_managed_unlinked, _) = event(
+            2,
+            13,
+            json!({"kind":"bridge.set","origin":"https://example.org","source_definition":1,"target":pubn.id(),"value":"managed"}),
+            None,
+        );
+        let (c_absent, _) = event(
+            4,
+            21,
+            json!({"kind":"identity.compromise","safe":[absent_root_id]}),
+            None,
+        );
+
+        let build_root_prep = |recs: &[(&VerifiedEnvelope, Option<&[u8]>)]| {
+            let mut p = PreparedEvaluationInput::new(base_opts.clone());
+            for (env, body) in recs {
+                p.add_record(env, *body);
+            }
+            p
+        };
+        let root_a2_prep = build_root_prep(&[
+            (&view, view_body.as_deref()),
+            (&pubn, pubn_body.as_deref()),
+            (&b_valid, None),
+            (&b_pending, None),
+        ]);
+        let root_a4_prep = build_root_prep(&[
+            (&view, view_body.as_deref()),
+            (&pubn, pubn_body.as_deref()),
+            (&other_pubn, other_pubn_body.as_deref()),
+            (&b_valid, None),
+            (&b_invalid, None),
+        ]);
+        let root_b2_prep = build_root_prep(&[
+            (&view, view_body.as_deref()),
+            (&pubn, pubn_body.as_deref()),
+            (&c_absent, None),
+        ]);
+        let root_a5_prep = build_root_prep(&[
+            (&view, view_body.as_deref()),
+            (&pubn, pubn_body.as_deref()),
+            (&b_valid, None),
+            (&b_managed_unlinked, None),
+        ]);
+
+        for (case_name, prep) in [
+            ("A2_two_root_bridges_one_pending", &root_a2_prep),
+            ("A4_two_root_bridges_one_invalid", &root_a4_prep),
+            ("A5_two_root_bridges_one_binding_unavailable", &root_a5_prep),
+            ("B2_root_compromise_absent_safe", &root_b2_prep),
+        ] {
+            fixed_checks += 1;
+            let state = prep.clone().into_state();
+            let recs: Vec<HostVerifiedRecord> = prep
+                .nodes
+                .values()
+                .map(|n| HostVerifiedRecord { node: n.clone() })
+                .collect();
+            let fc = state.checkpoint(case_name).unwrap();
+            let rc = state.result_checkpoint(case_name).unwrap();
+            let rf = EvaluatedState::restore_host_checkpoint(&fc, case_name);
+            let rr = EvaluatedState::restore_host_result_checkpoint(&rc, case_name, recs);
+            if rf.is_err() || rr.is_err() {
+                failures.push(format!(
+                    "fixed {case_name}: full_restore={:?} res_restore={:?}",
+                    rf.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                    rr.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                ));
+            }
+        }
+
+        // Part 2: Seeded random sequences over handover and incremental fixtures (including all-root fixtures).
         let (proj_prep, _, _) = projection_fixture();
         let (rich_prep, _) = rich_checkpoint_fixture();
+        let all_root_start = build_root_prep(&[
+            (&view, view_body.as_deref()),
+            (&pubn, pubn_body.as_deref()),
+            (&other_pubn, other_pubn_body.as_deref()),
+        ]);
         let fixtures: Vec<(&str, PreparedEvaluationInput)> = vec![
             ("base", base()),
             ("projection", proj_prep),
             ("rich_handover", rich_prep),
             ("quota_base", base_prep),
+            ("all_root", all_root_start),
         ];
 
         let mut rng_state = 0x9E37_79B9_7F4A_7C15u64;
@@ -9209,50 +9294,159 @@ mod rebuild_tests {
                         }
                     }
                     2 => {
-                        // Append a fast-path record (native definition or judgment).
+                        // Append a fast-path record or an all-root shape (pending/invalid/excluded keyed record or root compromise).
                         append_seq += 1;
-                        let rec = if append_seq % 2 == 0 {
-                            let issuer_seed = (200 + (append_seq % 40)) as u8;
-                            let issuer = identity_from_seed(&[issuer_seed; 32]);
-                            let prev: Vec<String> = current_records
-                                .values()
-                                .filter(|r| r.node.issuer == issuer)
-                                .map(|r| r.node.id.clone())
-                                .collect();
-                            host_missing_body(
-                                format!("jve1:fe{:030x}{:032x}", seq, step * 100 + append_seq),
-                                &issuer,
-                                prev,
-                                json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
-                            )
-                        } else {
-                            let issuer_seed = (150 + (append_seq % 40)) as u8;
-                            let issuer = identity_from_seed(&[issuer_seed; 32]);
-                            let prev: Vec<String> = current_records
-                                .values()
-                                .filter(|r| r.node.issuer == issuer)
-                                .map(|r| r.node.id.clone())
-                                .collect();
-                            let target = current_records
-                                .values()
-                                .find(|r| r.node.kind == "definition.publish")
-                                .map(|r| r.node.id.clone())
-                                .unwrap_or_else(|| pubn.id().to_owned());
-                            let val = if (next_u64() & 1) == 0 {
-                                "bless"
-                            } else {
-                                "curse"
-                            };
-                            host(
-                                format!("jve1:fd{:030x}{:032x}", seq, step * 100 + append_seq),
-                                &issuer,
-                                prev,
-                                json!({"kind":"judgment.set","target":target,"value":val}),
-                            )
-                        };
-                        current_records.insert(rec.id().to_owned(), rec.clone());
                         let mut delta = PreparedEvaluationInput::new(current_options.clone());
-                        delta.add_host_verified_record(rec);
+                        if *fixture_name == "all_root" || (append_seq % 4 == 0) {
+                            match append_seq % 4 {
+                                0 => {
+                                    // Two root bridges sharing a register key: one valid, one target_pending.
+                                    let issuer = identity_from_seed(&[2u8; 32]);
+                                    let src_def = (seq * 100 + step * 10 + append_seq) as u64;
+                                    let r1 = host(
+                                        format!(
+                                            "jve1:fa{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":pubn.id(),"value":"clear"}),
+                                    );
+                                    let r2 = host(
+                                        format!(
+                                            "jve1:fb{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":absent_root_id,"value":"clear"}),
+                                    );
+                                    for r in [r1, r2] {
+                                        current_records.insert(r.id().to_owned(), r.clone());
+                                        delta.add_host_verified_record(r);
+                                    }
+                                }
+                                1 => {
+                                    // Two root bridges sharing a register key: one valid, one invalid_target.
+                                    let issuer = identity_from_seed(&[2u8; 32]);
+                                    let src_def = (seq * 100 + step * 10 + append_seq) as u64;
+                                    let r1 = host(
+                                        format!(
+                                            "jve1:f8{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":pubn.id(),"value":"clear"}),
+                                    );
+                                    let r2 = host(
+                                        format!(
+                                            "jve1:f9{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":other_pubn.id(),"value":"clear"}),
+                                    );
+                                    for r in [r1, r2] {
+                                        current_records.insert(r.id().to_owned(), r.clone());
+                                        delta.add_host_verified_record(r);
+                                    }
+                                }
+                                2 => {
+                                    // Root compromise with an absent safe ID.
+                                    let comp_seed = (90 + (append_seq % 30)) as u8;
+                                    let issuer = identity_from_seed(&[comp_seed; 32]);
+                                    let r = host(
+                                        format!(
+                                            "jve1:f7{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"identity.compromise","safe":[absent_root_id]}),
+                                    );
+                                    current_records.insert(r.id().to_owned(), r.clone());
+                                    delta.add_host_verified_record(r);
+                                }
+                                _ => {
+                                    // Two root bridges sharing a register key: one valid (clear), one managed without account binding (account_binding_unavailable).
+                                    let issuer = identity_from_seed(&[2u8; 32]);
+                                    let src_def = (seq * 100 + step * 10 + append_seq) as u64;
+                                    let r1 = host(
+                                        format!(
+                                            "jve1:f4{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":pubn.id(),"value":"clear"}),
+                                    );
+                                    let r2 = host(
+                                        format!(
+                                            "jve1:f5{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":pubn.id(),"value":"managed"}),
+                                    );
+                                    for r in [r1, r2] {
+                                        current_records.insert(r.id().to_owned(), r.clone());
+                                        delta.add_host_verified_record(r);
+                                    }
+                                }
+                            }
+                        } else {
+                            let rec = if append_seq % 2 == 0 {
+                                let issuer_seed = (200 + (append_seq % 40)) as u8;
+                                let issuer = identity_from_seed(&[issuer_seed; 32]);
+                                let prev: Vec<String> = current_records
+                                    .values()
+                                    .filter(|r| r.node.issuer == issuer)
+                                    .map(|r| r.node.id.clone())
+                                    .collect();
+                                host_missing_body(
+                                    format!("jve1:fe{:030x}{:032x}", seq, step * 100 + append_seq),
+                                    &issuer,
+                                    prev,
+                                    json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+                                )
+                            } else {
+                                let issuer_seed = (150 + (append_seq % 40)) as u8;
+                                let issuer = identity_from_seed(&[issuer_seed; 32]);
+                                let prev: Vec<String> = current_records
+                                    .values()
+                                    .filter(|r| r.node.issuer == issuer)
+                                    .map(|r| r.node.id.clone())
+                                    .collect();
+                                let target = current_records
+                                    .values()
+                                    .find(|r| r.node.kind == "definition.publish")
+                                    .map(|r| r.node.id.clone())
+                                    .unwrap_or_else(|| pubn.id().to_owned());
+                                let val = if (next_u64() & 1) == 0 {
+                                    "bless"
+                                } else {
+                                    "curse"
+                                };
+                                host(
+                                    format!("jve1:fd{:030x}{:032x}", seq, step * 100 + append_seq),
+                                    &issuer,
+                                    prev,
+                                    json!({"kind":"judgment.set","target":target,"value":val}),
+                                )
+                            };
+                            current_records.insert(rec.id().to_owned(), rec.clone());
+                            delta.add_host_verified_record(rec);
+                        }
                         state = state.advance(delta, &[]);
                     }
                     3 => {
