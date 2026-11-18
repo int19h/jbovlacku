@@ -312,9 +312,16 @@ that the capture does not carry. It holds the expected final
 counts and digests of all three components. It holds the
 expected final logical inventory. It holds the kit revision,
 counts by kind and by issuer, the public keys, and the SHA-256
-of the event file. It also holds the source server id from the
-disposable marker of the server that made the capture. The keys
-file holds private keys. Keep a capture folder private.
+of the event file. For an empty base, it holds the source server
+id from the original pin. Each captured identity records that
+same id with its base. If the manifest source id disagrees with
+those records, restore refuses the capture. The keys file holds
+private keys. Keep a capture folder private.
+
+Capture files and the local disposable server are trusted
+operator storage, like other checkpoints in this project. A
+fully consistent capture and a direct request to the loopback
+server are outside the disagreement check.
 
 When restore finishes on a capture that names a source server
 id, it writes `restored-runs.json` in the target data folder.
@@ -322,7 +329,9 @@ The file names that source server id and the event ids of the
 proven inventory. The target keeps its own server id. A later
 `init` can use the original empty pin on that target. When
 every recorded event is still on the target, init accepts the
-pin. A different server, with no such proven copy, is refused.
+pin. The target can hold more events than the record and still
+accept the pin. A different server, with no such proven copy,
+is refused.
 
 Restore and the reuse check enforce the pinned base. They
 prove the whole logical inventory, not only event IDs, before

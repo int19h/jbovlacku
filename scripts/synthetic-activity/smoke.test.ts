@@ -1514,3 +1514,80 @@ test("a losing startup keeps the winner marker across a restart", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a second capture keeps the original empty pin across two restores", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    servers.push(await startServer(join(root, "a-data"), 9635));
+    servers.push(await startServer(join(root, "b-data"), 9636));
+    servers.push(await startServer(join(root, "c-data"), 9637));
+    const aurl = "http://127.0.0.1:9635";
+    const burl = "http://127.0.0.1:9636";
+    const curl = "http://127.0.0.1:9637";
+    const stateA = join(root, "run", "a");
+    const pin = join(root, "run", "base-pin.json");
+    await cmd(["--server", aurl, "--state", stateA, "init"]);
+    await cmd(["--server", aurl, "--state", stateA, "profile", "--name", "A event"]);
+    await cmd(["--server", aurl, "capture", "--state", stateA, "--out", join(root, "capture-one")]);
+    await cmd(["--server", burl, "restore", "--capture", join(root, "capture-one")]);
+    const late = join(root, "run", "late");
+    await cmd(["--server", burl, "--state", late, "--pin", pin, "init"]);
+    await cmd(["--server", burl, "--state", late, "profile", "--name", "B event"]);
+    await cmd(["--server", burl, "capture", "--state", stateA, "--state", late, "--pin", pin, "--out", join(root, "capture-two")]);
+    await cmd(["--server", curl, "restore", "--capture", join(root, "capture-two")]);
+    assert.match(await cmd(["--server", curl, "--state", join(root, "run", "c-late"), "--pin", pin, "init"]), /ed25519:[a-f0-9]{64}/);
+    const pinJson = JSON.parse(await readFile(pin, "utf8"));
+    const continued = JSON.parse(await readFile(join(root, "run", "c-late", "identity.json"), "utf8"));
+    assert.equal(continued.server_id, pinJson.server_id);
+    assert.equal(continued.base_event_count, 0);
+    const one = JSON.parse(await readFile(join(root, "capture-one", "manifest.json"), "utf8"));
+    const two = JSON.parse(await readFile(join(root, "capture-two", "manifest.json"), "utf8"));
+    assert.equal(one.source_server_id, pinJson.server_id);
+    assert.equal(two.source_server_id, pinJson.server_id);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an edited manifest source id is refused and the foreign pin stays refused", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const source = await startServer(join(root, "a-data"), 9638);
+    servers.push(source);
+    const sourceUrl = "http://127.0.0.1:9638";
+    const stateA = join(root, "run", "a");
+    await cmd(["--server", sourceUrl, "--state", stateA, "init"]);
+    await cmd(["--server", sourceUrl, "--state", stateA, "profile", "--name", "one"]);
+    await cmd(["--server", sourceUrl, "--state", stateA, "profile", "--name", "two"]);
+    await cmd(["--server", sourceUrl, "--state", stateA, "profile", "--name", "three"]);
+    const cap = join(root, "capture");
+    await cmd(["--server", sourceUrl, "capture", "--state", stateA, "--out", cap]);
+    await source.close();
+    const foreign = await startServer(join(root, "c-data"), 9638);
+    servers.push(foreign);
+    const foreignState = join(root, "foreign", "a");
+    const foreignPin = join(root, "foreign", "base-pin.json");
+    await cmd(["--server", sourceUrl, "--state", foreignState, "init"]);
+    const foreignId = JSON.parse(await readFile(foreignPin, "utf8")).server_id as string;
+    await foreign.close();
+    const manifestPath = join(cap, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.source_server_id = foreignId;
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    const target = await startServer(join(root, "b-data"), 9639);
+    servers.push(target);
+    const targetUrl = "http://127.0.0.1:9639";
+    const restored = await cmdResult(["--server", targetUrl, "restore", "--capture", cap]);
+    assert.equal(restored.code, 3, restored.out);
+    assert.match(restored.out, /refused: source server id does not match the captured identity base/);
+    const joined = await cmdFail(["--server", targetUrl, "--state", join(root, "on-b"), "--pin", foreignPin, "init"]);
+    assert.match(joined, /refused: empty base pin does not match this server/);
+    assert.equal(existsSync(join(root, "on-b", "identity.json")), false);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

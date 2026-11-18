@@ -151,7 +151,7 @@ async function api(o: Opts, path: string, init?: RequestInit): Promise<any> {
 const refused = (e: any): never => { console.error(`refused: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); };
 
 interface Pin { base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string; server_id?: string }
-interface Identity { seed: string; identity: string; base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string }
+interface Identity { seed: string; identity: string; base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string; server_id?: string }
 async function loadIdentity(o: Opts): Promise<Identity> {
   if (!o.state) { console.error("refused: --state is required"); process.exit(2); }
   return JSON.parse(await readFile(join(o.state, "identity.json"), "utf8"));
@@ -201,6 +201,29 @@ async function writeAtomic(path: string, text: string, mode?: number): Promise<v
 function baseIsEmpty(pin: Pin, lists: PinLists): boolean {
   return lists.events.length === 0 && lists.bodies.length === 0 && lists.selections.length === 0
     && pin.base_event_count === 0 && pin.base_body_count === 0 && pin.base_selection_count === 0;
+}
+function validServerId(value: unknown): string | undefined {
+  return typeof value === "string" && /^[0-9a-f]{32}$/.test(value) ? value : undefined;
+}
+/**
+ * An empty base names the run by the original pin's server id.
+ * A later capture on a restored copy keeps that id. The marker
+ * of the server that makes the capture is a different server.
+ */
+function runSourceId(pin: Pin, identities: Identity[], lists: PinLists): string | undefined {
+  const pinId = validServerId(pin.server_id);
+  const recorded = identities.map((identity) => validServerId(identity.server_id));
+  if (recorded.some((id) => id !== undefined && id !== pinId)) {
+    console.error("refused: an identity records a different server id than the base pin");
+    process.exit(3);
+  }
+  if (baseIsEmpty(pin, lists)) {
+    if (!pinId) { console.error("refused: an empty base pin has no server id, so the capture cannot name this run; take a new pin with pin-base"); process.exit(3); }
+    if (recorded.some((id) => id !== pinId)) { console.error("refused: an identity does not record the base pin's server id; run init again so the identity stores it"); process.exit(3); }
+    return pinId;
+  }
+  if (pinId && recorded.every((id) => id === pinId)) return pinId;
+  return markerServerId;
 }
 /**
  * An empty ID list is a subset of every server. The pin's server id,
@@ -516,7 +539,17 @@ async function main(): Promise<void> {
             j.base_body_count = pin.base_body_count; j.base_body_digest = pin.base_body_digest;
             j.base_selection_count = pin.base_selection_count; j.base_selection_digest = pin.base_selection_digest;
             j.base_snapshot ??= pin.base_snapshot; j.base_inventory ??= pin.base_inventory;
+            if (!validServerId(j.server_id) && validServerId(pin.server_id)) j.server_id = pin.server_id;
             await writeAtomic(p, JSON.stringify(j, null, 2) + "\n", 0o600);
+          }
+        } else if (!validServerId(j.server_id)) {
+          const path = pinPath(o);
+          if (existsSync(path)) {
+            const pin = JSON.parse(await readFile(path, "utf8"));
+            if (validServerId(pin.server_id) && j.base_snapshot === pin.base_snapshot && j.base_inventory === pin.base_inventory) {
+              j.server_id = pin.server_id;
+              await writeAtomic(p, JSON.stringify(j, null, 2) + "\n", 0o600);
+            }
           }
         }
         console.log(`identity ${j.identity}`); return;
@@ -545,7 +578,8 @@ async function main(): Promise<void> {
         await refuseForeignEmptyPin(o, pin, lists);
       }
       const seed = randomBytes(32); const identity = identityFromSeed(new Uint8Array(seed));
-      const rec: Identity = { seed: hex(new Uint8Array(seed)), identity, base_snapshot: pin.base_snapshot, base_inventory: pin.base_inventory, base_event_count: pin.base_event_count ?? null, base_inventory_digest: pin.base_inventory_digest, base_body_count: pin.base_body_count ?? null, base_body_digest: pin.base_body_digest, base_selection_count: pin.base_selection_count ?? null, base_selection_digest: pin.base_selection_digest };
+      const runId = validServerId(pin.server_id);
+      const rec: Identity = { seed: hex(new Uint8Array(seed)), identity, base_snapshot: pin.base_snapshot, base_inventory: pin.base_inventory, base_event_count: pin.base_event_count ?? null, base_inventory_digest: pin.base_inventory_digest, base_body_count: pin.base_body_count ?? null, base_body_digest: pin.base_body_digest, base_selection_count: pin.base_selection_count ?? null, base_selection_digest: pin.base_selection_digest, ...(runId ? { server_id: runId } : {}) };
       await writeAtomic(p, JSON.stringify(rec, null, 2) + "\n", 0o600);
       console.log(`identity ${identity}`); console.log(`state ${resolve(o.state)}`);
     } else if (cmd === "unlock") {
@@ -820,9 +854,11 @@ async function captureBody(o: Opts): Promise<void> {
   const byKind: Record<string, number> = {}, byIssuer: Record<string, number> = {};
   for (const t of transports) { const k = t.envelope.header.action.kind; byKind[k] = (byKind[k] ?? 0) + 1; const iss = t.envelope.header.issuer; byIssuer[iss] = (byIssuer[iss] ?? 0) + 1; }
   let kit_revision = "unknown"; try { kit_revision = execFileSync("git", ["-C", resolve(dirname(fileURLToPath(import.meta.url)), "../.."), "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
+  const sourceId = runSourceId(capturePin, identities, pinLists);
   const manifest = {
     format: 1, capture_snapshot: sourceSnapshot, base_snapshot: identities[0].base_snapshot, base_inventory: identities[0].base_inventory, kit_revision,
-    ...(markerServerId ? { source_server_id: markerServerId } : {}),
+    ...(sourceId ? { source_server_id: sourceId } : {}),
+    identity_states: identities.map((identity) => ({ identity: identity.identity, base_snapshot: identity.base_snapshot, base_inventory: identity.base_inventory, ...(validServerId(identity.server_id) ? { server_id: identity.server_id } : {}) })),
     event_count: transports.length, by_kind: byKind, by_issuer: byIssuer, public_keys: identities.map((i) => i.identity),
     event_file_sha256: sha256(bytes), base_event_count: baseIds.length, base_inventory_digest: digestIds(baseIds),
     base_body_count: pinLists.bodies.length, base_body_digest: digestIds(pinLists.bodies),
@@ -858,6 +894,11 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   if (!manifest.base_snapshot || !manifest.base_inventory || !Number.isInteger(manifest.base_event_count) || !manifest.base_inventory_digest || !Number.isInteger(manifest.expected_final_event_count) || !manifest.expected_final_inventory_digest || !manifest.event_file_sha256 || !Number.isInteger(manifest.event_count)
     || !Number.isInteger(manifest.base_body_count) || !manifest.base_body_digest || !Number.isInteger(manifest.base_selection_count) || !manifest.base_selection_digest || !manifest.base_minus_captured_body_digest
     || !Number.isInteger(manifest.expected_final_body_count) || !manifest.expected_final_body_digest || !Number.isInteger(manifest.expected_final_selection_count) || !manifest.expected_final_selection_digest || !manifest.expected_final_logical_inventory) fail(`capture manifest is missing a required field`);
+  // The source id is one field. Each captured identity states the
+  // same run id with its base. One edited field is a mismatch.
+  if (Array.isArray(manifest.identity_states) && typeof manifest.source_server_id === "string"
+    && (manifest.identity_states.length === 0 || manifest.identity_states.some((state: any) => state?.server_id !== manifest.source_server_id)))
+    fail("source server id does not match the captured identity base");
   if (sha256(bytes) !== manifest.event_file_sha256) fail(`event file hash does not match manifest`);
   const lines = new TextDecoder().decode(bytes).trim().split("\n").filter(Boolean);
   if (lines.length !== manifest.event_count) fail(`event count ${lines.length} does not match manifest ${manifest.event_count}`);
