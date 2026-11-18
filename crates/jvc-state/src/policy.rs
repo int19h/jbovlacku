@@ -32,6 +32,7 @@ pub struct ContextGraph<T = Rational> {
     pub available: bool,
     pub reasons: BTreeSet<String>,
 }
+#[derive(Default)]
 pub(crate) struct ResolvedSelections<'a> {
     pub allowance: usize,
     pub valid: BTreeMap<String, &'a Vec<String>>,
@@ -41,6 +42,15 @@ pub(crate) struct ResolvedSelections<'a> {
 pub(crate) fn resolve_referenced_selections<'a>(
     input: &'a EvaluationOptions,
     nodes: &BTreeMap<String, graph::Node>,
+) -> ResolvedSelections<'a> {
+    let mut cache = BTreeMap::new();
+    resolve_referenced_selections_cached(input, nodes, &mut cache)
+}
+
+pub(crate) fn resolve_referenced_selections_cached<'a>(
+    input: &'a EvaluationOptions,
+    nodes: &BTreeMap<String, graph::Node>,
+    cache: &mut BTreeMap<String, bool>,
 ) -> ResolvedSelections<'a> {
     let mut resolved = ResolvedSelections {
         allowance: 0,
@@ -84,7 +94,7 @@ pub(crate) fn resolve_referenced_selections<'a>(
             resolved.invalid.insert(selection_id.to_owned());
             continue;
         };
-        match valid_selection(input, selection_id) {
+        match valid_selection_cached(input, selection_id, cache) {
             Some(valid_ids) => {
                 resolved.allowance = resolved.allowance.saturating_add(valid_ids.len());
                 resolved.valid.insert(selection_id.to_owned(), valid_ids);
@@ -105,6 +115,7 @@ pub(crate) fn select(
     graph: &graph::Graph,
     input: &EvaluationOptions,
     resolved: &ResolvedSelections<'_>,
+    cache: &mut BTreeMap<String, bool>,
     result: &mut Evaluation,
 ) {
     let mut todo = vec![input.selected_view.clone()];
@@ -215,7 +226,7 @@ pub(crate) fn select(
                     .valid
                     .get(selection_id)
                     .copied()
-                    .or_else(|| valid_selection(input, selection_id));
+                    .or_else(|| valid_selection_cached(input, selection_id, cache));
                 match valid_ids {
                     None => {
                         invalid_selections.insert(selection_id.to_owned());
@@ -1534,12 +1545,43 @@ fn resolve_context_indexed<A: RowArithmetic>(
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static SELECTION_HASH_VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_selection_hash_validations() {
+    SELECTION_HASH_VALIDATIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn selection_hash_validations() -> usize {
+    SELECTION_HASH_VALIDATIONS.with(std::cell::Cell::get)
+}
+
+pub(crate) fn valid_selection_cached<'a>(
+    input: &'a EvaluationOptions,
+    id: &str,
+    cache: &mut BTreeMap<String, bool>,
+) -> Option<&'a Vec<String>> {
+    let ids = input.import_selections.get(id)?;
+    if let Some(&is_valid) = cache.get(id) {
+        return is_valid.then_some(ids);
+    }
+    let valid = valid_selection(input, id);
+    cache.insert(id.to_owned(), valid.is_some());
+    valid
+}
+
 pub(crate) fn valid_selection<'a>(
     input: &'a EvaluationOptions,
     id: &str,
 ) -> Option<&'a Vec<String>> {
     use std::io::Write;
     let ids = input.import_selections.get(id)?;
+    #[cfg(test)]
+    SELECTION_HASH_VALIDATIONS.with(|count| count.set(count.get() + 1));
     let mut writer = jvc_core::HashWriter::new(b"", 16 * 1024 * 1024);
     writer.write_all(b"[").ok()?;
     let mut previous: Option<&str> = None;

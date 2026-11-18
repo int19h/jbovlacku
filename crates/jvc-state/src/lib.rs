@@ -95,6 +95,7 @@ pub struct PreparedEvaluationInput {
     arena: arena::SharedArena,
     arena_error: Option<jvc_core::Error>,
     event_limit_exceeded: bool,
+    validated_selections: std::cell::RefCell<BTreeMap<String, bool>>,
 }
 impl PreparedEvaluationInput {
     pub fn new(options: EvaluationOptions) -> Self {
@@ -104,6 +105,7 @@ impl PreparedEvaluationInput {
             arena: std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default())),
             arena_error: None,
             event_limit_exceeded: false,
+            validated_selections: Default::default(),
         }
     }
     /// Inspect the original body before retaining its state fields.
@@ -171,12 +173,15 @@ impl PreparedEvaluationInput {
     }
     pub fn clear_import_selections(&mut self) {
         self.options.import_selections.clear();
+        self.validated_selections.borrow_mut().clear();
     }
     pub fn insert_import_selection(&mut self, hash: String, ids: Vec<String>) {
+        self.validated_selections.borrow_mut().remove(&hash);
         self.options.import_selections.insert(hash, ids);
     }
     pub fn inherit_import_selections(&mut self, base: &EvaluatedState) {
         self.options.import_selections = base.import_selections().clone();
+        *self.validated_selections.borrow_mut() = base.validated_selections().clone();
     }
     pub(crate) fn arena_error(&self) -> Option<jvc_core::Error> {
         self.arena_error.clone()
@@ -576,14 +581,16 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
         options: input,
         nodes,
         arena,
+        validated_selections,
         ..
     } = prepared;
-    let resolved = policy::resolve_referenced_selections(&input, &nodes);
+    let mut cache = validated_selections.into_inner();
+    let resolved = policy::resolve_referenced_selections_cached(&input, &nodes, &mut cache);
     let budget = input
         .limits
         .traversal_budget_with_selections(nodes.len(), resolved.allowance);
     let graph = graph::Graph::new_with_budget(nodes, budget);
-    let result = evaluate_graph_with_selections(&input, &graph, &resolved);
+    let result = evaluate_graph_with_selections_cached(&input, &graph, &resolved, &mut cache);
     arena.borrow_mut().finish_load();
     result
 }
@@ -623,13 +630,15 @@ fn event_limit_evaluation(input: &EvaluationOptions) -> Evaluation {
 }
 #[allow(dead_code)]
 fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation {
-    let resolved = policy::resolve_referenced_selections(input, &graph.nodes);
-    evaluate_graph_with_selections(input, graph, &resolved)
+    let mut cache = BTreeMap::new();
+    let resolved = policy::resolve_referenced_selections_cached(input, &graph.nodes, &mut cache);
+    evaluate_graph_with_selections_cached(input, graph, &resolved, &mut cache)
 }
-fn evaluate_graph_with_selections(
+fn evaluate_graph_with_selections_cached(
     input: &EvaluationOptions,
     graph: &graph::Graph,
     resolved: &policy::ResolvedSelections<'_>,
+    cache: &mut BTreeMap<String, bool>,
 ) -> Evaluation {
     let mut result = empty_evaluation(input);
     if graph.resource.get() {
@@ -681,7 +690,7 @@ fn evaluate_graph_with_selections(
             },
         );
     }
-    policy::select(graph, input, resolved, &mut result);
+    policy::select(graph, input, resolved, cache, &mut result);
     if graph.resource.get() || result.reasons.contains("resource_unavailable") {
         resource_unavailable(&mut result);
         return result;
@@ -885,6 +894,41 @@ fn native_status(graph: &graph::Graph, result: &mut Evaluation) {
     native_status_for(graph, result, None);
 }
 fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option<&str>) {
+    if let Some(only_id) = only {
+        let Some(publication) = result.publications.get_mut(only_id).filter(|p| !p.imported) else {
+            return;
+        };
+        let actor = graph.actor(&publication.issuer);
+        let keys = graph.downstream(&publication.issuer);
+        if graph.resource.get() {
+            return;
+        }
+        if keys.len() > 1 && !graph.charge(keys.len() - 1) {
+            return;
+        }
+        if !graph.suspended(&publication.issuer)
+            && keys.iter().any(|k| {
+                !graph.lifecycle.retired.contains(k) && !graph.lifecycle.compromised.contains(k)
+            })
+        {
+            publication.authority = Authority::Native;
+            publication.controller = Some(actor);
+        }
+        if graph.suspended(&publication.issuer) {
+            publication.authority = Authority::Uncertain;
+            publication.controller = None;
+            publication.status = Status::Uncertain;
+            publication.reasons.insert("incomplete_group".into());
+            return;
+        }
+        let frontier = graph.maxima(BTreeSet::new(), true);
+        if graph.resource.get() {
+            return;
+        }
+        publication.status_frontier = frontier;
+        publication.status = Status::Active;
+        return;
+    }
     let mut status_records: BTreeMap<String, Vec<&graph::Node>> = BTreeMap::new();
     for node in graph
         .nodes

@@ -2083,6 +2083,8 @@ fn historical_guard_survives_missing_observation_body() {
     f.input.bodies.remove(&missing);
     f.view(vec![12, 13], vec![f.base_view.clone()]);
     assert_pending_observation(&f, &missing);
+    f.input.limits.claim_depth = 0;
+    assert_pending_observation(&f, &missing);
 }
 #[test]
 fn historical_guard_survives_missing_witness_predecessor() {
@@ -2092,6 +2094,8 @@ fn historical_guard_survives_missing_witness_predecessor() {
     f.remove(&predecessor);
     f.retirement("deprecated");
     f.view(vec![12, 13], vec![f.base_view.clone()]);
+    assert_pending_observation(&f, &predecessor);
+    f.input.limits.claim_depth = 0;
     assert_pending_observation(&f, &predecessor);
 }
 #[test]
