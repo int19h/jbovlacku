@@ -2108,7 +2108,9 @@ mod tests {
     /// expands to at its call site. It does not catch helpers outside
     /// the listed functions, or reads inside closures and iterator
     /// adapters that borrow an earlier charge; those are covered by
-    /// the operation-level tests, not by this scan.
+    /// the operation-level tests, not by this scan. Its allow-list
+    /// has four entries, listed with a reason in the test; an entry
+    /// that matches nothing fails the test.
     #[test]
     fn setup_source_has_no_unmetered_map_reads() {
         let allow: &[(&str, &str)] = &[
@@ -2208,6 +2210,10 @@ mod tests {
             "fn fixture() {\n let value = map.index(key);\n}\n",
             "fn fixture() {\n let subject = \"some_subject\";\n charge_lookup(map, \"issuer\", meter)?;\n let value = map.get(subject);\n}\n",
             "fn fixture() {\n let value = map.get(subject);\n}\n",
+            // Input D: a separate declaration after an unrelated charge does not satisfy it.
+            "fn fixture() {\n charge_lookup(meter, 3, \"issuer\")?;\n let subject = \"some_subject\";\n let value = map.get(subject);\n}\n",
+            // Input D control: the same read without the unrelated charge.
+            "fn fixture() {\n let subject = \"some_subject\";\n let value = map.get(subject);\n}\n",
         ] {
             let mut used = vec![false; allow.len()];
             assert!(
@@ -2434,6 +2440,37 @@ mod tests {
             let Some(key) = read_key(trimmed) else {
                 continue;
             };
+            fn charge_call(lines: &[&str], at: usize, before: usize) -> String {
+                let first = lines[at];
+                let start = ["charge_lookup", "lookup_work", "get_metered"]
+                    .iter()
+                    .filter_map(|token| first.find(token))
+                    .min()
+                    .unwrap_or(0);
+                let mut call = String::new();
+                let mut depth = 0i32;
+                let mut opened = false;
+                let segments: Vec<&str> = std::iter::once(&first[start..])
+                    .chain(lines[at + 1..before].iter().copied())
+                    .collect();
+                for segment in segments {
+                    for ch in segment.chars() {
+                        call.push(ch);
+                        if ch == '(' {
+                            opened = true;
+                            depth += 1;
+                        }
+                        if ch == ')' {
+                            depth -= 1;
+                            if opened && depth == 0 {
+                                return call;
+                            }
+                        }
+                    }
+                    call.push(' ');
+                }
+                call
+            }
             let charged = (0..index).rev().take(12).any(|at| {
                 let prior = lines[at];
                 if !(prior.contains("charge_lookup")
@@ -2442,7 +2479,7 @@ mod tests {
                 {
                     return false;
                 }
-                let call: String = lines[at..index.min(at + 6)].join(" ");
+                let call = charge_call(&lines, at, index);
                 charged_matches(&call, &key)
             });
             if !charged {
