@@ -681,7 +681,7 @@ fn evaluate_graph_with_selections_cached(
         resource_unavailable(&mut result);
         return result;
     }
-    result.lifecycle = graph.lifecycle.clone();
+    result.lifecycle = Lifecycle::clone(&graph.lifecycle);
     if !result.lifecycle.suspended.is_empty() {
         result.reasons.insert("conditional_on_suspension".into());
     }

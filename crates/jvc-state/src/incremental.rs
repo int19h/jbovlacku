@@ -512,8 +512,10 @@ impl EvaluatedState {
         self.remaining_work = graph.budget.get();
         if !self.evaluation.reasons.contains("resource_unavailable") {
             self.unmatched_publication_scans = graph.unmatched_publication_scans.get();
+            // Move the counts out: the graph never reads them again,
+            // and a graph clone would otherwise copy them.
             self.matched_publication_scans =
-                std::rc::Rc::new(graph.matched_publication_scans.borrow().clone());
+                std::rc::Rc::new(graph.matched_publication_scans.take());
         } else {
             self.unmatched_publication_scans = 0;
             self.matched_publication_scans = Default::default();
@@ -583,7 +585,6 @@ impl EvaluatedState {
                     let next_selections = &delta.import_selections;
                     let prev_cache = self.prepared.validated_selections.borrow();
                     let mut next_cache = delta.validated_selections.borrow_mut();
-                    let explicit_limit = self.prepared.options.limits.traversal;
                     for entry in body
                         .view()
                         .index("import_sets")
@@ -606,8 +607,16 @@ impl EvaluatedState {
                         let Some((prev_ids, next_ids)) = prev.zip(next) else {
                             continue;
                         };
+                        // The refused evaluation read this selection's IDs
+                        // only if selection processing reached it: then it
+                        // either admitted the selection into `selections`
+                        // or recorded it as invalid in the validity cache.
+                        // Otherwise processing stopped at or before the
+                        // selection's length charge, and equal lengths
+                        // already give the same refusal.
                         if exhausted_empty_advance
-                            && explicit_limit.is_some_and(|limit| prev_ids.len() > limit)
+                            && !self.evaluation.selections.contains_key(sel_id)
+                            && prev_cache.get(sel_id) != Some(&false)
                         {
                             continue;
                         }
@@ -930,55 +939,7 @@ impl EvaluatedState {
         } else {
             per_cache(&graph.own) + per_cache(&graph.structural) + per_cache(&graph.accepted)
         };
-        let fork_shared = std::rc::Rc::strong_count(&self.evaluation.results) > 1;
-        let copy_work = if fork_shared {
-            let node_copy_work = if std::rc::Rc::strong_count(&graph.nodes) > 2 {
-                graph.nodes.len()
-            } else {
-                0
-            };
-            let closure_copy_work = if shared {
-                if std::rc::Rc::strong_count(&graph.own) > 3 {
-                    graph.own.len()
-                } else {
-                    0
-                }
-            } else {
-                usize::from(std::rc::Rc::strong_count(&graph.own) > 1) * graph.own.len()
-                    + usize::from(std::rc::Rc::strong_count(&graph.structural) > 1)
-                        * graph.structural.len()
-                    + usize::from(std::rc::Rc::strong_count(&graph.accepted) > 1)
-                        * graph.accepted.len()
-            };
-            let evaluation_copy_work = evaluation_copy_units(&self.evaluation);
-            let unresolved_copy_work = if std::rc::Rc::strong_count(&self.unresolved) > 1
-                && node_has_new_unresolved_references(node, &self.prepared.nodes, &self.unresolved)
-            {
-                self.unresolved.len()
-            } else {
-                0
-            };
-            let matched_scans_copy_work = if node.kind == "judgment.set"
-                && node
-                    .action
-                    .view()
-                    .index("target")
-                    .as_str()
-                    .is_some_and(|t| t.starts_with("jvr1:"))
-                && std::rc::Rc::strong_count(&self.matched_publication_scans) > 1
-            {
-                self.matched_publication_scans.len()
-            } else {
-                0
-            };
-            node_copy_work
-                .saturating_add(closure_copy_work)
-                .saturating_add(evaluation_copy_work)
-                .saturating_add(unresolved_copy_work)
-                .saturating_add(matched_scans_copy_work)
-        } else {
-            0
-        };
+        let copy_work = self.append_copy_units(node, graph, shared, available_work)?;
         // The last two units are the lifecycle record and the account
         // history scan. A full evaluation skips the scan when no
         // policy is selected, so the append charges it only then too.
@@ -1005,6 +966,84 @@ impl EvaluatedState {
             return Err("work_budget");
         }
         Ok(work)
+    }
+
+    /// Units for the copies an append makes of structures that another
+    /// state (a fork, an overlay sibling, or a retained prepared input)
+    /// still shares. `Rc::make_mut` copies a shared structure on its
+    /// first write, so each structure the append writes is tested for
+    /// sharing on its own and its full size is charged, nested members
+    /// included. An unshared structure is written in place and costs
+    /// nothing extra. Returns `work_budget` as soon as the count passes
+    /// `available_work`, before any nested walk past that point.
+    fn append_copy_units(
+        &self,
+        node: &Node,
+        graph: &Graph,
+        closures_shared: bool,
+        available_work: usize,
+    ) -> std::result::Result<usize, &'static str> {
+        use std::rc::Rc;
+        let mut units = CopyUnits {
+            total: 0,
+            limit: available_work,
+        };
+        // The node map: the graph and the prepared input hold it.
+        if Rc::strong_count(&graph.nodes) > 2 {
+            units.add(graph.nodes.len())?;
+            for n in graph.nodes.values() {
+                units.add(n.previous.len())?;
+            }
+        }
+        // Closure maps. Each closure shares its missing IDs and range
+        // list; its appended-record set holds at most
+        // `MAX_INCREMENTAL_RECORDS` IDs, a fixed cap per entry.
+        if closures_shared {
+            // Three references when the modes share one map.
+            if Rc::strong_count(&graph.own) > 3 {
+                units.add(graph.own.len())?;
+            }
+        } else {
+            for cache in [&graph.own, &graph.structural, &graph.accepted] {
+                if Rc::strong_count(cache) > 1 {
+                    units.add(cache.len())?;
+                }
+            }
+        }
+        // Graph indexes that the append writes (`Graph::append_ordinary`).
+        let new_issuer = !graph.lifecycle.key_actor.contains_key(&node.issuer)
+            || !graph
+                .lifecycle
+                .groups
+                .get(&node.issuer)
+                .is_some_and(|group| group.contains(&node.issuer));
+        if new_issuer && graph.lifecycle.is_shared() {
+            lifecycle_copy_units(&graph.lifecycle, &mut units)?;
+        }
+        if !node.previous.is_empty() && graph.boundary.is_shared() {
+            units.add(graph.boundary.len())?;
+        }
+        // Evaluation results: every append adds a receipt.
+        if Rc::strong_count(&self.evaluation.results) > 1 {
+            results_copy_units(&self.evaluation.results, &mut units)?;
+        }
+        if Rc::strong_count(&self.unresolved) > 1
+            && node_has_new_unresolved_references(node, &self.prepared.nodes, &self.unresolved)
+        {
+            units.add(self.unresolved.len())?;
+        }
+        if node.kind == "judgment.set"
+            && node
+                .action
+                .view()
+                .index("target")
+                .as_str()
+                .is_some_and(|t| t.starts_with("jvr1:"))
+            && Rc::strong_count(&self.matched_publication_scans) > 1
+        {
+            units.add(self.matched_publication_scans.len())?;
+        }
+        Ok(units.total)
     }
 
     fn append(&mut self, node: Node, work: usize) {
@@ -2935,31 +2974,129 @@ fn next_ready_id(added: &BTreeMap<String, Node>) -> Option<String> {
         .map(|(id, _)| id.clone())
 }
 
-fn evaluation_copy_units(evaluation: &Evaluation) -> usize {
-    let lifecycle = &evaluation.lifecycle;
-    lifecycle
-        .key_actor
-        .len()
-        .saturating_add(lifecycle.groups.len())
-        .saturating_add(lifecycle.successor.len())
-        .saturating_add(lifecycle.suspended.len())
-        .saturating_add(lifecycle.retired.len())
-        .saturating_add(lifecycle.compromised.len())
-        .saturating_add(evaluation.publications.len())
-        .saturating_add(evaluation.accounts.len())
-        .saturating_add(evaluation.registers.len())
-        .saturating_add(evaluation.judgments.len())
-        .saturating_add(evaluation.policies.len())
-        .saturating_add(evaluation.policy_history.len())
-        .saturating_add(evaluation.trust.len())
-        .saturating_add(
-            evaluation
-                .selections
-                .values()
-                .map(BTreeSet::len)
-                .sum::<usize>(),
-        )
-        .saturating_add(evaluation.receipts.len())
+/// Counts copy units against a limit. A caller adds the counts it can
+/// read in constant time first, and walks nested collections only
+/// after their outer counts fit, so every walk is bounded by units
+/// already counted.
+struct CopyUnits {
+    total: usize,
+    limit: usize,
+}
+impl CopyUnits {
+    fn add(&mut self, units: usize) -> std::result::Result<(), &'static str> {
+        self.total = self.total.saturating_add(units);
+        if self.total > self.limit {
+            Err("work_budget")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Units to deep-copy evaluation results that another state shares:
+/// one per entry of every collection and one per member of every
+/// nested collection, at every depth.
+fn results_copy_units(
+    r: &EvaluationResults,
+    units: &mut CopyUnits,
+) -> std::result::Result<(), &'static str> {
+    lifecycle_copy_units(&r.lifecycle, units)?;
+    for len in [
+        r.receipts.len(),
+        r.publications.len(),
+        r.accounts.len(),
+        r.registers.len(),
+        r.judgments.len(),
+        r.policies.len(),
+        r.policy_history.len(),
+        r.selections.len(),
+        r.trust.len(),
+    ] {
+        units.add(len)?;
+    }
+    // Second level: walks bounded by the entry counts above.
+    for receipt in r.receipts.values() {
+        units.add(receipt.reasons.len())?;
+    }
+    for p in r.publications.values() {
+        units.add(
+            p.lineage.len()
+                + p.observations.len()
+                + p.status_frontier.len()
+                + p.controller_candidates.len()
+                + p.witness_contributions.len()
+                + p.missing.len()
+                + p.reasons.len(),
+        )?;
+    }
+    for a in r.accounts.values() {
+        units.add(
+            a.candidates.len()
+                + a.contributions.len()
+                + a.observation_evidence.len()
+                + a.certificates.len()
+                + a.chain.len()
+                + a.current_observations.len()
+                + a.historical.len()
+                + a.closed.len()
+                + a.reasons.len()
+                + a.missing.len(),
+        )?;
+    }
+    for register in r.registers.values() {
+        units.add(register.heads.len() + register.values.len())?;
+    }
+    for judgments in r.judgments.values() {
+        units.add(judgments.len())?;
+    }
+    for ids in r.selections.values() {
+        units.add(ids.len())?;
+    }
+    for rule in &r.trust {
+        units.add(rule.values.len())?;
+    }
+    // Third level: walks bounded by the nested counts above.
+    for p in r.publications.values() {
+        for members in p.witness_contributions.values() {
+            units.add(members.len())?;
+        }
+    }
+    for a in r.accounts.values() {
+        for members in a
+            .contributions
+            .values()
+            .chain(a.observation_evidence.values())
+        {
+            units.add(members.len())?;
+        }
+        for certificate in &a.certificates {
+            units.add(certificate.observations.len())?;
+        }
+    }
+    Ok(())
+}
+
+/// Units to deep-copy a lifecycle that another state shares.
+fn lifecycle_copy_units(
+    lifecycle: &Lifecycle,
+    units: &mut CopyUnits,
+) -> std::result::Result<(), &'static str> {
+    units.add(
+        lifecycle.key_actor.len()
+            + lifecycle.groups.len()
+            + lifecycle.successor.len()
+            + lifecycle.suspended.len()
+            + lifecycle.retired.len()
+            + lifecycle.compromised.len(),
+    )?;
+    for members in lifecycle
+        .groups
+        .values()
+        .chain(lifecycle.suspended.values())
+    {
+        units.add(members.len())?;
+    }
+    Ok(())
 }
 
 fn value_has_new_unresolved_references(

@@ -10,6 +10,39 @@ fn empty_closures() -> Rc<BTreeMap<String, Closure>> {
     EMPTY_CLOSURES.with(Rc::clone)
 }
 
+/// Copy-on-write storage for a graph index. Cloning a graph copies
+/// one pointer per index, so a fork or an overlay change copies no
+/// index contents. A write to an index that another graph still
+/// shares copies that index first; the fast path charges that copy
+/// before the append runs (`EvaluatedState::fast_work`).
+#[derive(Default)]
+pub(crate) struct Shared<T>(Rc<T>);
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+impl<T> Shared<T> {
+    pub fn new(value: T) -> Self {
+        Self(Rc::new(value))
+    }
+    /// Whether a write would copy the index first.
+    pub fn is_shared(&self) -> bool {
+        Rc::strong_count(&self.0) > 1
+    }
+}
+impl<T> std::ops::Deref for Shared<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+impl<T: Clone> std::ops::DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        Rc::make_mut(&mut self.0)
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
@@ -186,7 +219,9 @@ pub(crate) use super::ancestors::IdSet;
 #[derive(Clone)]
 pub(crate) struct Closure {
     pub ids: IdSet,
-    pub missing: BTreeSet<String>,
+    /// Shared so that copying a closure map (for a fork's first
+    /// append) copies one pointer per closure, not its missing IDs.
+    pub missing: Rc<BTreeSet<String>>,
     pub invalid: bool,
     pub resource: bool,
 }
@@ -209,6 +244,10 @@ pub(crate) struct BoundaryCrossings {
 }
 
 impl BoundaryCrossings {
+    pub fn len(&self) -> usize {
+        self.tree.len()
+    }
+
     fn with_len(len: usize) -> Self {
         Self {
             tree: vec![0; len + 2],
@@ -254,17 +293,17 @@ pub(crate) struct Graph {
     pub own: Rc<BTreeMap<String, Closure>>,
     pub structural: Rc<BTreeMap<String, Closure>>,
     pub accepted: Rc<BTreeMap<String, Closure>>,
-    pub lifecycle: Lifecycle,
-    pub cutoffs: BTreeMap<String, Vec<Closure>>,
-    pub transfers: BTreeMap<String, Vec<String>>,
-    pub pending_cutoffs: BTreeSet<String>,
+    pub lifecycle: Shared<Lifecycle>,
+    pub cutoffs: Shared<BTreeMap<String, Vec<Closure>>>,
+    pub transfers: Shared<BTreeMap<String, Vec<String>>>,
+    pub pending_cutoffs: Shared<BTreeSet<String>>,
     pub space: Rc<super::ancestors::Space>,
     pub ancestry: super::ancestors::AncestryBudget,
-    pub boundary: BoundaryCrossings,
+    pub boundary: Shared<BoundaryCrossings>,
     /// Whether every record of an issuer is complete for
     /// `local_complete`, computed in one pass at lifecycle build and
     /// kept current by appends.
-    pub issuer_complete: BTreeMap<String, bool>,
+    pub issuer_complete: Shared<BTreeMap<String, bool>>,
     /// Appended-rank index for fresh range counts, built once per
     /// appended-record count and reused. Rebuilding it per maxima
     /// merge made one append after many earlier appends rebuild it
@@ -273,10 +312,10 @@ pub(crate) struct Graph {
     /// Semantic `account.set` record IDs by account token
     /// (`origin#account`), in record order. Account evaluation reads
     /// this index instead of scanning all records per claim.
-    pub account_sets: BTreeMap<String, Vec<String>>,
+    pub account_sets: Shared<BTreeMap<String, Vec<String>>>,
     /// Per issuer, the union of missing IDs over its retained
     /// records, for account evaluation's missing-history lookup.
-    pub issuer_missing: BTreeMap<String, BTreeSet<String>>,
+    pub issuer_missing: Shared<BTreeMap<String, BTreeSet<String>>>,
     /// Records appended to this state, in append order. Per state: a
     /// sibling's appends never appear here.
     pub appended_ids: Vec<String>,
@@ -323,11 +362,11 @@ impl Graph {
             nodes,
             space: super::ancestors::Space::empty(),
             ancestry: super::ancestors::AncestryBudget::new(),
-            boundary: BoundaryCrossings::default(),
-            issuer_complete: BTreeMap::new(),
+            boundary: Shared::default(),
+            issuer_complete: Shared::default(),
             rank_index: std::cell::RefCell::new(None),
-            account_sets: BTreeMap::new(),
-            issuer_missing: BTreeMap::new(),
+            account_sets: Shared::default(),
+            issuer_missing: Shared::default(),
             appended_ids: Vec::new(),
             appended_rank: BTreeMap::new(),
             unmatched_publication_scans: Cell::new(0),
@@ -335,17 +374,17 @@ impl Graph {
             own: empty_closures(),
             structural: empty_closures(),
             accepted: empty_closures(),
-            lifecycle: Lifecycle {
+            lifecycle: Shared::new(Lifecycle {
                 key_actor: BTreeMap::new(),
                 groups: BTreeMap::new(),
                 successor: BTreeMap::new(),
                 suspended: BTreeMap::new(),
                 retired: BTreeSet::new(),
                 compromised: BTreeSet::new(),
-            },
-            cutoffs: BTreeMap::new(),
-            transfers: BTreeMap::new(),
-            pending_cutoffs: BTreeSet::new(),
+            }),
+            cutoffs: Shared::default(),
+            transfers: Shared::default(),
+            pending_cutoffs: Shared::default(),
             budget: Cell::new(budget),
             resource: Cell::new(false),
             appended: 0,
@@ -396,7 +435,7 @@ impl Graph {
         if graph.ancestry.failed() {
             graph.resource.set(true);
         }
-        graph.boundary = BoundaryCrossings::with_len(graph.space.len());
+        graph.boundary = Shared::new(BoundaryCrossings::with_len(graph.space.len()));
         let mut seen: Vec<usize> = Vec::new();
         for cache in [&graph.own, &graph.structural, &graph.accepted] {
             let pointer = Rc::as_ptr(cache) as usize;
@@ -421,7 +460,7 @@ impl Graph {
     fn empty_closure(&self) -> Closure {
         Closure {
             ids: IdSet::empty(self.space.clone()),
-            missing: BTreeSet::new(),
+            missing: Rc::default(),
             invalid: false,
             resource: false,
         }
@@ -505,13 +544,15 @@ impl Graph {
             let sets: Vec<&IdSet> = deps.iter().map(|dep| &cache[dep].ids).collect();
             let mut c = Closure {
                 ids: IdSet::combined(self.space.clone(), &self.ancestry, &sets, Some(&id)),
-                missing: missing.clone(),
+                missing: Rc::new(missing.clone()),
                 invalid: *invalid,
                 resource: false,
             };
             for dep in deps {
                 let p = &cache[dep];
-                c.missing.extend(p.missing.iter().cloned());
+                if !p.missing.is_empty() {
+                    Rc::make_mut(&mut c.missing).extend(p.missing.iter().cloned());
+                }
                 c.invalid |= p.invalid;
                 c.resource |= p.resource;
             }
@@ -562,7 +603,7 @@ impl Graph {
                     result.resource = true;
                     break;
                 }
-                result.missing.insert(id.clone());
+                Rc::make_mut(&mut result.missing).insert(id.clone());
                 continue;
             };
             if !self.charge(
@@ -580,7 +621,9 @@ impl Graph {
                 self.resource.set(true);
                 break;
             }
-            result.missing.extend(c.missing.iter().cloned());
+            if !c.missing.is_empty() {
+                Rc::make_mut(&mut result.missing).extend(c.missing.iter().cloned());
+            }
             result.invalid |= c.invalid;
             result.resource |= c.resource;
         }
@@ -652,7 +695,9 @@ impl Graph {
                     if self.ancestry.failed() {
                         cutoff.resource = true;
                     }
-                    cutoff.missing.extend(c.missing);
+                    if !c.missing.is_empty() {
+                        Rc::make_mut(&mut cutoff.missing).extend(c.missing.iter().cloned());
+                    }
                     cutoff.invalid |= c.invalid;
                     cutoff.resource |= c.resource;
                 }
@@ -660,8 +705,7 @@ impl Graph {
                     if !self.charge(self.own[&node.id].missing.len()) {
                         return;
                     }
-                    cutoff
-                        .missing
+                    Rc::make_mut(&mut cutoff.missing)
                         .extend(self.own[&node.id].missing.iter().cloned());
                     cutoff.invalid |= self.own[&node.id].invalid;
                 }
@@ -678,7 +722,7 @@ impl Graph {
         self.lifecycle
             .retired
             .extend(self.transfers.keys().cloned());
-        for (key, transfers) in &self.transfers {
+        for (key, transfers) in self.transfers.iter() {
             if !self.charge(1) {
                 return;
             }
@@ -754,6 +798,7 @@ impl Graph {
                 .or_insert(key.as_str());
         }
         let mut resolved: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut actors: Vec<(&String, String)> = Vec::with_capacity(keys.len());
         for key in &keys {
             let mut path: Vec<&str> = Vec::new();
             let mut on_path: BTreeSet<&str> = BTreeSet::new();
@@ -783,12 +828,16 @@ impl Graph {
                 resolved.insert(item, actor);
             }
             resolved.insert(key.as_str(), actor);
-            self.lifecycle
-                .key_actor
-                .insert(key.clone(), actor.to_string());
-            self.lifecycle
+            actors.push((key, actor.to_string()));
+        }
+        drop(predecessor);
+        drop(resolved);
+        let lifecycle = &mut *self.lifecycle;
+        for (key, actor) in actors {
+            lifecycle.key_actor.insert(key.clone(), actor.clone());
+            lifecycle
                 .groups
-                .entry(actor.to_string())
+                .entry(actor)
                 .or_default()
                 .insert(key.clone());
         }
@@ -833,9 +882,10 @@ impl Graph {
         }
         for (id, node) in self.nodes.as_ref() {
             if !self.own_complete(id) || self.pending_cutoffs.contains(&node.issuer) {
+                let actor = self.actor(&node.issuer);
                 self.lifecycle
                     .suspended
-                    .entry(self.actor(&node.issuer))
+                    .entry(actor)
                     .or_default()
                     .insert(id.clone());
             }
@@ -968,7 +1018,9 @@ impl Graph {
                 let prior = &cache[previous];
                 result.ids.union(&self.ancestry, &prior.ids);
                 result.ids.fresh_ranges = self.fresh_range_count(&result.ids);
-                result.missing.extend(prior.missing.iter().cloned());
+                if !prior.missing.is_empty() {
+                    Rc::make_mut(&mut result.missing).extend(prior.missing.iter().cloned());
+                }
                 result.invalid |= prior.invalid;
                 result.resource |= prior.resource;
             }
@@ -988,15 +1040,26 @@ impl Graph {
             others.push(closure(&self.structural));
             others.push(closure(&self.accepted));
         }
-        self.lifecycle
-            .key_actor
-            .entry(node.issuer.clone())
-            .or_insert_with(|| node.issuer.clone());
-        self.lifecycle
+        // Write the shared indexes only where the append changes them,
+        // so a fork copies only what the fast path charged for
+        // (`EvaluatedState::fast_work`).
+        if !self.lifecycle.key_actor.contains_key(&node.issuer) {
+            self.lifecycle
+                .key_actor
+                .insert(node.issuer.clone(), node.issuer.clone());
+        }
+        if !self
+            .lifecycle
             .groups
-            .entry(node.issuer.clone())
-            .or_default()
-            .insert(node.issuer.clone());
+            .get(&node.issuer)
+            .is_some_and(|group| group.contains(&node.issuer))
+        {
+            self.lifecycle
+                .groups
+                .entry(node.issuer.clone())
+                .or_default()
+                .insert(node.issuer.clone());
+        }
         if self.ancestry.failed() {
             self.resource.set(true);
             // No closure stored for this record may read as complete.
@@ -1058,10 +1121,16 @@ impl Graph {
             } else {
                 self.own_complete(&node.id)
             };
-        *self
-            .issuer_complete
-            .entry(node.issuer.clone())
-            .or_insert(true) &= complete;
+        // An absent entry reads as complete, so only an incomplete
+        // record writes.
+        // A failed cap marks the graph unusable and the state rebuilds,
+        // so the write is skipped then too.
+        if !complete
+            && !self.resource.get()
+            && self.issuer_complete.get(&node.issuer) != Some(&false)
+        {
+            self.issuer_complete.insert(node.issuer.clone(), false);
+        }
         if node.semantic && node.kind == "account.set" {
             if let (Some(origin), Some(account)) = (
                 node.action.view().index("origin").as_str(),
@@ -1073,7 +1142,11 @@ impl Graph {
                     .push(node.id.clone());
             }
         }
-        if !self.lifecycle.successor.contains_key(&node.issuer) || self.retained(&node.id) {
+        // An absent entry reads as an empty set, so only missing IDs
+        // write. A fast-path record has complete parents, so it has none.
+        if !own_missing.is_empty()
+            && (!self.lifecycle.successor.contains_key(&node.issuer) || self.retained(&node.id))
+        {
             self.issuer_missing
                 .entry(node.issuer.clone())
                 .or_default()
@@ -1769,7 +1842,10 @@ mod tests {
                     *ids,
                     "unordered ids mode {mode} record {id}"
                 );
-                assert_eq!(&closure.missing, missing, "missing mode {mode} record {id}");
+                assert_eq!(
+                    &*closure.missing, missing,
+                    "missing mode {mode} record {id}"
+                );
                 assert_eq!(closure.invalid, *invalid, "invalid mode {mode} record {id}");
                 for member in ids {
                     assert!(closure.ids.contains(member));

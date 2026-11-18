@@ -240,7 +240,7 @@ fn observation_missing(graph: &Graph, n: &Node, historical: bool) -> BTreeSet<St
     if !graph.charge(1 + own_missing.len()) {
         return BTreeSet::new();
     }
-    let mut missing = own_missing.clone();
+    let mut missing = BTreeSet::clone(own_missing);
     if n.body.is_none() {
         missing.insert(n.id.clone());
     }
@@ -1056,7 +1056,7 @@ fn period_chain_status(
                     status: Status::Unavailable,
                     frontier: BTreeSet::new(),
                     claim: None,
-                    missing: boundary.missing.clone(),
+                    missing: BTreeSet::clone(&boundary.missing),
                 };
             }
         }
