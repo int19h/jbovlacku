@@ -1269,6 +1269,48 @@ for (const route of ["helper", "plain", "blur"] as const) {
   });
 }
 
+test("tab into the field after a reset keeps the recorded caret", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { richField } = await import(
+      String("/src/components/rich-field.ts"),
+    );
+    const field = richField("Tab reset field", { value: [["alpha beta"]] });
+    const button = document.createElement("button");
+    button.textContent = "Rewrite without focusing";
+    document.body.replaceChildren(button, field.wrapper);
+    button.onclick = () => {
+      field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+    };
+  });
+  const field = page.getByRole("textbox", {
+    name: "Tab reset field",
+    exact: true,
+  });
+  await field.focus();
+  await field.evaluate((node) => {
+    const text = node.querySelector(".rich-literal")!.firstChild!;
+    getSelection()!.setBaseAndExtent(text, 4, text, 4);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.waitForTimeout(60);
+  await page
+    .getByRole("button", { name: "Rewrite without focusing", exact: true })
+    .click();
+  await page.waitForTimeout(40);
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("x");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["reset prefix"], ["alpha betax"]]);
+  await page.keyboard.press("Control+z");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["reset prefix"], ["alpha beta"]]);
+});
+
 test("trusted line keys replace the paragraph after a slow Home handler", async ({
   page,
 }) => {
