@@ -314,8 +314,9 @@ expected final logical inventory. It holds the kit revision,
 counts by kind and by issuer, the public keys, and the SHA-256
 of the event file. For an empty base, it holds the source server
 id from the original pin. Each captured identity records that
-same id with its base. If the manifest source id disagrees with
-those records, restore refuses the capture. The keys file holds
+same id with its base. Restore refuses a capture whose identity
+records disagree with its manifest, and a capture from an older
+kit must be captured again. The keys file holds
 private keys. Keep a capture folder private.
 
 Capture files and the local disposable server are trusted

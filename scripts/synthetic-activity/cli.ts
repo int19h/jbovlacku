@@ -887,6 +887,7 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   const dir = flag(o, "capture"); if (!dir) { console.error("refused: --capture is required"); process.exit(2); }
   const fail = (reason: string): never => { if (checkOnly) console.log(`not reusable: ${reason}`); else console.error(`refused: ${reason}`); process.exit(3); };
   let manifest: any = {}; let bytes: Buffer = Buffer.alloc(0);
+  const identityByKey = new Map<string, any>();
   try {
     manifest = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8"));
     bytes = await readFile(join(dir, "events.jsonl"));
@@ -894,17 +895,42 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   if (!manifest.base_snapshot || !manifest.base_inventory || !Number.isInteger(manifest.base_event_count) || !manifest.base_inventory_digest || !Number.isInteger(manifest.expected_final_event_count) || !manifest.expected_final_inventory_digest || !manifest.event_file_sha256 || !Number.isInteger(manifest.event_count)
     || !Number.isInteger(manifest.base_body_count) || !manifest.base_body_digest || !Number.isInteger(manifest.base_selection_count) || !manifest.base_selection_digest || !manifest.base_minus_captured_body_digest
     || !Number.isInteger(manifest.expected_final_body_count) || !manifest.expected_final_body_digest || !Number.isInteger(manifest.expected_final_selection_count) || !manifest.expected_final_selection_digest || !manifest.expected_final_logical_inventory) fail(`capture manifest is missing a required field`);
-  // The source id is one field. Each captured identity states the
-  // same run id with its base. One edited field is a mismatch.
-  if (Array.isArray(manifest.identity_states) && typeof manifest.source_server_id === "string"
-    && (manifest.identity_states.length === 0 || manifest.identity_states.some((state: any) => state?.server_id !== manifest.source_server_id)))
-    fail("source server id does not match the captured identity base");
+  // Each captured identity states the manifest base and the source
+  // id. One edited field is a mismatch. A capture with no such
+  // records is from an older kit and must be captured again.
+  if (!Array.isArray(manifest.identity_states))
+    fail("capture has no identity records; capture it again with the current kit");
+  const publicKeys = manifest.public_keys;
+  if (!Array.isArray(publicKeys) || publicKeys.length !== manifest.identity_states.length || new Set(publicKeys).size !== publicKeys.length)
+    fail("capture does not have one identity record for each captured identity; capture it again with the current kit");
+  for (const state of manifest.identity_states) {
+    const id = state?.identity;
+    if (typeof id !== "string" || identityByKey.has(id))
+      fail("capture does not have one identity record for each captured identity; capture it again with the current kit");
+    identityByKey.set(id, state);
+  }
+  for (const key of publicKeys) {
+    if (typeof key !== "string" || !identityByKey.has(key))
+      fail("capture does not have one identity record for each captured identity; capture it again with the current kit");
+  }
+  for (const state of manifest.identity_states) {
+    if (state?.base_snapshot !== manifest.base_snapshot)
+      fail("identity base_snapshot does not match the manifest base_snapshot");
+    if (state?.base_inventory !== manifest.base_inventory)
+      fail("identity base_inventory does not match the manifest base_inventory");
+    if (state?.server_id !== manifest.source_server_id)
+      fail("source server id does not match the captured identity base");
+  }
   if (sha256(bytes) !== manifest.event_file_sha256) fail(`event file hash does not match manifest`);
   const lines = new TextDecoder().decode(bytes).trim().split("\n").filter(Boolean);
   if (lines.length !== manifest.event_count) fail(`event count ${lines.length} does not match manifest ${manifest.event_count}`);
   const transports = lines.map((l) => JSON.parse(l));
   const synthetic = new Set<string>(transports.map((t: any) => t.envelope.id));
   if (synthetic.size !== transports.length) fail(`capture holds a duplicate event id`);
+  for (const t of transports) {
+    if (!identityByKey.has(t.envelope?.header?.issuer))
+      fail("capture does not have one identity record for each captured identity; capture it again with the current kit");
+  }
   for (const t of transports) { try { const p = prepareAdmission(utf8(JSON.stringify(t))); if (!p.action_valid || p.body_status === "invalid") fail(`current code refuses event ${t.envelope?.id ?? "?"}: invalid action or body`); } catch (e: any) { fail(`current code refuses event ${t.envelope?.id ?? "?"}: ${e.message ?? String(e)}`); } }
   // Prove the whole logical inventory before any post: retained
   // events, bodies and import selections, each read at one pinned

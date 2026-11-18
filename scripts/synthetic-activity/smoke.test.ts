@@ -161,7 +161,7 @@ test("foreign base, tampered inventory and superset are refused; a partial resto
     const tm = JSON.parse(await readFile(join(tampered, "manifest.json"), "utf8")); tm.base_inventory = "sha256:" + "0".repeat(64);
     await writeFile(join(tampered, "manifest.json"), JSON.stringify(tm, null, 2));
     const s2 = await startServer(join(root, "fresh2"), 8797); servers.push(s2);
-    assert.match(await cmdFail(["--server", "http://127.0.0.1:8797", "restore", "--capture", tampered, "--wait-ms", "200"]), /refused: base inventory mismatch/);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8797", "restore", "--capture", tampered, "--wait-ms", "200"]), /refused: identity base_inventory does not match the manifest base_inventory/);
     // Partial restore: post only the first captured event, then resume.
     const s3 = await startServer(join(root, "fresh3"), 8798); servers.push(s3);
     const lines = (await readFile(join(cap, "events.jsonl"), "utf8")).trim().split("\n");
@@ -1586,6 +1586,90 @@ test("an edited manifest source id is refused and the foreign pin stays refused"
     const joined = await cmdFail(["--server", targetUrl, "--state", join(root, "on-b"), "--pin", foreignPin, "init"]);
     assert.match(joined, /refused: empty base pin does not match this server/);
     assert.equal(existsSync(join(root, "on-b", "identity.json")), false);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/** Two identities, one capture. The caller edits one manifest field. */
+async function captureTwo(root: string, port: number): Promise<{ cap: string; close(): Promise<void> }> {
+  const server = await startServer(join(root, "src"), port);
+  const url = `http://127.0.0.1:${port}`;
+  const a = join(root, "a");
+  const b = join(root, "b");
+  await cmd(["--server", url, "--state", a, "init"]);
+  await cmd(["--server", url, "--state", b, "init"]);
+  await cmd(["--server", url, "--state", a, "profile", "--name", "A"]);
+  await cmd(["--server", url, "--state", b, "profile", "--name", "B"]);
+  const cap = join(root, "capture");
+  await cmd(["--server", url, "capture", "--state", a, "--state", b, "--out", cap]);
+  return { cap, close: () => server.close() };
+}
+
+test("an edited identity base snapshot is refused", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const captured = await captureTwo(root, 9640);
+    servers.push(captured);
+    const manifestPath = join(captured.cap, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.identity_states[0].base_snapshot = "sha256:" + "ab".repeat(32);
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    const target = await startServer(join(root, "dst"), 9641);
+    servers.push(target);
+    const restored = await cmdResult(["--server", "http://127.0.0.1:9641", "restore", "--capture", captured.cap]);
+    assert.equal(restored.code, 3, restored.out);
+    assert.match(restored.out, /refused: identity base_snapshot does not match the manifest base_snapshot/);
+    const ids = ((await (await fetch("http://127.0.0.1:9641/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+    assert.deepEqual(ids, []);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an edited identity base inventory is refused", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const captured = await captureTwo(root, 9642);
+    servers.push(captured);
+    const manifestPath = join(captured.cap, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.identity_states[0].base_inventory = "sha256:" + "0".repeat(64);
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    const target = await startServer(join(root, "dst"), 9643);
+    servers.push(target);
+    const restored = await cmdResult(["--server", "http://127.0.0.1:9643", "restore", "--capture", captured.cap]);
+    assert.equal(restored.code, 3, restored.out);
+    assert.match(restored.out, /refused: identity base_inventory does not match the manifest base_inventory/);
+    const ids = ((await (await fetch("http://127.0.0.1:9643/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+    assert.deepEqual(ids, []);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a capture without identity records is refused", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const captured = await captureTwo(root, 9644);
+    servers.push(captured);
+    const manifestPath = join(captured.cap, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    delete manifest.identity_states;
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    const target = await startServer(join(root, "dst"), 9645);
+    servers.push(target);
+    const restored = await cmdResult(["--server", "http://127.0.0.1:9645", "restore", "--capture", captured.cap]);
+    assert.equal(restored.code, 3, restored.out);
+    assert.match(restored.out, /refused: capture has no identity records; capture it again with the current kit/);
+    const ids = ((await (await fetch("http://127.0.0.1:9645/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+    assert.deepEqual(ids, []);
   } finally {
     for (const server of servers) await server.close();
     await rm(root, { recursive: true, force: true });
