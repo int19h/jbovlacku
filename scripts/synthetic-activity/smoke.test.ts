@@ -1103,7 +1103,7 @@ test("an empty base pin refuses a larger unrelated server", async () => {
     for (const ext of [".ids", ".bodies", ".selections"]) await writeFile(pin2 + ext, await readFile(pin + ext));
     const d = join(root, "away", "d");
     const noId = await cmdFail(["--server", "http://127.0.0.1:9622", "--state", d, "--pin", pin2, "init"]);
-    assert.match(noId, /refused: an empty base pin has no server id/);
+    assert.match(noId, /refused: pin has no server id; make a new pin with the current kit/);
     assert.equal(existsSync(join(d, "identity.json")), false);
   } finally { await s1.close(); await s2.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -1670,6 +1670,41 @@ test("a capture without identity records is refused", async () => {
     assert.match(restored.out, /refused: capture has no identity records; capture it again with the current kit/);
     const ids = ((await (await fetch("http://127.0.0.1:9645/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
     assert.deepEqual(ids, []);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a non-empty pin without a server id is refused", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const source = await startServer(join(root, "src"), 9646);
+    servers.push(source);
+    const url = "http://127.0.0.1:9646";
+    const base = join(root, "base");
+    await cmd(["--server", url, "--state", base, "init"]);
+    await cmd(["--server", url, "--state", base, "profile", "--name", "base"]);
+    const pin = join(root, "old-pin.json");
+    await cmd(["--server", url, "--pin", pin, "pin-base"]);
+    const pinJson = JSON.parse(await readFile(pin, "utf8"));
+    assert.ok(pinJson.base_event_count > 0);
+    const kept = join(root, "kept");
+    await cmd(["--server", url, "--state", kept, "--pin", pin, "init"]);
+    delete pinJson.server_id;
+    await writeFile(pin, JSON.stringify(pinJson, null, 2) + "\n");
+    const state = join(root, "run");
+    const created = await cmdResult(["--server", url, "--state", state, "--pin", pin, "init"]);
+    assert.equal(created.code, 3, created.out);
+    assert.match(created.out, /refused: pin has no server id; make a new pin with the current kit/);
+    assert.equal(existsSync(join(state, "identity.json")), false);
+    const cap = join(root, "capture");
+    const captured = await cmdResult(["--server", url, "capture", "--state", kept, "--pin", pin, "--out", cap]);
+    assert.equal(captured.code, 3, captured.out);
+    assert.match(captured.out, /refused: pin has no server id; make a new pin with the current kit/);
+    assert.equal(existsSync(join(cap, "manifest.json")), false);
+    assert.equal(existsSync(join(cap, "events.jsonl")), false);
   } finally {
     for (const server of servers) await server.close();
     await rm(root, { recursive: true, force: true });

@@ -205,25 +205,29 @@ function baseIsEmpty(pin: Pin, lists: PinLists): boolean {
 function validServerId(value: unknown): string | undefined {
   return typeof value === "string" && /^[0-9a-f]{32}$/.test(value) ? value : undefined;
 }
+/** A pin without a server id is from an older kit. Refuse it before any identity or capture is written. */
+function requirePinServerId(pin: Pin): string {
+  const id = validServerId(pin.server_id);
+  if (!id) { console.error("refused: pin has no server id; make a new pin with the current kit"); process.exit(3); }
+  return id;
+}
 /**
- * An empty base names the run by the original pin's server id.
- * A later capture on a restored copy keeps that id. The marker
- * of the server that makes the capture is a different server.
+ * The capture names the run by the original pin's server id.
+ * A later capture on a restored copy keeps that id.
+ * Every identity must record that same id.
  */
-function runSourceId(pin: Pin, identities: Identity[], lists: PinLists): string | undefined {
-  const pinId = validServerId(pin.server_id);
+function runSourceId(pin: Pin, identities: Identity[]): string {
+  const pinId = requirePinServerId(pin);
   const recorded = identities.map((identity) => validServerId(identity.server_id));
   if (recorded.some((id) => id !== undefined && id !== pinId)) {
     console.error("refused: an identity records a different server id than the base pin");
     process.exit(3);
   }
-  if (baseIsEmpty(pin, lists)) {
-    if (!pinId) { console.error("refused: an empty base pin has no server id, so the capture cannot name this run; take a new pin with pin-base"); process.exit(3); }
-    if (recorded.some((id) => id !== pinId)) { console.error("refused: an identity does not record the base pin's server id; run init again so the identity stores it"); process.exit(3); }
-    return pinId;
+  if (recorded.some((id) => id !== pinId)) {
+    console.error("refused: an identity does not record the base pin's server id; run init again so the identity stores it");
+    process.exit(3);
   }
-  if (pinId && recorded.every((id) => id === pinId)) return pinId;
-  return markerServerId;
+  return pinId;
 }
 /**
  * An empty ID list is a subset of every server. The pin's server id,
@@ -233,10 +237,10 @@ function runSourceId(pin: Pin, identities: Identity[], lists: PinLists): string 
  */
 async function refuseForeignEmptyPin(o: Opts, pin: Pin, lists: PinLists): Promise<void> {
   if (!baseIsEmpty(pin, lists)) return;
-  if (!pin.server_id) { console.error("refused: an empty base pin has no server id, so it cannot tell this server from another; take a new pin with pin-base"); process.exit(3); }
+  const pinId = requirePinServerId(pin);
   await checkMarker(o);
-  if (markerServerId === pin.server_id) return;
-  if (await targetHoldsProvenCopy(o, pin.server_id)) return;
+  if (markerServerId === pinId) return;
+  if (await targetHoldsProvenCopy(o, pinId)) return;
   console.error("refused: empty base pin does not match this server; a new base needs a new pin file"); process.exit(3);
 }
 /** The target recorded this source after a restore proved the inventory, and it still holds those events. */
@@ -502,6 +506,7 @@ async function main(): Promise<void> {
       if (!o.state && !flag(o, "pin")) throw new Error("--pin or --state is required");
       const pin = await loadOrCreatePin(o);
       if (!pinHasEvidence(pin, pinPath(o))) { console.error("refused: base pin file has no base evidence; delete it or use a new --pin path, then run pin-base again"); process.exit(3); }
+      requirePinServerId(pin);
       await readPinEvidence(pin, pinPath(o));
       console.log(`base_snapshot ${pin.base_snapshot}`);
       console.log(`base_inventory ${pin.base_inventory}`);
@@ -524,6 +529,7 @@ async function main(): Promise<void> {
           } else {
             const pin = JSON.parse(await readFile(path, "utf8"));
             if (!pinHasEvidence(pin, path)) { console.error("refused: base pin file has no base evidence; a new base needs a new pin file"); process.exit(3); }
+            requirePinServerId(pin);
             const lists = await readPinEvidence(pin, path);
             if ((j.base_snapshot && j.base_snapshot !== pin.base_snapshot) || (j.base_inventory && j.base_inventory !== pin.base_inventory)) {
               console.error("refused: base pin does not match this identity's recorded base; start a new state folder"); process.exit(3);
@@ -539,14 +545,15 @@ async function main(): Promise<void> {
             j.base_body_count = pin.base_body_count; j.base_body_digest = pin.base_body_digest;
             j.base_selection_count = pin.base_selection_count; j.base_selection_digest = pin.base_selection_digest;
             j.base_snapshot ??= pin.base_snapshot; j.base_inventory ??= pin.base_inventory;
-            if (!validServerId(j.server_id) && validServerId(pin.server_id)) j.server_id = pin.server_id;
+            if (!validServerId(j.server_id)) j.server_id = pin.server_id;
             await writeAtomic(p, JSON.stringify(j, null, 2) + "\n", 0o600);
           }
         } else if (!validServerId(j.server_id)) {
           const path = pinPath(o);
           if (existsSync(path)) {
             const pin = JSON.parse(await readFile(path, "utf8"));
-            if (validServerId(pin.server_id) && j.base_snapshot === pin.base_snapshot && j.base_inventory === pin.base_inventory) {
+            requirePinServerId(pin);
+            if (j.base_snapshot === pin.base_snapshot && j.base_inventory === pin.base_inventory) {
               j.server_id = pin.server_id;
               await writeAtomic(p, JSON.stringify(j, null, 2) + "\n", 0o600);
             }
@@ -568,6 +575,7 @@ async function main(): Promise<void> {
         if (!pinHasEvidence(pin, pinPath(o))) {
           console.error("refused: base pin file has no base evidence; take a new pin with pin-base"); process.exit(3);
         }
+        requirePinServerId(pin);
         let serverIds: string[];
         try { serverIds = await inventoryIds(o); } catch (e: any) { console.error(`refused: cannot check the base pin against the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
         const serverSet = new Set(serverIds);
@@ -578,8 +586,8 @@ async function main(): Promise<void> {
         await refuseForeignEmptyPin(o, pin, lists);
       }
       const seed = randomBytes(32); const identity = identityFromSeed(new Uint8Array(seed));
-      const runId = validServerId(pin.server_id);
-      const rec: Identity = { seed: hex(new Uint8Array(seed)), identity, base_snapshot: pin.base_snapshot, base_inventory: pin.base_inventory, base_event_count: pin.base_event_count ?? null, base_inventory_digest: pin.base_inventory_digest, base_body_count: pin.base_body_count ?? null, base_body_digest: pin.base_body_digest, base_selection_count: pin.base_selection_count ?? null, base_selection_digest: pin.base_selection_digest, ...(runId ? { server_id: runId } : {}) };
+      const runId = requirePinServerId(pin);
+      const rec: Identity = { seed: hex(new Uint8Array(seed)), identity, base_snapshot: pin.base_snapshot, base_inventory: pin.base_inventory, base_event_count: pin.base_event_count ?? null, base_inventory_digest: pin.base_inventory_digest, base_body_count: pin.base_body_count ?? null, base_body_digest: pin.base_body_digest, base_selection_count: pin.base_selection_count ?? null, base_selection_digest: pin.base_selection_digest, server_id: runId };
       await writeAtomic(p, JSON.stringify(rec, null, 2) + "\n", 0o600);
       console.log(`identity ${identity}`); console.log(`state ${resolve(o.state)}`);
     } else if (cmd === "unlock") {
@@ -811,6 +819,7 @@ async function captureBody(o: Opts): Promise<void> {
   if (!existsSync(capturePinPath)) { console.error(`refused: capture needs the base pin file with its full evidence lists (expected ${capturePinPath}); run pin-base for this run first`); process.exit(3); }
   const capturePin: Pin = JSON.parse(await readFile(capturePinPath, "utf8"));
   if (!pinHasEvidence(capturePin, capturePinPath)) { console.error("refused: base pin file has no full base evidence; take a new pin with pin-base"); process.exit(3); }
+  requirePinServerId(capturePin);
   const pinLists = await readPinEvidence(capturePin, capturePinPath);
   if (capturePin.base_snapshot !== identities[0].base_snapshot || capturePin.base_inventory !== identities[0].base_inventory
     || identities.some((i) => i.base_body_digest !== capturePin.base_body_digest || i.base_selection_digest !== capturePin.base_selection_digest)) {
@@ -847,6 +856,9 @@ async function captureBody(o: Opts): Promise<void> {
     console.error("refused: writers are still active (the admitted snapshot changed during capture); stop them and capture again");
     process.exit(3);
   }
+  // Name the run before any capture file is written. A mismatch here
+  // is a capture this kit would refuse on restore.
+  const sourceId = runSourceId(capturePin, identities);
   await mkdir(outDir, { recursive: true });
   const lines = transports.map((t) => canonicalize(utf8(JSON.stringify(t))));
   const bytes = utf8(lines.join("\n") + (lines.length ? "\n" : ""));
@@ -854,7 +866,6 @@ async function captureBody(o: Opts): Promise<void> {
   const byKind: Record<string, number> = {}, byIssuer: Record<string, number> = {};
   for (const t of transports) { const k = t.envelope.header.action.kind; byKind[k] = (byKind[k] ?? 0) + 1; const iss = t.envelope.header.issuer; byIssuer[iss] = (byIssuer[iss] ?? 0) + 1; }
   let kit_revision = "unknown"; try { kit_revision = execFileSync("git", ["-C", resolve(dirname(fileURLToPath(import.meta.url)), "../.."), "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
-  const sourceId = runSourceId(capturePin, identities, pinLists);
   const manifest = {
     format: 1, capture_snapshot: sourceSnapshot, base_snapshot: identities[0].base_snapshot, base_inventory: identities[0].base_inventory, kit_revision,
     ...(sourceId ? { source_server_id: sourceId } : {}),
