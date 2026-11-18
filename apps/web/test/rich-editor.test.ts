@@ -1314,6 +1314,54 @@ test(`tab into the field after a reset keeps the recorded caret: wait ${wait}`, 
 });
 }
 
+test.describe("touch input", () => {
+  test.use({ hasTouch: true });
+  test("a tap after a reset places a caret at the tap point", async ({
+    page,
+    browserName,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts"),
+      );
+      const field = richField("Touch reset field", {
+        value: [["alpha beta"]],
+      });
+      const button = document.createElement("button");
+      button.textContent = "Rewrite without focusing";
+      document.body.replaceChildren(button, field.wrapper);
+      button.onclick = () => {
+        field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+      };
+    });
+    const field = page.getByRole("textbox", {
+      name: "Touch reset field",
+      exact: true,
+    });
+    await field.focus();
+    await field.evaluate((node) => {
+      const text = node.querySelector(".rich-literal")!.firstChild!;
+      getSelection()!.setBaseAndExtent(text, 4, text, 4);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForTimeout(60);
+    await page
+      .getByRole("button", { name: "Rewrite without focusing", exact: true })
+      .click();
+    await page.waitForTimeout(40);
+    const box = await field.locator("p").first().boundingBox();
+    await page.touchscreen.tap(box!.x + 35, box!.y + 8);
+    await page.keyboard.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual([
+        [browserName === "firefox" ? "resetx prefix" : "resext prefix"],
+        ["alpha beta"],
+      ]);
+  });
+});
+
 test("trusted line keys replace the paragraph after a slow Home handler", async ({
   page,
 }) => {
