@@ -359,6 +359,8 @@ function checkHeldConsistency(pin: object, identity: object): void {
   if (reason) { console.error(`refused: ${reason}`); process.exit(3); }
 }
 async function checkPinInUse(o: Opts, identities: readonly object[]): Promise<void> {
+  // The identity shape does not need a pin file. The compare does.
+  for (const identity of identities) refuseShape(localShapeError(identity, "identity", false));
   const path = pinPath(o);
   if (!existsSync(path)) return;
   checkLocalConsistency(JSON.parse(await readFile(path, "utf8")), identities);
@@ -420,8 +422,9 @@ async function readPinEvidence(pin: Pin, path: string): Promise<PinLists> {
  * The snapshot id is the hash of the carrier manifest, not of the
  * three ID lists. While the server still holds exactly those lists,
  * its admitted snapshot must be the pinned snapshot. A later event
- * changes the lists. That late join keeps the original pin, and this
- * compare does not run.
+ * changes both the snapshot and the lists. That late join keeps the
+ * original pin. The same snapshot with different lists is inconsistent
+ * with data this command already read.
  */
 async function refusePinSnapshot(o: Opts, pin: Pin, lists: PinLists): Promise<void> {
   let page: any;
@@ -434,9 +437,13 @@ async function refusePinSnapshot(o: Opts, pin: Pin, lists: PinLists): Promise<vo
   const events = await inventoryIds(o, snapshot);
   const bodies = await inventoryList(o, "bodies", snapshot);
   const selections = await inventoryList(o, "import_selections", snapshot);
-  if (!sameMembers(events, lists.events) || !sameMembers(bodies, lists.bodies) || !sameMembers(selections, lists.selections)) return;
-  if (snapshot !== pin.base_snapshot) {
+  const listsDiffer = !sameMembers(events, lists.events) || !sameMembers(bodies, lists.bodies) || !sameMembers(selections, lists.selections);
+  if (!listsDiffer && snapshot !== pin.base_snapshot) {
     console.error("refused: base pin snapshot does not match the server; take a new pin with pin-base");
+    process.exit(3);
+  }
+  if (listsDiffer && snapshot === pin.base_snapshot) {
+    console.error("refused: base pin snapshot matches the server but the lists differ; take a new pin with pin-base");
     process.exit(3);
   }
 }
@@ -444,7 +451,7 @@ async function loadOrCreatePin(o: Opts): Promise<Pin> {
   const path = pinPath(o);
   if (existsSync(path)) {
     const pin = JSON.parse(await readFile(path, "utf8"));
-    if (!pin.base_snapshot || !pin.base_inventory) { console.error(`refused: base pin file has no base: ${path}`); process.exit(3); }
+    refuseShape(localShapeError(pin, "pin", false));
     return pin;
   }
   // Pin the whole logical inventory at one admitted snapshot. The
@@ -463,6 +470,8 @@ async function loadOrCreatePin(o: Opts): Promise<Pin> {
     base_selection_count: selections.length, base_selection_digest: digestIds(selections),
     ...(markerServerId ? { server_id: markerServerId } : {}),
   };
+  // A new pin must already have all nine fields. Refuse before any of the four files is written.
+  refuseShape(localShapeError(pin, "pin", false));
   await mkdir(dirname(path), { recursive: true });
   await writeAtomic(pinIdsPath(path), ids.join("\n") + (ids.length ? "\n" : ""));
   await writeAtomic(pinBodiesPath(path), bodies.join("\n") + (bodies.length ? "\n" : ""));
@@ -1100,6 +1109,9 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
     || !Number.isInteger(manifest.base_body_count) || !manifest.base_body_digest || !Number.isInteger(manifest.base_selection_count) || !manifest.base_selection_digest || !manifest.base_minus_captured_body_digest
     || !Number.isInteger(manifest.expected_final_body_count) || !manifest.expected_final_body_digest || !Number.isInteger(manifest.expected_final_selection_count) || !manifest.expected_final_selection_digest || !manifest.expected_final_logical_inventory) fail(`capture manifest is missing a required field`);
   if (manifest.format !== 1) fail("capture format is not 1");
+  for (const field of ["base_event_count", "base_body_count", "base_selection_count"] as const) {
+    if (manifest[field] < 0) fail(`manifest ${field} is not a non-negative integer`);
+  }
   // Each captured identity states the manifest base and the source
   // id. One edited field is a mismatch. A capture with no such
   // records is from an older kit and must be captured again.

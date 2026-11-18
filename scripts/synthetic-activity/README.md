@@ -98,11 +98,14 @@ same base, even after other identities have written. If no
 pin file exists, `init` reads the server and creates the
 pin. If it cannot read a base, `init` fails and writes no
 identity. It never creates an identity with an empty base.
+`pin-base` checks a new pin before it writes the first of the
+four pin files. A pin that fails that check writes nothing.
 
 An explicit `--pin` path that does not exist is refused for every identity command.
 Every command that loads an identity refuses that path.
 `init` of a new identity refuses it too.
 An absent default `base-pin.json` is not a refusal.
+The loaded identity must still hold every base field.
 A wrong path must not create a new pin late in a run.
 `init` creates a pin only on the default pin path.
 
@@ -112,7 +115,10 @@ on the server. A server that holds the base plus this run's
 later events passes. A larger server without the pinned base
 IDs is refused. A pin file with no base count or no ID list
 is refused. Delete the old pin file, or pass a new `--pin`
-path, to start a run on a new base.
+path, to start a run on a new base. When the pin snapshot
+equals the admitted snapshot, the pin lists must equal the
+server lists. When both the snapshot and the lists differ
+from the pin, a late join still passes.
 
 The pin also records the server id from the disposable marker.
 An empty base has an empty ID list.
@@ -368,6 +374,7 @@ missing or added import selection is refused. A tampered base
 value in the manifest is refused. The first mismatch is the
 reason. When a body is in the base and the capture, the
 resumed count is not exact, and a larger base count is refused.
+A negative base count is refused.
 
 A fresh target must match the pinned base in all three
 components. If a captured event shares that hash, a missing

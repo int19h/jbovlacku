@@ -2353,6 +2353,134 @@ test("one edited field is refused before a post or a write", async () => {
       assert.deepEqual(after, before);
       assert.equal(existsSync(join(state, "lock")), false);
     });
+    await row("snapshot matches the server but the lists differ", async () => {
+      const bindPort = 9690;
+      const bindUrl = `http://127.0.0.1:${bindPort}`;
+      const bindServer = await startServer(join(root, "bind-src"), bindPort);
+      servers.push(bindServer);
+      const first = join(root, "bind", "a");
+      await cmd(["--server", bindUrl, "--state", first, "init"]);
+      await cmd(["--server", bindUrl, "--state", first, "profile", "--name", "One"]);
+      const goodPin = join(root, "bind", "good.json");
+      await cmd(["--server", bindUrl, "--state", first, "--pin", goodPin, "pin-base"]);
+      await cmd(["--server", bindUrl, "--state", first, "profile", "--name", "Two"]);
+      const advanced = await (await fetch(bindUrl + "/api/v1/inventory?kind=events&limit=1")).json() as any;
+      const badPin = join(root, "bind", "bad.json");
+      const pinJson = JSON.parse(await readFile(goodPin, "utf8"));
+      assert.notEqual(pinJson.base_snapshot, advanced.snapshot);
+      pinJson.base_snapshot = advanced.snapshot;
+      await writeFile(badPin, JSON.stringify(pinJson, null, 2) + "\n");
+      for (const ext of [".ids", ".bodies", ".selections"]) await writeFile(badPin + ext, await readFile(goodPin + ext));
+      const late = join(root, "bind", "late");
+      const created = await cmdResult(["--server", bindUrl, "--state", late, "--pin", badPin, "init"]);
+      assert.equal(created.code, 3, created.out);
+      assert.match(created.out, /refused: base pin snapshot matches the server but the lists differ/);
+      assert.equal(existsSync(join(late, "identity.json")), false);
+      assert.equal(existsSync(join(late, "lock")), false);
+      const joined = join(root, "bind", "joined");
+      const ok = await cmdResult(["--server", bindUrl, "--state", joined, "--pin", goodPin, "init"]);
+      assert.equal(ok.code, 0, ok.out);
+      assert.match(ok.out, /identity ed25519:/);
+      assert.equal(existsSync(join(joined, "identity.json")), true);
+    });
+    await row("profile without a pin requires a complete identity", async () => {
+      const before = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+      const missing = join(root, "no-default", "missing");
+      await mkdir(missing, { recursive: true });
+      const record = structuredClone(identityJson);
+      delete record.base_event_count;
+      await writeFile(join(missing, "identity.json"), JSON.stringify(record, null, 2) + "\n");
+      const posted = await cmdResult(["--server", url, "--state", missing, "profile", "--name", "no pin"]);
+      assert.equal(posted.code, 3, posted.out);
+      assert.match(posted.out, /refused: identity base_event_count is missing/);
+      const after = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+      assert.deepEqual(after, before);
+      assert.equal(existsSync(join(missing, "lock")), false);
+    });
+    await row("pin-base writes nothing when the new pin has no server id", async () => {
+      const pinFile = join(root, "bootstrap", "pin.json");
+      await mkdir(dirname(pinFile), { recursive: true });
+      const snapshot = "sha256:" + "ab".repeat(32);
+      const fake = createServer((req, res) => {
+        if (req.url === "/synthetic-disposable") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ disposable: true }));
+          return;
+        }
+        if (req.url?.startsWith("/api/v1/inventory")) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ snapshot, ids: [], next: null }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+      await listenLocal(fake, 9692);
+      try {
+        const created = await cmdResult(["--server", "http://127.0.0.1:9692", "--pin", pinFile, "pin-base"]);
+        assert.equal(created.code, 3, created.out);
+        assert.match(created.out, /refused: pin has no server id/);
+        for (const file of [pinFile, pinFile + ".ids", pinFile + ".bodies", pinFile + ".selections"]) {
+          assert.equal(existsSync(file), false, file);
+        }
+      } finally {
+        await new Promise<void>((resolve) => fake.close(() => resolve()));
+      }
+    });
+    for (const field of ["base_snapshot", "base_inventory"] as const) {
+      await row(`missing pin ${field} names the field`, async () => {
+        const dest = join(root, "rows", `missing-${field}`, "pin.json");
+        await copyPin(dest);
+        const pinJson = JSON.parse(await readFile(dest, "utf8"));
+        delete pinJson[field];
+        await writeFile(dest, JSON.stringify(pinJson, null, 2) + "\n");
+        const pinned = await cmdResult(["--server", url, "--pin", dest, "pin-base"]);
+        assert.equal(pinned.code, 3, pinned.out);
+        assert.match(pinned.out, new RegExp(`refused: pin ${field} is missing`), pinned.out);
+        const next = join(root, "rows", `missing-${field}`, "state");
+        const created = await cmdResult(["--server", url, "--state", next, "--pin", dest, "init"]);
+        assert.equal(created.code, 3, created.out);
+        assert.match(created.out, new RegExp(`refused: pin ${field} is missing`), created.out);
+        assert.equal(existsSync(join(next, "identity.json")), false);
+      });
+    }
+    await row("resumed negative base_body_count", async () => {
+      const sourcePort = 9693;
+      const targetPort = 9694;
+      const sourceUrl = `http://127.0.0.1:${sourcePort}`;
+      const resumedTargetUrl = `http://127.0.0.1:${targetPort}`;
+      const sourceServer = await startServer(join(root, "neg-src"), sourcePort);
+      servers.push(sourceServer);
+      const targetServer = await startServer(join(root, "neg-dst"), targetPort);
+      servers.push(targetServer);
+      const resumeState = join(root, "neg", "a");
+      await cmd(["--server", sourceUrl, "--state", resumeState, "init"]);
+      await cmd(["--server", sourceUrl, "--state", resumeState, "profile", "--name", "One"]);
+      const prefix = join(root, "neg", "prefix");
+      await cmd(["--server", sourceUrl, "capture", "--state", resumeState, "--out", prefix]);
+      const first = await cmdResult(["--server", resumedTargetUrl, "restore", "--capture", prefix, "--wait-ms", "0"]);
+      assert.equal(first.code, 0, first.out);
+      await cmd(["--server", sourceUrl, "--state", resumeState, "profile", "--name", "Two"]);
+      const full = join(root, "neg", "full");
+      await cmd(["--server", sourceUrl, "capture", "--state", resumeState, "--out", full]);
+      const fullManifestPath = join(full, "manifest.json");
+      const fullManifest = JSON.parse(await readFile(fullManifestPath, "utf8"));
+      const beforeIds = ((await (await fetch(resumedTargetUrl + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+      assert.equal(beforeIds.length, 1);
+      fullManifest.base_body_count = -1;
+      await writeFile(fullManifestPath, JSON.stringify(fullManifest, null, 2) + "\n");
+      const resumed = await cmdResult(["--server", resumedTargetUrl, "restore", "--capture", full, "--wait-ms", "0"]);
+      assert.equal(resumed.code, 3, resumed.out);
+      assert.match(resumed.out, /refused: manifest base_body_count is not a non-negative integer/);
+      const afterIds = ((await (await fetch(resumedTargetUrl + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+      assert.deepEqual(afterIds, beforeIds);
+      const reuse = await cmdResult(["--server", resumedTargetUrl, "reuse-check", "--capture", full, "--wait-ms", "0"]);
+      assert.equal(reuse.code, 3, reuse.out);
+      assert.match(reuse.out, /not reusable: manifest base_body_count is not a non-negative integer/);
+      assert.doesNotMatch(reuse.out, /^reusable$/m);
+      const afterReuse = ((await (await fetch(resumedTargetUrl + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+      assert.deepEqual(afterReuse, beforeIds);
+    });
     assert.equal(problems.length, 0, problems.join("\n\n"));
   } finally {
     for (const server of servers) await server.close();
