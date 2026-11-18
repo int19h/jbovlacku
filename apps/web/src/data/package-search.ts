@@ -288,7 +288,12 @@ export async function searchPackage(
   options: PackageSearchOptions = {},
 ): Promise<PackageSearchResult> {
   options.signal?.throwIfAborted();
-  if (!pkg || typeof pkg !== "object" || Array.isArray(pkg))
+  if (
+    !pkg ||
+    typeof pkg !== "object" ||
+    Array.isArray(pkg) ||
+    !Array.isArray((pkg as { entries?: unknown }).entries)
+  )
     throw new PackageValidationError(invalidPackage().message);
   const { signal, ...workerOptions } = options;
   let identity: string | number | undefined =
@@ -369,14 +374,20 @@ export async function searchPackage(
       });
       signal?.addEventListener("abort", abort, { once: true });
       try {
-        // Transferring the package clones every entry onto the worker, so the
-        // transfer charges one unit per entry plus its content before the
-        // package is posted.
+        // Transferring the package clones every entry onto the worker, so
+        // the transfer charges one unit per entry plus its content before
+        // the package is posted. Each entry is charged before the next one
+        // is measured, so an exhausted budget stops before walking the
+        // remaining package; the per-entry measurement itself checks the
+        // allowance inside large date maps.
         if (prepare) {
-          let transferUnits = 0;
-          for (const entry of pkg.entries)
-            transferUnits += 1 + entryContentUnits(entry);
-          clientBudget.reserve(transferUnits, "prepare");
+          for (const entry of pkg.entries) {
+            clientBudget.ensure(1, "prepare");
+            clientBudget.reserve(
+              1 + entryContentUnits(entry, clientBudget, "prepare"),
+              "prepare",
+            );
+          }
         }
         current.worker.postMessage({
           request,

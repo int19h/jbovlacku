@@ -316,8 +316,10 @@ export function validateCachedPackage(
   let previous = "";
   for (const entry of value.entries) {
     // One validated entry costs one unit plus its content, charged before
-    // the entry is read so a bloated package refuses up front.
-    budget?.reserve(1 + entryContentUnits(entry), "prepare");
+    // the entry is read so a bloated package refuses up front. The unit is
+    // ensured before measuring, so an exhausted budget walks nothing.
+    budget?.ensure(1, "prepare");
+    budget?.reserve(1 + entryContentUnits(entry, budget, "prepare"), "prepare");
     validateEntry(entry, language, version, value.search_view);
     if (value.search_view && typeof entry.search_status !== "string")
       throw invalidPackage();

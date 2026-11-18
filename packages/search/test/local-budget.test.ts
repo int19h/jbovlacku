@@ -420,3 +420,89 @@ test("a tight preparation does not poison the whole-array cache", () => {
   assert.deepEqual(warm, fresh);
   assert.deepEqual(warm, ["sequence-subsequence"]);
 });
+
+test("an exact-fit comparison block runs nothing past the allowance", () => {
+  // Review inputs: the `a a` row with the 512-word `a` query. Query
+  // parsing consumes 207,360 units and the row content 2, so at 208,387
+  // and 208,388 the 1,537-unit contiguous-block reservation itself refuses
+  // with zero comparisons. At 208,899 the reservation fits exactly and the
+  // first comparison refuses instead. Nothing runs past the allowance in
+  // any case.
+  const short = {
+    word: { spelling: "a a" },
+    glosses: [],
+    plain_text: "book",
+  } as LexicalEntry;
+  const index = prepareIndex([short]);
+  const query = "a ".repeat(511) + "a";
+  for (const workLimit of [208387, 208388, 208899]) {
+    const measured = searchMetrics();
+    const budget = new SearchRequestBudget(measured, {
+      workLimit,
+      deadlineMs: Infinity,
+    });
+    assert.throws(
+      () =>
+        selectMatches(index, query, measured, () => true, {
+          requestBudget: budget,
+        }),
+      (error: unknown) => error instanceof SearchBudgetError,
+      `limit ${workLimit}`,
+    );
+    assert.equal(measured.componentComparisons, 0, `limit ${workLimit}`);
+    assert.ok(
+      budget.snapshot().spent <= workLimit,
+      `spent ${budget.snapshot().spent} exceeds ${workLimit}`,
+    );
+  }
+});
+
+test("the comparison bound covers prefix-follow re-comparisons", () => {
+  // Headword `a a a i` against 200 `a` query words: following the prefix
+  // table re-compares tokens after a mismatch, and the repeated test
+  // re-compares again, so the scan performs 596 comparisons — above the old
+  // 2n + 1 bound of 401 and within the true 3n + 1 bound of 601.
+  const row = {
+    word: { spelling: "a a a i" },
+    glosses: [],
+    plain_text: "book",
+  } as LexicalEntry;
+  const query = Array(200).fill("a").join(" ");
+  const free = searchMetrics();
+  const index = prepareIndex([row]);
+  // The pattern never completes (no `i` in the query), but the scan still
+  // performs every comparison.
+  selectMatches(index, query, free);
+  assert.ok(
+    free.componentComparisons > 401,
+    `only ${free.componentComparisons} comparisons ran`,
+  );
+  assert.ok(
+    free.componentComparisons <= 3 * 200 + 1,
+    `${free.componentComparisons} comparisons exceed the bound`,
+  );
+  // A budget that fits the true bound to the unit still runs nothing past
+  // the allowance: the reservation fits exactly and the first comparison
+  // refuses.
+  const probe = searchMetrics();
+  prepareQuery(query, probe);
+  const workLimit =
+    probe.queryParserWork + 1 + entryContentUnits(row) + (3 * 200 + 1);
+  const measured = searchMetrics();
+  const budget = new SearchRequestBudget(measured, {
+    workLimit,
+    deadlineMs: Infinity,
+  });
+  assert.throws(
+    () =>
+      selectMatches(index, query, measured, () => true, {
+        requestBudget: budget,
+      }),
+    (error: unknown) => error instanceof SearchBudgetError,
+  );
+  assert.equal(measured.componentComparisons, 0);
+  assert.ok(
+    budget.snapshot().spent <= workLimit,
+    `spent ${budget.snapshot().spent} exceeds ${workLimit}`,
+  );
+});

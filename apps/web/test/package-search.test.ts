@@ -313,3 +313,155 @@ test("download, saved cache, and search worker retain the package view once", as
   expect(result.known).toBe(true);
   expect(result.downgrade).toBeNull();
 });
+
+test("a zero-unit transfer walks no attribution dates", async ({ page }) => {
+  // The review input: 100 valid version-2 entries with 128 attribution
+  // dates each. A request with workLimit 0 must refuse before walking any
+  // date map on the page thread, while the default budget still returns
+  // the one hit with all 100 entries.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const dates = () =>
+      Object.fromEntries(
+        Array.from({ length: 128 }, (_, index) => [
+          `d${index}`,
+          "2020-01-01",
+        ]),
+      );
+    const entries = Array.from({ length: 100 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [],
+      plain_text: "book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+      issuer: "ed25519:" + "a".repeat(64),
+      notes: false,
+      rafsi: [],
+      attribution: { source: "test", author: null, account: null, dates: dates() },
+    }));
+    const pkg = { snapshot: "sha256:" + "a".repeat(64), version: 2, entries };
+    const maps = new WeakSet<object>(
+      entries.map((entry) => entry.attribution.dates),
+    );
+    let visits = 0;
+    let pairs = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const original: any = Object.entries;
+    const hooked = function (obj: object): [string, unknown][] {
+      const result = original(obj) as [string, unknown][];
+      if (maps.has(obj)) {
+        visits++;
+        pairs += result.length;
+      }
+      return result;
+    };
+    Object.entries = hooked as typeof Object.entries;
+    try {
+      try {
+        await searchPackage(pkg as never, "en", ["book"], { workLimit: 0 });
+        return { refused: false, visits, pairs };
+      } catch (error) {
+        return {
+          refused: true,
+          constructor: (error as Error).constructor.name,
+          visits,
+          pairs,
+        };
+      }
+    } finally {
+      Object.entries = original;
+    }
+  });
+  expect(result.refused).toBe(true);
+  expect(result.constructor).toBe("SearchBudgetError");
+  expect(result.visits).toBe(0);
+  expect(result.pairs).toBe(0);
+  const control = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const dates = () =>
+      Object.fromEntries(
+        Array.from({ length: 128 }, (_, index) => [
+          `d${index}`,
+          "2020-01-01",
+        ]),
+      );
+    const entries = Array.from({ length: 100 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [],
+      plain_text: "book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+      issuer: "ed25519:" + "a".repeat(64),
+      notes: false,
+      rafsi: [],
+      attribution: { source: "test", author: null, account: null, dates: dates() },
+    }));
+    const hits = await searchPackage(
+      { snapshot: "sha256:" + "a".repeat(64), version: 2, entries } as never,
+      "en",
+      ["book"],
+    );
+    return { hits: hits.hits[0].length, entries: hits.hits[0][0]?.entries.length };
+  });
+  expect(control).toEqual({ hits: 1, entries: 100 });
+});
+
+test("a malformed saved package reports an invalid package", async ({
+  page,
+}) => {
+  // A stored package whose entries field is missing, null, or not an
+  // array must report PackageValidationError (so the page clears it and
+  // falls back to server search), not a raw TypeError. A null row still
+  // reports invalid, and an empty package still returns zero hits.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage, PackageValidationError } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const snapshot = "sha256:" + "a".repeat(64);
+    const attempt = async (entries: unknown) => {
+      try {
+        const outcome = await searchPackage(
+          { snapshot, version: 1, entries } as never,
+          "en",
+          ["book"],
+        );
+        return { resolved: true, hits: outcome.hits[0].length };
+      } catch (error) {
+        return {
+          resolved: false,
+          constructor: (error as Error).constructor.name,
+          invalid:
+            error instanceof PackageValidationError ||
+            (error as Error).constructor.name ===
+              "PackageValidationError",
+          message: (error as Error).message,
+        };
+      }
+    };
+    return {
+      missing: await attempt(undefined),
+      null: await attempt(null),
+      object: await attempt({}),
+      nullRow: await attempt([null]),
+      empty: await attempt([]),
+    };
+  });
+  for (const label of ["missing", "null", "object"] as const) {
+    expect(result[label].resolved).toBe(false);
+    expect(result[label].invalid).toBe(true);
+    expect(result[label].constructor).toBe("PackageValidationError");
+  }
+  expect(result.nullRow.resolved).toBe(false);
+  expect(result.nullRow.invalid).toBe(true);
+  expect(result.empty).toEqual({ resolved: true, hits: 0 });
+});

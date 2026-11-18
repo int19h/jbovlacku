@@ -62,9 +62,16 @@ export function contentUnits(items: number, chars: number): number {
  * oversized malformed list cannot turn into a budget refusal instead of
  * invalid input. Validation places no bound on the attribution dates map,
  * so every date counts: any date count is valid input there. Callers add
- * their own base unit.
+ * their own base unit. With a budget, the unbounded walks stop as soon as
+ * the measured cost itself exceeds the remaining allowance, so measuring a
+ * huge map cannot walk unbounded on an exhausted budget; a cost that fits is
+ * measured to the end, so exact charges are unchanged.
  */
-export function entryContentUnits(value: unknown): number {
+export function entryContentUnits(
+  value: unknown,
+  budget?: SearchRequestBudget,
+  phase: SearchBudgetError["phase"] = "prepare",
+): number {
   // Mirrors the per-entry bounds enforced by entry validation.
   const MAX_GLOSSES = 8192;
   const MAX_RAFSI = 64;
@@ -84,6 +91,14 @@ export function entryContentUnits(value: unknown): number {
   text(record.plain_text);
   text(record.event);
   text(record.issuer);
+  // Enforcement inside the unbounded walks below: stop as soon as the cost
+  // measured so far exceeds what remains, so a huge map respects the
+  // allowance instead of walking to the end on an exhausted budget.
+  let walked = 0;
+  const bound = () => {
+    if (budget && ++walked % 64 === 0)
+      budget.ensure(items + Math.ceil(chars / 64), phase);
+  };
   const glosses = Array.isArray(record.glosses) ? record.glosses : [];
   const glossCount = Math.min(glosses.length, MAX_GLOSSES);
   items += glossCount;
@@ -106,6 +121,7 @@ export function entryContentUnits(value: unknown): number {
         items++;
         text(day);
         text(stamp);
+        bound();
       }
     }
   }
@@ -120,7 +136,10 @@ export function entryContentUnits(value: unknown): number {
       : undefined;
   if (Array.isArray(selmaho)) {
     items += selmaho.length;
-    for (const name of selmaho) text(name);
+    for (const name of selmaho) {
+      text(name);
+      bound();
+    }
   }
   return contentUnits(items, chars);
 }
@@ -225,8 +244,18 @@ interface PreparedEntry {
 }
 // Entries belong to immutable packages. A replaced package releases its cache.
 const entryIndex = new WeakMap<LexicalEntry, PreparedEntry>();
-const equal = (a: string | null, b: string | null, metrics?: SearchMetrics) => {
-  if (metrics) metrics.componentComparisons++;
+const equal = (
+  a: string | null,
+  b: string | null,
+  metrics?: SearchMetrics,
+  budget?: SearchRequestBudget,
+) => {
+  // Each counted comparison checks the remaining allowance before it runs,
+  // so a comparison never starts with zero units left for its own charge.
+  if (metrics) {
+    budget?.ensure(1, "search");
+    metrics.componentComparisons++;
+  }
   return a === b;
 };
 function prefixTable(pattern: string[], metrics?: SearchMetrics): number[] {
@@ -245,15 +274,16 @@ function coverOccurrences(
   prefix: number[],
   coverage: Int32Array,
   metrics?: SearchMetrics,
+  budget?: SearchRequestBudget,
 ): boolean {
   if (text.length < pattern.length) return false;
   let matched = 0,
     found = false;
   for (let index = 0; index < text.length; index++) {
     const word = text[index];
-    while (matched && !equal(word, pattern[matched], metrics))
+    while (matched && !equal(word, pattern[matched], metrics, budget))
       matched = prefix[matched - 1];
-    if (equal(word, pattern[matched], metrics)) matched++;
+    if (equal(word, pattern[matched], metrics, budget)) matched++;
     if (matched === pattern.length) {
       coverage[index - pattern.length + 1]++;
       coverage[index + 1]--;
@@ -504,12 +534,23 @@ export class SearchRequestBudget {
     if (Date.now() - this.start > this.deadlineMs) throw this.failure(phase);
   }
   /**
+   * Throw unless `units` more work fits in the budget, without charging
+   * anything. Use it before a metrics counter increment that the budget
+   * totals, so the increment itself cannot push the total past the limit.
+   * Unlike `check`, this performs no deadline read, so it stays cheap
+   * inside per-comparison loops; the surrounding per-row reservation still
+   * enforces the deadline.
+   */
+  ensure(units: number, phase: SearchBudgetError["phase"]): void {
+    if (this.total() + units > this.workLimit) throw this.failure(phase);
+  }
+  /**
    * Charge `units` of work, then enforce before that work runs. The refusal
    * is tested before anything is added, so the budget total never passes
    * its limit on a refusal: only performed work is ever charged.
    */
   reserve(units: number, phase: SearchBudgetError["phase"]): void {
-    if (this.total() + units > this.workLimit) throw this.failure(phase);
+    this.ensure(units, phase);
     this.reserved += units;
     this.check(phase);
   }
@@ -532,8 +573,10 @@ export function prepareIndex<T extends LexicalEntry>(
   const rows = entries.map((entry) => {
     // Building one row costs one unit on top of its content work and its
     // parser work, charged before the row is built so an exhausted budget
-    // builds nothing.
-    limit.reserve(1 + entryContentUnits(entry), "prepare");
+    // builds nothing. The unit is ensured before measuring, so an
+    // exhausted budget also walks nothing.
+    limit.ensure(1, "prepare");
+    limit.reserve(1 + entryContentUnits(entry, limit, "prepare"), "prepare");
     const allowance = limit.remaining();
     const indexed = prepareEntry(entry, measured, allowance);
     if (indexed.limited && allowance < SEARCH_HEADWORD_WORK_LIMIT)
@@ -639,12 +682,19 @@ function sequenceMatch(
   // Component comparisons are request work too: reserve each block's bound
   // before it runs, so an exhausted budget refuses instead of letting the
   // comparisons run past the allowance. The exact path compares at most one
-  // word per headword; the scan below compares at most twice per query
-  // token; the subsequence path compares at most one word per headword.
+  // word per headword, and the subsequence path at most one word per
+  // headword. The scan below compares at most three times per query token:
+  // the per-token test, its repeat after a prefix-follow mismatch exits the
+  // follow loop, and the follow steps, which total no more than the tests
+  // that succeed. Each comparison that runs also checks the remaining
+  // allowance first (see `equal`), so a bound that fits exactly still runs
+  // nothing past it.
   if (q.cmavo && head.words.length === q.words.length) {
     limit?.reserve(head.words.length, "search");
     if (
-      head.words.every((word, index) => equal(word, q.words[index], metrics))
+      head.words.every((word, index) =>
+        equal(word, q.words[index], metrics, limit),
+      )
     ) {
       coverage[0]++;
       coverage[q.tokens.length]--;
@@ -652,15 +702,24 @@ function sequenceMatch(
     }
   }
   if (q.tokens.length >= head.words.length) {
-    limit?.reserve(2 * q.tokens.length + 1, "search");
-    if (coverOccurrences(q.tokens, head.words, head.prefix, coverage, metrics))
+    limit?.reserve(3 * q.tokens.length + 1, "search");
+    if (
+      coverOccurrences(
+        q.tokens,
+        head.words,
+        head.prefix,
+        coverage,
+        metrics,
+        limit,
+      )
+    )
       return "sequence-contiguous";
   }
   if (q.cmavo && q.words.length <= head.words.length) {
     limit?.reserve(head.words.length, "search");
     let matched = 0;
     for (const word of head.words) {
-      if (equal(word, q.words[matched], metrics)) matched++;
+      if (equal(word, q.words[matched], metrics, limit)) matched++;
       if (matched === q.words.length) return "sequence-subsequence";
     }
   }
@@ -691,10 +750,15 @@ export function selectRafsiMatches<T extends LexicalEntry>(
   const queryKey = pattern ? null : patternKey(query);
   try {
     for (const entry of entries) {
-      // One scanned entry costs one unit, charged before the entry is read,
-      // plus its content in proportion to the bytes the scan handles.
+      // One scanned entry costs one unit, ensured before the entry is
+      // measured or counted, plus its content in proportion to the bytes
+      // the scan handles, so neither step walks input or pushes the total
+      // past the limit on an exhausted budget.
+      limit.ensure(1, "search");
+      const content = entryContentUnits(entry, limit, "search");
+      limit.ensure(1 + content, "search");
       measured.entries++;
-      limit.reserve(entryContentUnits(entry), "search");
+      limit.reserve(content, "search");
       const rafsi = (entry.rafsi ?? []).filter((spelling) =>
         pattern ? pattern.test(spelling) : patternKey(spelling) === queryKey,
       );
@@ -735,10 +799,15 @@ export function selectMatches<T extends LexicalEntry>(
       const source =
         "rows" in entries ? entries.rows.map(({ entry }) => entry) : entries;
       for (const entry of source) {
-        // One scanned entry costs one unit, charged before the entry is read,
-        // plus its content in proportion to the bytes the scan handles.
+        // One scanned entry costs one unit, ensured before the entry is
+        // measured or counted, plus its content in proportion to the bytes
+        // the scan handles, so neither step walks input or pushes the total
+        // past the limit on an exhausted budget.
+        limit.ensure(1, "search");
+        const content = entryContentUnits(entry, limit, "search");
+        limit.ensure(1 + content, "search");
         measured.entries++;
-        limit.reserve(entryContentUnits(entry), "search");
+        limit.reserve(content, "search");
         if (!accept(entry)) continue;
         const headword = pattern.test(entry.word.spelling);
         // Scan every retained rafsi, even after a match, under the same budget.
@@ -789,8 +858,14 @@ export function selectMatches<T extends LexicalEntry>(
         : (function* () {
             for (const entry of entries as Iterable<T>) {
               // Lazy rows charge their content up front like prepareIndex,
-              // and parse with only the remaining allowance.
-              limit.reserve(1 + entryContentUnits(entry), "prepare");
+              // and parse with only the remaining allowance. The unit is
+              // ensured before measuring, so an exhausted budget builds
+              // nothing and walks nothing.
+              limit.ensure(1, "prepare");
+              limit.reserve(
+                1 + entryContentUnits(entry, limit, "prepare"),
+                "prepare",
+              );
               yield {
                 entry,
                 indexed: prepareEntry(entry, measured, limit.remaining()),
@@ -801,10 +876,15 @@ export function selectMatches<T extends LexicalEntry>(
   const prefix = prepared.headword.replace(/[.,]/gu, "");
   const headwordH = prepared.headword.replaceAll("h", "'");
   for (const { entry, indexed: index } of source) {
-    // One scanned entry costs one unit, charged before the entry is read,
-    // plus its content in proportion to the bytes the scan handles.
+    // One scanned entry costs one unit, ensured before the entry is
+    // measured or counted, plus its content in proportion to the bytes
+    // the scan handles, so neither step walks input or pushes the total
+    // past the limit on an exhausted budget.
+    limit.ensure(1, "search");
+    const content = entryContentUnits(entry, limit, "search");
+    limit.ensure(1 + content, "search");
     measured.entries++;
-    limit.reserve(entryContentUnits(entry), "search");
+    limit.reserve(content, "search");
     if (!accept(entry)) continue;
     if (!options.knownWord || options.knownWord(entry)) {
       if (index.knownSpelling && querySpellings.has(index.knownSpelling))
