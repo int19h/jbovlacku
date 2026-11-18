@@ -2087,6 +2087,10 @@ mod tests {
         assert!(descriptor.available, "{:?}", descriptor.reasons);
     }
     /// A partial source guard for the metered setup functions.
+    /// The scanner reads source as text and does not parse Rust;
+    /// text inside string literals, raw strings and macros, and
+    /// unusual formatting, can change what it matches, in both
+    /// directions.
     /// Before anything else, it blanks out `//` line comments and
     /// nested `/* ... */` block comments (never `//` inside a normal
     /// string literal), so a commented-out charge does not count and
@@ -2100,6 +2104,11 @@ mod tests {
     /// `.index(` - when no single charge call in the twelve lines
     /// above it names the same key, either as a quoted literal in the
     /// call or as the same identifier outside quoted text in the call.
+    /// That call text is bounded by counting parenthesis characters
+    /// from the charge name, including any inside strings; if the
+    /// count does not balance before the read, the inspected text
+    /// runs up to the read, so a later statement can then supply
+    /// the key.
     /// A recognized read whose only charge is outside that window is
     /// flagged; the scan does not decide whether a distant charge
     /// covers the read. It reads the text of a `macro_rules!` body in
@@ -2224,6 +2233,14 @@ mod tests {
         let mut used = vec![false; allow.len()];
         assert!(scan_region(
             "fn fixture() {\n charge_lookup(meter, 3, \"value\")?;\n let value = map.get(\"value\");\n}\n",
+            allow,
+            &mut used,
+        )
+        .is_empty());
+        // Pins the bounded-call sentence: parenthesis characters inside strings count too.
+        let mut used = vec![false; allow.len()];
+        assert!(scan_region(
+            "fn fixture() {\n charge_lookup(&mut meter, 3, \"issuer(\")?;\n let subject = \"subject\";\n let value = map.get(subject);\n}\n",
             allow,
             &mut used,
         )
