@@ -2089,12 +2089,14 @@ mod tests {
     /// A partial source guard for the metered setup functions. It
     /// catches a map or set read whose key is a string literal or a
     /// plain identifier - after `[`, `.get(`, `.contains(`,
-    /// `.contains_key(`, or `.index(` - when no charge for the same
-    /// key appears within the twelve lines above it. It does not
-    /// catch helpers outside the listed functions, reads whose charge
-    /// is not in that window, or reads inside closures and iterator
-    /// adapters that borrow an earlier charge; those are covered by
-    /// the operation-level tests, not by this scan.
+    /// `.contains_key(`, or `.index(` - when no single charge call in
+    /// the twelve lines above it names the same key. A recognized
+    /// read whose only charge is outside that window is flagged; the
+    /// scan does not decide whether a distant charge covers the read.
+    /// It does not catch helpers outside the listed functions, or
+    /// reads inside closures and iterator adapters that borrow an
+    /// earlier charge; those are covered by the operation-level
+    /// tests, not by this scan.
     #[test]
     fn setup_source_has_no_unmetered_map_reads() {
         let allow: &[(&str, &str)] = &[
@@ -2110,14 +2112,11 @@ mod tests {
             // Interning is charged by the pack charge that every
             // packing call site takes before packing.
             (
-                "string_hashes.get(string)",
-                "interning is charged by the pack charge",
-            ),
-            (
                 "string_hashes.get(&hash)",
                 "interning is charged by the pack charge",
             ),
         ];
+        let mut allow_used = vec![false; allow.len()];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let files: Vec<(std::path::PathBuf, &[&str])> = vec![
             (
@@ -2157,7 +2156,82 @@ mod tests {
                 &["fn parameter(", "fn parameters(", "fn new(session"],
             ),
         ];
-        let read_key = |line: &str| -> Option<String> {
+        let mut failures = Vec::new();
+        for (path, functions) in &files {
+            let text = std::fs::read_to_string(path).unwrap();
+            for name in *functions {
+                let mut regions = Vec::new();
+                let mut rest = text.as_str();
+                // "fn new_metered" names two construction functions;
+                // every other name names one.
+                let limit = if *name == "fn new_metered" { 2 } else { 1 };
+                while regions.len() < limit {
+                    let Some(region) = extract_fn(rest, name) else {
+                        break;
+                    };
+                    let offset = rest.find(name).unwrap() + region.len();
+                    regions.push(region);
+                    rest = &rest[offset.min(rest.len())..];
+                }
+                if regions.is_empty() {
+                    failures.push(format!("{}: missing function {name}", path.display()));
+                    continue;
+                }
+                for region in regions {
+                    failures.extend(scan_region(region, allow, &mut allow_used));
+                }
+            }
+        }
+        for (index, (part, reason)) in allow.iter().enumerate() {
+            if !allow_used[index] {
+                failures.push(format!(
+                    "stale allow-list entry {part:?} ({reason}) matches no current source"
+                ));
+            }
+        }
+        // Self-test: identifier after .index(, a mismatched-key
+        // charge, and no charge at all are all rejected, while a
+        // same-key charge passes.
+        for input in [
+            "fn fixture() {\n let value = map.index(key);\n}\n",
+            "fn fixture() {\n let subject = \"some_subject\";\n charge_lookup(map, \"issuer\", meter)?;\n let value = map.get(subject);\n}\n",
+            "fn fixture() {\n let value = map.get(subject);\n}\n",
+        ] {
+            let mut used = vec![false; allow.len()];
+            assert!(
+                !scan_region(input, allow, &mut used).is_empty(),
+                "scan accepted: {input}"
+            );
+        }
+        let mut used = vec![false; allow.len()];
+        assert!(scan_region(
+            "fn fixture() {\n charge_lookup(meter, 3, \"value\")?;\n let value = map.get(\"value\");\n}\n",
+            allow,
+            &mut used,
+        )
+        .is_empty());
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+    fn extract_fn<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+        let start = text.find(name)?;
+        let body = start + text[start..].find('{')?;
+        let mut depth = 0i32;
+        for (offset, ch) in text[body..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&text[start..body + offset + 1]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    fn scan_region(region: &str, allow: &[(&str, &str)], allow_used: &mut [bool]) -> Vec<String> {
+        fn read_key(line: &str) -> Option<String> {
             for open in [
                 "[\"",
                 ".get(\"",
@@ -2170,7 +2244,7 @@ mod tests {
                     return rest.find('"').map(|end| rest[..end].to_string());
                 }
             }
-            for open in [".get(", ".contains(", ".contains_key("] {
+            for open in [".get(", ".contains(", ".contains_key(", ".index("] {
                 if let Some(at) = line.find(open) {
                     let rest = &line[at + open.len()..];
                     let rest = rest.trim_start_matches(['&', '(', ' ']);
@@ -2205,83 +2279,66 @@ mod tests {
                 }
             }
             None
-        };
+        }
+        fn charged_matches(call: &str, key: &str) -> bool {
+            // A charge names the read's key either as a quoted literal
+            // or as the same identifier outside any quoted text.
+            let mut quoted = Vec::new();
+            let mut rest = String::new();
+            let mut chars = call.chars();
+            while let Some(ch) = chars.next() {
+                if ch == '"' {
+                    let literal: String = chars.by_ref().take_while(|c| *c != '"').collect();
+                    quoted.push(literal);
+                } else {
+                    rest.push(ch);
+                }
+            }
+            quoted.iter().any(|literal| literal == key)
+                || rest
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .any(|token| token == key)
+        }
+        let lines: Vec<&str> = region.lines().collect();
         let mut failures = Vec::new();
-        for (path, functions) in &files {
-            let text = std::fs::read_to_string(path).unwrap();
-            for name in *functions {
-                let mut regions = Vec::new();
-                let mut rest = text.as_str();
-                // "fn new_metered" names two construction functions;
-                // every other name names one.
-                let limit = if *name == "fn new_metered" { 2 } else { 1 };
-                while regions.len() < limit {
-                    let Some(region) = extract_fn(rest, name) else {
-                        break;
-                    };
-                    let offset = rest.find(name).unwrap() + region.len();
-                    regions.push(region);
-                    rest = &rest[offset.min(rest.len())..];
+        for (index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            let is_read = !trimmed.contains("in [\"")
+                && (trimmed.contains("[\"")
+                    || trimmed.contains(".get(")
+                    || trimmed.contains(".contains(")
+                    || trimmed.contains(".contains_key(")
+                    || trimmed.contains(".index(")
+                    || read_key(trimmed).is_some());
+            if !is_read || trimmed.contains("get_metered") {
+                continue;
+            }
+            if let Some(at) = allow.iter().position(|(part, _)| trimmed.contains(part)) {
+                allow_used[at] = true;
+                continue;
+            }
+            let Some(key) = read_key(trimmed) else {
+                continue;
+            };
+            let charged = (0..index).rev().take(12).any(|at| {
+                let prior = lines[at];
+                if !(prior.contains("charge_lookup")
+                    || prior.contains("lookup_work")
+                    || prior.contains("get_metered"))
+                {
+                    return false;
                 }
-                if regions.is_empty() {
-                    failures.push(format!("{}: missing function {name}", path.display()));
-                    continue;
-                }
-                for region in regions {
-                    let lines: Vec<&str> = region.lines().collect();
-                    for (index, line) in lines.iter().enumerate() {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with("//") {
-                            continue;
-                        }
-                        let is_read = !trimmed.contains("in [\"")
-                            && (trimmed.contains("[\"")
-                                || trimmed.contains(".get(")
-                                || trimmed.contains(".contains(")
-                                || trimmed.contains(".contains_key(")
-                                || trimmed.contains(".index(")
-                                || read_key(trimmed).is_some());
-                        if !is_read || trimmed.contains("get_metered") {
-                            continue;
-                        }
-                        if allow.iter().any(|(part, _)| trimmed.contains(part)) {
-                            continue;
-                        }
-                        let Some(key) = read_key(trimmed) else {
-                            continue;
-                        };
-                        let window = &lines[index.saturating_sub(12)..index];
-                        let charged = window.iter().any(|prior| {
-                            prior.contains("charge_lookup")
-                                || prior.contains("lookup_work")
-                                || prior.contains("get_metered")
-                        }) && window.iter().any(|prior| prior.contains(&key));
-                        if !charged {
-                            failures.push(format!("{} in {name}: {trimmed}", path.display()));
-                        }
-                    }
-                }
+                let call: String = lines[at..index.min(at + 6)].join(" ");
+                charged_matches(&call, &key)
+            });
+            if !charged {
+                failures.push(trimmed.to_string());
             }
         }
-        assert!(failures.is_empty(), "{}", failures.join("\n"));
-    }
-    fn extract_fn<'a>(text: &'a str, name: &str) -> Option<&'a str> {
-        let start = text.find(name)?;
-        let body = start + text[start..].find('{')?;
-        let mut depth = 0i32;
-        for (offset, ch) in text[body..].char_indices() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(&text[start..body + offset + 1]);
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
+        failures
     }
     #[test]
     fn records_walk_overlay_reads_are_charged() {
