@@ -291,11 +291,11 @@ the product accepts it.
 
 ## Capture and restore
 
-Capture is a point-in-time copy. It holds the write lock of
-every state folder it captures. The lock starts before the
-first read and ends after the files are complete. During
-capture, a writer from this kit is refused. That writer retries
-later. The capture holds
+Capture is a point-in-time copy. Capture compares the local
+pin and the identity files before it takes a lock. It then
+locks every state folder, reads those records again, and
+writes the capture files. During capture, a writer from this
+kit is refused. That writer retries later. The capture holds
 exactly the synthetic events of one admitted snapshot. The
 success line and the manifest name that snapshot as
 `capture_snapshot`. An event that a writer outside this kit

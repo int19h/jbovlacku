@@ -436,7 +436,7 @@ test("a pin without evidence and a larger unrelated server are refused at init",
     await mkdir(join(root, "pins"), { recursive: true });
     await writeFile(barePin, JSON.stringify({ base_snapshot: "sha256:" + "0".repeat(64), base_inventory: "sha256:" + "0".repeat(64) }));
     const d = join(root, "d");
-    assert.match(await cmdFail(["--server", "http://127.0.0.1:8795", "--state", d, "--pin", barePin, "init"]), /refused: base pin file has no base evidence/);
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8795", "--state", d, "--pin", barePin, "init"]), /refused: pin base_inventory_digest is missing/);
     assert.equal(existsSync(join(d, "identity.json")), false);
   } finally { await s1.close(); await s2.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -2071,6 +2071,31 @@ test("one edited field is refused before a post or a write", async () => {
         assert.equal(existsSync(join(next, "identity.json")), false);
       });
     }
+    const pinShapeRows: Array<[string, (pinJson: any) => void, RegExp]> = [
+      ["pin.base_snapshot.type", (pinJson) => { pinJson.base_snapshot = 7; }, /refused: pin base_snapshot is not a sha256 digest/],
+      ["pin.base_inventory.type", (pinJson) => { pinJson.base_inventory = 7; }, /refused: pin base_inventory is not a sha256 digest/],
+      ["pin.base_inventory_digest.missing", (pinJson) => { delete pinJson.base_inventory_digest; }, /refused: pin base_inventory_digest is missing/],
+      ["pin.base_event_count.missing", (pinJson) => { delete pinJson.base_event_count; }, /refused: pin base_event_count is missing/],
+      ["pin.base_body_count.type", (pinJson) => { pinJson.base_body_count = "1"; }, /refused: pin base_body_count is not a non-negative integer/],
+      ["pin.base_body_digest.type", (pinJson) => { pinJson.base_body_digest = 7; }, /refused: pin base_body_digest is not a sha256 digest/],
+      ["pin.base_selection_count.type", (pinJson) => { pinJson.base_selection_count = -1; }, /refused: pin base_selection_count is not a non-negative integer/],
+      ["pin.base_selection_digest.missing", (pinJson) => { delete pinJson.base_selection_digest; }, /refused: pin base_selection_digest is missing/],
+      ["pin.server_id.type", (pinJson) => { pinJson.server_id = 7; }, /refused: pin has no server id/],
+    ];
+    for (const [name, edit, message] of pinShapeRows) {
+      await row(name, async () => {
+        const dest = join(root, "rows", name, "pin.json");
+        const next = join(root, "rows", name, "state");
+        await copyPin(dest);
+        const pinJson = JSON.parse(await readFile(dest, "utf8"));
+        edit(pinJson);
+        await writeFile(dest, JSON.stringify(pinJson, null, 2) + "\n");
+        const created = await cmdResult(["--server", url, "--state", next, "--pin", dest, "init"]);
+        assert.equal(created.code, 3, created.out);
+        assert.match(created.out, message, created.out);
+        assert.equal(existsSync(join(next, "identity.json")), false);
+      });
+    }
     const identityRows: Array<[string, (record: any) => void]> = [
       ["new:identity.seed", (record) => { record.seed = flip(record.seed); }],
       ["new:identity.identity", (record) => { record.identity = flipKey(record.identity); }],
@@ -2103,7 +2128,7 @@ test("one edited field is refused before a post or a write", async () => {
     await cmd(["--server", url, "--state", stateB, "init"]);
     const identityB = JSON.parse(await readFile(join(stateB, "identity.json"), "utf8"));
     const twoIdentityRows: Array<[string, (record: any) => void, RegExp]> = [
-      ["two:identity.base_snapshot", (record) => { record.base_snapshot = [record.base_snapshot]; }, /refused: identity base_snapshot does not match the base pin/],
+      ["two:identity.base_snapshot", (record) => { record.base_snapshot = [record.base_snapshot]; }, /refused: identity base_snapshot is not a sha256 digest/],
       ["two:identity.base_event_count", (record) => { record.base_event_count = 9; }, /refused: identity base_event_count does not match the base pin/],
       ["two:identity.base_inventory_digest", (record) => { record.base_inventory_digest = "sha256:" + "0".repeat(64); }, /refused: identity base_inventory_digest does not match the base pin/],
     ];
@@ -2292,6 +2317,41 @@ test("one edited field is refused before a post or a write", async () => {
       assert.doesNotMatch(reuse.out, /^reusable$/m);
       const afterReuse = ((await (await fetch(resumedTargetUrl + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
       assert.deepEqual(afterReuse, beforeIds);
+    });
+    await row("numeric pin base_snapshot", async () => {
+      const numericPort = 9689;
+      const numericUrl = `http://127.0.0.1:${numericPort}`;
+      const numericServer = await startServer(join(root, "numeric-src"), numericPort);
+      servers.push(numericServer);
+      const first = join(root, "numeric", "a");
+      await cmd(["--server", numericUrl, "--state", first, "init"]);
+      await cmd(["--server", numericUrl, "--state", first, "profile", "--name", "One"]);
+      const sourcePin = join(root, "numeric", "base-pin.json");
+      const badPin = join(root, "numeric", "numeric-pin.json");
+      const pinJson = JSON.parse(await readFile(sourcePin, "utf8"));
+      pinJson.base_snapshot = 7;
+      await writeFile(badPin, JSON.stringify(pinJson, null, 2) + "\n");
+      for (const ext of [".ids", ".bodies", ".selections"]) await writeFile(badPin + ext, await readFile(sourcePin + ext));
+      const late = join(root, "numeric", "late");
+      const created = await cmdResult(["--server", numericUrl, "--state", late, "--pin", badPin, "init"]);
+      assert.equal(created.code, 3, created.out);
+      assert.match(created.out, /refused: pin base_snapshot is not a sha256 digest/);
+      assert.equal(existsSync(join(late, "identity.json")), false);
+      assert.equal(existsSync(join(late, "lock")), false);
+    });
+    await row("profile pin.base_event_count missing", async () => {
+      const before = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+      const dest = join(root, "rows", "profile-missing-count", "pin.json");
+      await copyPin(dest);
+      const pinJson = JSON.parse(await readFile(dest, "utf8"));
+      delete pinJson.base_event_count;
+      await writeFile(dest, JSON.stringify(pinJson, null, 2) + "\n");
+      const posted = await cmdResult(["--server", url, "--state", state, "--pin", dest, "profile", "--name", "late"]);
+      assert.equal(posted.code, 3, posted.out);
+      assert.match(posted.out, /refused: pin base_event_count is missing/);
+      const after = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+      assert.deepEqual(after, before);
+      assert.equal(existsSync(join(state, "lock")), false);
     });
     assert.equal(problems.length, 0, problems.join("\n\n"));
   } finally {

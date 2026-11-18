@@ -280,6 +280,51 @@ const localConsistencyFields = [
   "base_snapshot", "base_inventory", "base_inventory_digest", "base_event_count",
   "base_body_count", "base_selection_count", "base_body_digest", "base_selection_digest", "server_id",
 ] as const;
+const localDigestFields = new Set<string>(["base_snapshot", "base_inventory", "base_inventory_digest", "base_body_digest", "base_selection_digest"]);
+const sha256Digest = /^sha256:[0-9a-f]{64}$/;
+function isSha256Digest(value: unknown): boolean {
+  return typeof value === "string" && sha256Digest.test(value);
+}
+function isNonNegativeInteger(value: unknown): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+/** A full local pin, and an identity the gate reads, has all nine fields.
+ * Each field has its required type. A backfill identity may omit a field
+ * it does not hold yet. Null counts as absent. Restore keeps its own
+ * three-field rule and does not use this check. */
+function localShapeError(record: object, kind: "pin" | "identity", presentOnly: boolean): string | null {
+  const rec = record as Record<string, unknown>;
+  for (const field of localConsistencyFields) {
+    const present = Object.hasOwn(rec, field) && rec[field] != null;
+    if (!present) {
+      if (presentOnly) continue;
+      if (field === "server_id") {
+        return kind === "pin"
+          ? "pin has no server id; make a new pin with the current kit"
+          : "identity has no server id; make a new pin and a new state folder";
+      }
+      return `${kind} ${field} is missing`;
+    }
+    const value = rec[field];
+    if (field === "server_id") {
+      if (!validServerId(value)) {
+        return kind === "pin"
+          ? "pin has no server id; make a new pin with the current kit"
+          : "identity has no server id; make a new pin and a new state folder";
+      }
+      continue;
+    }
+    if (localDigestFields.has(field)) {
+      if (!isSha256Digest(value)) return `${kind} ${field} is not a sha256 digest`;
+      continue;
+    }
+    if (!isNonNegativeInteger(value)) return `${kind} ${field} is not a non-negative integer`;
+  }
+  return null;
+}
+function refuseShape(reason: string | null): void {
+  if (reason) { console.error(`refused: ${reason}`); process.exit(3); }
+}
 /** Object.is on the parsed values. A one-element array is not equal to that string. */
 function localConsistencyError(pin: object, identities: readonly object[]): string | null {
   const pinRecord = pin as Record<string, unknown>;
@@ -294,18 +339,24 @@ function localConsistencyError(pin: object, identities: readonly object[]): stri
   return null;
 }
 function checkLocalConsistency(pin: object, identities: readonly object[]): void {
+  refuseShape(localShapeError(pin, "pin", false));
+  for (const identity of identities) refuseShape(localShapeError(identity, "identity", false));
   const reason = localConsistencyError(pin, identities);
   if (reason) { console.error(`refused: ${reason}`); process.exit(3); }
 }
-/** Compare only fields the identity already records. A missing field is for backfill, not a mismatch yet. */
+/** Compare only fields the identity already records. A missing field is for backfill, not a mismatch yet.
+ * The pin must already have all nine fields. A field the identity holds must have the required type. */
 function checkHeldConsistency(pin: object, identity: object): void {
+  refuseShape(localShapeError(pin, "pin", false));
+  refuseShape(localShapeError(identity, "identity", true));
   const pinRecord = pin as Record<string, unknown>;
   const record = identity as Record<string, unknown>;
   const held: Record<string, unknown> = {};
   for (const field of localConsistencyFields) {
-    if (Object.hasOwn(record, field) && Object.hasOwn(pinRecord, field)) held[field] = pinRecord[field];
+    if (Object.hasOwn(record, field) && record[field] != null && Object.hasOwn(pinRecord, field)) held[field] = pinRecord[field];
   }
-  checkLocalConsistency(held, [identity]);
+  const reason = localConsistencyError(held, [identity]);
+  if (reason) { console.error(`refused: ${reason}`); process.exit(3); }
 }
 async function checkPinInUse(o: Opts, identities: readonly object[]): Promise<void> {
   const path = pinPath(o);
@@ -618,6 +669,7 @@ async function main(): Promise<void> {
     if (cmd === "pin-base") {
       if (!o.state && !flag(o, "pin")) throw new Error("--pin or --state is required");
       const pin = await loadOrCreatePin(o);
+      refuseShape(localShapeError(pin, "pin", false));
       if (!pinHasEvidence(pin, pinPath(o))) { console.error("refused: base pin file has no base evidence; delete it or use a new --pin path, then run pin-base again"); process.exit(3); }
       requirePinServerId(pin);
       const pinned = await readPinEvidence(pin, pinPath(o));
@@ -683,6 +735,7 @@ async function main(): Promise<void> {
       if (flag(o, "pin") && !existsSync(pinPath(o))) { console.error(`refused: base pin file not found: ${pinPath(o)} (run pin-base first)`); process.exit(3); }
       const pinExisted = existsSync(pinPath(o));
       const pin = await loadOrCreatePin(o);
+      refuseShape(localShapeError(pin, "pin", false));
       if (pinExisted) {
         // Compare base evidence, not only a count. The server must
         // hold every pinned base ID. A server that grew past the pin
@@ -893,12 +946,13 @@ function importSets(o: Opts): ImportSet[] {
   return entries;
 }
 /**
- * Capture holds the write lock of every state folder it captures,
- * from before its first read until its files are complete. A kit
- * writer that starts during capture gets the normal lock refusal
- * and retries later. The exit handler releases the locks
- * synchronously when a refusal ends the process, and the finally
- * step releases them on success and on other errors.
+ * Capture compares the local pin and the identity files before it
+ * takes a lock. It then locks every state folder, reads those
+ * records again, and writes the capture files. A kit writer that
+ * starts during capture gets the normal lock refusal and retries
+ * later. The exit handler releases the locks synchronously when a
+ * refusal ends the process, and the finally step releases them on
+ * success and on other errors.
  */
 async function captureIdentities(states: string[]): Promise<object[]> {
   const identities: object[] = [];
