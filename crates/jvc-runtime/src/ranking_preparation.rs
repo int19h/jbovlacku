@@ -2223,6 +2223,8 @@ mod tests {
             "fn fixture() {\n charge_lookup(meter, 3, \"issuer\")?;\n let subject = \"some_subject\";\n let value = map.get(subject);\n}\n",
             // Input D control: the same read without the unrelated charge.
             "fn fixture() {\n let subject = \"some_subject\";\n let value = map.get(subject);\n}\n",
+            // Input E control: input E with the parenthesis removed from the string.
+            "fn fixture() {\n charge_lookup(&mut meter, 3, \"issuer\")?;\n let subject = \"subject\";\n let value = map.get(subject);\n}\n",
         ] {
             let mut used = vec![false; allow.len()];
             assert!(
