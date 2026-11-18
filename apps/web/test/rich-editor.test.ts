@@ -1269,9 +1269,9 @@ for (const route of ["helper", "plain", "blur"] as const) {
   });
 }
 
-test("tab into the field after a reset keeps the recorded caret", async ({
+for (const wait of [0, 80] as const) {
+test(`tab into the field after a reset keeps the recorded caret: wait ${wait}`, async ({
   page,
-  browserName,
 }) => {
   await page.goto("/");
   await page.evaluate(async () => {
@@ -1302,19 +1302,17 @@ test("tab into the field after a reset keeps the recorded caret", async ({
     .click();
   await page.waitForTimeout(40);
   await page.keyboard.press("Tab");
+  if (wait) await page.waitForTimeout(wait);
   await page.keyboard.press("x");
   await expect
     .poll(() => field.evaluate((node: any) => node.value))
-    .toEqual(
-      browserName === "firefox"
-        ? [["reset prefix"], ["alpha betax"]]
-        : [["reset prefixx"], ["alpha beta"]],
-    );
+    .toEqual([["reset prefix"], ["alpha betax"]]);
   await page.keyboard.press("Control+z");
   await expect
     .poll(() => field.evaluate((node: any) => node.value))
     .toEqual([["reset prefix"], ["alpha beta"]]);
 });
+}
 
 test("trusted line keys replace the paragraph after a slow Home handler", async ({
   page,
