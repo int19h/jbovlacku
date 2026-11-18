@@ -2088,21 +2088,27 @@ mod tests {
     }
     /// A partial source guard for the metered setup functions.
     /// Before anything else, it blanks out `//` line comments and
-    /// nested `/* ... */` block comments (never `//` inside a string
-    /// literal), so a commented-out charge does not count and a
-    /// commented-out read is not flagged. In the listed functions
-    /// only, it then catches a map or set read whose key is a string
-    /// literal or a plain identifier - after `[`, `.get(`,
-    /// `.contains(`, `.contains_key(`, or `.index(` - when no single
-    /// charge call in the twelve lines above it names the same key,
-    /// either as a quoted literal in the call or as the same
-    /// identifier outside quoted text in the call. A recognized read
-    /// whose only charge is outside that window is flagged; the scan
-    /// does not decide whether a distant charge covers the read. It
-    /// does not catch helpers outside the listed functions, macro
-    /// bodies, or reads inside closures and iterator adapters that
-    /// borrow an earlier charge; those are covered by the
-    /// operation-level tests, not by this scan.
+    /// nested `/* ... */` block comments (never `//` inside a normal
+    /// string literal), so a commented-out charge does not count and
+    /// a commented-out read is not flagged. Raw strings (`r"..."`,
+    /// `r#"..."#`) are not recognized as string literals, so text
+    /// inside one is scanned as code: a charge call written inside a
+    /// raw string counts, and a read written inside one is flagged.
+    /// In the listed functions only, it then catches a map or set
+    /// read whose key is a string literal or a plain identifier -
+    /// after `[`, `.get(`, `.contains(`, `.contains_key(`, or
+    /// `.index(` - when no single charge call in the twelve lines
+    /// above it names the same key, either as a quoted literal in the
+    /// call or as the same identifier outside quoted text in the call.
+    /// A recognized read whose only charge is outside that window is
+    /// flagged; the scan does not decide whether a distant charge
+    /// covers the read. It reads the text of a `macro_rules!` body in
+    /// a listed function like any other code, so a read directly
+    /// inside such a body is caught; it does not see code that a macro
+    /// expands to at its call site. It does not catch helpers outside
+    /// the listed functions, or reads inside closures and iterator
+    /// adapters that borrow an earlier charge; those are covered by
+    /// the operation-level tests, not by this scan.
     #[test]
     fn setup_source_has_no_unmetered_map_reads() {
         let allow: &[(&str, &str)] = &[
@@ -2220,6 +2226,22 @@ mod tests {
         let mut used = vec![false; allow.len()];
         assert!(!scan_region(
             "fn fixture() {\n // charge_lookup(meter, 3, \"value\")?;\n let value = map.get(\"value\");\n}\n",
+            allow,
+            &mut used,
+        )
+        .is_empty());
+        // Pins: raw strings are not recognized as string literals.
+        let mut used = vec![false; allow.len()];
+        assert!(scan_region(
+            "fn fixture() {\n let text = r#\"charge_lookup(meter, 3, \"value\")\"#;\n let value = map.get(\"value\");\n}\n",
+            allow,
+            &mut used,
+        )
+        .is_empty());
+        // Pins: a read directly inside a macro_rules! body is caught.
+        let mut used = vec![false; allow.len()];
+        assert!(!scan_region(
+            "fn fixture() {\n macro_rules! read_value { () => { map.get(\"value\") } }\n let value = read_value!();\n}\n",
             allow,
             &mut used,
         )
