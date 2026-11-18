@@ -591,7 +591,13 @@ export function localSearch(
     const preview = {
       event: entry.event,
       word_kind: entry.classification.kind,
-      plain_text: Array.from(entry.plain_text).slice(0, 240).join(""),
+      // A code point uses at most two UTF-16 units. Read only the preview,
+      // the same bound the client rebuild uses, so a huge definition is
+      // never copied in full here. The first 240 code points always fit in
+      // the first 480 units, so the shorter read is exact.
+      plain_text: Array.from(entry.plain_text.slice(0, 480))
+        .slice(0, 240)
+        .join(""),
       status: "unavailable",
     };
     const old = grouped.get(id);

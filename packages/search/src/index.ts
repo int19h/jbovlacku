@@ -117,10 +117,15 @@ export function entryContentUnits(
       text((account as Record<string, unknown>).origin);
     const dates = info.dates;
     if (dates && typeof dates === "object") {
-      for (const [day, stamp] of Object.entries(dates)) {
+      // for..in avoids materializing the whole pairs array before the bound
+      // below can refuse; with an own-property guard it enumerates the same
+      // names in the same order as Object.entries.
+      const table = dates as Record<string, unknown>;
+      for (const day in table) {
+        if (!Object.prototype.hasOwnProperty.call(table, day)) continue;
         items++;
         text(day);
-        text(stamp);
+        text(table[day]);
         bound();
       }
     }
@@ -683,10 +688,13 @@ function sequenceMatch(
   // before it runs, so an exhausted budget refuses instead of letting the
   // comparisons run past the allowance. The exact path compares at most one
   // word per headword, and the subsequence path at most one word per
-  // headword. The scan below compares at most three times per query token:
-  // the per-token test, its repeat after a prefix-follow mismatch exits the
-  // follow loop, and the follow steps, which total no more than the tests
-  // that succeed. Each comparison that runs also checks the remaining
+  // headword. The scan below compares at most three times the token count
+  // across the whole scan: the per-token test, its repeat after a
+  // prefix-follow mismatch exits the follow loop, and the follow steps,
+  // which total no more than the tests that succeed. Any single token may
+  // exceed three (a mismatch, its follow, and the repeated final test can
+  // coincide); the sum cannot. Each comparison that runs also checks the
+  // remaining
   // allowance first (see `equal`), so a bound that fits exactly still runs
   // nothing past it.
   if (q.cmavo && head.words.length === q.words.length) {
@@ -940,7 +948,12 @@ export function selectMatches<T extends LexicalEntry>(
     if (!covered && !positions.has(token)) positions.set(token, position);
     position++;
   }
-  const matchedEntries = new Set(rows.map((row) => row.entry));
+  // The definitions group never adds component fallback rows, so it needs
+  // no hit set; other groups deduplicate fallback rows against it.
+  const matchedEntries =
+    options.group === "definitions"
+      ? new Set<T>()
+      : new Set(rows.map((row) => row.entry));
   for (const { entry, key } of fallback) {
     const position = positions.get(key);
     if (
