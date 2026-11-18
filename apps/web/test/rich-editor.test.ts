@@ -1233,7 +1233,31 @@ for (const route of ["helper", "plain", "blur"] as const) {
     });
     await page.waitForTimeout(60);
     await page.getByRole("button", { name: "Rewrite", exact: true }).click();
-    await page.waitForTimeout(60);
+    // Wait until the recorded caret (end of the last paragraph) is the
+    // browser caret, however long the focus restore takes.
+    await expect
+      .poll(() =>
+        field.evaluate((node) => {
+          const selection = getSelection()!;
+          const paragraph =
+            selection.focusNode?.nodeType === 3
+              ? selection.focusNode.parentElement?.closest("p")
+              : (selection.focusNode as Element)?.closest?.("p");
+          if (!paragraph) return { paragraph: -1, offset: -1 };
+          const range = document.createRange();
+          range.setStart(paragraph, 0);
+          range.setEnd(selection.focusNode!, selection.focusOffset);
+          return {
+            paragraph: [...node.querySelectorAll("p")].indexOf(paragraph),
+            offset: range.toString().length,
+          };
+        }),
+      )
+      .toEqual(
+        browserName === "firefox"
+          ? { paragraph: 0, offset: 12 }
+          : { paragraph: 1, offset: 10 },
+      );
     await field.press("x");
     await expect
       .poll(() => field.evaluate((node: any) => node.value))
