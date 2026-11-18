@@ -378,8 +378,6 @@ export function richField(label: string, options: RichFieldOptions) {
   // browser-adjusted caret instead.
   let resetGuard: { doc: EditorNode; selection: Selection } | null = null;
   let pointerFocus = false;
-  let tabArrival = false;
-  let tabArrivalTimer: number | undefined;
   let tabSelection: boolean | null = null;
   let tabTimer: number | undefined;
   let blurSelection: { doc: EditorNode; selection: Selection | null } | null =
@@ -907,8 +905,7 @@ export function richField(label: string, options: RichFieldOptions) {
       const result = view.state.applyTransaction(transaction);
       // A selection-only change that the native sync did not make
       // supersedes the caret a rewrite recorded, so the guard no longer
-      // describes the caret the reader has and must not drive a later
-      // Tab restore. Most such changes are the reader's caret (a click,
+      // protects that recorded caret. Most such changes are the reader's caret (a click,
       // a tap, select-all, as ProseMirror reads them from the DOM), but
       // code that adopts the browser selection does the same: the
       // toolbar's focusin and pointerdown handlers and the Enter and
@@ -1153,39 +1150,6 @@ export function richField(label: string, options: RichFieldOptions) {
             dispatchEdit(view.state.tr.setSelection(chosen));
           if (repair) view.focus();
         }
-        // A reader who tabs into the field after a rewrite did not
-        // choose the caret the browser adjusted inside the rewritten
-        // text; the recorded reset caret is the caret for this arrival.
-        // Put it in the browser now instead of leaving it to the
-        // focus-time write ProseMirror schedules about 20 ms later,
-        // which a first keystroke can beat and then type at the
-        // adjusted caret. The adjusted caret is collapsed; a
-        // non-collapsed selection inside the field is one the reader
-        // made after the rewrite (for example with Find), so leave it
-        // alone and let it release the guard as it reaches state.
-        if (
-          tabArrival &&
-          resetGuard?.doc === view.state.doc &&
-          native?.isCollapsed &&
-          native.anchorNode &&
-          native.focusNode &&
-          input.contains(native.anchorNode) &&
-          input.contains(native.focusNode)
-        ) {
-          try {
-            const anchor = view.domAtPos(resetGuard.selection.anchor);
-            const head = view.domAtPos(resetGuard.selection.head);
-            native.setBaseAndExtent(
-              anchor.node,
-              anchor.offset,
-              head.node,
-              head.offset,
-            );
-          } catch {
-            // Keep the browser caret when it cannot be mapped.
-          }
-        }
-        tabArrival = false;
         // This handler runs before ProseMirror's own focus handler.
         // With any caret repair above settled, read the browser selection
         // into state, so the focus-time write ProseMirror schedules
@@ -1754,19 +1718,6 @@ export function richField(label: string, options: RichFieldOptions) {
     "selectionchange",
     syncFromSelectionChange,
   );
-  // Remember a Tab that moves focus toward this field, so the focus
-  // handler can tell a reader's keyboard arrival from a page-owned
-  // focus call after a rewrite.
-  const markTabArrival = (event: KeyboardEvent) => {
-    if (event.key !== "Tab" || view.dom.ownerDocument.activeElement === input)
-      return;
-    tabArrival = true;
-    window.clearTimeout(tabArrivalTimer);
-    tabArrivalTimer = window.setTimeout(() => {
-      tabArrival = false;
-    }, 0);
-  };
-  view.dom.ownerDocument.addEventListener("keydown", markTabArrival, true);
   labelNode.addEventListener("click", () => view.focus());
   const insert = (
     node: ReturnType<typeof richEditorSchema.node>,
@@ -2316,11 +2267,6 @@ export function richField(label: string, options: RichFieldOptions) {
     view.dom.ownerDocument.removeEventListener(
       "selectionchange",
       syncFromSelectionChange,
-    );
-    view.dom.ownerDocument.removeEventListener(
-      "keydown",
-      markTabArrival,
-      true,
     );
     settlingComposition = false;
     clearOperation();
