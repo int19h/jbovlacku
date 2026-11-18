@@ -903,11 +903,16 @@ export function richField(label: string, options: RichFieldOptions) {
         nativeEdit = null;
       }
       const result = view.state.applyTransaction(transaction);
-      // A selection-only change that the native sync did not make is a
-      // caret the reader or a command chose (a click, a tap, select-all,
-      // as ProseMirror reads them from the DOM). It supersedes the caret
-      // a rewrite recorded, so the guard no longer describes the caret
-      // the reader has and must not drive a later Tab restore.
+      // A selection-only change that the native sync did not make
+      // supersedes the caret a rewrite recorded, so the guard no longer
+      // describes the caret the reader has and must not drive a later
+      // Tab restore. Most such changes are the reader's caret (a click,
+      // a tap, select-all, as ProseMirror reads them from the DOM), but
+      // code that adopts the browser selection does the same: the
+      // toolbar's focusin and pointerdown handlers and the Enter and
+      // Tab keydowns dispatch the browser selection into state. On a
+      // main field that adoption releases the guard, so tabbing
+      // through the toolbar types at the browser caret, as on main.
       if (
         resetGuard &&
         !transaction.docChanged &&
@@ -1561,17 +1566,22 @@ export function richField(label: string, options: RichFieldOptions) {
   function syncNativeSelection(readerChoice = false) {
     if (view.isDestroyed || view.composing) return;
     // A reader caret choice supersedes the intended caret a rewrite
-    // recorded; anything code or the browser adjusted does not. Motion
-    // keys and pointer focus arrivals pass readerChoice here; a click,
-    // tap or select-all in a focused field instead reaches editor state
-    // as a selection-only transaction, which releases the guard in
-    // dispatchTransaction.
+    // recorded. Motion keys and pointer focus arrivals pass
+    // readerChoice here; a click, tap or select-all in a focused field
+    // instead reaches editor state as a selection-only transaction,
+    // which releases the guard in dispatchTransaction. Code that
+    // adopts the browser selection (the toolbar's focusin and
+    // pointerdown handlers, and Enter and Tab keydown in the editor)
+    // releases it there too, so the guard keeps the recorded caret
+    // only until the reader, or such code, moves it.
     if (readerChoice) resetGuard = null;
     else if (resetGuard?.doc === view.state.doc) {
       // An external rewrite records its intended caret for focus repair.
-      // A caret the browser adjusted inside the rewritten text is not a
-      // reader choice; do not adopt it over the recorded selection.
-      // Once the browser caret is the recorded one again, fall through.
+      // The sync does not adopt a caret the browser adjusted inside the
+      // rewritten text over that recorded selection; when other code
+      // adopts the browser selection into state it releases the guard
+      // instead (see dispatchTransaction). Once the browser caret is
+      // the recorded one again, fall through.
       const native = input.ownerDocument.getSelection();
       if (!native?.anchorNode || !native.focusNode) return;
       try {
