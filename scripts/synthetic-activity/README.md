@@ -24,8 +24,10 @@ The tool refuses unsafe targets in code, before it sends any request.
   Any other answer is refused with `refused: server does not prove
   it holds a disposable copy`.
 
-The test server in `server.ts` provides that proof. It writes a
-`disposable.json` marker into a fresh empty data folder. The
+The test server in `server.ts` provides that proof. It takes the
+data-directory lock before it reads or writes the marker. When
+the marker check fails, the server releases the lock. It writes
+a `disposable.json` marker into a fresh empty data folder. The
 marker includes a `server_id`. The server stores the new marker
 bytes. It then gives the file its final name. It then stores the
 directory update. A marker that already says
@@ -116,7 +118,9 @@ The ID check alone cannot name the server that made the pin.
 If the base is empty, `init` requires the server id.
 The same server still passes after later events from this run.
 A different server is refused with `refused: empty
-base pin does not match this server`. An empty pin with no
+base pin does not match this server`. A target that holds a
+proven copy of this run accepts the same pin. The capture
+section tells how restore records that copy. An empty pin with no
 server id is refused. That pin was taken before server ids
 existed. Take a new pin with `pin-base` before any synthetic
 event. Take that pin on the server that will host the run.
@@ -243,7 +247,9 @@ the option for each set. One value has the form
 `source|importer|selection`: the source namespace, the importer's
 `ed25519:` identity, and the `sha256:` hash of the import
 selection. The source must not contain `|`. The tool sorts the
-sets and refuses a duplicate. A view holds at most 8192 import
+source, the importer, and the selection in UTF-8 byte order.
+In that order, uppercase ASCII comes before lowercase ASCII.
+The tool refuses a duplicate. A view holds at most 8192 import
 sets.
 
 A view with no `--import-set` has an empty import set. An empty
@@ -306,8 +312,17 @@ that the capture does not carry. It holds the expected final
 counts and digests of all three components. It holds the
 expected final logical inventory. It holds the kit revision,
 counts by kind and by issuer, the public keys, and the SHA-256
-of the event file. The keys file holds private keys. Keep a
-capture folder private.
+of the event file. It also holds the source server id from the
+disposable marker of the server that made the capture. The keys
+file holds private keys. Keep a capture folder private.
+
+When restore finishes on a capture that names a source server
+id, it writes `restored-runs.json` in the target data folder.
+The file names that source server id and the event ids of the
+proven inventory. The target keeps its own server id. A later
+`init` can use the original empty pin on that target. When
+every recorded event is still on the target, init accepts the
+pin. A different server, with no such proven copy, is refused.
 
 Restore and the reuse check enforce the pinned base. They
 prove the whole logical inventory, not only event IDs, before

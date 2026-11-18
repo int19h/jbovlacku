@@ -136,7 +136,7 @@ test("a server without the disposable marker is refused, and init fails with no 
   await rm(root, { recursive: true, force: true });
 });
 
-test("foreign base, tampered inventory and superset are refused; a partial restore resumes", async () => {
+test("foreign base, tampered inventory and superset are refused; a partial restore resumes and the original pin continues", async () => {
   const root = await rootOf();
   const servers: Awaited<ReturnType<typeof startServer>>[] = [];
   try {
@@ -168,9 +168,22 @@ test("foreign base, tampered inventory and superset are refused; a partial resto
     const firstPost = await fetch("http://127.0.0.1:8798/api/v1/events", { method: "POST", headers: { "content-type": "application/json" }, body: lines[0] });
     assert.ok(firstPost.ok);
     assert.match(await cmd(["--server", "http://127.0.0.1:8798", "restore", "--capture", cap]), /restored .* resumed=1/);
-    // Superset: one more unrelated event, then the reuse check must fail.
-    const extra = join(root, "extra-home", "id");
-    await cmd(["--server", "http://127.0.0.1:8798", "--state", extra, "init"]);
+    // The restored target has its own server id. A new identity still
+    // uses the original empty pin. An unrelated server does not.
+    const pin = join(root, "base-pin.json");
+    const extra = join(root, "extra");
+    assert.match(await cmd(["--server", "http://127.0.0.1:8798", "--state", extra, "--pin", pin, "init"]), /ed25519:/);
+    const continued = JSON.parse(await readFile(join(extra, "identity.json"), "utf8"));
+    const original = JSON.parse(await readFile(pin, "utf8"));
+    assert.equal(continued.base_snapshot, original.base_snapshot);
+    assert.equal(continued.base_inventory, original.base_inventory);
+    assert.equal(continued.base_event_count, 0);
+    const manifest = JSON.parse(await readFile(join(cap, "manifest.json"), "utf8"));
+    assert.equal(manifest.source_server_id, original.server_id);
+    const foreignLate = join(root, "foreign-home", "late");
+    assert.match(await cmdFail(["--server", "http://127.0.0.1:8796", "--state", foreignLate, "--pin", pin, "init"]), /refused: empty base pin does not match this server/);
+    assert.equal(existsSync(join(foreignLate, "identity.json")), false);
+    // Superset: one more event from the continued identity, then the reuse check must fail.
     await cmd(["--server", "http://127.0.0.1:8798", "--state", extra, "define", "--word", "foreignthree", "--text", "extra entry"]);
     assert.match(await cmdFail(["--server", "http://127.0.0.1:8798", "reuse-check", "--capture", cap]), /not reusable: already restored inventory is not the pinned base plus the capture/);
     // The superset above fails because its count passes the pinned
@@ -1368,4 +1381,136 @@ test("a zombie lock owner is dead", async () => {
     assert.match(cleared.out, /lock cleared/);
     assert.equal(existsSync(join(state, "lock")), false);
   } finally { holder.kill("SIGKILL"); await rm(root, { recursive: true, force: true }); }
+});
+
+/** Publish one view whose import sets are the given sources, in that flag order. */
+async function publishedImportSets(port: number, sources: string[]): Promise<{ source: string; importer: string; selection: string }[]> {
+  const root = await rootOf();
+  const server = await startServer(join(root, "data"), port);
+  try {
+    const url = `http://127.0.0.1:${port}`;
+    const state = join(root, "a");
+    const created = await cmd(["--server", url, "--state", state, "init"]);
+    const importer = created.match(/ed25519:[a-f0-9]{64}/)![0];
+    const hash = "sha256:" + "1".repeat(64);
+    const args = ["--server", url, "--state", state, "view", "--name", "Byte order"];
+    for (const source of sources) args.push("--import-set", `${source}|${importer}|${hash}`);
+    const published = await cmd(args);
+    const viewId = published.match(/jve1:[a-f0-9]{64}/)![0];
+    const env = await (await fetch(`${url}/api/v1/events/${viewId}`)).json() as any;
+    const body = await (await fetch(`${url}/api/v1/bodies/${encodeURIComponent(env.header.content.hash)}`)).json() as any;
+    return body.import_sets;
+  } finally { await server.close(); await rm(root, { recursive: true, force: true }); }
+}
+
+test("view import sets use UTF-8 byte order for mixed-case sources", async () => {
+  const low = "https://example.test/a";
+  const up = "https://example.test/B";
+  const sets = await publishedImportSets(9633, [low, up]);
+  assert.deepEqual(sets.map((set) => set.source), [up, low]);
+});
+
+test("view import sets use UTF-8 byte order for non-ASCII sources", async () => {
+  const accented = "https://example.test/\u00e4";
+  const plain = "https://example.test/b";
+  const sets = await publishedImportSets(9634, [accented, plain]);
+  assert.deepEqual(sets.map((set) => set.source), [plain, accented]);
+});
+
+test("a losing startup keeps the winner marker across a restart", async () => {
+  const root = await rootOf();
+  const data = join(root, "data");
+  const pause = join(root, "pause");
+  const preload = join(root, "pause-rename.cjs");
+  await writeFile(preload, [
+    "const fs = require('node:fs');",
+    "const fsp = require('node:fs/promises');",
+    "const original = fsp.rename;",
+    "fsp.rename = async function (src, dest) {",
+    "  if (String(dest).endsWith('/disposable.json') && process.env.MARKER_PAUSE) {",
+    "    fs.writeFileSync(process.env.MARKER_PAUSE + '.ready', String(src));",
+    "    const end = Date.now() + 30000;",
+    "    while (!fs.existsSync(process.env.MARKER_PAUSE + '.go')) {",
+    "      if (Date.now() > end) throw new Error('pause timed out');",
+    "      await new Promise((r) => setTimeout(r, 10));",
+    "    }",
+    "  }",
+    "  return original.call(this, src, dest);",
+    "};",
+    "require('node:module').syncBuiltinESMExports();",
+    "",
+  ].join("\n"));
+  const serverMod = new URL("./server.ts", import.meta.url).pathname;
+  const child = spawn(tsx, [serverMod, data, "9632"], {
+    env: { ...process.env, NODE_OPTIONS: `--require ${preload}`, MARKER_PAUSE: pause },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let childOut = "";
+  child.stdout!.on("data", (chunk) => { childOut += chunk; });
+  child.stderr!.on("data", (chunk) => { childOut += chunk; });
+  const childExit = new Promise<number>((resolve) => child.on("exit", (code) => resolve(code ?? -1)));
+  let winner: Awaited<ReturnType<typeof startServer>> | undefined;
+  const readLive = async (port: number) => {
+    const deadline = Date.now() + 15000;
+    let last = "";
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/synthetic-disposable`);
+        if (response.ok) {
+          const body = await response.json() as { server_id?: string };
+          if (body.server_id) return body.server_id;
+        }
+      } catch (error: any) { last = String(error?.message ?? error); }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`server did not publish a marker: ${last}; child: ${childOut}`);
+  };
+  try {
+    const deadline = Date.now() + 15000;
+    while (!existsSync(pause + ".ready")) {
+      if (child.exitCode !== null) throw new Error(`paused startup exited early: ${childOut}`);
+      if (Date.now() > deadline) throw new Error(`paused startup did not reach the marker rename: ${childOut}`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    let winnerId = "";
+    try {
+      winner = await startServer(data, 9631);
+      winnerId = await readLive(9631);
+    } catch (error: any) {
+      assert.match(String(error?.message ?? error), /data directory is locked/);
+      await writeFile(pause + ".go", "go");
+      winnerId = await readLive(9632);
+      const disk = JSON.parse(await readFile(join(data, "disposable.json"), "utf8")).server_id as string;
+      assert.equal(disk, winnerId);
+      child.kill("SIGTERM");
+      const code = await Promise.race([
+        childExit,
+        new Promise<number>((_, reject) => setTimeout(() => reject(new Error(`winner did not exit: ${childOut}`)), 15000)),
+      ]);
+      assert.equal(code, 0, childOut);
+      const restarted = await startServer(data, 9631);
+      try {
+        assert.equal(await readLive(9631), winnerId);
+      } finally { await restarted.close(); }
+      return;
+    }
+    await writeFile(pause + ".go", "go");
+    const loserCode = await Promise.race([
+      childExit,
+      new Promise<number>((_, reject) => setTimeout(() => reject(new Error(`loser did not exit: ${childOut}`)), 15000)),
+    ]);
+    assert.notEqual(loserCode, 0, childOut);
+    const disk = JSON.parse(await readFile(join(data, "disposable.json"), "utf8")).server_id as string;
+    assert.equal(disk, winnerId, `disk marker ${disk} replaced winner ${winnerId}; loser: ${childOut}`);
+    await winner.close();
+    winner = undefined;
+    const restarted = await startServer(data, 9631);
+    try {
+      assert.equal(await readLive(9631), winnerId, `restart served a different marker than winner ${winnerId}`);
+    } finally { await restarted.close(); }
+  } finally {
+    child.kill("SIGKILL");
+    if (winner) await winner.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

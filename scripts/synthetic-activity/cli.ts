@@ -205,13 +205,38 @@ function baseIsEmpty(pin: Pin, lists: PinLists): boolean {
 /**
  * An empty ID list is a subset of every server. The pin's server id,
  * taken from the disposable marker, is what tells the server that
- * made the pin from a larger unrelated server.
+ * made the pin from a larger unrelated server. A target that holds
+ * a proven restored copy of that server accepts the same pin.
  */
 async function refuseForeignEmptyPin(o: Opts, pin: Pin, lists: PinLists): Promise<void> {
   if (!baseIsEmpty(pin, lists)) return;
   if (!pin.server_id) { console.error("refused: an empty base pin has no server id, so it cannot tell this server from another; take a new pin with pin-base"); process.exit(3); }
   await checkMarker(o);
-  if (markerServerId !== pin.server_id) { console.error("refused: empty base pin does not match this server; a new base needs a new pin file"); process.exit(3); }
+  if (markerServerId === pin.server_id) return;
+  if (await targetHoldsProvenCopy(o, pin.server_id)) return;
+  console.error("refused: empty base pin does not match this server; a new base needs a new pin file"); process.exit(3);
+}
+/** The target recorded this source after a restore proved the inventory, and it still holds those events. */
+async function targetHoldsProvenCopy(o: Opts, sourceId: string): Promise<boolean> {
+  let body: any;
+  try {
+    const response = await rawFetch(o, o.server + "/synthetic-restored");
+    body = await response.json().catch(() => null);
+    if (!response.ok || !Array.isArray(body?.runs)) return false;
+  } catch { return false; }
+  let present: Set<string> | undefined;
+  for (const run of body.runs) {
+    if (run?.source_server_id !== sourceId || !Array.isArray(run.event_ids) || run.event_ids.length === 0) continue;
+    if (!run.event_ids.every((id: unknown) => typeof id === "string")) continue;
+    let held = present;
+    if (!held) {
+      try { held = new Set(await inventoryIds(o)); }
+      catch { return false; }
+      present = held;
+    }
+    if (held && run.event_ids.every((id: string) => held.has(id))) return true;
+  }
+  return false;
 }
 interface PinLists { events: string[]; bodies: string[]; selections: string[] }
 /** Read the three pin lists and check each against its pinned count and digest. */
@@ -680,6 +705,10 @@ async function distinctStateDirs(states: string[]): Promise<string[]> {
   return out;
 }
 interface ImportSet { source: string; importer: string; selection: string }
+/** Protocol order is UTF-8 byte order, the same order as a Rust string. */
+function utf8Compare(a: string, b: string): number {
+  return Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+}
 /** Repeated --import-set values. Each value is source|importer|selection.
  * The result is sorted and unique, as a view body requires. */
 function importSets(o: Opts): ImportSet[] {
@@ -692,7 +721,7 @@ function importSets(o: Opts): ImportSet[] {
     if (!/^ed25519:[0-9a-f]{64}$/.test(importer) || !/^sha256:[0-9a-f]{64}$/.test(selection)) { console.error("refused: --import-set importer must be an ed25519 identity and selection must be a sha256 hash"); process.exit(3); }
     entries.push({ source, importer, selection });
   }
-  entries.sort((a, b) => a.source.localeCompare(b.source) || a.importer.localeCompare(b.importer) || a.selection.localeCompare(b.selection));
+  entries.sort((a, b) => utf8Compare(a.source, b.source) || utf8Compare(a.importer, b.importer) || utf8Compare(a.selection, b.selection));
   for (let i = 1; i < entries.length; i++) {
     const prev = entries[i - 1];
     if (prev.source === entries[i].source && prev.importer === entries[i].importer && prev.selection === entries[i].selection) { console.error("refused: --import-set values must be unique"); process.exit(3); }
@@ -793,6 +822,7 @@ async function captureBody(o: Opts): Promise<void> {
   let kit_revision = "unknown"; try { kit_revision = execFileSync("git", ["-C", resolve(dirname(fileURLToPath(import.meta.url)), "../.."), "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
   const manifest = {
     format: 1, capture_snapshot: sourceSnapshot, base_snapshot: identities[0].base_snapshot, base_inventory: identities[0].base_inventory, kit_revision,
+    ...(markerServerId ? { source_server_id: markerServerId } : {}),
     event_count: transports.length, by_kind: byKind, by_issuer: byIssuer, public_keys: identities.map((i) => i.identity),
     event_file_sha256: sha256(bytes), base_event_count: baseIds.length, base_inventory_digest: digestIds(baseIds),
     base_body_count: pinLists.bodies.length, base_body_digest: digestIds(pinLists.bodies),
@@ -953,6 +983,10 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
       if (canonicalize(utf8(JSON.stringify(fetched))) !== canonicalize(utf8(JSON.stringify(t.body))))
         fail(`captured body for event ${t.envelope.id} does not match the restored copy`);
     }
+  }
+  if (!checkOnly && typeof manifest.source_server_id === "string" && /^[0-9a-f]{32}$/.test(manifest.source_server_id) && afterIds.length > 0) {
+    const recorded = await rawFetch(o, o.server + "/synthetic-restored", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source_server_id: manifest.source_server_id, event_ids: afterIds }) });
+    if (!recorded.ok) fail(`cannot record the proven copy on the target: ${await recorded.text()}`);
   }
   if (checkOnly) console.log("reusable");
   else console.log(`restored ${transports.length} events resumed=${resumed} inventory=${afterIds.length} digest=${digestIds(afterIds)}`);
