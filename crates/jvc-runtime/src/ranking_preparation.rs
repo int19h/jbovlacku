@@ -2086,17 +2086,23 @@ mod tests {
         let descriptor = session.ranking_descriptor_native(&policy).unwrap();
         assert!(descriptor.available, "{:?}", descriptor.reasons);
     }
-    /// A partial source guard for the metered setup functions. It
-    /// catches a map or set read whose key is a string literal or a
-    /// plain identifier - after `[`, `.get(`, `.contains(`,
-    /// `.contains_key(`, or `.index(` - when no single charge call in
-    /// the twelve lines above it names the same key. A recognized
-    /// read whose only charge is outside that window is flagged; the
-    /// scan does not decide whether a distant charge covers the read.
-    /// It does not catch helpers outside the listed functions, or
-    /// reads inside closures and iterator adapters that borrow an
-    /// earlier charge; those are covered by the operation-level
-    /// tests, not by this scan.
+    /// A partial source guard for the metered setup functions.
+    /// Before anything else, it blanks out `//` line comments and
+    /// nested `/* ... */` block comments (never `//` inside a string
+    /// literal), so a commented-out charge does not count and a
+    /// commented-out read is not flagged. In the listed functions
+    /// only, it then catches a map or set read whose key is a string
+    /// literal or a plain identifier - after `[`, `.get(`,
+    /// `.contains(`, `.contains_key(`, or `.index(` - when no single
+    /// charge call in the twelve lines above it names the same key,
+    /// either as a quoted literal in the call or as the same
+    /// identifier outside quoted text in the call. A recognized read
+    /// whose only charge is outside that window is flagged; the scan
+    /// does not decide whether a distant charge covers the read. It
+    /// does not catch helpers outside the listed functions, macro
+    /// bodies, or reads inside closures and iterator adapters that
+    /// borrow an earlier charge; those are covered by the
+    /// operation-level tests, not by this scan.
     #[test]
     fn setup_source_has_no_unmetered_map_reads() {
         let allow: &[(&str, &str)] = &[
@@ -2210,6 +2216,24 @@ mod tests {
             &mut used,
         )
         .is_empty());
+        // A commented-out charge is not a charge.
+        let mut used = vec![false; allow.len()];
+        assert!(!scan_region(
+            "fn fixture() {\n // charge_lookup(meter, 3, \"value\")?;\n let value = map.get(\"value\");\n}\n",
+            allow,
+            &mut used,
+        )
+        .is_empty());
+        // A read that appears only in a comment is not a read.
+        let mut used = vec![false; allow.len()];
+        assert!(
+            scan_region(
+                "fn fixture() {\n // let value = map.get(\"value\");\n let value = 1;\n}\n",
+                allow,
+                &mut used,
+            )
+            .is_empty()
+        );
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
     fn extract_fn<'a>(text: &'a str, name: &str) -> Option<&'a str> {
@@ -2229,6 +2253,70 @@ mod tests {
             }
         }
         None
+    }
+    /// Blank out `//` line comments and (nested) `/* ... */` block
+    /// comments, preserving newlines so line numbers stay aligned.
+    /// `//` inside a string literal is not a comment.
+    fn stripped(region: &str) -> String {
+        let mut out = String::with_capacity(region.len());
+        let mut chars = region.chars().peekable();
+        let mut depth = 0u32;
+        let mut in_string = false;
+        while let Some(ch) = chars.next() {
+            if depth > 0 {
+                if ch == '/' && chars.peek() == Some(&'*') {
+                    chars.next();
+                    depth += 1;
+                    out.push(' ');
+                    out.push(' ');
+                } else if ch == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    depth -= 1;
+                    out.push(' ');
+                    out.push(' ');
+                } else {
+                    out.push(if ch == '\n' { '\n' } else { ' ' });
+                }
+                continue;
+            }
+            if in_string {
+                out.push(ch);
+                if ch == '\\' {
+                    if let Some(next) = chars.next() {
+                        out.push(next);
+                    }
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => {
+                    in_string = true;
+                    out.push(ch);
+                }
+                '/' if chars.peek() == Some(&'/') => {
+                    chars.next();
+                    out.push(' ');
+                    out.push(' ');
+                    for next in chars.by_ref() {
+                        if next == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                        out.push(' ');
+                    }
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                    depth = 1;
+                    out.push(' ');
+                    out.push(' ');
+                }
+                _ => out.push(ch),
+            }
+        }
+        out
     }
     fn scan_region(region: &str, allow: &[(&str, &str)], allow_used: &mut [bool]) -> Vec<String> {
         fn read_key(line: &str) -> Option<String> {
@@ -2299,7 +2387,8 @@ mod tests {
                     .split(|c: char| !(c.is_alphanumeric() || c == '_'))
                     .any(|token| token == key)
         }
-        let lines: Vec<&str> = region.lines().collect();
+        let text = stripped(region);
+        let lines: Vec<&str> = text.lines().collect();
         let mut failures = Vec::new();
         for (index, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
