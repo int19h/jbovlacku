@@ -348,6 +348,14 @@ fn private_trust_metered(
         meter(resolved.len() as u64, 0, 0, 0)?;
         Ok(resolved.to_owned())
     };
+    // Charge the capacity allocation before it runs: the vector
+    // holds one `TrustRule` per restored rule.
+    meter(
+        (evaluation.trust.len() as u64).saturating_mul(std::mem::size_of::<TrustRule>() as u64),
+        0,
+        0,
+        0,
+    )?;
     let mut trust = Vec::with_capacity(evaluation.trust.len());
     for rule in &evaluation.trust {
         meter(16 + (rule.actor.len() + rule.subject.len()) as u64, 0, 0, 0)?;
@@ -640,11 +648,12 @@ fn scope_measure(value: &Value, meter: &mut SetupMeter<'_>) -> jvc_core::Result<
 }
 
 /// An upper bound on a scope's JSON text length: at most six bytes
-/// per string byte (worst-case escapes) plus 24 bytes of syntax,
-/// digits, and punctuation per walked node.
+/// per string byte (worst-case escapes) plus 25 bytes per walked
+/// node (at most 24 bytes for a value such as a long float, plus
+/// one separator byte).
 fn json_text_bound(raw_steps: u64, string_bytes: u64) -> u64 {
     raw_steps
-        .saturating_mul(24)
+        .saturating_mul(25)
         .saturating_add(string_bytes.saturating_mul(6))
 }
 
@@ -1644,6 +1653,46 @@ mod tests {
         assert_eq!(
             prepare_roots::<FloatRows>([Rational::zero(), Rational::one()]),
             Ok(vec![0.0, 1.0])
+        );
+    }
+
+    #[test]
+    fn private_trust_capacity_is_charged_before_the_allocation() {
+        // Charge-order test: the first charge the meter sees must be
+        // the capacity charge for the trust vector, before any rule
+        // is read. Allocation counting is not needed to pin the order.
+        let mut evaluation = dispatch_evaluation("simple-routes-shun-f64-v1");
+        let rule = evaluation.trust[0].clone();
+        evaluation.trust = vec![rule.clone(), rule.clone(), rule];
+        let charges = std::cell::RefCell::new(Vec::new());
+        let mut meter = |work: u64, _: u64, _: u64, _: u64| -> jvc_core::Result<()> {
+            charges.borrow_mut().push(work);
+            Ok(())
+        };
+        private_trust_metered(&evaluation, &mut meter).unwrap();
+        let expected = (evaluation.trust.len() * std::mem::size_of::<TrustRule>()) as u64;
+        assert_eq!(charges.borrow().first().copied(), Some(expected));
+    }
+
+    #[test]
+    fn json_text_bound_covers_long_float_arrays() {
+        let value = Value::Array(
+            (0..2_000)
+                .map(|_| json!(-1.2345678901234567e-100))
+                .collect(),
+        );
+        let mut raw = 0u64;
+        let string_bytes = value_strings_metered(&value, &mut |steps, _, _, _| {
+            raw += steps;
+            Ok(())
+        })
+        .unwrap();
+        let serialized = value.to_string().len() as u64;
+        assert_eq!(serialized, 50_001);
+        assert!(json_text_bound(raw, string_bytes) >= serialized);
+        assert_eq!(
+            json_text_bound(raw, string_bytes),
+            25 * raw + 6 * string_bytes
         );
     }
 

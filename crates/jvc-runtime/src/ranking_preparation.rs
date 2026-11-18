@@ -451,8 +451,13 @@ impl SetupMeter {
             mul(self.credited, SETUP_UNITS_PER_ENTRY)?,
         )
     }
-    /// The final default plus one entry allowance per credited item.
+    /// The budget for the final safeguard: an explicit quota is used
+    /// as is, exactly as in `charge`; otherwise the final default plus
+    /// one entry allowance per credited item.
     fn final_budget(&self, policy: &RankingPreparationPolicy) -> Result<u64> {
+        if let Some(limit) = self.explicit {
+            return Ok(limit);
+        }
         add(
             policy.effective_setup_units(self.entries, self.key_bytes)?,
             mul(self.credited, SETUP_UNITS_PER_ENTRY)?,
@@ -466,10 +471,11 @@ impl SessionPreparation {
         let e = session.state.evaluation();
         // The meter exists before anything is read or copied from the
         // evaluation. Every lookup, clone, and copy below is charged
-        // through it before it runs. After a charged read refuses, no
-        // further work over restored data happens: the session is
-        // classified only from what the reads before the refusal
-        // already learned, and anything else returns the refusal.
+        // through it before it runs. A `resource_unavailable`
+        // refusal from a charged read returns the error at once, on
+        // every profile: no further work over restored data follows
+        // it. A diagnostic descriptor is returned only when no
+        // charged read refused.
         let mut meter = policy.setup_meter(0, 0);
         let mut reasons = BTreeSet::new();
         // The selected view identifier is cloned into the descriptor.
@@ -1363,6 +1369,35 @@ mod tests {
             p.setup_estimate(&large).unwrap_err().code,
             "resource_unavailable"
         );
+    }
+    #[test]
+    fn explicit_setup_units_near_the_maximum_are_used_as_is() {
+        let (first, _word) = session();
+        // One judgment group, so the record walk credits an item and
+        // the old final budget added 1,040 units to an explicit quota.
+        let session = restored_with_judgments(
+            first,
+            json!({ format!("jve1:{}", "0".repeat(64)): {"k0": "bless"} }),
+        );
+        for limit in [u64::MAX, u64::MAX - 1039] {
+            let mut policy = RankingPreparationPolicy {
+                core_binding: format!("sha256:{}", "a".repeat(64)),
+                limits: Default::default(),
+            };
+            policy.limits.setup_units = Some(limit);
+            let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+            assert!(descriptor.available, "{:?}", descriptor.reasons);
+        }
+        // The final safeguard uses the explicit quota itself, with no
+        // walk credits added to it.
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(12_345);
+        let mut meter = policy.setup_meter(10, 20);
+        meter.charge(0, 0, 0, 3).unwrap();
+        assert_eq!(meter.final_budget(&policy).unwrap(), 12_345);
     }
     fn restored_with(
         mut session: EvaluationSession,

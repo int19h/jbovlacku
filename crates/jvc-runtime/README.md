@@ -118,9 +118,9 @@ Those allowances cover the charge at the widest bit length: 16 * 64 + 16 per ent
 Index construction is charged through the same meter as the walks, before each lookup, insertion, and comparison.
 The margin over the charge is therefore at least the fixed 100,000,000 at any size, and it grows as an ordinary shape grows.
 An explicit `setup_units` quota replaces the default.
-After a charged read refuses, setup does no further work over restored data.
-It classifies the session only from what the reads before the refusal already learned.
-A profile that was not yet shown exact or unavailable therefore returns the refusal, even when it is one of those profiles.
+A `resource_unavailable` refusal from a charged read returns the error at once, on every profile.
+No source hash, serialization, or descriptor work over restored data follows it.
+A diagnostic descriptor for an exact or unavailable profile is returned only when no charged read refused.
 
 The measured dictionary has 269,350 structural records and 165,438,058 source bytes.
 Its indexes retain 64,033,159 requested heap bytes.
