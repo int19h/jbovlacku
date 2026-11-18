@@ -51,12 +51,12 @@ pub struct EvaluatedState {
     prepared: PreparedEvaluationInput,
     evaluation: Evaluation,
     graph: Option<Graph>,
-    unresolved: BTreeSet<String>,
-    rafsi_word_publications: std::rc::Rc<BTreeMap<String, BTreeSet<String>>>,
+    unresolved: std::rc::Rc<BTreeSet<String>>,
+    rafsi_words: std::rc::Rc<BTreeSet<String>>,
     selection_allowance: usize,
     remaining_work: usize,
     unmatched_publication_scans: usize,
-    matched_publication_scans: BTreeMap<String, usize>,
+    matched_publication_scans: std::rc::Rc<BTreeMap<String, usize>>,
     /// Ancestry bytes spent by the evaluation this state carries,
     /// saved across a checkpoint. A restored state has no graph, so
     /// the first advance seeds the rebuilt graph's cap counter with
@@ -92,7 +92,7 @@ impl Clone for EvaluatedState {
             evaluation: self.evaluation.clone(),
             graph: self.graph.clone(),
             unresolved: self.unresolved.clone(),
-            rafsi_word_publications: self.rafsi_word_publications.clone(),
+            rafsi_words: self.rafsi_words.clone(),
             selection_allowance: self.selection_allowance,
             remaining_work: self.remaining_work,
             unmatched_publication_scans: self.unmatched_publication_scans,
@@ -124,12 +124,12 @@ impl EvaluatedState {
             evaluation: empty_evaluation(&prepared.options),
             prepared,
             graph: None,
-            unresolved: BTreeSet::new(),
-            rafsi_word_publications: Default::default(),
+            unresolved: Default::default(),
+            rafsi_words: Default::default(),
             selection_allowance: 0,
             remaining_work: 0,
             unmatched_publication_scans: 0,
-            matched_publication_scans: BTreeMap::new(),
+            matched_publication_scans: Default::default(),
             saved_ancestry_bytes: None,
             checkpoint_restored: false,
             statistics: UpdateStatistics::default(),
@@ -198,9 +198,9 @@ impl EvaluatedState {
         observe("other_evaluation_cleared");
         self.graph = None;
         observe("graph_cleared");
-        self.unresolved.clear();
-        self.rafsi_word_publications = Default::default();
-        self.matched_publication_scans.clear();
+        self.unresolved = Default::default();
+        self.rafsi_words = Default::default();
+        self.matched_publication_scans = Default::default();
         observe("unresolved_cleared");
     }
 
@@ -227,10 +227,6 @@ impl EvaluatedState {
                     .unwrap_or_else(|| issuer.into());
                 lifecycle.suspended.contains_key(&actor)
             });
-            if !self.evaluation.available && state.evaluation.available {
-                state.unresolved = unresolved(&state.prepared, &state.evaluation);
-                state.rafsi_word_publications = rafsi_word_publications(&state.evaluation);
-            }
         }
         state.statistics = self.statistics.clone();
         state.judgment_changes = None;
@@ -475,20 +471,20 @@ impl EvaluatedState {
             self.evaluation = empty_evaluation(&self.prepared.options);
             resource_unavailable(&mut self.evaluation);
             self.remaining_work = self.traversal_budget();
-            self.unresolved.clear();
-            self.rafsi_word_publications = Default::default();
+            self.unresolved = Default::default();
+            self.rafsi_words = Default::default();
             self.unmatched_publication_scans = 0;
-            self.matched_publication_scans.clear();
+            self.matched_publication_scans = Default::default();
             return;
         }
         if self.prepared.event_limit_exceeded {
             self.selection_allowance = 0;
             self.evaluation = event_limit_evaluation(&self.prepared.options);
             self.remaining_work = self.traversal_budget();
-            self.unresolved.clear();
-            self.rafsi_word_publications = Default::default();
+            self.unresolved = Default::default();
+            self.rafsi_words = Default::default();
             self.unmatched_publication_scans = 0;
-            self.matched_publication_scans.clear();
+            self.matched_publication_scans = Default::default();
             return;
         }
         let mut selection_cache = self.prepared.validated_selections.borrow_mut();
@@ -516,14 +512,15 @@ impl EvaluatedState {
         self.remaining_work = graph.budget.get();
         if !self.evaluation.reasons.contains("resource_unavailable") {
             self.unmatched_publication_scans = graph.unmatched_publication_scans.get();
-            self.matched_publication_scans = graph.matched_publication_scans.borrow().clone();
+            self.matched_publication_scans =
+                std::rc::Rc::new(graph.matched_publication_scans.borrow().clone());
         } else {
             self.unmatched_publication_scans = 0;
-            self.matched_publication_scans.clear();
+            self.matched_publication_scans = Default::default();
         }
         self.graph = Some(graph);
         self.unresolved = unresolved(&self.prepared, &self.evaluation);
-        self.rafsi_word_publications = rafsi_word_publications(&self.evaluation);
+        self.rafsi_words = rafsi_words(&self.evaluation);
     }
 
     /// Advance from original records that already passed record preparation.
@@ -565,8 +562,13 @@ impl EvaluatedState {
                     self.prepared.nodes.len().saturating_add(added.len()) > limit
                 });
         if !std::rc::Rc::ptr_eq(&self.prepared.import_selections, &delta.import_selections) {
+            let exhausted_empty_advance = rebuild_reason.is_none()
+                && added.is_empty()
+                && self.evaluation.reasons.contains("resource_unavailable")
+                && self.prepared.options.limits.traversal.is_some();
             if !self.prepared.event_limit_exceeded
                 && self.prepared.options.limits.traversal != Some(0)
+                && !(exhausted_empty_advance && self.evaluation.policy.is_none())
             {
                 let view_node = added.get(&self.prepared.options.selected_view).or_else(|| {
                     self.prepared
@@ -581,6 +583,7 @@ impl EvaluatedState {
                     let next_selections = &delta.import_selections;
                     let prev_cache = self.prepared.validated_selections.borrow();
                     let mut next_cache = delta.validated_selections.borrow_mut();
+                    let explicit_limit = self.prepared.options.limits.traversal;
                     for entry in body
                         .view()
                         .index("import_sets")
@@ -592,7 +595,23 @@ impl EvaluatedState {
                         let Some(sel_id) = sel_field.as_str() else {
                             continue;
                         };
-                        if prev_selections.get(sel_id) != next_selections.get(sel_id) {
+                        let prev = prev_selections.get(sel_id);
+                        let next = next_selections.get(sel_id);
+                        if prev.map(Vec::len) != next.map(Vec::len) {
+                            if rebuild_reason.is_none() {
+                                rebuild_reason = Some("configuration_changed".into());
+                            }
+                            continue;
+                        }
+                        let Some((prev_ids, next_ids)) = prev.zip(next) else {
+                            continue;
+                        };
+                        if exhausted_empty_advance
+                            && explicit_limit.is_some_and(|limit| prev_ids.len() > limit)
+                        {
+                            continue;
+                        }
+                        if prev_ids != next_ids {
                             if rebuild_reason.is_none() {
                                 rebuild_reason = Some("configuration_changed".into());
                             }
@@ -790,6 +809,12 @@ impl EvaluatedState {
                 return Err("work_budget");
             }
         } else if node.kind == "definition.publish" {
+            let word_field = node.action.view().index("word");
+            let word = word_field.as_str().unwrap_or_default();
+            if self.rafsi_words.contains(word) || (word.is_empty() && !self.rafsi_words.is_empty())
+            {
+                return Err("rafsi_eligibility");
+            }
             // A new native publication enters `evaluation.publications`
             // at its record ID. Every existing publication scan that
             // walks past that ID (all unmatched `jvr1:` judgments and
@@ -905,14 +930,64 @@ impl EvaluatedState {
         } else {
             per_cache(&graph.own) + per_cache(&graph.structural) + per_cache(&graph.accepted)
         };
+        let fork_shared = std::rc::Rc::strong_count(&self.evaluation.results) > 1;
+        let copy_work = if fork_shared {
+            let node_copy_work = if std::rc::Rc::strong_count(&graph.nodes) > 2 {
+                graph.nodes.len()
+            } else {
+                0
+            };
+            let closure_copy_work = if shared {
+                if std::rc::Rc::strong_count(&graph.own) > 3 {
+                    graph.own.len()
+                } else {
+                    0
+                }
+            } else {
+                usize::from(std::rc::Rc::strong_count(&graph.own) > 1) * graph.own.len()
+                    + usize::from(std::rc::Rc::strong_count(&graph.structural) > 1)
+                        * graph.structural.len()
+                    + usize::from(std::rc::Rc::strong_count(&graph.accepted) > 1)
+                        * graph.accepted.len()
+            };
+            let evaluation_copy_work = evaluation_copy_units(&self.evaluation);
+            let unresolved_copy_work = if std::rc::Rc::strong_count(&self.unresolved) > 1
+                && node_has_new_unresolved_references(node, &self.prepared.nodes, &self.unresolved)
+            {
+                self.unresolved.len()
+            } else {
+                0
+            };
+            let matched_scans_copy_work = if node.kind == "judgment.set"
+                && node
+                    .action
+                    .view()
+                    .index("target")
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("jvr1:"))
+                && std::rc::Rc::strong_count(&self.matched_publication_scans) > 1
+            {
+                self.matched_publication_scans.len()
+            } else {
+                0
+            };
+            node_copy_work
+                .saturating_add(closure_copy_work)
+                .saturating_add(evaluation_copy_work)
+                .saturating_add(unresolved_copy_work)
+                .saturating_add(matched_scans_copy_work)
+        } else {
+            0
+        };
         // The last two units are the lifecycle record and the account
         // history scan. A full evaluation skips the scan when no
         // policy is selected, so the append charges it only then too.
         let work = (1 + node.previous.len())
-            + construction
-            + 1
-            + usize::from(self.evaluation.policy.is_some())
-            + target_work;
+            .saturating_add(construction)
+            .saturating_add(1)
+            .saturating_add(usize::from(self.evaluation.policy.is_some()))
+            .saturating_add(target_work)
+            .saturating_add(copy_work);
         let lineage_work = if node.kind == "definition.publish" {
             node.action
                 .view()
@@ -994,8 +1069,7 @@ impl EvaluatedState {
                     .values()
                     .find(|p| p.assignment.as_deref() == Some(target))
                 {
-                    *self
-                        .matched_publication_scans
+                    *std::rc::Rc::make_mut(&mut self.matched_publication_scans)
                         .entry(publication.id.clone())
                         .or_insert(0) += 1;
                 }
@@ -1150,21 +1224,9 @@ impl EvaluatedState {
             );
             native_status_for(graph, &mut self.evaluation, Some(&node.id));
             action_targets_for(graph, &mut self.evaluation, Some(&node.id));
-            // Pair gates consume eligibility before the gate itself. Restore
-            // that input before evaluating a changed word's gate again.
-            let word = self.evaluation.publications[&node.id].word.clone();
-            if self.rafsi_word_publications.contains_key(&word) {
-                std::rc::Rc::make_mut(&mut self.rafsi_word_publications)
-                    .get_mut(&word)
-                    .unwrap()
-                    .insert(node.id.clone());
-                let word_ids = &self.rafsi_word_publications[&word];
-                let empty_word_ids = self.rafsi_word_publications.get("");
-                rafsi_gate_for_word(&mut self.evaluation, word_ids, empty_word_ids);
-            }
         }
         self.remaining_work = graph.budget.get();
-        add_unresolved_node_references(&node, &self.prepared.nodes, &mut self.unresolved);
+        add_unresolved_node_references_cow(&node, &self.prepared.nodes, &mut self.unresolved);
     }
 
     pub fn checkpoint(&self, binding: &str) -> jvc_core::Result<Vec<u8>> {
@@ -1409,17 +1471,17 @@ impl EvaluatedState {
             register.maxima_work = *work;
             register.maxima_member_work = *member_work;
         }
-        let rafsi_word_publications = rafsi_word_publications(&evaluation);
+        let rafsi_words = rafsi_words(&evaluation);
         Ok(Self {
             unresolved: unresolved(&prepared, &evaluation),
-            rafsi_word_publications,
+            rafsi_words,
             prepared,
             evaluation,
             graph: None,
             selection_allowance,
             remaining_work: saved.remaining_work,
             unmatched_publication_scans: saved.unmatched_publication_scans,
-            matched_publication_scans: saved.matched_publication_scans,
+            matched_publication_scans: std::rc::Rc::new(saved.matched_publication_scans),
             saved_ancestry_bytes: saved.ancestry_bytes,
             checkpoint_restored: true,
             statistics: UpdateStatistics::default(),
@@ -2873,6 +2935,66 @@ fn next_ready_id(added: &BTreeMap<String, Node>) -> Option<String> {
         .map(|(id, _)| id.clone())
 }
 
+fn evaluation_copy_units(evaluation: &Evaluation) -> usize {
+    let lifecycle = &evaluation.lifecycle;
+    lifecycle
+        .key_actor
+        .len()
+        .saturating_add(lifecycle.groups.len())
+        .saturating_add(lifecycle.successor.len())
+        .saturating_add(lifecycle.suspended.len())
+        .saturating_add(lifecycle.retired.len())
+        .saturating_add(lifecycle.compromised.len())
+        .saturating_add(evaluation.publications.len())
+        .saturating_add(evaluation.accounts.len())
+        .saturating_add(evaluation.registers.len())
+        .saturating_add(evaluation.judgments.len())
+        .saturating_add(evaluation.policies.len())
+        .saturating_add(evaluation.policy_history.len())
+        .saturating_add(evaluation.trust.len())
+        .saturating_add(
+            evaluation
+                .selections
+                .values()
+                .map(BTreeSet::len)
+                .sum::<usize>(),
+        )
+        .saturating_add(evaluation.receipts.len())
+}
+
+fn value_has_new_unresolved_references(
+    value: ValueView,
+    nodes: &BTreeMap<String, Node>,
+    existing: &BTreeSet<String>,
+) -> bool {
+    if let Some(id) = value.as_str().filter(|id| jvc_core::valid_id(id, "jve1:")) {
+        !nodes.contains_key(id) && !existing.contains(id)
+    } else {
+        let mut found = false;
+        value.for_each_child(|child| {
+            if !found {
+                found = value_has_new_unresolved_references(child, nodes, existing);
+            }
+        });
+        found
+    }
+}
+
+fn node_has_new_unresolved_references(
+    node: &Node,
+    nodes: &BTreeMap<String, Node>,
+    existing: &BTreeSet<String>,
+) -> bool {
+    node.previous
+        .iter()
+        .any(|id| !nodes.contains_key(id) && !existing.contains(id))
+        || value_has_new_unresolved_references(node.action.view(), nodes, existing)
+        || node
+            .body
+            .as_ref()
+            .is_some_and(|body| value_has_new_unresolved_references(body.view(), nodes, existing))
+}
+
 fn unresolved_references(
     value: ValueView,
     nodes: &BTreeMap<String, Node>,
@@ -2903,9 +3025,22 @@ fn add_unresolved_node_references(
     }
 }
 
-fn unresolved(prepared: &PreparedEvaluationInput, evaluation: &Evaluation) -> BTreeSet<String> {
-    if !evaluation.available {
-        return BTreeSet::new();
+fn add_unresolved_node_references_cow(
+    node: &Node,
+    nodes: &BTreeMap<String, Node>,
+    result: &mut std::rc::Rc<BTreeSet<String>>,
+) {
+    if node_has_new_unresolved_references(node, nodes, result) {
+        add_unresolved_node_references(node, nodes, std::rc::Rc::make_mut(result));
+    }
+}
+
+fn unresolved(
+    prepared: &PreparedEvaluationInput,
+    evaluation: &Evaluation,
+) -> std::rc::Rc<BTreeSet<String>> {
+    if evaluation.reasons.contains("resource_unavailable") {
+        return Default::default();
     }
     let mut result = BTreeSet::new();
     if !prepared.nodes.contains_key(&prepared.options.selected_view) {
@@ -2926,32 +3061,23 @@ fn unresolved(prepared: &PreparedEvaluationInput, evaluation: &Evaluation) -> BT
     for node in prepared.nodes.values() {
         add_unresolved_node_references(node, &prepared.nodes, &mut result);
     }
-    result
+    std::rc::Rc::new(result)
 }
 
-fn rafsi_word_publications(
-    evaluation: &Evaluation,
-) -> std::rc::Rc<BTreeMap<String, BTreeSet<String>>> {
-    if !evaluation.available {
+fn rafsi_words(evaluation: &Evaluation) -> std::rc::Rc<BTreeSet<String>> {
+    if evaluation.reasons.contains("resource_unavailable") {
         return Default::default();
     }
-    let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut words = BTreeSet::new();
     for p in evaluation.publications.values() {
         if p.kind == "rafsi.publish" {
-            map.entry(p.word.clone()).or_default();
+            words.insert(p.word.clone());
         }
     }
-    if map.is_empty() {
+    if words.is_empty() {
         return Default::default();
     }
-    for (id, p) in &evaluation.publications {
-        if p.word.is_empty() {
-            map.entry(String::new()).or_default().insert(id.clone());
-        } else if let Some(ids) = map.get_mut(&p.word) {
-            ids.insert(id.clone());
-        }
-    }
-    std::rc::Rc::new(map)
+    std::rc::Rc::new(words)
 }
 
 #[cfg(test)]
@@ -3558,7 +3684,19 @@ mod rebuild_tests {
                     let fork = state.clone().advance(delta, &[]);
                     let mut fork_prepared = prepared.clone();
                     fork_prepared.add_host_verified_record(record);
-                    assert_matches_full(&fork, &fork_prepared);
+                    if fork.statistics().rebuilt {
+                        assert_matches_full(&fork, &fork_prepared);
+                    } else {
+                        let full = fork_prepared.into_state();
+                        assert_shared_projection(&fork);
+                        assert_eq!(fork.evaluation(), full.evaluation());
+                        assert_eq!(cap_bytes(&fork), cap_bytes(&full));
+                        assert!(fork.consumed_work() > full.consumed_work());
+                        let cp = fork.checkpoint("property").unwrap();
+                        let restored =
+                            EvaluatedState::restore_host_checkpoint(&cp, "property").unwrap();
+                        assert_eq!(restored.evaluation(), full.evaluation());
+                    }
                     comparisons += 1;
                     continue;
                 }
@@ -3947,10 +4085,13 @@ mod rebuild_tests {
 
         let (mut full, _, _) = projection_fixture();
         full.add_host_verified_record(record);
-        assert_eq!(
-            child.checkpoint("projection").unwrap(),
-            full.into_state().checkpoint("projection").unwrap()
-        );
+        let full_state = full.into_state();
+        assert_eq!(child.evaluation(), full_state.evaluation());
+        assert!(child.consumed_work() > full_state.consumed_work());
+        let child_cp = child.checkpoint("projection").unwrap();
+        let restored_child =
+            EvaluatedState::restore_host_checkpoint(&child_cp, "projection").unwrap();
+        assert_eq!(restored_child.evaluation(), full_state.evaluation());
     }
 
     #[test]
@@ -4272,7 +4413,14 @@ mod rebuild_tests {
             assert!(!fork.statistics().rebuilt);
             let mut full = prepared.clone();
             full.add_host_verified_record(record);
-            assert_matches_full(&fork, &full);
+            let full_state = full.into_state();
+            assert_shared_projection(&fork);
+            assert_eq!(fork.evaluation(), full_state.evaluation());
+            assert_eq!(cap_bytes(&fork), cap_bytes(&full_state));
+            assert!(fork.consumed_work() > full_state.consumed_work());
+            let cp = fork.checkpoint("property").unwrap();
+            let restored = EvaluatedState::restore_host_checkpoint(&cp, "property").unwrap();
+            assert_eq!(restored.evaluation(), full_state.evaluation());
         }
     }
 
@@ -4792,7 +4940,7 @@ mod rebuild_tests {
             prepared.add_host_verified_record(record.clone());
             let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
             delta.add_host_verified_record(record.clone());
-            let direct = state.clone().advance(delta.clone(), &[]);
+            let direct = state.advance(delta.clone(), &[]);
             let restored = restored.advance(delta, &[]);
             assert_matches_full(&direct, &prepared);
             assert_matches_full(&restored, &prepared);
@@ -6200,6 +6348,7 @@ mod rebuild_tests {
     fn fast_append_native_publication_before_matched_rafsi_or_bridge_scan_charges_visit() {
         let mut prepared = witnessed_view();
         let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let rafsi_word = jvc_core::word_id(&json!({"language":"jbo","spelling":"klama"})).unwrap();
         let rafsi_target = format!("jvr1:{:064x}", 7usize);
         let issuer = identity_from_seed(&[1u8; 32]);
         let rafsi_pub_id = format!("jve1:{:064x}", 500_000usize);
@@ -6207,7 +6356,7 @@ mod rebuild_tests {
             rafsi_pub_id,
             &issuer,
             vec![],
-            json!({"kind":"rafsi.publish","word":word,"assignment":rafsi_target,"origin":"native"}),
+            json!({"kind":"rafsi.publish","word":rafsi_word,"assignment":rafsi_target,"origin":"native"}),
         ));
         let native_target_id = format!("jve1:{:064x}", 100_000usize);
         prepared.add_host_verified_record(host_missing_body(
@@ -6285,10 +6434,10 @@ mod rebuild_tests {
             );
             let mut delta = PreparedEvaluationInput::new(after_judgment_prepared.options.clone());
             delta.add_host_verified_record(new_pub.clone());
-            let direct = after_judgment.clone().advance(delta.clone(), &[]);
+            let saved = after_judgment.checkpoint("host-checked").unwrap();
+            let direct = after_judgment.advance(delta.clone(), &[]);
             assert!(!direct.statistics().rebuilt);
 
-            let saved = after_judgment.checkpoint("host-checked").unwrap();
             let restored = EvaluatedState::restore_host_checkpoint(&saved, "host-checked").unwrap();
             let from_restored = restored.advance(delta, &[]);
             assert!(!from_restored.statistics().rebuilt);
@@ -6421,11 +6570,12 @@ mod rebuild_tests {
         for node in matched_prepared.nodes.values() {
             matched_records.push(HostVerifiedRecord { node: node.clone() });
         }
+        let rafsi_word = jvc_core::word_id(&json!({"language":"jbo","spelling":"klama"})).unwrap();
         let rafsi_pub = host_missing_body(
             format!("jve1:{:064x}", 0xf000usize),
             &identity_from_seed(&[1u8; 32]),
             vec![],
-            json!({"kind":"rafsi.publish","word":word,"assignment":rafsi_target,"origin":"native"}),
+            json!({"kind":"rafsi.publish","word":rafsi_word,"assignment":rafsi_target,"origin":"native"}),
         );
         matched_records.push(rafsi_pub.clone());
         matched_prepared.add_host_verified_record(rafsi_pub);
@@ -6998,13 +7148,14 @@ mod rebuild_tests {
             json!({"kind":"definition.publish","word":word,"language":"en","parents":[native_pub_id.clone()],"origin":"native"}),
         ));
 
+        let rafsi_word = jvc_core::word_id(&json!({"language":"jbo","spelling":"klama"})).unwrap();
         let rafsi_target = format!("jvr1:{:064x}", 7usize);
         let rafsi_pub_id = format!("jve1:{:064x}", 10_002usize);
         prepared.add_host_verified_record(host_missing_body(
             rafsi_pub_id,
             &issuer,
             vec![],
-            json!({"kind":"rafsi.publish","word":word,"assignment":rafsi_target,"origin":"native"}),
+            json!({"kind":"rafsi.publish","word":rafsi_word,"assignment":rafsi_target,"origin":"native"}),
         ));
 
         let claim_id = format!("jve1:{:064x}", 10_010usize);
@@ -7429,8 +7580,17 @@ mod rebuild_tests {
         let first_open = build_with_overlay(invalid_overlay.clone(), None).into_state();
         assert!(!first_open.evaluation().available);
         assert!(first_open.evaluation().reasons.contains("invalid_overlay"));
+        let invalid_overlay_records: Vec<HostVerifiedRecord> = first_open
+            .prepared
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let invalid_full = first_open.checkpoint("bad-overlay").unwrap();
+        let invalid_results = first_open.result_checkpoint("bad-overlay").unwrap();
 
         let switched_open = first_open.with_overlay(None);
+        drop(first_open);
         assert!(switched_open.evaluation().available);
         assert!(switched_open.evaluation().reasons.is_empty());
 
@@ -7450,6 +7610,7 @@ mod rebuild_tests {
         let first_tight =
             build_with_overlay(invalid_overlay.clone(), Some(tight_budget)).into_state();
         let switched_tight = first_tight.with_overlay(None);
+        drop(first_tight);
         assert!(switched_tight.evaluation().available);
 
         let mut delta_tight = PreparedEvaluationInput::new(switched_tight.prepared.options.clone());
@@ -7502,14 +7663,6 @@ mod rebuild_tests {
         assert_eq!(restored_zero_full.evaluation(), zero_state.evaluation());
         assert_eq!(restored_zero_results.evaluation(), zero_state.evaluation());
 
-        let invalid_overlay_records: Vec<HostVerifiedRecord> = first_open
-            .prepared
-            .nodes
-            .values()
-            .map(|n| HostVerifiedRecord { node: n.clone() })
-            .collect();
-        let invalid_full = first_open.checkpoint("bad-overlay").unwrap();
-        let invalid_results = first_open.result_checkpoint("bad-overlay").unwrap();
         assert!(EvaluatedState::restore_host_checkpoint(&invalid_full, "bad-overlay").is_ok());
         assert!(
             EvaluatedState::restore_host_result_checkpoint(
@@ -10688,7 +10841,7 @@ mod rebuild_tests {
             "fast definition append for a word without rafsi claims must not run rafsi_gate"
         );
 
-        // 2. Appending a native definition for word(0) (which has 1 rafsi claim and 1 existing definition) must visit only word(0)'s publications (3), not the 127 unrelated words.
+        // 2. Appending a native definition for word(0) (which has a rafsi claim) routes to full evaluation.
         let mut w0_body = def_template;
         w0_body["word"] = w0;
         let (same_word_def, same_word_bytes) = event(
@@ -10699,18 +10852,452 @@ mod rebuild_tests {
         );
         let mut delta_same = PreparedEvaluationInput::new(prepared.options.clone());
         delta_same.add_record(&same_word_def, same_word_bytes.as_deref());
-        reset_rafsi_gate_publication_visits();
         let next_same = state.advance(delta_same, &[]);
         assert!(next_same.evaluation().available);
-        assert!(!next_same.statistics().rebuilt);
-        assert_eq!(next_same.statistics().incremental_records, 1);
+        assert!(next_same.statistics().rebuilt);
         assert_eq!(
-            rafsi_gate_publication_visits(),
-            3,
-            "fast definition append for a word with a rafsi claim must visit only that word's publications"
+            next_same.statistics().reason.as_deref(),
+            Some("rafsi_eligibility")
         );
+        assert_eq!(next_same.statistics().incremental_records, 0);
         let mut full_same = prepared;
         full_same.add_record(&same_word_def, same_word_bytes.as_deref());
         assert_eq!(next_same.evaluation(), &full_same.evaluate());
+    }
+
+    #[test]
+    fn cross_word_rafsi_assignment_orders_rebuild_and_match_full_across_checkpoints() {
+        let abc = b"bdfgjklmnprstvxz";
+        let word_value = |i: usize| {
+            json!({
+                "language": "jbo",
+                "spelling": format!("ba{}a{}a", abc[i / 16] as char, abc[i % 16] as char)
+            })
+        };
+        let def_template: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"no imports",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let options = EvaluationOptions {
+            selected_view: view.id().into(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+            limits: Limits::default(),
+        };
+        let wa = word_value(0);
+        let wb = word_value(1);
+        let aid = jvc_core::word_id(&wa).unwrap();
+        let bid = jvc_core::word_id(&wb).unwrap();
+        let pair_a = jvc_core::rafsi_pair_id(&aid, "bab").unwrap();
+        let pair_b = jvc_core::rafsi_pair_id(&bid, "bab").unwrap();
+        let body_a =
+            json!({"word":wa,"rafsi":"bab","rationale":[["fixture"]],"sources":[],"legacy":null});
+        let body_b =
+            json!({"word":wb,"rafsi":"bab","rationale":[["fixture"]],"sources":[],"legacy":null});
+        let (a_ev, a_bytes) = event(
+            13,
+            1,
+            json!({"kind":"rafsi.publish","word":aid,"assignment":pair_a,"origin":"native"}),
+            Some(body_a),
+        );
+        let mut d_body = def_template;
+        d_body["word"] = wa;
+        let (d_ev, d_bytes) = event(
+            15,
+            100,
+            json!({"kind":"definition.publish","word":aid,"language":"en","parents":[],"origin":"native"}),
+            Some(d_body),
+        );
+
+        for a_before_b in [true, false] {
+            for same_assignment in [false, true] {
+                let target_pair = if same_assignment { &pair_a } else { &pair_b };
+                let (b_ev, _) = (1u8..=250)
+                    .map(|n| {
+                        event(
+                            14,
+                            n,
+                            json!({"kind":"rafsi.publish","word":bid,"assignment":target_pair,"origin":"native"}),
+                            Some(body_b.clone()),
+                        )
+                    })
+                    .find(|(b, _)| {
+                        if a_before_b {
+                            a_ev.id() < b.id()
+                        } else {
+                            a_ev.id() > b.id()
+                        }
+                    })
+                    .unwrap();
+
+                for mode in 0..3usize {
+                    let mut hist = PreparedEvaluationInput::new(options.clone());
+                    let rows_input = [
+                        (&view, view_body.as_deref()),
+                        (&a_ev, a_bytes.as_deref()),
+                        (&b_ev, None),
+                    ];
+                    for (ev, body) in rows_input {
+                        hist.add_record(ev, body);
+                    }
+                    let mut state = hist.clone().into_state();
+                    if mode == 1 {
+                        state = EvaluatedState::restore_host_checkpoint(
+                            &state.checkpoint("pairs").unwrap(),
+                            "pairs",
+                        )
+                        .unwrap();
+                    } else if mode == 2 {
+                        let rows = rows_input
+                            .iter()
+                            .map(|(ev, body)| {
+                                HostVerifiedRecord::extract_with(
+                                    ev.id(),
+                                    ev.header(),
+                                    jvc_core::inspect_body(ev, *body),
+                                    |_| (),
+                                )
+                                .0
+                            })
+                            .collect();
+                        state = EvaluatedState::restore_host_result_checkpoint(
+                            &state.result_checkpoint("pairs").unwrap(),
+                            "pairs",
+                            rows,
+                        )
+                        .unwrap();
+                    }
+                    let mut delta = PreparedEvaluationInput::new(options.clone());
+                    delta.add_record(&d_ev, d_bytes.as_deref());
+                    hist.add_record(&d_ev, d_bytes.as_deref());
+                    let full = hist.into_state();
+                    let next = state.advance(delta, &[]);
+                    assert_eq!(
+                        next.evaluation(),
+                        full.evaluation(),
+                        "a_before_b={a_before_b} same_assignment={same_assignment} mode={mode}: evaluation mismatch (next_a={:?} full_a={:?} next_b={:?} full_b={:?})",
+                        next.evaluation().publications[a_ev.id()].eligible,
+                        full.evaluation().publications[a_ev.id()].eligible,
+                        next.evaluation().publications[b_ev.id()].eligible,
+                        full.evaluation().publications[b_ev.id()].eligible,
+                    );
+                    assert_eq!(
+                        next.consumed_work(),
+                        full.consumed_work(),
+                        "a_before_b={a_before_b} same_assignment={same_assignment} mode={mode}: consumed_work mismatch"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fast_append_on_shared_fork_charges_copied_state_and_refuses_tight_budget() {
+        let build_fixture = |count: usize, traversal: Option<usize>| {
+            let mut prepared = base();
+            prepared.options.limits.traversal = traversal;
+            let (pubn, pubn_body) = publication();
+            let pub_id = pubn.id().to_owned();
+            prepared.add_record(&pubn, pubn_body.as_deref());
+            let filler_issuer = identity_from_seed(&[9; 32]);
+            for i in 0..count {
+                prepared.add_host_verified_record(host(
+                    format!("jve1:{:064x}", i + 10),
+                    &filler_issuer,
+                    vec![],
+                    json!({"kind":"identity.merge"}),
+                ));
+            }
+            (prepared, pub_id)
+        };
+
+        let judge = identity_from_seed(&[11; 32]);
+        for count in [128usize, 512usize] {
+            let (prepared, pub_id) = build_fixture(count, None);
+            let judgment = host(
+                format!("jve1:{:064x}", 1_000_000 + count),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":pub_id,"value":"bless"}),
+            );
+
+            // 1. Single-owner fast append (no live fork) charges only the 9-unit incremental delta.
+            let unshared_state = prepared.clone().into_state();
+            let before = unshared_state.consumed_work();
+            let mut delta_unshared = PreparedEvaluationInput::new(prepared.options.clone());
+            delta_unshared.add_host_verified_record(judgment.clone());
+            let unshared_next = unshared_state.advance(delta_unshared, &[]);
+            assert!(!unshared_next.statistics().rebuilt);
+            assert_eq!(unshared_next.statistics().incremental_records, 1);
+            assert_eq!(unshared_next.consumed_work() - before, 9);
+
+            // 2. Forked fast append (base state held by `holder`) must charge the copy of nodes, closures, and evaluation results.
+            let forked_base = prepared.clone().into_state();
+            let cp = forked_base.checkpoint("branch").unwrap();
+            let rcp = forked_base.result_checkpoint("branch").unwrap();
+            let holder = forked_base.clone();
+            let mut delta_forked = PreparedEvaluationInput::new(prepared.options.clone());
+            delta_forked.add_host_verified_record(judgment.clone());
+            let forked_next = forked_base.advance(delta_forked, &[]);
+            assert!(!forked_next.statistics().rebuilt);
+            assert_eq!(forked_next.statistics().incremental_records, 1);
+            let forked_extra = forked_next.consumed_work() - before;
+            let total_nodes = count + 2;
+            assert!(
+                forked_extra >= 9 + 3 * total_nodes,
+                "count={count}: forked fast append must charge proportional to copied nodes, closures, and receipts (got extra_units={forked_extra}, expected >= {})",
+                9 + 3 * total_nodes
+            );
+            assert_eq!(forked_next.evaluation(), unshared_next.evaluation());
+            assert_eq!(holder.checkpoint("branch").unwrap(), cp);
+            assert_eq!(holder.result_checkpoint("branch").unwrap(), rcp);
+            assert!(
+                EvaluatedState::restore_host_checkpoint(
+                    &forked_next.checkpoint("branch").unwrap(),
+                    "branch"
+                )
+                .is_ok()
+            );
+
+            // 3. At a tight budget `before + 9` (enough for single-owner fast append, too small for forked copy + rebuild),
+            // a forked advance must not complete on the fast path without paying for the copy.
+            let (tight_prepared, _) = build_fixture(count, Some(before + 9));
+            let tight_base = tight_prepared.clone().into_state();
+            assert!(tight_base.evaluation().available);
+            let _tight_holder = tight_base.clone();
+            let mut delta_tight = PreparedEvaluationInput::new(tight_prepared.options.clone());
+            delta_tight.add_host_verified_record(judgment);
+            let tight_forked = tight_base.advance(delta_tight, &[]);
+            assert!(
+                tight_forked.statistics().rebuilt,
+                "count={count}: forked advance at tight budget (before + 9) must decline the fast copy and route to rebuild"
+            );
+        }
+    }
+
+    #[test]
+    fn definition_append_with_rafsi_claim_rebuilds_and_fast_path_never_walks_word_definitions() {
+        let mut prepared = base();
+        let abc = b"bdfgjklmnprstvxz";
+        let word = json!({
+            "language": "jbo",
+            "spelling": format!("ba{}a{}a", abc[0] as char, abc[0] as char)
+        });
+        let wid = jvc_core::word_id(&word).unwrap();
+        let rafsi_pair = jvc_core::rafsi_pair_id(&wid, "bab").unwrap();
+        let (rafsi_claim, rafsi_body) = event(
+            13,
+            1,
+            json!({"kind":"rafsi.publish","word":wid,"assignment":rafsi_pair,"origin":"native"}),
+            Some(json!({
+                "word": word,
+                "rafsi": "bab",
+                "rationale": [["fixture"]],
+                "sources": [],
+                "legacy": null
+            })),
+        );
+        prepared.add_record(&rafsi_claim, rafsi_body.as_deref());
+
+        let mut def_body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        def_body["word"] = word;
+        for i in 0..128usize {
+            let (def_ev, def_bytes) = event(
+                14,
+                (i % 250) as u8 + 2,
+                json!({"kind":"definition.publish","word":wid,"language":"en","parents":[],"origin":"native"}),
+                Some(def_body.clone()),
+            );
+            prepared.add_record(&def_ev, def_bytes.as_deref());
+        }
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+
+        let (appended_def, appended_bytes) = event(
+            15,
+            1,
+            json!({"kind":"definition.publish","word":wid,"language":"en","parents":[],"origin":"native"}),
+            Some(def_body),
+        );
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_record(&appended_def, appended_bytes.as_deref());
+        let next = state.advance(delta, &[]);
+        assert!(
+            next.statistics().rebuilt,
+            "appending a native definition for a word with a rafsi claim must route to full evaluation"
+        );
+        assert_eq!(
+            next.statistics().reason.as_deref(),
+            Some("rafsi_eligibility")
+        );
+        assert_eq!(next.statistics().incremental_records, 0);
+
+        prepared.add_record(&appended_def, appended_bytes.as_deref());
+        let full = prepared.into_state();
+        assert_eq!(next.evaluation(), full.evaluation());
+        assert_eq!(next.consumed_work(), full.consumed_work());
+    }
+
+    #[test]
+    fn empty_advance_on_budget_exhausted_state_skips_referenced_selection_comparison() {
+        let ids: Vec<String> = (0..4_096usize).map(|i| format!("jve1:{i:064x}")).collect();
+        let sel_bytes = jvc_core::canonical_value(&json!(ids)).unwrap();
+        let digest = jvc_core::hash_id("sha256:", b"", &sel_bytes);
+        let issuer = identity_from_seed(&[3; 32]);
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"quota",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[{"source":"fixture","importer":issuer,"selection":digest}],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+
+        for limit in [0usize, 1usize, 15usize] {
+            let options = EvaluationOptions {
+                selected_view: view.id().into(),
+                overlay: None,
+                import_selections: BTreeMap::from([(digest.clone(), ids.clone())]),
+                limits: Limits {
+                    traversal: Some(limit),
+                    ..Limits::default()
+                },
+            };
+            let mut prepared = PreparedEvaluationInput::new(options.clone());
+            prepared.add_record(&view, view_body.as_deref());
+            let state = prepared.into_state();
+            assert!(!state.evaluation().available);
+            assert!(state.evaluation().reasons.contains("resource_unavailable"));
+            assert_eq!(state.consumed_work(), limit);
+
+            let mut modified_options = options;
+            *modified_options
+                .import_selections
+                .get_mut(&digest)
+                .unwrap()
+                .last_mut()
+                .unwrap() = format!("jve1:{:064x}", 4_096usize);
+            let delta = PreparedEvaluationInput::new(modified_options);
+            let advanced = state.advance(delta, &[]);
+            assert!(
+                advanced.statistics().reason.is_none(),
+                "limit={limit}: empty advance on budget-exhausted state must not scan 4,096 selection IDs or trigger configuration_changed (got {:?})",
+                advanced.statistics().reason
+            );
+            assert!(!advanced.statistics().rebuilt);
+            assert_eq!(advanced.consumed_work(), limit);
+            assert!(!advanced.evaluation().available);
+        }
+    }
+
+    #[test]
+    fn overlay_change_and_recovery_share_unresolved_index_without_cloning_pending_ids() {
+        let ids: Vec<String> = (0..4_096usize).map(|i| format!("jve1:{i:064x}")).collect();
+        let sel_bytes = jvc_core::canonical_value(&json!(ids)).unwrap();
+        let digest = jvc_core::hash_id("sha256:", b"", &sel_bytes);
+        let issuer = identity_from_seed(&[3; 32]);
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"pending-overlay",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[{"source":"fixture","importer":issuer,"selection":digest}],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+
+        // 1. Valid base -> invalid overlay shares `unresolved` in O(1) without cloning the 4,096 pending IDs.
+        let mut valid_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::from([(digest.clone(), ids.clone())]),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        valid_input.add_record(&view, view_body.as_deref());
+        let base_valid = valid_input.into_state();
+        assert!(base_valid.evaluation().available);
+        assert_eq!(base_valid.unresolved.len(), 4_096);
+        let valid_first_id_ptr = base_valid.unresolved.iter().next().unwrap().as_ptr();
+
+        let overlaid_invalid = base_valid.with_overlay(Some(json!({})));
+        assert!(!overlaid_invalid.evaluation().available);
+        assert_eq!(overlaid_invalid.unresolved.len(), 4_096);
+        let invalid_first_id_ptr = overlaid_invalid.unresolved.iter().next().unwrap().as_ptr();
+        assert_eq!(
+            valid_first_id_ptr, invalid_first_id_ptr,
+            "with_overlay(Some({{}})) must share unresolved index without cloning 4,096 pending selection IDs"
+        );
+
+        // 2. Invalid-overlay base -> with_overlay(None) recovery shares `unresolved` in O(1) without rebuilding the 4,096 pending IDs.
+        let mut invalid_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::from([(digest, ids)]),
+            overlay: Some(json!({})),
+            limits: Limits::default(),
+        });
+        invalid_input.add_record(&view, view_body.as_deref());
+        let base_invalid = invalid_input.into_state();
+        assert!(!base_invalid.evaluation().available);
+        assert_eq!(
+            base_invalid.unresolved.len(),
+            4_096,
+            "invalid-overlay base that evaluated selections must retain unresolved index so recovery shares it in O(1)"
+        );
+        let base_invalid_first_ptr = base_invalid.unresolved.iter().next().unwrap().as_ptr();
+
+        let recovered = base_invalid.with_overlay(None);
+        assert!(recovered.evaluation().available);
+        assert_eq!(recovered.unresolved.len(), 4_096);
+        let recovered_first_ptr = recovered.unresolved.iter().next().unwrap().as_ptr();
+        assert_eq!(
+            base_invalid_first_ptr, recovered_first_ptr,
+            "with_overlay(None) recovery must share unresolved index without rebuilding 4,096 pending selection IDs"
+        );
     }
 }
