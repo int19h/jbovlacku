@@ -295,10 +295,11 @@ function indexedComponents(
   if (metrics) metrics.headwordsParsed++;
   try {
     // The parser runs on at most the remaining shared allowance, never on
-    // its own independent cap alone, so an exhausted budget stops it.
+    // its own independent cap alone: with no allowance left, the first step
+    // already refuses and charges nothing.
     const result = components(
       spelling,
-      Math.max(1, Math.min(SEARCH_HEADWORD_WORK_LIMIT, allowance)),
+      Math.min(SEARCH_HEADWORD_WORK_LIMIT, allowance),
       256,
     );
     if (metrics) metrics.headwordParserWork += result.parsed.spent;
@@ -553,7 +554,7 @@ export function prepareQuery(
     // an exhausted budget stops it instead of running its own cap alone.
     const segmented = components(
       headword,
-      Math.max(1, Math.min(SEARCH_SEGMENT_WORK_LIMIT, limit.remaining())),
+      Math.min(SEARCH_SEGMENT_WORK_LIMIT, limit.remaining()),
     );
     measured.queryParserWork += segmented.parsed.spent;
     measured.queryWords += segmented.value.words.length;

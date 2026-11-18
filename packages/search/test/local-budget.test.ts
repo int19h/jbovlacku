@@ -288,16 +288,40 @@ test("an exhausted budget stops the parser before it starts", () => {
   // A 199-character spelling makes the morphology parser run tens of
   // thousands of steps under its own cap.
   const long = entry("x".repeat(199));
-  const shared = SearchRequestBudget.for(searchMetrics(), {
+  const measured = searchMetrics();
+  const shared = SearchRequestBudget.for(measured, {
     workLimit: 1,
     deadlineMs: Infinity,
   });
   assert.throws(
-    () => prepareIndex([long], searchMetrics(), { requestBudget: shared }),
+    () => prepareIndex([long], measured, { requestBudget: shared }),
     (error: unknown) => error instanceof SearchBudgetError,
   );
   // The parser never ran: only the per-entry content charge was spent.
   assert.ok(shared.snapshot().spent < 100);
+  assert.equal(measured.headwordParserWork, 0);
+});
+
+test("the parser never spends past its remaining allowance", () => {
+  // The review input: the spelling "a ".repeat(99) + "a" under a shared
+  // budget of 100 units. Content reservation spends 6 and passes 94 to the
+  // parser; the parser used to perform a 95th step and throw only at a
+  // total of 101.
+  const long = entry("a ".repeat(99) + "a", "x");
+  const measured = searchMetrics();
+  const shared = SearchRequestBudget.for(measured, {
+    workLimit: 100,
+    deadlineMs: Infinity,
+  });
+  prepareIndex([long], measured, { requestBudget: shared });
+  assert.ok(
+    shared.snapshot().spent <= 100,
+    `spent ${shared.snapshot().spent} exceeds the shared budget`,
+  );
+  assert.ok(
+    measured.headwordParserWork <= 94,
+    `parser work ${measured.headwordParserWork} exceeds its allowance`,
+  );
 });
 
 test("a nearly exhausted budget bounds the parser to what remains", () => {
