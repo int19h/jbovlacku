@@ -1611,8 +1611,11 @@ test("a line selection made right after focus is kept", async ({ page }) => {
   await chooseKeyboardSelection(field, 18, 18);
   await field.blur();
   await field.focus();
-  // Move to the line start and extend to its end in one task, then hold
-  // event delivery past the editor's focus-time selection write.
+  // Move to the line start and extend to its end in one task, as a
+  // real key sequence does: each keydown is followed, after the native
+  // selection move, by its keyup, whose sync reads the moved selection
+  // into editor state before the focus-time write can restore the old
+  // caret. Then hold event delivery past that write.
   await field.evaluate((node) => {
     const text = node.querySelector("p .rich-literal")!.firstChild!;
     const selection = getSelection()!;
@@ -1632,6 +1635,15 @@ test("a line selection made right after focus is kept", async ({ page }) => {
           key === "Home" ? "backward" : "forward",
           "lineboundary",
         );
+      node.dispatchEvent(
+        new KeyboardEvent("keyup", {
+          key,
+          keyCode,
+          bubbles: true,
+          cancelable: true,
+          shiftKey: shift,
+        }),
+      );
     };
     command("Home", 36, false);
     command("End", 35, true);
