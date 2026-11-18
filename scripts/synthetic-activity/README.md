@@ -14,7 +14,7 @@ The tool refuses unsafe targets in code, before it sends any request.
   password is refused. Any other host is refused with
   `refused: server must be a loopback URL`. Environment proxy
   support (`NODE_USE_ENV_PROXY` or `--use-env-proxy`) is also
-  refused. A proxy would decide what the loopback name means.
+  refused. A proxy changes what the loopback name means.
 - Redirects must stay on the same origin. The tool follows at most
   five redirects by hand. A redirect to another origin is refused
   with `refused: redirect leaves the loopback server`.
@@ -24,9 +24,16 @@ The tool refuses unsafe targets in code, before it sends any request.
   Any other answer is refused with `refused: server does not prove
   it holds a disposable copy`.
 
-The test server in `server.ts` provides that proof. It writes a
-`disposable.json` marker into a fresh empty data folder. If a data
-folder already holds data and has no marker, the server refuses to
+The test server in `server.ts` provides that proof. It takes the
+data-directory lock before it reads or writes the marker. When
+the marker check fails, the server releases the lock. It writes
+a `disposable.json` marker into a fresh empty data folder. The
+marker includes a `server_id`. The server stores the new marker
+bytes. It then gives the file its final name. It then stores the
+directory update. A marker that already says
+`disposable: true` and has no server id gets one at startup, and
+that id then stays with the data directory. If a data folder
+already holds data and has no marker, the server refuses to
 start. To serve a disposable copy of existing data, put a
 `disposable.json` file with `{"disposable": true}` into the copy
 first. Never put that marker into data that must stay live. A
@@ -45,8 +52,8 @@ If a server stops hard, its data folder keeps a
 `.node-data-lock` folder. First make sure that no server
 process uses that data folder. Then delete that exact
 `.node-data-lock` folder inside the data folder, and nothing
-else. The next server start can then take the lock. Never
-delete that folder while a server may still run on the data.
+else. The next server start can then take the lock. If a
+server process still uses the data, do not delete that folder.
 
 ## Setup
 
@@ -62,7 +69,9 @@ Run every command from the repository root with `tsx`:
 npx tsx scripts/synthetic-activity/cli.ts --server http://127.0.0.1:8795 --state .cache/synthetic/a init
 ```
 
-One state folder holds one identity. Use one folder per identity.
+One state folder holds one identity. The tool stores the new
+identity bytes. It then gives the file its final name. It then
+stores the directory update. Use one folder per identity.
 Several identities can write at the same time to one server.
 The server serializes admission. One identity must use one state
 folder at a time. The tool locks the state folder during a write.
@@ -82,31 +91,66 @@ the counts and digests of all three components of the base
 logical inventory: retained events, bodies, and import
 selections. Three list files hold the base entries:
 `<pin>.ids` for event IDs, `<pin>.bodies` for body hashes, and
-`<pin>.selections` for import selections. They go beside the
+`<pin>.selections` for import selections. `<pin>.manifest`
+holds the canonical manifest bytes. The canonical manifest is
+the byte form of the snapshot manifest. They go beside the
 state folders, or to the paths from `--pin`. Every `init`
 reads that same pin. An identity that starts later gets the
 same base, even after other identities have written. If no
 pin file exists, `init` reads the server and creates the
 pin. If it cannot read a base, `init` fails and writes no
 identity. It never creates an identity with an empty base.
+`pin-base` checks a new pin before it writes the first of the
+five pin files. A pin that fails that check writes nothing.
+The sha256 prefix form of the manifest bytes equals
+`base_snapshot`. `pin-base` saves those bytes beside the pin.
+A command that reads the pin checks those bytes before a
+lock, a post, or a write. When the sha256 differs, the
+refusal names `base_snapshot`. When a saved manifest list or
+count differs from the pin, the refusal names that field.
+The check uses the saved bytes. The server can discard that
+snapshot. A command that reads the pin checks each list digest
+against its list file. A mismatch names that field.
 
-An explicit `--pin` path that does not exist is refused at
-`init`. A wrong path must not create a new pin late in a run.
-Only the default pin path may be created by `init`.
+An explicit `--pin` path that does not exist is refused for every identity command.
+Every command that loads an identity refuses that path.
+`init` of a new identity refuses it too.
+An absent default `base-pin.json` is not a refusal.
+A command that writes requires every base field on the loaded identity.
+`whoami` and `history` read an identity that omits a base field.
+When `init` finds an identity that omits a base field, `init` can copy the pin fields into that identity.
+A wrong path must not create a new pin late in a run.
+`init` creates a pin only on the default pin path.
 
 A new base needs a new pin file. When a fresh identity uses
-an existing pin, `init` requires every pinned base ID on the
-server. A server that holds the base plus this run's later
-events passes. A larger server without the pinned base IDs
-is refused. A pin file with no base count or no ID list is
-refused. Delete the old pin file, or pass a new `--pin`
-path, to start a run on a new base.
+an existing pin, `init` requires every pinned base event ID
+on the server. A server that holds the base plus this run's
+later events passes. A larger server without the pinned base
+IDs is refused. A pin file with no base count or no ID list
+is refused. Delete the old pin file, or pass a new `--pin`
+path, to start a run on a new base. When the pin snapshot
+equals the admitted snapshot, the pin lists must equal the
+server lists. When both the snapshot and the lists differ
+from the pin, a late join still passes.
 
-Known limit: a pin for an empty base has an empty ID list,
-so a larger unrelated server can pass this check. Restore
-still rejects the later capture, because its base evidence
-does not match. Take the pin before any synthetic event.
-This limit is a follow-up. It is not fixed in this version.
+The pin also records the server id from the disposable marker.
+An empty base has an empty ID list.
+An empty list matches every server.
+The ID check alone cannot name the server that made the pin.
+If the base is empty, `init` requires the server id.
+The same server still passes after later events from this run.
+A different server is refused with `refused: empty
+base pin does not match this server`. A target that holds a
+proven copy of this run accepts the same pin. The capture
+section tells how restore records that copy. A command that
+loads an identity checks the pin in use. That pin is an
+explicit `--pin` or the default `base-pin.json` beside the
+state folder. A pin with no
+server id is refused. That pin was taken before server ids
+existed. Take a new pin with `pin-base` before any synthetic
+event. Take that pin on the server that will host the run.
+An identity with no server id is refused. Make a new pin and
+a new state folder.
 
 ### Write lock and crash recovery
 
@@ -114,8 +158,8 @@ The lock is one file named `lock` in the state folder. Its
 content is the complete owner record: the process ID, the
 process start tick from `/proc`, the start time, and a random
 ownership token. A writer builds that record in a private
-temp file, then publishes it with `link`. Link is atomic
-and fails when the lock already exists. So the lock never
+temp file, then publishes it with `link`. Link is atomic.
+If the lock already exists, link fails. So the lock never
 exists without its owner record, and no writer can overwrite
 another owner's record. A second write while that owner
 process runs is refused.
@@ -124,7 +168,9 @@ The owner check compares the process start tick, not only
 the process ID. A new process that reuses an old process ID
 has a different start tick, so its lock is stale, not live.
 Where `/proc` is absent, the tool cannot compare start
-ticks and it treats a running process ID as live. An
+ticks and it treats a running process ID as live. On Linux,
+a zombie process is dead. Recovery clears that lock. The
+`unlock` command clears it too. An
 unreadable lock record is treated as live, never as stale.
 
 Recovery works in steps. A recoverer reads the owner and
@@ -140,23 +186,24 @@ deletes only the stale record it judged.
 
 The holder checks its own token at the lock path before it
 posts. A writer whose lock was claimed stops. It does not
-post under another writer's lock. The release step removes
-the lock only when the token still matches. The `unlock`
+post under another writer's lock. If the token still matches,
+the release step removes the lock. The `unlock`
 command clears a lock by hand with the same claim check.
 It refuses while the owner process still runs, unless
 `--force` is given. A real filesystem error, such as no
 permission, is reported as an `error:` line. It is not
 reported as another writer.
 
-In normal operation this prevents forks, including when a
-writer crashes or is killed at any point. Under an
+In normal operation this prevents forks. A writer crash or a
+kill is included. Under an
 adversarial schedule, a fork can still occur: a live writer
 held for a long time at an exact point, while another
 writer's post is held. A third writer can also slip into the
 short gap while a claimed lock is checked and linked back.
 A fork is valid data. The format
-treats concurrent branches of one identity as valid, and
-the next write uses all heads, with merges when it must.
+treats concurrent branches of one identity as valid.
+The next write uses all heads. If a merge is required, the
+next write adds it.
 
 ## Commands
 
@@ -181,7 +228,7 @@ the next write uses all heads, with merges when it must.
 | Status | `status --target jve1:... --value deprecated` |
 | Profile | `profile --name "Test user" --bio "Local test"` |
 | Report | `report --subject ed25519:... --category spam-flooding --value report --text "Test"` |
-| Publish view | `view --name "Test view" --root ed25519:...=1/1` |
+| Publish view | `view --name "Test view" --root ed25519:...=1/1 --import-set "https://source.invalid\|ed25519:...\|sha256:..."` |
 | Merge heads | `merge` |
 | Capture | `capture --state A --state B --out DIR --pin PIN` |
 | Restore | `restore --capture DIR` |
@@ -200,8 +247,42 @@ latest events last admitted. The `history` command pages
 through all of an identity's actions, orders them by receipt
 position, and prints the latest ones. Head reads page as well.
 With `--full`, `show` prints each definition's complete text.
+`show` prints a place node as `x1`, `x2`, and so on. A link, a
+code span, and an operand contribute their text. The short form
+keeps those place numbers, and then keeps the first 160
+characters. If the output pipe closes early, the process exits
+quietly. A pipe to `head` closes the pipe early. The process
+prints no stack trace. When the error stream works, the
+process prints a full-disk error or another output failure.
+The process exits with status 1.
 A write by an identity with more than 64 heads first combines
 them with merge events in batches of 64.
+
+### Trust scope
+
+A trust action has a scope of three fields. `--value` is `heed`,
+`shun`, or `clear`. The default value is `heed`.
+
+- `--scope-kind` is `definition`, `rafsi`, or `*`. `*` means every kind. The default is `*`.
+- `--scope-word` is `*` or one `jvw1:` word id. The default is `*`.
+- `--scope-language` is `*` or one lowercase BCP 47 language tag, such as `en`. The default is `*`.
+
+### Import sets on a view
+
+`--import-set` adds one import set to a `view` command. Repeat
+the option for each set. One value has the form
+`source|importer|selection`: the source namespace, the importer's
+`ed25519:` identity, and the `sha256:` hash of the import
+selection. The source must not contain `|`. The tool sorts the
+source, the importer, and the selection in UTF-8 byte order.
+In that order, uppercase ASCII comes before lowercase ASCII.
+The tool refuses a duplicate. A view holds at most 8192 import
+sets.
+
+A view with no `--import-set` has an empty import set. An empty
+import set excludes every imported base definition. A persona
+view of the imported dictionary must repeat the import sets of
+the base view. Copy those three fields from the base view's body.
 
 A refused write prints one line on standard error. It starts
 with `refused:` and keeps the server or validator message
@@ -229,10 +310,11 @@ the product accepts it.
 
 ## Capture and restore
 
-Capture is a point-in-time copy. It holds the write lock of
-every state folder it captures, from before its first read
-until its files are complete, so a writer from this kit is
-refused during capture and retries later. The capture holds
+Capture is a point-in-time copy. Capture compares the local
+pin and the identity files before it takes a lock. It then
+locks every state folder, reads those records again, and
+writes the capture files. During capture, a writer from this
+kit is refused. That writer retries later. The capture holds
 exactly the synthetic events of one admitted snapshot. The
 success line and the manifest name that snapshot as
 `capture_snapshot`. An event that a writer outside this kit
@@ -240,29 +322,55 @@ admits after the final check is after that snapshot, and so
 is not in the capture.
 
 Capture collects only events by the identities in the given
-state folders. Capture needs the run's pin file: pass `--pin`,
+state folders. Naming one folder twice is the same folder. A
+relative path, an absolute path, and a symlink of that folder
+are one lock, and capture does not refuse itself. The tool
+compares the device and the inode. Two names of one folder
+are one lock. Capture needs
+the run's pin file: pass `--pin`,
 or keep `base-pin.json` beside the first state folder. It
 writes `events.jsonl`, `manifest.json`, and
 `keys.json`. The event file uses canonical JSON, one event per
-line. The manifest holds the base snapshot, the base inventory
-value, counts and digests for all three components of the base
-logical inventory (retained events, bodies, and import
-selections), a digest of the base bodies that the capture does
-not itself carry, the expected final counts and digests of all
-three components, the expected final logical inventory, the
-kit revision, counts by kind and by issuer, the public keys,
-and the SHA-256 of the event file. The keys file holds private
-keys. Keep a capture folder private.
+line. The manifest holds the base snapshot and the base
+inventory value. It holds counts and digests for the three
+base components. Those components are retained events, bodies,
+and import selections. It holds a digest of the base bodies
+that the capture does not carry. It holds the expected final
+counts and digests of all three components. It holds the
+expected final logical inventory. It holds the kit revision,
+counts by kind and by issuer, the public keys, and the SHA-256
+of the event file. For an empty base, it holds the source server
+id from the original pin. Each captured identity records that
+same id with its base. Restore refuses a capture whose identity
+records disagree with its manifest, and pins and captures from
+an older kit must be made again. Restore refuses a capture that
+has no source server id. The keys file holds
+private keys. Keep a capture folder private.
+
+Capture files and the local disposable server are trusted
+operator storage, like other checkpoints in this project. A
+fully consistent capture and a direct request to the loopback
+server are outside the disagreement check.
+
+When restore finishes on a capture that names a source server
+id, it writes `restored-runs.json` in the target data folder.
+The file names that source server id and the event ids of the
+proven inventory. The target keeps its own server id. A later
+`init` can use the original empty pin on that target. When
+every recorded event is still on the target, init accepts the
+pin. The target can hold more events than the record and still
+accept the pin. A different server, with no such proven copy,
+is refused.
 
 Restore and the reuse check enforce the pinned base. They
 prove the whole logical inventory, not only event IDs, before
 they post anything: the retained events, bodies, and import
 selections are read at one pinned admitted snapshot. A body
-that a captured event shares with a base event counts once, in
-the captured set, so a missing captured body stays repairable
-while a missing or added base body is refused. The manifest
-can lag behind the admitted inventory, so it never decides the
-case. Three cases pass:
+that a captured event shares with a base event counts once.
+That count is in the captured set. A missing captured body
+stays repairable. A missing base body is refused. An added
+base body is refused. The manifest can lag behind the admitted
+inventory, so it never decides the case. Three cases pass.
 
 - Fresh copy: the inventory is exactly the pinned base. The
   manifest must also reach the pin. The tool waits at most ten
@@ -274,34 +382,39 @@ case. Three cases pass:
   command resumes a stopped restore.
 
 Any other inventory is refused before any post. A foreign
-event, a missing or added base body or import selection, or a
-tampered base value in the manifest is refused with the first
-mismatch as the reason.
+event is refused. A missing or added base body is refused. A
+missing or added import selection is refused. A tampered base
+value in the manifest is refused. The first mismatch is the
+reason. When a body is in the base and the capture, the
+resumed count is not exact, and a larger base count is refused.
+A negative base count is refused.
 
 A fresh target must match the pinned base in all three
-components, so a missing base body is refused even when a
-captured event shares its hash. Missing captured bodies are
+components. If a captured event shares that hash, a missing
+base body is still refused. Missing captured bodies are
 repaired only in the partial and already-restored cases, where
 a restore already started on a correct base.
 
 After the proof, restore posts every captured transport, not
 only the missing ones. A repost is idempotent. It makes the
-server validate each captured representation again, and it
-supplies any body that an earlier admission left out. At the
-end, all three components and the final logical inventory must
-equal the expected final values, each restored envelope must
-equal the captured envelope, and every captured body must be
-present. An event ID alone is never enough for `reusable`.
+server check each captured representation again. It supplies
+any body that an earlier admission left out. At the end, all
+three components must equal the expected final values. The
+final logical inventory must equal its expected value. Each
+restored envelope must equal the captured envelope. Every
+captured body must be present. An event ID alone is never
+enough for `reusable`.
 
 The reuse check does the same work on a fresh disposable copy.
-It prints `reusable` when every event still passes the current
-code. It prints `not reusable:` and the first reason when it
-does not. That result is the signal to create the data again.
-This tool has no migration code.
+If every event still passes the current code, it prints
+`reusable`. If an event does not pass, it prints `not reusable:`
+and the first reason. That result is the signal to create the
+data again. This tool has no migration code.
 
-`reusable` proves that the current code accepts each captured
-event and body, and that the restored copy holds exactly the
-pinned base plus the capture, with equal envelopes and bodies.
+`reusable` proves two facts. The current code accepts each
+captured event and each captured body. The restored copy holds
+exactly the pinned base plus the capture. The envelopes are
+equal. The bodies are equal.
 It does not prove that an event keeps the same interpretation,
 such as a score or a status effect, under the selected view.
 The `accepted` line of a write prints the receipt's
