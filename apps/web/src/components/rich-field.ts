@@ -2,6 +2,7 @@
 import "prosemirror-view/style/prosemirror.css";
 import { Slice, type Node as EditorNode } from "prosemirror-model";
 import {
+  AllSelection,
   EditorState,
   NodeSelection,
   Plugin,
@@ -902,6 +903,19 @@ export function richField(label: string, options: RichFieldOptions) {
         nativeEdit = null;
       }
       const result = view.state.applyTransaction(transaction);
+      // A selection-only change that the native sync did not make is a
+      // caret the reader or a command chose (a click, a tap, select-all,
+      // as ProseMirror reads them from the DOM). It supersedes the caret
+      // a rewrite recorded, so the guard no longer describes the caret
+      // the reader has and must not drive a later Tab restore.
+      if (
+        resetGuard &&
+        !transaction.docChanged &&
+        !transaction.getMeta("richNativeSync") &&
+        result.state.doc === resetGuard.doc &&
+        !result.state.selection.eq(resetGuard.selection)
+      )
+        resetGuard = null;
       lastAppliedTransactions = result.transactions;
       if (compositionDelete) {
         for (const applied of result.transactions) {
@@ -1547,7 +1561,11 @@ export function richField(label: string, options: RichFieldOptions) {
   function syncNativeSelection(readerChoice = false) {
     if (view.isDestroyed || view.composing) return;
     // A reader caret choice supersedes the intended caret a rewrite
-    // recorded; anything code or the browser adjusted does not.
+    // recorded; anything code or the browser adjusted does not. Motion
+    // keys and pointer focus arrivals pass readerChoice here; a click,
+    // tap or select-all in a focused field instead reaches editor state
+    // as a selection-only transaction, which releases the guard in
+    // dispatchTransaction.
     if (readerChoice) resetGuard = null;
     else if (resetGuard?.doc === view.state.doc) {
       // An external rewrite records its intended caret for focus repair.
@@ -1598,9 +1616,16 @@ export function richField(label: string, options: RichFieldOptions) {
         }
       }
     }
+    // Select-all is editor state of its own kind, like a selected chip.
+    // Mapping its root range to a text range would demote it and lose
+    // the selection the reader made, so leave it to ProseMirror.
+    if (current instanceof AllSelection) return;
     const selection = readNativeSelection();
-    if (selection && !selection.eq(view.state.selection))
-      view.dispatch(view.state.tr.setSelection(selection));
+    if (selection && !selection.eq(view.state.selection)) {
+      const transaction = view.state.tr.setSelection(selection);
+      transaction.setMeta("richNativeSync", true);
+      view.dispatch(transaction);
+    }
   }
   function readNativeSelection(): Selection | null {
     const selection = input.ownerDocument.getSelection();

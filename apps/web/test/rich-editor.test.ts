@@ -1314,6 +1314,70 @@ test(`tab into the field after a reset keeps the recorded caret: wait ${wait}`, 
 });
 }
 
+for (const route of ["click", "selectall"] as const) {
+  test(`a reader ${route} after a reset survives Tab out and back`, async ({
+    page,
+    browserName,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts"),
+      );
+      const field = richField("Retab field", { value: [["alpha beta"]] });
+      const button = document.createElement("button");
+      button.textContent = "Rewrite without focusing";
+      document.body.replaceChildren(button, field.wrapper);
+      button.onclick = () => {
+        field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+      };
+    });
+    const field = page.getByRole("textbox", {
+      name: "Retab field",
+      exact: true,
+    });
+    await field.focus();
+    await field.evaluate((node) => {
+      const text = node.querySelector(".rich-literal")!.firstChild!;
+      getSelection()!.setBaseAndExtent(text, 4, text, 4);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForTimeout(60);
+    await page
+      .getByRole("button", { name: "Rewrite without focusing", exact: true })
+      .click();
+    await page.waitForTimeout(40);
+    await page.keyboard.press("Tab");
+    await page.waitForTimeout(80);
+    if (route === "click") {
+      const box = await field.locator("p").first().boundingBox();
+      await page.mouse.click(box!.x + 35, box!.y + 8);
+    } else {
+      await page.keyboard.press("Control+A");
+    }
+    await page.waitForTimeout(40);
+    await page.keyboard.press("Tab");
+    await expect(field).not.toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(field).toBeFocused();
+    await page.keyboard.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual(
+        route === "selectall"
+          ? [["x"]]
+          : [
+              [
+                browserName === "firefox"
+                  ? "resetx prefix"
+                  : "resext prefix",
+              ],
+              ["alpha beta"],
+            ],
+      );
+  });
+}
+
 test.describe("touch input", () => {
   test.use({ hasTouch: true });
   test("a tap after a reset places a caret at the tap point", async ({
@@ -1352,6 +1416,56 @@ test.describe("touch input", () => {
     await page.waitForTimeout(40);
     const box = await field.locator("p").first().boundingBox();
     await page.touchscreen.tap(box!.x + 35, box!.y + 8);
+    await page.keyboard.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual([
+        [browserName === "firefox" ? "resetx prefix" : "resext prefix"],
+        ["alpha beta"],
+      ]);
+  });
+
+  test("a reader tap after a reset survives Tab out and back", async ({
+    page,
+    browserName,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts"),
+      );
+      const field = richField("Retab tap field", {
+        value: [["alpha beta"]],
+      });
+      const button = document.createElement("button");
+      button.textContent = "Rewrite without focusing";
+      document.body.replaceChildren(button, field.wrapper);
+      button.onclick = () => {
+        field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+      };
+    });
+    const field = page.getByRole("textbox", {
+      name: "Retab tap field",
+      exact: true,
+    });
+    await field.focus();
+    await field.evaluate((node) => {
+      const text = node.querySelector(".rich-literal")!.firstChild!;
+      getSelection()!.setBaseAndExtent(text, 4, text, 4);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForTimeout(60);
+    await page
+      .getByRole("button", { name: "Rewrite without focusing", exact: true })
+      .click();
+    await page.waitForTimeout(40);
+    const box = await field.locator("p").first().boundingBox();
+    await page.touchscreen.tap(box!.x + 35, box!.y + 8);
+    await page.waitForTimeout(40);
+    await page.keyboard.press("Tab");
+    await expect(field).not.toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(field).toBeFocused();
     await page.keyboard.press("x");
     await expect
       .poll(() => field.evaluate((node: any) => node.value))
