@@ -1135,9 +1135,15 @@ export function richField(label: string, options: RichFieldOptions) {
         // into state, so the focus-time write ProseMirror schedules
         // about 20 ms later starts from the caret the reader actually
         // has; the keyup and selectionchange syncs then keep state
-        // ahead of it. A pending reset selection is the intended caret
-        // after a rewrite; only a new reader choice supersedes it.
-        if (!reset || chosen || pointerFocus) syncNativeSelection(true);
+        // ahead of it. A guard record from a rewrite is not released by
+        // page-owned focus: only a reader caret choice this handler
+        // found (a chosen selection or a pointer focus) supersedes it.
+        if (
+          resetGuard?.doc !== view.state.doc ||
+          chosen ||
+          pointerFocus
+        )
+          syncNativeSelection(true);
         pointerFocus = false;
         return false;
       },
