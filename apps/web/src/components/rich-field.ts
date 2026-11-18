@@ -206,13 +206,17 @@ function deletionRange(
   }
 }
 
-type NativeSelection = NonNullable<ReturnType<Document["getSelection"]>>;
-
-/** Read the range a native selection motion produces, then restore it. */
-function motionRange(
+/** Ask only for selection motion. Never let the browser delete text. */
+function deletionMotion(
   view: EditorView,
-  move: (selection: NativeSelection) => void,
+  type: RichDeleteType,
 ): RichDeleteRange | null {
+  if (
+    !type.startsWith("deleteWord") &&
+    !type.startsWith("deleteSoftLine") &&
+    type !== "deleteEntireSoftLine"
+  )
+    return null;
   const selection = view.dom.ownerDocument.getSelection();
   if (!selection?.anchorNode || !selection.focusNode || !selection.modify)
     return null;
@@ -221,7 +225,13 @@ function motionRange(
   const anchorOffset = selection.anchorOffset,
     headOffset = selection.focusOffset;
   try {
-    move(selection);
+    if (type === "deleteEntireSoftLine")
+      selection.modify("move", "backward", "lineboundary");
+    selection.modify(
+      "extend",
+      type.endsWith("Backward") ? "backward" : "forward",
+      type.startsWith("deleteWord") ? "word" : "lineboundary",
+    );
     const range = selection.rangeCount ? selection.getRangeAt(0) : null;
     if (
       !range ||
@@ -241,35 +251,8 @@ function motionRange(
   }
 }
 
-/** Ask only for selection motion. Never let the browser delete text. */
-function deletionMotion(
-  view: EditorView,
-  type: RichDeleteType,
-): RichDeleteRange | null {
-  if (
-    !type.startsWith("deleteWord") &&
-    !type.startsWith("deleteSoftLine") &&
-    type !== "deleteEntireSoftLine"
-  )
-    return null;
-  return motionRange(view, (selection) => {
-    if (type === "deleteEntireSoftLine")
-      selection.modify("move", "backward", "lineboundary");
-    selection.modify(
-      "extend",
-      type.endsWith("Backward") ? "backward" : "forward",
-      type.startsWith("deleteWord") ? "word" : "lineboundary",
-    );
-  });
-}
-
-/** Home and End scroll on macOS; they move the caret elsewhere. */
-function macPlatform(): boolean {
-  return /Mac|iP(hone|[oa]d)/u.test(navigator.platform);
-}
-
 function deletionKey(event: KeyboardEvent): RichDeleteType | null {
-  const mac = macPlatform();
+  const mac = /Mac|iP(hone|[oa]d)/u.test(navigator.platform);
   const {
     key,
     ctrlKey: ctrl,
@@ -372,11 +355,6 @@ export function richField(label: string, options: RichFieldOptions) {
   let current = options.value;
   let moved = false;
   let resetSelection: { doc: EditorNode; selection: Selection } | null = null;
-  // The same intended caret, kept until a reader caret choice, or a
-  // selection change made by other code that adopts the browser
-  // selection, supersedes it, so selection syncs do not adopt a
-  // browser-adjusted caret instead.
-  let resetGuard: { doc: EditorNode; selection: Selection } | null = null;
   let pointerFocus = false;
   let tabSelection: boolean | null = null;
   let tabTimer: number | undefined;
@@ -903,23 +881,6 @@ export function richField(label: string, options: RichFieldOptions) {
         nativeEdit = null;
       }
       const result = view.state.applyTransaction(transaction);
-      // A selection-only change that the native sync did not make
-      // supersedes the caret a rewrite recorded, so the guard no longer
-      // protects that recorded caret. Most such changes are the reader's caret (a click,
-      // a tap, select-all, as ProseMirror reads them from the DOM), but
-      // code that adopts the browser selection does the same: the
-      // toolbar's focusin and pointerdown handlers and the Enter and
-      // Tab keydowns dispatch the browser selection into state. On a
-      // main field that adoption releases the guard, so tabbing
-      // through the toolbar types at the browser caret, as on main.
-      if (
-        resetGuard &&
-        !transaction.docChanged &&
-        !transaction.getMeta("richNativeSync") &&
-        result.state.doc === resetGuard.doc &&
-        !result.state.selection.eq(resetGuard.selection)
-      )
-        resetGuard = null;
       lastAppliedTransactions = result.transactions;
       if (compositionDelete) {
         for (const applied of result.transactions) {
@@ -985,19 +946,11 @@ export function richField(label: string, options: RichFieldOptions) {
         }
         const type = deletionKey(event);
         if (!type) {
-          // Sync once this key's native motion lands. The microtask runs
-          // after the move in Firefox; in Chromium it can run before the
-          // caret moves and then reads the old selection, so the keyup
-          // sync below covers that engine in ordinary delivery. Under
-          // slow execution an overdue focus timer can still fire between
-          // a motion keydown and its keyup, as it can on main; no public
-          // hook runs in that gap.
-          if (
-            /^(?:Home|End|PageUp|PageDown|Arrow(?:Left|Right|Up|Down))$/u.test(
-              event.key,
-            )
-          )
-            queueMicrotask(() => syncNativeSelection(true));
+          // Not a deletion key. The keyup handler below reads the
+          // selection this key's native motion leaves behind. Under
+          // slow execution an overdue focus timer can still fire
+          // between a motion keydown and its keyup, as it can on main;
+          // no public hook runs in that gap.
           return false;
         }
         const selection = readNativeSelection();
@@ -1016,14 +969,13 @@ export function richField(label: string, options: RichFieldOptions) {
         // The native motion for this key has landed by keyup, so read
         // the resulting selection into state now; in ordinary delivery
         // that is before the focus-time write-back can restore the
-        // previous caret. (A microtask queued from keydown would run
-        // before Chromium moves the caret.)
+        // previous caret.
         if (
           /^(?:Home|End|PageUp|PageDown|Arrow(?:Left|Right|Up|Down))$/u.test(
             event.key,
           )
         )
-          syncNativeSelection(true);
+          syncNativeSelection();
         return false;
       },
       input(_view, event) {
@@ -1150,20 +1102,6 @@ export function richField(label: string, options: RichFieldOptions) {
             dispatchEdit(view.state.tr.setSelection(chosen));
           if (repair) view.focus();
         }
-        // This handler runs before ProseMirror's own focus handler.
-        // With any caret repair above settled, read the browser selection
-        // into state, so the focus-time write ProseMirror schedules
-        // about 20 ms later starts from the caret the reader actually
-        // has; the keyup and selectionchange syncs then keep state
-        // ahead of it. A guard record from a rewrite is not released by
-        // page-owned focus: only a reader caret choice this handler
-        // found (a chosen selection or a pointer focus) supersedes it.
-        if (
-          resetGuard?.doc !== view.state.doc ||
-          chosen ||
-          pointerFocus
-        )
-          syncNativeSelection(true);
         pointerFocus = false;
         return false;
       },
@@ -1530,52 +1468,19 @@ export function richField(label: string, options: RichFieldOptions) {
   rememberDOM();
   const input = view.dom as RichInput;
   /**
-   * Read the browser selection into editor state. ProseMirror writes its
-   * tracked selection back to the DOM about 20 ms after the editor takes
-   * focus; a native selection made in that window (a click, Home, an arrow)
-   * is newer than the tracked one and must be in state before the write
-   * runs, or the write restores the caret the reader just moved from.
-   * The sync runs at focus (after that handler's caret repair, before
-   * ProseMirror's own focus handler), on keyup after a motion key's
-   * native move has landed, and on selectionchange for moves that
-   * arrive without a key.
+   * Read the browser selection into editor state after a motion key.
+   * ProseMirror writes its tracked selection back to the DOM about
+   * 20 ms after the editor takes focus; a native selection the reader
+   * makes with a motion key in that window (Home, an arrow) is newer
+   * than the tracked one and must be in state before the write runs,
+   * or the write restores the caret the reader just moved from. The
+   * sync runs on keyup, once the key's native move has landed. It is
+   * the only selection sync: no focus-time or selectionchange sync
+   * reads the browser selection, so code that changes state while
+   * the field is blurred keeps the selection its transaction chose.
    */
-  function syncNativeSelection(readerChoice = false) {
+  function syncNativeSelection() {
     if (view.isDestroyed || view.composing) return;
-    // The guard ends by either of two paths. First, once this sync
-    // accepts a call with readerChoice set (a motion-key keyup or
-    // keydown microtask, or a pointer focus arrival), it clears the
-    // guard below, before it reads the browser selection, even when
-    // the state selection does not change. Second, a selection-only
-    // transaction from other code (a click, tap or select-all, or
-    // code that adopts the browser selection, such as the toolbar's
-    // focusin and pointerdown handlers and Enter and Tab keydown in
-    // the editor) releases the guard in dispatchTransaction when it
-    // moves the selection off the recorded caret in the same
-    // document. Moving the browser caret while focus stays outside
-    // the field matches neither path, so it leaves the guard in place.
-    if (readerChoice) resetGuard = null;
-    else if (resetGuard?.doc === view.state.doc) {
-      // An external rewrite records its intended caret for focus repair.
-      // The sync does not adopt a caret the browser adjusted inside the
-      // rewritten text over that recorded selection; when other code
-      // adopts the browser selection into state it releases the guard
-      // instead (see dispatchTransaction). Once the browser caret is
-      // the recorded one again, fall through.
-      const native = input.ownerDocument.getSelection();
-      if (!native?.anchorNode || !native.focusNode) return;
-      try {
-        if (
-          view.posAtDOM(native.anchorNode, native.anchorOffset, -1) !==
-            resetGuard.selection.anchor ||
-          view.posAtDOM(native.focusNode, native.focusOffset, 1) !==
-            resetGuard.selection.head
-        )
-          return;
-      } catch {
-        return;
-      }
-    }
     // Firefox can hold several ranges (Ctrl+drag). ProseMirror normalizes
     // those to their outer bounds itself; mapping only the anchor and
     // focus here would record just the last range, so leave them to it.
@@ -1611,11 +1516,8 @@ export function richField(label: string, options: RichFieldOptions) {
     // the selection the reader made, so leave it to ProseMirror.
     if (current instanceof AllSelection) return;
     const selection = readNativeSelection();
-    if (selection && !selection.eq(view.state.selection)) {
-      const transaction = view.state.tr.setSelection(selection);
-      transaction.setMeta("richNativeSync", true);
-      view.dispatch(transaction);
-    }
+    if (selection && !selection.eq(view.state.selection))
+      view.dispatch(view.state.tr.setSelection(selection));
   }
   function readNativeSelection(): Selection | null {
     const selection = input.ownerDocument.getSelection();
@@ -1701,7 +1603,6 @@ export function richField(label: string, options: RichFieldOptions) {
         const next = state();
         view.updateState(next);
         resetSelection = { doc: next.doc, selection: next.selection };
-        resetGuard = resetSelection;
       } else if (enabled() !== previousMode) {
         // Mode changes start a new undo boundary without moving the caret.
         deletionCaret = null;
@@ -1713,14 +1614,6 @@ export function richField(label: string, options: RichFieldOptions) {
       syncLinkAction();
     },
   });
-  // Keep editor state current with the browser selection, so the
-  // focus-time write-back described at syncNativeSelection restores the
-  // selection the reader actually made.
-  const syncFromSelectionChange = () => syncNativeSelection();
-  view.dom.ownerDocument.addEventListener(
-    "selectionchange",
-    syncFromSelectionChange,
-  );
   labelNode.addEventListener("click", () => view.focus());
   const insert = (
     node: ReturnType<typeof richEditorSchema.node>,
@@ -2267,10 +2160,6 @@ export function richField(label: string, options: RichFieldOptions) {
     node.showModal();
   }
   onDisconnect(wrapper, () => {
-    view.dom.ownerDocument.removeEventListener(
-      "selectionchange",
-      syncFromSelectionChange,
-    );
     settlingComposition = false;
     clearOperation();
     if (ownedInput) clearTimeout(ownedInput.timer);

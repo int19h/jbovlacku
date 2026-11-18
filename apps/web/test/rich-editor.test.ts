@@ -1574,6 +1574,38 @@ test("a selected chip keeps its node selection for Cmd arrows", async ({
   }
 });
 
+for (const route of ["click", "click-twice", "keyboard"] as const) {
+  test(`a toolbar place insert keeps the caret for typing: ${route}`, async ({
+    page,
+  }) => {
+    const field = await mountKeyboardField(page, "alpha beta");
+    await chooseKeyboardSelection(field, 4, 4);
+    await page.waitForTimeout(60);
+    const insert = page.getByRole("button", {
+      name: "Insert place 1",
+      exact: true,
+    });
+    if (route === "click") {
+      await insert.click();
+    } else if (route === "click-twice") {
+      await insert.click();
+      await page.waitForTimeout(80);
+      await insert.click();
+    } else {
+      await insert.focus();
+      await page.keyboard.press("Enter");
+    }
+    await page.keyboard.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual(
+        route === "click-twice"
+          ? [["alph", 1, 1, "xa beta"]]
+          : [["alph", 1, "xa beta"]],
+      );
+  });
+}
+
 test("a line selection made right after focus is kept", async ({ page }) => {
   const field = await mountKeyboardField(page, "Sense: new meaning");
   await chooseKeyboardSelection(field, 18, 18);
