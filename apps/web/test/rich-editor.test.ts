@@ -1181,6 +1181,70 @@ for (const resetCase of resetFocusCases) {
   }
 }
 
+for (const route of ["helper", "plain", "blur"] as const) {
+  test(`repeated page-owned focus after a reset keeps the recorded caret: ${route}`, async ({
+    page,
+    browserName,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async (route) => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts")
+      );
+      const { watchReaderFocus } = await import(String("/src/app/focus.ts"));
+      const field = richField("Refocus field", { value: [["alpha beta"]] });
+      const main = document.createElement("main");
+      const error = document.createElement("h2");
+      error.textContent = "Result";
+      error.tabIndex = -1;
+      const button = document.createElement("button");
+      button.textContent = "Rewrite";
+      main.append(field.wrapper, error, button);
+      document.body.replaceChildren(main);
+      button.onclick = () => {
+        field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+        if (route === "helper") {
+          const controller = new AbortController();
+          const focus = watchReaderFocus(main, controller.signal);
+          focus.focus(field.input);
+          focus.focus(error);
+          focus.focus(field.input);
+          controller.abort();
+        } else if (route === "plain") {
+          field.input.focus();
+          error.focus();
+          field.input.focus();
+        } else {
+          field.input.focus();
+          field.input.blur();
+          field.input.focus();
+        }
+      };
+    }, route);
+    const field = page.getByRole("textbox", {
+      name: "Refocus field",
+      exact: true,
+    });
+    await field.focus();
+    await field.evaluate((node) => {
+      const text = node.querySelector(".rich-literal")!.firstChild!;
+      getSelection()!.setBaseAndExtent(text, 4, text, 4);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForTimeout(60);
+    await page.getByRole("button", { name: "Rewrite", exact: true }).click();
+    await page.waitForTimeout(60);
+    await field.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual(
+        browserName === "firefox"
+          ? [["reset prefixx"], ["alpha beta"]]
+          : [["reset prefix"], ["alpha betax"]],
+      );
+  });
+}
+
 test("trusted line keys replace the paragraph after a slow Home handler", async ({
   page,
 }) => {
