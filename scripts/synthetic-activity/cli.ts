@@ -184,11 +184,7 @@ async function refusePinInUse(o: Opts): Promise<void> {
     }
     return;
   }
-  const pin = JSON.parse(await readFile(path, "utf8"));
-  // Name a missing or mistyped field before the manifest compare.
-  // An old pin with no manifest then gets the manifest refusal.
-  refuseShape(localShapeError(pin, "pin", false));
-  await refuseSavedManifest(pin, path);
+  await loadCheckedPin(path);
 }
 async function loadIdentity(o: Opts): Promise<Identity> {
   if (!o.state) { console.error("refused: --state is required"); process.exit(2); }
@@ -357,7 +353,7 @@ function refuseManifestField(field: string): never {
  * lock, a post, or a write, including after the server has discarded
  * the snapshot itself.
  */
-async function refuseSavedManifest(pin: Pin, path: string): Promise<void> {
+async function refuseSavedManifest(pin: Pin, path: string): Promise<ManifestParts> {
   const manifestPath = pinManifestPath(path);
   if (!existsSync(manifestPath)) {
     console.error("refused: pin base manifest is missing; make a new pin with the current kit");
@@ -389,8 +385,47 @@ async function refuseSavedManifest(pin: Pin, path: string): Promise<void> {
   const bodyList = await readList(pinBodiesPath(path));
   const selectionList = await readList(pinSelectionsPath(path));
   if (eventList && eventList.length !== events.count) refuseManifestField("base_event_count");
-  if (bodyList && (bodyList.length !== bodies.count || hashJson([...bodyList].sort()) !== bodies.hash)) refuseManifestField(bodyList.length !== bodies.count ? "base_body_count" : "base_body_digest");
-  if (selectionList && (selectionList.length !== selections.count || hashJson([...selectionList].sort()) !== selections.hash)) refuseManifestField(selectionList.length !== selections.count ? "base_selection_count" : "base_selection_digest");
+  if (bodyList && bodyList.length !== bodies.count) refuseManifestField("base_body_count");
+  if (selectionList && selectionList.length !== selections.count) refuseManifestField("base_selection_count");
+  return { events, bodies, selections };
+}
+interface ManifestParts { events: ManifestPart; bodies: ManifestPart; selections: ManifestPart }
+function refuseListField(field: string): never {
+  console.error(`refused: pin ${field} does not match its list`);
+  process.exit(3);
+}
+async function readOptionalList(path: string): Promise<string[] | null> {
+  if (!existsSync(path)) return null;
+  return (await readFile(path, "utf8")).split("\n").filter(Boolean);
+}
+/** Each pin digest against its list file. A missing list names that digest. */
+function refuseListDigests(pin: Pin, events: string[] | null, bodies: string[] | null, selections: string[] | null): PinLists {
+  if (!events || digestIds(events) !== pin.base_inventory_digest) refuseListField("base_inventory_digest");
+  if (events.length !== pin.base_event_count) refuseListField("base_event_count");
+  if (!bodies || digestIds(bodies) !== pin.base_body_digest) refuseListField("base_body_digest");
+  if (bodies.length !== pin.base_body_count) refuseListField("base_body_count");
+  if (!selections || digestIds(selections) !== pin.base_selection_digest) refuseListField("base_selection_digest");
+  if (selections.length !== pin.base_selection_count) refuseListField("base_selection_count");
+  if (logicalInventoryDigest(events, bodies, selections) !== pin.base_inventory) refuseListField("base_inventory");
+  return { events, bodies, selections };
+}
+/** The manifest component hash, after the pin digest matched the list. */
+function refuseManifestListHashes(parts: ManifestParts, lists: PinLists): void {
+  if (hashJson([...lists.bodies].sort()) !== parts.bodies.hash) refuseManifestField("base_body_digest");
+  if (hashJson([...lists.selections].sort()) !== parts.selections.hash) refuseManifestField("base_selection_digest");
+}
+/**
+ * The only read of a pin file. The nine fields, the saved manifest,
+ * and each list digest. A command that reads a pin calls this before
+ * a lock, a post, or a write.
+ */
+async function loadCheckedPin(path: string): Promise<{ pin: Pin; lists: PinLists }> {
+  const pin = JSON.parse(await readFile(path, "utf8")) as Pin;
+  refuseShape(localShapeError(pin, "pin", false));
+  const parts = await refuseSavedManifest(pin, path);
+  const lists = refuseListDigests(pin, await readOptionalList(pinIdsPath(path)), await readOptionalList(pinBodiesPath(path)), await readOptionalList(pinSelectionsPath(path)));
+  refuseManifestListHashes(parts, lists);
+  return { pin, lists };
 }
 /** Object.is on the parsed values. A one-element array is not equal to that string. */
 function localConsistencyError(pin: object, identities: readonly object[]): string | null {
@@ -431,9 +466,7 @@ async function checkPinInUse(o: Opts, identities: readonly object[]): Promise<vo
   for (const identity of identities) refuseShape(localShapeError(identity, "identity", false));
   const path = pinPath(o);
   if (!existsSync(path)) return;
-  const pin = JSON.parse(await readFile(path, "utf8"));
-  refuseShape(localShapeError(pin, "pin", false));
-  await refuseSavedManifest(pin, path);
+  const { pin } = await loadCheckedPin(path);
   checkLocalConsistency(pin, identities);
 }
 /**
@@ -473,22 +506,6 @@ async function targetHoldsProvenCopy(o: Opts, sourceId: string): Promise<boolean
   return false;
 }
 interface PinLists { events: string[]; bodies: string[]; selections: string[] }
-/** Read the three pin lists and check each against its pinned count, digest, and combined base inventory. */
-async function readPinEvidence(pin: Pin, path: string): Promise<PinLists> {
-  const read = async (p: string) => (await readFile(p, "utf8")).split("\n").filter(Boolean);
-  const events = await read(pinIdsPath(path));
-  const bodies = await read(pinBodiesPath(path));
-  const selections = await read(pinSelectionsPath(path));
-  // The three component digests do not determine base_inventory.
-  // One edited field is enough to make a capture that restore refuses.
-  if (events.length !== pin.base_event_count || digestIds(events) !== pin.base_inventory_digest
-    || bodies.length !== pin.base_body_count || digestIds(bodies) !== pin.base_body_digest
-    || selections.length !== pin.base_selection_count || digestIds(selections) !== pin.base_selection_digest
-    || logicalInventoryDigest(events, bodies, selections) !== pin.base_inventory) {
-    console.error("refused: base pin evidence does not match its lists; take a new pin with pin-base"); process.exit(3);
-  }
-  return { events, bodies, selections };
-}
 /**
  * The snapshot id is the hash of the carrier manifest, not of the
  * three ID lists. While the server still holds exactly those lists,
@@ -566,14 +583,9 @@ async function canonicalManifestText(o: Opts, snapshot: string, ids: string[], b
   }
   return Buffer.from(bytes).toString("utf8");
 }
-async function loadOrCreatePin(o: Opts): Promise<Pin> {
+async function loadOrCreatePin(o: Opts): Promise<{ pin: Pin; lists: PinLists }> {
   const path = pinPath(o);
-  if (existsSync(path)) {
-    const pin = JSON.parse(await readFile(path, "utf8"));
-    refuseShape(localShapeError(pin, "pin", false));
-    await refuseSavedManifest(pin, path);
-    return pin;
-  }
+  if (existsSync(path)) return loadCheckedPin(path);
   // Pin the whole logical inventory at one admitted snapshot. The
   // first inventory page names that snapshot; every list below is
   // pinned to it, so the three components describe one point in time.
@@ -601,7 +613,7 @@ async function loadOrCreatePin(o: Opts): Promise<Pin> {
   await writeAtomic(pinSelectionsPath(path), selections.join("\n") + (selections.length ? "\n" : ""));
   await writeAtomic(pinManifestPath(path), manifestText);
   await writeAtomic(path, JSON.stringify(pin, null, 2) + "\n");
-  return pin;
+  return { pin, lists: { events: ids, bodies, selections } };
 }
 
 /** Process state and start ticks from /proc, or null where /proc is absent. */
@@ -801,12 +813,11 @@ async function main(): Promise<void> {
   try {
     if (cmd === "pin-base") {
       if (!o.state && !flag(o, "pin")) throw new Error("--pin or --state is required");
-      const pin = await loadOrCreatePin(o);
+      const { pin, lists } = await loadOrCreatePin(o);
       refuseShape(localShapeError(pin, "pin", false));
       if (!pinHasEvidence(pin, pinPath(o))) { console.error("refused: base pin file has no base evidence; delete it or use a new --pin path, then run pin-base again"); process.exit(3); }
       requirePinServerId(pin);
-      const pinned = await readPinEvidence(pin, pinPath(o));
-      await refusePinSnapshot(o, pin, pinned);
+      await refusePinSnapshot(o, pin, lists);
       console.log(`base_snapshot ${pin.base_snapshot}`);
       console.log(`base_inventory ${pin.base_inventory}`);
     } else if (cmd === "init") {
@@ -826,12 +837,10 @@ async function main(): Promise<void> {
           if (!existsSync(path)) {
             console.error(`note: no base pin file at ${path}; this identity has no base evidence for capture`);
           } else {
-            const pin = JSON.parse(await readFile(path, "utf8"));
+            const { pin, lists } = await loadCheckedPin(path);
             checkHeldConsistency(pin, j);
-            await refuseSavedManifest(pin, path);
             if (!pinHasEvidence(pin, path)) { console.error("refused: base pin file has no base evidence; a new base needs a new pin file"); process.exit(3); }
             requirePinServerId(pin);
-            const lists = await readPinEvidence(pin, path);
             const serverEvents = new Set(await inventoryIds(o));
             const serverBodies = new Set(await inventoryList(o, "bodies"));
             const serverSelections = new Set(await inventoryList(o, "import_selections"));
@@ -851,9 +860,7 @@ async function main(): Promise<void> {
         } else if (!validServerId(j.server_id)) {
           const path = pinPath(o);
           if (existsSync(path)) {
-            const pin = JSON.parse(await readFile(path, "utf8"));
-            refuseShape(localShapeError(pin, "pin", false));
-            await refuseSavedManifest(pin, path);
+            const { pin } = await loadCheckedPin(path);
             if (j.base_snapshot === pin.base_snapshot && j.base_inventory === pin.base_inventory) {
               j.server_id = pin.server_id;
               await writeAtomic(p, JSON.stringify(j, null, 2) + "\n", 0o600);
@@ -869,7 +876,7 @@ async function main(): Promise<void> {
       // new pin. Only the default pin path may be created by init.
       if (flag(o, "pin") && !existsSync(pinPath(o))) { console.error(`refused: base pin file not found: ${pinPath(o)} (run pin-base first)`); process.exit(3); }
       const pinExisted = existsSync(pinPath(o));
-      const pin = await loadOrCreatePin(o);
+      const { pin, lists } = await loadOrCreatePin(o);
       refuseShape(localShapeError(pin, "pin", false));
       if (pinExisted) {
         // Compare base evidence, not only a count. The server must
@@ -883,7 +890,6 @@ async function main(): Promise<void> {
         let serverIds: string[];
         try { serverIds = await inventoryIds(o); } catch (e: any) { console.error(`refused: cannot check the base pin against the server: ${e.code ? e.code + ": " : ""}${e.message ?? String(e)}`); process.exit(3); }
         const serverSet = new Set(serverIds);
-        const lists = await readPinEvidence(pin, pinPath(o));
         if (!lists.events.every((id) => serverSet.has(id))) {
           console.error("refused: base pin does not match this server; a new base needs a new pin file"); process.exit(3);
         }
@@ -1103,9 +1109,7 @@ async function capture(o: Opts): Promise<void> {
   if (!states.length) { console.error("refused: --state is required (repeat for each identity)"); process.exit(2); }
   const capturePinPath = capturePinFile(o, states);
   if (!existsSync(capturePinPath)) { console.error(`refused: capture needs the base pin file with its full evidence lists (expected ${capturePinPath}); run pin-base for this run first`); process.exit(3); }
-  const capturePin = JSON.parse(await readFile(capturePinPath, "utf8"));
-  refuseShape(localShapeError(capturePin, "pin", false));
-  await refuseSavedManifest(capturePin, capturePinPath);
+  const { pin: capturePin } = await loadCheckedPin(capturePinPath);
   checkLocalConsistency(capturePin, await captureIdentities(states));
   const handles: LockHandle[] = [];
   process.on("exit", () => { for (const h of handles) { try { h.releaseSync(); } catch {} } });
@@ -1121,6 +1125,9 @@ async function capture(o: Opts): Promise<void> {
 async function captureBody(o: Opts): Promise<void> {
   const outDir = flag(o, "out"); if (!outDir) { console.error("refused: --out is required"); process.exit(2); }
   const states = o.multi.get("state") ?? []; if (!states.length) { console.error("refused: --state is required (repeat for each identity)"); process.exit(2); }
+  const capturePinPath = capturePinFile(o, states);
+  if (!existsSync(capturePinPath)) { console.error(`refused: capture needs the base pin file with its full evidence lists (expected ${capturePinPath}); run pin-base for this run first`); process.exit(3); }
+  const { pin: capturePin, lists: pinLists } = await loadCheckedPin(capturePinPath);
   // Take the capture snapshot from the first unpinned inventory
   // page. That page names the admitted snapshot, which holds every
   // event the server has admitted. The manifest names the last
@@ -1131,14 +1138,9 @@ async function captureBody(o: Opts): Promise<void> {
   const firstPage = await api(o, "/inventory?kind=events&limit=1000");
   const sourceSnapshot: string = firstPage.snapshot;
   const { transports, identities: rawIdentities } = await collectSynthetic(o, states, sourceSnapshot);
-  const capturePinPath = capturePinFile(o, states);
-  if (!existsSync(capturePinPath)) { console.error(`refused: capture needs the base pin file with its full evidence lists (expected ${capturePinPath}); run pin-base for this run first`); process.exit(3); }
-  const capturePin: Pin = JSON.parse(await readFile(capturePinPath, "utf8"));
   // Before records are combined by public key. The same key in a
-  // second folder is still compared. The saved manifest is checked
-  // again here, before any capture file is written.
-  refuseShape(localShapeError(capturePin, "pin", false));
-  await refuseSavedManifest(capturePin, capturePinPath);
+  // second folder is still compared. The pin was checked again above,
+  // before any capture file is written.
   checkLocalConsistency(capturePin, rawIdentities);
   const identities = rawIdentities.filter((v, i, a) => a.findIndex((x) => x.identity === v.identity) === i);
   if (!identities[0]?.base_snapshot || !identities[0]?.base_inventory) { console.error("refused: identity has no base pin; run init again with a base pin"); process.exit(3); }
@@ -1151,7 +1153,6 @@ async function captureBody(o: Opts): Promise<void> {
   // digests, which cannot separate base bodies from captured ones.
   if (!pinHasEvidence(capturePin, capturePinPath)) { console.error("refused: base pin file has no full base evidence; take a new pin with pin-base"); process.exit(3); }
   requirePinServerId(capturePin);
-  const pinLists = await readPinEvidence(capturePin, capturePinPath);
   const allIds = await inventoryIds(o, sourceSnapshot);
   const allBodies = await inventoryList(o, "bodies", sourceSnapshot);
   const allSelections = await inventoryList(o, "import_selections", sourceSnapshot);

@@ -109,7 +109,8 @@ lock, a post, or a write. When the sha256 differs, the
 refusal names `base_snapshot`. When a saved manifest list or
 count differs from the pin, the refusal names that field.
 The check uses the saved bytes. The server can discard that
-snapshot.
+snapshot. A command that reads the pin checks each list digest
+against its list file. A mismatch names that field.
 
 An explicit `--pin` path that does not exist is refused for every identity command.
 Every command that loads an identity refuses that path.

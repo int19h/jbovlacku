@@ -1933,7 +1933,7 @@ test("init refuses a pin whose base inventory does not match its lists", async (
     const state = join(root, "a");
     const created = await cmdResult(["--server", url, "--state", state, "init"]);
     assert.equal(created.code, 3, created.out);
-    assert.match(created.out, /refused: base pin evidence does not match its lists/);
+    assert.match(created.out, /refused: pin base_inventory does not match its list/);
     assert.equal(existsSync(join(state, "identity.json")), false);
   } finally {
     for (const server of servers) await server.close();
@@ -2262,7 +2262,7 @@ test("one edited field is refused before a post or a write", async () => {
       await writeFile(dest, JSON.stringify(pinJson, null, 2) + "\n");
       const posted = await cmdResult(["--server", url, "--state", state, "--pin", dest, "profile", "--name", "late"]);
       assert.equal(posted.code, 3, posted.out);
-      assert.match(posted.out, /refused: identity base_inventory does not match the base pin/);
+      assert.match(posted.out, /refused: pin base_inventory does not match its list/);
       const after = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
       assert.deepEqual(after, before);
       assert.equal(existsSync(join(state, "lock")), false);
@@ -2556,8 +2556,9 @@ test("one edited field is refused before a post or a write", async () => {
         gone = status === 410;
       }
       if (!gone) {
-        // pin-base reads the manifest, and the server keeps that snapshot
-        // until a later manifest read names a newer snapshot.
+        // The fallback reads /manifest when the pin snapshot is still
+        // present after 20 profiles. pin-base reads the inventory and
+        // the event envelopes.
         await fetch(rowUrl + "/api/v1/manifest");
         const status = (await fetch(rowUrl + "/api/v1/inventory?kind=events&limit=1&snapshot=" + encodeURIComponent(snap))).status;
         gone = status === 410;
@@ -2570,6 +2571,95 @@ test("one edited field is refused before a post or a write", async () => {
       const identity = JSON.parse(await readFile(join(joined, "identity.json"), "utf8"));
       assert.equal(identity.base_snapshot, snap);
     });
+    assert.equal(problems.length, 0, problems.join("\n\n"));
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a same-size pin list replacement is refused before a post or a write", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  const problems: string[] = [];
+  const row = async (name: string, fn: () => Promise<void>) => {
+    try { await fn(); }
+    catch (error: any) { problems.push(`${name}: ${error.message ?? error}`); }
+  };
+  try {
+    const port = 9698;
+    const url = `http://127.0.0.1:${port}`;
+    const server = await startServer(join(root, "src"), port);
+    servers.push(server);
+    const holder = join(root, "holder");
+    await cmd(["--server", url, "--state", holder, "init"]);
+    const first = await cmd(["--server", url, "--state", holder, "profile", "--name", "One"]);
+    const firstEvent = first.match(/jve1:[a-f0-9]{64}/)![0];
+    const firstSelection = await fetch(url + "/api/v1/import-selections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([firstEvent]) });
+    assert.equal(firstSelection.ok, true, await firstSelection.text());
+    const good = join(root, "good.json");
+    await cmd(["--server", url, "--state", holder, "--pin", good, "pin-base"]);
+    const lines = async (ext: string) => (await readFile(good + ext, "utf8")).split("\n").filter(Boolean);
+    const pinnedEvents = await lines(".ids");
+    const pinnedBodies = await lines(".bodies");
+    const pinnedSelections = await lines(".selections");
+    assert.deepEqual(pinnedEvents, [firstEvent]);
+    assert.equal(pinnedBodies.length, 1);
+    assert.equal(pinnedSelections.length, 1);
+    const writer = join(root, "writer");
+    await cmd(["--server", url, "--state", writer, "--pin", good, "init"]);
+    const second = await cmd(["--server", url, "--state", writer, "--pin", good, "profile", "--name", "Two"]);
+    const secondEvent = second.match(/jve1:[a-f0-9]{64}/)![0];
+    const secondSelection = await fetch(url + "/api/v1/import-selections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify([secondEvent]) });
+    assert.equal(secondSelection.ok, true, await secondSelection.text());
+    const bodies = ((await (await fetch(url + "/api/v1/inventory?kind=bodies&limit=10")).json()) as any).ids as string[];
+    const selections = ((await (await fetch(url + "/api/v1/inventory?kind=import_selections&limit=10")).json()) as any).ids as string[];
+    const otherBody = bodies.find((id) => id !== pinnedBodies[0]);
+    const otherSelection = selections.find((id) => id !== pinnedSelections[0]);
+    assert.ok(otherBody && otherBody !== pinnedBodies[0]);
+    assert.ok(otherSelection && otherSelection !== pinnedSelections[0]);
+    const before = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids as string[];
+    const cases: Array<[string, string, string, string]> = [
+      ["ids", ".ids", "base_inventory_digest", secondEvent],
+      ["bodies", ".bodies", "base_body_digest", otherBody!],
+      ["selections", ".selections", "base_selection_digest", otherSelection!],
+    ];
+    for (const [name, ext, field, replacement] of cases) {
+      const bad = join(root, name, "pin.json");
+      await mkdir(dirname(bad), { recursive: true });
+      await writeFile(bad, await readFile(good));
+      for (const sidecar of [".ids", ".bodies", ".selections", ".manifest"]) await writeFile(bad + sidecar, await readFile(good + sidecar));
+      const current = (await readFile(bad + ext, "utf8")).split("\n").filter(Boolean);
+      assert.equal(current.length, 1, name);
+      assert.notEqual(current[0], replacement);
+      current[0] = replacement;
+      await writeFile(bad + ext, current.join("\n") + "\n");
+      const message = new RegExp(`refused: pin ${field} does not match its list`);
+      await row(`${name} profile`, async () => {
+        const posted = await cmdResult(["--server", url, "--state", writer, "--pin", bad, "profile", "--name", name]);
+        assert.equal(posted.code, 3, posted.out);
+        assert.match(posted.out, message, posted.out);
+        assert.equal(existsSync(join(writer, "lock")), false);
+        const after = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=10")).json()) as any).ids as string[];
+        assert.deepEqual(after, before);
+      });
+      await row(`${name} init`, async () => {
+        const late = join(root, name, "late");
+        const created = await cmdResult(["--server", url, "--state", late, "--pin", bad, "init"]);
+        assert.equal(created.code, 3, created.out);
+        assert.match(created.out, message, created.out);
+        assert.equal(existsSync(join(late, "identity.json")), false);
+        assert.equal(existsSync(join(late, "lock")), false);
+      });
+      await row(`${name} capture`, async () => {
+        const out = join(root, name, "cap");
+        const captured = await cmdResult(["--server", url, "--state", writer, "--pin", bad, "capture", "--out", out]);
+        assert.equal(captured.code, 3, captured.out);
+        assert.match(captured.out, message, captured.out);
+        assert.equal(existsSync(join(out, "manifest.json")), false);
+        assert.equal(existsSync(join(writer, "lock")), false);
+      });
+    }
     assert.equal(problems.length, 0, problems.join("\n\n"));
   } finally {
     for (const server of servers) await server.close();
