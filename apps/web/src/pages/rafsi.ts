@@ -96,13 +96,12 @@ export async function wordsWithRafsi(
     limited ||= result.totals[0] > 1000;
     for (const hit of result.hits[0])
       identities.set(hit.word.spelling, hit.word_id);
-    // Rows stay capped at what the page renders: takeRafsiRows stops at the
-    // first spelling left out, so the page sets limited only when a row was
-    // actually left out. Exactly 1,000 rows across every language show no
-    // notice, as on main. The helper never visits more spellings than main
-    // would: it stops early only where main would set limited, and otherwise
-    // visits the same spellings. Later languages still run their own package
-    // checks because the loop continues.
+    // Rows stay capped at what the page renders: takeRafsiRows skips novel
+    // spellings past the cap but keeps visiting, so later duplicates still
+    // take the later language, as on main. The page sets limited only when
+    // a row was actually left out. Exactly 1,000 rows across every language
+    // show no notice, as on main. Later languages still run their own
+    // package checks because the loop continues.
     if (takeRafsiRows(result.hits[0], language, found, 1000)) limited = true;
   }
   return Object.assign(

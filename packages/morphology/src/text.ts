@@ -114,9 +114,12 @@ export function segmentText(
           error.failure.kind === "resource-limit" &&
           error.failure.measure !== "text recognition work"
         ) {
-          // A later run that fails its phoneme bound still bills the runs
-          // before it: the recognition-work conversion above already added
-          // them, while every other resource failure carries only its run.
+          // A later run that fails its bound still bills the runs before it:
+          // the recognition-work conversion above already added them, while
+          // every other resource failure carries only its own size. That size
+          // is a length, not parser work: a phoneme count for a run bound, a
+          // byte count for a byte bound. As a result the carried value no
+          // longer matches the message for these failures.
           error.failure.value = spent + (error.failure.value ?? 0);
         } else if (error.failure.kind === "invalid") {
           // An invalid run bills what parsing it cost.

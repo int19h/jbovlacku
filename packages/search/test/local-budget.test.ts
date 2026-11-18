@@ -360,9 +360,11 @@ test("a later parser failure still bills the runs before it", () => {
 });
 
 test("component comparisons stop at the shared allowance", () => {
-  // The review input: a two-word headword against a 512-word query. Query
-  // parsing consumes 207,360 units and the row content 2, leaving no room
-  // for the 1,023 comparisons the scan would otherwise perform.
+  // The review input: a two-word headword against a 512-word query at a
+  // 207,362-unit limit. Query parsing consumes 207,360 units and the row
+  // one more, so the row content reserve would pass the limit and the
+  // request refuses before the 1,023 comparisons the scan would otherwise
+  // perform.
   const short = {
     word: { spelling: "a a" },
     glosses: [],
@@ -372,7 +374,7 @@ test("component comparisons stop at the shared allowance", () => {
   const query = "a ".repeat(511) + "a";
   const measured = searchMetrics();
   const budget = new SearchRequestBudget(measured, {
-    workLimit: 207400,
+    workLimit: 207362,
     deadlineMs: Infinity,
   });
   assert.throws(
@@ -390,7 +392,13 @@ test("component comparisons stop at the shared allowance", () => {
     measured.componentComparisons +
     measured.queryParserWork +
     measured.headwordParserWork;
-  assert.ok(spent <= 207400, `spent ${spent} exceeds the allowance`);
+  assert.ok(spent <= 207362, `spent ${spent} exceeds the allowance`);
+  // The refusal adds nothing: the budget's own total also stays at or
+  // below the limit.
+  assert.ok(
+    budget.snapshot().spent <= 207362,
+    `budget spent ${budget.snapshot().spent} exceeds the limit`,
+  );
 });
 
 test("a tight preparation does not poison the whole-array cache", () => {

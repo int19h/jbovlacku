@@ -17,10 +17,17 @@ export const SEARCH_SEGMENT_WORK_LIMIT = 300_000;
 export const SEARCH_HEADWORD_WORK_LIMIT = 300_000;
 /**
  * A literal local scan or package preparation may use this much work before
- * it reports a budget failure instead of running unbounded. One unit is one
- * scanned entry, one component comparison, or one morphology parser step.
- * The default completes an ordinary query on a package five times the base
- * data with wide headroom. A caller can lower or raise it per request.
+ * it reports a budget failure instead of running unbounded. Work is counted
+ * in units: a validated, prepared, transferred, or scanned entry costs
+ * `1 + items + ceil(chars / 64)`, where items counts its glosses, rafsi
+ * spellings, selmaho names, and attribution dates, and chars counts the
+ * characters of its spelling, texts, senses, IDs, and attribution strings.
+ * All other work costs one unit each: a component comparison, a map
+ * insertion, a sort comparison, a morphology parser step, or a mapped reply
+ * reference. A comparison block reserves its upper bound before it runs,
+ * and each comparison that runs is also counted. The default completes an
+ * ordinary query on a package five times the base data with wide headroom.
+ * A caller can lower or raise it per request.
  */
 export const SEARCH_LOCAL_WORK_LIMIT = 200_000_000;
 /**
@@ -495,8 +502,13 @@ export class SearchRequestBudget {
     if (this.total() > this.workLimit) throw this.failure(phase);
     if (Date.now() - this.start > this.deadlineMs) throw this.failure(phase);
   }
-  /** Charge `units` of work, then enforce before that work runs. */
+  /**
+   * Charge `units` of work, then enforce before that work runs. The refusal
+   * is tested before anything is added, so the budget total never passes
+   * its limit on a refusal: only performed work is ever charged.
+   */
   reserve(units: number, phase: SearchBudgetError["phase"]): void {
+    if (this.total() + units > this.workLimit) throw this.failure(phase);
     this.reserved += units;
     this.check(phase);
   }
@@ -602,10 +614,12 @@ export function prepareQuery(
   } catch (error) {
     if (!(error instanceof BuilderError)) throw error;
     result.segmentation = "limited";
-    // Every failure carries the work already performed: recognition-work
-    // failures, later runs that fail their phoneme bound, and invalid runs.
-    // Only the allowance is added to the shared budget; work past it is the
-    // parser's own accounting.
+    // Every failure carries the work already performed plus the failing
+    // run's own size: recognition-work failures, later runs that fail their
+    // phoneme bound (their length, not parser work), byte-bound failures
+    // (their byte count, charged before any parsing), and invalid runs
+    // (what parsing them cost). Only the allowance is added to the shared
+    // budget; work past it is the parser's own accounting.
     measured.queryParserWork += Math.min(error.failure.value ?? 0, allowance);
     limit.check("search");
   }
