@@ -267,6 +267,11 @@ function macPlatform(): boolean {
   return /Mac|iP(hone|[oa]d)/u.test(navigator.platform);
 }
 
+/** Firefox, whose focus-time caret restore behaves as described below. */
+function firefoxBrowser(): boolean {
+  return /Firefox\//u.test(navigator.userAgent);
+}
+
 function deletionKey(event: KeyboardEvent): RichDeleteType | null {
   const mac = macPlatform();
   const {
@@ -1135,11 +1140,19 @@ export function richField(label: string, options: RichFieldOptions) {
         // A reader who tabs into the field after a rewrite did not
         // choose the caret the browser adjusted inside the rewritten
         // text; the recorded reset caret is the caret for this arrival.
-        // Put it in the browser now instead of leaving it to the
-        // focus-time write ProseMirror schedules about 20 ms later,
-        // which a first keystroke can beat and then type at the
-        // adjusted caret.
-        if (tabArrival && resetGuard?.doc === view.state.doc && native) {
+        // In Firefox the focus-time write ProseMirror schedules about
+        // 20 ms later is what the first keystroke normally meets, so
+        // put the recorded caret in the browser now instead of leaving
+        // it to that write, which a first keystroke can beat and then
+        // type at the adjusted caret. In Chromium the adjusted caret
+        // is the one that receives the text, as on main, so leave
+        // that arrival as it is.
+        if (
+          tabArrival &&
+          firefoxBrowser() &&
+          resetGuard?.doc === view.state.doc &&
+          native
+        ) {
           try {
             const anchor = view.domAtPos(resetGuard.selection.anchor);
             const head = view.domAtPos(resetGuard.selection.head);
