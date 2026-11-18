@@ -276,6 +276,42 @@ function requireSeedMatchesIdentity(idn: Identity): void {
     process.exit(3);
   }
 }
+const localConsistencyFields = [
+  "base_snapshot", "base_inventory", "base_inventory_digest", "base_event_count",
+  "base_body_count", "base_selection_count", "base_body_digest", "base_selection_digest", "server_id",
+] as const;
+/** Object.is on the parsed values. A one-element array is not equal to that string. */
+function localConsistencyError(pin: object, identities: readonly object[]): string | null {
+  const pinRecord = pin as Record<string, unknown>;
+  for (const identity of identities) {
+    const record = identity as Record<string, unknown>;
+    for (const field of localConsistencyFields) {
+      if (!Object.hasOwn(pinRecord, field)) continue;
+      if (!Object.hasOwn(record, field) || !Object.is(record[field], pinRecord[field]))
+        return `identity ${field} does not match the base pin`;
+    }
+  }
+  return null;
+}
+function checkLocalConsistency(pin: object, identities: readonly object[]): void {
+  const reason = localConsistencyError(pin, identities);
+  if (reason) { console.error(`refused: ${reason}`); process.exit(3); }
+}
+/** Compare only fields the identity already records. A missing field is for backfill, not a mismatch yet. */
+function checkHeldConsistency(pin: object, identity: object): void {
+  const pinRecord = pin as Record<string, unknown>;
+  const record = identity as Record<string, unknown>;
+  const held: Record<string, unknown> = {};
+  for (const field of localConsistencyFields) {
+    if (Object.hasOwn(record, field) && Object.hasOwn(pinRecord, field)) held[field] = pinRecord[field];
+  }
+  checkLocalConsistency(held, [identity]);
+}
+async function checkPinInUse(o: Opts, identities: readonly object[]): Promise<void> {
+  const path = pinPath(o);
+  if (!existsSync(path)) return;
+  checkLocalConsistency(JSON.parse(await readFile(path, "utf8")), identities);
+}
 /**
  * An empty ID list is a subset of every server. The pin's server id,
  * taken from the disposable marker, is what tells the server that
@@ -546,6 +582,7 @@ async function fitHeads(o: Opts, seed: Uint8Array, identity: string, verify?: ()
 async function writeEvent(o: Opts, action: Record<string, unknown>, body: unknown | null): Promise<void> {
   const idn = await loadIdentity(o);
   requireSeedMatchesIdentity(idn);
+  await checkPinInUse(o, [idn]);
   const handle = await lock(o);
   try {
     const seed = unhex(idn.seed);
@@ -596,21 +633,19 @@ async function main(): Promise<void> {
         // Backfill the base evidence from the pin for identities
         // that were created before capture required it. The
         // backfill runs the same checks as a new identity: the
-        // pin evidence must be consistent, it must match this
-        // identity's recorded base, and the server must hold
-        // every pinned base ID.
+        // pin evidence must be consistent, the recorded fields
+        // must match the pin, and the server must hold every
+        // pinned base ID.
         if (j.base_inventory_digest == null || j.base_event_count == null || j.base_body_digest == null || j.base_selection_digest == null) {
           const path = pinPath(o);
           if (!existsSync(path)) {
             console.error(`note: no base pin file at ${path}; this identity has no base evidence for capture`);
           } else {
             const pin = JSON.parse(await readFile(path, "utf8"));
+            checkHeldConsistency(pin, j);
             if (!pinHasEvidence(pin, path)) { console.error("refused: base pin file has no base evidence; a new base needs a new pin file"); process.exit(3); }
             requirePinServerId(pin);
             const lists = await readPinEvidence(pin, path);
-            if ((j.base_snapshot && j.base_snapshot !== pin.base_snapshot) || (j.base_inventory && j.base_inventory !== pin.base_inventory)) {
-              console.error("refused: base pin does not match this identity's recorded base; start a new state folder"); process.exit(3);
-            }
             const serverEvents = new Set(await inventoryIds(o));
             const serverBodies = new Set(await inventoryList(o, "bodies"));
             const serverSelections = new Set(await inventoryList(o, "import_selections"));
@@ -624,6 +659,7 @@ async function main(): Promise<void> {
             j.base_selection_count = pin.base_selection_count; j.base_selection_digest = pin.base_selection_digest;
             j.base_snapshot ??= pin.base_snapshot; j.base_inventory ??= pin.base_inventory;
             if (!validServerId(j.server_id)) j.server_id = pin.server_id;
+            checkLocalConsistency(pin, [j]);
             await writeAtomic(p, JSON.stringify(j, null, 2) + "\n", 0o600);
           }
         } else if (!validServerId(j.server_id)) {
@@ -636,6 +672,8 @@ async function main(): Promise<void> {
               await writeAtomic(p, JSON.stringify(j, null, 2) + "\n", 0o600);
             }
           }
+        } else {
+          await checkPinInUse(o, [j]);
         }
         console.log(`identity ${j.identity}`); return;
       }
@@ -667,6 +705,7 @@ async function main(): Promise<void> {
       const seed = randomBytes(32); const identity = identityFromSeed(new Uint8Array(seed));
       const runId = requirePinServerId(pin);
       const rec: Identity = { seed: hex(new Uint8Array(seed)), identity, base_snapshot: pin.base_snapshot, base_inventory: pin.base_inventory, base_event_count: pin.base_event_count ?? null, base_inventory_digest: pin.base_inventory_digest, base_body_count: pin.base_body_count ?? null, base_body_digest: pin.base_body_digest, base_selection_count: pin.base_selection_count ?? null, base_selection_digest: pin.base_selection_digest, server_id: runId };
+      await checkPinInUse(o, [rec]);
       await writeAtomic(p, JSON.stringify(rec, null, 2) + "\n", 0o600);
       console.log(`identity ${identity}`); console.log(`state ${resolve(o.state)}`);
     } else if (cmd === "unlock") {
@@ -861,9 +900,21 @@ function importSets(o: Opts): ImportSet[] {
  * synchronously when a refusal ends the process, and the finally
  * step releases them on success and on other errors.
  */
+async function captureIdentities(states: string[]): Promise<object[]> {
+  const identities: object[] = [];
+  for (const state of states) identities.push(JSON.parse(await readFile(join(state, "identity.json"), "utf8")));
+  return identities;
+}
+function capturePinFile(o: Opts, states: string[]): string {
+  return flag(o, "pin") ?? join(dirname(resolve(states[0])), "base-pin.json");
+}
 async function capture(o: Opts): Promise<void> {
   const states = await distinctStateDirs(o.multi.get("state") ?? []);
   o.multi.set("state", states);
+  if (!states.length) { console.error("refused: --state is required (repeat for each identity)"); process.exit(2); }
+  const capturePinPath = capturePinFile(o, states);
+  if (!existsSync(capturePinPath)) { console.error(`refused: capture needs the base pin file with its full evidence lists (expected ${capturePinPath}); run pin-base for this run first`); process.exit(3); }
+  checkLocalConsistency(JSON.parse(await readFile(capturePinPath, "utf8")), await captureIdentities(states));
   const handles: LockHandle[] = [];
   process.on("exit", () => { for (const h of handles) { try { h.releaseSync(); } catch {} } });
   try {
@@ -888,9 +939,14 @@ async function captureBody(o: Opts): Promise<void> {
   const firstPage = await api(o, "/inventory?kind=events&limit=1000");
   const sourceSnapshot: string = firstPage.snapshot;
   const { transports, identities: rawIdentities } = await collectSynthetic(o, states, sourceSnapshot);
+  const capturePinPath = capturePinFile(o, states);
+  if (!existsSync(capturePinPath)) { console.error(`refused: capture needs the base pin file with its full evidence lists (expected ${capturePinPath}); run pin-base for this run first`); process.exit(3); }
+  const capturePin: Pin = JSON.parse(await readFile(capturePinPath, "utf8"));
+  // Before records are combined by public key. The same key in a
+  // second folder is still compared.
+  checkLocalConsistency(capturePin, rawIdentities);
   const identities = rawIdentities.filter((v, i, a) => a.findIndex((x) => x.identity === v.identity) === i);
   if (!identities[0]?.base_snapshot || !identities[0]?.base_inventory) { console.error("refused: identity has no base pin; run init again with a base pin"); process.exit(3); }
-  const bases = new Set(identities.map((i) => i.base_snapshot + "|" + i.base_inventory)); if (bases.size > 1) { console.error("refused: state folders do not share one base pin; use one --pin file for the whole run"); process.exit(3); }
   // The derived base must equal the pin evidence. Otherwise a state
   // folder is missing, or an event outside the given folders is
   // being absorbed into the base, and the capture could not restore.
@@ -898,22 +954,9 @@ async function captureBody(o: Opts): Promise<void> {
   // The full base proof needs the pin lists themselves, beside the
   // state folders (or at --pin). An identity record carries only the
   // digests, which cannot separate base bodies from captured ones.
-  const capturePinPath = flag(o, "pin") ?? join(dirname(resolve(states[0])), "base-pin.json");
-  if (!existsSync(capturePinPath)) { console.error(`refused: capture needs the base pin file with its full evidence lists (expected ${capturePinPath}); run pin-base for this run first`); process.exit(3); }
-  const capturePin: Pin = JSON.parse(await readFile(capturePinPath, "utf8"));
   if (!pinHasEvidence(capturePin, capturePinPath)) { console.error("refused: base pin file has no full base evidence; take a new pin with pin-base"); process.exit(3); }
   requirePinServerId(capturePin);
   const pinLists = await readPinEvidence(capturePin, capturePinPath);
-  if (capturePin.base_snapshot !== identities[0].base_snapshot || capturePin.base_inventory !== identities[0].base_inventory
-    || identities.some((i) => i.base_body_digest !== capturePin.base_body_digest || i.base_selection_digest !== capturePin.base_selection_digest)) {
-    console.error("refused: state folders do not match the base pin file; use the pin file of this run"); process.exit(3);
-  }
-  if (identities.some((i) => i.base_body_count !== capturePin.base_body_count)) {
-    console.error("refused: identity base body count does not match the pin"); process.exit(3);
-  }
-  if (identities.some((i) => i.base_selection_count !== capturePin.base_selection_count)) {
-    console.error("refused: identity base selection count does not match the pin"); process.exit(3);
-  }
   const allIds = await inventoryIds(o, sourceSnapshot);
   const allBodies = await inventoryList(o, "bodies", sourceSnapshot);
   const allSelections = await inventoryList(o, "import_selections", sourceSnapshot);
@@ -1023,14 +1066,15 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   }
   if (!validServerId(manifest.source_server_id))
     fail("capture has no source server id; capture it again with the current kit");
-  for (const state of manifest.identity_states) {
-    if (state?.base_snapshot !== manifest.base_snapshot)
-      fail("identity base_snapshot does not match the manifest base_snapshot");
-    if (state?.base_inventory !== manifest.base_inventory)
-      fail("identity base_inventory does not match the manifest base_inventory");
-    if (state?.server_id !== manifest.source_server_id)
-      fail("source server id does not match the captured identity base");
-  }
+  const identityPinError = localConsistencyError(
+    { base_snapshot: manifest.base_snapshot, base_inventory: manifest.base_inventory, server_id: manifest.source_server_id },
+    manifest.identity_states.map((state: any) => ({
+      base_snapshot: state?.base_snapshot,
+      base_inventory: state?.base_inventory,
+      server_id: state?.server_id,
+    })),
+  );
+  if (identityPinError) fail(identityPinError);
   if (sha256(bytes) !== manifest.event_file_sha256) fail(`event file hash does not match manifest`);
   const lines = new TextDecoder().decode(bytes).trim().split("\n").filter(Boolean);
   if (lines.length !== manifest.event_count) fail(`event count ${lines.length} does not match manifest ${manifest.event_count}`);
@@ -1166,6 +1210,14 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
     fail(`expected final import selections do not match the pinned base: server holds ${beforeSelections.length} selections digest ${digestIds(beforeSelections)}, manifest says ${manifest.expected_final_selection_count} digest ${manifest.expected_final_selection_digest}; refusing to write`);
   if (logicalInventoryDigest(finalEventIds, finalBodies, beforeSelections) !== manifest.expected_final_logical_inventory)
     fail("expected final logical inventory does not match the pinned base plus the capture; refusing to write");
+  // A shared body makes the remaining body count smaller than the
+  // base count, so that count is not compared exactly. A base count
+  // greater than the final count cannot fit on a fresh target or a
+  // resumed target.
+  if (manifest.base_event_count > manifest.expected_final_event_count
+    || manifest.base_body_count > manifest.expected_final_body_count
+    || manifest.base_selection_count > manifest.expected_final_selection_count)
+    fail(`base count cannot fit the final set: base events ${manifest.base_event_count} of ${manifest.expected_final_event_count}, base bodies ${manifest.base_body_count} of ${manifest.expected_final_body_count}, base selections ${manifest.base_selection_count} of ${manifest.expected_final_selection_count}`);
   // Post every captured transport, not only the missing ones. A
   // repost is idempotent. It makes the server validate each captured
   // representation and supplies any body that an earlier admission

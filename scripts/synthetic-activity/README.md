@@ -366,7 +366,8 @@ Any other inventory is refused before any post. A foreign
 event is refused. A missing or added base body is refused. A
 missing or added import selection is refused. A tampered base
 value in the manifest is refused. The first mismatch is the
-reason.
+reason. When a body is in the base and the capture, the
+resumed count is not exact, and a larger base count is refused.
 
 A fresh target must match the pinned base in all three
 components. If a captured event shares that hash, a missing
