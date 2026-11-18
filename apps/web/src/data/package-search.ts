@@ -187,6 +187,12 @@ interface Client {
   retained: Set<string | number>;
   cacheRevision: number;
   preparing: Map<number, string | number>;
+  /**
+   * In-flight transfer counts by package key. A key with no count has no
+   * pending transfer, so reuse is decided by lookup instead of copying
+   * every pending key.
+   */
+  preparingKeys: Map<string | number, number>;
   pending: Map<
     number,
     {
@@ -211,11 +217,25 @@ function stopWorker(current: Client, error: Error) {
   current.worker.terminate();
   current.retained.clear();
   current.preparing.clear();
+  current.preparingKeys.clear();
   for (const waiting of current.pending.values()) waiting.reject(error);
   current.pending.clear();
   if (client === current) {
     client = undefined;
   }
+}
+/**
+ * Drops one request's transfer announcement, keeping the per-key count for
+ * any other request still transferring the same package. A request that
+ * never announced (it reused a warm package) changes nothing.
+ */
+function forgetPreparing(current: Client, request: number): void {
+  const key = current.preparing.get(request);
+  if (key === undefined) return;
+  current.preparing.delete(request);
+  const left = (current.preparingKeys.get(key) ?? 1) - 1;
+  if (left <= 0) current.preparingKeys.delete(key);
+  else current.preparingKeys.set(key, left);
 }
 function searchWorker(): Client {
   if (client) return client;
@@ -230,6 +250,7 @@ function searchWorker(): Client {
     retained: new Set(),
     cacheRevision: -1,
     preparing: new Map(),
+    preparingKeys: new Map(),
   };
   worker.onmessage = ({ data }) => {
     // Cache acknowledgments also matter after that request's consumer aborts.
@@ -245,7 +266,7 @@ function searchWorker(): Client {
       for (const key of data.retained) current.retained.add(key);
       current.cacheRevision = data.cacheRevision;
     }
-    if (!data.started) current.preparing.delete(data.request);
+    if (!data.started) forgetPreparing(current, data.request);
     const waiting = current.pending.get(data.request);
     if (!waiting) {
       if (data.started && !stale && current.canceledPatterns.has(data.request))
@@ -314,13 +335,16 @@ export async function searchPackage(
     const current = searchWorker();
     const prepare =
       force ||
-      !(
-        current.retained.has(key) ||
-        [...current.preparing.values()].includes(key)
-      );
+      !(current.retained.has(key) || current.preparingKeys.has(key));
     const request = ++requestId;
     // Announce a transfer without evicting any confirmed warm package.
-    if (prepare) current.preparing.set(request, key);
+    if (prepare) {
+      current.preparing.set(request, key);
+      current.preparingKeys.set(
+        key,
+        (current.preparingKeys.get(key) ?? 0) + 1,
+      );
+    }
     return new Promise<
       Omit<PackageSearchResult, "hits"> & {
         hits: PackageHitReferences[][];
@@ -401,7 +425,7 @@ export async function searchPackage(
       } catch (error) {
         clean();
         current.pending.delete(request);
-        current.preparing.delete(request);
+        forgetPreparing(current, request);
         // An allocation failure while the package is posted reports that the
         // package does not fit. Other clone or programming errors keep their
         // own rejection.

@@ -621,6 +621,11 @@ export function prepareQuery(
   const measured = metrics ?? searchMetrics();
   const limit = SearchRequestBudget.for(measured, options);
   limit.check("search");
+  // The raw query has no length limit on the product path, so its size is
+  // charged before anything that scales with it runs: normalization, the
+  // byte check, parsing, and the per-group word splits below all read the
+  // whole query. One unit per 64 UTF-16 code units, like entry content.
+  limit.reserve(contentUnits(0, query.length), "search");
   const text = normalizeQuery(query);
   const headword = headwordKey(text);
   const result: PreparedQuery = {

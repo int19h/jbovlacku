@@ -422,12 +422,12 @@ test("a tight preparation does not poison the whole-array cache", () => {
 });
 
 test("an exact-fit comparison block runs nothing past the allowance", () => {
-  // Review inputs: the `a a` row with the 512-word `a` query. Query
-  // parsing consumes 207,360 units and the row content 2, so at 208,387
-  // and 208,388 the 1,537-unit contiguous-block reservation itself refuses
-  // with zero comparisons. At 208,899 the reservation fits exactly and the
-  // first comparison refuses instead. Nothing runs past the allowance in
-  // any case.
+  // Review inputs: the `a a` row with the 512-word `a` query. The query
+  // size costs 16 units, parsing consumes 207,360, and the row content 2,
+  // so at 208,387 and 208,388 the 1,537-unit contiguous-block reservation
+  // itself refuses with zero comparisons. At 208,915 the reservation fits
+  // exactly and the first comparison refuses instead. Nothing runs past
+  // the allowance in any case.
   const short = {
     word: { spelling: "a a" },
     glosses: [],
@@ -435,7 +435,7 @@ test("an exact-fit comparison block runs nothing past the allowance", () => {
   } as LexicalEntry;
   const index = prepareIndex([short]);
   const query = "a ".repeat(511) + "a";
-  for (const workLimit of [208387, 208388, 208899]) {
+  for (const workLimit of [208387, 208388, 208915]) {
     const measured = searchMetrics();
     const budget = new SearchRequestBudget(measured, {
       workLimit,
@@ -504,5 +504,43 @@ test("the comparison bound covers prefix-follow re-comparisons", () => {
   assert.ok(
     budget.snapshot().spent <= workLimit,
     `spent ${budget.snapshot().spent} exceeds ${workLimit}`,
+  );
+});
+
+test("a zero-unit budget refuses before parsing the query", () => {
+  // The review probe: thousands of query words at workLimit 0. The query
+  // size is charged first, so the request refuses with zero parser work
+  // instead of splitting the whole query.
+  const measured = searchMetrics();
+  const budget = new SearchRequestBudget(measured, {
+    workLimit: 0,
+    deadlineMs: Infinity,
+  });
+  assert.throws(
+    () =>
+      prepareQuery("z ".repeat(2048) + "z", measured, {
+        requestBudget: budget,
+      }),
+    (error: unknown) => error instanceof SearchBudgetError,
+  );
+  assert.equal(measured.queryParses, 0);
+  assert.equal(measured.queryParserWork, 0);
+  assert.equal(budget.snapshot().spent, 0);
+});
+
+test("an over-long query still matches literally", () => {
+  // Past the 16,384-byte segmentation bound the query stays unparsed, but
+  // ordinary text matching keeps working under the default budget.
+  const long = "z ".repeat(9000) + "z";
+  const entry = {
+    word: { spelling: "broda" },
+    glosses: [{ text: "book" }],
+    plain_text: `prefix ${long} suffix`,
+  } as LexicalEntry;
+  const { rows, segmentation } = selectMatches([entry], long);
+  assert.equal(segmentation, "limited");
+  assert.deepEqual(
+    rows.map((row) => row.match),
+    ["token"],
   );
 });

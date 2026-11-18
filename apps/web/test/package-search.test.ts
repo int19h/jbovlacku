@@ -465,3 +465,78 @@ test("a malformed saved package reports an invalid package", async ({
   expect(result.nullRow.invalid).toBe(true);
   expect(result.empty).toEqual({ resolved: true, hits: 0 });
 });
+
+test("a cold request does not copy other pending transfers", async ({
+  page,
+}) => {
+  // Overlapping calls with distinct packages used to copy every pending
+  // transfer key into an array and search it, so one cold request did work
+  // proportional to unrelated transfers. The client now looks up the
+  // package key directly: no pending-key array is ever built or searched,
+  // even with 32 transfers in flight.
+  await page.goto("/");
+  const result = await page.evaluate(async (count) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const store = new LocalStore("pending-keys");
+    const packages = [];
+    for (let index = 0; index <= count; index++) {
+      const language = `en-x-p${index}`;
+      await store.put("packages", language, {
+        version: 1,
+        snapshot: "sha256:" + "a".repeat(64),
+        entries: [],
+      });
+      packages.push({
+        pkg: await store.get("packages", language),
+        language,
+      });
+    }
+    const calls = [];
+    for (let index = 0; index < count; index++)
+      calls.push(
+        searchPackage(packages[index].pkg, packages[index].language, [], {
+          workLimit: 0,
+        }),
+      );
+    const lengths: number[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const native: any = Array.prototype.includes;
+    const hooked = function (
+      this: unknown[],
+      needle: unknown,
+      ...rest: unknown[]
+    ): boolean {
+      if (
+        typeof needle === "string" &&
+        needle.startsWith('["en-x-p') &&
+        this.every(
+          (item) => typeof item === "string" && item.startsWith('["en-x-p'),
+        )
+      )
+        lengths.push(this.length);
+      return native.call(this, needle, ...rest);
+    };
+    try {
+      Array.prototype.includes = hooked;
+      calls.push(
+        searchPackage(packages[count].pkg, packages[count].language, [], {
+          workLimit: 0,
+        }),
+      );
+    } finally {
+      Array.prototype.includes = native;
+    }
+    const settled = await Promise.all(calls);
+    return {
+      lengths,
+      fulfilled: settled.length,
+      groups: settled[settled.length - 1].hits.length,
+    };
+  }, 32);
+  expect(result.fulfilled).toBe(33);
+  expect(result.groups).toBe(0);
+  expect(result.lengths).toEqual([]);
+});
