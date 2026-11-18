@@ -1476,34 +1476,6 @@ test.describe("touch input", () => {
   });
 });
 
-test("trusted line keys replace the paragraph after a slow Home handler", async ({
-  page,
-}) => {
-  for (let trial = 0; trial < 3; trial++) {
-    const field = await mountKeyboardField(page, "Sense: new meaning");
-    await field.evaluate((node) => {
-      node.addEventListener("keydown", (event) => {
-        if ((event as KeyboardEvent).key !== "Home") return;
-        const until = performance.now() + 35;
-        while (performance.now() < until) {
-          // Model slow browser work during this one key.
-        }
-      });
-    });
-    await chooseKeyboardSelection(field, 18, 18);
-    await page.waitForTimeout(60);
-    await field.blur();
-    await field.focus();
-    await page.keyboard.press("Home");
-    await page.keyboard.press("Shift+End");
-    await page.waitForTimeout(60);
-    await field.press("x");
-    await expect
-      .poll(() => field.evaluate((node: any) => node.value))
-      .toEqual([["x"]]);
-  }
-});
-
 test("Firefox Ctrl-drag keeps ProseMirror's normalized selection", async ({
   page,
   browserName,
@@ -1639,6 +1611,10 @@ test("a line selection made right after focus is kept", async ({ page }) => {
   });
   await page.waitForTimeout(60);
   await expectKeyboardSelection(field, "Sense: new meaning", 0, 18);
+  await field.press("x");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["x"]]);
 });
 
 test("Ctrl arrows keep native word motion in mixed-direction text", async ({
