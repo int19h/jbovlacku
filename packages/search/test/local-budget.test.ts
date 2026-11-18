@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  entryContentUnits,
   prepareIndex,
   prepareQuery,
   selectMatches,
@@ -17,6 +18,12 @@ const entry = (spelling: string, text = "A disposable definition."): LexicalEntr
   word: { spelling },
   glosses: [{ text: "book" }],
   plain_text: text,
+});
+
+const glossEntry = (glossCount: number): LexicalEntry => ({
+  word: { spelling: "broda" },
+  glosses: Array.from({ length: glossCount }, () => ({ text: "book" })),
+  plain_text: "x",
 });
 
 // A slow scan stands in for a very large retained package: the accept hook
@@ -156,7 +163,17 @@ test("a scan charges each entry before reading it, not in batches", () => {
       ),
     (error: unknown) => error instanceof SearchBudgetError,
   );
-  assert.equal(accepted, 10);
+  // Each scanned entry costs one unit plus its content in proportion to the
+  // bytes the scan handles, so a 10-unit budget stops after the entries that
+  // fit instead of after exactly ten entries.
+  const perEntry =
+    1 +
+    entryContentUnits({
+      word: { spelling: "broda0" },
+      glosses: [{ text: "book" }],
+      plain_text: "A disposable definition.",
+    });
+  assert.equal(accepted, Math.floor(10 / perEntry));
 });
 
 test("one shared budget covers preparation and its query together", () => {
@@ -214,5 +231,88 @@ test("a grouped query parse counts against the shared request budget", () => {
         requestBudget: shared,
       }),
     (error: unknown) => error instanceof SearchBudgetError,
+  );
+});
+
+test("preparation charges gloss count in proportion, not per entry", () => {
+  // One hundred ordinary entries pass comfortably under a thousand units.
+  const ordinary = Array.from({ length: 100 }, (_, index) =>
+    glossEntry(1),
+  );
+  prepareIndex(ordinary, searchMetrics(), {
+    workLimit: 1000,
+    deadlineMs: Infinity,
+  });
+  // A hundred entries with the maximum gloss count cost hundreds of
+  // thousands of units on the same budget.
+  const heavy = Array.from({ length: 100 }, (_, index) => glossEntry(8192));
+  assert.throws(
+    () =>
+      prepareIndex(heavy, searchMetrics(), {
+        workLimit: 1000,
+        deadlineMs: Infinity,
+      }),
+    (error: unknown) =>
+      error instanceof SearchBudgetError && error.phase === "prepare",
+  );
+});
+
+test("a long literal query is transformed once, not once per entry", () => {
+  const query = "qqq.rrr";
+  const entries = Array.from({ length: 200 }, (_, index) =>
+    entry(`broda${index}`),
+  );
+  const calls: number[] = [];
+  const original = String.prototype.replace;
+  String.prototype.replace = function (
+    this: string,
+    ...args: [searchValue: string | RegExp, replaceValue: string]
+  ): string {
+    if (String(this) === query && String(args[0]) === "/[.,]/gu")
+      calls.push(1);
+    return Reflect.apply(original, this, args);
+  } as typeof String.prototype.replace;
+  try {
+    selectMatches(entries, query, undefined, undefined, {
+      patterns: false,
+    });
+  } finally {
+    String.prototype.replace = original;
+  }
+  // One hoisted prefix replacement plus the single-word query shape: the
+  // per-entry scan used to repeat the query replacement two hundred times.
+  assert.ok(calls.length <= 5, `expected a few query replaces, saw ${calls.length}`);
+});
+
+test("an exhausted budget stops the parser before it starts", () => {
+  // A 199-character spelling makes the morphology parser run tens of
+  // thousands of steps under its own cap.
+  const long = entry("x".repeat(199));
+  const shared = SearchRequestBudget.for(searchMetrics(), {
+    workLimit: 1,
+    deadlineMs: Infinity,
+  });
+  assert.throws(
+    () => prepareIndex([long], searchMetrics(), { requestBudget: shared }),
+    (error: unknown) => error instanceof SearchBudgetError,
+  );
+  // The parser never ran: only the per-entry content charge was spent.
+  assert.ok(shared.snapshot().spent < 100);
+});
+
+test("a nearly exhausted budget bounds the parser to what remains", () => {
+  const long = entry("x".repeat(199));
+  const measured = searchMetrics();
+  const shared = SearchRequestBudget.for(measured, {
+    workLimit: 100,
+    deadlineMs: Infinity,
+  });
+  // The full allowance makes the parser run tens of thousands of steps and
+  // refuse the request; the remaining allowance keeps the parse near zero
+  // work so the request still completes.
+  prepareIndex([long], measured, { requestBudget: shared });
+  assert.ok(
+    measured.headwordParserWork < 1000,
+    `parser work ${measured.headwordParserWork}`,
   );
 });

@@ -423,6 +423,7 @@ export async function meaningPage(
         );
         let opened = false;
         let sinceYield = 0;
+        let lastFirst: HTMLElement | undefined;
         while (shown < entries.length) {
           if (!valid()) return;
           const fragment = document.createDocumentFragment();
@@ -441,12 +442,16 @@ export async function meaningPage(
           // Focus stays on the new rows without scrolling the page for
           // every batch.
           firstRow?.focus({ preventScroll: true });
+          if (firstRow) lastFirst = firstRow;
           sinceYield += 1;
           if (shown < entries.length && sinceYield >= 10) {
             sinceYield = 0;
             await new Promise((resolve) => setTimeout(resolve, 0));
           }
         }
+        // The final focus target scrolls into view once rendering finishes,
+        // so the focused row is visible instead of far below the viewport.
+        lastFirst?.scrollIntoView({ block: "nearest" });
       }
       typedStatus.append(
         definitionsList,

@@ -100,6 +100,58 @@ test("rafsi rows stop at the display limit instead of visiting the rest", () => 
   assert.equal(secondPulls, 0);
 });
 
+test("a later language's row replaces an existing word-and-rafsi key", () => {
+  const found = new Map<
+    string,
+    { spelling: string; language: string; rafsi: string }
+  >();
+  const same = [
+    {
+      word_id: "one",
+      word: { spelling: "broda" },
+      matchingRafsi: ["bau"],
+    },
+  ];
+  assert.equal(takeRafsiRows(same as never, "en", found, 1000), false);
+  assert.equal(found.get("one|bau")?.language, "en");
+  assert.equal(takeRafsiRows(same as never, "fr", found, 1000), false);
+  assert.equal(found.size, 1);
+  assert.equal(found.get("one|bau")?.language, "fr");
+});
+
+test("a replacement past the cap fills nothing and sets no limit", () => {
+  const found = new Map<
+    string,
+    { spelling: string; language: string; rafsi: string }
+  >();
+  const full = [
+    {
+      word_id: "one",
+      word: { spelling: "broda" },
+      matchingRafsi: Array.from({ length: 1000 }, (_, index) => `raf${index}`),
+    },
+  ];
+  assert.equal(takeRafsiRows(full as never, "en", found, 1000), false);
+  assert.equal(found.size, 1000);
+  const dup = [
+    {
+      word_id: "one",
+      word: { spelling: "broda" },
+      matchingRafsi: ["raf0"],
+    },
+  ];
+  assert.equal(takeRafsiRows(dup as never, "fr", found, 1000), false);
+  assert.equal(found.get("one|raf0")?.language, "fr");
+  const novel = [
+    {
+      word_id: "one",
+      word: { spelling: "broda" },
+      matchingRafsi: ["rafX"],
+    },
+  ];
+  assert.equal(takeRafsiRows(novel as never, "fr", found, 1000), true);
+});
+
 test("rafsi rows deduplicate repeat spellings without filling", () => {
   const hits = [
     {

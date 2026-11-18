@@ -2109,7 +2109,7 @@ An optional client download quota can cap one download. It is off by default.
 Malformed input rejects the package as invalid. A valid package is never reported as malformed for its size.
 A download that the device cannot fit reports that the package does not fit in this browser's storage or memory.
 A download that a configured quota stops names the quota.
-A package that fails worker validation, preparation, or indexing reports the same does-not-fit outcome instead of a raw allocation error, as does a live worker that crashes while preparing it. A worker that never starts keeps the startup message.
+Worker validation reports malformed input as an invalid package. A package the device cannot fit reports does-not-fit instead of a raw allocation error, whether the allocation fails during download, validation, preparation, or indexing. A work-budget or deadline refusal reports the local-search limit failure instead of the malformed-package message, and preparation or indexing stopped by the budget reports that the package index is too costly to build. A live worker crash reports does-not-fit only for an allocation failure in either engine's wording; any other crash, including a worker that never starts, keeps the startup message.
 
 `search_view` is the selected signed view ID that binds ordering evidence for every row in that snapshot.
 The browser retains that binding once per saved package and passes it to local search.

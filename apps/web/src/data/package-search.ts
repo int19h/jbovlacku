@@ -8,9 +8,11 @@ import {
 } from "./search.ts";
 import type { PackageEntry } from "../model/types.ts";
 import {
+  entryContentUnits,
   isPatternQuery,
   PatternError,
   searchMetrics,
+  SearchBudgetError,
   SearchRequestBudget,
   isSearchBudgetState,
   type SearchBudgetState,
@@ -70,16 +72,42 @@ class MissingPackageError extends Error {}
 /**
  * Maps a worker reply to its rejection. A worker that reports `package-too-large`
  * ran out of room while the package was validated, prepared, or indexed, so
- * the request fails with the documented does-not-fit message.
+ * the request fails with the documented does-not-fit message. A worker that
+ * reports `resource-limit` hit the request budget or deadline: the rejection
+ * keeps the resource-failure type instead of the invalid-package message so
+ * the page does not drop its local package.
  */
-export function workerReplyError(code: unknown, message: unknown): Error {
+export function workerReplyError(
+  code: unknown,
+  message: unknown,
+  phase?: unknown,
+): Error {
   const text = typeof message === "string" ? message : String(message);
   if (code === "invalid-package") return new PackageValidationError(text);
   if (code === "package-missing") return new MissingPackageError(text);
   if (code === "package-too-large") return new PackageStorageError(text);
+  if (code === "resource-limit")
+    return new SearchBudgetError(
+      phase === "prepare" ? "prepare" : "search",
+      text,
+    );
   if (code === "pattern_timeout" || code === "pattern_invalid")
     return new PatternError(code, text);
   return new Error(text);
+}
+/**
+ * Whether an error is an allocation failure in either engine's wording:
+ * V8 reports "Array buffer allocation failed" and both engines report out
+ * of memory and invalid array lengths as RangeErrors. A name alone does not
+ * identify the cause: an out-of-bounds access is also a RangeError.
+ */
+const ALLOCATION_FAILURE_MESSAGE =
+  /array buffer allocation failed|invalid array length|out of memory/i;
+export function isAllocationFailure(error: unknown): boolean {
+  return (
+    error instanceof RangeError &&
+    ALLOCATION_FAILURE_MESSAGE.test(error.message)
+  );
 }
 /**
  * Evidence for classifying a worker crash. A worker that runs out of room
@@ -87,20 +115,32 @@ export function workerReplyError(code: unknown, message: unknown): Error {
  * `ErrorEvent` with e.g. "Uncaught RangeError: Array buffer allocation
  * failed"; Firefox delivers an `ErrorEvent` with the bare "RangeError: ..."
  * form and a null error object. A script that never loads reports a syntax
- * error instead.
+ * error instead. The message decides whether a RangeError is an allocation
+ * failure: a name alone does not, since an out-of-bounds access is also a
+ * RangeError.
  */
 export interface WorkerCrashEvidence {
   /** Parsed error name, e.g. "RangeError", "Error", or "SyntaxError". */
   errorName?: string;
+  /** The error message, kept so allocation failures stay distinguishable. */
+  message?: string;
 }
 /**
  * Classifies a worker crash by its own cause. Only an allocation failure
  * reports does-not-fit. Every other crash — an ordinary error, a load
- * failure, or a crash with no error information — keeps the generic startup
- * message, no matter what the worker reported before.
+ * failure, a non-allocation RangeError, or a crash with no error
+ * information — keeps the generic startup message, no matter what the
+ * worker reported before.
  */
 export function workerCrashReason(evidence: WorkerCrashEvidence): Error {
-  if (/^(RangeError|QuotaExceededError)$/i.test(evidence.errorName ?? ""))
+  if (/^QuotaExceededError$/i.test(evidence.errorName ?? ""))
+    return new PackageStorageError();
+  // A RangeError is an allocation failure only when its message is one in
+  // either engine: an out-of-bounds access is also a RangeError.
+  if (
+    /^RangeError$/i.test(evidence.errorName ?? "") &&
+    ALLOCATION_FAILURE_MESSAGE.test(evidence.message ?? "")
+  )
     return new PackageStorageError();
   return new Error("Local search could not start. Reload the page to retry.");
 }
@@ -119,6 +159,21 @@ export function workerErrorName(event: unknown): string | undefined {
   if (anyEvent?.error instanceof Error) return anyEvent.error.name;
   const message = typeof anyEvent?.message === "string" ? anyEvent.message : "";
   return /^(?:Uncaught )?([A-Za-z]*Error):/.exec(message)?.[1];
+}
+/**
+ * Reads the error message from a worker error event for the crash
+ * classifier: the error object's message when the browser supplies one,
+ * else the event's own message. Allocation failures in either engine carry
+ * their wording here.
+ */
+export function workerErrorMessage(event: unknown): string | undefined {
+  if (event instanceof Error) return event.message;
+  const anyEvent = event as {
+    error?: unknown;
+    message?: unknown;
+  } | null;
+  if (anyEvent?.error instanceof Error) return anyEvent.error.message;
+  return typeof anyEvent?.message === "string" ? anyEvent.message : undefined;
 }
 interface Client {
   worker: Worker;
@@ -201,14 +256,20 @@ function searchWorker(): Client {
     }
     current.pending.delete(data.request);
     if (data.error) {
-      waiting.reject(workerReplyError(data.code, data.error));
+      waiting.reject(workerReplyError(data.code, data.error, data.phase));
     } else {
       latest = { metrics: data.result.metrics, prepared: data.result.prepared };
       waiting.resolve(data.result);
     }
   };
   worker.onerror = (event) => {
-    stopWorker(current, workerCrashReason({ errorName: workerErrorName(event) }));
+    stopWorker(
+      current,
+      workerCrashReason({
+        errorName: workerErrorName(event),
+        message: workerErrorMessage(event),
+      }),
+    );
   };
   client = current;
   return current;
@@ -303,8 +364,14 @@ export async function searchPackage(
       signal?.addEventListener("abort", abort, { once: true });
       try {
         // Transferring the package clones every entry onto the worker, so the
-        // transfer charges one unit per entry before it is posted.
-        if (prepare) clientBudget.reserve(pkg.entries.length, "prepare");
+        // transfer charges one unit per entry plus its content before the
+        // package is posted.
+        if (prepare) {
+          let transferUnits = 0;
+          for (const entry of pkg.entries)
+            transferUnits += 1 + entryContentUnits(entry);
+          clientBudget.reserve(transferUnits, "prepare");
+        }
         current.worker.postMessage({
           request,
           key,
@@ -318,7 +385,12 @@ export async function searchPackage(
         clean();
         current.pending.delete(request);
         current.preparing.delete(request);
-        reject(error);
+        // An allocation failure while the package is posted reports that the
+        // package does not fit. Other clone or programming errors keep their
+        // own rejection.
+        reject(
+          isAllocationFailure(error) ? new PackageStorageError() : error,
+        );
       }
     });
   };
@@ -336,6 +408,9 @@ export async function searchPackage(
         workLimit: options.workLimit,
         deadlineMs: options.deadlineMs,
       });
+  // The resumed budget permits completion before any result is returned,
+  // including an empty one: the deadline spans the worker reply delivery.
+  continued.check("search");
   return {
     ...result,
     hits: resolvePackageHits(pkg, result.hits, continued),
@@ -445,8 +520,10 @@ export function previewEntryForHit(
 }
 /**
  * Rows the rafsi page collects from result hits, at most `limit` in visit
- * order, deduplicated across calls through `found`. Returns true only when
- * a further spelling exists past the limit, so the page marks its list
+ * order, deduplicated across calls through `found`. A later language's row
+ * replaces an existing word-and-rafsi key, as on main — even after the cap
+ * fills, since replacing adds no row. Returns true only when a further
+ * *novel* spelling exists past the limit, so the page marks its list
  * limited exactly when a row was left out. The call stops at that first
  * omitted spelling and otherwise visits the same spellings as an uncapped
  * scan, so it never visits more than main would.
@@ -460,7 +537,16 @@ export function takeRafsiRows(
   for (const hit of hits) {
     for (const spelling of hit.matchingRafsi ?? []) {
       const key = `${hit.word_id}|${spelling}`;
-      if (found.has(key)) continue;
+      // A repeat key takes the later language's row without counting
+      // toward the cap, exactly as the uncapped accumulation does.
+      if (found.has(key)) {
+        found.set(key, {
+          spelling: hit.word.spelling,
+          language,
+          rafsi: spelling,
+        });
+        continue;
+      }
       if (found.size >= limit) return true;
       found.set(key, { spelling: hit.word.spelling, language, rafsi: spelling });
     }

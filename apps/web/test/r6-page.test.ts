@@ -243,6 +243,18 @@ test("the typed-word check caps a 1001-definition word with show-all", async ({
   // Each rendered batch focuses its first new row, including the final one.
   expect(focused.tag).toBe("LI");
   expect(focused.text).toBe("Definition 1000 is a book.");
+  const box = await page.evaluate(() => {
+    const active = document.activeElement as HTMLElement | null;
+    if (!active) return null;
+    const rect = active.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, height: window.innerHeight };
+  });
+  // The final focus target scrolls into view instead of staying far below
+  // the viewport.
+  expect(box).not.toBeNull();
+  expect(box!.top).toBeGreaterThanOrEqual(0);
+  // A one-pixel tolerance absorbs sub-pixel rounding at the viewport edge.
+  expect(box!.bottom).toBeLessThanOrEqual(box!.height + 1);
 });
 
 test("the typed-word check pages a 100000-definition word in batches", async ({
@@ -308,6 +320,59 @@ test("the typed-word check pages a 100000-definition word in batches", async ({
   // Each rendered batch focuses its first new row, including the final one.
   expect(focused.tag).toBe("LI");
   expect(focused.text).toBe("Definition 99950 is a book.");
+  const box = await page.evaluate(() => {
+    const active = document.activeElement as HTMLElement | null;
+    if (!active) return null;
+    const rect = active.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, height: window.innerHeight };
+  });
+  expect(box).not.toBeNull();
+  expect(box!.top).toBeGreaterThanOrEqual(0);
+  // A one-pixel tolerance absorbs sub-pixel rounding at the viewport edge.
+  expect(box!.bottom).toBeLessThanOrEqual(box!.height + 1);
+});
+
+test("a later language's rafsi row replaces the earlier one", async ({
+  page,
+}) => {
+  await page.goto("/");
+  // The same word and rafsi in English and French: the French row wins, as
+  // on main, without counting as a new row against the cap.
+  const broda = (language: string) => ({
+    ...wordEntry(0),
+    language,
+    rafsi: ["bau"],
+  });
+  await seedPackages(page, {
+    en: { snapshot, version: 2, entries: [broda("en")] },
+    fr: { snapshot, version: 2, entries: [broda("fr")] },
+  });
+  await blockPackageDownloads(page);
+  const words = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { wordsWithRafsi } = await import(String("/src/pages/rafsi.ts"));
+    const store = new LocalStore();
+    const app = {
+      session: {
+        preferences: { definitionLanguage: "en" },
+        storageAvailable: true,
+      },
+      store,
+    };
+    const found = await wordsWithRafsi(
+      app as never,
+      "bau",
+      new AbortController().signal,
+    );
+    return found.map(
+      (row: { spelling: string; language: string; rafsi: string }) => ({
+        spelling: row.spelling,
+        language: row.language,
+        rafsi: row.rafsi,
+      }),
+    );
+  });
+  expect(words).toEqual([{ spelling: "broda", language: "fr", rafsi: "bau" }]);
 });
 
 test("exactly 1000 rafsi rows show no limited notice", async ({ page }) => {

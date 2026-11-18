@@ -4,6 +4,7 @@ import {
   prepareQuery,
   searchMetrics,
   PatternError,
+  SearchBudgetError,
   isPatternQuery,
   SearchRequestBudget,
   isSearchBudgetState,
@@ -81,6 +82,18 @@ self.onmessage = ({ data }) => {
           // package does not fit instead of the raw allocation error.
           if (error instanceof RangeError) {
             tooLarge(data.request, data.key);
+            return;
+          }
+          // A budget refusal on valid data stays a resource failure so the
+          // page does not mistake it for a malformed package.
+          if (error instanceof SearchBudgetError) {
+            reply({
+              request: data.request,
+              key: data.key,
+              code: "resource-limit",
+              phase: error.phase,
+              error: error.message,
+            });
             return;
           }
           reply({
@@ -190,12 +203,12 @@ self.onmessage = ({ data }) => {
       // client, so the mapping also counts the transfer units up front.
       // Reply field audit: each hit charges one unit for its fixed-size
       // shell (word_id, match, preview index) plus one unit per entry
-      // index, one per definition index, and one per matching rafsi
-      // spelling, which the clone copies string by string. The remaining
-      // reply fields are fixed-size scalars or small bounded structures
-      // covered by those per-hit units: totals (one number per group),
-      // segmentation, prepared, allLojban, the metrics counters, and the
-      // budget snapshot. The client rebuild maps hits, entries, and
+      // index, one per definition index, and one unit per 64 characters of
+      // matching rafsi, which the clone copies string by string. The
+      // remaining reply fields are fixed-size scalars or small bounded
+      // structures covered by those per-hit units: totals (one number per
+      // group), segmentation, prepared, allLojban, the metrics counters,
+      // and the budget snapshot. The client rebuild maps hits, entries, and
       // definitions one unit each and passes the rafsi array through by
       // reference, so it needs no per-spelling charge of its own.
       let transferUnits = 0;
@@ -215,9 +228,12 @@ self.onmessage = ({ data }) => {
             return stored.events.get(event)!;
           });
           // The clone copies every matching rafsi string, so the transfer
-          // charges one unit per spelling. The mapping itself only copies
-          // the reference, which the per-hit unit above already covers.
-          if (hit.matchingRafsi) transferUnits += hit.matchingRafsi.length;
+          // charges each spelling in proportion to its length. The mapping
+          // itself only copies the reference, which the per-hit unit above
+          // already covers.
+          if (hit.matchingRafsi)
+            for (const spelling of hit.matchingRafsi)
+              transferUnits += Math.max(1, Math.ceil(spelling.length / 64));
           requestBudget.reserve(1, "search");
           transferUnits += 1;
           return {
@@ -247,6 +263,18 @@ self.onmessage = ({ data }) => {
     } catch (error) {
       queued.delete(data.request);
       canceled.delete(data.request);
+      // A budget refusal anywhere else in the request also stays a resource
+      // failure instead of an untyped error.
+      if (error instanceof SearchBudgetError) {
+        reply({
+          request: data.request,
+          key: data.key,
+          code: "resource-limit",
+          phase: error.phase,
+          error: error.message,
+        });
+        return;
+      }
       reply({
         request: data.request,
         key: data.key,

@@ -8,6 +8,7 @@ import {
   wordId,
 } from "../../../../packages/core/src/browser.ts";
 import {
+  entryContentUnits,
   selectMatches,
   selectRafsiMatches,
   withSegmentation,
@@ -314,8 +315,9 @@ export function validateCachedPackage(
   const version = value.version === 2 ? 2 : 1;
   let previous = "";
   for (const entry of value.entries) {
-    // One validated entry costs one unit, charged before the entry is read.
-    budget?.reserve(1, "prepare");
+    // One validated entry costs one unit plus its content, charged before
+    // the entry is read so a bloated package refuses up front.
+    budget?.reserve(1 + entryContentUnits(entry), "prepare");
     validateEntry(entry, language, version, value.search_view);
     if (value.search_view && typeof entry.search_status !== "string")
       throw invalidPackage();

@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { initializeCore } from "../../../../packages/core/src/index.ts";
-import { searchMetrics, SearchRequestBudget } from "../../../../packages/search/src/index.ts";
+import {
+  searchMetrics,
+  SearchBudgetError,
+  SearchRequestBudget,
+} from "../../../../packages/search/src/index.ts";
 import type { PackageEntry } from "../../src/model/types.ts";
 
 Object.assign(globalThis, {
@@ -25,6 +29,7 @@ const { localSearch, validateCachedPackage } = searchModule;
 const {
   workerReplyError,
   workerCrashReason,
+  workerErrorMessage,
   workerErrorName,
   resolvePackageHits,
 } = await import("../../src/data/package-search.ts");
@@ -70,10 +75,47 @@ test("a worker crash is classified by cause, not history", () => {
     workerCrashReason({ errorName: undefined }).message,
     generic,
   );
-  // An allocation failure reports does-not-fit on its own evidence.
+  // An allocation failure reports does-not-fit on its own evidence, in
+  // either engine's wording. A bare RangeError no longer suffices: only the
+  // message proves the cause.
   assert.match(
     workerCrashReason({ errorName: "RangeError" }).message,
+    generic,
+  );
+  assert.match(
+    workerCrashReason({
+      errorName: "RangeError",
+      message: "Array buffer allocation failed",
+    }).message,
     /does not fit/,
+  );
+  assert.match(
+    workerCrashReason({
+      errorName: "RangeError",
+      message: "invalid array length",
+    }).message,
+    /does not fit/,
+  );
+  assert.match(
+    workerCrashReason({ errorName: "RangeError", message: "out of memory" })
+      .message,
+    /does not fit/,
+  );
+  // A bounds error is also a RangeError but keeps the startup message, in
+  // both engines' wording.
+  assert.match(
+    workerCrashReason({
+      errorName: "RangeError",
+      message: "Offset is outside of the bounds of the DataView",
+    }).message,
+    generic,
+  );
+  assert.match(
+    workerCrashReason({
+      errorName: "RangeError",
+      message: "offset is outside the bounds of the DataView",
+    }).message,
+    generic,
   );
   assert.match(
     workerCrashReason({ errorName: "QuotaExceededError" }).message,
@@ -113,6 +155,97 @@ test("worker error names cover both engines' event shapes", () => {
   );
   assert.equal(workerErrorName({ message: "nothing useful" }), undefined);
   assert.equal(workerErrorName(null), undefined);
+});
+
+test("entry content counts items and bytes, never malformed shapes", async () => {
+  const { entryContentUnits } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  assert.equal(entryContentUnits(null), 0);
+  assert.equal(entryContentUnits("broda"), 0);
+  // One gloss and a short headword stay small.
+  assert.equal(
+    entryContentUnits({
+      word: { spelling: "broda" },
+      glosses: [{ text: "book" }],
+      plain_text: "x",
+    }),
+    1 + Math.ceil((5 + 1 + 4) / 64),
+  );
+  // Thousands of glosses cost thousands of units.
+  assert.ok(
+    entryContentUnits({
+      word: { spelling: "broda" },
+      glosses: Array.from({ length: 8192 }, () => ({ text: "x".repeat(250) })),
+      plain_text: "x",
+    }) > 40000,
+  );
+  // An oversized malformed list cannot turn into a budget refusal: counts
+  // stop at the validation bounds so validation still reports invalid input.
+  assert.ok(
+    entryContentUnits({ glosses: new Array(1000000).fill({ text: "x" }) }) <
+      20000,
+  );
+});
+
+test("a worker budget refusal keeps its resource type", () => {
+  const prepared = workerReplyError(
+    "resource-limit",
+    "The package index is too costly to build on this device.",
+    "prepare",
+  );
+  assert.ok(prepared instanceof SearchBudgetError);
+  assert.equal(prepared.phase, "prepare");
+  const searched = workerReplyError(
+    "resource-limit",
+    "Local search reached its work or time limit.",
+    "search",
+  );
+  assert.ok(searched instanceof SearchBudgetError);
+  assert.equal(searched.phase, "search");
+});
+
+test("only allocation wording marks a RangeError as out of room", async () => {
+  const { isAllocationFailure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  assert.equal(
+    isAllocationFailure(new RangeError("Array buffer allocation failed")),
+    true,
+  );
+  assert.equal(
+    isAllocationFailure(new RangeError("invalid array length")),
+    true,
+  );
+  assert.equal(isAllocationFailure(new RangeError("out of memory")), true);
+  assert.equal(
+    isAllocationFailure(
+      new RangeError("Offset is outside of the bounds of the DataView"),
+    ),
+    false,
+  );
+  assert.equal(isAllocationFailure(new RangeError()), false);
+  assert.equal(isAllocationFailure(new Error("out of memory")), false);
+  assert.equal(isAllocationFailure(null), false);
+});
+
+test("worker crash messages keep both engines' wording", () => {
+  assert.equal(workerErrorMessage(new RangeError("Array buffer allocation failed")), "Array buffer allocation failed");
+  assert.equal(
+    workerErrorMessage({
+      message: "Uncaught RangeError: Array buffer allocation failed",
+      error: null,
+    }),
+    "Uncaught RangeError: Array buffer allocation failed",
+  );
+  assert.equal(
+    workerErrorMessage({
+      message: "RangeError: offset is outside the bounds of the DataView",
+      error: null,
+    }),
+    "RangeError: offset is outside the bounds of the DataView",
+  );
+  assert.equal(workerErrorMessage(null), undefined);
 });
 
 test("cached-package validation charges the request budget", () => {

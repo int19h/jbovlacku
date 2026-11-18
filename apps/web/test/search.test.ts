@@ -606,17 +606,18 @@ test("the worker continues the transferred budget state", async ({
         { snapshot: "sha256:" + "a".repeat(64), entries },
         "en",
         ["book"],
-        { workLimit: 75000 },
+        { workLimit: 200000 },
       );
       return "resolved";
     } catch (error) {
       return `${(error as Error).constructor.name}: ${(error as Error).message}`;
     }
   }, corePath);
-  // The transfer, validation, preparation, maps, scan, grouping, and response
-  // mapping spend about 85,000 units against the shared budget, so the
-  // response mapping refuses. Without the transferred and mapped stages the
-  // same request costs about 60,000 units and completes.
+  // Per-entry content charges lift the shared-budget spend: validation,
+  // preparation, maps, scan, grouping, and response mapping spend about
+  // 210,000 units, so the response mapping refuses. Without the transferred
+  // and mapped stages the same request costs about 190,000 units and
+  // completes.
   expect(outcome).toContain("work or time limit");
 });
 
@@ -646,7 +647,7 @@ test("the worker charges the response transfer it posts", async ({
         { snapshot: "sha256:" + "a".repeat(64), entries },
         "en",
         ["/.*/"],
-        { workLimit: 225 },
+        { workLimit: 450 },
       );
       return "resolved";
     } catch (error) {
@@ -654,8 +655,9 @@ test("the worker charges the response transfer it posts", async ({
     }
   }, corePath);
   // A pattern query spends no parser work, so only the transfer and rebuild
-  // charges can refuse. At this boundary the previous head still resolves:
-  // only the worker's reply-transfer charge refuses the same request.
+  // charges can refuse. Per-entry content charges lift the shared-budget
+  // spend to about 465 units with the transfer; at 450 the previous head
+  // still resolves while only the reply-transfer charge refuses.
   expect(outcome).toContain("work or time limit");
 });
 
@@ -692,7 +694,7 @@ test("the worker charges every matching rafsi in the response transfer", async (
         { snapshot: "sha256:" + "a".repeat(64), version: 2, entries },
         "en",
         ["/raf/"],
-        { rafsiOnly: true, workLimit: 470 },
+        { rafsiOnly: true, workLimit: 1100 },
       );
       return "resolved";
     } catch (error) {
@@ -703,6 +705,213 @@ test("the worker charges every matching rafsi in the response transfer", async (
   // so only the per-spelling reply-transfer charge refuses it. The previous
   // head, which clones the 80 spellings for free, resolves the same request.
   expect(outcome).toContain("work or time limit");
+});
+
+test("a worker validation budget refusal keeps its resource type", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const { PackageValidationError } = await import(
+      String("/src/data/package-search.ts")
+    );
+    // Ten ordinary entries cost 40 units to transfer and 40 more to
+    // validate: at 60 the worker still validates, but its budget refusal
+    // reports a resource failure instead of an invalid package.
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    try {
+      await searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), entries },
+        "en",
+        ["book"],
+        { workLimit: 60 },
+      );
+      return "resolved";
+    } catch (error) {
+      return `${(error as Error).constructor.name}: ${(error as Error).message} :: notInvalid=${!(error instanceof PackageValidationError)}`;
+    }
+  }, corePath);
+  expect(outcome).toContain("SearchBudgetError");
+  expect(outcome).toContain("too costly to build");
+  expect(outcome).toContain("notInvalid=true");
+});
+
+test("a reply held past the deadline refuses through local search", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    // Hold every worker reply for 600 ms: with a 250 ms deadline the
+    // resumed budget has expired by the time any result arrives. The
+    // client assigns worker.onmessage, so the harness wraps that setter.
+    const Original = window.Worker;
+    const delay = (
+      listener: EventListenerOrEventListenerObject,
+      target: WindowProxy | Worker,
+    ) => {
+      const delayed = (event: MessageEvent) => {
+        setTimeout(() => {
+          if (typeof listener === "function") listener.call(target, event);
+          else listener.handleEvent(event);
+        }, 600);
+      };
+      return delayed as EventListener;
+    };
+    window.Worker = class extends Original {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        if (!String(url).includes("package-search-worker")) return;
+        const originalAdd = this.addEventListener.bind(this);
+        this.addEventListener = ((
+          type: string,
+          listener: EventListenerOrEventListenerObject | null,
+          options?: AddEventListenerOptions,
+        ) => {
+          if (type === "message" && listener)
+            return originalAdd(type, delay(listener, this), options);
+          return originalAdd(
+            type,
+            listener as EventListener,
+            options as AddEventListenerOptions,
+          );
+        }) as typeof this.addEventListener;
+        // The own accessor shadows the prototype's, so it forwards the
+        // wrapped handler to the real registration as well; otherwise the
+        // browser would dispatch to nothing and every request would hang.
+        let handler: EventListenerOrEventListenerObject | null = null;
+        const protoSetter = Object.getOwnPropertyDescriptor(
+          Original.prototype,
+          "onmessage",
+        )?.set;
+        Object.defineProperty(this, "onmessage", {
+          configurable: true,
+          get: () => handler,
+          set: (next: EventListenerOrEventListenerObject | null) => {
+            handler = next;
+            const wrapped = next ? delay(next, this) : next;
+            if (protoSetter) protoSetter.call(this, wrapped);
+            else if (wrapped) originalAdd("message", wrapped);
+          },
+        });
+      }
+    };
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    const attempts: string[] = [];
+    for (const query of ["zzz-no-such-word", "book"]) {
+      try {
+        const found = await searchPackage(
+          { snapshot: "sha256:" + "a".repeat(64), entries },
+          "en",
+          [query],
+          { deadlineMs: 250 },
+        );
+        attempts.push(`${query}:resolved:${found.hits[0].length}`);
+      } catch (error) {
+        attempts.push(
+          `${query}:${(error as Error).constructor.name}:${(error as Error).message}`,
+        );
+      }
+    }
+    return attempts.join(" | ");
+  }, corePath);
+  // Even the zero-hit reply arrives past the deadline, so the resumed
+  // budget refuses before returning it; the non-empty reply refuses too.
+  expect(outcome).toContain("zzz-no-such-word:SearchBudgetError");
+  expect(outcome).toContain("work or time limit");
+  expect(outcome).toContain("book:SearchBudgetError");
+});
+
+test("a physical package-transfer failure reports does-not-fit", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const { PackageStorageError } = await import(
+      String("/src/data/search.ts")
+    );
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    const pkg = { snapshot: "sha256:" + "a".repeat(64), entries };
+    const results: string[] = [];
+    const Original = window.Worker;
+    // A constructor parameter property would shadow the failure with its
+    // own undefined, so the injected failure lives in a closure.
+    let fail: unknown;
+    window.Worker = class extends Original {
+      override postMessage(message: unknown, ...rest: never[]) {
+        if (
+          message &&
+          typeof message === "object" &&
+          "pkg" in (message as Record<string, unknown>) &&
+          fail !== undefined
+        )
+          throw fail;
+        return super.postMessage(message, ...rest);
+      }
+    };
+    // An allocation failure while posting reports does-not-fit.
+    fail = new RangeError("Array buffer allocation failed");
+    try {
+      await searchPackage(pkg, "en", ["book"]);
+      results.push("allocation:resolved");
+    } catch (error) {
+      results.push(
+        `allocation:${(error as Error).constructor.name}:${error instanceof PackageStorageError}`,
+      );
+    }
+    // Any other clone error keeps its own rejection.
+    fail = new Error("clone boom");
+    try {
+      await searchPackage(pkg, "en", ["book"]);
+      results.push("other:resolved");
+    } catch (error) {
+      results.push(
+        `other:${(error as Error).constructor.name}:${(error as Error).message}`,
+      );
+    }
+    window.Worker = Original;
+    return results.join(" | ");
+  }, corePath);
+  expect(outcome).toContain("allocation:PackageStorageError:true");
+  expect(outcome).toContain("other:Error:clone boom");
 });
 
 test("an invalid cached package is reported and server search stays usable", async ({

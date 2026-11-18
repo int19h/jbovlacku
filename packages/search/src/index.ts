@@ -34,6 +34,64 @@ export const SEARCH_LOCAL_WORK_LIMIT = 200_000_000;
  * pathological platform behavior).
  */
 export const SEARCH_LOCAL_DEADLINE_MS = 300_000;
+/**
+ * Work units for variable-size content: one unit per item plus one unit per
+ * 64 UTF-16 code units, so charges grow with the bytes and items actually
+ * handled instead of counting every entry the same.
+ */
+export function contentUnits(items: number, chars: number): number {
+  return items + Math.ceil(chars / 64);
+}
+/**
+ * Defensive content size of one package entry-shaped value, on top of the
+ * one unit every entry costs: gloss, rafsi, and selmaho counts plus the
+ * characters of the word spelling, plain text, gloss texts, rafsi
+ * spellings, event ID, and issuer. Non-array or non-string fields contribute
+ * nothing, so malformed input still fails validation with its invalid-package
+ * error instead of a shape error here. Counts stop at validation's own
+ * per-entry bounds, so an oversized malformed list cannot turn into a
+ * budget refusal instead of invalid input. Callers add their own base unit.
+ */
+export function entryContentUnits(value: unknown): number {
+  // Mirrors the per-entry bounds enforced by entry validation.
+  const MAX_GLOSSES = 8192;
+  const MAX_RAFSI = 64;
+  if (!value || typeof value !== "object") return 0;
+  const record = value as Record<string, unknown>;
+  const word = record.word;
+  let items = 0;
+  let chars = 0;
+  const text = (input: unknown) => {
+    if (typeof input === "string") chars += input.length;
+  };
+  text(
+    typeof word === "object" && word !== null
+      ? (word as Record<string, unknown>).spelling
+      : undefined,
+  );
+  text(record.plain_text);
+  text(record.event);
+  text(record.issuer);
+  const glosses = Array.isArray(record.glosses) ? record.glosses : [];
+  const glossCount = Math.min(glosses.length, MAX_GLOSSES);
+  items += glossCount;
+  for (let index = 0; index < glossCount; index++)
+    text((glosses[index] as Record<string, unknown> | null)?.text);
+  const rafsi = Array.isArray(record.rafsi) ? record.rafsi : [];
+  const rafsiCount = Math.min(rafsi.length, MAX_RAFSI);
+  items += rafsiCount;
+  for (let index = 0; index < rafsiCount; index++) text(rafsi[index]);
+  const classification = record.classification;
+  const selmaho =
+    typeof classification === "object" && classification !== null
+      ? (classification as Record<string, unknown>).selmaho
+      : undefined;
+  if (Array.isArray(selmaho)) {
+    items += selmaho.length;
+    for (const name of selmaho) text(name);
+  }
+  return contentUnits(items, chars);
+}
 /** A scan or preparation stopped by its work budget or deadline. */
 export class SearchBudgetError extends Error {
   constructor(
@@ -218,7 +276,11 @@ function canBeCompound(value: string): boolean {
     return false;
   return (plain.match(/[aeiouy0-9]/gu)?.length ?? 0) >= 2;
 }
-function indexedComponents(spelling: string, metrics?: SearchMetrics) {
+function indexedComponents(
+  spelling: string,
+  metrics?: SearchMetrics,
+  allowance = SEARCH_HEADWORD_WORK_LIMIT,
+) {
   if (new TextEncoder().encode(spelling).length > 256)
     return { components: null, limited: true };
   if (!canBeCompound(spelling)) return { components: null, limited: false };
@@ -232,7 +294,13 @@ function indexedComponents(spelling: string, metrics?: SearchMetrics) {
   let limited = false;
   if (metrics) metrics.headwordsParsed++;
   try {
-    const result = components(spelling, SEARCH_HEADWORD_WORK_LIMIT, 256);
+    // The parser runs on at most the remaining shared allowance, never on
+    // its own independent cap alone, so an exhausted budget stops it.
+    const result = components(
+      spelling,
+      Math.max(1, Math.min(SEARCH_HEADWORD_WORK_LIMIT, allowance)),
+      256,
+    );
     if (metrics) metrics.headwordParserWork += result.parsed.spent;
     if (!result.parsed.foreign.length && result.value.cmavo)
       sequence = result.value;
@@ -242,14 +310,19 @@ function indexedComponents(spelling: string, metrics?: SearchMetrics) {
     if (metrics) metrics.headwordParserWork += error.failure.value ?? 0;
   }
   const result = { components: sequence, limited };
-  spellingIndex.set(spelling, result);
-  if (spellingIndex.size > SPELLING_CACHE_LIMIT)
-    spellingIndex.delete(spellingIndex.keys().next().value!);
+  // A limit reached under a tight allowance must not poison later requests:
+  // only successes and full-allowance results are cached.
+  if (!limited || allowance >= SEARCH_HEADWORD_WORK_LIMIT) {
+    spellingIndex.set(spelling, result);
+    if (spellingIndex.size > SPELLING_CACHE_LIMIT)
+      spellingIndex.delete(spellingIndex.keys().next().value!);
+  }
   return result;
 }
 function prepareEntry(
   entry: LexicalEntry,
   metrics?: SearchMetrics,
+  allowance = SEARCH_HEADWORD_WORK_LIMIT,
 ): PreparedEntry {
   const cached = entryIndex.get(entry);
   if (cached) return cached;
@@ -260,9 +333,11 @@ function prepareEntry(
     canonical: canonicalWord(spelling),
     glosses: entry.glosses.map((gloss) => normalizeQuery(gloss.text)),
     text: normalizeQuery(entry.plain_text),
-    ...indexedComponents(spelling, metrics),
+    ...indexedComponents(spelling, metrics, allowance),
   };
-  entryIndex.set(entry, indexed);
+  // As above, a limit reached under a tight allowance is never cached.
+  if (!indexed.limited || allowance >= SEARCH_HEADWORD_WORK_LIMIT)
+    entryIndex.set(entry, indexed);
   return indexed;
 }
 export interface SearchIndex<T extends LexicalEntry> {
@@ -353,6 +428,14 @@ export class SearchRequestBudget {
     budget.parserWork = metrics.queryParserWork + metrics.headwordParserWork;
     return budget;
   }
+  /**
+   * Work units left before the limit. Parsers take at most this as their
+   * allowance, so an exhausted shared budget stops them before they start
+   * instead of letting them run on their own independent caps.
+   */
+  remaining(): number {
+    return Math.max(0, this.workLimit - this.total());
+  }
   /** Transferable spent total plus the original start for the reply. */
   snapshot(): SearchBudgetState {
     return {
@@ -404,10 +487,14 @@ export function prepareIndex<T extends LexicalEntry>(
   const measured = metrics ?? searchMetrics();
   const limit = SearchRequestBudget.for(measured, budget);
   const rows = entries.map((entry) => {
-    // Building one row costs one unit on top of its parser work, charged
-    // before the row is built so an exhausted budget builds nothing.
-    limit.reserve(1, "prepare");
-    return { entry, indexed: prepareEntry(entry, measured) };
+    // Building one row costs one unit on top of its content work and its
+    // parser work, charged before the row is built so an exhausted budget
+    // builds nothing.
+    limit.reserve(1 + entryContentUnits(entry), "prepare");
+    return {
+      entry,
+      indexed: prepareEntry(entry, measured, limit.remaining()),
+    };
   });
   limit.check("prepare");
   const index = { rows };
@@ -462,7 +549,12 @@ export function prepareQuery(
   }
   try {
     measured.queryParses++;
-    const segmented = components(headword, SEARCH_SEGMENT_WORK_LIMIT);
+    // The query parser runs on at most the remaining shared allowance, so
+    // an exhausted budget stops it instead of running its own cap alone.
+    const segmented = components(
+      headword,
+      Math.max(1, Math.min(SEARCH_SEGMENT_WORK_LIMIT, limit.remaining())),
+    );
     measured.queryParserWork += segmented.parsed.spent;
     measured.queryWords += segmented.value.words.length;
     // The parse work above belongs to the request budget; enforce it before
@@ -535,15 +627,18 @@ export function selectRafsiMatches<T extends LexicalEntry>(
   const rows: LexicalMatch<T>[] = [];
   const measured = metrics ?? searchMetrics();
   const limit = SearchRequestBudget.for(measured, options);
+  // The literal comparison key depends only on the query.
+  const queryKey = pattern ? null : patternKey(query);
   try {
     for (const entry of entries) {
-      // One scanned entry costs one unit, charged before the entry is read.
+      // One scanned entry costs one unit, charged before the entry is read,
+      // plus its content in proportion to the bytes the scan handles.
       measured.entries++;
-      limit.check("search");
+      limit.reserve(entryContentUnits(entry), "search");
       const rafsi = (entry.rafsi ?? []).filter((spelling) =>
         pattern
           ? pattern.test(spelling)
-          : patternKey(spelling) === patternKey(query),
+          : patternKey(spelling) === queryKey,
       );
       if (rafsi.length)
         rows.push({ entry, match: "rafsi-pattern", position: 0, rafsi });
@@ -582,9 +677,10 @@ export function selectMatches<T extends LexicalEntry>(
       const source =
         "rows" in entries ? entries.rows.map(({ entry }) => entry) : entries;
       for (const entry of source) {
-        // One scanned entry costs one unit, charged before the entry is read.
+        // One scanned entry costs one unit, charged before the entry is read,
+        // plus its content in proportion to the bytes the scan handles.
         measured.entries++;
-        limit.check("search");
+        limit.reserve(entryContentUnits(entry), "search");
         if (!accept(entry)) continue;
         const headword = pattern.test(entry.word.spelling);
         // Scan every retained rafsi, even after a match, under the same budget.
@@ -633,13 +729,24 @@ export function selectMatches<T extends LexicalEntry>(
             requestBudget: limit,
           }).rows
         : (function* () {
-            for (const entry of entries as Iterable<T>)
-              yield { entry, indexed: prepareEntry(entry, measured) };
-          })();
+          for (const entry of entries as Iterable<T>) {
+            // Lazy rows charge their content up front like prepareIndex,
+            // and parse with only the remaining allowance.
+            limit.reserve(1 + entryContentUnits(entry), "prepare");
+            yield {
+              entry,
+              indexed: prepareEntry(entry, measured, limit.remaining()),
+            };
+          }
+        })();
+  // Query-only transformations run once here, not once per entry.
+  const prefix = prepared.headword.replace(/[.,]/gu, "");
+  const headwordH = prepared.headword.replaceAll("h", "'");
   for (const { entry, indexed: index } of source) {
-    // One scanned entry costs one unit, charged before the entry is read.
+    // One scanned entry costs one unit, charged before the entry is read,
+    // plus its content in proportion to the bytes the scan handles.
     measured.entries++;
-    limit.check("search");
+    limit.reserve(entryContentUnits(entry), "search");
     if (!accept(entry)) continue;
     if (!options.knownWord || options.knownWord(entry)) {
       if (index.knownSpelling && querySpellings.has(index.knownSpelling))
@@ -649,7 +756,6 @@ export function selectMatches<T extends LexicalEntry>(
     }
     if (index.limited) segmentation = "limited";
     const sequence = sequenceMatch(index, prepared, coverage, measured);
-    const prefix = prepared.headword.replace(/[.,]/gu, "");
     const candidates: MatchKind[] = [];
     if (
       (prepared.headword && index.spelling === prepared.headword) ||
@@ -672,8 +778,7 @@ export function selectMatches<T extends LexicalEntry>(
       options.group === "lojban" &&
       (options.rafsiFor?.(entry) ?? entry.rafsi ?? []).some(
         (rafsi: string) =>
-          headwordKey(rafsi).replaceAll("h", "'") ===
-          prepared.headword.replaceAll("h", "'"),
+          headwordKey(rafsi).replaceAll("h", "'") === headwordH,
       )
     )
       candidates.push("rafsi-pattern");

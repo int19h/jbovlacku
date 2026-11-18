@@ -41,10 +41,11 @@ async function crashedSearch(
 test("worker crashes classify by cause, not history", async ({ page }) => {
   // The error event carries the allocation failure in both engines:
   // Chromium reports "Uncaught RangeError: ..." and Firefox reports the
-  // bare "RangeError: ..." with a null error object.
+  // bare "RangeError: ..." with a null error object. Only an allocation
+  // failure in either engine's wording reports does-not-fit.
   const memory = await crashedSearch(
     page,
-    "throw new RangeError('review allocation failure');",
+    "throw new RangeError('Array buffer allocation failed');",
   );
   expect(memory).toContain("does not fit");
   // An ordinary code bug keeps the startup message, even though the previous
@@ -52,4 +53,15 @@ test("worker crashes classify by cause, not history", async ({ page }) => {
   // classifies a later crash.
   const bug = await crashedSearch(page, "throw new Error('review code bug');");
   expect(bug).toContain("could not start");
+});
+
+test("an out-of-bounds crash keeps the startup message", async ({ page }) => {
+  // A DataView bounds error is a RangeError in both engines, but it is not
+  // an allocation failure, so the page must not report does-not-fit.
+  const bounds = await crashedSearch(
+    page,
+    "new DataView(new ArrayBuffer(1)).getUint32(2);",
+  );
+  expect(bounds).toContain("could not start");
+  expect(bounds).not.toContain("does not fit");
 });
