@@ -19,7 +19,8 @@ export interface ImportSizeInput {
 export interface ImportSizeEstimate {
   model: "lensisku-sql-artifacts-v1";
   scope: "proposal" | "proposal-and-load";
-  budget_bytes: number;
+  /** Absent when the operator set no budget. The estimate then never refuses. */
+  budget_bytes?: number;
   stage_bytes: number;
   definition_rows: number;
   new_publication_count: number;
@@ -85,11 +86,10 @@ export function estimateImportArtifacts(
     input.existing_output_carrier_bytes ?? retained,
     "existing_output_carrier_bytes",
   );
-  const budget = size(
-    input.budget_bytes ??
-      (input.check_existing ? 1_500_000_000 : 3_000_000_000),
-    "budget_bytes",
-  );
+  const budget =
+    input.budget_bytes === undefined
+      ? undefined
+      : size(input.budget_bytes, "budget_bytes");
   if (budget === 0) throw new Error("budget_bytes must be positive.");
   // Normal imports reserve one view in addition to the planned definitions.
   const newCount = input.check_existing
@@ -132,7 +132,7 @@ export function estimateImportArtifacts(
     estimated_proposal_bytes: proposal,
     estimated_proposal_peak_bytes: proposalPeak,
     estimated_total_bytes: total,
-    within_budget: total <= budget,
+    within_budget: budget === undefined || total <= budget,
     components: {
       staging_bytes: stage,
       journal_bytes: journalBytes,
@@ -201,7 +201,7 @@ export function compareImportSize(
       estimated_bytes: expected,
       actual_bytes: total,
     });
-  if (total > estimate.budget_bytes)
+  if (estimate.budget_bytes !== undefined && total > estimate.budget_bytes)
     warnings.push({
       code: "import_budget_exceeded",
       message: "The measured artifacts exceed the size budget.",
@@ -218,7 +218,8 @@ export function compareImportSize(
     measured_total_bytes: total,
     estimated_comparison_bytes: expected,
     estimate_miss_bytes: Math.max(0, total - expected),
-    budget_exceeded: total > estimate.budget_bytes,
+    budget_exceeded:
+      estimate.budget_bytes !== undefined && total > estimate.budget_bytes,
     warnings,
   };
 }

@@ -37,7 +37,19 @@ import {
 } from "./load-config.ts";
 
 const MAX_RECORD_BYTES = 1024 * 1024;
-const MAX_EVENTS = 200_000;
+
+/** Optional operator quotas. Absent means no logical cap. */
+export interface ImportLoadQuotas {
+  maxAdmittedEvents?: number;
+  maxCarrierRecords?: number;
+}
+
+function quota(value: number | undefined, name: string) {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 1)
+    throw new Error(`${name} must be a positive safe integer.`);
+  return value;
+}
 
 async function boundedFile(path: string, limit: number) {
   const file = await open(path, "r");
@@ -89,12 +101,28 @@ function preferredSignature(left: number[], right: number[]) {
   return left.length < right.length;
 }
 
-/** Admit once without per-record snapshots, receipts, or full evaluation. */
+/**
+ * Admit once without per-record snapshots, receipts, or full evaluation.
+ * Carriers stream in one at a time. Changes are held in a pending map
+ * beside the loaded state; retained events are never deep-cloned, and no
+ * whole-dictionary index is built before loading. Verified and semantic
+ * records stage in batches of 256 inside the coordinator, and one final
+ * transaction promotes them.
+ */
 export async function admitImportProposal(
   proposal: string,
   coordinator: Coordinator,
   objects: ObjectStore,
+  quotas: ImportLoadQuotas = {},
 ) {
+  const maxAdmittedEvents = quota(
+    quotas.maxAdmittedEvents,
+    "maxAdmittedEvents",
+  );
+  const maxCarrierRecords = quota(
+    quotas.maxCarrierRecords,
+    "maxCarrierRecords",
+  );
   const selection = prepareSelection(
     await boundedFile(
       join(proposal, "import-selection.json"),
@@ -121,26 +149,37 @@ export async function admitImportProposal(
       "The selected view does not select the supplied import selection.",
     );
   const state = await coordinator.load();
-  const next = structuredClone(state);
   const selectedIds = new Set(selection.ids);
   const sourceEvidence = new Map<
     string,
     { source: string; record: { kind: string; id: number } }
   >();
-  const available = new Set<string>();
-  const waiting = new Map<string, [string, StoredEvent][]>();
-  const key = (hash: string, bytes: number) => `${hash}/${bytes}`;
-  for (const [id, event] of Object.entries(next.events)) {
-    const descriptor = event.header.content;
-    if (!descriptor) continue;
-    const token = key(descriptor.hash, descriptor.bytes);
-    if (event.body_hash) available.add(token);
-    else {
-      const list = waiting.get(token) ?? [];
-      list.push([id, event]);
-      waiting.set(token, list);
+  // Only events this proposal changes live here. Retained events stay in
+  // the loaded state and are never cloned or indexed up front.
+  const pending = new Map<string, StoredEvent>();
+  const journal: { position: number; id: string }[] = [];
+  let position = state.position;
+  const suppliedBodies = new Map<string, string>();
+  // Body mappings come only from retained events or from bodies this
+  // proposal supplies. An object in the store with no mapping (for
+  // example from a proposal that failed before its commit) does not make
+  // a body available. The retained token set builds lazily, on the first
+  // envelope-only carrier, and holds content tokens only.
+  let retainedBodyTokens: Set<string> | undefined;
+  const retainedAvailable = (token: string) => {
+    if (!retainedBodyTokens) {
+      retainedBodyTokens = new Set();
+      for (const id in state.events) {
+        const event = state.events[id];
+        const descriptor = event.header.content;
+        if (descriptor && event.body_hash)
+          retainedBodyTokens.add(key(descriptor.hash, descriptor.bytes));
+      }
     }
-  }
+    return retainedBodyTokens.has(token);
+  };
+  const waiting = new Map<string, string[]>();
+  const key = (hash: string, bytes: number) => `${hash}/${bytes}`;
   const changedIds = new Set<string>();
   let changed = false;
   let accepted = 0;
@@ -148,27 +187,34 @@ export async function admitImportProposal(
   let records = 0;
   const add = async (p: PreparedAdmission) => {
     records++;
-    if (records > MAX_EVENTS * 2)
-      throw new Error("The import proposal exceeds 400000 carrier records.");
-    const old = next.events[p.id];
+    if (maxCarrierRecords !== undefined && records > maxCarrierRecords)
+      throw new Error(
+        `The import proposal exceeds the configured limit of ${maxCarrierRecords} carrier records.`,
+      );
+    const old = pending.get(p.id) ?? state.events[p.id];
     if (
       old &&
       canonicalize(utf8(JSON.stringify(old.header))) !==
         canonicalize(utf8(JSON.stringify(p.header)))
     )
       throw new Error(`The event ID names different headers: ${p.id}`);
-    if (!old && next.position >= MAX_EVENTS)
-      throw new Error("The data directory exceeds 200000 admitted events.");
+    if (!old && maxAdmittedEvents !== undefined && position >= maxAdmittedEvents)
+      throw new Error(
+        `The data directory exceeds the configured limit of ${maxAdmittedEvents} admitted events.`,
+      );
     await objects.put(p.envelope_hash, utf8(p.envelope));
     const descriptor = p.header.content;
     const token = descriptor ? key(descriptor.hash, descriptor.bytes) : null;
     if (p.body !== null) {
       await objects.put(descriptor!.hash, utf8(p.body));
-      available.add(token!);
-      for (const [id, event] of waiting.get(token!) ?? []) {
-        event.body_hash = descriptor!.hash;
-        changedIds.add(id);
-        changed = true;
+      suppliedBodies.set(token!, descriptor!.hash);
+      for (const id of waiting.get(token!) ?? []) {
+        const event = pending.get(id);
+        if (event && !event.body_hash) {
+          event.body_hash = descriptor!.hash;
+          changedIds.add(id);
+          changed = true;
+        }
       }
       waiting.delete(token!);
       if (selectedIds.has(p.id)) {
@@ -180,7 +226,8 @@ export async function admitImportProposal(
       }
     }
     const body =
-      p.body !== null || (token && available.has(token))
+      p.body !== null ||
+      (token && (suppliedBodies.has(token) || retainedAvailable(token)))
         ? descriptor!.hash
         : (old?.body_hash ?? null);
     const preferred =
@@ -188,22 +235,23 @@ export async function admitImportProposal(
     if (old) duplicate++;
     else {
       accepted++;
-      next.position++;
-      next.journal.push({ position: next.position, id: p.id });
+      position++;
+      journal.push({ position, id: p.id });
     }
     if (!old || preferred || old.body_hash !== body) {
       changed = true;
       changedIds.add(p.id);
-      const event = (next.events[p.id] = {
+      const event: StoredEvent = {
         envelope_hash: preferred ? p.envelope_hash : old.envelope_hash,
         body_hash: body,
         header: p.header,
         signature: preferred ? p.signature_bytes : old.signature,
-        position: old?.position ?? next.position,
-      });
+        position: old?.position ?? position,
+      };
+      pending.set(p.id, event);
       if (token && !body) {
         const list = waiting.get(token) ?? [];
-        list.push([p.id, event]);
+        list.push(p.id);
         waiting.set(token, list);
       }
     }
@@ -211,9 +259,25 @@ export async function admitImportProposal(
   for await (const bytes of carriers(join(proposal, "carriers.jsonl")))
     await add(validCarrier(bytes));
   await add(view);
+  // Fill retained events whose body this proposal supplied. One scan at
+  // the end replaces a whole-dictionary waiting map built up front.
+  if (suppliedBodies.size) {
+    for (const id in state.events) {
+      const event = state.events[id];
+      if (pending.has(id) || event.body_hash) continue;
+      const descriptor = event.header.content;
+      if (!descriptor) continue;
+      const hash = suppliedBodies.get(key(descriptor.hash, descriptor.bytes));
+      if (!hash) continue;
+      pending.set(id, { ...event, body_hash: hash });
+      changedIds.add(id);
+      changed = true;
+    }
+  }
   const sourceRecords = new Map<string, string>();
+  const eventFor = (id: string) => pending.get(id) ?? state.events[id];
   const evidenceFor = async (id: string) => {
-    const event = next.events[id];
+    const event = eventFor(id);
     if (
       !event?.body_hash ||
       event.header.action.origin !== "import" ||
@@ -265,7 +329,7 @@ export async function admitImportProposal(
   }[]) {
     let ids = selection.ids;
     if (set.selection !== selection.hash) {
-      if (!next.selections.includes(set.selection))
+      if (!state.selections.includes(set.selection))
         throw new Error(
           "The selected view requires another import selection that is not retained.",
         );
@@ -280,7 +344,7 @@ export async function admitImportProposal(
       ids = retained.ids;
     }
     for (const id of ids) {
-      const retained = next.events[id];
+      const retained = eventFor(id);
       if (
         retained &&
         (retained.header.issuer !== set.importer ||
@@ -307,15 +371,25 @@ export async function admitImportProposal(
     }
   }
   await objects.put(selection.hash, utf8(selection.canonical));
-  if (!next.selections.includes(selection.hash)) {
-    next.selections.push(selection.hash);
-    next.selections.sort();
+  const selections = [...state.selections];
+  if (!selections.includes(selection.hash)) {
+    selections.push(selection.hash);
+    selections.sort();
     changed = true;
   }
   if (changed) {
-    next.revision++;
-    // The first service read publishes one wrapper for the complete inventory.
-    next.snapshot = null;
+    // Assemble the next state once, at commit. Retained event objects are
+    // shared with the loaded state; only changed events are new objects.
+    const next = {
+      ...state,
+      revision: state.revision + 1,
+      position,
+      // The first service read publishes one wrapper for the complete inventory.
+      snapshot: null,
+      events: { ...state.events, ...Object.fromEntries(pending) },
+      journal: [...state.journal, ...journal],
+      selections,
+    };
     // Projections stay bounded even when a full proposal changes every event.
     // Staged rows stay private until the final admission transaction promotes them.
     const canStage =
@@ -392,7 +466,7 @@ export async function admitImportProposal(
     accepted,
     duplicate,
     selected: selection.count,
-    position: next.position,
+    position,
   };
 }
 
@@ -400,6 +474,8 @@ export async function loadImportProposal(options: {
   proposal: string;
   directory: string;
   stateTraversalLimit?: number;
+  maxAdmittedEvents?: number;
+  maxCarrierRecords?: number;
 }) {
   const traversal = stateTraversalLimit(options.stateTraversalLimit);
   const release = await lockDataDirectory(options.directory, "import-loader");
@@ -415,6 +491,10 @@ export async function loadImportProposal(options: {
       options.proposal,
       coordinator,
       objects,
+      {
+        maxAdmittedEvents: options.maxAdmittedEvents,
+        maxCarrierRecords: options.maxCarrierRecords,
+      },
     );
     const configuration: LoadedView = {
       version: 1,

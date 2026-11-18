@@ -331,55 +331,147 @@ fn evaluate_context_with_limit(
 }
 type PrivateWeights = BTreeMap<(String, String), Vec<(CompactValue, Rational)>>;
 fn private_trust(evaluation: &Evaluation) -> (Vec<TrustRule>, PrivateWeights) {
-    let resolve = |key: &str| {
-        evaluation
+    private_trust_metered(evaluation, &mut |_, _, _, _| Ok(())).unwrap()
+}
+
+fn private_trust_metered(
+    evaluation: &Evaluation,
+    meter: &mut SetupMeter<'_>,
+) -> jvc_core::Result<(Vec<TrustRule>, PrivateWeights)> {
+    let resolve = |meter: &mut SetupMeter<'_>, key: &str| -> jvc_core::Result<String> {
+        charge_lookup(meter, evaluation.lifecycle.key_actor.len(), key)?;
+        let resolved = evaluation
             .lifecycle
             .key_actor
             .get(key)
-            .cloned()
-            .unwrap_or_else(|| key.into())
+            .map_or(key, String::as_str);
+        meter(resolved.len() as u64, 0, 0, 0)?;
+        Ok(resolved.to_owned())
     };
-    let mut trust = evaluation.trust.clone();
+    // Charge the capacity allocation before it runs: the vector
+    // holds one `TrustRule` per restored rule.
+    meter(
+        (evaluation.trust.len() as u64).saturating_mul(std::mem::size_of::<TrustRule>() as u64),
+        0,
+        0,
+        0,
+    )?;
+    let mut trust = Vec::with_capacity(evaluation.trust.len());
+    for rule in &evaluation.trust {
+        meter(16 + (rule.actor.len() + rule.subject.len()) as u64, 0, 0, 0)?;
+        let mut iter = rule.values.iter();
+        loop {
+            meter(4, 0, 0, 0)?;
+            let Some(value) = iter.next() else { break };
+            meter(value.len() as u64, 0, 0, 0)?;
+        }
+        trust.push(rule.clone());
+    }
     let mut private_weights_by_pair: PrivateWeights = BTreeMap::new();
+    charge_lookup(meter, evaluation.reasons.len(), "invalid_overlay")?;
     if !evaluation.reasons.contains("invalid_overlay") {
         if let Some(overlay) = &evaluation.overlay {
+            charge_lookup(meter, overlay.as_object().map_or(0, |o| o.len()), "trust")?;
             let mut private: BTreeMap<(String, String, String), (CompactValue, BTreeSet<String>)> =
                 BTreeMap::new();
             let mut scope_arena = None;
             for rule in overlay["trust"].as_array().into_iter().flatten() {
-                let issuer = resolve(rule["issuer"].as_str().unwrap());
-                let subject = resolve(rule["subject"].as_str().unwrap());
+                let obj_len = rule.as_object().map_or(0, |o| o.len());
+                charge_lookup(meter, obj_len, "issuer")?;
+                let issuer = resolve(meter, rule["issuer"].as_str().unwrap())?;
+                charge_lookup(meter, obj_len, "subject")?;
+                let subject = resolve(meter, rule["subject"].as_str().unwrap())?;
+                charge_lookup(meter, obj_len, "scope")?;
+                let scope_value = &rule["scope"];
+                let (raw, scope_bytes) = scope_measure(scope_value, meter)?;
+                // Pack and intern repeat this walk; charge their bound
+                // from the counts just measured, before packing.
+                meter(4 * (raw + scope_bytes), 0, 0, 0)?;
                 let scope = CompactValue::from_arena(
                     scope_arena
                         .get_or_insert_with(|| {
                             std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default()))
                         })
                         .clone(),
-                    &rule["scope"],
+                    scope_value,
                 );
-                if rule["value"] == "heed" {
+                charge_lookup(meter, obj_len, "value")?;
+                let value = rule["value"].as_str().unwrap();
+                if value == "heed" {
+                    charge_lookup(meter, obj_len, "weight")?;
+                    let weight = &rule["weight"];
+                    let weight_len = weight.as_object().map_or(0, |o| o.len());
+                    charge_lookup(meter, weight_len, "numerator")?;
+                    charge_lookup(meter, weight_len, "denominator")?;
+                    meter(
+                        super::arena::lookup_work(
+                            private_weights_by_pair.len() as u64,
+                            (issuer.len() + subject.len()) as u64,
+                        ),
+                        0,
+                        0,
+                        0,
+                    )?;
                     private_weights_by_pair
                         .entry((issuer.clone(), subject.clone()))
                         .or_default()
                         .push((
                             scope.clone(),
-                            overlay_rational(&rule["weight"]).unwrap_or_else(Rational::one),
+                            overlay_rational(weight).unwrap_or_else(Rational::one),
                         ));
                 }
+                meter(json_text_bound(raw, scope_bytes), 0, 0, 0)?;
+                let scope_text = scope_value.to_string();
+                meter(
+                    super::arena::lookup_work(
+                        private.len() as u64,
+                        (issuer.len() + subject.len() + scope_text.len()) as u64,
+                    ),
+                    0,
+                    0,
+                    0,
+                )?;
                 let entry = private
-                    .entry((issuer, subject, rule["scope"].to_string()))
+                    .entry((issuer, subject, scope_text))
                     .or_insert_with(|| (scope, BTreeSet::new()));
-                entry.1.insert(rule["value"].as_str().unwrap().into());
+                meter(
+                    super::arena::lookup_work(entry.1.len() as u64, value.len() as u64),
+                    0,
+                    0,
+                    0,
+                )?;
+                entry.1.insert(value.into());
             }
             // Remove replaced public registers once before adding private registers.
-            trust.retain(|rule| {
-                !private.contains_key(&(
-                    rule.actor.clone(),
-                    rule.subject.clone(),
-                    rule.scope.to_string(),
-                ))
-            });
+            let retained = std::mem::take(&mut trust);
+            for rule in retained {
+                let mut raw = 0u64;
+                let scope_bytes = rule.scope.view().string_bytes_metered(&mut |steps| {
+                    raw += steps;
+                    meter(4 * steps, 0, 0, 0)
+                })?;
+                meter(json_text_bound(raw, scope_bytes), 0, 0, 0)?;
+                let scope_text = rule.scope.to_string();
+                meter(
+                    super::arena::lookup_work(
+                        private.len() as u64,
+                        (rule.actor.len() + rule.subject.len() + scope_text.len()) as u64,
+                    ),
+                    0,
+                    0,
+                    0,
+                )?;
+                if !private.contains_key(&(rule.actor.clone(), rule.subject.clone(), scope_text)) {
+                    trust.push(rule);
+                }
+            }
             for ((issuer, subject, _), (scope, values)) in private {
+                meter(
+                    super::arena::lookup_work(values.len() as u64, "clear".len() as u64),
+                    0,
+                    0,
+                    0,
+                )?;
                 if values.len() != 1 || !values.contains("clear") {
                     trust.push(TrustRule {
                         actor: issuer,
@@ -391,7 +483,7 @@ fn private_trust(evaluation: &Evaluation) -> (Vec<TrustRule>, PrivateWeights) {
             }
         }
     }
-    (trust, private_weights_by_pair)
+    Ok((trust, private_weights_by_pair))
 }
 
 type ScopeKey = (String, String, String);
@@ -406,39 +498,65 @@ fn count_overflow() -> jvc_core::Error {
     jvc_core::Error::new("resource_unavailable", "preparation count overflow")
 }
 impl ScopedRuleIndex {
-    fn new(trust: &[TrustRule], weights: Option<&PrivateWeights>) -> jvc_core::Result<Self> {
+    fn new_metered(
+        trust: &[TrustRule],
+        weights: Option<&PrivateWeights>,
+        meter: &mut SetupMeter<'_>,
+    ) -> jvc_core::Result<Self> {
         let mut result = Self::default();
         for (id, rule) in trust.iter().enumerate() {
-            let key = (
-                rule.scope
-                    .view()
-                    .index("kind")
-                    .as_str()
-                    .unwrap_or_default()
-                    .into(),
-                rule.scope
-                    .view()
-                    .index("word")
-                    .as_str()
-                    .unwrap_or_default()
-                    .into(),
-                rule.scope
-                    .view()
-                    .index("language")
-                    .as_str()
-                    .unwrap_or_default()
-                    .into(),
-            );
+            let view = rule.scope.view();
+            let mut key = (String::new(), String::new(), String::new());
+            for (slot, field) in [
+                (&mut key.0, "kind"),
+                (&mut key.1, "word"),
+                (&mut key.2, "language"),
+            ] {
+                let value = view.get_metered(field, &mut |w| meter(w, 0, 0, 0))?;
+                if let Some(text) = value.as_ref().and_then(|v| v.as_str()) {
+                    meter(text.len() as u64, 0, 0, 0)?;
+                    *slot = text.to_owned();
+                }
+            }
+            meter(
+                super::arena::lookup_work(
+                    result.0.len() as u64,
+                    (key.0.len() + key.1.len() + key.2.len()) as u64,
+                ),
+                0,
+                0,
+                0,
+            )?;
             result.0.entry(key).or_default().ids.push(id);
         }
         for bucket in result.0.values_mut() {
             let mut pairs: BTreeMap<(&str, &str), u64> = BTreeMap::new();
             for id in &bucket.ids {
                 let rule = &trust[*id];
+                meter(
+                    super::arena::lookup_work(
+                        pairs.len() as u64,
+                        (rule.actor.len() + rule.subject.len()) as u64,
+                    ),
+                    0,
+                    0,
+                    0,
+                )?;
                 *pairs.entry((&rule.actor, &rule.subject)).or_default() += 1;
             }
             for ((actor, subject), count) in pairs {
                 // The resolver checks every private weight for a matching pair.
+                if let Some(w) = &weights {
+                    meter(
+                        super::arena::lookup_work(
+                            w.len() as u64,
+                            (actor.len() + subject.len()) as u64,
+                        ),
+                        0,
+                        0,
+                        0,
+                    )?;
+                }
                 let private = weights
                     .and_then(|w| w.get(&(actor.into(), subject.into())))
                     .map_or(0, Vec::len) as u64;
@@ -506,15 +624,81 @@ pub struct RankingIndexCounts {
     pub private_rules: u64,
     pub key_bytes: u64,
 }
-fn value_strings(value: &Value) -> u64 {
+/// A setup-work meter. Each call charges, before the work it covers:
+/// work steps, the index entries that work builds toward, and the copied
+/// key bytes it reads. Entry and key totals only grow during a walk, so a
+/// budget derived from them is a lower bound on the final budget.
+/// A setup-work meter. Each call charges, before the work it covers:
+/// work steps, the index entries that work builds toward, the copied
+/// key bytes it reads, and walk items that credit their own allowance
+/// without being index entries.
+pub type SetupMeter<'a> = dyn FnMut(u64, u64, u64, u64) -> jvc_core::Result<()> + 'a;
+
+/// Walk a serde scope once, charging four units per meter step before
+/// each node is visited, and return the raw step total and the string
+/// byte total. A later pack, intern, or serialization of the same
+/// scope is bounded by these counts.
+fn scope_measure(value: &Value, meter: &mut SetupMeter<'_>) -> jvc_core::Result<(u64, u64)> {
+    let mut raw = 0u64;
+    let bytes = value_strings_metered(value, &mut |steps, _, _, _| {
+        raw += steps;
+        meter(4 * steps, 0, 0, 0)
+    })?;
+    Ok((raw, bytes))
+}
+
+/// An upper bound on a scope's JSON text length: at most six bytes
+/// per string byte (worst-case escapes) plus 25 bytes per walked
+/// node (at most 24 bytes for a value such as a long float, plus
+/// one separator byte).
+fn json_text_bound(raw_steps: u64, string_bytes: u64) -> u64 {
+    raw_steps
+        .saturating_mul(25)
+        .saturating_add(string_bytes.saturating_mul(6))
+}
+
+/// Charge one map or set lookup to the meter before it runs, using the
+/// bound from `lookup_work` for the collection size and lookup key.
+fn charge_lookup(
+    meter: &mut SetupMeter<'_>,
+    collection_len: usize,
+    key: &str,
+) -> jvc_core::Result<()> {
+    meter(
+        super::arena::lookup_work(collection_len as u64, key.len() as u64),
+        0,
+        0,
+        0,
+    )
+}
+
+fn value_strings_metered(value: &Value, meter: &mut SetupMeter<'_>) -> jvc_core::Result<u64> {
     match value {
-        Value::String(s) => s.len() as u64,
-        Value::Array(a) => a.iter().map(value_strings).sum(),
-        Value::Object(o) => o
-            .iter()
-            .map(|(k, v)| k.len() as u64 + value_strings(v))
-            .sum(),
-        _ => 0,
+        Value::String(s) => {
+            meter(1 + s.len() as u64, 0, 0, 0)?;
+            Ok(s.len() as u64)
+        }
+        Value::Array(a) => {
+            meter(1, 0, 0, 0)?;
+            let mut total = 0u64;
+            for item in a {
+                total += value_strings_metered(item, meter)?;
+            }
+            Ok(total)
+        }
+        Value::Object(o) => {
+            meter(1, 0, 0, 0)?;
+            let mut total = 0u64;
+            for (k, v) in o {
+                meter(k.len() as u64, 0, 0, 0)?;
+                total += k.len() as u64 + value_strings_metered(v, meter)?;
+            }
+            Ok(total)
+        }
+        _ => {
+            meter(1, 0, 0, 0)?;
+            Ok(0)
+        }
     }
 }
 fn invalid_index_overlay() -> jvc_core::Error {
@@ -524,36 +708,72 @@ fn invalid_index_overlay() -> jvc_core::Error {
     )
 }
 fn index_private_rules(e: &Evaluation) -> jvc_core::Result<&[Value]> {
+    index_private_rules_metered(e, &mut |_, _, _, _| Ok(()))
+}
+
+fn index_private_rules_metered<'e>(
+    e: &'e Evaluation,
+    meter: &mut SetupMeter<'_>,
+) -> jvc_core::Result<&'e [Value]> {
+    charge_lookup(meter, e.reasons.len(), "invalid_overlay")?;
     if e.reasons.contains("invalid_overlay") {
         return Ok(&[]);
     }
     let Some(overlay) = &e.overlay else {
         return Ok(&[]);
     };
+    charge_lookup(meter, overlay.as_object().map_or(0, |o| o.len()), "trust")?;
     let rules = overlay
         .get("trust")
         .and_then(Value::as_array)
         .ok_or_else(invalid_index_overlay)?;
     for rule in rules {
-        if rule.get("issuer").and_then(Value::as_str).is_none()
-            || rule.get("subject").and_then(Value::as_str).is_none()
-            || !rule
-                .get("value")
-                .and_then(Value::as_str)
-                .is_some_and(|v| matches!(v, "heed" | "shun" | "clear"))
-            || !rule.get("scope").is_some_and(|v| {
-                ["kind", "word", "language"]
-                    .iter()
-                    .all(|k| v.get(*k).and_then(Value::as_str).is_some())
-            })
-        {
+        // Credit this rule's entries before its validation charges, so
+        // the walk raises its own allowance as it goes. A private rule
+        // contributes four entries, plus two more for a heed rule.
+        meter(0, 4, 0, 0)?;
+        let obj_len = rule.as_object().map_or(0, |o| o.len());
+        charge_lookup(meter, obj_len, "issuer")?;
+        let issuer_ok = rule.get("issuer").and_then(Value::as_str).is_some();
+        charge_lookup(meter, obj_len, "subject")?;
+        let subject_ok = rule.get("subject").and_then(Value::as_str).is_some();
+        charge_lookup(meter, obj_len, "value")?;
+        let value = rule.get("value").and_then(Value::as_str);
+        let value_ok = value.is_some_and(|v| matches!(v, "heed" | "shun" | "clear"));
+        charge_lookup(meter, obj_len, "scope")?;
+        let mut scope_ok = false;
+        if let Some(scope) = rule.get("scope") {
+            scope_ok = true;
+            let scope_len = scope.as_object().map_or(0, |o| o.len());
+            for key in ["kind", "word", "language"] {
+                charge_lookup(meter, scope_len, key)?;
+                if scope.get(key).and_then(Value::as_str).is_none() {
+                    scope_ok = false;
+                    break;
+                }
+            }
+        }
+        if !(issuer_ok && subject_ok && value_ok && scope_ok) {
             return Err(invalid_index_overlay());
+        }
+        if value == Some("heed") {
+            meter(0, 2, 0, 0)?;
         }
     }
     Ok(rules)
 }
 /// Upper bounds permit one bucket per input, including duplicate keys.
 pub(crate) fn ranking_index_bound(e: &Evaluation) -> jvc_core::Result<RankingIndexCounts> {
+    ranking_index_bound_metered(e, &mut |_, _, _, _| Ok(()))
+}
+
+/// Like `ranking_index_bound`, but every publication, trust rule, scope
+/// tree, private rule, and `key_actor` lookup is charged to the meter
+/// before it is processed.
+pub(crate) fn ranking_index_bound_metered(
+    e: &Evaluation,
+    meter: &mut SetupMeter<'_>,
+) -> jvc_core::Result<RankingIndexCounts> {
     let mut c = RankingIndexCounts::default();
     let mut bytes = 0u64;
     let mut add_bytes = |n: u64| -> jvc_core::Result<()> {
@@ -561,6 +781,21 @@ pub(crate) fn ranking_index_bound(e: &Evaluation) -> jvc_core::Result<RankingInd
         Ok(())
     };
     for p in e.publications.values() {
+        let entry_delta = 2
+            + if matches!(p.kind.as_str(), "definition.publish" | "rafsi.publish") {
+                3 + u64::from(p.assignment.is_some())
+            } else {
+                0
+            };
+        let key_delta = (p.word.len() + p.id.len()) as u64
+            + if matches!(p.kind.as_str(), "definition.publish" | "rafsi.publish") {
+                (2 * (10 + p.word.len() + p.language.as_ref().map_or(0, String::len))
+                    + p.id.len()
+                    + p.assignment.as_ref().map_or(0, String::len)) as u64
+            } else {
+                0
+            };
+        meter(24 + key_delta, entry_delta, key_delta, 0)?;
         c.words += 1;
         c.word_publications += 1;
         add_bytes((p.word.len() + p.id.len()) as u64)?;
@@ -577,29 +812,58 @@ pub(crate) fn ranking_index_bound(e: &Evaluation) -> jvc_core::Result<RankingInd
     }
     let public = e.trust.len() as u64;
     for r in &e.trust {
-        add_bytes(
-            8 * (r.actor.len() as u64
-                + r.subject.len() as u64
-                + r.scope.view().string_bytes()
-                + r.values.iter().map(|v| v.len() as u64).sum::<u64>()),
-        )?;
+        // A public rule contributes exactly five entries: one trust rule,
+        // two scope rules, and two scope buckets.
+        let fixed = (r.actor.len() + r.subject.len()) as u64;
+        meter(24 + fixed, 5, 8 * fixed, 0)?;
+        // Charge each value before the set walk visits it.
+        let mut values = 0u64;
+        let mut iter = r.values.iter();
+        loop {
+            meter(4, 0, 0, 0)?;
+            let Some(value) = iter.next() else { break };
+            meter(value.len() as u64, 0, 8 * value.len() as u64, 0)?;
+            values += value.len() as u64;
+        }
+        let plain = fixed + values;
+        let scope_bytes = r
+            .scope
+            .view()
+            .string_bytes_metered(&mut |steps| meter(4 * steps, 0, 0, 0))?;
+        meter(0, 0, 8 * scope_bytes, 0)?;
+        add_bytes(8 * (plain + scope_bytes))?;
     }
-    for r in index_private_rules(e)? {
+    for r in index_private_rules_metered(e, meter)? {
+        meter(16, 0, 0, 0)?;
+        let obj_len = r.as_object().map_or(0, |o| o.len());
+        charge_lookup(meter, obj_len, "value")?;
+        let heed = r["value"] == "heed";
         c.private_rules += 1;
-        c.private_weights += u64::from(r["value"] == "heed");
-        // Continuity IDs can be longer than the issuer keys in the overlay.
-        let actor = |key: &str| {
-            e.lifecycle
-                .key_actor
-                .get(key)
-                .map_or(key.len(), String::len) as u64
-        };
-        add_bytes(
-            8 * (actor(r["issuer"].as_str().ok_or_else(invalid_index_overlay)?)
-                + actor(r["subject"].as_str().ok_or_else(invalid_index_overlay)?)
-                + value_strings(&r["scope"])
-                + 16),
-        )?;
+        c.private_weights += u64::from(heed);
+        // Continuity IDs can be longer than the issuer keys in the
+        // overlay. Each field read and each `key_actor` lookup is
+        // charged through `charge_lookup` before it runs.
+        charge_lookup(meter, obj_len, "issuer")?;
+        let issuer_key = r["issuer"].as_str().ok_or_else(invalid_index_overlay)?;
+        charge_lookup(meter, e.lifecycle.key_actor.len(), issuer_key)?;
+        let issuer = e
+            .lifecycle
+            .key_actor
+            .get(issuer_key)
+            .map_or(issuer_key.len(), String::len) as u64;
+        charge_lookup(meter, obj_len, "subject")?;
+        let subject_key = r["subject"].as_str().ok_or_else(invalid_index_overlay)?;
+        charge_lookup(meter, e.lifecycle.key_actor.len(), subject_key)?;
+        let subject = e
+            .lifecycle
+            .key_actor
+            .get(subject_key)
+            .map_or(subject_key.len(), String::len) as u64;
+        charge_lookup(meter, obj_len, "scope")?;
+        let scope_bytes =
+            value_strings_metered(&r["scope"], &mut |steps, _, _, _| meter(4 * steps, 0, 0, 0))?;
+        meter(0, 0, 8 * (issuer + subject + scope_bytes + 16), 0)?;
+        add_bytes(8 * (issuer + subject + scope_bytes + 16))?;
     }
     c.private_pairs = c.private_weights;
     c.trust_rules = public
@@ -624,11 +888,16 @@ pub(crate) struct ApproximateContextIndex {
     public_rules: ScopedRuleIndex,
 }
 impl ApproximateContextIndex {
-    pub(crate) fn new(evaluation: &Evaluation) -> jvc_core::Result<Self> {
-        index_private_rules(evaluation)?;
-        let (trust, private_weights) = private_trust(evaluation);
-        let merged_rules = ScopedRuleIndex::new(&trust, Some(&private_weights))?;
-        let public_rules = ScopedRuleIndex::new(&evaluation.trust, None)?;
+    pub(crate) fn new_metered(
+        evaluation: &Evaluation,
+        meter: &mut SetupMeter<'_>,
+    ) -> jvc_core::Result<Self> {
+        // Validation work is charged, but its entry credits belong to
+        // the count walk, so this pass drops entry and key deltas.
+        index_private_rules_metered(evaluation, &mut |w, _, _, _| meter(w, 0, 0, 0))?;
+        let (trust, private_weights) = private_trust_metered(evaluation, meter)?;
+        let merged_rules = ScopedRuleIndex::new_metered(&trust, Some(&private_weights), meter)?;
+        let public_rules = ScopedRuleIndex::new_metered(&evaluation.trust, None, meter)?;
         let mut index = Self {
             words: BTreeMap::new(),
             targets: BTreeMap::new(),
@@ -639,6 +908,13 @@ impl ApproximateContextIndex {
             public_rules,
         };
         for p in evaluation.publications.values() {
+            meter(
+                super::arena::lookup_work(index.words.len() as u64, p.word.len() as u64)
+                    + p.id.len() as u64,
+                0,
+                0,
+                0,
+            )?;
             index
                 .words
                 .entry(p.word.clone())
@@ -652,29 +928,68 @@ impl ApproximateContextIndex {
             } else {
                 "rafsi"
             };
+            let language_len = if kind == "definition" {
+                p.language.as_ref().map_or(0, String::len)
+            } else {
+                0
+            };
+            meter(
+                super::arena::lookup_work(
+                    index.targets.len() as u64,
+                    (kind.len() + p.word.len() + language_len) as u64,
+                ),
+                0,
+                0,
+                0,
+            )?;
+            let language = if kind == "definition" {
+                p.language.clone()
+            } else {
+                None
+            };
             let targets = index
                 .targets
-                .entry((
-                    kind.into(),
-                    p.word.clone(),
-                    if kind == "definition" {
-                        p.language.clone()
-                    } else {
-                        None
-                    },
-                ))
+                .entry((kind.into(), p.word.clone(), language))
                 .or_default();
+            meter(
+                super::arena::lookup_work(targets.len() as u64, p.id.len() as u64),
+                0,
+                0,
+                0,
+            )?;
             targets.insert(p.id.clone());
             if let Some(assignment) = &p.assignment {
+                meter(
+                    super::arena::lookup_work(targets.len() as u64, assignment.len() as u64),
+                    0,
+                    0,
+                    0,
+                )?;
                 targets.insert(assignment.clone());
             }
         }
         for (key, targets) in &index.targets {
-            let count = targets
-                .iter()
-                .filter_map(|id| evaluation.judgments.get(id))
-                .map(|j| j.len() as u64)
-                .sum();
+            let mut count = 0u64;
+            for id in targets {
+                meter(
+                    super::arena::lookup_work(evaluation.judgments.len() as u64, id.len() as u64),
+                    0,
+                    0,
+                    0,
+                )?;
+                if let Some(judgments) = evaluation.judgments.get(id) {
+                    count += judgments.len() as u64;
+                }
+            }
+            meter(
+                super::arena::lookup_work(
+                    index.judgments.len() as u64,
+                    (key.0.len() + key.1.len() + key.2.as_ref().map_or(0, String::len)) as u64,
+                ),
+                0,
+                0,
+                0,
+            )?;
             index.judgments.insert(key.clone(), count);
         }
         Ok(index)
@@ -1338,6 +1653,46 @@ mod tests {
         assert_eq!(
             prepare_roots::<FloatRows>([Rational::zero(), Rational::one()]),
             Ok(vec![0.0, 1.0])
+        );
+    }
+
+    #[test]
+    fn private_trust_capacity_is_charged_before_the_allocation() {
+        // Charge-order test: the first charge the meter sees must be
+        // the capacity charge for the trust vector, before any rule
+        // is read. Allocation counting is not needed to pin the order.
+        let mut evaluation = dispatch_evaluation("simple-routes-shun-f64-v1");
+        let rule = evaluation.trust[0].clone();
+        evaluation.trust = vec![rule.clone(), rule.clone(), rule];
+        let charges = std::cell::RefCell::new(Vec::new());
+        let mut meter = |work: u64, _: u64, _: u64, _: u64| -> jvc_core::Result<()> {
+            charges.borrow_mut().push(work);
+            Ok(())
+        };
+        private_trust_metered(&evaluation, &mut meter).unwrap();
+        let expected = (evaluation.trust.len() * std::mem::size_of::<TrustRule>()) as u64;
+        assert_eq!(charges.borrow().first().copied(), Some(expected));
+    }
+
+    #[test]
+    fn json_text_bound_covers_long_float_arrays() {
+        let value = Value::Array(
+            (0..2_000)
+                .map(|_| json!(-1.2345678901234567e-100))
+                .collect(),
+        );
+        let mut raw = 0u64;
+        let string_bytes = value_strings_metered(&value, &mut |steps, _, _, _| {
+            raw += steps;
+            Ok(())
+        })
+        .unwrap();
+        let serialized = value.to_string().len() as u64;
+        assert_eq!(serialized, 50_001);
+        assert!(json_text_bound(raw, string_bytes) >= serialized);
+        assert_eq!(
+            json_text_bound(raw, string_bytes),
+            25 * raw + 6 * string_bytes
         );
     }
 

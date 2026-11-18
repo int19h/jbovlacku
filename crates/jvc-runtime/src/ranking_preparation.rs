@@ -4,15 +4,23 @@ use super::*;
 use jvc_rank::approximate as a;
 use std::{collections::BTreeSet, sync::Arc};
 
-pub const PREPARATION_CONTRACT: &str = "jvc-session-ranking-preparation-v4";
+pub const PREPARATION_CONTRACT: &str = "jvc-session-ranking-preparation-v5";
+/// Fixed part of the default setup-unit budget.
+pub const SETUP_UNITS_FIXED_ALLOWANCE: u64 = 100_000_000;
+/// Default setup-unit allowance per index entry. It covers the widest
+/// charge per entry: `16 * 64 + 16` at bit length 64.
+pub const SETUP_UNITS_PER_ENTRY: u64 = 1040;
+/// Default setup-unit allowance per copied key byte. It covers the
+/// charge per key byte: 2 from the index term plus 4 from the walk term.
+pub const SETUP_UNITS_PER_KEY_BYTE: u64 = 6;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RankingPreparationLimits {
-    pub records: usize,
-    pub setup_bytes: usize,
+    pub records: Option<usize>,
+    pub setup_bytes: Option<usize>,
     pub units: u64,
-    pub setup_units: u64,
-    pub source_bytes: usize,
+    pub setup_units: Option<u64>,
+    pub source_bytes: Option<usize>,
     pub source_millis: u64,
     pub word_publications: usize,
     pub targets: usize,
@@ -23,11 +31,11 @@ pub struct RankingPreparationLimits {
 impl Default for RankingPreparationLimits {
     fn default() -> Self {
         Self {
-            records: 1_000_000,
-            setup_bytes: 512 * 1024 * 1024,
+            records: None,
+            setup_bytes: None,
             units: 100_000_000,
-            setup_units: 400_000_000,
-            source_bytes: 256 * 1024 * 1024,
+            setup_units: None,
+            source_bytes: None,
             source_millis: 30_000,
             word_publications: 8192,
             targets: 4096,
@@ -87,26 +95,63 @@ impl RankingPreparationPolicy {
         // Measured roots and first split nodes fit these base allowances.
         // The outer factor also covers allocator overhead and transient maps.
         let bytes = mul(add(bytes, fixed)?, 2)?;
-        let log = u64::from(64 - add(entries, 1)?.leading_zeros());
-        let units = mul(add(mul(mul(entries, 8)?, log)?, c.key_bytes)?, 2)?;
-        if bytes > self.limits.setup_bytes as u64 || units > self.limits.setup_units {
+        let log = bit_length(entries);
+        let base = mul(add(mul(mul(entries, 8)?, log)?, c.key_bytes)?, 2)?;
+        // The record-count walk and the index-count walk scan these entries
+        // and key bytes. Charge them in the same total, before index build.
+        let walk = add(mul(entries, 16)?, mul(c.key_bytes, 4)?)?;
+        // Index construction compares keys that can share long prefixes:
+        // each key byte can be read in at most eleven comparisons per
+        // tree level, over at most `log` levels.
+        let comparison = mul(mul(11, c.key_bytes)?, log)?;
+        let units = add(add(base, walk)?, comparison)?;
+        if self
+            .limits
+            .setup_bytes
+            .is_some_and(|limit| bytes > limit as u64)
+            || units > self.effective_setup_units(entries, c.key_bytes)?
+        {
             return Err(resource("ranking setup envelope limit"));
         }
         Ok((bytes, units))
     }
+    /// The explicit setup-unit quota, or the scaled default for these counts.
+    pub fn effective_setup_units(&self, entries: u64, key_bytes: u64) -> Result<u64> {
+        if let Some(limit) = self.limits.setup_units {
+            return Ok(limit);
+        }
+        add(
+            add(
+                SETUP_UNITS_FIXED_ALLOWANCE,
+                mul(entries, SETUP_UNITS_PER_ENTRY)?,
+            )?,
+            mul(
+                key_bytes,
+                add(SETUP_UNITS_PER_KEY_BYTE, mul(11, bit_length(entries))?)?,
+            )?,
+        )
+    }
+    /// A meter that charges setup work before it runs. Entry and key
+    /// totals only grow during a walk, so the scaled default computed
+    /// from them is a lower bound on the final default budget.
+    fn setup_meter(&self, entries: u64, key_bytes: u64) -> SetupMeter {
+        SetupMeter {
+            explicit: self.limits.setup_units,
+            spent: 0,
+            entries,
+            key_bytes,
+            credited: 0,
+        }
+    }
     fn validate(&self) -> Result<()> {
         let l = &self.limits;
         if !jvc_core::valid_id(&self.core_binding, "sha256:")
-            || l.records == 0
-            || l.records > 1_000_000
-            || l.setup_bytes == 0
-            || l.setup_bytes > 1024 * 1024 * 1024
+            || l.records == Some(0)
+            || l.setup_bytes == Some(0)
             || l.units == 0
             || l.units > 1_000_000_000
-            || l.setup_units == 0
-            || l.setup_units > 1_000_000_000
-            || l.source_bytes == 0
-            || l.source_bytes > 1024 * 1024 * 1024
+            || l.setup_units == Some(0)
+            || l.source_bytes == Some(0)
             || l.source_millis == 0
             || l.source_millis > 120_000
             || l.word_publications == 0
@@ -259,7 +304,7 @@ fn source_binding(
     let start = std::time::Instant::now();
     #[cfg(target_arch = "wasm32")]
     let start = setup_now();
-    state.ranking_source_binding_checked(limits.source_bytes, || {
+    state.ranking_source_binding_checked(limits.source_bytes.unwrap_or(usize::MAX), || {
         #[cfg(not(target_arch = "wasm32"))]
         {
             start.elapsed().as_secs_f64() * 1000.0 <= limits.source_millis as f64
@@ -300,14 +345,14 @@ pub(crate) fn encoded(value: &impl Serialize, max: usize) -> Result<Vec<u8>> {
 fn digest(domain: &[u8], value: &impl Serialize, max: usize) -> Result<String> {
     Ok(jvc_core::hash_id("sha256:", domain, &encoded(value, max)?))
 }
-fn parameter(value: jvc_state::ValueView) -> Result<FloatParameter> {
+fn parameter(value: jvc_state::ValueView, meter: &mut SetupMeter) -> Result<FloatParameter> {
     let n = value
-        .index("numerator")
-        .as_i64()
+        .get_metered("numerator", &mut |w| meter.charge(w, 0, 0, 0))?
+        .and_then(|v| v.as_i64())
         .ok_or_else(|| Error::new("ranking", "signed numerator is unavailable"))?;
     let d = value
-        .index("denominator")
-        .as_u64()
+        .get_metered("denominator", &mut |w| meter.charge(w, 0, 0, 0))?
+        .and_then(|v| v.as_u64())
         .filter(|d| *d > 0)
         .ok_or_else(|| Error::new("ranking", "signed denominator is unavailable"))?;
     let exact = jvc_rank::Rational::new(n.into(), d.into());
@@ -323,46 +368,166 @@ fn parameter(value: jvc_state::ValueView) -> Result<FloatParameter> {
         bits: bits(converted),
     })
 }
-fn parameters(e: &jvc_state::Evaluation) -> Result<PreparationParameters> {
+fn parameters(e: &jvc_state::Evaluation, meter: &mut SetupMeter) -> Result<PreparationParameters> {
     let p = e
         .policy
         .as_ref()
         .ok_or_else(|| Error::new("policy_unavailable", "selected policy is unavailable"))?;
-    let work = e
-        .overlay
-        .as_ref()
-        .and_then(|o| o["work"].as_u64())
-        .or_else(|| p.view().index("work").as_u64())
-        .filter(|w| (1..=10_000_000).contains(w))
-        .ok_or_else(|| Error::new("ranking", "signed work budget is unavailable"))?;
+    let mut work = None;
+    if let Some(overlay) = &e.overlay {
+        meter.charge(
+            jvc_state::lookup_work(
+                overlay.as_object().map_or(0, |o| o.len()) as u64,
+                "work".len() as u64,
+            ),
+            0,
+            0,
+            0,
+        )?;
+        work = overlay["work"].as_u64();
+    }
+    let view = p.view();
+    let work = match work {
+        Some(w) => Some(w),
+        None => view
+            .get_metered("work", &mut |w| meter.charge(w, 0, 0, 0))?
+            .and_then(|v| v.as_u64()),
+    }
+    .filter(|w| (1..=10_000_000).contains(w))
+    .ok_or_else(|| Error::new("ranking", "signed work budget is unavailable"))?;
+    let field = |key: &str, meter: &mut SetupMeter| -> Result<jvc_state::ValueView> {
+        view.get_metered(key, &mut |w| meter.charge(w, 0, 0, 0))?
+            .ok_or_else(|| Error::new("ranking", "signed parameter is unavailable"))
+    };
     Ok(PreparationParameters {
-        h: parameter(p.view().index("H"))?,
-        alpha: parameter(p.view().index("alpha"))?,
-        threshold: parameter(p.view().index("rafsi_threshold"))?,
+        h: parameter(field("H", meter)?, meter)?,
+        alpha: parameter(field("alpha", meter)?, meter)?,
+        threshold: parameter(field("rafsi_threshold", meter)?, meter)?,
         work,
     })
+}
+fn bit_length(entries: u64) -> u64 {
+    u64::from(64 - entries.saturating_add(1).leading_zeros())
+}
+
+/// Charges setup work before it runs, against an explicit quota or the
+/// scaled default for the entries and key bytes charged so far.
+struct SetupMeter {
+    explicit: Option<u64>,
+    spent: u64,
+    entries: u64,
+    key_bytes: u64,
+    credited: u64,
+}
+impl SetupMeter {
+    fn charge(&mut self, work: u64, entries: u64, key_bytes: u64, credited: u64) -> Result<()> {
+        self.spent = add(self.spent, work)?;
+        self.entries = add(self.entries, entries)?;
+        self.key_bytes = add(self.key_bytes, key_bytes)?;
+        self.credited = add(self.credited, credited)?;
+        let budget = match self.explicit {
+            Some(limit) => limit,
+            None => self.default_budget()?,
+        };
+        if self.spent > budget {
+            return Err(resource("ranking setup envelope limit"));
+        }
+        Ok(())
+    }
+    /// The scaled default for the totals charged so far, including the
+    /// comparison-byte term and one entry allowance per credited item.
+    fn default_budget(&self) -> Result<u64> {
+        add(
+            add(
+                add(
+                    SETUP_UNITS_FIXED_ALLOWANCE,
+                    mul(self.entries, SETUP_UNITS_PER_ENTRY)?,
+                )?,
+                mul(
+                    self.key_bytes,
+                    add(SETUP_UNITS_PER_KEY_BYTE, mul(11, bit_length(self.entries))?)?,
+                )?,
+            )?,
+            mul(self.credited, SETUP_UNITS_PER_ENTRY)?,
+        )
+    }
+    /// The budget for the final safeguard: an explicit quota is used
+    /// as is, exactly as in `charge`; otherwise the final default plus
+    /// one entry allowance per credited item.
+    fn final_budget(&self, policy: &RankingPreparationPolicy) -> Result<u64> {
+        if let Some(limit) = self.explicit {
+            return Ok(limit);
+        }
+        add(
+            policy.effective_setup_units(self.entries, self.key_bytes)?,
+            mul(self.credited, SETUP_UNITS_PER_ENTRY)?,
+        )
+    }
 }
 impl SessionPreparation {
     fn new(session: &EvaluationSession, policy: &RankingPreparationPolicy) -> Result<Self> {
         policy.validate()?;
         let limits = &policy.limits;
         let e = session.state.evaluation();
-        let algorithm = e
-            .policy
-            .as_ref()
-            .and_then(|p| p.view().index("calculation").as_str().map(str::to_owned));
-        let mut reasons = e.reasons.clone();
-        let unsupported = algorithm.as_deref().is_some_and(|a| a != a::ALGORITHM);
-        if unsupported {
-            reasons.insert("unsupported_calculation".into());
+        // The meter exists before anything is read or copied from the
+        // evaluation. Every lookup, clone, and copy below is charged
+        // through it before it runs. A `resource_unavailable`
+        // refusal from a charged read returns the error at once, on
+        // every profile: no further work over restored data follows
+        // it. A diagnostic descriptor is returned only when no
+        // charged read refused.
+        let mut meter = policy.setup_meter(0, 0);
+        let mut reasons = BTreeSet::new();
+        // The selected view identifier is cloned into the descriptor.
+        // A refusal here has learned nothing, so it returns at once.
+        meter.charge(add(e.selected_view.len() as u64, 16)?, 0, 0, 0)?;
+        // Build the reason set through the meter: each entry is charged
+        // for its set insertion comparisons and its string copy before
+        // either happens. A refusal here also returns at once.
+        for reason in &e.reasons {
+            let work = add(
+                add(
+                    jvc_state::lookup_work(e.reasons.len() as u64, reason.len() as u64),
+                    reason.len() as u64,
+                )?,
+                16,
+            )?;
+            meter.charge(work, 0, 0, 0)?;
+            reasons.insert(reason.clone());
         }
-        let parameters = match parameters(e) {
+        // Read the calculation field borrowed, charge its length, and
+        // only then copy it. A refusal in either charge returns at
+        // once: without the copied name the descriptor cannot name
+        // the profile.
+        let calculation = match e.policy.as_ref() {
+            Some(policy) => policy
+                .view()
+                .get_metered("calculation", &mut |w| meter.charge(w, 0, 0, 0))?,
+            None => None,
+        };
+        let algorithm: Option<String> = match calculation.as_ref().and_then(|v| v.as_str()) {
+            Some(name) => {
+                meter.charge(name.len() as u64, 0, 0, 0)?;
+                Some(name.to_owned())
+            }
+            None => None,
+        };
+        let unsupported = algorithm.as_deref().is_some_and(|a| a != a::ALGORITHM);
+        // Parameters are read charged. A charged refusal returns at
+        // once, on every profile: no source hash, serialization, or
+        // descriptor work over restored data follows it. A diagnostic
+        // descriptor is returned only when no charged read refused.
+        let parameters = match parameters(e, &mut meter) {
             Ok(p) => Some(p),
+            Err(error) if error.code == "resource_unavailable" => return Err(error),
             Err(error) => {
                 reasons.insert(error.code);
                 None
             }
         };
+        if unsupported {
+            reasons.insert("unsupported_calculation".into());
+        }
         let available =
             e.available && algorithm.as_deref() == Some(a::ALGORITHM) && parameters.is_some();
         // Unsupported profiles need no ranking input identity or dictionary walk.
@@ -379,19 +544,45 @@ impl SessionPreparation {
                 0,
             )
         } else {
-            let records = session.state.ranking_source_records()?;
-            if records > limits.records {
+            // Every setup walk is charged to the setup-unit budget before
+            // it runs. The meter starts from zero: each walk item charges
+            // its exact entry and key-byte contribution, so the meter
+            // totals never exceed the final counts. Unavailable sessions
+            // skip the walks entirely and report zero setup counts.
+            let records = if available {
+                session
+                    .state
+                    .ranking_source_records_metered(&mut |w, en, k, c| meter.charge(w, en, k, c))?
+            } else {
+                0
+            };
+            if limits.records.is_some_and(|limit| records > limit) {
                 return Err(resource("ranking setup record limit"));
             }
             let (setup_bytes, setup_units) = if available {
-                let counts = session.state.ranking_index_bound()?;
+                let counts = session
+                    .state
+                    .ranking_index_bound_metered(&mut |w, en, k, c| meter.charge(w, en, k, c))?;
+                // Safeguard: total spent work must also fit the final
+                // default for the true counts, not only each provisional
+                // budget seen during the walk.
+                if meter.spent > meter.final_budget(policy)? {
+                    return Err(resource("ranking setup envelope limit"));
+                }
                 policy.setup_estimate(&counts)?
             } else {
                 (0, 0)
             };
             let (binding, bytes) = source_binding(&session.state, limits)?;
             if available {
-                session.state.ensure_ranking_index()?;
+                session
+                    .state
+                    .ensure_ranking_index_metered(&mut |w, en, k, c| meter.charge(w, en, k, c))?;
+                // Construction work must also fit the final budget for
+                // the true counts, plus credited walk items.
+                if meter.spent > meter.final_budget(policy)? {
+                    return Err(resource("ranking setup envelope limit"));
+                }
             }
             (binding, records, setup_bytes, setup_units, bytes as u64)
         };
@@ -990,7 +1181,7 @@ mod tests {
         session.prepare_ranking_native(&request).unwrap();
         let refused = graph(&session);
         let mut smaller = policy.clone();
-        smaller.limits.records = 1;
+        smaller.limits.records = Some(1);
         assert_eq!(
             session
                 .ranking_descriptor_native(&smaller)
@@ -1131,43 +1322,38 @@ mod tests {
             core_binding: format!("sha256:{}", "a".repeat(64)),
             limits: Default::default(),
         };
+        assert_eq!(p.limits.records, None);
+        assert_eq!(p.limits.setup_bytes, None);
+        assert_eq!(p.limits.setup_units, None);
+        assert_eq!(p.limits.source_bytes, None);
         let (bytes, units) = p.setup_estimate(&c).unwrap();
-        assert_eq!((bytes, units), (291_524_664, 204_442_264));
-        assert!(
-            bytes + p.limits.graph_bytes as u64 + (p.limits.metadata_bytes as u64)
-                < p.limits.setup_bytes as u64
-        );
-        assert!(units + 50_000_000 < p.limits.setup_units);
+        assert_eq!((bytes, units), (291_524_664, 7_332_895_940));
+        assert!(units + 50_000_000 < p.effective_setup_units(452_554, 33_432_924).unwrap());
         assert_eq!(p.limits.units, 100_000_000);
-        assert!(165_438_058 < p.limits.source_bytes);
         let mut grown = serde_json::to_value(&c).unwrap();
         for count in grown.as_object_mut().unwrap().values_mut() {
             *count = json!(count.as_u64().unwrap() * 3 / 2);
         }
         let grown: jvc_state::RankingIndexCounts = serde_json::from_value(grown).unwrap();
-        let (grown_bytes, _) = p.setup_estimate(&grown).unwrap();
-        assert!(
-            grown_bytes + p.limits.graph_bytes as u64 + (p.limits.metadata_bytes as u64)
-                < p.limits.setup_bytes as u64
-        );
-        assert!(165_438_058 * 3 / 2 < p.limits.source_bytes);
-        assert!(269_350 * 3 / 2 < p.limits.records);
-        p.limits.setup_bytes = bytes as usize;
-        p.limits.setup_units = units;
+        p.setup_estimate(&grown).unwrap();
+        p.limits.setup_bytes = Some(bytes as usize);
+        p.limits.setup_units = Some(units);
         assert_eq!(p.setup_estimate(&c).unwrap(), (bytes, units));
-        p.limits.setup_bytes -= 1;
+        p.limits.setup_bytes = Some(bytes as usize - 1);
         assert_eq!(
             p.setup_estimate(&c).unwrap_err().code,
             "resource_unavailable"
         );
-        p.limits.setup_bytes += 1;
-        p.limits.setup_units -= 1;
+        p.limits.setup_bytes = Some(bytes as usize);
+        p.limits.setup_units = Some(units - 1);
         assert_eq!(
             p.setup_estimate(&c).unwrap_err().code,
             "resource_unavailable"
         );
-        p.limits.setup_bytes = 1024 * 1024 * 1024;
-        p.limits.setup_units = 1_000_000_000;
+        // Eight times the measured shape passes at the scaled default and
+        // under quotas above the old whole-dictionary ceilings.
+        p.limits.setup_bytes = Some(1024 * 1024 * 1024 * 4);
+        p.limits.setup_units = Some(4_000_000_000);
         let mut large = c.clone();
         large.words *= 8;
         large.word_publications *= 8;
@@ -1175,14 +1361,1328 @@ mod tests {
         large.targets *= 8;
         large.judgment_groups *= 8;
         large.key_bytes *= 8;
-        assert_eq!(
-            p.setup_estimate(&large).unwrap_err().code,
-            "resource_unavailable"
-        );
+        p.limits.setup_bytes = None;
+        p.limits.setup_units = None;
+        p.setup_estimate(&large).unwrap();
         large.words = u64::MAX;
         assert_eq!(
             p.setup_estimate(&large).unwrap_err().code,
             "resource_unavailable"
+        );
+    }
+    #[test]
+    fn explicit_setup_units_near_the_maximum_are_used_as_is() {
+        let (first, _word) = session();
+        // One judgment group, so the record walk credits an item and
+        // the old final budget added 1,040 units to an explicit quota.
+        let session = restored_with_judgments(
+            first,
+            json!({ format!("jve1:{}", "0".repeat(64)): {"k0": "bless"} }),
+        );
+        for limit in [u64::MAX, u64::MAX - 1039] {
+            let mut policy = RankingPreparationPolicy {
+                core_binding: format!("sha256:{}", "a".repeat(64)),
+                limits: Default::default(),
+            };
+            policy.limits.setup_units = Some(limit);
+            let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+            assert!(descriptor.available, "{:?}", descriptor.reasons);
+        }
+        // The final safeguard uses the explicit quota itself, with no
+        // walk credits added to it.
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(12_345);
+        let mut meter = policy.setup_meter(10, 20);
+        meter.charge(0, 0, 0, 3).unwrap();
+        assert_eq!(meter.final_budget(&policy).unwrap(), 12_345);
+    }
+    fn restored_with(
+        mut session: EvaluationSession,
+        edit: impl FnOnce(&mut Value),
+    ) -> EvaluationSession {
+        let mut saved: Value =
+            serde_json::from_slice(&session.checkpoint("synthetic").unwrap()).unwrap();
+        edit(&mut saved);
+        session.state = jvc_state::EvaluatedState::restore_host_checkpoint(
+            &serde_json::to_vec(&saved).unwrap(),
+            "synthetic",
+        )
+        .unwrap();
+        session.word_results.borrow_mut().take();
+        *session.preparation.borrow_mut() = None;
+        session
+    }
+    fn restored_with_judgments(session: EvaluationSession, judgments: Value) -> EvaluationSession {
+        restored_with(session, |saved| {
+            saved["evaluation"]["judgments"] = judgments;
+        })
+    }
+    #[test]
+    fn setup_above_a_million_records_without_a_quota_completes() {
+        let (session, word) = session();
+        let inner: serde_json::Map<String, Value> = (0..=1_000_000u32)
+            .map(|n| (format!("k{n}"), json!("bless")))
+            .collect();
+        let session = restored_with_judgments(
+            session,
+            json!({ format!("jve1:{}", "0".repeat(64)): inner }),
+        );
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(descriptor.available, "{:?}", descriptor.reasons);
+        assert!(descriptor.setup.setup_records > 1_000_000);
+        let summary = session
+            .prepare_ranking_native(&RankingPreparationRequest {
+                owner_session: descriptor.owner_session.clone(),
+                descriptor_binding: descriptor.binding.clone(),
+                word: word.clone(),
+            })
+            .unwrap();
+        assert_eq!(summary.usage.setup_records, descriptor.setup.setup_records);
+        // A configured record quota keeps the old refusal and message.
+        let mut quota = policy.clone();
+        quota.limits.records = Some(descriptor.setup.setup_records - 1);
+        let error = session.ranking_descriptor_native(&quota).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup record limit");
+        // A configured envelope quota keeps the old refusal and message.
+        let mut quota = policy.clone();
+        quota.limits.setup_bytes = Some(descriptor.setup.setup_bytes as usize - 1);
+        let error = session.ranking_descriptor_native(&quota).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+        // A configured setup-unit quota below the advance charge also refuses.
+        let mut quota = policy;
+        quota.limits.setup_units = Some(1);
+        let error = session.ranking_descriptor_native(&quota).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn source_above_256_mib_without_a_quota_completes() {
+        let (session, _word) = session();
+        let inner: serde_json::Map<String, Value> = (0..9u32)
+            .map(|n| (format!("k{n}-{}", "x".repeat(30_000_000)), json!("bless")))
+            .collect();
+        let session = restored_with_judgments(
+            session,
+            json!({ format!("jve1:{}", "0".repeat(64)): inner }),
+        );
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        // This test checks the byte quota, not the clock. Give the large
+        // synthetic walk the widest time limit so parallel test load
+        // cannot trip it.
+        policy.limits.source_millis = 120_000;
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(descriptor.available, "{:?}", descriptor.reasons);
+        assert!(descriptor.setup.source_bytes > 256 * 1024 * 1024);
+        // A configured source quota keeps the old refusal.
+        let mut quota = policy;
+        quota.limits.source_bytes = Some(descriptor.setup.source_bytes as usize - 1);
+        assert_eq!(
+            session.ranking_descriptor_native(&quota).unwrap_err().code,
+            "resource_unavailable"
+        );
+    }
+    #[test]
+    fn mid_range_quota_refuses_before_the_count_walk() {
+        let (first, _word) = session();
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(65);
+        let error = first.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+        // A malformed private overlay makes a completed count walk return
+        // `invalid_overlay`. The same quota must still refuse first.
+        let (second, _word) = session();
+        let session = restored_with(second, |saved| {
+            let overlay = json!({"trust":[{"issuer":1}]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn count_walk_charges_trust_rules_and_scope_trees_first() {
+        // Many trust rules: the meter must stop inside the trust walk,
+        // before the malformed private overlay at its end can error.
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let rule = format!(
+            "{{\"actor\":\"{actor}\",\"subject\":\"{actor}\",\"scope\":{{\"kind\":\"definition\",\"word\":\"*\",\"language\":\"en\"}},\"values\":[\"heed\"]}}"
+        );
+        let trust: Value =
+            serde_json::from_str(&format!("[{}]", vec![rule; 1_000_000].join(","))).unwrap();
+        let restored = restored_with(first, |saved| {
+            saved["evaluation"]["trust"] = trust;
+            let overlay = json!({"trust":[{"issuer":1}]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(1_000_000);
+        let error = restored.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+        // One trust rule with a wide scope tree of numbers: the scope walk
+        // is charged per node, before the descriptor can succeed.
+        let (second, _word) = session();
+        let wide = json!({"kind":"definition","word":"*","language":"en","extra":vec![0; 100_000]});
+        let restored = restored_with(second, |saved| {
+            saved["evaluation"]["trust"] = json!([{
+                "actor": actor,
+                "subject": actor,
+                "scope": wide,
+                "values": ["heed"],
+            }]);
+        });
+        policy.limits.setup_units = Some(10_000);
+        let error = restored.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn count_walk_charges_public_values_before_visiting_them() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let values: Vec<String> = (0..1_000_000u32).map(|n| format!("v{n:06}")).collect();
+        let restored = restored_with(first, |saved| {
+            saved["evaluation"]["trust"] = json!([{
+                "actor": actor,
+                "subject": actor,
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+                "values": values,
+            }]);
+            let overlay = json!({"trust":[{"issuer":1}]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        // Enough for the post-walk charge of the old code, which then ran
+        // into the malformed overlay; the per-value charge must stop first.
+        policy.limits.setup_units = Some(8_000_000);
+        let error = restored.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    fn final_entries(c: &jvc_state::RankingIndexCounts) -> u64 {
+        c.words
+            + c.word_publications
+            + c.target_groups
+            + c.targets
+            + c.judgment_groups
+            + c.trust_rules
+            + c.scope_buckets
+            + c.scope_rules
+            + c.private_pairs
+            + c.private_weights
+            + c.private_rules
+    }
+    #[test]
+    fn meter_totals_equal_the_final_counts_for_each_rule_kind() {
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let mut scenarios: Vec<EvaluationSession> = Vec::new();
+        let (base, _word) = session();
+        scenarios.push(base);
+        let (with_public, _word) = session();
+        scenarios.push(restored_with(with_public, |saved| {
+            saved["evaluation"]["trust"] = json!([{
+                "actor": actor,
+                "subject": actor,
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+                "values": ["heed"],
+            }]);
+        }));
+        for value in ["heed", "shun"] {
+            let (with_private, _word) = session();
+            scenarios.push(restored_with(with_private, |saved| {
+                let overlay = json!({"trust":[{
+                    "issuer": actor,
+                    "subject": actor,
+                    "value": value,
+                    "scope": {"kind": "definition", "word": "*", "language": "en"},
+                }]});
+                saved["evaluation"]["overlay"] = overlay.clone();
+                saved["options"]["overlay"] = overlay;
+            }));
+        }
+        for scenario in &scenarios {
+            let mut meter = policy.setup_meter(0, 0);
+            let counts = scenario
+                .state
+                .ranking_index_bound_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
+                .unwrap();
+            assert_eq!(meter.entries, final_entries(&counts));
+            assert_eq!(meter.key_bytes, counts.key_bytes);
+            assert!(
+                meter.spent
+                    <= policy
+                        .effective_setup_units(meter.entries, meter.key_bytes)
+                        .unwrap()
+            );
+        }
+    }
+    #[test]
+    fn wide_scope_with_many_publications_refuses_at_the_default() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let restored = restored_with(first, |saved| {
+            let publications = saved["evaluation"]["publications"].as_object().unwrap();
+            let definition = publications
+                .values()
+                .find(|p| p["kind"] == "definition.publish")
+                .unwrap()
+                .clone();
+            let publications = saved["evaluation"]["publications"].as_object_mut().unwrap();
+            for n in 0..100u32 {
+                let id = format!("jve1:{n:064x}");
+                let mut publication = definition.clone();
+                publication["id"] = json!(id);
+                publications.insert(id, publication);
+            }
+            saved["evaluation"]["trust"] = json!([{
+                "actor": actor,
+                "subject": actor,
+                "scope": {
+                    "kind": "definition",
+                    "word": "*",
+                    "language": "en",
+                    "extra": vec![0; 30_000_000],
+                },
+                "values": ["heed"],
+            }]);
+        });
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let error = restored.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn private_lookup_charges_long_shared_prefix_keys() {
+        let (first, _word) = session();
+        let prefix = "a".repeat(99_990);
+        let actor = format!("ed25519:{}", "b".repeat(64));
+        let key_actor: serde_json::Map<String, Value> = (0..1000u32)
+            .map(|n| (format!("{prefix}:{n:04}"), json!(actor)))
+            .collect();
+        let long_key = format!("{prefix}:0999");
+        let restored = restored_with(first, |saved| {
+            saved["evaluation"]["lifecycle"]["key_actor"] = Value::Object(key_actor);
+            let overlay = json!({"trust":[{
+                "issuer": long_key,
+                "subject": long_key,
+                "value": "shun",
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+            }]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(20_000);
+        let error = restored.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn setup_lookups_are_all_charged_through_the_helper() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let session = restored_with(first, |saved| {
+            let overlay = json!({"trust":[{
+                "issuer": actor,
+                "subject": actor,
+                "value": "heed",
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+            }]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let mut meter = policy.setup_meter(0, 0);
+        jvc_state::reset_setup_lookup_calls();
+        session
+            .state
+            .ranking_source_records_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
+            .unwrap();
+        session
+            .state
+            .ranking_index_bound_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
+            .unwrap();
+        // Records walk: 3 overlay field reads. Count walk: 1 reasons
+        // read, 1 overlay trust read, 7 rule validation reads, and 6
+        // bound reads (value, issuer, subject, scope, 2 key_actor).
+        assert_eq!(jvc_state::setup_lookup_calls(), 18);
+    }
+    #[test]
+    fn long_stored_key_overlay_and_rule_lookups_are_charged() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let prefix = "a".repeat(99_990);
+        let mut rule = json!({
+            "issuer": actor,
+            "subject": actor,
+            "value": "shun",
+            "scope": {"kind": "definition", "word": "*", "language": "en"},
+        });
+        for n in 0..1000u32 {
+            rule[format!("{prefix}:{n:04}")] = json!(n);
+        }
+        let mut overlay = json!({"trust": [rule]});
+        for n in 0..1000u32 {
+            overlay[format!("{prefix}:{n:04}")] = json!(n);
+        }
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(13_500);
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn policy_field_lookups_are_charged_before_the_walks() {
+        let (first, _word) = session();
+        let session = restored_with(first, |saved| {
+            let policy = saved["evaluation"]["policy"].as_object_mut().unwrap();
+            for n in 0..1000u32 {
+                policy.insert(format!("x{n}"), json!(n));
+            }
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(5_000);
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn reasons_lookup_is_charged_by_depth() {
+        let (first, _word) = session();
+        let prefix = "a".repeat(1000);
+        let reasons: Vec<String> = (0..1000u32).map(|n| format!("{prefix}:{n:04}")).collect();
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["reasons"] = json!(reasons);
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(1_000);
+        let mut meter = policy.setup_meter(0, 0);
+        let error = session
+            .state
+            .ranking_index_bound_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
+            .unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    fn with_long_policy(session: EvaluationSession) -> EvaluationSession {
+        restored_with(session, |saved| {
+            let policy = saved["evaluation"]["policy"].as_object_mut().unwrap();
+            for n in 0..1000u32 {
+                policy.insert(format!("x{n}"), json!(n));
+            }
+        })
+    }
+    #[test]
+    fn long_policy_classifies_available_unavailable_and_exact() {
+        let mut quota = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        quota.limits.setup_units = Some(1);
+        // Available float at a one-unit quota refuses, and the refusal
+        // is the last work done: no classification reads follow it.
+        let (available_session, _word) = session();
+        let available_session = with_long_policy(available_session);
+        jvc_state::reset_setup_lookup_calls();
+        let error = available_session
+            .ranking_descriptor_native(&quota)
+            .unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(jvc_state::setup_lookup_calls(), 0);
+        // Unavailable float returns its diagnostic descriptor at the
+        // default and at an ordinary quota.
+        let (unavailable_session, _word) = session();
+        let unavailable_session = restored_with(unavailable_session, |saved| {
+            saved["evaluation"]["available"] = json!(false);
+            saved["evaluation"]["reasons"] = json!(["resource_unavailable"]);
+            let policy = saved["evaluation"]["policy"].as_object_mut().unwrap();
+            for n in 0..1000u32 {
+                policy.insert(format!("x{n}"), json!(n));
+            }
+        });
+        for policy in [
+            RankingPreparationPolicy {
+                core_binding: format!("sha256:{}", "a".repeat(64)),
+                limits: Default::default(),
+            },
+            RankingPreparationPolicy {
+                core_binding: format!("sha256:{}", "a".repeat(64)),
+                limits: RankingPreparationLimits {
+                    setup_units: Some(1_000_000),
+                    ..Default::default()
+                },
+            },
+        ] {
+            let descriptor = unavailable_session
+                .ranking_descriptor_native(&policy)
+                .unwrap();
+            assert!(!descriptor.available);
+            assert_eq!(descriptor.setup.setup_records, 0);
+        }
+        // Exact profile returns its diagnostic descriptor at the
+        // default and at an ordinary quota.
+        let (exact_session, _word) = session();
+        let exact_session = restored_with(exact_session, |saved| {
+            saved["evaluation"]["policy"]["calculation"] = json!("simple-routes-bounds-v1");
+            let policy = saved["evaluation"]["policy"].as_object_mut().unwrap();
+            for n in 0..1000u32 {
+                policy.insert(format!("x{n}"), json!(n));
+            }
+        });
+        for policy in [
+            RankingPreparationPolicy {
+                core_binding: format!("sha256:{}", "a".repeat(64)),
+                limits: Default::default(),
+            },
+            RankingPreparationPolicy {
+                core_binding: format!("sha256:{}", "a".repeat(64)),
+                limits: RankingPreparationLimits {
+                    setup_units: Some(1_000_000),
+                    ..Default::default()
+                },
+            },
+        ] {
+            let descriptor = exact_session.ranking_descriptor_native(&policy).unwrap();
+            assert!(!descriptor.available);
+            assert!(descriptor.reasons.contains("unsupported_calculation"));
+            assert_eq!(descriptor.setup.setup_records, 0);
+        }
+    }
+    #[test]
+    fn long_reasons_clone_is_charged_before_cloning() {
+        let (first, _word) = session();
+        let prefix = "a".repeat(99_990);
+        let reasons: Vec<String> = (0..1000u32).map(|n| format!("{prefix}:{n:04}")).collect();
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["reasons"] = json!(reasons);
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(1);
+        jvc_state::reset_setup_lookup_calls();
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        // The first charge refuses, so no lookup or clone follows it.
+        assert_eq!(jvc_state::setup_lookup_calls(), 0);
+    }
+    #[test]
+    fn long_calculation_is_charged_before_it_is_copied() {
+        let (first, _word) = session();
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["policy"]["calculation"] = json!("a".repeat(100_000_000));
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(1_000);
+        jvc_state::reset_setup_lookup_calls();
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        // Only the charged calculation lookup ran. A copy before its
+        // charge, or any classification reread, would add lookups.
+        assert_eq!(jvc_state::setup_lookup_calls(), 1);
+    }
+    #[test]
+    fn unavailable_parameter_refusal_reads_no_source_bytes() {
+        let (first, _word) = session();
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["available"] = json!(false);
+            saved["evaluation"]["reasons"] = json!([]);
+            let policy = saved["evaluation"]["policy"].as_object_mut().unwrap();
+            for n in 0..1000u32 {
+                policy.insert(format!("x{n}"), json!(n));
+            }
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        // The view, clone, and work lookups spend just over this quota
+        // during the parameter reads, before any source hash may run.
+        policy.limits.setup_units = Some(1_500);
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        assert_eq!(error.message, "ranking setup envelope limit");
+    }
+    #[test]
+    fn arena_strings_are_not_revalidated_during_setup() {
+        let mut quota = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        // A long calculation: its length charge refuses, and no arena
+        // string bytes are validated on the way.
+        let (first, _word) = session();
+        let restored = restored_with(first, |saved| {
+            saved["evaluation"]["policy"]["calculation"] = json!("a".repeat(10_000_000));
+        });
+        quota.limits.setup_units = Some(1_000);
+        jvc_state::reset_validated_string_bytes();
+        assert_eq!(
+            restored.ranking_descriptor_native(&quota).unwrap_err().code,
+            "resource_unavailable"
+        );
+        assert_eq!(jvc_state::validated_string_bytes(), 0);
+        // Long policy keys: the calculation lookup's candidate keys are
+        // borrowed without validation before the next lookup refuses.
+        let (second, _word) = session();
+        let restored = restored_with(second, |saved| {
+            let policy = saved["evaluation"]["policy"].as_object_mut().unwrap();
+            for n in 0..1000u32 {
+                policy.insert(format!("{}-{n}", "a".repeat(10_000)), json!(n));
+            }
+        });
+        quota.limits.setup_units = Some(1_500);
+        jvc_state::reset_validated_string_bytes();
+        assert_eq!(
+            restored.ranking_descriptor_native(&quota).unwrap_err().code,
+            "resource_unavailable"
+        );
+        assert_eq!(jvc_state::validated_string_bytes(), 0);
+    }
+    #[test]
+    fn index_comparison_bytes_are_in_the_model_and_default() {
+        let (first, _word) = session();
+        let session = restored_with(first, |saved| {
+            let publications = saved["evaluation"]["publications"].as_object().unwrap();
+            let definition = publications
+                .values()
+                .find(|p| p["kind"] == "definition.publish")
+                .unwrap()
+                .clone();
+            let publications = saved["evaluation"]["publications"].as_object_mut().unwrap();
+            for n in 0..10_000u32 {
+                let id = format!("jve1:{n:064x}");
+                let mut publication = definition.clone();
+                publication["id"] = json!(id);
+                publication["word"] = json!(format!("{}:{n:06}", "x".repeat(4096)));
+                publications.insert(id, publication);
+            }
+        });
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(descriptor.available, "{:?}", descriptor.reasons);
+        // The word map alone reads at least 1,281,368,064 comparison
+        // bytes for this shape; the modelled charge must cover it.
+        assert!(descriptor.setup.setup_units > 1_281_368_064);
+        let mut quota = policy;
+        quota.limits.setup_units = Some(1_000_000_000);
+        assert_eq!(
+            session.ranking_descriptor_native(&quota).unwrap_err().code,
+            "resource_unavailable"
+        );
+    }
+    #[test]
+    fn descriptor_with_12_5m_judgment_groups_passes_at_the_default() {
+        let (first, _word) = session();
+        let session = restored_with(first, |saved| {
+            let mut text = String::with_capacity(160_000_000);
+            text.push('{');
+            for n in 0..12_500_001u32 {
+                if n > 0 {
+                    text.push(',');
+                }
+                text.push_str(&format!("\"k{n}\":{{}}"));
+            }
+            text.push('}');
+            saved["evaluation"]["judgments"] = serde_json::from_str(&text).unwrap();
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        // This test checks the unit budget, not the clock.
+        policy.limits.source_millis = 120_000;
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(descriptor.available, "{:?}", descriptor.reasons);
+        assert!(descriptor.setup.setup_records >= 12_500_001);
+    }
+    #[test]
+    fn private_scope_pack_and_serialize_are_charged_before_they_run() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let session = restored_with(first, |saved| {
+            let overlay = json!({"trust":[{
+                "issuer": actor,
+                "subject": actor,
+                "value": "heed",
+                "weight": {"numerator": 1, "denominator": 1},
+                "scope": {
+                    "kind": "definition",
+                    "word": "*",
+                    "language": "en",
+                    "extra": vec![0; 100_000],
+                },
+            }]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(500_000);
+        jvc_state::reset_packed_value_nodes();
+        jvc_state::reset_serialized_value_bytes();
+        let error = session.ranking_descriptor_native(&policy).unwrap_err();
+        assert_eq!(error.code, "resource_unavailable");
+        // The refusal lands on the pack charge, so construction never
+        // packed the scope into an arena or serialized it.
+        assert_eq!(jvc_state::packed_value_nodes(), 0);
+        assert_eq!(jvc_state::serialized_value_bytes(), 0);
+    }
+    #[test]
+    fn long_stored_key_rule_completes_at_an_ordinary_quota() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let prefix = "a".repeat(99_990);
+        let mut rule = json!({
+            "issuer": actor,
+            "subject": actor,
+            "value": "shun",
+            "scope": {"kind": "definition", "word": "*", "language": "en"},
+        });
+        for n in 0..1000u32 {
+            rule[format!("{prefix}:{n:04}")] = json!(n);
+        }
+        let mut overlay = json!({"trust": [rule]});
+        for n in 0..1000u32 {
+            overlay[format!("{prefix}:{n:04}")] = json!(n);
+        }
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let mut policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        policy.limits.setup_units = Some(200_000);
+        // This test checks the unit quota, not the clock.
+        policy.limits.source_millis = 120_000;
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(descriptor.available, "{:?}", descriptor.reasons);
+    }
+    /// A partial source guard for the metered setup functions.
+    /// The scanner reads source as text and does not parse Rust;
+    /// text inside string literals, raw strings and macros, and
+    /// unusual formatting, can change what it matches, in both
+    /// directions.
+    /// Before anything else, it blanks out `//` line comments and
+    /// nested `/* ... */` block comments (never `//` inside a normal
+    /// string literal), so a commented-out charge does not count and
+    /// a commented-out read is not flagged. Raw strings (`r"..."`,
+    /// `r#"..."#`) are not recognized as string literals, so text
+    /// inside one is scanned as code: a charge call written inside a
+    /// raw string counts, and a read written inside one is flagged.
+    /// In the listed functions only, it then catches a map or set
+    /// read whose key is a string literal or a plain identifier -
+    /// after `[`, `.get(`, `.contains(`, `.contains_key(`, or
+    /// `.index(` - when no single charge call in the twelve lines
+    /// above it names the same key, either as a quoted literal in the
+    /// call or as the same identifier outside quoted text in the call.
+    /// That call text is bounded by counting parenthesis characters
+    /// from the charge name, including any inside strings; if the
+    /// count does not balance before the read, the inspected text
+    /// runs up to the read, so a later statement can then supply
+    /// the key.
+    /// A recognized read whose only charge is outside that window is
+    /// flagged; the scan does not decide whether a distant charge
+    /// covers the read. It reads the text of a `macro_rules!` body in
+    /// a listed function like any other code, so a read directly
+    /// inside such a body is caught; it does not see code that a macro
+    /// expands to at its call site. It does not catch helpers outside
+    /// the listed functions, or reads inside closures and iterator
+    /// adapters that borrow an earlier charge; those are covered by
+    /// the operation-level tests, not by this scan. Its allow-list
+    /// has four entries, listed with a reason in the test; an entry
+    /// that matches nothing fails the test.
+    #[test]
+    fn setup_source_has_no_unmetered_map_reads() {
+        let allow: &[(&str, &str)] = &[
+            // overlay_rational is charged at its setup call sites
+            // (weight, numerator, and denominator reads in
+            // private_trust_metered); its other callers are per-word
+            // context reads under the per-word charges.
+            ("let n = v[\"numerator\"]", "charged at setup call sites"),
+            ("let d = v[\"denominator\"]", "charged at setup call sites"),
+            // Inside the lookup helper itself: get_metered charges
+            // before it delegates to get.
+            ("pairs[index]", "inside the lookup helper"),
+            // Interning is charged by the pack charge that every
+            // packing call site takes before packing.
+            (
+                "string_hashes.get(&hash)",
+                "interning is charged by the pack charge",
+            ),
+        ];
+        let mut allow_used = vec![false; allow.len()];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let files: Vec<(std::path::PathBuf, &[&str])> = vec![
+            (
+                root.join("../jvc-state/src/policy.rs"),
+                &[
+                    "fn charge_lookup",
+                    "fn scope_measure",
+                    "fn value_strings_metered",
+                    "fn overlay_rational",
+                    "fn private_trust_metered",
+                    "fn new_metered",
+                    "fn index_private_rules_metered",
+                    "fn ranking_index_bound_metered",
+                ],
+            ),
+            (
+                root.join("../jvc-state/src/incremental.rs"),
+                &[
+                    "fn ranking_source_records_metered",
+                    "fn ranking_index_bound_metered",
+                    "fn ensure_ranking_index_metered",
+                ],
+            ),
+            (
+                root.join("../jvc-state/src/arena.rs"),
+                &[
+                    "fn lookup_work",
+                    "fn intern",
+                    "fn pack_serde",
+                    "fn get(",
+                    "fn get_metered",
+                    "fn string_bytes_metered",
+                ],
+            ),
+            (
+                root.join("src/ranking_preparation.rs"),
+                &["fn parameter(", "fn parameters(", "fn new(session"],
+            ),
+        ];
+        let mut failures = Vec::new();
+        for (path, functions) in &files {
+            let text = std::fs::read_to_string(path).unwrap();
+            for name in *functions {
+                let mut regions = Vec::new();
+                let mut rest = text.as_str();
+                // "fn new_metered" names two construction functions;
+                // every other name names one.
+                let limit = if *name == "fn new_metered" { 2 } else { 1 };
+                while regions.len() < limit {
+                    let Some(region) = extract_fn(rest, name) else {
+                        break;
+                    };
+                    let offset = rest.find(name).unwrap() + region.len();
+                    regions.push(region);
+                    rest = &rest[offset.min(rest.len())..];
+                }
+                if regions.is_empty() {
+                    failures.push(format!("{}: missing function {name}", path.display()));
+                    continue;
+                }
+                for region in regions {
+                    failures.extend(scan_region(region, allow, &mut allow_used));
+                }
+            }
+        }
+        for (index, (part, reason)) in allow.iter().enumerate() {
+            if !allow_used[index] {
+                failures.push(format!(
+                    "stale allow-list entry {part:?} ({reason}) matches no current source"
+                ));
+            }
+        }
+        // Self-test: identifier after .index(, a mismatched-key
+        // charge, and no charge at all are all rejected, while a
+        // same-key charge passes.
+        for input in [
+            "fn fixture() {\n let value = map.index(key);\n}\n",
+            "fn fixture() {\n let subject = \"some_subject\";\n charge_lookup(map, \"issuer\", meter)?;\n let value = map.get(subject);\n}\n",
+            "fn fixture() {\n let value = map.get(subject);\n}\n",
+            // Input D: a separate declaration after an unrelated charge does not satisfy it.
+            "fn fixture() {\n charge_lookup(meter, 3, \"issuer\")?;\n let subject = \"some_subject\";\n let value = map.get(subject);\n}\n",
+            // Input D control: the same read without the unrelated charge.
+            "fn fixture() {\n let subject = \"some_subject\";\n let value = map.get(subject);\n}\n",
+            // Input E control: input E with the parenthesis removed from the string.
+            "fn fixture() {\n charge_lookup(&mut meter, 3, \"issuer\")?;\n let subject = \"subject\";\n let value = map.get(subject);\n}\n",
+        ] {
+            let mut used = vec![false; allow.len()];
+            assert!(
+                !scan_region(input, allow, &mut used).is_empty(),
+                "scan accepted: {input}"
+            );
+        }
+        let mut used = vec![false; allow.len()];
+        assert!(scan_region(
+            "fn fixture() {\n charge_lookup(meter, 3, \"value\")?;\n let value = map.get(\"value\");\n}\n",
+            allow,
+            &mut used,
+        )
+        .is_empty());
+        // Pins the bounded-call sentence: parenthesis characters inside strings count too.
+        let mut used = vec![false; allow.len()];
+        assert!(scan_region(
+            "fn fixture() {\n charge_lookup(&mut meter, 3, \"issuer(\")?;\n let subject = \"subject\";\n let value = map.get(subject);\n}\n",
+            allow,
+            &mut used,
+        )
+        .is_empty());
+        // A commented-out charge is not a charge.
+        let mut used = vec![false; allow.len()];
+        assert!(!scan_region(
+            "fn fixture() {\n // charge_lookup(meter, 3, \"value\")?;\n let value = map.get(\"value\");\n}\n",
+            allow,
+            &mut used,
+        )
+        .is_empty());
+        // Pins: raw strings are not recognized as string literals.
+        let mut used = vec![false; allow.len()];
+        assert!(scan_region(
+            "fn fixture() {\n let text = r#\"charge_lookup(meter, 3, \"value\")\"#;\n let value = map.get(\"value\");\n}\n",
+            allow,
+            &mut used,
+        )
+        .is_empty());
+        // Pins: a read directly inside a macro_rules! body is caught.
+        let mut used = vec![false; allow.len()];
+        assert!(!scan_region(
+            "fn fixture() {\n macro_rules! read_value { () => { map.get(\"value\") } }\n let value = read_value!();\n}\n",
+            allow,
+            &mut used,
+        )
+        .is_empty());
+        // A read that appears only in a comment is not a read.
+        let mut used = vec![false; allow.len()];
+        assert!(
+            scan_region(
+                "fn fixture() {\n // let value = map.get(\"value\");\n let value = 1;\n}\n",
+                allow,
+                &mut used,
+            )
+            .is_empty()
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+    fn extract_fn<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+        let start = text.find(name)?;
+        let body = start + text[start..].find('{')?;
+        let mut depth = 0i32;
+        for (offset, ch) in text[body..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&text[start..body + offset + 1]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    /// Blank out `//` line comments and (nested) `/* ... */` block
+    /// comments, preserving newlines so line numbers stay aligned.
+    /// `//` inside a string literal is not a comment.
+    fn stripped(region: &str) -> String {
+        let mut out = String::with_capacity(region.len());
+        let mut chars = region.chars().peekable();
+        let mut depth = 0u32;
+        let mut in_string = false;
+        while let Some(ch) = chars.next() {
+            if depth > 0 {
+                if ch == '/' && chars.peek() == Some(&'*') {
+                    chars.next();
+                    depth += 1;
+                    out.push(' ');
+                    out.push(' ');
+                } else if ch == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    depth -= 1;
+                    out.push(' ');
+                    out.push(' ');
+                } else {
+                    out.push(if ch == '\n' { '\n' } else { ' ' });
+                }
+                continue;
+            }
+            if in_string {
+                out.push(ch);
+                if ch == '\\' {
+                    if let Some(next) = chars.next() {
+                        out.push(next);
+                    }
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => {
+                    in_string = true;
+                    out.push(ch);
+                }
+                '/' if chars.peek() == Some(&'/') => {
+                    chars.next();
+                    out.push(' ');
+                    out.push(' ');
+                    for next in chars.by_ref() {
+                        if next == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                        out.push(' ');
+                    }
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                    depth = 1;
+                    out.push(' ');
+                    out.push(' ');
+                }
+                _ => out.push(ch),
+            }
+        }
+        out
+    }
+    fn scan_region(region: &str, allow: &[(&str, &str)], allow_used: &mut [bool]) -> Vec<String> {
+        fn read_key(line: &str) -> Option<String> {
+            for open in [
+                "[\"",
+                ".get(\"",
+                ".contains(\"",
+                ".contains_key(\"",
+                ".index(\"",
+            ] {
+                if let Some(at) = line.find(open) {
+                    let rest = &line[at + open.len()..];
+                    return rest.find('"').map(|end| rest[..end].to_string());
+                }
+            }
+            for open in [".get(", ".contains(", ".contains_key(", ".index("] {
+                if let Some(at) = line.find(open) {
+                    let rest = &line[at + open.len()..];
+                    let rest = rest.trim_start_matches(['&', '(', ' ']);
+                    let ident: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !ident.is_empty() {
+                        return Some(ident);
+                    }
+                }
+            }
+            // Indexing with a variable key: `map[key]`.
+            let bytes = line.as_bytes();
+            for at in 0..bytes.len() {
+                if bytes[at] != b'[' || at == 0 {
+                    continue;
+                }
+                let before = bytes[at - 1] as char;
+                if !(before.is_alphanumeric() || before == '_' || before == ')' || before == ']') {
+                    continue;
+                }
+                let Some(end) = line[at + 1..].find(']') else {
+                    continue;
+                };
+                let inner = line[at + 1..at + 1 + end].trim();
+                if !inner.is_empty()
+                    && inner.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    && !inner.chars().next().unwrap().is_numeric()
+                {
+                    return Some(inner.to_string());
+                }
+            }
+            None
+        }
+        fn charged_matches(call: &str, key: &str) -> bool {
+            // A charge names the read's key either as a quoted literal
+            // or as the same identifier outside any quoted text.
+            let mut quoted = Vec::new();
+            let mut rest = String::new();
+            let mut chars = call.chars();
+            while let Some(ch) = chars.next() {
+                if ch == '"' {
+                    let literal: String = chars.by_ref().take_while(|c| *c != '"').collect();
+                    quoted.push(literal);
+                } else {
+                    rest.push(ch);
+                }
+            }
+            quoted.iter().any(|literal| literal == key)
+                || rest
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .any(|token| token == key)
+        }
+        let text = stripped(region);
+        let lines: Vec<&str> = text.lines().collect();
+        let mut failures = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            let is_read = !trimmed.contains("in [\"")
+                && (trimmed.contains("[\"")
+                    || trimmed.contains(".get(")
+                    || trimmed.contains(".contains(")
+                    || trimmed.contains(".contains_key(")
+                    || trimmed.contains(".index(")
+                    || read_key(trimmed).is_some());
+            if !is_read || trimmed.contains("get_metered") {
+                continue;
+            }
+            if let Some(at) = allow.iter().position(|(part, _)| trimmed.contains(part)) {
+                allow_used[at] = true;
+                continue;
+            }
+            let Some(key) = read_key(trimmed) else {
+                continue;
+            };
+            fn charge_call(lines: &[&str], at: usize, before: usize) -> String {
+                let first = lines[at];
+                let start = ["charge_lookup", "lookup_work", "get_metered"]
+                    .iter()
+                    .filter_map(|token| first.find(token))
+                    .min()
+                    .unwrap_or(0);
+                let mut call = String::new();
+                let mut depth = 0i32;
+                let mut opened = false;
+                let segments: Vec<&str> = std::iter::once(&first[start..])
+                    .chain(lines[at + 1..before].iter().copied())
+                    .collect();
+                for segment in segments {
+                    for ch in segment.chars() {
+                        call.push(ch);
+                        if ch == '(' {
+                            opened = true;
+                            depth += 1;
+                        }
+                        if ch == ')' {
+                            depth -= 1;
+                            if opened && depth == 0 {
+                                return call;
+                            }
+                        }
+                    }
+                    call.push(' ');
+                }
+                call
+            }
+            let charged = (0..index).rev().take(12).any(|at| {
+                let prior = lines[at];
+                if !(prior.contains("charge_lookup")
+                    || prior.contains("lookup_work")
+                    || prior.contains("get_metered"))
+                {
+                    return false;
+                }
+                let call = charge_call(&lines, at, index);
+                charged_matches(&call, &key)
+            });
+            if !charged {
+                failures.push(trimmed.to_string());
+            }
+        }
+        failures
+    }
+    #[test]
+    fn records_walk_overlay_reads_are_charged() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let prefix = "a".repeat(99_990);
+        let mut overlay = json!({"trust": [{
+            "issuer": actor,
+            "subject": actor,
+            "value": "shun",
+            "scope": {"kind": "definition", "word": "*", "language": "en"},
+        }]});
+        for n in 0..1000u32 {
+            overlay[format!("{prefix}:{n:04}")] = json!(n);
+        }
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let mut meter = policy.setup_meter(0, 0);
+        jvc_state::reset_setup_lookup_calls();
+        session
+            .state
+            .ranking_source_records_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
+            .unwrap();
+        // Exactly the three overlay field reads go through the helper.
+        assert_eq!(jvc_state::setup_lookup_calls(), 3);
+    }
+    #[test]
+    fn construction_contains_key_read_is_charged() {
+        let (first, _word) = session();
+        let actor = format!("ed25519:{}", "a".repeat(64));
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["trust"] = json!([{
+                "actor": actor,
+                "subject": actor,
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+                "values": ["heed"],
+            }]);
+            let overlay = json!({"trust": [{
+                "issuer": actor,
+                "subject": actor,
+                "value": "shun",
+                "scope": {"kind": "definition", "word": "*", "language": "en"},
+            }]});
+            saved["evaluation"]["overlay"] = overlay.clone();
+            saved["options"]["overlay"] = overlay;
+        });
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let mut meter = policy.setup_meter(0, 0);
+        jvc_state::reset_setup_lookup_calls();
+        session
+            .state
+            .ensure_ranking_index_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
+            .unwrap();
+        // Construction makes exactly 37 charged lookup calls for this
+        // fixture, one of them the charge taken before the retained
+        // rules' `contains_key` read. Removing that charge drops the
+        // count to 36 and fails this test.
+        assert_eq!(jvc_state::setup_lookup_calls(), 37);
+    }
+    #[test]
+    fn unavailable_float_skips_the_records_walk() {
+        let (first, _word) = session();
+        let groups: serde_json::Map<String, Value> = (0..100u32)
+            .map(|n| (format!("jve1:{n:064x}"), json!({"a": "bless"})))
+            .collect();
+        let session = restored_with(first, |saved| {
+            saved["evaluation"]["judgments"] = Value::Object(groups);
+            saved["evaluation"]["available"] = json!(false);
+            saved["evaluation"]["reasons"] = json!(["resource_unavailable"]);
+        });
+        // No setup walk runs on this path: the descriptor reports zero
+        // setup counts.
+        let policy = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        let descriptor = session.ranking_descriptor_native(&policy).unwrap();
+        assert!(!descriptor.available);
+        assert_eq!(descriptor.setup.setup_records, 0);
+        assert_eq!(descriptor.setup.setup_units, 0);
+        assert_eq!(descriptor.setup.setup_bytes, 0);
+    }
+    #[test]
+    fn scaled_default_covers_uniform_growth_and_widest_bit_length() {
+        let base = jvc_state::RankingIndexCounts {
+            words: 89687,
+            word_publications: 89687,
+            target_groups: 89687,
+            targets: 93806,
+            judgment_groups: 89687,
+            key_bytes: 33432924,
+            ..Default::default()
+        };
+        let p = RankingPreparationPolicy {
+            core_binding: format!("sha256:{}", "a".repeat(64)),
+            limits: Default::default(),
+        };
+        for scale in [64u64, 1024] {
+            let mut c = base.clone();
+            c.words *= scale;
+            c.word_publications *= scale;
+            c.target_groups *= scale;
+            c.targets *= scale;
+            c.judgment_groups *= scale;
+            c.key_bytes *= scale;
+            let (bytes, units) = p.setup_estimate(&c).unwrap();
+            let _ = bytes;
+            let entries = 452_554 * scale;
+            let budget = p
+                .effective_setup_units(entries, base.key_bytes * scale)
+                .unwrap();
+            assert!(budget - units >= SETUP_UNITS_FIXED_ALLOWANCE, "{scale}");
+        }
+        // At bit length 64 the charge per entry is 16 * 64 + 16 = 1040 and
+        // per key byte 6, exactly the default allowances, so the margin is
+        // the fixed allowance at any key-byte count. Counts that wide
+        // overflow the checked u64 arithmetic in `setup_estimate` itself,
+        // so this part checks the formula in u128.
+        for (entries, key_bytes) in [(1u128 << 62, 0u128), (1u128 << 62, 1u128 << 60)] {
+            let budget = SETUP_UNITS_FIXED_ALLOWANCE as u128 + 1040 * entries + 6 * key_bytes;
+            let charge = 1040 * entries + 6 * key_bytes;
+            assert_eq!(budget - charge, SETUP_UNITS_FIXED_ALLOWANCE as u128);
+        }
+        // A representable wide shape through the real estimate.
+        let wide = jvc_state::RankingIndexCounts {
+            words: 1 << 40,
+            key_bytes: 1 << 40,
+            ..Default::default()
+        };
+        let (_, units) = p.setup_estimate(&wide).unwrap();
+        assert!(
+            p.effective_setup_units(1 << 40, 1 << 40).unwrap() - units
+                >= SETUP_UNITS_FIXED_ALLOWANCE
         );
     }
     #[test]
@@ -1191,18 +2691,15 @@ mod tests {
             core_binding: format!("sha256:{}", "a".repeat(64)),
             limits: Default::default(),
         };
-        p.limits.source_bytes = 1024 * 1024 * 1024;
+        p.limits.source_bytes = Some(1024 * 1024 * 1024 * 4);
         p.limits.source_millis = 120_000;
         p.validate().unwrap();
-        p.limits.source_bytes += 1;
-        assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
-        p.limits.source_bytes -= 1;
         p.limits.source_millis += 1;
         assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
         p.limits.source_millis = 0;
         assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
         p.limits.source_millis = 1;
-        p.limits.source_bytes = 0;
+        p.limits.source_bytes = Some(0);
         assert_eq!(p.validate().unwrap_err().code, "ranking_policy");
     }
     #[test]
@@ -1221,7 +2718,7 @@ mod tests {
             key_bytes: 434,
             ..Default::default()
         };
-        assert_eq!(p.setup_estimate(&c).unwrap(), (12_772, 1_156));
+        assert_eq!(p.setup_estimate(&c).unwrap(), (12_772, 17_310));
     }
     #[test]
     fn setup_units_do_not_spend_the_context_allowance() {
@@ -1252,9 +2749,9 @@ mod tests {
             session.prepare_ranking_native(&request).unwrap_err().code,
             "resource_unavailable"
         );
-        policy.limits.setup_units = 0;
+        policy.limits.setup_units = Some(0);
         assert_eq!(policy.validate().unwrap_err().code, "ranking_policy");
-        policy.limits.setup_units = 1_000_000_001;
-        assert_eq!(policy.validate().unwrap_err().code, "ranking_policy");
+        policy.limits.setup_units = Some(4_000_000_001);
+        policy.validate().unwrap();
     }
 }
