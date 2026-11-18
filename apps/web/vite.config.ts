@@ -10,10 +10,11 @@ const testRoot =
 const testPlugins: Plugin[] = process.env.JVC_PLAYWRIGHT_RUN_ROOT
   ? [
       {
-        name: "test-rich-field-no-revalidate",
+        name: "test-firefox-no-revalidate",
         configureServer(server) {
           server.middlewares.use((req, _res, next) => {
-            if (req.url?.split("?")[0] === "/src/components/rich-field.ts")
+            const agent = req.headers["user-agent"];
+            if (typeof agent === "string" && agent.includes("Firefox/"))
               delete req.headers["if-none-match"];
             next();
           });
