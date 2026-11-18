@@ -740,7 +740,6 @@ fn native_read_limits_are_local_policy_and_can_be_raised() {
     // The default has no total-byte or file-count quota.
     assert_eq!(ReadLimits::default().max_total_bytes, None);
     assert_eq!(ReadLimits::default().max_files, None);
-    assert!(read_directory_with_limits(&repo, ReadLimits::default()).is_ok());
     git(&repo, &["init", "-q"]);
     let with_readme = read_directory(&repo).unwrap();
     let id = commit_fixture(&repo, &with_readme, None);
@@ -762,7 +761,6 @@ fn native_read_limits_are_local_policy_and_can_be_raised() {
             .code,
         "resource_unavailable"
     );
-    assert!(read_git_tree_with_limits(&repo, &id, ReadLimits::default()).is_ok());
     assert_eq!(
         read_git_tree(&repo, &id).unwrap().snapshot_id().unwrap(),
         with_readme.snapshot_id().unwrap()
@@ -1104,4 +1102,43 @@ fn native_reader_reports_record_newline_for_unterminated_part() {
     let root = temp.path().join("carrier");
     write_carrier_files(&root, &files);
     assert_eq!(read_directory(&root).unwrap_err().code, "record_newline");
+}
+
+#[test]
+fn readme_above_one_mib_needs_a_raised_readme_limit() {
+    let (s, _, _) = with_body();
+    let large_readme = vec![b'x'; 1024 * 1024 + 1];
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("carrier");
+    write_directory(&root, &s).unwrap();
+    std::fs::write(root.join("README.md"), &large_readme).unwrap();
+    assert_eq!(
+        read_directory(&root).unwrap_err().code,
+        "resource_unavailable"
+    );
+    let raised = ReadLimits {
+        max_readme_bytes: 2 * 1024 * 1024,
+        ..ReadLimits::default()
+    };
+    let read = read_directory_with_limits(&root, raised).unwrap();
+    let mut expected = s.to_files().unwrap();
+    expected.insert("README.md".into(), large_readme.clone());
+    assert_eq!(read.to_files().unwrap(), expected);
+    // The Git reader applies the same configurable bound.
+    let repo = temp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    write_carrier_files(&repo, &expected);
+    git(&repo, &["add", "--all"]);
+    let tree = git(&repo, &["write-tree"]);
+    let commit = git(
+        &repo,
+        &["commit-tree", &tree, "-m", "Disposable carrier fixture"],
+    );
+    assert_eq!(
+        read_git_tree(&repo, &commit).unwrap_err().code,
+        "resource_unavailable"
+    );
+    let read = read_git_tree_with_limits(&repo, &commit, raised).unwrap();
+    assert_eq!(read.to_files().unwrap(), expected);
 }

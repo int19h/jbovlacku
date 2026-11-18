@@ -370,6 +370,11 @@ fn cli_rejects_a_carrier_record_above_the_per_record_bound() {
         ],
     );
     assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("record_size"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(!root.join("full").exists());
 }
 
@@ -396,4 +401,98 @@ fn cli_file_input_reports_record_newline_before_record_shape() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!root.join("full").exists());
+}
+
+#[test]
+fn cli_input_limit_is_rejected_without_a_file_argument() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let (snapshot, _, _) = fixture();
+    fs::write(root.join("records.jsonl"), snapshot.to_jsonl().unwrap()).unwrap();
+    success(cli(
+        root,
+        &[
+            "import",
+            "records.jsonl",
+            "--format",
+            "jsonl",
+            "--output",
+            "full",
+        ],
+    ));
+    let commit = "0000000000000000000000000000000000000000";
+    for args in [
+        vec!["--input-limit", "0", "validate", "full"],
+        vec!["--input-limit", "0", "inventory", "full"],
+        vec!["--input-limit", "0", "validate-git", "full", commit],
+        vec!["--input-limit", "0", "validate-checkout", "full", commit],
+        vec!["--input-limit", "0", "export", "full", "--format", "jsonl"],
+        vec![
+            "--input-limit",
+            "0",
+            "merge",
+            "full",
+            "full",
+            "--output",
+            "merged",
+        ],
+        vec!["--input-limit", "0", "--help"],
+    ] {
+        let output = cli(root, &args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("--input-limit"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(!root.join("merged").exists());
+    // The flag stays enforced on the FILE argument of policy commands.
+    fs::write(root.join("policy.json"), b"{}").unwrap();
+    let refused = cli(
+        root,
+        &[
+            "--input-limit",
+            "1",
+            "retain",
+            "full",
+            "--policy",
+            "policy.json",
+            "--output",
+            "filtered",
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("configured input limit"));
+    assert!(!root.join("filtered").exists());
+    let refused_merge = cli(
+        root,
+        &[
+            "--input-limit",
+            "1",
+            "merge",
+            "full",
+            "full",
+            "--output",
+            "remerged",
+            "--policy",
+            "policy.json",
+        ],
+    );
+    assert!(!refused_merge.status.success());
+    assert!(String::from_utf8_lossy(&refused_merge.stderr).contains("configured input limit"));
+    assert!(!root.join("remerged").exists());
+    success(cli(
+        root,
+        &[
+            "--input-limit",
+            "100000",
+            "retain",
+            "full",
+            "--policy",
+            "policy.json",
+            "--output",
+            "filtered",
+        ],
+    ));
 }

@@ -179,6 +179,15 @@ fn write_filtered(
     );
     Ok(())
 }
+fn reject_input_limit(limit: Option<u64>) -> Result<(), Box<dyn std::error::Error>> {
+    if limit.is_some() {
+        return Err(
+            "--input-limit applies only to direct FILE arguments and cannot be used with this command"
+                .into(),
+        );
+    }
+    Ok(())
+}
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<String> = env::args().skip(1).collect();
     // An optional input quota is off by default. It applies per input file.
@@ -221,6 +230,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     match args.as_slice() {
         [command] if command == "--help" || command == "help" => {
+            reject_input_limit(input_limit)?;
             println!(
                 "jvc canonicalize FILE\njvc verify FILE\njvc evaluate FILE\njvc validate DIRECTORY\njvc validate-git REPOSITORY COMMIT\njvc validate-checkout REPOSITORY COMMIT\njvc inventory DIRECTORY\njvc import FILE --format jsonl --output DIRECTORY [--selection FILE ...]\njvc export DIRECTORY --format jsonl\njvc merge LEFT RIGHT --output DIRECTORY [--policy FILE]\njvc retain DIRECTORY --policy FILE --output DIRECTORY\njvc validate FILE --format envelope-jsonl\njvc export FILE --format envelope-jsonl\njvc merge LEFT RIGHT --output FILE --format envelope-jsonl"
             );
@@ -228,14 +238,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "JSONL carriers contain body and envelope fields. Import selections require separate canonical --selection files; JSONL export omits them. Envelope JSONL contains envelopes only. Output paths must be new. If an input has an adjacent retention-policy sidecar, merge requires explicit --policy FILE. The supplied policy can intentionally override that sidecar; peer policies are never adopted automatically. Git commands require a full commit object identifier and never fetch."
             );
             println!(
-                "Place --input-limit BYTES before the command to set an optional per-file input quota. It is off by default. JSONL inputs are read one record at a time. Each carrier record stays within its envelope and body limits, and each envelope record stays within the envelope limit."
+                "Place --input-limit BYTES before the command to set an optional input quota for direct FILE arguments only, including --selection FILE and --policy FILE arguments. It is off by default, and commands with no FILE argument reject it. Carrier DIRECTORY and REPOSITORY reads use the carrier library ReadLimits, not this flag. JSONL inputs are read one record at a time. Each carrier record stays within its envelope and body limits, and each envelope record stays within the envelope limit."
             );
         }
-        [command, path] if command == "validate" => println!(
-            "{}",
-            serde_json::to_string(&jvc_carrier::read_directory(path)?.validation_report()?)?
-        ),
+        [command, path] if command == "validate" => {
+            reject_input_limit(input_limit)?;
+            println!(
+                "{}",
+                serde_json::to_string(&jvc_carrier::read_directory(path)?.validation_report()?)?
+            )
+        }
         [command, path] if command == "inventory" => {
+            reject_input_limit(input_limit)?;
             let snapshot = jvc_carrier::read_directory(path)?;
             println!(
                 "{}",
@@ -245,6 +259,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         [command, repo, commit] if command == "validate-git" || command == "validate-checkout" => {
+            reject_input_limit(input_limit)?;
             let snapshot = if command == "validate-git" {
                 jvc_carrier::read_git_tree(repo, commit)?
             } else {
@@ -255,6 +270,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         [command, path, format, value]
             if command == "export" && format == "--format" && value == "jsonl" =>
         {
+            reject_input_limit(input_limit)?;
             jvc_carrier::read_directory(path)?.write_jsonl(&mut io::stdout().lock())?
         }
         [command, path, format, value, output, destination]
@@ -268,6 +284,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         [command, left, right, output, destination]
             if command == "merge" && output == "--output" =>
         {
+            reject_input_limit(input_limit)?;
             require_explicit_merge_policy(&[left, right])?;
             let merged = jvc_carrier::read_directory(left)?.merge(
                 &jvc_carrier::read_directory(right)?,
