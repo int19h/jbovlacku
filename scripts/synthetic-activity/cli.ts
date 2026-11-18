@@ -160,7 +160,16 @@ interface Identity { seed: string; identity: string; base_snapshot: string; base
  */
 async function refusePinInUse(o: Opts): Promise<void> {
   const path = pinPath(o);
-  if (!existsSync(path)) return;
+  if (!existsSync(path)) {
+    // A named --pin that is not there is a wrong path. The default
+    // base-pin.json may be absent: init can create it, and an
+    // existing identity keeps the note path.
+    if (flag(o, "pin")) {
+      console.error(`refused: base pin file not found: ${path} (run pin-base first)`);
+      process.exit(3);
+    }
+    return;
+  }
   requirePinServerId(JSON.parse(await readFile(path, "utf8")));
 }
 async function loadIdentity(o: Opts): Promise<Identity> {
@@ -241,7 +250,7 @@ function runSourceId(pin: Pin, identities: Identity[]): string {
     process.exit(3);
   }
   if (recorded.some((id) => id !== pinId)) {
-    console.error("refused: an identity does not record the base pin's server id; run init again so the identity stores it");
+    console.error("refused: an identity does not record the base pin's server id; make a new pin and a new state folder");
     process.exit(3);
   }
   return pinId;
@@ -283,15 +292,18 @@ async function targetHoldsProvenCopy(o: Opts, sourceId: string): Promise<boolean
   return false;
 }
 interface PinLists { events: string[]; bodies: string[]; selections: string[] }
-/** Read the three pin lists and check each against its pinned count and digest. */
+/** Read the three pin lists and check each against its pinned count, digest, and combined base inventory. */
 async function readPinEvidence(pin: Pin, path: string): Promise<PinLists> {
   const read = async (p: string) => (await readFile(p, "utf8")).split("\n").filter(Boolean);
   const events = await read(pinIdsPath(path));
   const bodies = await read(pinBodiesPath(path));
   const selections = await read(pinSelectionsPath(path));
+  // The three component digests do not determine base_inventory.
+  // One edited field is enough to make a capture that restore refuses.
   if (events.length !== pin.base_event_count || digestIds(events) !== pin.base_inventory_digest
     || bodies.length !== pin.base_body_count || digestIds(bodies) !== pin.base_body_digest
-    || selections.length !== pin.base_selection_count || digestIds(selections) !== pin.base_selection_digest) {
+    || selections.length !== pin.base_selection_count || digestIds(selections) !== pin.base_selection_digest
+    || logicalInventoryDigest(events, bodies, selections) !== pin.base_inventory) {
     console.error("refused: base pin evidence does not match its lists; take a new pin with pin-base"); process.exit(3);
   }
   return { events, bodies, selections };
@@ -828,7 +840,7 @@ async function captureBody(o: Opts): Promise<void> {
   // The derived base must equal the pin evidence. Otherwise a state
   // folder is missing, or an event outside the given folders is
   // being absorbed into the base, and the capture could not restore.
-  if (!identities[0].base_inventory_digest || !Number.isInteger(identities[0].base_event_count)) { console.error("refused: identity has no base evidence; run init once to backfill it, or start a new state folder"); process.exit(3); }
+  if (!identities[0].base_inventory_digest || !Number.isInteger(identities[0].base_event_count)) { console.error("refused: identity has no base evidence; make a new pin and a new state folder"); process.exit(3); }
   // The full base proof needs the pin lists themselves, beside the
   // state folders (or at --pin). An identity record carries only the
   // digests, which cannot separate base bodies from captured ones.
@@ -981,7 +993,10 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
   let resumed = 0;
   {
     // Events outside the capture must be exactly the pinned base.
+    // A wrong set is refused below. A matching digest does not
+    // imply the manifest base count, so the count is checked too.
     const rest = before.filter((id) => !synthetic.has(id));
+    const baseCountMismatch = rest.length !== manifest.base_event_count;
     if (digestIds(rest) !== manifest.base_inventory_digest) {
       if (present.length === transports.length && transports.length > 0)
         fail(`already restored inventory is not the pinned base plus the capture: ${before.length} events, expected ${manifest.expected_final_event_count}`);
@@ -989,6 +1004,8 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
         fail(`partial restore does not hold the pinned base; refusing to write`);
       fail(`base inventory does not match the capture pin; refusing to write`);
     }
+    if (baseCountMismatch)
+      fail(`base event count does not match the capture pin: server holds ${rest.length} events outside the capture, manifest says ${manifest.base_event_count}; refusing to write`);
     // Bodies outside the capture must be exactly the pinned base
     // bodies that the capture does not itself carry. A captured body
     // may share its hash with a base body; the set difference keeps

@@ -736,10 +736,13 @@ test("existing-identity backfill checks the pin, and a missing pin prints a note
     assert.ok(Number.isInteger(filled.base_event_count) && typeof filled.base_inventory_digest === "string", JSON.stringify(filled));
     // The backfilled identity joins a capture.
     assert.match(await cmd(["--server", url, "capture", "--state", a, "--state", b, "--out", join(root, "cap")]), /captured/);
-    // A missing pin file prints a note instead of skipping silently.
+    // A missing explicit pin is a refusal. An absent default pin still prints a note.
     const c = join(root, "c"); await mkdir(c, { recursive: true });
     await writeFile(join(c, "identity.json"), JSON.stringify(old, null, 2));
-    assert.match(await cmd(["--server", url, "--state", c, "--pin", join(root, "missing-pin.json"), "init"]), /note: no base pin file/);
+    assert.match(await cmdFail(["--server", url, "--state", c, "--pin", join(root, "missing-pin.json"), "init"]), /refused: base pin file not found/);
+    const orphan = join(root, "orphan", "c"); await mkdir(orphan, { recursive: true });
+    await writeFile(join(orphan, "identity.json"), JSON.stringify(old, null, 2));
+    assert.match(await cmd(["--server", url, "--state", orphan, "init"]), /note: no base pin file/);
     // A pin that does not match the identity's base refuses.
     const wrong = JSON.parse(await readFile(join(b, "identity.json"), "utf8"));
     wrong.base_snapshot = "sha256:" + "0".repeat(64);
@@ -1898,6 +1901,100 @@ test("a capture without a source server id is refused", async () => {
     const ids = ((await (await fetch("http://127.0.0.1:9653/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
     assert.deepEqual(ids, []);
     assert.equal(existsSync(join(root, "dst", "restored-runs.json")), false);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("init refuses a pin whose base inventory does not match its lists", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const server = await startServer(join(root, "src"), 9654);
+    servers.push(server);
+    const url = "http://127.0.0.1:9654";
+    await cmd(["--server", url, "--state", join(root, "holder"), "pin-base"]);
+    const pin = join(root, "base-pin.json");
+    const pinJson = JSON.parse(await readFile(pin, "utf8"));
+    pinJson.base_inventory = "sha256:" + "0".repeat(64);
+    await writeFile(pin, JSON.stringify(pinJson, null, 2) + "\n");
+    const state = join(root, "a");
+    const created = await cmdResult(["--server", url, "--state", state, "init"]);
+    assert.equal(created.code, 3, created.out);
+    assert.match(created.out, /refused: base pin evidence does not match its lists/);
+    assert.equal(existsSync(join(state, "identity.json")), false);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("restore refuses a capture whose base event count was edited", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const source = await startServer(join(root, "src"), 9655);
+    servers.push(source);
+    const url = "http://127.0.0.1:9655";
+    const state = join(root, "a");
+    await cmd(["--server", url, "--state", state, "init"]);
+    await cmd(["--server", url, "--state", state, "profile", "--name", "one"]);
+    const cap = join(root, "cap");
+    await cmd(["--server", url, "capture", "--state", state, "--out", cap]);
+    const manifestPath = join(cap, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    assert.equal(manifest.base_event_count, 0);
+    manifest.base_event_count = 1;
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    const target = await startServer(join(root, "dst"), 9656);
+    servers.push(target);
+    const restored = await cmdResult(["--server", "http://127.0.0.1:9656", "restore", "--capture", cap]);
+    assert.equal(restored.code, 3, restored.out);
+    assert.match(restored.out, /refused: base event count does not match the capture pin/);
+    const ids = ((await (await fetch("http://127.0.0.1:9656/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+    assert.deepEqual(ids, []);
+    assert.equal(existsSync(join(root, "dst", "restored-runs.json")), false);
+    const reuse = await cmdResult(["--server", "http://127.0.0.1:9656", "reuse-check", "--capture", cap]);
+    assert.equal(reuse.code, 3, reuse.out);
+    assert.match(reuse.out, /not reusable: base event count does not match the capture pin/);
+    const afterReuse = ((await (await fetch("http://127.0.0.1:9656/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+    assert.deepEqual(afterReuse, []);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an explicit pin path that does not exist is refused", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const run = await runOnDefaultPin(root, 9657);
+    servers.push(run);
+    const missing = join(root, "missing.json");
+    const identityPath = join(run.state, "identity.json");
+    const beforeIdentity = await readFile(identityPath, "utf8");
+    const beforeIds = ((await (await fetch(run.url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    const again = await cmdResult(["--server", run.url, "--state", run.state, "--pin", missing, "init"]);
+    assert.equal(again.code, 3, again.out);
+    assert.match(again.out, /refused: base pin file not found/);
+    assert.equal(await readFile(identityPath, "utf8"), beforeIdentity);
+    const posted = await cmdResult(["--server", run.url, "--state", run.state, "--pin", missing, "profile", "--name", "late"]);
+    assert.equal(posted.code, 3, posted.out);
+    assert.match(posted.out, /refused: base pin file not found/);
+    const named = await cmdResult(["--server", run.url, "--state", run.state, "--pin", missing, "whoami"]);
+    assert.equal(named.code, 3, named.out);
+    assert.match(named.out, /refused: base pin file not found/);
+    const afterIds = ((await (await fetch(run.url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    assert.deepEqual(afterIds, beforeIds);
+    const still = await cmdResult(["--server", run.url, "--state", run.state, "whoami"]);
+    assert.equal(still.code, 0, still.out);
+    const orphan = join(root, "orphan", "a");
+    await mkdir(orphan, { recursive: true });
+    await writeFile(join(orphan, "identity.json"), beforeIdentity);
+    const open = await cmdResult(["--server", run.url, "--state", orphan, "whoami"]);
+    assert.equal(open.code, 0, open.out);
   } finally {
     for (const server of servers) await server.close();
     await rm(root, { recursive: true, force: true });
