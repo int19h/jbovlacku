@@ -7,6 +7,7 @@ import {
   prepareQuery,
   SEARCH_QUERY_WORD_LIMIT,
   SEARCH_SEGMENT_WORK_LIMIT,
+  SearchQueryTooLongError,
   type LexicalEntry,
 } from "../src/index.ts";
 const entry = (spelling: string): LexicalEntry => ({
@@ -136,7 +137,6 @@ test("resource limits keep ordinary search and never use a partial component que
     Array(SEARCH_QUERY_WORD_LIMIT + 1)
       .fill("i")
       .join(" "),
-    "x".repeat(16_385),
   ]) {
     const row = { ...entry("broda"), glosses: [{ text: query }] };
     const selected = selectMatches([entry("i"), row], query);
@@ -146,6 +146,11 @@ test("resource limits keep ordinary search and never use a partial component que
       ["gloss"],
     );
   }
+  // Past the product length cap the query never reaches the matchers.
+  assert.throws(
+    () => selectMatches([entry("i")], "x".repeat(16_385)),
+    (error: unknown) => error instanceof SearchQueryTooLongError,
+  );
   const oversized = entry("ba".repeat(128) + "bo");
   assert.equal(matchKind(oversized, oversized.word.spelling), "headword");
   assert.equal(matchKind(oversized, "i bo"), null);

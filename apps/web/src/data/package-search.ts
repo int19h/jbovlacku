@@ -13,7 +13,9 @@ import {
   PatternError,
   searchMetrics,
   SearchBudgetError,
+  SearchQueryTooLongError,
   SearchRequestBudget,
+  SEARCH_QUERY_LENGTH_LIMIT,
   isSearchBudgetState,
   type SearchBudgetState,
 } from "../../../../packages/search/src/index.ts";
@@ -93,6 +95,7 @@ export function workerReplyError(
     );
   if (code === "pattern_timeout" || code === "pattern_invalid")
     return new PatternError(code, text);
+  if (code === "query-too-long") return new SearchQueryTooLongError(text);
   return new Error(text);
 }
 /**
@@ -316,6 +319,12 @@ export async function searchPackage(
     !Array.isArray((pkg as { entries?: unknown }).entries)
   )
     throw new PackageValidationError(invalidPackage().message);
+  // The product length cap applies before any detector, transfer or group
+  // choice reads a query; longer input is refused with a typed error.
+  for (const text of queries) {
+    if (text.length > SEARCH_QUERY_LENGTH_LIMIT)
+      throw new SearchQueryTooLongError();
+  }
   const { signal, ...workerOptions } = options;
   let identity: string | number | undefined =
     packageStorageKey(pkg) ?? packageIds.get(pkg);

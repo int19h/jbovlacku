@@ -5,6 +5,8 @@ import {
   searchMetrics,
   PatternError,
   SearchBudgetError,
+  SearchQueryTooLongError,
+  SEARCH_QUERY_LENGTH_LIMIT,
   isPatternQuery,
   SearchRequestBudget,
   isSearchBudgetState,
@@ -67,6 +69,22 @@ self.onmessage = ({ data }) => {
             workLimit: data.options?.workLimit,
             deadlineMs: data.options?.deadlineMs,
           });
+      // Over-long queries are refused before validation, preparation, or
+      // matching reads them. The client checks first; this is defense.
+      if (
+        Array.isArray(data.queries) &&
+        data.queries.some(
+          (query: string) => query.length > SEARCH_QUERY_LENGTH_LIMIT,
+        )
+      ) {
+        reply({
+          request: data.request,
+          key: data.key,
+          code: "query-too-long",
+          error: new SearchQueryTooLongError().message,
+        });
+        return;
+      }
       const tooLarge = (request: number, key: string) =>
         reply({
           request,

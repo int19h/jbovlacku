@@ -13,6 +13,24 @@ export {
 
 export const SEARCH_QUERY_BYTE_LIMIT = 16_384;
 export const SEARCH_QUERY_WORD_LIMIT = 512;
+/**
+ * A local search query accepts at most this many UTF-16 code units. Longer
+ * input is refused before anything reads it: every per-query step (splitting,
+ * detectors, transfer, parsing, scanning, sorting) scales with the query,
+ * and the per-request budget cannot see the raw query before it is charged.
+ * Real dictionary queries are words and short phrases; the longest fixed
+ * check query is 25 units, so this leaves wide headroom.
+ */
+export const SEARCH_QUERY_LENGTH_LIMIT = 4096;
+/** A query longer than SEARCH_QUERY_LENGTH_LIMIT. The page reports it as a message. */
+export class SearchQueryTooLongError extends Error {
+  constructor(
+    message = "The search query is too long. Queries accept at most 4096 characters.",
+  ) {
+    super(message);
+    this.name = "SearchQueryTooLongError";
+  }
+}
 export const SEARCH_SEGMENT_WORK_LIMIT = 300_000;
 export const SEARCH_HEADWORD_WORK_LIMIT = 300_000;
 /**
@@ -616,6 +634,10 @@ export function prepareQuery(
   metrics?: SearchMetrics,
   options: SearchOptions = {},
 ): PreparedQuery {
+  // Queries longer than the product limit never reach the budget: split,
+  // normalize, and parse all scale with the full input.
+  if (query.length > SEARCH_QUERY_LENGTH_LIMIT)
+    throw new SearchQueryTooLongError();
   // Query parsing belongs to the request budget, so a grouped query that
   // parses before the scan still counts its parser work.
   const measured = metrics ?? searchMetrics();
@@ -752,6 +774,11 @@ export function selectRafsiMatches<T extends LexicalEntry>(
   metrics?: SearchMetrics,
   options: SearchOptions = {},
 ) {
+  // Rafsi searches skip prepareQuery, so they enforce the cap and charge
+  // the query size here: normalization and the pattern test below both
+  // scale with the full input.
+  if (query.length > SEARCH_QUERY_LENGTH_LIMIT)
+    throw new SearchQueryTooLongError();
   const pattern =
     options.patterns !== false && isPatternQuery(query)
       ? compilePattern(query)
@@ -759,6 +786,7 @@ export function selectRafsiMatches<T extends LexicalEntry>(
   const rows: LexicalMatch<T>[] = [];
   const measured = metrics ?? searchMetrics();
   const limit = SearchRequestBudget.for(measured, options);
+  limit.reserve(contentUnits(0, query.length), "search");
   // The literal comparison key depends only on the query.
   const queryKey = pattern ? null : patternKey(query);
   try {

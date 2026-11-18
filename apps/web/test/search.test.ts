@@ -2012,3 +2012,15 @@ test("the local-query guard blocks result fetches and query-bearing capability v
   expect(guard.forbidden).toHaveLength(5);
   expect(guard.leaks).toHaveLength(4);
 });
+
+test("an over-cap query is refused with a message before any search", async ({
+  page,
+}) => {
+  // Past the 4,096-character product limit the page reports the typed
+  // error instead of classifying, transferring, or matching the query.
+  const query = "z".repeat(5000);
+  await page.goto(`/search?q=${query}&lang=en`);
+  await expect(
+    page.getByText("The search query is too long. Queries accept at most 4096 characters."),
+  ).toBeVisible();
+});

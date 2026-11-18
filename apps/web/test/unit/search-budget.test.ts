@@ -513,3 +513,63 @@ test("page-side reference rebuild charges the continued budget", () => {
       error instanceof Error && error.constructor.name === "SearchBudgetError",
   );
 });
+
+test("grouped sorting classifies the query once, not per comparison", () => {
+  // 24 identical token matches sort entirely on ties, so the old
+  // per-comparison wildcard test would scan the full raw query on every
+  // tied comparison. The sort classifies the query once up front instead.
+  const query = " ".repeat(996) + "book";
+  const entries = Array.from({ length: 24 }, (_, index) => ({
+    event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+    word: { language: "jbo", spelling: `broda${index}` },
+    language: "en",
+    glosses: [{ language: "en", text: "book", sense: null }],
+    plain_text: "book",
+    classification: { kind: "gismu", selmaho: [] },
+    body: null,
+  }));
+  const original = RegExp.prototype.test;
+  let wildcardTests = 0;
+  RegExp.prototype.test = function (this: RegExp, value: string): boolean {
+    if (this.source === "[*?@$]" && value === query) wildcardTests++;
+    return original.call(this, value);
+  };
+  try {
+    const hits = localSearch(entries as never, query);
+    assert.equal(hits.length, 24);
+  } finally {
+    RegExp.prototype.test = original;
+  }
+  // One classification for the pattern branch plus the hoisted sort check.
+  assert.ok(wildcardTests <= 2, `classified the query ${wildcardTests} times`);
+});
+
+test("grouped sorting classifies the query once, not per comparison", () => {
+  // 24 identical token matches sort entirely on ties, so the old
+  // per-comparison wildcard test would scan the full raw query on every
+  // tied comparison. The sort classifies the query once up front instead.
+  const query = " ".repeat(996) + "book";
+  const entries = Array.from({ length: 24 }, (_, index) => ({
+    event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+    word: { language: "jbo", spelling: `broda${index}` },
+    language: "en",
+    glosses: [{ language: "en", text: "book", sense: null }],
+    plain_text: "book",
+    classification: { kind: "gismu", selmaho: [] },
+    body: null,
+  }));
+  const original = RegExp.prototype.test;
+  let wildcardTests = 0;
+  RegExp.prototype.test = function (this: RegExp, value: string): boolean {
+    if (this.source === "[*?@$]" && value === query) wildcardTests++;
+    return original.call(this, value);
+  };
+  try {
+    const hits = localSearch(entries as never, query);
+    assert.equal(hits.length, 24);
+  } finally {
+    RegExp.prototype.test = original;
+  }
+  // One classification for the pattern branch plus the hoisted sort check.
+  assert.ok(wildcardTests <= 2, `classified the query ${wildcardTests} times`);
+});

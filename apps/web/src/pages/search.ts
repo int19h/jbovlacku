@@ -12,7 +12,11 @@ import {
   type PackageSearchResult,
 } from "../data/package-search.ts";
 import { kindLabel } from "../model/types.ts";
-import { isPatternQuery } from "../../../../packages/search/src/index.ts";
+import {
+  isPatternQuery,
+  SEARCH_QUERY_LENGTH_LIMIT,
+  SearchQueryTooLongError,
+} from "../../../../packages/search/src/index.ts";
 /**
  * Search results. The header holds the query. The page shows a count line,
  * the definition-language select, and compact three-line rows.
@@ -235,6 +239,12 @@ export async function searchPage(
     if (context.live() && request === languageRequest)
       navigate(routes.search(query, value));
   });
+  // The product query limit applies before any classification, transfer,
+  // or worker call reads the query. The page shows the refusal as a message.
+  if (query.length > SEARCH_QUERY_LENGTH_LIMIT) {
+    results.append(p(describe(new SearchQueryTooLongError()), "notice"));
+    return;
+  }
   const punctuationNote = naturalLanguageNote(query);
   if (punctuationNote) main.append(p(punctuationNote, "meta"));
   // Search source: the downloaded package in local mode, otherwise this server.

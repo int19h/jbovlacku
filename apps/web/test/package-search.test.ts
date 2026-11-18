@@ -540,3 +540,64 @@ test("a cold request does not copy other pending transfers", async ({
   expect(result.groups).toBe(0);
   expect(result.lengths).toEqual([]);
 });
+
+test("an over-cap query is refused before any detector or transfer", async ({
+  page,
+}) => {
+  // A query past the product length cap must not reach the wildcard
+  // detector or the worker: the client refuses with a typed error first.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage } = await import(String("/src/data/package-search.ts"));
+    const pkg = {
+      snapshot: "sha256:" + "b".repeat(64),
+      version: 1,
+      entries: [
+        {
+          event: "jve1:" + "1".repeat(64),
+          word: { language: "jbo", spelling: "broda" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        },
+      ],
+    };
+    const query = "z".repeat(5000);
+    const originalTest = RegExp.prototype.test;
+    let detectorCalls = 0;
+    RegExp.prototype.test = function (this: RegExp, value: string): boolean {
+      if (this.source === "[*?@$]" && value === query) detectorCalls++;
+      return originalTest.call(this, value);
+    };
+    const originalPost = Worker.prototype.postMessage;
+    let posts = 0;
+    (Worker.prototype as any).postMessage = function (
+      this: unknown,
+      ...args: [unknown]
+    ) {
+      posts++;
+      return originalPost.apply(this, args);
+    };
+    try {
+      await searchPackage(pkg as never, "en", [query]);
+      return { refused: false, detectorCalls, posts };
+    } catch (error) {
+      return {
+        refused: true,
+        constructor: (error as Error).constructor.name,
+        message: (error as Error).message,
+        detectorCalls,
+        posts,
+      };
+    } finally {
+      RegExp.prototype.test = originalTest;
+      Worker.prototype.postMessage = originalPost;
+    }
+  });
+  expect(result.refused).toBe(true);
+  expect(result.constructor).toBe("SearchQueryTooLongError");
+  expect(result.detectorCalls).toBe(0);
+  expect(result.posts).toBe(0);
+});

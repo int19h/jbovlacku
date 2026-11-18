@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  contentUnits,
   entryContentUnits,
   prepareIndex,
   prepareQuery,
@@ -483,11 +484,17 @@ test("the comparison bound covers prefix-follow re-comparisons", () => {
   );
   // A budget that fits the true bound to the unit still runs nothing past
   // the allowance: the reservation fits exactly and the first comparison
-  // refuses.
+  // refuses. The 399-character query itself costs 7 units, so the true
+  // exact fit is 81,610.
   const probe = searchMetrics();
   prepareQuery(query, probe);
   const workLimit =
-    probe.queryParserWork + 1 + entryContentUnits(row) + (3 * 200 + 1);
+    probe.queryParserWork +
+    contentUnits(0, query.length) +
+    1 +
+    entryContentUnits(row) +
+    (3 * 200 + 1);
+  assert.equal(workLimit, 81610);
   const measured = searchMetrics();
   const budget = new SearchRequestBudget(measured, {
     workLimit,
@@ -518,7 +525,7 @@ test("a zero-unit budget refuses before parsing the query", () => {
   });
   assert.throws(
     () =>
-      prepareQuery("z ".repeat(2048) + "z", measured, {
+      prepareQuery("z ".repeat(1023) + "z", measured, {
         requestBudget: budget,
       }),
     (error: unknown) => error instanceof SearchBudgetError,
@@ -528,19 +535,60 @@ test("a zero-unit budget refuses before parsing the query", () => {
   assert.equal(budget.snapshot().spent, 0);
 });
 
-test("an over-long query still matches literally", () => {
-  // Past the 16,384-byte segmentation bound the query stays unparsed, but
-  // ordinary text matching keeps working under the default budget.
+test("an over-long query is refused before parsing", () => {
+  // Past the product length cap the query never reaches the budget:
+  // splitting, normalization, and parsing must not see it.
   const long = "z ".repeat(9000) + "z";
-  const entry = {
-    word: { spelling: "broda" },
-    glosses: [{ text: "book" }],
-    plain_text: `prefix ${long} suffix`,
-  } as LexicalEntry;
-  const { rows, segmentation } = selectMatches([entry], long);
-  assert.equal(segmentation, "limited");
-  assert.deepEqual(
-    rows.map((row) => row.match),
-    ["token"],
+  const measured = searchMetrics();
+  assert.throws(
+    () => prepareQuery(long, measured),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.constructor.name === "SearchQueryTooLongError",
   );
+  assert.equal(measured.queryParses, 0);
+  assert.equal(measured.queryParserWork, 0);
+  assert.equal(measured.queryWords, 0);
+});
+
+test("a rafsi search charges the query size first", () => {
+  // Rafsi searches skip prepareQuery, so selectRafsiMatches charges the
+  // query itself: the same scan with a longer query spends exactly the
+  // extra content units of the query and nothing else.
+  const rows = [
+    {
+      word: { spelling: "broda" },
+      glosses: [],
+      plain_text: "book",
+      rafsi: ["bau"],
+    } as LexicalEntry,
+  ];
+  const spentFor = (query: string) => {
+    const measured = searchMetrics();
+    const budget = new SearchRequestBudget(measured, {});
+    selectRafsiMatches(rows, query, measured, { requestBudget: budget });
+    return budget.snapshot().spent;
+  };
+  assert.equal(spentFor("x".repeat(100)) - spentFor("a"), 1);
+});
+
+test("an over-long rafsi query is refused before matching", () => {
+  // Both rafsi branches read the full query (literal key or pattern test),
+  // so the product cap applies before either runs.
+  const rows = [
+    {
+      word: { spelling: "broda" },
+      glosses: [],
+      plain_text: "book",
+      rafsi: ["bau"],
+    } as LexicalEntry,
+  ];
+  const measured = searchMetrics();
+  assert.throws(
+    () => selectRafsiMatches(rows, "z".repeat(5000), measured),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.constructor.name === "SearchQueryTooLongError",
+  );
+  assert.equal(measured.entries, 0);
 });

@@ -647,13 +647,16 @@ export function localSearch(
     });
     hit.matchingRafsi = merged;
   }
+  // The pattern test depends only on the query, so classify once up front
+  // instead of re-testing the full raw query on every tied comparison.
+  const matchPattern = options.patterns !== false && isPatternQuery(queryText);
   const ordered = [...grouped.values()].sort((a, b) => {
     // One comparison costs one unit, charged before the comparison runs.
     limit.reserve(1, "search");
     return (
       matchRank(a.match) - matchRank(b.match) ||
       a.position - b.position ||
-      (options.patterns !== false && isPatternQuery(queryText)
+      (matchPattern
         ? comparePatternSpelling(a.word.spelling, b.word.spelling)
         : 0) ||
       (a.word_id < b.word_id ? -1 : a.word_id > b.word_id ? 1 : 0)
