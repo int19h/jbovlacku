@@ -642,7 +642,7 @@ Owned Rust tasks retain their graph and numerical workspace between bounded call
 The Rust API returns approximate actor estimates, work counters, margin details, support and threshold decisions, and stable layers.
 It counts tiny propagated terms that it flushes to zero and keeps structural zeros separate from computed zeros.
 The existing evaluation session also supports [bounded float graph preparation](../crates/jvc-runtime/README.md).
-Setup admission uses measured index-entry costs. Source hashing has separate byte and time limits.
+Setup admission uses measured index-entry costs. It has no default whole-dictionary quota. A caller can set record, envelope, or source-byte quotas. The default setup-unit budget grows with the index counts. Source hashing has a separate time limit.
 
 It supports owned word-result slices, float decisions, optional reviewer details, and a bounded serialized word cache.
 Ready tickets retain their bytes for a fixed 60 seconds under the 32 MiB session budget.

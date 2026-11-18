@@ -14,6 +14,7 @@ pub use ranking_preparation::{
     FloatParameter, PREPARATION_CONTRACT, PreparationContext, PreparationParameters,
     PreparationTarget, PreparationUsage, RankingPreparationDescriptor, RankingPreparationLimits,
     RankingPreparationPolicy, RankingPreparationRequest, RankingPreparationSummary,
+    SETUP_UNITS_FIXED_ALLOWANCE, SETUP_UNITS_PER_ENTRY, SETUP_UNITS_PER_KEY_BYTE,
 };
 mod search_pattern;
 pub use search_pattern::SearchPattern;
