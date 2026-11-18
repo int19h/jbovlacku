@@ -340,3 +340,75 @@ test("a nearly exhausted budget bounds the parser to what remains", () => {
     `parser work ${measured.headwordParserWork}`,
   );
 });
+
+test("a later parser failure still bills the runs before it", () => {
+  // The review input: ten short "a" runs parse before the last run fails
+  // its 128-phoneme bound. The shared budget must see those performed
+  // steps, not just the failing run.
+  const query = "a ".repeat(10) + "a".repeat(129);
+  const measured = searchMetrics();
+  const shared = SearchRequestBudget.for(measured, {
+    workLimit: 5000,
+    deadlineMs: Infinity,
+  });
+  const first = prepareQuery(query, measured, { requestBudget: shared });
+  assert.equal(first.segmentation, "limited");
+  assert.ok(
+    measured.queryParserWork >= 4050,
+    `billed ${measured.queryParserWork}, performed 4050`,
+  );
+});
+
+test("component comparisons stop at the shared allowance", () => {
+  // The review input: a two-word headword against a 512-word query. Query
+  // parsing consumes 207,360 units and the row content 2, leaving no room
+  // for the 1,023 comparisons the scan would otherwise perform.
+  const short = {
+    word: { spelling: "a a" },
+    glosses: [],
+    plain_text: "book",
+  } as LexicalEntry;
+  const index = prepareIndex([short]);
+  const query = "a ".repeat(511) + "a";
+  const measured = searchMetrics();
+  const budget = new SearchRequestBudget(measured, {
+    workLimit: 207400,
+    deadlineMs: Infinity,
+  });
+  assert.throws(
+    () =>
+      selectMatches(index, query, measured, () => true, {
+        requestBudget: budget,
+      }),
+    (error: unknown) => error instanceof SearchBudgetError,
+  );
+  // No comparison ran past the allowance: the metrics show none, and the
+  // measured work stays at or below the limit.
+  assert.equal(measured.componentComparisons, 0);
+  const spent =
+    measured.entries +
+    measured.componentComparisons +
+    measured.queryParserWork +
+    measured.headwordParserWork;
+  assert.ok(spent <= 207400, `spent ${spent} exceeds the allowance`);
+});
+
+test("a tight preparation does not poison the whole-array cache", () => {
+  // The review input: preparing under a 3-unit allowance limits the
+  // "i o i" headword; a later default-allowance search must agree with a
+  // fresh preparation instead of reusing that partial row.
+  const rows = [
+    {
+      word: { spelling: "i o i" },
+      glosses: [],
+      plain_text: "unrelated",
+    } as LexicalEntry,
+  ];
+  prepareIndex(rows, undefined, { workLimit: 3, deadlineMs: Infinity });
+  const warm = selectMatches(rows, "o i").rows.map((row) => row.match);
+  const fresh = selectMatches(structuredClone(rows), "o i").rows.map(
+    (row) => row.match,
+  );
+  assert.deepEqual(warm, fresh);
+  assert.deepEqual(warm, ["sequence-subsequence"]);
+});

@@ -55,6 +55,15 @@ test("worker crashes classify by cause, not history", async ({ page }) => {
   expect(bug).toContain("could not start");
 });
 
+test("an invalid array length keeps the startup message", async ({ page }) => {
+  // `new Array(-1)` throws "Invalid array length" without allocating
+  // anything, in both engines' wording, so freeing storage cannot repair
+  // it and the page must not report does-not-fit.
+  const crash = await crashedSearch(page, "new Array(-1);");
+  expect(crash).toContain("could not start");
+  expect(crash).not.toContain("does not fit");
+});
+
 test("an out-of-bounds crash keeps the startup message", async ({ page }) => {
   // A DataView bounds error is a RangeError in both engines, but it is not
   // an allocation failure, so the page must not report does-not-fit.

@@ -98,11 +98,17 @@ export function workerReplyError(
 /**
  * Whether an error is an allocation failure in either engine's wording:
  * V8 reports "Array buffer allocation failed" and both engines report out
- * of memory and invalid array lengths as RangeErrors. A name alone does not
- * identify the cause: an out-of-bounds access is also a RangeError.
+ * of memory as RangeErrors. A name alone does not identify the cause: an
+ * out-of-bounds access is also a RangeError. An "invalid array length" alone
+ * proves nothing about memory: `new Array(-1)` reports it without allocating
+ * anything, and a length past the engine maximum reports it on any device,
+ * so freeing storage cannot repair either. Engine string-capacity failures
+ * ("Invalid string length", the Firefox repeat-count overflow message) are
+ * likewise ambiguous between an engine maximum and exhausted memory, so they
+ * keep the generic message too.
  */
 const ALLOCATION_FAILURE_MESSAGE =
-  /array buffer allocation failed|invalid array length|out of memory/i;
+  /array buffer allocation failed|out of memory/i;
 export function isAllocationFailure(error: unknown): boolean {
   return (
     error instanceof RangeError &&
@@ -522,11 +528,10 @@ export function previewEntryForHit(
  * Rows the rafsi page collects from result hits, at most `limit` in visit
  * order, deduplicated across calls through `found`. A later language's row
  * replaces an existing word-and-rafsi key, as on main — even after the cap
- * fills, since replacing adds no row. Returns true only when a further
- * *novel* spelling exists past the limit, so the page marks its list
- * limited exactly when a row was left out. The call stops at that first
- * omitted spelling and otherwise visits the same spellings as an uncapped
- * scan, so it never visits more than main would.
+ * fills, since replacing adds no row. A novel spelling past the limit is
+ * skipped but the scan continues, so later duplicates still replace their
+ * rows exactly as the uncapped accumulation does. Returns true when a novel
+ * spelling was left out, so the page marks its list limited exactly then.
  */
 export function takeRafsiRows(
   hits: readonly Pick<LocalHit, "word_id" | "word" | "matchingRafsi">[],
@@ -534,6 +539,7 @@ export function takeRafsiRows(
   found: Map<string, { spelling: string; language: string; rafsi: string }>,
   limit: number,
 ): boolean {
+  let limited = false;
   for (const hit of hits) {
     for (const spelling of hit.matchingRafsi ?? []) {
       const key = `${hit.word_id}|${spelling}`;
@@ -547,9 +553,12 @@ export function takeRafsiRows(
         });
         continue;
       }
-      if (found.size >= limit) return true;
+      if (found.size >= limit) {
+        limited = true;
+        continue;
+      }
       found.set(key, { spelling: hit.word.spelling, language, rafsi: spelling });
     }
   }
-  return false;
+  return limited;
 }

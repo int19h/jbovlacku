@@ -62,48 +62,68 @@ export function segmentText(
       foreign.push({ text: input.slice(start, end), start, end });
       continue;
     }
-    requireLimit("text run phonemes", run.text.length, runLimit);
     let parsed: ReturnType<typeof readPeggyWords>;
     try {
-      parsed = readPeggyWords(run.text, workLimit - spent, true);
-    } catch (error) {
-      if (
-        error instanceof BuilderError &&
-        error.failure.kind === "resource-limit"
-      ) {
-        resource(
-          "text recognition work",
-          spent + error.failure.value!,
-          workLimit,
+      requireLimit("text run phonemes", run.text.length, runLimit);
+      try {
+        parsed = readPeggyWords(run.text, workLimit - spent, true);
+      } catch (error) {
+        if (
+          error instanceof BuilderError &&
+          error.failure.kind === "resource-limit"
+        ) {
+          resource(
+            "text recognition work",
+            spent + error.failure.value!,
+            workLimit,
+          );
+        }
+        throw error;
+      }
+      spent += parsed.spent;
+      if (!parsed.words.length) {
+        foreign.push({ text: input.slice(start, end), start, end });
+        continue;
+      }
+      for (const word of parsed.words) {
+        const source = input.slice(
+          run.spans[word.start].start,
+          run.spans[word.end - 1].end,
         );
+        if (source.normalize("NFD").includes("\u0301")) {
+          let letter = false;
+          for (const char of source.normalize("NFD")) {
+            if (char === "\u0301" && !letter)
+              invalid(
+                "An acute accent must follow a Lojban vowel or consonant.",
+              );
+            letter = /\p{L}/u.test(char);
+          }
+          if (word.kind !== "cmevla") invalid(ACUTE_ACCENT_ERROR);
+        }
+        words.push({
+          ...word,
+          text: word.text.replace(/[qɩ]/g, "i").replace(/[wʋ]/g, "u"),
+          start: run.spans[word.start].start,
+          end: run.spans[word.end - 1].end,
+        });
+      }
+    } catch (error) {
+      if (error instanceof BuilderError) {
+        if (
+          error.failure.kind === "resource-limit" &&
+          error.failure.measure !== "text recognition work"
+        ) {
+          // A later run that fails its phoneme bound still bills the runs
+          // before it: the recognition-work conversion above already added
+          // them, while every other resource failure carries only its run.
+          error.failure.value = spent + (error.failure.value ?? 0);
+        } else if (error.failure.kind === "invalid") {
+          // An invalid run bills what parsing it cost.
+          error.failure.value = spent;
+        }
       }
       throw error;
-    }
-    spent += parsed.spent;
-    if (!parsed.words.length) {
-      foreign.push({ text: input.slice(start, end), start, end });
-      continue;
-    }
-    for (const word of parsed.words) {
-      const source = input.slice(
-        run.spans[word.start].start,
-        run.spans[word.end - 1].end,
-      );
-      if (source.normalize("NFD").includes("\u0301")) {
-        let letter = false;
-        for (const char of source.normalize("NFD")) {
-          if (char === "\u0301" && !letter)
-            invalid("An acute accent must follow a Lojban vowel or consonant.");
-          letter = /\p{L}/u.test(char);
-        }
-        if (word.kind !== "cmevla") invalid(ACUTE_ACCENT_ERROR);
-      }
-      words.push({
-        ...word,
-        text: word.text.replace(/[qɩ]/g, "i").replace(/[wʋ]/g, "u"),
-        start: run.spans[word.start].start,
-        end: run.spans[word.end - 1].end,
-      });
     }
   }
   return { words, foreign, spent };

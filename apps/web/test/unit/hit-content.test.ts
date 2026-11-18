@@ -94,10 +94,44 @@ test("rafsi rows stop at the display limit instead of visiting the rest", () => 
   );
   assert.equal(filled, true);
   assert.equal(found.size, 1000);
-  // 1,000 rows plus the one spelling that proves more exist.
-  assert.ok(firstPulls <= 1002, `visited ${firstPulls} spellings`);
-  // The second hit is never visited once the rows are full.
-  assert.equal(secondPulls, 0);
+  // Past the cap, novel rows are skipped but every spelling is still
+  // visited, so a later duplicate can replace its row, as on main. Each
+  // pull count is the 100,000 spellings plus the final done read.
+  assert.equal(firstPulls, 100001);
+  assert.equal(secondPulls, 100001);
+});
+
+test("replacements continue past an omitted novel row", () => {
+  // The review input: 1,000 English rows fill the cap, then one French
+  // call lists an omitted novel row before the duplicate of a kept row.
+  const english = Array.from({ length: 1000 }, (_, index) => ({
+    word_id: `w${index}`,
+    word: { spelling: `w${index}` },
+    matchingRafsi: ["bau"],
+  }));
+  const found = new Map<
+    string,
+    { spelling: string; language: string; rafsi: string }
+  >();
+  assert.equal(takeRafsiRows(english as never, "en", found, 1000), false);
+  assert.equal(found.size, 1000);
+  const french = [
+    {
+      word_id: "novel",
+      word: { spelling: "novel" },
+      matchingRafsi: ["bau"],
+    },
+    {
+      word_id: "w999",
+      word: { spelling: "w999" },
+      matchingRafsi: ["bau"],
+    },
+  ];
+  // The novel row is left out, but the later duplicate still takes the
+  // French row, as on main.
+  assert.equal(takeRafsiRows(french as never, "fr", found, 1000), true);
+  assert.equal(found.size, 1000);
+  assert.equal(found.get("w999|bau")?.language, "fr");
 });
 
 test("a later language's row replaces an existing word-and-rafsi key", () => {

@@ -89,12 +89,47 @@ test("a worker crash is classified by cause, not history", () => {
     }).message,
     /does not fit/,
   );
+  // An invalid array length proves nothing about memory: `new Array(-1)`
+  // reports it without allocating anything, so it keeps the startup
+  // message in both engines' wording.
   assert.match(
     workerCrashReason({
       errorName: "RangeError",
-      message: "invalid array length",
+      message: "Uncaught RangeError: Invalid array length",
     }).message,
-    /does not fit/,
+    generic,
+  );
+  assert.match(
+    workerCrashReason({
+      errorName: "RangeError",
+      message: "RangeError: invalid array length",
+    }).message,
+    generic,
+  );
+  // Engine string-capacity failures are likewise ambiguous between an
+  // engine maximum and exhausted memory, so they keep the generic message.
+  assert.match(
+    workerCrashReason({
+      errorName: "RangeError",
+      message: "Uncaught RangeError: Invalid string length",
+    }).message,
+    generic,
+  );
+  assert.match(
+    workerCrashReason({
+      errorName: "RangeError",
+      message:
+        "RangeError: repeat count must be less than infinity and not overflow maximum string size",
+    }).message,
+    generic,
+  );
+  // An invalid array buffer length is an invalid argument, not exhaustion.
+  assert.match(
+    workerCrashReason({
+      errorName: "RangeError",
+      message: "Uncaught RangeError: Invalid array buffer length",
+    }).message,
+    generic,
   );
   assert.match(
     workerCrashReason({ errorName: "RangeError", message: "out of memory" })
@@ -180,6 +215,43 @@ test("entry content counts items and bytes, never malformed shapes", async () =>
       plain_text: "x",
     }) > 40000,
   );
+  // A gloss sense counts its characters: validation and the transfer both
+  // read it.
+  const unsensed = {
+    word: { spelling: "broda" },
+    glosses: [{ text: "book", sense: null }],
+    plain_text: "x",
+  };
+  const sensed = {
+    word: { spelling: "broda" },
+    glosses: [{ text: "book", sense: "x".repeat(100) }],
+    plain_text: "x",
+  };
+  assert.ok(entryContentUnits(sensed) > entryContentUnits(unsensed));
+  // One attribution date stays small; thousands of dates cost thousands of
+  // units, in validation and in transfer alike.
+  const dated = (count: number) => ({
+    word: { spelling: "broda" },
+    glosses: [{ language: "en", text: "book", sense: null }],
+    plain_text: "book",
+    event: "jve1:" + "1".padStart(64, "0"),
+    issuer: "ed25519:" + "a".repeat(64),
+    attribution: {
+      source: "test",
+      author: null,
+      account: null,
+      dates: Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [
+          `d${index}`,
+          "2020-01-01",
+        ]),
+      ),
+    },
+  });
+  const one = entryContentUnits(dated(1));
+  const many = entryContentUnits(dated(8192));
+  assert.ok(many > one);
+  assert.ok(many > 8000, `8,192 dates cost ${many} units`);
   // An oversized malformed list cannot turn into a budget refusal: counts
   // stop at the validation bounds so validation still reports invalid input.
   assert.ok(
@@ -215,9 +287,17 @@ test("only allocation wording marks a RangeError as out of room", async () => {
   );
   assert.equal(
     isAllocationFailure(new RangeError("invalid array length")),
-    true,
+    false,
   );
   assert.equal(isAllocationFailure(new RangeError("out of memory")), true);
+  assert.equal(
+    isAllocationFailure(new RangeError("Invalid string length")),
+    false,
+  );
+  assert.equal(
+    isAllocationFailure(new RangeError("Invalid array buffer length")),
+    false,
+  );
   assert.equal(
     isAllocationFailure(
       new RangeError("Offset is outside of the bounds of the DataView"),
@@ -267,6 +347,62 @@ test("cached-package validation charges the request budget", () => {
   );
   // Without a budget the same package validates.
   assert.doesNotThrow(() => validateCachedPackage(pkg, "en"));
+});
+
+test("validation charges attribution dates through the request budget", () => {
+  // The review input: a valid version-2 package whose one entry carries
+  // either 1 or 8,192 attribution dates. Validation enumerates every date,
+  // so the larger package must refuse a seven-unit budget that the smaller
+  // one passes.
+  const row = (count: number): Record<string, unknown> => ({
+    event: "jve1:" + "1".padStart(64, "0"),
+    word: { language: "jbo", spelling: "broda" },
+    language: "en",
+    glosses: [{ language: "en", text: "book", sense: null }],
+    plain_text: "book",
+    classification: { kind: "gismu", selmaho: [] },
+    body: null,
+    issuer: "ed25519:" + "a".repeat(64),
+    notes: false,
+    rafsi: ["bau"],
+    attribution: {
+      source: "test",
+      author: null,
+      account: null,
+      dates: Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [
+          `d${index}`,
+          "2020-01-01",
+        ]),
+      ),
+    },
+  });
+  // The assertion function below is destructured without an annotation,
+  // so a direct call needs an explicitly annotated alias.
+  const validate: typeof validateCachedPackage = validateCachedPackage;
+  const attempt = (count: number): void => {
+    const measured = searchMetrics();
+    const shared = new SearchRequestBudget(measured, {
+      workLimit: 7,
+      deadlineMs: Infinity,
+    });
+    const pkg: {
+      snapshot: string;
+      version: number;
+      entries: Record<string, unknown>[];
+    } = {
+      snapshot: "sha256:" + "a".repeat(64),
+      version: 2,
+      entries: [row(count)],
+    };
+    validate(pkg, "en", shared);
+  };
+  assert.doesNotThrow(() => attempt(1));
+  assert.throws(
+    () => attempt(8192),
+    (error: unknown) =>
+      error instanceof Error && error.constructor.name === "SearchBudgetError",
+  );
 });
 
 test("grouping and sorting share the request budget", () => {

@@ -44,13 +44,17 @@ export function contentUnits(items: number, chars: number): number {
 }
 /**
  * Defensive content size of one package entry-shaped value, on top of the
- * one unit every entry costs: gloss, rafsi, and selmaho counts plus the
- * characters of the word spelling, plain text, gloss texts, rafsi
- * spellings, event ID, and issuer. Non-array or non-string fields contribute
- * nothing, so malformed input still fails validation with its invalid-package
- * error instead of a shape error here. Counts stop at validation's own
- * per-entry bounds, so an oversized malformed list cannot turn into a
- * budget refusal instead of invalid input. Callers add their own base unit.
+ * one unit every entry costs: gloss, rafsi, selmaho, and attribution-date
+ * counts plus the characters of the word spelling, plain text, gloss texts
+ * and senses, rafsi spellings, event ID, issuer, attribution source, author,
+ * account origin, and attribution date names and values. Non-array or
+ * non-string fields contribute nothing, so malformed input still fails
+ * validation with its invalid-package error instead of a shape error here.
+ * Gloss and rafsi counts stop at validation's own per-entry bounds, so an
+ * oversized malformed list cannot turn into a budget refusal instead of
+ * invalid input. Validation places no bound on the attribution dates map,
+ * so every date counts: any date count is valid input there. Callers add
+ * their own base unit.
  */
 export function entryContentUnits(value: unknown): number {
   // Mirrors the per-entry bounds enforced by entry validation.
@@ -75,8 +79,28 @@ export function entryContentUnits(value: unknown): number {
   const glosses = Array.isArray(record.glosses) ? record.glosses : [];
   const glossCount = Math.min(glosses.length, MAX_GLOSSES);
   items += glossCount;
-  for (let index = 0; index < glossCount; index++)
-    text((glosses[index] as Record<string, unknown> | null)?.text);
+  for (let index = 0; index < glossCount; index++) {
+    const gloss = glosses[index] as Record<string, unknown> | null;
+    text(gloss?.text);
+    text(gloss?.sense);
+  }
+  const attribution = record.attribution;
+  if (attribution && typeof attribution === "object") {
+    const info = attribution as Record<string, unknown>;
+    text(info.source);
+    text(info.author);
+    const account = info.account;
+    if (account && typeof account === "object")
+      text((account as Record<string, unknown>).origin);
+    const dates = info.dates;
+    if (dates && typeof dates === "object") {
+      for (const [day, stamp] of Object.entries(dates)) {
+        items++;
+        text(day);
+        text(stamp);
+      }
+    }
+  }
   const rafsi = Array.isArray(record.rafsi) ? record.rafsi : [];
   const rafsiCount = Math.min(rafsi.length, MAX_RAFSI);
   items += rafsiCount;
@@ -299,7 +323,8 @@ function indexedComponents(
   const cap = Math.min(SEARCH_HEADWORD_WORK_LIMIT, allowance);
   try {
     const result = components(spelling, cap, 256);
-    if (metrics) metrics.headwordParserWork += Math.min(result.parsed.spent, cap);
+    if (metrics)
+      metrics.headwordParserWork += Math.min(result.parsed.spent, cap);
     if (!result.parsed.foreign.length && result.value.cmavo)
       sequence = result.value;
   } catch (error) {
@@ -363,9 +388,12 @@ export interface SearchBudgetState {
   spent: number;
 }
 /** True for a well-formed budget state carried by a worker message. */
-export function isSearchBudgetState(value: unknown): value is SearchBudgetState {
+export function isSearchBudgetState(
+  value: unknown,
+): value is SearchBudgetState {
   const state = value as SearchBudgetState;
-  const bound = (n: number) => typeof n === "number" && (Number.isFinite(n) || n === Infinity);
+  const bound = (n: number) =>
+    typeof n === "number" && (Number.isFinite(n) || n === Infinity);
   return (
     !!value &&
     typeof value === "object" &&
@@ -465,8 +493,7 @@ export class SearchRequestBudget {
   /** Enforce the budget and the deadline before the next work runs. */
   check(phase: SearchBudgetError["phase"]): void {
     if (this.total() > this.workLimit) throw this.failure(phase);
-    if (Date.now() - this.start > this.deadlineMs)
-      throw this.failure(phase);
+    if (Date.now() - this.start > this.deadlineMs) throw this.failure(phase);
   }
   /** Charge `units` of work, then enforce before that work runs. */
   reserve(units: number, phase: SearchBudgetError["phase"]): void {
@@ -485,19 +512,24 @@ export function prepareIndex<T extends LexicalEntry>(
   if (previous) return previous as SearchIndex<T>;
   const measured = metrics ?? searchMetrics();
   const limit = SearchRequestBudget.for(measured, budget);
+  // A limit reached under a tight allowance must not poison later requests:
+  // the whole-array result is cached only when no row was limited by one,
+  // like the per-spelling and per-entry caches below.
+  let cacheable = true;
   const rows = entries.map((entry) => {
     // Building one row costs one unit on top of its content work and its
     // parser work, charged before the row is built so an exhausted budget
     // builds nothing.
     limit.reserve(1 + entryContentUnits(entry), "prepare");
-    return {
-      entry,
-      indexed: prepareEntry(entry, measured, limit.remaining()),
-    };
+    const allowance = limit.remaining();
+    const indexed = prepareEntry(entry, measured, allowance);
+    if (indexed.limited && allowance < SEARCH_HEADWORD_WORK_LIMIT)
+      cacheable = false;
+    return { entry, indexed };
   });
   limit.check("prepare");
   const index = { rows };
-  preparedIndexes.set(entries, index);
+  if (cacheable) preparedIndexes.set(entries, index);
   return index;
 }
 export interface SearchOptions extends SearchBudgetOptions {
@@ -570,8 +602,11 @@ export function prepareQuery(
   } catch (error) {
     if (!(error instanceof BuilderError)) throw error;
     result.segmentation = "limited";
-    if (error.failure.measure === "text recognition work")
-      measured.queryParserWork += Math.min(error.failure.value ?? 0, allowance);
+    // Every failure carries the work already performed: recognition-work
+    // failures, later runs that fail their phoneme bound, and invalid runs.
+    // Only the allowance is added to the shared budget; work past it is the
+    // parser's own accounting.
+    measured.queryParserWork += Math.min(error.failure.value ?? 0, allowance);
     limit.check("search");
   }
   return result;
@@ -581,22 +616,33 @@ function sequenceMatch(
   query: PreparedQuery,
   coverage: Int32Array,
   metrics?: SearchMetrics,
+  limit?: SearchRequestBudget,
 ): MatchKind | null {
   const head = entry.components,
     q = query.components;
   if (!head?.cmavo || head.words.length < 2 || !q?.words.length) return null;
-  if (
-    q.cmavo &&
-    head.words.length === q.words.length &&
-    head.words.every((word, index) => equal(word, q.words[index], metrics))
-  ) {
-    coverage[0]++;
-    coverage[q.tokens.length]--;
-    return "sequence-exact";
+  // Component comparisons are request work too: reserve each block's bound
+  // before it runs, so an exhausted budget refuses instead of letting the
+  // comparisons run past the allowance. The exact path compares at most one
+  // word per headword; the scan below compares at most twice per query
+  // token; the subsequence path compares at most one word per headword.
+  if (q.cmavo && head.words.length === q.words.length) {
+    limit?.reserve(head.words.length, "search");
+    if (
+      head.words.every((word, index) => equal(word, q.words[index], metrics))
+    ) {
+      coverage[0]++;
+      coverage[q.tokens.length]--;
+      return "sequence-exact";
+    }
   }
-  if (coverOccurrences(q.tokens, head.words, head.prefix, coverage, metrics))
-    return "sequence-contiguous";
+  if (q.tokens.length >= head.words.length) {
+    limit?.reserve(2 * q.tokens.length + 1, "search");
+    if (coverOccurrences(q.tokens, head.words, head.prefix, coverage, metrics))
+      return "sequence-contiguous";
+  }
   if (q.cmavo && q.words.length <= head.words.length) {
+    limit?.reserve(head.words.length, "search");
     let matched = 0;
     for (const word of head.words) {
       if (equal(word, q.words[matched], metrics)) matched++;
@@ -635,9 +681,7 @@ export function selectRafsiMatches<T extends LexicalEntry>(
       measured.entries++;
       limit.reserve(entryContentUnits(entry), "search");
       const rafsi = (entry.rafsi ?? []).filter((spelling) =>
-        pattern
-          ? pattern.test(spelling)
-          : patternKey(spelling) === queryKey,
+        pattern ? pattern.test(spelling) : patternKey(spelling) === queryKey,
       );
       if (rafsi.length)
         rows.push({ entry, match: "rafsi-pattern", position: 0, rafsi });
@@ -728,16 +772,16 @@ export function selectMatches<T extends LexicalEntry>(
             requestBudget: limit,
           }).rows
         : (function* () {
-          for (const entry of entries as Iterable<T>) {
-            // Lazy rows charge their content up front like prepareIndex,
-            // and parse with only the remaining allowance.
-            limit.reserve(1 + entryContentUnits(entry), "prepare");
-            yield {
-              entry,
-              indexed: prepareEntry(entry, measured, limit.remaining()),
-            };
-          }
-        })();
+            for (const entry of entries as Iterable<T>) {
+              // Lazy rows charge their content up front like prepareIndex,
+              // and parse with only the remaining allowance.
+              limit.reserve(1 + entryContentUnits(entry), "prepare");
+              yield {
+                entry,
+                indexed: prepareEntry(entry, measured, limit.remaining()),
+              };
+            }
+          })();
   // Query-only transformations run once here, not once per entry.
   const prefix = prepared.headword.replace(/[.,]/gu, "");
   const headwordH = prepared.headword.replaceAll("h", "'");
@@ -754,7 +798,7 @@ export function selectMatches<T extends LexicalEntry>(
         wholeKnown = true;
     }
     if (index.limited) segmentation = "limited";
-    const sequence = sequenceMatch(index, prepared, coverage, measured);
+    const sequence = sequenceMatch(index, prepared, coverage, measured, limit);
     const candidates: MatchKind[] = [];
     if (
       (prepared.headword && index.spelling === prepared.headword) ||
