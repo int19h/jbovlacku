@@ -153,20 +153,25 @@ const refused = (e: any): never => { console.error(`refused: ${e.code ? e.code +
 interface Pin { base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string; server_id?: string }
 interface Identity { seed: string; identity: string; base_snapshot: string; base_inventory: string; base_event_count?: number | null; base_inventory_digest?: string; base_body_count?: number | null; base_body_digest?: string; base_selection_count?: number | null; base_selection_digest?: string; server_id?: string }
 /**
- * An explicit pin is an input of this command. Refuse an old pin
- * before the identity is used, so the command cannot post an event
- * or rewrite the identity.
+ * The pin in use is an input of this command. That pin is the
+ * explicit --pin, or the default base-pin.json beside the state
+ * folder. Refuse an old pin before the identity is used, so the
+ * command cannot post an event or rewrite the identity.
  */
-async function refuseGivenPin(o: Opts): Promise<void> {
-  if (!flag(o, "pin")) return;
+async function refusePinInUse(o: Opts): Promise<void> {
   const path = pinPath(o);
   if (!existsSync(path)) return;
   requirePinServerId(JSON.parse(await readFile(path, "utf8")));
 }
 async function loadIdentity(o: Opts): Promise<Identity> {
   if (!o.state) { console.error("refused: --state is required"); process.exit(2); }
-  await refuseGivenPin(o);
-  return JSON.parse(await readFile(join(o.state, "identity.json"), "utf8"));
+  const identity = JSON.parse(await readFile(join(o.state, "identity.json"), "utf8"));
+  if (!validServerId(identity.server_id)) {
+    console.error("refused: identity has no server id; make a new pin and a new state folder");
+    process.exit(3);
+  }
+  await refusePinInUse(o);
+  return identity;
 }
 function pinPath(o: Opts): string {
   return flag(o, "pin") ?? join(dirname(resolve(o.state)), "base-pin.json");
@@ -936,6 +941,8 @@ async function restore(o: Opts, checkOnly: boolean): Promise<void> {
     if (typeof key !== "string" || !identityByKey.has(key))
       fail("capture does not have one identity record for each captured identity; capture it again with the current kit");
   }
+  if (!validServerId(manifest.source_server_id))
+    fail("capture has no source server id; capture it again with the current kit");
   for (const state of manifest.identity_states) {
     if (state?.base_snapshot !== manifest.base_snapshot)
       fail("identity base_snapshot does not match the manifest base_snapshot");

@@ -120,10 +120,15 @@ The same server still passes after later events from this run.
 A different server is refused with `refused: empty
 base pin does not match this server`. A target that holds a
 proven copy of this run accepts the same pin. The capture
-section tells how restore records that copy. A pin with no
+section tells how restore records that copy. A command that
+loads an identity checks the pin in use. That pin is an
+explicit `--pin` or the default `base-pin.json` beside the
+state folder. A pin with no
 server id is refused. That pin was taken before server ids
 existed. Take a new pin with `pin-base` before any synthetic
 event. Take that pin on the server that will host the run.
+An identity with no server id is refused. Make a new pin and
+a new state folder.
 
 ### Write lock and crash recovery
 
@@ -316,7 +321,8 @@ of the event file. For an empty base, it holds the source server
 id from the original pin. Each captured identity records that
 same id with its base. Restore refuses a capture whose identity
 records disagree with its manifest, and pins and captures from
-an older kit must be made again. The keys file holds
+an older kit must be made again. Restore refuses a capture that
+has no source server id. The keys file holds
 private keys. Keep a capture folder private.
 
 Capture files and the local disposable server are trusted

@@ -266,14 +266,14 @@ test("recent and history page past one server page, and heads past 64 merge", as
     assert.equal(recentOut.trim().split("\n").length, 5);
     // history pages past one 200 item page for the seeded identity.
     const m = await (await fetch(url + "/api/v1/manifest")).json() as any;
-    await writeFile(join(seededState, "identity.json"), JSON.stringify({ seed: Buffer.from(seed).toString("hex"), identity: identityFromSeed(seed), base_snapshot: m.snapshot, base_inventory: m.logical_inventory }, null, 2));
+    await writeFile(join(seededState, "identity.json"), JSON.stringify({ seed: Buffer.from(seed).toString("hex"), identity: identityFromSeed(seed), base_snapshot: m.snapshot, base_inventory: m.logical_inventory, server_id: "a".repeat(32) }, null, 2));
     const histOut = await cmd(["--server", url, "--state", seededState, "history", "--limit", "1005"]);
     assert.equal(histOut.trim().split("\n").length, 1005, histOut.slice(0, 300));
     assert.ok(histOut.includes(lastId));
     // A write with 65 heads first combines them in batches of 64.
     const headState = join(root, "heads");
     await mkdir(headState, { recursive: true });
-    await writeFile(join(headState, "identity.json"), JSON.stringify({ seed: Buffer.from(seed2).toString("hex"), identity: identityFromSeed(seed2), base_snapshot: m.snapshot, base_inventory: m.logical_inventory }, null, 2));
+    await writeFile(join(headState, "identity.json"), JSON.stringify({ seed: Buffer.from(seed2).toString("hex"), identity: identityFromSeed(seed2), base_snapshot: m.snapshot, base_inventory: m.logical_inventory, server_id: "b".repeat(32) }, null, 2));
     assert.match(await cmd(["--server", url, "--state", headState, "define", "--word", "headsword", "--text", "after many heads"]), /accepted/);
   } finally { await s.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -1248,7 +1248,7 @@ test("a full output stream reports the write error and exits nonzero", async () 
   try {
     const state = join(root, "a");
     await mkdir(state);
-    await writeFile(join(state, "identity.json"), JSON.stringify({ identity: "ed25519:aa" }) + "\n");
+    await writeFile(join(state, "identity.json"), JSON.stringify({ identity: "ed25519:aa", server_id: "c".repeat(32) }) + "\n");
     const fd = openSync("/dev/full", "w");
     const child = spawn(tsx, [cli, "--state", state, "whoami"], { stdio: ["ignore", fd, "pipe"] });
     closeSync(fd);
@@ -1763,6 +1763,141 @@ test("profile refuses an old pin", async () => {
     assert.equal(existsSync(join(run.state, "lock")), false);
     const afterIds = ((await (await fetch(run.url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
     assert.deepEqual(afterIds, beforeIds);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/** A current run whose default pin is base-pin.json beside the state folder. */
+async function runOnDefaultPin(root: string, port: number): Promise<{ url: string; pin: string; state: string; close(): Promise<void> }> {
+  const server = await startServer(join(root, "src"), port);
+  try {
+    const url = `http://127.0.0.1:${port}`;
+    const state = join(root, "run", "a");
+    await cmd(["--server", url, "--state", state, "init"]);
+    await cmd(["--server", url, "--state", state, "profile", "--name", "base"]);
+    const pin = join(root, "run", "base-pin.json");
+    return { url, pin, state, close: () => server.close() };
+  } catch (error) {
+    await server.close();
+    throw error;
+  }
+}
+
+test("profile refuses an old default pin and an identity with no server id", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const server = await startServer(join(root, "src"), 9649);
+    servers.push(server);
+    const url = "http://127.0.0.1:9649";
+    await cmd(["--server", url, "--state", join(root, "base", "state"), "init"]);
+    await cmd(["--server", url, "--state", join(root, "base", "state"), "profile", "--name", "base"]);
+    const state = join(root, "run", "a");
+    await cmd(["--server", url, "--state", state, "init"]);
+    const pin = join(root, "run", "base-pin.json");
+    const pinJson = JSON.parse(await readFile(pin, "utf8"));
+    assert.ok(pinJson.base_event_count > 0);
+    delete pinJson.server_id;
+    await writeFile(pin, JSON.stringify(pinJson, null, 2) + "\n");
+    const identityPath = join(state, "identity.json");
+    const identity = JSON.parse(await readFile(identityPath, "utf8"));
+    delete identity.server_id;
+    await writeFile(identityPath, JSON.stringify(identity, null, 2) + "\n");
+    const before = await readFile(identityPath, "utf8");
+    const beforeIds = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    const posted = await cmdResult(["--server", url, "--state", state, "profile", "--name", "late"]);
+    assert.equal(posted.code, 3, posted.out);
+    assert.match(posted.out, /refused: identity has no server id; make a new pin and a new state folder/);
+    assert.equal(await readFile(identityPath, "utf8"), before);
+    assert.equal(existsSync(join(state, "lock")), false);
+    const afterIds = ((await (await fetch(url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    assert.deepEqual(afterIds, beforeIds);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("profile, whoami and init refuse an old default pin", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const run = await runOnDefaultPin(root, 9650);
+    servers.push(run);
+    const pinJson = JSON.parse(await readFile(run.pin, "utf8"));
+    delete pinJson.server_id;
+    await writeFile(run.pin, JSON.stringify(pinJson, null, 2) + "\n");
+    const identityPath = join(run.state, "identity.json");
+    const before = await readFile(identityPath, "utf8");
+    const beforeIds = ((await (await fetch(run.url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    const posted = await cmdResult(["--server", run.url, "--state", run.state, "profile", "--name", "late"]);
+    assert.equal(posted.code, 3, posted.out);
+    assert.match(posted.out, /refused: pin has no server id; make a new pin with the current kit/);
+    assert.equal(existsSync(join(run.state, "lock")), false);
+    const named = await cmdResult(["--server", run.url, "--state", run.state, "whoami"]);
+    assert.equal(named.code, 3, named.out);
+    assert.match(named.out, /refused: pin has no server id; make a new pin with the current kit/);
+    const again = await cmdResult(["--server", run.url, "--state", run.state, "init"]);
+    assert.equal(again.code, 3, again.out);
+    assert.match(again.out, /refused: pin has no server id; make a new pin with the current kit/);
+    assert.equal(await readFile(identityPath, "utf8"), before);
+    const afterIds = ((await (await fetch(run.url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    assert.deepEqual(afterIds, beforeIds);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an explicit pin is checked and an old default pin is not", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const run = await runOnDefaultPin(root, 9651);
+    servers.push(run);
+    const explicit = join(root, "good-pin.json");
+    await writeFile(explicit, await readFile(run.pin, "utf8"));
+    const pinJson = JSON.parse(await readFile(run.pin, "utf8"));
+    delete pinJson.server_id;
+    await writeFile(run.pin, JSON.stringify(pinJson, null, 2) + "\n");
+    const beforeIds = ((await (await fetch(run.url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    const posted = await cmdResult(["--server", run.url, "--state", run.state, "--pin", explicit, "profile", "--name", "late"]);
+    assert.equal(posted.code, 0, posted.out);
+    assert.match(posted.out, /accepted jve1:/);
+    const afterExplicit = ((await (await fetch(run.url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    assert.equal(afterExplicit.length, beforeIds.length + 1);
+    const refused = await cmdResult(["--server", run.url, "--state", run.state, "profile", "--name", "other"]);
+    assert.equal(refused.code, 3, refused.out);
+    assert.match(refused.out, /refused: pin has no server id; make a new pin with the current kit/);
+    const afterDefault = ((await (await fetch(run.url + "/api/v1/inventory?kind=events&limit=1000")).json()) as any).ids;
+    assert.deepEqual(afterDefault, afterExplicit);
+  } finally {
+    for (const server of servers) await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a capture without a source server id is refused", async () => {
+  const root = await rootOf();
+  const servers: Array<{ close(): Promise<void> }> = [];
+  try {
+    const captured = await captureTwo(root, 9652);
+    servers.push(captured);
+    const manifestPath = join(captured.cap, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    delete manifest.source_server_id;
+    for (const state of manifest.identity_states) delete state.server_id;
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    const target = await startServer(join(root, "dst"), 9653);
+    servers.push(target);
+    const restored = await cmdResult(["--server", "http://127.0.0.1:9653", "restore", "--capture", captured.cap]);
+    assert.equal(restored.code, 3, restored.out);
+    assert.match(restored.out, /refused: capture has no source server id; capture it again with the current kit/);
+    const ids = ((await (await fetch("http://127.0.0.1:9653/api/v1/inventory?kind=events&limit=10")).json()) as any).ids;
+    assert.deepEqual(ids, []);
+    assert.equal(existsSync(join(root, "dst", "restored-runs.json")), false);
   } finally {
     for (const server of servers) await server.close();
     await rm(root, { recursive: true, force: true });
