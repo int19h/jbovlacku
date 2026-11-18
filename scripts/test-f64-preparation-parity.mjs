@@ -191,11 +191,18 @@ const smallPolicy = {
   core_binding: `sha256:${"a".repeat(64)}`,
   limits: { setup_bytes: 1, setup_units: 1 },
 };
+const diagnosticPolicy = {
+  core_binding: `sha256:${"a".repeat(64)}`,
+  limits: { setup_bytes: 1 },
+};
 for (const limits of [{ events: 1 }, { traversal: 0 }]) {
   const input = { ...JSON.parse(resourceRow.input), limits, overlay: rawOverlay };
   const session = new wasm.EvaluationSession(utf8(input));
   try {
-    const descriptor = JSON.parse(session.ranking_descriptor(utf8(smallPolicy)));
+    // A one-unit setup quota refuses in the preamble, before the
+    // unavailable profile is classified.
+    assert.throws(() => session.ranking_descriptor(utf8(smallPolicy)), /resource_unavailable/);
+    const descriptor = JSON.parse(session.ranking_descriptor(utf8(diagnosticPolicy)));
     assert.equal(descriptor.available, false);
     assert(descriptor.reasons.includes("resource_unavailable"));
     assert.equal(descriptor.setup.setup_bytes, 0);
@@ -218,7 +225,8 @@ try {
       if (available) {
         assert.throws(() => restored.ranking_descriptor(utf8(resourceRow.policy)), /invalid_overlay/);
       } else {
-        const descriptor = JSON.parse(restored.ranking_descriptor(utf8(smallPolicy)));
+        assert.throws(() => restored.ranking_descriptor(utf8(smallPolicy)), /resource_unavailable/);
+        const descriptor = JSON.parse(restored.ranking_descriptor(utf8(diagnosticPolicy)));
         assert.equal(descriptor.available, false);
         assert.equal(descriptor.setup.setup_bytes, 0);
         assert.equal(descriptor.setup.setup_units, 0);

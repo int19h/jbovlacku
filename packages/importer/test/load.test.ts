@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
@@ -731,6 +731,26 @@ test("server and loader exclude each other, and startup restores the loaded view
   assert.equal(again.accepted, 0);
 });
 
+test("configured loader quotas refuse with their configured messages and no quota is the default", async () => {
+  const byEvents = await fixture();
+  await assert.rejects(
+    loadImportProposal({ ...byEvents, maxAdmittedEvents: 2 }),
+    /data directory exceeds the configured limit of 2 admitted events/,
+  );
+  const byRecords = await fixture();
+  await assert.rejects(
+    loadImportProposal({ ...byRecords, maxCarrierRecords: 2 }),
+    /import proposal exceeds the configured limit of 2 carrier records/,
+  );
+  const unquotaed = await fixture();
+  const loaded = await loadImportProposal(unquotaed);
+  assert.equal(loaded.accepted, unquotaed.imported.carriers.length);
+  await assert.rejects(
+    loadImportProposal({ ...unquotaed, maxAdmittedEvents: 0 }),
+    /positive safe integer/,
+  );
+});
+
 test("operator traversal limit is explicit and bounded", () => {
   assert.equal(stateTraversalLimit(undefined), undefined);
   assert.equal(stateTraversalLimit("1000000000"), 1_000_000_000);
@@ -765,6 +785,98 @@ test("later inline bodies fill earlier carriers without extra receipts", async (
     assert.equal(retained.position, f.imported.carriers.length);
   } finally {
     state.coordinator.close();
+  }
+});
+
+test("envelope-only carriers use retained or supplied body mappings, not orphan objects", async () => {
+  const targetOf = (f: Awaited<ReturnType<typeof fixture>>) =>
+    f.imported.carriers.find(
+      (carrier) => carrier.envelope.header.action.kind === "definition.publish",
+    )!;
+  const orphanOf = (f: Awaited<ReturnType<typeof fixture>>, nonce: string) => {
+    const target = targetOf(f);
+    return {
+      target,
+      orphan: createEvent(seed, [], nonce, target.envelope.header.action, target.body),
+    };
+  };
+  // An orphan object with no retained mapping does not supply a body.
+  {
+    const f = await fixture();
+    const { target, orphan } = orphanOf(f, "6".repeat(32));
+    const removed = new Set(
+      f.imported.carriers
+        .filter(
+          (carrier) =>
+            carrier.envelope.header.content?.hash ===
+            target.envelope.header.content!.hash,
+        )
+        .map((carrier) => carrier.envelope.id),
+    );
+    await changedSelection(
+      f,
+      f.imported.selection.ids.filter((id) => !removed.has(id)),
+      [],
+      [
+        ...f.imported.carriers.filter((carrier) => !removed.has(carrier.envelope.id)),
+        { envelope: orphan.envelope, body: null },
+      ],
+    );
+    await mkdir(f.directory, { recursive: true });
+    const s = stores(f.directory);
+    try {
+      await s.objects.put(
+        target.envelope.header.content!.hash,
+        utf8(canonical(target.body)),
+      );
+      await admitImportProposal(f.proposal, s.coordinator, s.objects);
+      const state = await s.coordinator.load();
+      assert.equal(state.events[orphan.envelope.id].body_hash, null);
+    } finally {
+      s.coordinator.close();
+    }
+  }
+  // A body supplied by the same proposal fills an earlier envelope-only carrier.
+  {
+    const f = await fixture();
+    const { target, orphan } = orphanOf(f, "6".repeat(32));
+    await changedSelection(f, f.imported.selection.ids, [], [
+      ...f.imported.carriers,
+      { envelope: orphan.envelope, body: null },
+      orphan,
+    ]);
+    await mkdir(f.directory, { recursive: true });
+    const s = stores(f.directory);
+    try {
+      await admitImportProposal(f.proposal, s.coordinator, s.objects);
+      const state = await s.coordinator.load();
+      assert.equal(
+        state.events[orphan.envelope.id].body_hash,
+        target.envelope.header.content!.hash,
+      );
+    } finally {
+      s.coordinator.close();
+    }
+  }
+  // A retained mapping from an earlier proposal supplies the body.
+  {
+    const f = await fixture();
+    await loadImportProposal(f);
+    const { target, orphan } = orphanOf(f, "5".repeat(32));
+    await changedSelection(f, f.imported.selection.ids, [], [
+      { envelope: orphan.envelope, body: null },
+    ]);
+    await loadImportProposal(f);
+    const s = stores(f.directory);
+    try {
+      const state = await s.coordinator.load();
+      assert.equal(
+        state.events[orphan.envelope.id].body_hash,
+        target.envelope.header.content!.hash,
+      );
+    } finally {
+      s.coordinator.close();
+    }
   }
 });
 

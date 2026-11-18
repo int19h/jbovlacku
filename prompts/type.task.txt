@@ -126,7 +126,7 @@ Such a word does not describe a thing.
 Grammar jobs include attitudes, discourse markers, evidentials, vocatives, tense and aspect, connectives, descriptors, numbers and digits, quantifiers, pro-sumti, place conversion, abstraction, quotation and terminators.
 A new word whose job is to exchange places, as se and te do, is cmavo. An existing relation with its places in another order is a conversion of that relation. The conversion step handles it.
 A compound cmavo is one word that splits into two or more cmavo. It says the same as its parts said one after another.
-The split follows Lojban morphology. It does not follow a match against dictionary words. For example, taia splits as tai .a, not as ta .ia.
+The split follows Lojban morphology. It does not follow a match against dictionary words. For example, taia is not valid Lojban, it doesn't parse as ta.ia nor as tai.a.
 So never split a spelling yourself. The application splits it, and spelling_form and spelling_parts give the result.
 Choose between cmavo and compound this way.
 If spelling_form is compound, give compound. If spelling_form is cmavo, give cmavo.

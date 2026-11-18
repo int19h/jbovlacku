@@ -301,7 +301,8 @@ Observation growth still covers all staged definition rows.
 The normal estimate includes a projected loaded copy, while `--check-existing` covers only its scratch proposal and staging.
 That check reparses the source with retained envelopes and refuses new publications.
 Use a new scratch directory with a copied journal. The command refuses existing `carriers.jsonl` or `source-archive` paths before opening the journal.
-Its 1.5 GB budget does not authorize a service load.
+The estimate has no size budget by default. Pass `--budget-bytes` to set an optional budget.
+A check with no budget does not authorize a service load.
 
 After preparing a signed proposal, stop the Node server for the target data directory.
 From the repository root, load the proposal into that directory:
@@ -326,9 +327,10 @@ The SQL archive records the digest and path of the external dump instead of copy
 Rights remain unknown in this extraction. Local loading grants no publication authority.
 
 Large imports need a larger explicit state work budget and enough memory.
-The traversal flag changes the work limit only. It does not remove memory or event limits.
+The traversal flag changes the work limit only.
+The loader sets no event-count limit. An operator can set `--max-admitted-events` and `--max-carrier-records` quotas on the load command. Both quotas are off by default.
 The loader completes admission before the server builds its snapshot, indexes, and search packages.
-The SQL loader projects only final changed event bindings and stages at most 256 compact records per batch.
+The SQL loader reads carriers one at a time, projects only final changed event bindings, and stages at most 256 compact records per batch.
 One admission transaction promotes staged rows and accepted events together. Failed admission removes its own staged rows.
 The Node server and top-level loader clear abandoned stages only while they hold the exclusive data directory lock.
 Generic test coordinators without SQL staging retain changed projections in memory.
@@ -542,6 +544,8 @@ The table names the implemented interface. Output files and directories must be 
 | `merge LEFT RIGHT --output DIRECTORY [--policy FILE]`                  | Write the authenticated set union with an explicit local refusal policy when supplied.             |
 | `retain DIRECTORY --policy FILE --output DIRECTORY`                    | Write a filtered carrier and its resolved policy sidecar.                                          |
 
+Carrier reads set no total size or file-count quota by default. The `*_with_limits` reader forms accept an optional local quota for either value, and the per-file bounds stay in force. Readers stream each record part one line at a time instead of holding every carrier file in memory at once. The `jvc` command also sets no input size quota by default. Place `--input-limit BYTES` before a `jvc` command to set an optional input quota for direct FILE arguments only, including `--selection FILE` and `--policy FILE` arguments. Commands with no FILE argument reject the flag. Carrier DIRECTORY and REPOSITORY reads use the carrier library `ReadLimits`, not this flag. JSONL inputs are read one record at a time, and each record stays within its per-record bound. Single-document inputs such as one envelope, one canonical JSON value, and one evaluation input are still read as one document.
+
 JSONL carriers contain `{body,envelope}` records. Export sorts them by event ID.
 A JSONL export does not include import selections. Keep each selection as a separate canonical JSON file.
 Supply every required selection through repeated `--selection FILE` arguments when importing.
@@ -661,9 +665,10 @@ npx tsx scripts/test-server-security.ts
 The probe verifies real runtime WebAssembly, blocked JavaScript evaluation, blocked inline scripts, and blocked framing.
 `scripts/measure-service-io.ts` uses the same corpus variables to count object operations and sample Node and Wasm memory.
 `logical_get` and `logical_put` count calls to the object store.
-`object_get` counts file read attempts, including missing objects and existing-object checks after a link collision.
-`object_put` counts temporary-file write attempts, including duplicate puts. New objects need no read before the write.
-`operations` totals those file reads and writes. It excludes directory operations, links, file syncs, and metadata access.
+`object_get` counts file read attempts, including missing objects, the existing-object check before a skipped write, and existing-object checks after a link collision.
+`object_put` counts temporary-file write attempts only. An identical duplicate put makes no temporary-file write, so it does not count here.
+`object_sync` counts object-directory syncs, including the sync before a skipped write returns. A counter that is not a read, write, or sync counts in none of these until it is counted on purpose.
+`operations` totals those file reads, temporary-file writes, and directory syncs. It excludes links and other metadata access.
 `JVC_IO_REPORT` selects an output report file. Its disposable database is removed when the measurement finishes.
 The importer tests use pinned JSON captures and a small SQL fixture with source provenance.
 The importer converts supported explicit x-place forms and publishes known official and experimental rafsi as separate imported claims.
@@ -1182,6 +1187,7 @@ It also compares host-only extraction and trusted insertion with the original ve
 Ranking cases compare `rank_word`, session ranking, and `rank_with_reviewers`, including `public_shun_block` and `private_block` details.
 When `JVC_SHUN_PARITY_DIR` is set, the runner requires shun-profile cases and both block reasons, separately and together.
 Without that variable, the runner compares state only. CI sets both corpus variables before the native tests and browser comparison.
+Ranking preparation has no default whole-dictionary quota. Its record, setup-envelope, and source-byte limits are optional caller quotas. The default setup-unit budget, computed by `effective_setup_units` for index entries `I` and copied key bytes `K`, is exactly `100,000,000 + 1,040 * I + K * (6 + 11 * bit_length(I + 1))`. The last term charges key comparison bytes during index construction: each key byte can be read in at most eleven comparisons per tree level. Those allowances cover the setup charge at the widest bit length, so the margin never falls below the fixed allowance as an ordinary dictionary grows. For the recorded base counts `I = 457930` and `K = 34112650`, the budget is 7,910,466,950 units. An explicit policy value replaces that default.
 The preparation comparison uses native fixtures across fresh, compact-record, forked, full-restore, and result-restore Wasm sessions.
 It compares descriptor bindings, effective targets, context graph metadata, and charged usage.
 It also requires stale requests to leave the current preparation unchanged.

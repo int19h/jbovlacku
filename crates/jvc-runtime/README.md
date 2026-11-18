@@ -5,7 +5,7 @@ It borrows the retained authenticated records and their evaluation.
 It does not accept another input container or repeat envelope authentication.
 The state builds its target, scope, judgment-count, and private-weight indexes once, after setup admission.
 Unavailable descriptors skip the index bound and setup estimate, reporting zero setup bytes and units.
-Their source walk still has its independent byte and time limits. Malformed restored overlays return an error instead of a panic.
+Their source walk still has its independent time limit and any configured byte quota. Malformed restored overlays return an error instead of a panic.
 Every fork and restore starts without those indexes or prepared graphs.
 
 `ranking_descriptor` accepts an unsigned policy with a `core_binding` and optional limits.
@@ -17,7 +17,7 @@ Fresh, forked, and restored equivalent float states share semantic bindings.
 Exact profiles return unavailable descriptors before the source walk or index construction.
 Their diagnostic input binding names the selected view and algorithm, without identifying the complete input.
 Unavailable descriptors cannot prepare graphs.
-The preparation contract is `jvc-session-ranking-preparation-v4`.
+The preparation contract is `jvc-session-ranking-preparation-v5`.
 Source serialization keeps the existing serde field order and sorted `serde_json::Value` object keys.
 A regression test pins that sorted-key assumption against future dependency feature changes.
 Each session also supplies a separate owner identity that prevents cross-session requests.
@@ -42,11 +42,12 @@ Preparation generations stay monotonic through both successful and refused polic
 The TypeScript handle exposes these operations as `rankingDescriptor`, `prepareRanking`, `rankingPreparation`, and `clearRankingPreparation`.
 The browser facade exposes them without host insertion or checkpoint restore.
 
-The default policy permits 1,000,000 structural records and a 512 MiB setup envelope.
-It has separate unit allowances: 400,000,000 `setup_units` and 100,000,000 context `units`.
+The default policy has no whole-dictionary quota: `records`, `setup_bytes`, and `source_bytes` are absent by default.
+A caller can set any of them as an optional quota. A set quota keeps the old refusal: `ranking setup record limit`, `ranking setup envelope limit`, or the source-byte reason.
 It permits 8,192 publications per word, 4,096 targets, 128 contexts, a 64 MiB graph envelope, and 16 MiB metadata encodings.
-The setup ceiling is 1 GiB. Each unit allowance has a 1,000,000,000 ceiling.
-All limits are inclusive. These envelopes model allocation and work, rather than operating-system memory or CPU time.
+The context `units` allowance is 100,000,000 per word. Its ceiling is 1,000,000,000.
+All set limits are inclusive. These envelopes model allocation and work, rather than operating-system memory or CPU time.
+A device that cannot hold the data fails with a physical error, such as out of memory. No default restores a total-size cap.
 
 Setup admission counts index inputs before it allocates indexes.
 It permits one bucket per input, even when duplicate keys later share a bucket.
@@ -104,28 +105,39 @@ M = nz(words) + nz(target_groups) + nz(judgment_groups)
 S = target_groups + private_rules
 B = 1536 * M + 384 * S
 setup_bytes = 2 * (sum(count * base_bytes) + K + B)
-setup_units = 2 * (8 * I * bit_length(I + 1) + K)
+setup_units = 2 * (8 * I * bit_length(I + 1) + K) + 16 * I + 4 * K + 11 * K * bit_length(I + 1)
 ```
+
+The `16 * I + 4 * K` term charges the record-count walk and the index-count walk. The last term charges key comparison bytes during index construction.
+Setup charges each walk before it runs. Each publication, trust rule, scope tree, private rule, and lookup is charged before it is processed.
+Arena strings are validated once when the arena is loaded; after that, string access borrows the stored length and bytes in constant time and validates nothing.
+Each linear walk credits its own allowance for the items it visits before it charges them, so a walk never exhausts a budget that its own input would raise.
+The index build itself runs only after `setup_estimate` accepts the counts.
+The default setup-unit budget is 100,000,000 plus 1,040 per index entry plus 6 per copied key byte plus 11 per copied key byte per tree level.
+Those allowances cover the charge at the widest bit length: 16 * 64 + 16 per entry, 6 per key byte, and the comparison term 11 * K * bit_length(I + 1) for index construction.
+Index construction is charged through the same meter as the walks, before each lookup, insertion, and comparison.
+The margin over the charge is therefore at least the fixed 100,000,000 at any size, and it grows as an ordinary shape grows.
+An explicit `setup_units` quota replaces the default.
+A `resource_unavailable` refusal from a charged read returns the error at once, on every profile.
+No source hash, serialization, or descriptor work over restored data follows it.
+A diagnostic descriptor for an exact or unavailable profile is returned only when no charged read refused.
 
 The measured dictionary has 269,350 structural records and 165,438,058 source bytes.
 Its indexes retain 64,033,159 requested heap bytes.
-The preflight envelope reserves 291,524,664 bytes and 204,442,264 units.
-The default budget also accommodates the 64 MiB graph envelope and 16 MiB metadata envelope.
-The dictionary leaves 195,557,736 setup units unused. Word preparation retains its full 100,000,000-unit allowance.
-A uniform 50% increase in dictionary counts and copied-key bytes still fits the default setup units and memory.
-That growth also fits the source-byte and record limits, with the graph and metadata envelopes reserved.
-Growth near 55% reaches the combined setup-memory envelope before the separate setup-unit allowance.
+The preflight envelope reserves 291,524,664 bytes and 7,332,895,940 units, walks and comparison bytes included.
+The scaled default budget for that shape is 7,758,734,820 units. Word preparation retains its full 100,000,000-unit allowance.
+A uniform increase in dictionary counts and copied-key bytes keeps at least that fixed margin under the scaled default.
 These count-based growth figures assume the same shape and do not promise that every future word fits.
 The measurements do not guarantee capacity for every word or every future dictionary revision.
 
-The streaming source hash has independent limits, `source_bytes` and `source_millis`.
-Their defaults are 256 MiB and 30,000 elapsed milliseconds. Their ceilings are 1 GiB and 120,000 milliseconds.
+The streaming source hash has an optional byte quota, `source_bytes`, and a time limit, `source_millis`.
+The byte quota is absent by default. The time default is 30,000 elapsed milliseconds and its ceiling is 120,000 milliseconds.
 The measured native source walk takes about one CPU second and retains no source buffer.
 The writer measures bytes and consults a monotonic clock at most 256 KiB apart and after serialization.
 Native builds use `Instant`. Wasm builds require the host's `performance.now()`.
 Browsers, browser workers, and Node provide that clock. Bare hosts must supply it.
 The time limit stops cooperatively at writer boundaries. It does not preempt serialization between writes.
-This deadline covers hashing only. Count walks and index construction have record and unit limits, without an elapsed-time deadline.
+This deadline covers hashing only. Count walks and index construction have unit charges, without an elapsed-time deadline.
 A refused walk returns no partial binding and does not construct an index.
 The source length remains part of usage reporting, but it does not charge setup memory or preparation units.
 
@@ -329,7 +341,7 @@ A process restart loses this in-memory cache and its markers.
 
 Use the `jvc-runtime` example `ranking_setup_measurement` for the current index-based setup model.
 It reports measured heap, index counts, modeled setup bytes and units, source bytes, and hash-walk timing.
-Source hashing has independent byte and time limits, as described above.
+Source hashing has an independent time limit and optional byte quota, as described above.
 The [allocation measurement guide](#measure-setup-allocation) gives the command and trusted-input requirements.
 Measurement does not change runtime policy limits.
 

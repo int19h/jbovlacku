@@ -93,6 +93,8 @@ export interface SqlImportOptions {
   roots: ImportOptions["roots"];
   /** Reparse an existing ledger without signing any publication or view. */
   checkExisting?: boolean;
+  /** Optional estimate budget in bytes. Absent means no budget refusal. */
+  budgetBytes?: number;
   /** This test hook runs after durable state changes. */
   checkpoint?: (
     stage: "source-durable" | "journal-durable" | "carriers-written",
@@ -1430,6 +1432,7 @@ export async function importSqlSnapshot(options: SqlImportOptions) {
         existing_output_carrier_bytes: oldCarriers?.size ?? 0,
         check_existing: options.checkExisting,
         reuse_committed_snapshot: reuseCommitted,
+        budget_bytes: options.budgetBytes,
       });
       options.estimate?.(sizeEstimate);
       if (!sizeEstimate.within_budget)

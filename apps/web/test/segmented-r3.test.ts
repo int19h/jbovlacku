@@ -15,8 +15,14 @@ const entry = (
   classification: { kind: "other", selmaho: [] },
   body: null,
 });
-async function seed(page: Page) {
+async function openHome(page: Page) {
   await page.goto("/");
+  await expect(
+    page.getByText("Type a word or a meaning to search.", { exact: true }),
+  ).toBeVisible();
+}
+async function seed(page: Page) {
+  await openHome(page);
   await page.evaluate(
     async (entries) => {
       const { LocalStore } = await import(String("/src/data/store.ts"));
@@ -238,7 +244,7 @@ for (const [label, corrupt] of [
   test(`empty search validates a corrupt package ${label}`, async ({
     page,
   }) => {
-    await page.goto("/");
+    await openHome(page);
     await page.evaluate(async (pkg) => {
       const { LocalStore } = await import(String("/src/data/store.ts"));
       await new LocalStore().put("packages", "en", pkg);
@@ -307,7 +313,7 @@ test("accepted package searches survive queued cache eviction", async ({
 test("nearby ranks overlapping candidates before selecting its six rows", async ({
   page,
 }) => {
-  await page.goto("/");
+  await openHome(page);
   const entries = Array.from({ length: 60 }, (_, index) => ({
     ...entry(
       "broad" +
@@ -338,7 +344,7 @@ test("nearby ranks overlapping candidates before selecting its six rows", async 
 test("a broad local page keeps its total and show-all cap", async ({
   page,
 }) => {
-  await page.goto("/");
+  await openHome(page);
   await page.evaluate(
     async (entries) => {
       const { LocalStore } = await import(String("/src/data/store.ts"));

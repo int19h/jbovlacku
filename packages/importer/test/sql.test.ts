@@ -1318,7 +1318,7 @@ test("check-existing restages a copied journal and preserves every carrier byte"
   );
   assert.ok(estimates[0].stage_bytes > 0);
   assert.equal(estimates[0].scope, "proposal");
-  assert.equal(estimates[0].budget_bytes, 1_500_000_000);
+  assert.equal(estimates[0].budget_bytes, undefined);
   assert.equal(result.report.reused, 4);
   assert.deepEqual(await readFile(join(output, "carriers.jsonl")), expected);
   assert.equal(result.size_measurement.loaded_copy_measured, false);
