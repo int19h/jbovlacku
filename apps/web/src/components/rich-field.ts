@@ -1542,16 +1542,18 @@ export function richField(label: string, options: RichFieldOptions) {
    */
   function syncNativeSelection(readerChoice = false) {
     if (view.isDestroyed || view.composing) return;
-    // The guard ends when an event this editor handles adopts a
-    // different selection into editor state: motion keys and pointer
-    // focus arrivals pass readerChoice here; a click, tap or
-    // select-all in a focused field, and code that adopts the browser
-    // selection (the toolbar's focusin and pointerdown handlers, and
-    // Enter and Tab keydown in the editor), reach state as a
-    // selection-only transaction, which releases the guard in
-    // dispatchTransaction. Moving the browser caret while focus stays
-    // outside the field is not such an event, so it leaves the guard
-    // in place until a selection is adopted into state.
+    // The guard ends by either of two paths. First, once this sync
+    // accepts a call with readerChoice set (a motion-key keyup or
+    // keydown microtask, or a pointer focus arrival), it clears the
+    // guard below, before it reads the browser selection, even when
+    // the state selection does not change. Second, a selection-only
+    // transaction from other code (a click, tap or select-all, or
+    // code that adopts the browser selection, such as the toolbar's
+    // focusin and pointerdown handlers and Enter and Tab keydown in
+    // the editor) releases the guard in dispatchTransaction when it
+    // moves the selection off the recorded caret in the same
+    // document. Moving the browser caret while focus stays outside
+    // the field matches neither path, so it leaves the guard in place.
     if (readerChoice) resetGuard = null;
     else if (resetGuard?.doc === view.state.doc) {
       // An external rewrite records its intended caret for focus repair.
