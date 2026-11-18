@@ -544,6 +544,8 @@ The table names the implemented interface. Output files and directories must be 
 | `merge LEFT RIGHT --output DIRECTORY [--policy FILE]`                  | Write the authenticated set union with an explicit local refusal policy when supplied.             |
 | `retain DIRECTORY --policy FILE --output DIRECTORY`                    | Write a filtered carrier and its resolved policy sidecar.                                          |
 
+Carrier reads set no total size or file-count quota by default. The `*_with_limits` reader forms accept an optional local quota for either value, and the per-file bounds stay in force. Readers stream each record part one line at a time instead of holding every carrier file in memory at once. The `jvc` command also sets no input size quota by default. Place `--input-limit BYTES` before a `jvc` command to set an optional input quota for direct FILE arguments only, including `--selection FILE` and `--policy FILE` arguments. Commands with no FILE argument reject the flag. Carrier DIRECTORY and REPOSITORY reads use the carrier library `ReadLimits`, not this flag. JSONL inputs are read one record at a time, and each record stays within its per-record bound. Single-document inputs such as one envelope, one canonical JSON value, and one evaluation input are still read as one document.
+
 JSONL carriers contain `{body,envelope}` records. Export sorts them by event ID.
 A JSONL export does not include import selections. Keep each selection as a separate canonical JSON file.
 Supply every required selection through repeated `--selection FILE` arguments when importing.

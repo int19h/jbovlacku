@@ -482,6 +482,38 @@ pub fn export_jsonl(events: &[VerifiedEnvelope]) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
+/// Stream envelope JSONL from a buffered reader, one line at a time. The
+/// result is the same deduplicated, event-ID-ordered set that
+/// `import_jsonl` returns for the same bytes.
+pub fn import_jsonl_reader<R: std::io::BufRead>(mut reader: R) -> Result<Vec<VerifiedEnvelope>> {
+    use std::io::{BufRead as _, Read};
+    let mut events = Vec::new();
+    let mut verifier = EnvelopeVerifier::default();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = (&mut reader)
+            .take((MAX_ENVELOPE_BYTES + 2) as u64)
+            .read_until(b'\n', &mut line)
+            .map_err(|e| Error::new("filesystem", e.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        if line.len() > MAX_ENVELOPE_BYTES + 1 {
+            return Err(Error::new("size", "complete envelope exceeds 20 KiB"));
+        }
+        let stored = line.strip_suffix(b"\n").unwrap_or(&line);
+        events.push(verifier.verify_stored(stored)?);
+    }
+    let export = export_jsonl(&events)?;
+    if export.is_empty() {
+        return Ok(Vec::new());
+    }
+    export[..export.len() - 1]
+        .split(|b| *b == b'\n')
+        .map(|line| verifier.verify_stored(line))
+        .collect()
+}
 pub fn import_jsonl(bytes: &[u8]) -> Result<Vec<VerifiedEnvelope>> {
     if bytes.is_empty() {
         return Ok(Vec::new());
