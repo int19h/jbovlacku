@@ -1093,7 +1093,7 @@ Updating place rows with unchanged field values preserves each retained editor's
 A reference rewrite changes the affected field's value and starts a new history at the document end.
 Undo in that field cannot restore references that the rewrite removed or renumbered.
 Pointer focus and an existing native selection keep their chosen caret position.
-An editor repairs its native caret only after its retained wrapper moves, when no pointer or native selection chooses another position.
+For a retained field whose value did not change, an editor repairs its native caret only after its wrapper moves, when no pointer or native selection chooses another position. After a reference rewrite, the editor instead puts the recorded document-end caret into the browser selection when the reader tabs in, unless the reader has since chosen a selection or code has adopted the browser selection.
 
 If an authoring page, profile editor, rafsi editor, or report editor fails to load, show an accessible error with a heading and Reload.
 Keep saved drafts unchanged. A report action permits only one pending editor load.

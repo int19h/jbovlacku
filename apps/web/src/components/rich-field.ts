@@ -372,8 +372,10 @@ export function richField(label: string, options: RichFieldOptions) {
   let current = options.value;
   let moved = false;
   let resetSelection: { doc: EditorNode; selection: Selection } | null = null;
-  // The same intended caret, kept until a reader caret choice supersedes
-  // it, so selection syncs do not adopt a browser-adjusted caret instead.
+  // The same intended caret, kept until a reader caret choice, or a
+  // selection change made by other code that adopts the browser
+  // selection, supersedes it, so selection syncs do not adopt a
+  // browser-adjusted caret instead.
   let resetGuard: { doc: EditorNode; selection: Selection } | null = null;
   let pointerFocus = false;
   let tabArrival = false;
@@ -1157,8 +1159,19 @@ export function richField(label: string, options: RichFieldOptions) {
         // Put it in the browser now instead of leaving it to the
         // focus-time write ProseMirror schedules about 20 ms later,
         // which a first keystroke can beat and then type at the
-        // adjusted caret.
-        if (tabArrival && resetGuard?.doc === view.state.doc && native) {
+        // adjusted caret. The adjusted caret is collapsed; a
+        // non-collapsed selection inside the field is one the reader
+        // made after the rewrite (for example with Find), so leave it
+        // alone and let it release the guard as it reaches state.
+        if (
+          tabArrival &&
+          resetGuard?.doc === view.state.doc &&
+          native?.isCollapsed &&
+          native.anchorNode &&
+          native.focusNode &&
+          input.contains(native.anchorNode) &&
+          input.contains(native.focusNode)
+        ) {
           try {
             const anchor = view.domAtPos(resetGuard.selection.anchor);
             const head = view.domAtPos(resetGuard.selection.head);

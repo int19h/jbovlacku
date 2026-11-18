@@ -1233,8 +1233,10 @@ for (const route of ["helper", "plain", "blur"] as const) {
     });
     await page.waitForTimeout(60);
     await page.getByRole("button", { name: "Rewrite", exact: true }).click();
-    // Wait until the recorded caret (end of the last paragraph) is the
-    // browser caret, however long the focus restore takes.
+    // Wait until the expected browser caret settles, however long the
+    // focus restore takes: in Chromium the recorded caret at the end
+    // of the last paragraph; in Firefox the caret at the end of the
+    // first rewritten paragraph, which is where that engine leaves it.
     await expect
       .poll(() =>
         field.evaluate((node) => {
@@ -1474,6 +1476,66 @@ test.describe("touch input", () => {
         ["alpha beta"],
       ]);
   });
+});
+
+test("a range the reader selected before tabbing in survives a rewrite", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { richField } = await import(
+      String("/src/components/rich-field.ts"),
+    );
+    const field = richField("Find field", { value: [["alpha beta"]] });
+    const button = document.createElement("button");
+    button.textContent = "Rewrite without focusing";
+    document.body.replaceChildren(button, field.wrapper);
+    button.onclick = () => {
+      field.input.value = [["reset prefix tail"], ["alpha beta"]] as never;
+    };
+  });
+  const field = page.getByRole("textbox", {
+    name: "Find field",
+    exact: true,
+  });
+  await field.focus();
+  await field.evaluate((node) => {
+    const text = node.querySelector(".rich-literal")!.firstChild!;
+    getSelection()!.setBaseAndExtent(text, 4, text, 4);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.waitForTimeout(60);
+  await page
+    .getByRole("button", { name: "Rewrite without focusing", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Rewrite without focusing", exact: true })
+    .focus();
+  await page.waitForTimeout(40);
+  // Playwright cannot drive the browser Find bar. Select the word with
+  // the DOM Selection API, which is the selection state the Find
+  // sequence leaves behind. Setting a selection focuses the editable
+  // in the browser, so focus the button again in the same script;
+  // the range stays and the field stays blurred.
+  await page.evaluate(() => {
+    const node = document.querySelector('[role="textbox"]')!;
+    const text = node.querySelector(".rich-literal")!.firstChild!;
+    const start = text.textContent!.indexOf("prefix");
+    getSelection()!.setBaseAndExtent(
+      text,
+      start,
+      text,
+      start + "prefix".length,
+    );
+    [...document.querySelectorAll("button")]
+      .find((b) => b.textContent === "Rewrite without focusing")!
+      .focus();
+  });
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("x");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["reset x tail"], ["alpha beta"]]);
 });
 
 test("trusted line keys replace the paragraph after a slow Home handler", async ({
