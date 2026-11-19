@@ -125,7 +125,7 @@ fn main() {
     let options = jvc_state::EvaluationOptions {
         selected_view,
         import_selections,
-        overlay,
+        overlay: overlay.map(Into::into),
         limits: limits.into(),
     };
     let mut prepared = jvc_state::PreparedEvaluationInput::new(options);

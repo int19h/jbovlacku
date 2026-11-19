@@ -224,7 +224,7 @@ impl Fixture {
                 let mut delta = PreparedEvaluationInput::new(EvaluationOptions {
                     selected_view: input.selected_view.clone(),
                     import_selections: input.import_selections.clone(),
-                    overlay: input.overlay.clone(),
+                    overlay: input.overlay.clone().map(Into::into),
                     limits: input.limits.clone(),
                 });
                 delta.add_record(e, input.bodies.get(e.id()).map(Vec::as_slice));
@@ -1897,7 +1897,7 @@ fn assert_checkpoint_roundtrip_and_append(
     let options = EvaluationOptions {
         selected_view: input.selected_view.clone(),
         import_selections: input.import_selections.clone(),
-        overlay: input.overlay.clone(),
+        overlay: input.overlay.clone().map(Into::into),
         limits: input.limits.clone(),
     };
     let mut delta_full = PreparedEvaluationInput::new(options.clone());
@@ -1942,7 +1942,7 @@ fn evaluate_observed(input: &EvaluationInput) -> Evaluation {
     let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
         selected_view: input.selected_view.clone(),
         import_selections: input.import_selections.clone(),
-        overlay: input.overlay.clone(),
+        overlay: input.overlay.clone().map(Into::into),
         limits: input.limits.clone(),
     });
     for event in &input.events {
@@ -2032,7 +2032,7 @@ fn incremental_record_growth_with_carried_account_history_keeps_resource_results
         let mut delta = PreparedEvaluationInput::new(EvaluationOptions {
             selected_view: f.input.selected_view.clone(),
             import_selections: f.input.import_selections.clone(),
-            overlay: f.input.overlay.clone(),
+            overlay: f.input.overlay.clone().map(Into::into),
             limits: f.input.limits.clone(),
         });
         let event = f

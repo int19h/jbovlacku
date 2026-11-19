@@ -345,7 +345,7 @@ fn private_weights_use_retained_scopes_and_clear_fallback() {
             {"issuer":"a0","subject":"a1","scope":fr,"value":"heed","weight":{"numerator":3,"denominator":4}},
             {"issuer":"a0","subject":"a1","scope":{"kind":"definition","word":"other","language":"en"},"value":"heed","weight":{"numerator":2,"denominator":3}},
             {"issuer":"a0","subject":"a2","scope":broad,"value":"heed","weight":{"numerator":2,"denominator":3}}
-        ]}));
+        ]}).into());
         let mut context = Context {
             kind: "definition".into(),
             word: "word".into(),
@@ -361,7 +361,7 @@ fn private_weights_use_retained_scopes_and_clear_fallback() {
         context.language = Some("fr".into());
         assert_eq!(shares(&e, &context), expected([9, 8, 12], 29));
         context.language = Some("en".into());
-        e.overlay.as_mut().unwrap()["trust"]
+        std::rc::Rc::make_mut(e.overlay.as_mut().unwrap())["trust"]
             .as_array_mut()
             .unwrap()
             .push(json!({"issuer":"a0","subject":"a1","scope":en,"value":"clear","weight":null}));
@@ -386,7 +386,7 @@ fn continuity_aliases_keep_weight_conflicts_and_both_block_sources() {
             json!({"version":2,"public_shun_issuer":"old-root","root_changes":[],"blocked":[{"identity":"old-subject","scope":broad}],"trust":[
                 {"issuer":"old-root","subject":"old-subject","scope":broad,"value":"heed","weight":{"numerator":1,"denominator":2}},
                 {"issuer":"a0","subject":"a1","scope":broad,"value":"heed","weight":{"numerator":2,"denominator":3}}
-            ]}),
+            ]}).into(),
         );
         let context = Context {
             kind: "definition".into(),
@@ -400,14 +400,16 @@ fn continuity_aliases_keep_weight_conflicts_and_both_block_sources() {
         assert!(graph.rows.iter().flatten().all(|edge| edge.to != a1));
         // Removing both blocks leaves the conflicting private weights in effect.
         e.trust[0].values = BTreeSet::from(["heed".into()]);
-        e.overlay.as_mut().unwrap()["blocked"] = json!([]);
+        std::rc::Rc::make_mut(e.overlay.as_mut().unwrap())["blocked"] = json!([]);
         assert_eq!(
             shares(&e, &context),
             vec![("a2".into(), jvc_rank::rational(1, 1))]
         );
         // Agreeing alias weights count once and normalize before a private block.
-        e.overlay.as_mut().unwrap()["trust"][1]["weight"] = json!({"numerator":1,"denominator":2});
-        e.overlay.as_mut().unwrap()["blocked"] = json!([{"identity":"old-subject","scope":broad}]);
+        std::rc::Rc::make_mut(e.overlay.as_mut().unwrap())["trust"][1]["weight"] =
+            json!({"numerator":1,"denominator":2});
+        std::rc::Rc::make_mut(e.overlay.as_mut().unwrap())["blocked"] =
+            json!([{"identity":"old-subject","scope":broad}]);
         assert_eq!(
             shares(&e, &context),
             vec![("a2".into(), jvc_rank::rational(2, 3))]
@@ -549,14 +551,12 @@ fn generated_exact_contexts_and_rankings_match_main_bytes() {
                     None
                 } else {
                     Some(
-                        json!({"version":version,"public_shun_issuer":"old-a0","root_changes":[],"trust":private,"blocked":[{"identity":"old-a1","scope":scopes[0]}]}),
+                        json!({"version":version,"public_shun_issuer":"old-a0","root_changes":[],"trust":private,"blocked":[{"identity":"old-a1","scope":scopes[0]}]}).into(),
                     )
                 };
                 // Version 1 has no selected public issuer.
                 if version == 1 {
-                    e.overlay
-                        .as_mut()
-                        .unwrap()
+                    std::rc::Rc::make_mut(e.overlay.as_mut().unwrap())
                         .as_object_mut()
                         .unwrap()
                         .remove("public_shun_issuer");

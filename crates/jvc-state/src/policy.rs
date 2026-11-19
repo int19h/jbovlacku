@@ -1898,7 +1898,8 @@ mod tests {
         evaluation.policy =
             Some(json!({"calculation":"simple-routes-bounds-v1","roots":[],"excluded":[]}).into());
         evaluation.overlay = Some(
-            json!({"version":2,"public_shun_issuer":issuer,"root_changes":[],"trust":[],"blocked":[]}),
+            json!({"version":2,"public_shun_issuer":issuer,"root_changes":[],"trust":[],"blocked":[]})
+                .into(),
         );
         evaluation.trust = [2, 3]
             .into_iter()

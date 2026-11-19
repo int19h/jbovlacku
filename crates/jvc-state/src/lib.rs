@@ -50,8 +50,9 @@ pub struct EvaluationInput {
 pub struct EvaluationOptions {
     pub selected_view: String,
     pub import_selections: BTreeMap<String, Vec<String>>,
+    /// Shared, so that cloning options or a state copies one pointer.
     #[serde(deserialize_with = "Option::deserialize")]
-    pub overlay: Option<Value>,
+    pub overlay: Option<std::rc::Rc<Value>>,
     pub limits: Limits,
 }
 impl EvaluationOptions {
@@ -415,7 +416,9 @@ pub struct Evaluation {
     pub available: bool,
     pub reasons: BTreeSet<String>,
     results: std::rc::Rc<EvaluationResults>,
-    pub overlay: Option<Value>,
+    /// Shared with the options it came from, so that cloning a state
+    /// copies one pointer.
+    pub overlay: Option<std::rc::Rc<Value>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -488,7 +491,7 @@ impl<'de> Deserialize<'de> for Evaluation {
             #[serde(deserialize_with = "Option::deserialize")]
             policy: Option<CompactValue>,
             #[serde(deserialize_with = "Option::deserialize")]
-            overlay: Option<Value>,
+            overlay: Option<std::rc::Rc<Value>>,
             policies: Vec<CompactValue>,
             policy_history: BTreeMap<String, CompactValue>,
             selections: BTreeMap<String, BTreeSet<String>>,
@@ -517,7 +520,11 @@ impl<'de> Deserialize<'de> for Evaluation {
     }
 }
 impl Evaluation {
-    pub fn with_overlay(&self, overlay: Option<Value>, suspended: impl Fn(&str) -> bool) -> Self {
+    pub fn with_overlay(
+        &self,
+        overlay: Option<std::rc::Rc<Value>>,
+        suspended: impl Fn(&str) -> bool,
+    ) -> Self {
         let overlay_reason = self.reasons.contains("invalid_overlay")
             || self.reasons.contains("public_shun_issuer_unavailable");
         let mut result = Self {
@@ -571,7 +578,7 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
     let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
         selected_view: input.selected_view.clone(),
         import_selections: input.import_selections.clone(),
-        overlay: input.overlay.clone(),
+        overlay: input.overlay.clone().map(std::rc::Rc::new),
         limits: input.limits.clone(),
     });
     for event in &input.events {

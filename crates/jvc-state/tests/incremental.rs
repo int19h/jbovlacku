@@ -188,7 +188,7 @@ fn options(input: &EvaluationInput) -> EvaluationOptions {
     EvaluationOptions {
         selected_view: input.selected_view.clone(),
         import_selections: input.import_selections.clone(),
-        overlay: input.overlay.clone(),
+        overlay: input.overlay.clone().map(Into::into),
         limits: input.limits.clone(),
     }
 }

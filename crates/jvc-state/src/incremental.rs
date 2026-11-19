@@ -41,7 +41,7 @@ pub struct JudgmentChanges {
 struct SavedOptions<'a> {
     selected_view: &'a str,
     import_selections: &'a BTreeMap<String, Vec<String>>,
-    overlay: &'a Option<Value>,
+    overlay: &'a Option<std::rc::Rc<Value>>,
     limits: &'a Limits,
 }
 
@@ -111,7 +111,7 @@ impl EvaluatedState {
         let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
             selected_view: input.selected_view.clone(),
             import_selections: input.import_selections.clone(),
-            overlay: input.overlay.clone(),
+            overlay: input.overlay.clone().map(std::rc::Rc::new),
             limits: input.limits.clone(),
         });
         for event in &input.events {
@@ -213,6 +213,7 @@ impl EvaluatedState {
         overlay: Option<Value>,
         rebuild: impl FnOnce(&mut Self),
     ) -> Self {
+        let overlay = overlay.map(std::rc::Rc::new);
         let mut state = self.clone();
         state.prepared.options.overlay = overlay.clone();
         if self.evaluation.reasons.contains("resource_unavailable") {
@@ -409,7 +410,7 @@ impl EvaluatedState {
     }
     #[doc(hidden)]
     pub fn replace_evaluation_for_test(&mut self, evaluation: Evaluation, overlay: Option<Value>) {
-        self.prepared.options.overlay = overlay;
+        self.prepared.options.overlay = overlay.map(std::rc::Rc::new);
         self.evaluation = evaluation;
         *self.ranking_index.borrow_mut() = None;
     }
@@ -699,8 +700,12 @@ impl EvaluatedState {
                 Ok(work) => {
                     let node = added.remove(&id).unwrap();
                     appended_any = true;
-                    self.append(node, work);
+                    let appended = self.append(node, work);
                     self.statistics.incremental_records += 1;
+                    if !appended {
+                        rebuild_reason = Some("register_members".into());
+                        break;
+                    }
                     if self.graph.as_ref().is_some_and(|g| g.resource.get()) {
                         rebuild_reason = Some("history_resource_unavailable".into());
                         break;
@@ -1046,7 +1051,10 @@ impl EvaluatedState {
         Ok(units.total)
     }
 
-    fn append(&mut self, node: Node, work: usize) {
+    /// Applies an append that `fast_work` priced. Returns `false` when
+    /// the record turns out to need the register member walk; the
+    /// caller then rebuilds, which discards the partial update.
+    fn append(&mut self, node: Node, work: usize) -> bool {
         let graph = self.graph.as_mut().unwrap();
         let prepared_nodes = std::mem::take(&mut self.prepared.nodes);
         debug_assert!(std::rc::Rc::ptr_eq(&graph.nodes, &prepared_nodes));
@@ -1179,41 +1187,11 @@ impl EvaluatedState {
                 }
                 (BTreeSet::from([node.id.clone()]), amount, new_member_work)
             } else {
-                // General path: run maxima over the same member set
-                // a full evaluation uses for this register, so its
-                // (now cap-charged) union work and the resulting
-                // heads match a full build exactly.
-                let members: BTreeSet<String> = graph
-                    .nodes
-                    .values()
-                    .filter(|n| {
-                        n.semantic
-                            && n.kind == "judgment.set"
-                            && graph.actor(&n.issuer) == node.issuer
-                            && n.action.view().index("target").as_str() == Some(target)
-                            && graph.retained(&n.id)
-                            && !graph.suspended(&n.issuer)
-                            && graph.own_complete(&n.id)
-                            && !self.evaluation.receipts[&n.id]
-                                .reasons
-                                .contains("invalid_target")
-                            && !self.evaluation.receipts[&n.id]
-                                .reasons
-                                .contains("target_pending")
-                            && !self.evaluation.receipts[&n.id]
-                                .reasons
-                                .contains("account_binding_unavailable")
-                    })
-                    .map(|n| n.id.clone())
-                    .collect();
-                let charge_before = graph.ancestry.bytes();
-                let work_before = graph.budget.get();
-                let heads = graph.maxima(members, false);
-                (
-                    heads,
-                    graph.ancestry.bytes() - charge_before,
-                    work_before - graph.budget.get(),
-                )
+                // Otherwise a full evaluation's maxima runs over every
+                // member of the register, and finding the members walks
+                // every record. That walk is not part of this append's
+                // price, so the advance rebuilds instead, which charges it.
+                return false;
             };
             let values: BTreeSet<String> = heads
                 .iter()
@@ -1266,6 +1244,7 @@ impl EvaluatedState {
         }
         self.remaining_work = graph.budget.get();
         add_unresolved_node_references_cow(&node, &self.prepared.nodes, &mut self.unresolved);
+        true
     }
 
     pub fn checkpoint(&self, binding: &str) -> jvc_core::Result<Vec<u8>> {
@@ -3379,7 +3358,7 @@ mod rebuild_tests {
         ] {
             let mut complete = base();
             if unavailable_reason == "invalid_overlay" {
-                complete.options.overlay = Some(json!({}));
+                complete.options.overlay = Some(json!({}).into());
             } else {
                 complete.options.limits.traversal = Some(1);
             }
@@ -4272,7 +4251,7 @@ mod rebuild_tests {
                     evaluate_graph(&next.prepared.options, next.graph.as_ref().unwrap());
             });
             let mut options = state.prepared.options.clone();
-            options.overlay = Some(overlay);
+            options.overlay = Some(overlay.into());
             let expected = evaluate_graph(&options, state.graph.as_ref().unwrap());
             assert_eq!(actual.evaluation(), &expected);
             assert!(!actual.evaluation.reasons.contains("invalid_overlay"));
@@ -4300,7 +4279,7 @@ mod rebuild_tests {
             "public_shun_issuer":null
         });
         let mut delta = PreparedEvaluationInput::new(options);
-        delta.options.overlay = Some(overlay.clone());
+        delta.options.overlay = Some(overlay.clone().into());
         let child = parent.clone().advance(delta, &[]);
         assert!(child.statistics().rebuilt);
         assert_eq!(
@@ -4317,7 +4296,7 @@ mod rebuild_tests {
         assert_eq!(parent.checkpoint("projection").unwrap(), parent_checkpoint);
 
         let (mut full, _, _) = projection_fixture();
-        full.options.overlay = Some(overlay);
+        full.options.overlay = Some(overlay.into());
         assert_matches_full(&child, &full);
     }
 
@@ -5405,6 +5384,67 @@ mod rebuild_tests {
         assert_matches_full(&advanced, &prepared);
     }
 
+    /// When a register head lies outside the new judgment's closure, a
+    /// full evaluation finds the register members by walking every
+    /// record. The append does not price that walk, so it rebuilds
+    /// instead of walking. The fast path's own checks admit no such
+    /// head from signed input (its parents cover the issuer's whole
+    /// block, and a single-key actor has no other member), so the test
+    /// places one in the stored register.
+    #[test]
+    fn register_head_outside_new_closure_rebuilds_instead_of_walking_records() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let issuer = identity_from_seed(&[8u8; 32]);
+        let first = format!("jve1:{:064x}", 977_000usize);
+        prepared.add_host_verified_record(host(
+            first.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        ));
+        for i in 0..64usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 978_000 + i),
+                &identity_from_seed(&[9u8; 32]),
+                vec![],
+                json!({"kind":"identity.merge"}),
+            ));
+        }
+        let mut state = unshared(&prepared).into_state();
+        let key = format!("{issuer}|judgment|{publication_id}");
+        assert_eq!(
+            state.evaluation.registers[&key].heads,
+            BTreeSet::from([first.clone()])
+        );
+        // A stored head outside every closure of the issuer.
+        state
+            .evaluation
+            .registers
+            .get_mut(&key)
+            .unwrap()
+            .heads
+            .insert(publication_id.clone());
+        let next = host(
+            format!("jve1:{:064x}", 977_001usize),
+            &issuer,
+            vec![first],
+            json!({"kind":"judgment.set","target":publication_id,"value":"curse"}),
+        );
+        prepared.add_host_verified_record(next.clone());
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(next);
+        let advanced = state.advance(delta, &[]);
+        assert!(advanced.statistics().rebuilt);
+        assert_eq!(
+            advanced.statistics().reason.as_deref(),
+            Some("register_members")
+        );
+        assert_matches_full(&advanced, &prepared);
+    }
+
     /// A register head from another issuer whose actor is this
     /// issuer (a judgment by the successor key) is not an ancestor
     /// of the new record, so the append keeps the general
@@ -5874,7 +5914,7 @@ mod rebuild_tests {
     #[test]
     fn malformed_overlay_bound_errors_and_invalid_overlay_counts_are_ignored() {
         let mut state = base().into_state();
-        state.evaluation.overlay = Some(json!({"trust":[{"issuer":1}]}));
+        state.evaluation.overlay = Some(json!({"trust":[{"issuer":1}]}).into());
         state.evaluation.reasons.remove("invalid_overlay");
         assert_eq!(
             state.ranking_index_bound().unwrap_err().code,
@@ -7263,7 +7303,7 @@ mod rebuild_tests {
         let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
             selected_view: view.id().into(),
             import_selections: BTreeMap::from([(sel_hash, sel_ids)]),
-            overlay: Some(overlay),
+            overlay: Some(overlay.into()),
             limits: Limits {
                 events: Some(500),
                 traversal: Some(10_000),
@@ -7709,7 +7749,7 @@ mod rebuild_tests {
 
         let build_with_overlay = |overlay: Option<Value>, traversal: Option<usize>| {
             let mut prepared = base();
-            prepared.options.overlay = overlay;
+            prepared.options.overlay = overlay.map(Into::into);
             prepared.options.limits.traversal = traversal;
             for i in 0..20usize {
                 prepared.add_host_verified_record(host(
@@ -10017,7 +10057,7 @@ mod rebuild_tests {
                             })),
                             _ => Some(json!({"version": 3})),
                         };
-                        current_options.overlay = new_overlay.clone();
+                        current_options.overlay = new_overlay.clone().map(Into::into);
                         if (next_u64() & 1) == 0 {
                             state = state.with_overlay(new_overlay);
                         } else {
@@ -10617,7 +10657,7 @@ mod rebuild_tests {
         );
         let sel_opts = EvaluationOptions {
             selected_view: sel_view.id().into(),
-            overlay: Some(json!({})),
+            overlay: Some(json!({}).into()),
             import_selections: BTreeMap::from([(sel_digest, sel_ids)]),
             limits: Limits::default(),
         };
@@ -10726,7 +10766,7 @@ mod rebuild_tests {
                 };
                 let opts = EvaluationOptions {
                     selected_view: no_import_view.id().into(),
-                    overlay: Some(json!({})),
+                    overlay: Some(json!({}).into()),
                     import_selections: BTreeMap::new(),
                     limits: Limits::default(),
                 };
@@ -11425,7 +11465,7 @@ mod rebuild_tests {
         let mut invalid_input = PreparedEvaluationInput::new(EvaluationOptions {
             selected_view: view.id().into(),
             import_selections: BTreeMap::from([(digest, ids)]),
-            overlay: Some(json!({})),
+            overlay: Some(json!({}).into()),
             limits: Limits::default(),
         });
         invalid_input.add_record(&view, view_body.as_deref());

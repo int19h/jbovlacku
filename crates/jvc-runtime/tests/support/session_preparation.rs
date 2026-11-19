@@ -47,7 +47,7 @@ fn export_with_policy(
 ) {
     let mut input = jvc_state::PreparedEvaluationInput::new(jvc_state::EvaluationOptions {
         selected_view: f.selected_view.clone(),
-        overlay: f.overlay.clone(),
+        overlay: f.overlay.clone().map(Into::into),
         import_selections: BTreeMap::new(),
         limits: jvc_state::Limits::default(),
     });

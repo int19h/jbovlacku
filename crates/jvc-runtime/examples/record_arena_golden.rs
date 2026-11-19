@@ -50,7 +50,7 @@ fn options(wire: &Wire, limits: Limits) -> EvaluationOptions {
     EvaluationOptions {
         selected_view: wire.selected_view.clone(),
         import_selections: wire.import_selections.clone(),
-        overlay: wire.overlay.clone(),
+        overlay: wire.overlay.clone().map(Into::into),
         limits,
     }
 }

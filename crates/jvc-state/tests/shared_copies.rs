@@ -396,3 +396,40 @@ fn exhausted_empty_advance_skips_selection_that_was_never_admitted() {
         }
     }
 }
+
+#[test]
+fn state_clone_does_not_copy_the_overlay() {
+    // A fork clones the state, and an overlay change clones it before
+    // it sets the new overlay. Neither charges anything, so neither may
+    // copy the old overlay, whatever its size.
+    let mut counts = Vec::new();
+    for entries in [1usize, 4096] {
+        let (view, body) = view(json!([]));
+        let mut options = options(&view);
+        let blocked: Vec<Value> = (0..entries)
+            .map(|i| json!({"identity": format!("entry-{i}"), "scope": {"kind": "all"}}))
+            .collect();
+        options.overlay = Some(
+            json!({
+                "version": 1, "base_view": view.id(), "root_changes": [],
+                "trust": [], "blocked": blocked, "work": null
+            })
+            .into(),
+        );
+        let mut prepared = PreparedEvaluationInput::new(options);
+        prepared.add_record(&view, Some(&body));
+        let state = prepared.into_state();
+        let (fork, fork_count) = allocations(|| state.clone());
+        let (sibling, overlay_count) = allocations(|| state.with_overlay(None));
+        assert_eq!(fork.consumed_work(), state.consumed_work());
+        assert_eq!(sibling.consumed_work(), state.consumed_work());
+        eprintln!(
+            "entries={entries} clone_allocations={fork_count} overlay_allocations={overlay_count}"
+        );
+        counts.push((fork_count, overlay_count));
+    }
+    assert!(
+        counts[1].0 <= counts[0].0 + 8 && counts[1].1 <= counts[0].1 + 8,
+        "allocations at 1 and 4096 overlay entries: {counts:?}"
+    );
+}
