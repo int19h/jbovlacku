@@ -15,9 +15,9 @@ concurrency:
 jobs:
   rust-native:
     runs-on: ubuntu-24.04
-    # In 20 recent runs this part took 16 to 48 minutes, with a median of 25.
-    # The Rust test step alone took 14 to 46 minutes.
-    timeout-minutes: 60
+    # In 21 recent attempts this part took 16 to 53 minutes, with a median of 25.
+    # The Rust test step alone took 14 to 50 minutes.
+    timeout-minutes: 75
     env:
       CARGO_BUILD_JOBS: "2"
       CARGO_TARGET_DIR: /build/jbovlacku/target
@@ -63,7 +63,7 @@ jobs:
   wasm-and-browser-parity:
     needs: rust-native
     runs-on: ubuntu-24.04
-    # In 20 recent runs this part took 5 to 15 minutes, with a median of 8.
+    # In 21 recent attempts this part took 5 to 15 minutes, with a median of 7.
     timeout-minutes: 30
     env:
       CARGO_BUILD_JOBS: "2"
@@ -114,7 +114,7 @@ jobs:
 
   typescript-and-applications:
     runs-on: ubuntu-24.04
-    # In 20 recent runs this part took 9 to 22 minutes, with a median of 16.
+    # In 21 recent attempts this part took 9 to 22 minutes, with a median of 15.
     timeout-minutes: 35
     env:
       CARGO_BUILD_JOBS: "2"
