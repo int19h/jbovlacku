@@ -3565,6 +3565,16 @@ mod rebuild_tests {
         HostVerifiedRecord::extract_with(&id, &header, jvc_core::BodyAvailability::Absent, |_| ()).0
     }
 
+    /// A copy of `prepared` with its own node map. A state built from a
+    /// plain clone shares the map with `prepared`, so its first append
+    /// copies and charges the map; a state built from this copy appends
+    /// in place, as a full evaluation of the same records would price it.
+    fn unshared(prepared: &PreparedEvaluationInput) -> PreparedEvaluationInput {
+        let mut copy = prepared.clone();
+        copy.nodes = std::rc::Rc::new(BTreeMap::clone(&prepared.nodes));
+        copy
+    }
+
     fn remaining_work(state: &EvaluatedState) -> usize {
         let bytes = state.checkpoint("property").unwrap();
         let value: Value = serde_json::from_slice(&bytes).unwrap();
@@ -4499,7 +4509,7 @@ mod rebuild_tests {
             assert_matches_full(&state, &full);
             (full, state)
         };
-        let state = prepared.clone().into_state();
+        let state = unshared(&prepared).into_state();
         let (prepared, state) = append(&prepared, state, 2000, vec![tip.clone()]);
         assert!(!state.statistics().rebuilt);
         let (prepared, state) = append(&prepared, state, 1500, vec![tip.clone()]);
@@ -5381,7 +5391,7 @@ mod rebuild_tests {
         }
         // Rebuild from the records and append: the result matches a
         // full evaluation.
-        let rebuilt = prepared.clone().into_state();
+        let rebuilt = unshared(&prepared).into_state();
         let next = host(
             format!("jve1:{:064x}", 975_002usize),
             &issuer,
@@ -6316,7 +6326,7 @@ mod rebuild_tests {
         prepared: &PreparedEvaluationInput,
         record: &HostVerifiedRecord,
     ) -> (EvaluatedState, EvaluatedState, PreparedEvaluationInput) {
-        let state = prepared.clone().into_state();
+        let state = unshared(prepared).into_state();
         let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
         delta.add_host_verified_record(record.clone());
         let fast = state.advance(delta, &[]);
@@ -9772,7 +9782,7 @@ mod rebuild_tests {
                 .iter()
                 .map(|(id, n)| (id.clone(), HostVerifiedRecord { node: n.clone() }))
                 .collect();
-            let base_open = start_prep.clone().into_state();
+            let base_open = unshared(start_prep).into_state();
             let base_cost = base_open.consumed_work().max(20);
             let mut state = base_open;
             let mut append_seq = 0usize;
@@ -11179,7 +11189,7 @@ mod rebuild_tests {
             );
 
             // 1. Single-owner fast append (no live fork) charges only the 9-unit incremental delta.
-            let unshared_state = prepared.clone().into_state();
+            let unshared_state = unshared(&prepared).into_state();
             let before = unshared_state.consumed_work();
             let mut delta_unshared = PreparedEvaluationInput::new(prepared.options.clone());
             delta_unshared.add_host_verified_record(judgment.clone());
