@@ -983,22 +983,30 @@ fn overlay_only_rebuilds_policy_resource_results_before_applying_an_overlay() {
 
 #[test]
 fn overlay_only_rebuilds_late_resource_results_and_keeps_full_overlay_reasons() {
+    // The latest refusal: the largest limit below the work that the
+    // fixture needs. A refused result carries only the refusal reason,
+    // however late the budget ran out.
     let mut f = suspended_fixture();
-    for traversal in 0..1000 {
-        f.limits.traversal = Some(traversal);
-        f.overlay = None;
-        let state = jvc_runtime::evaluate_bytes(&f.bytes()).unwrap();
-        if state["reasons"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("resource_unavailable"))
-            && !state["publications"].as_object().unwrap().is_empty()
-        {
-            assert_resource_overlays(&mut f);
-            return;
-        }
-    }
-    panic!("no late resource return found");
+    f.overlay = None;
+    let late = (0..1000)
+        .rev()
+        .find(|&traversal| {
+            f.limits.traversal = Some(traversal);
+            let state = jvc_runtime::evaluate_bytes(&f.bytes()).unwrap();
+            let refused = state["reasons"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("resource_unavailable"));
+            if refused {
+                assert_eq!(state["reasons"], json!(["resource_unavailable"]));
+                assert!(state["publications"].as_object().unwrap().is_empty());
+                assert!(state["receipts"].as_object().unwrap().is_empty());
+            }
+            refused
+        })
+        .expect("a refusing limit below 1000");
+    f.limits.traversal = Some(late);
+    assert_resource_overlays(&mut f);
 }
 
 #[test]
