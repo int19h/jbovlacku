@@ -673,7 +673,11 @@ export function sourceOptions(
   for (const entry of cached?.entries ?? []) {
     const spelling = entry.word.spelling;
     const listed =
-      !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
+      !wholeWord &&
+      "issuer" in entry &&
+      Array.isArray((entry as PackageEntryV2).rafsi)
+        ? (entry as PackageEntryV2).rafsi
+        : [];
     const plain = stripAcuteAccents(spelling);
     if (wholeWord && plain !== part.text) continue;
     if (

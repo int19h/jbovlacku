@@ -221,9 +221,8 @@ export function validateCachedPackage(
  * Checks a saved package before a page reads its rows on the main thread.
  * The worker checks packages with `validateCachedPackage`; pages that build
  * inventories or word indexes from saved rows use this check instead of
- * reading fields first. It checks every row with `validateEntry` and the
- * package fields those readers use. It does not require the row order the
- * worker requires, so a package the readers can use keeps working. A bad
+ * reading fields first. It checks the package fields and row fields those
+ * readers use, so a package the readers can use keeps working. A bad
  * package or row raises the documented invalid-package error.
  */
 export function checkSavedPackage(
@@ -253,24 +252,58 @@ export function checkSavedPackage(
   )
     throw invalidPackage();
   const pkg = value as CachedPackage & { search_view?: string };
+  // Rows are checked for the fields the main-thread readers read: a word
+  // spelling that names a word, its language and classification, its
+  // glosses and text, its event, and a rafsi list when one is present.
+  // A package whose rows carry extra version 2 fields beside a version 1
+  // marker still reads the same way it did before this check, so those
+  // fields do not reject it here. The worker keeps the full shape check.
   for (const entry of pkg.entries) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry))
       throw invalidPackage();
-    const entryLanguage =
-      language ??
-      (typeof (entry as { language?: unknown }).language === "string"
-        ? (entry as { language: string }).language
-        : undefined);
-    if (!entryLanguage) throw invalidPackage();
-    const version =
-      pkg.version === 2 ||
-      (pkg.version === undefined &&
-        ("issuer" in entry || "search_status" in entry))
-        ? 2
-        : 1;
-    validateEntry(entry, entryLanguage, version, pkg.search_view);
-    if (pkg.search_view && typeof entry.search_status !== "string")
+    const word = (entry as { word?: unknown }).word as {
+      language?: unknown;
+      spelling?: unknown;
+    } | null;
+    if (
+      !word ||
+      typeof word !== "object" ||
+      word.language !== "jbo" ||
+      typeof word.spelling !== "string" ||
+      typeof (entry as { language?: unknown }).language !== "string" ||
+      !languageTag((entry as { language: string }).language) ||
+      (language !== undefined &&
+        (entry as { language: string }).language !== language) ||
+      !(entry as { classification?: unknown }).classification ||
+      typeof (entry as { classification?: unknown }).classification !==
+        "object" ||
+      typeof (entry as { classification: { kind?: unknown } }).classification
+        .kind !== "string" ||
+      !Array.isArray((entry as { glosses?: unknown }).glosses) ||
+      ((entry as { glosses: unknown[] }).glosses as unknown[]).some(
+        (gloss) =>
+          !gloss ||
+          typeof gloss !== "object" ||
+          typeof (gloss as { text?: unknown }).text !== "string",
+      ) ||
+      typeof (entry as { plain_text?: unknown }).plain_text !== "string" ||
+      typeof (entry as { event?: unknown }).event !== "string" ||
+      !eventId((entry as { event: string }).event) ||
+      ((entry as { rafsi?: unknown }).rafsi !== undefined &&
+        (!Array.isArray((entry as { rafsi?: unknown }).rafsi) ||
+          ((entry as unknown as { rafsi: unknown[] }).rafsi as unknown[]).some(
+            (rafsi) => typeof rafsi !== "string",
+          ))) ||
+      (pkg.search_view &&
+        "search_status" in entry &&
+        typeof entry.search_status !== "string")
+    )
       throw invalidPackage();
+    try {
+      wordId({ language: "jbo", spelling: word.spelling as string });
+    } catch {
+      throw invalidPackage();
+    }
   }
   return pkg;
 }
