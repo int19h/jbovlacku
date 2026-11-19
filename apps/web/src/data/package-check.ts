@@ -223,12 +223,17 @@ const checkedPackages = new WeakMap<object, Set<string>>();
 const failedPackages = new WeakMap<object, Set<string>>();
 /**
  * Checks a saved package before a page reads its rows on the main thread.
- * This runs the same full validation the worker uses
- * (`validateCachedPackage`), so whatever the worker would reject never
- * reaches a page. The result is remembered per package object and
- * language: the store returns the same object until the package changes,
- * so each saved package is checked once, not once per reader or edit.
- * A bad package or row raises the documented invalid-package error.
+ * Every row runs the same full row validation the worker uses
+ * (`validateEntry`), so a row the worker would reject for its shape -
+ * a version 2 row with no rafsi, a word object with an extra field, a
+ * gloss with no sense field - never reaches a page. The package-level
+ * rules the readers do not use (the worker's row order, its exact
+ * top-level field sets) are not imposed here, so a package whose rows
+ * readers can use keeps working in the order it was saved. The result
+ * is remembered per package object and language: the store returns the
+ * same object until the package changes, so each saved package is
+ * checked once, not once per reader or edit. A bad package or row
+ * raises the documented invalid-package error.
  */
 export function checkSavedPackage(
   value: unknown,
@@ -252,7 +257,39 @@ export function checkSavedPackage(
     if (failedPackages.get(value)?.has(lang)) throw invalidPackage();
   }
   try {
-    validateCachedPackage(value, lang);
+    if (
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      !Array.isArray((value as { entries?: unknown }).entries) ||
+      typeof (value as { snapshot?: unknown }).snapshot !== "string" ||
+      !hashId((value as { snapshot: string }).snapshot) ||
+      !(
+        (value as { version?: unknown }).version === undefined ||
+        (value as { version?: unknown }).version === 1 ||
+        (value as { version?: unknown }).version === 2
+      ) ||
+      ((value as { search_view?: unknown }).search_view !== undefined &&
+        ((value as { version?: unknown }).version !== 2 ||
+          !eventId((value as { search_view: string }).search_view))) ||
+      !(
+        (value as { downgrade?: unknown }).downgrade === undefined ||
+        (value as { downgrade?: unknown }).downgrade === null ||
+        typeof (value as { downgrade?: unknown }).downgrade === "string"
+      )
+    )
+      throw invalidPackage();
+    const pkg = value as CachedPackage & { search_view?: string };
+    for (const entry of pkg.entries) {
+      const v2 =
+        pkg.version === 2 ||
+        (!!entry &&
+          typeof entry === "object" &&
+          ("issuer" in entry || "search_status" in entry));
+      validateEntry(entry, lang, v2 ? 2 : 1, pkg.search_view);
+      if (pkg.search_view && typeof entry.search_status !== "string")
+        throw invalidPackage();
+    }
   } catch (error) {
     if (value && typeof value === "object") {
       let langs = failedPackages.get(value);

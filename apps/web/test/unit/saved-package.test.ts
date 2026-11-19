@@ -69,7 +69,7 @@ test("the shared guard runs the worker validation on every row field", () => {
     pkg([row({}, ["rafsi", "rafsi_complete"])]),
     pkg([row({ word: { language: "jbo", spelling: "cukta", extra: 1 } })]),
     pkg([row({ glosses: [{ language: "en", text: "book" }] })]),
-    pkg([row(), row()]),
+    pkg([row({ rafsi: "cuk" })]),
   ]) {
     assert.throws(
       () => search.checkSavedPackage(bad, "en"),
