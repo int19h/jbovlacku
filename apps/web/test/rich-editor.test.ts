@@ -803,3 +803,1129 @@ test("a fully declared manual frame with 17 places reaches Publish without AI", 
   ).toBeEnabled();
   expect(requests).toBe(0);
 });
+
+async function mountKeyboardField(
+  page: Page,
+  text: string,
+  narrow = false,
+  direction?: string,
+) {
+  await page.goto("/");
+  await page.evaluate(
+    async ({ text, narrow, direction }) => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts")
+      );
+      const field = richField("Keyboard field", { value: [[text]] });
+      if (direction) field.wrapper.dir = direction;
+      if (narrow) {
+        field.wrapper.style.width = "110px";
+        field.wrapper.style.font = "16px monospace";
+      }
+      document.body.replaceChildren(field.wrapper);
+    },
+    { text, narrow, direction },
+  );
+  return page.getByRole("textbox", { name: "Keyboard field", exact: true });
+}
+
+async function keyboardSelection(field: Locator) {
+  return field.evaluate((node) => {
+    const text = node.querySelector("p .rich-literal")!.firstChild!;
+    const selection = getSelection()!;
+    const offset = (point: Node | null, at: number) =>
+      point === text ? at : -1;
+    return {
+      anchor: offset(selection.anchorNode, selection.anchorOffset),
+      focus: offset(selection.focusNode, selection.focusOffset),
+      selected: selection.toString(),
+    };
+  });
+}
+
+async function chooseKeyboardSelection(
+  field: Locator,
+  anchor: number,
+  focus: number,
+) {
+  await field.focus();
+  await field.evaluate(
+    (node, { anchor, focus }) => {
+      const text = node.querySelector("p .rich-literal")!.firstChild!;
+      getSelection()!.setBaseAndExtent(text, anchor, text, focus);
+      document.dispatchEvent(new Event("selectionchange"));
+    },
+    { anchor, focus },
+  );
+}
+
+// The collapsed browser caret as a paragraph index and a text offset in
+// that paragraph, or -1 values when the selection is not a collapsed
+// caret in a paragraph of the field.
+async function collapsedCaret(field: Locator) {
+  return field.evaluate((node) => {
+    const selection = getSelection()!;
+    const paragraph =
+      selection.focusNode?.nodeType === 3
+        ? selection.focusNode.parentElement?.closest("p")
+        : (selection.focusNode as Element)?.closest?.("p");
+    if (!paragraph || !selection.isCollapsed || !node.contains(paragraph))
+      return { paragraph: -1, offset: -1 };
+    const range = document.createRange();
+    range.setStart(paragraph, 0);
+    range.setEnd(selection.focusNode!, selection.focusOffset);
+    return {
+      paragraph: [...node.querySelectorAll("p")].indexOf(paragraph),
+      offset: range.toString().length,
+    };
+  });
+}
+
+async function expectKeyboardSelection(
+  field: Locator,
+  text: string,
+  anchor: number,
+  focus: number,
+) {
+  const selected = text.slice(Math.min(anchor, focus), Math.max(anchor, focus));
+  await expect
+    .poll(async () => {
+      const now = await keyboardSelection(field);
+      return [now.anchor, now.focus, now.selected];
+    })
+    .toEqual([anchor, focus, selected]);
+}
+
+const lineMotionText = "alpha beta gamma delta";
+const lineMotionCases = [
+  {
+    name: "a backward selection extended Home keeps its anchor",
+    anchor: 12,
+    focus: 6,
+    key: "Shift+Home",
+    after: [12, 0],
+    steps: [
+      ["Shift+ArrowRight", [12, 1]],
+      ["Shift+ArrowLeft", [12, 0]],
+    ],
+  },
+  {
+    name: "a backward selection extended End keeps its anchor",
+    anchor: 12,
+    focus: 6,
+    key: "Shift+End",
+    after: [12, 22],
+    steps: [
+      ["Shift+ArrowLeft", [12, 21]],
+      ["Shift+ArrowRight", [12, 22]],
+    ],
+  },
+  {
+    name: "a forward selection extended Home keeps its anchor",
+    anchor: 6,
+    focus: 12,
+    key: "Shift+Home",
+    after: [6, 0],
+    steps: [
+      ["Shift+ArrowRight", [6, 1]],
+      ["Shift+ArrowLeft", [6, 0]],
+    ],
+  },
+  {
+    name: "a forward selection extended End keeps its anchor",
+    anchor: 6,
+    focus: 12,
+    key: "Shift+End",
+    after: [6, 22],
+    steps: [
+      ["Shift+ArrowLeft", [6, 21]],
+      ["Shift+ArrowRight", [6, 22]],
+    ],
+  },
+] as const;
+
+for (const lineCase of lineMotionCases) {
+  test(lineCase.name, async ({ page }) => {
+    const field = await mountKeyboardField(page, lineMotionText);
+    await chooseKeyboardSelection(field, lineCase.anchor, lineCase.focus);
+    await expectKeyboardSelection(
+      field,
+      lineMotionText,
+      lineCase.anchor,
+      lineCase.focus,
+    );
+    await field.press(lineCase.key);
+    await expectKeyboardSelection(
+      field,
+      lineMotionText,
+      lineCase.after[0],
+      lineCase.after[1],
+    );
+    for (const [key, after] of lineCase.steps) {
+      await field.press(key);
+      await expectKeyboardSelection(field, lineMotionText, after[0], after[1]);
+    }
+  });
+}
+
+test("Home and End move by visual line in wrapped text", async ({ page }) => {
+  const text = "one two three four five six seven eight nine ten";
+  const field = await mountKeyboardField(page, text, true);
+  await chooseKeyboardSelection(field, 24, 24);
+  await field.press("Home");
+  await expectKeyboardSelection(field, text, 19, 19);
+  await field.press("End");
+  await expectKeyboardSelection(field, text, 28, 28);
+});
+
+test("Home stays native on a Mac platform and elsewhere", async ({
+  page,
+}) => {
+  const field = await mountKeyboardField(page, lineMotionText);
+  await chooseKeyboardSelection(field, 12, 12);
+  const outcome = await field.evaluate((node) => {
+    const dispatch = (platform: string) => {
+      const original = navigator.platform;
+      Object.defineProperty(navigator, "platform", {
+        value: platform,
+        configurable: true,
+      });
+      try {
+        const notPrevented = node.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Home",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        const selection = getSelection()!;
+        const text = node.querySelector("p .rich-literal")!.firstChild!;
+        return {
+          notPrevented,
+          anchor: selection.anchorNode === text ? selection.anchorOffset : -1,
+          focus: selection.focusNode === text ? selection.focusOffset : -1,
+        };
+      } finally {
+        Object.defineProperty(navigator, "platform", {
+          value: original,
+          configurable: true,
+        });
+      }
+    };
+    return { mac: dispatch("MacIntel"), other: dispatch("Linux x86_64") };
+  });
+  // Line motion is the browser's on every platform; on macOS Home
+  // scrolls and never moves the caret. The editor intercepts neither.
+  expect(outcome.mac).toEqual({ notPrevented: true, anchor: 12, focus: 12 });
+  expect(outcome.other).toEqual({ notPrevented: true, anchor: 12, focus: 12 });
+});
+
+for (const platform of ["Linux x86_64", "MacIntel"]) {
+  test(`a pending native caret does not swallow line motion: ${platform}`, async ({
+    page,
+  }) => {
+    const field = await mountKeyboardField(page, "alpha beta");
+    await field.evaluate((node, platform) => {
+      Object.defineProperty(navigator, "platform", {
+        value: platform,
+        configurable: true,
+      });
+    }, platform);
+    await chooseKeyboardSelection(field, 0, 0);
+    await page.waitForTimeout(40);
+    const immediate = await field.evaluate((node, platform) => {
+      const text = node.querySelector("p .rich-literal")!.firstChild!;
+      const selection = getSelection()!;
+      const snap = () => ({
+        anchor: selection.anchorOffset,
+        focus: selection.focusOffset,
+        text: selection.toString(),
+      });
+      // Move the native caret and send both line keys in one task, before
+      // the browser delivers the pending selectionchange.
+      selection.setBaseAndExtent(text, 5, text, 5);
+      const command = (backward: boolean, shift: boolean) => {
+        const mac = platform === "MacIntel";
+        const key = mac
+          ? backward
+            ? "ArrowLeft"
+            : "ArrowRight"
+          : backward
+            ? "Home"
+            : "End";
+        const unhandled = node.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key,
+            keyCode: mac ? (backward ? 37 : 39) : backward ? 36 : 35,
+            bubbles: true,
+            cancelable: true,
+            shiftKey: shift,
+            metaKey: mac,
+          }),
+        );
+        if (unhandled)
+          selection.modify(
+            shift ? "extend" : "move",
+            backward ? "backward" : "forward",
+            "lineboundary",
+          );
+        return snap();
+      };
+      const start = snap();
+      const home = command(true, false);
+      const end = command(false, true);
+      return { start, home, end };
+    }, platform);
+    expect(immediate.home).toEqual({ anchor: 0, focus: 0, text: "" });
+    expect(immediate.end).toEqual({ anchor: 0, focus: 10, text: "alpha beta" });
+    await field.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual([["x"]]);
+  });
+}
+
+test("line keys reveal a caret the reader scrolled away from", async ({
+  page,
+}) => {
+  const value = Array.from({ length: 45 }, (_, index) => [
+    `line ${index} alpha beta`,
+  ]);
+  await page.goto("/");
+  await page.evaluate(async (value) => {
+    const { richField } = await import(String("/src/components/rich-field.ts"));
+    const field = richField("Long keyboard field", { value });
+    document.body.replaceChildren(field.wrapper);
+  }, value);
+  const field = page.getByRole("textbox", {
+    name: "Long keyboard field",
+    exact: true,
+  });
+  for (const key of ["Home", "End", "Shift+Home", "Shift+End"]) {
+    await field.evaluate((node) => {
+      const text =
+        node.querySelectorAll("p")[30].querySelector(".rich-literal")!
+          .firstChild!;
+      getSelection()!.setBaseAndExtent(text, 8, text, 8);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForTimeout(40);
+    await page.evaluate(() => scrollTo(0, 0));
+    await field.press(key);
+    await expect
+      .poll(() =>
+        field.evaluate(() => {
+          const selection = getSelection()!;
+          const range = document.createRange();
+          range.setStart(selection.focusNode!, selection.focusOffset);
+          range.collapse(true);
+          const rect = range.getBoundingClientRect();
+          return scrollY > 0 && rect.top >= 0 && rect.top <= innerHeight;
+        }),
+      )
+      .toBe(true);
+  }
+});
+
+const resetFocusCases = [
+  {
+    name: "prepend paragraph",
+    before: [["alpha beta"]],
+    after: [["reset prefix"], ["alpha beta"]],
+    typed: [["reset prefix"], ["alpha betax"]],
+    typedFirefox: [["reset prefixx"], ["alpha beta"]],
+    caret: { paragraph: 1, offset: 10 },
+    caretFirefox: { paragraph: 0, offset: 12 },
+  },
+  {
+    name: "shorten first paragraph",
+    before: [["alpha beta"], ["omega end"]],
+    after: [["new"], ["omega end"]],
+    typed: [["new"], ["omega endx"]],
+    typedFirefox: [["newx"], ["omega end"]],
+    caret: { paragraph: 1, offset: 9 },
+    caretFirefox: { paragraph: 0, offset: 3 },
+  },
+] as const;
+
+for (const resetCase of resetFocusCases) {
+  for (const route of ["button", "direct"] as const) {
+    test(`reset then focus types where the engine leaves the caret: ${resetCase.name} ${route}`, async ({
+      page,
+      browserName,
+    }) => {
+      await page.goto("/");
+      await page.evaluate(async (before) => {
+        const { richField } = await import(
+          String("/src/components/rich-field.ts")
+        );
+        const field = richField("Reset field", { value: before });
+        const button = document.createElement("button");
+        button.textContent = "Replace value";
+        document.body.replaceChildren(field.wrapper, button);
+        (window as any).__resetField = field;
+        (window as any).__resetButton = button;
+      }, resetCase.before as unknown as RichText);
+      const field = page.getByRole("textbox", {
+        name: "Reset field",
+        exact: true,
+      });
+      await field.focus();
+      await field.evaluate((node) => {
+        const text = node.querySelector(".rich-literal")!.firstChild!;
+        getSelection()!.setBaseAndExtent(text, 4, text, 4);
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      await page.waitForTimeout(60);
+      if (route === "button") {
+        await page.evaluate((after) => {
+          const w = window as any;
+          w.__resetButton.onclick = () => {
+            w.__resetField.input.value = after;
+            w.__resetField.input.focus();
+          };
+        }, resetCase.after as unknown as RichText);
+        await page
+          .getByRole("button", { name: "Replace value", exact: true })
+          .click();
+      } else {
+        await field.evaluate((node, after) => {
+          const input = node as any;
+          input.blur();
+          input.value = after;
+          input.focus();
+        }, resetCase.after as unknown as RichText);
+      }
+      // Wait for the browser caret to settle where this engine leaves
+      // it, however long the focus-time selection write takes.
+      await expect
+        .poll(() => collapsedCaret(field))
+        .toEqual(
+          browserName === "firefox" ? resetCase.caretFirefox : resetCase.caret,
+        );
+      await field.press("x");
+      await expect
+        .poll(() => field.evaluate((node: any) => node.value))
+        .toEqual(
+          browserName === "firefox" ? resetCase.typedFirefox : resetCase.typed,
+        );
+    });
+  }
+}
+
+for (const route of ["helper", "plain", "blur"] as const) {
+  test(`repeated page-owned focus after a reset types at the settled caret: ${route}`, async ({
+    page,
+    browserName,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async (route) => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts")
+      );
+      const { watchReaderFocus } = await import(String("/src/app/focus.ts"));
+      const field = richField("Refocus field", { value: [["alpha beta"]] });
+      const main = document.createElement("main");
+      const error = document.createElement("h2");
+      error.textContent = "Result";
+      error.tabIndex = -1;
+      const button = document.createElement("button");
+      button.textContent = "Rewrite";
+      main.append(field.wrapper, error, button);
+      document.body.replaceChildren(main);
+      button.onclick = () => {
+        field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+        if (route === "helper") {
+          const controller = new AbortController();
+          const focus = watchReaderFocus(main, controller.signal);
+          focus.focus(field.input);
+          focus.focus(error);
+          focus.focus(field.input);
+          controller.abort();
+        } else if (route === "plain") {
+          field.input.focus();
+          error.focus();
+          field.input.focus();
+        } else {
+          field.input.focus();
+          field.input.blur();
+          field.input.focus();
+        }
+      };
+    }, route);
+    const field = page.getByRole("textbox", {
+      name: "Refocus field",
+      exact: true,
+    });
+    await field.focus();
+    await field.evaluate((node) => {
+      const text = node.querySelector(".rich-literal")!.firstChild!;
+      getSelection()!.setBaseAndExtent(text, 4, text, 4);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForTimeout(60);
+    await page.getByRole("button", { name: "Rewrite", exact: true }).click();
+    // Wait until the expected browser caret settles, however long the
+    // focus restore takes: in Chromium the recorded caret at the end
+    // of the last paragraph; in Firefox the caret at the end of the
+    // first rewritten paragraph, which is where that engine leaves it.
+    await expect
+      .poll(() =>
+        field.evaluate((node) => {
+          const selection = getSelection()!;
+          const paragraph =
+            selection.focusNode?.nodeType === 3
+              ? selection.focusNode.parentElement?.closest("p")
+              : (selection.focusNode as Element)?.closest?.("p");
+          if (!paragraph) return { paragraph: -1, offset: -1 };
+          const range = document.createRange();
+          range.setStart(paragraph, 0);
+          range.setEnd(selection.focusNode!, selection.focusOffset);
+          return {
+            paragraph: [...node.querySelectorAll("p")].indexOf(paragraph),
+            offset: range.toString().length,
+          };
+        }),
+      )
+      .toEqual(
+        browserName === "firefox"
+          ? { paragraph: 0, offset: 12 }
+          : { paragraph: 1, offset: 10 },
+      );
+    await field.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual(
+        browserName === "firefox"
+          ? [["reset prefixx"], ["alpha beta"]]
+          : [["reset prefix"], ["alpha betax"]],
+      );
+  });
+}
+
+test("tab into the field after a reset types at the document end once focus settles", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { richField } = await import(
+      String("/src/components/rich-field.ts"),
+    );
+    const field = richField("Tab reset field", { value: [["alpha beta"]] });
+    const button = document.createElement("button");
+    button.textContent = "Rewrite without focusing";
+    document.body.replaceChildren(button, field.wrapper);
+    button.onclick = () => {
+      field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+    };
+  });
+  const field = page.getByRole("textbox", {
+    name: "Tab reset field",
+    exact: true,
+  });
+  await field.focus();
+  await field.evaluate((node) => {
+    const text = node.querySelector(".rich-literal")!.firstChild!;
+    getSelection()!.setBaseAndExtent(text, 4, text, 4);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.waitForTimeout(60);
+  await page
+    .getByRole("button", { name: "Rewrite without focusing", exact: true })
+    .click();
+  await page.waitForTimeout(40);
+  await page.keyboard.press("Tab");
+  await expect(field).toBeFocused();
+  // Wait for the browser caret to settle at the document end, however
+  // long the focus-time selection write takes.
+  await expect
+    .poll(() => collapsedCaret(field))
+    .toEqual({ paragraph: 1, offset: 10 });
+  await page.keyboard.press("x");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["reset prefix"], ["alpha betax"]]);
+  await page.keyboard.press("Control+z");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["reset prefix"], ["alpha beta"]]);
+});
+
+test("a motion key pressed before Tab and released in the field moves no caret", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { richField } = await import(String("/src/components/rich-field.ts"));
+    const field = richField("Held key field", { value: [["alpha beta"]] });
+    const button = document.createElement("button");
+    button.textContent = "Rewrite without focusing";
+    document.body.replaceChildren(button, field.wrapper);
+    button.onclick = () => {
+      field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+    };
+  });
+  const field = page.getByRole("textbox", {
+    name: "Held key field",
+    exact: true,
+  });
+  await field.focus();
+  await field.evaluate((node) => {
+    const text = node.querySelector(".rich-literal")!.firstChild!;
+    getSelection()!.setBaseAndExtent(text, 4, text, 4);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.waitForTimeout(60);
+  await page
+    .getByRole("button", { name: "Rewrite without focusing", exact: true })
+    .click();
+  // The button receives the ArrowDown press; the field receives only
+  // its release, after Tab moves the focus. That release moved no caret
+  // in the field, so the field keeps the selection the rewrite chose,
+  // the document end, as it does without the held key.
+  await page.keyboard.down("ArrowDown");
+  await page.keyboard.down("Tab");
+  await page.keyboard.up("ArrowDown");
+  await page.keyboard.up("Tab");
+  await expect(field).toBeFocused();
+  // Wait for the browser caret to settle at the document end, however
+  // long the focus-time selection write takes, before typing.
+  await expect
+    .poll(() =>
+      field.evaluate((node) => {
+        const selection = getSelection()!;
+        const paragraph =
+          selection.focusNode?.nodeType === 3
+            ? selection.focusNode.parentElement?.closest("p")
+            : (selection.focusNode as Element)?.closest?.("p");
+        if (!paragraph || !selection.isCollapsed)
+          return { paragraph: -1, offset: -1 };
+        const range = document.createRange();
+        range.setStart(paragraph, 0);
+        range.setEnd(selection.focusNode!, selection.focusOffset);
+        return {
+          paragraph: [...node.querySelectorAll("p")].indexOf(paragraph),
+          offset: range.toString().length,
+        };
+      }),
+    )
+    .toEqual({ paragraph: 1, offset: 10 });
+  await page.keyboard.press("x");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["reset prefix"], ["alpha betax"]]);
+});
+
+for (const route of ["click", "selectall"] as const) {
+  test(`a reader ${route} after a reset survives Tab out and back`, async ({
+    page,
+    browserName,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts"),
+      );
+      const field = richField("Retab field", { value: [["alpha beta"]] });
+      const button = document.createElement("button");
+      button.textContent = "Rewrite without focusing";
+      document.body.replaceChildren(button, field.wrapper);
+      button.onclick = () => {
+        field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+      };
+    });
+    const field = page.getByRole("textbox", {
+      name: "Retab field",
+      exact: true,
+    });
+    await field.focus();
+    await field.evaluate((node) => {
+      const text = node.querySelector(".rich-literal")!.firstChild!;
+      getSelection()!.setBaseAndExtent(text, 4, text, 4);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForTimeout(60);
+    await page
+      .getByRole("button", { name: "Rewrite without focusing", exact: true })
+      .click();
+    await page.waitForTimeout(40);
+    await page.keyboard.press("Tab");
+    await expect(field).toBeFocused();
+    // Let the focus-time selection write settle the caret at the
+    // document end before the reader's own choice, however long it takes.
+    await expect
+      .poll(() => collapsedCaret(field))
+      .toEqual({ paragraph: 1, offset: 10 });
+    if (route === "click") {
+      const box = await field.locator("p").first().boundingBox();
+      await page.mouse.click(box!.x + 35, box!.y + 8);
+    } else {
+      await page.keyboard.press("Control+A");
+    }
+    await page.waitForTimeout(40);
+    await page.keyboard.press("Tab");
+    await expect(field).not.toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(field).toBeFocused();
+    await page.keyboard.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual(
+        route === "selectall"
+          ? [["x"]]
+          : [
+              [
+                browserName === "firefox"
+                  ? "resetx prefix"
+                  : "resext prefix",
+              ],
+              ["alpha beta"],
+            ],
+      );
+  });
+}
+
+test.describe("touch input", () => {
+  test.use({ hasTouch: true });
+  test("a tap after a reset places a caret at the tap point", async ({
+    page,
+    browserName,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts"),
+      );
+      const field = richField("Touch reset field", {
+        value: [["alpha beta"]],
+      });
+      const button = document.createElement("button");
+      button.textContent = "Rewrite without focusing";
+      document.body.replaceChildren(button, field.wrapper);
+      button.onclick = () => {
+        field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+      };
+    });
+    const field = page.getByRole("textbox", {
+      name: "Touch reset field",
+      exact: true,
+    });
+    await field.focus();
+    await field.evaluate((node) => {
+      const text = node.querySelector(".rich-literal")!.firstChild!;
+      getSelection()!.setBaseAndExtent(text, 4, text, 4);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForTimeout(60);
+    await page
+      .getByRole("button", { name: "Rewrite without focusing", exact: true })
+      .click();
+    await page.waitForTimeout(40);
+    const box = await field.locator("p").first().boundingBox();
+    await page.touchscreen.tap(box!.x + 35, box!.y + 8);
+    await page.keyboard.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual([
+        [browserName === "firefox" ? "resetx prefix" : "resext prefix"],
+        ["alpha beta"],
+      ]);
+  });
+
+  test("a reader tap after a reset survives Tab out and back", async ({
+    page,
+    browserName,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts"),
+      );
+      const field = richField("Retab tap field", {
+        value: [["alpha beta"]],
+      });
+      const button = document.createElement("button");
+      button.textContent = "Rewrite without focusing";
+      document.body.replaceChildren(button, field.wrapper);
+      button.onclick = () => {
+        field.input.value = [["reset prefix"], ["alpha beta"]] as never;
+      };
+    });
+    const field = page.getByRole("textbox", {
+      name: "Retab tap field",
+      exact: true,
+    });
+    await field.focus();
+    await field.evaluate((node) => {
+      const text = node.querySelector(".rich-literal")!.firstChild!;
+      getSelection()!.setBaseAndExtent(text, 4, text, 4);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.waitForTimeout(60);
+    await page
+      .getByRole("button", { name: "Rewrite without focusing", exact: true })
+      .click();
+    await page.waitForTimeout(40);
+    const box = await field.locator("p").first().boundingBox();
+    await page.touchscreen.tap(box!.x + 35, box!.y + 8);
+    await page.waitForTimeout(40);
+    await page.keyboard.press("Tab");
+    await expect(field).not.toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(field).toBeFocused();
+    await page.keyboard.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual([
+        [browserName === "firefox" ? "resetx prefix" : "resext prefix"],
+        ["alpha beta"],
+      ]);
+  });
+});
+
+test("Firefox Ctrl-drag keeps ProseMirror's normalized selection", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(browserName !== "firefox", "Only Firefox holds several ranges.");
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { richField } = await import(String("/src/components/rich-field.ts"));
+    const field = richField("Ranges field", {
+      value: [["alpha beta"], ["middle"], ["omega end"]],
+    });
+    document.body.replaceChildren(field.wrapper);
+  });
+  const field = page.getByRole("textbox", {
+    name: "Ranges field",
+    exact: true,
+  });
+  await field.focus();
+  const points = await field.evaluate((node) =>
+    [0, 2].map((paragraph) =>
+      [1, 4].map((offset) => {
+        const text =
+          node
+            .querySelectorAll("p")
+            [paragraph].querySelector(".rich-literal")!.firstChild!;
+        const range = document.createRange();
+        range.setStart(text, offset);
+        range.collapse(true);
+        const box = range.getBoundingClientRect();
+        return { x: box.left, y: (box.top + box.bottom) / 2 };
+      }),
+    ),
+  );
+  const drag = async (from: { x: number; y: number }, to: { x: number; y: number }) => {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 4 });
+    await page.mouse.up();
+  };
+  await drag(points[0][0], points[0][1]);
+  await page.keyboard.down("Control");
+  await drag(points[1][0], points[1][1]);
+  await page.keyboard.up("Control");
+  const selected = () =>
+    field.evaluate(() => ({
+      text: getSelection()!.toString(),
+      ranges: getSelection()!.rangeCount,
+    }));
+  await expect
+    .poll(selected)
+    .toEqual({ text: "lpha beta\n\nmiddle\n\nomeg", ranges: 1 });
+  await field.press("Delete");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["aa end"]]);
+  await field.press("Control+z");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["alpha beta"], ["middle"], ["omega end"]]);
+  await expect
+    .poll(selected)
+    .toEqual({ text: "lpha beta\n\nmiddle\n\nomeg", ranges: 1 });
+});
+
+test("a selected chip keeps its node selection for Cmd arrows", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+  });
+  for (const [key, after] of [
+    ["Meta+ArrowRight", [[1, "x alpha beta"]]],
+    ["Meta+ArrowLeft", [["x", 1, " alpha beta"]]],
+  ] as const) {
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts")
+      );
+      const field = richField("Chip field", { value: [[1, " alpha beta"]] });
+      document.body.replaceChildren(field.wrapper);
+    });
+    const field = page.getByRole("textbox", {
+      name: "Chip field",
+      exact: true,
+    });
+    await field.locator(".rich-chip").click();
+    await field.press(key);
+    await field.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual(after);
+  }
+});
+
+for (const route of ["click", "click-twice", "keyboard"] as const) {
+  test(`a toolbar place insert keeps the caret for typing: ${route}`, async ({
+    page,
+  }) => {
+    const field = await mountKeyboardField(page, "alpha beta");
+    await chooseKeyboardSelection(field, 4, 4);
+    await page.waitForTimeout(60);
+    const insert = page.getByRole("button", {
+      name: "Insert place 1",
+      exact: true,
+    });
+    if (route === "click") {
+      await insert.click();
+    } else if (route === "click-twice") {
+      await insert.click();
+      await page.waitForTimeout(80);
+      await insert.click();
+    } else {
+      await insert.focus();
+      await page.keyboard.press("Enter");
+    }
+    await page.keyboard.press("x");
+    await expect
+      .poll(() => field.evaluate((node: any) => node.value))
+      .toEqual(
+        route === "click-twice"
+          ? [["alph", 1, 1, "xa beta"]]
+          : [["alph", 1, "xa beta"]],
+      );
+  });
+}
+
+test("a line selection made right after focus is kept", async ({ page }) => {
+  const field = await mountKeyboardField(page, "Sense: new meaning");
+  await chooseKeyboardSelection(field, 18, 18);
+  await field.blur();
+  await field.focus();
+  // Move to the line start and extend to its end. The test sends each
+  // keydown, its native selection move, and its keyup in one task on
+  // purpose, so the keyup sync reads the moved selection into editor
+  // state before the focus-time write can run; then it holds event
+  // delivery past that write. Real keys arrive in separate tasks, and
+  // the focus timer can fire between a keydown and its keyup (a traced
+  // Home: keydown, then the focus timer about 5 ms later, then keyup
+  // about 80 ms after that). This test fixes the order instead of
+  // relying on that timing.
+  await field.evaluate((node) => {
+    const text = node.querySelector("p .rich-literal")!.firstChild!;
+    const selection = getSelection()!;
+    const command = (key: string, keyCode: number, shift: boolean) => {
+      const unhandled = node.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key,
+          keyCode,
+          bubbles: true,
+          cancelable: true,
+          shiftKey: shift,
+        }),
+      );
+      if (unhandled)
+        selection.modify(
+          shift ? "extend" : "move",
+          key === "Home" ? "backward" : "forward",
+          "lineboundary",
+        );
+      node.dispatchEvent(
+        new KeyboardEvent("keyup", {
+          key,
+          keyCode,
+          bubbles: true,
+          cancelable: true,
+          shiftKey: shift,
+        }),
+      );
+    };
+    command("Home", 36, false);
+    command("End", 35, true);
+    const until = performance.now() + 35;
+    while (performance.now() < until) {
+      // Hold timers and selectionchange behind the native motion.
+    }
+    void text;
+  });
+  await page.waitForTimeout(60);
+  await expectKeyboardSelection(field, "Sense: new meaning", 0, 18);
+  await field.press("x");
+  await expect
+    .poll(() => field.evaluate((node: any) => node.value))
+    .toEqual([["x"]]);
+});
+
+test("Ctrl arrows keep native word motion in mixed-direction text", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(
+    browserName !== "chromium",
+    "This pins Chromium's native Ctrl+Arrow behavior.",
+  );
+  const text = "abc אבג def היג xyz";
+  const field = await mountKeyboardField(page, text, false, "rtl");
+  // Native word motion is the browser's. Let the editor sync each native
+  // selection before the next key, as the main-branch comparison does.
+  const key = async (name: string) => {
+    await field.press(name);
+    await page.waitForTimeout(40);
+  };
+  await chooseKeyboardSelection(field, 0, 0);
+  await key("Control+ArrowRight");
+  await expectKeyboardSelection(field, text, 0, 0);
+  await key("Control+ArrowRight");
+  await expectKeyboardSelection(field, text, 0, 0);
+  await key("Control+ArrowLeft");
+  await expectKeyboardSelection(field, text, 3, 3);
+  await chooseKeyboardSelection(field, 0, 0);
+  await key("Control+Shift+ArrowRight");
+  await expectKeyboardSelection(field, text, 0, 0);
+  await key("Control+Shift+ArrowRight");
+  await expectKeyboardSelection(field, text, 0, 0);
+  await key("Control+Shift+ArrowLeft");
+  await expectKeyboardSelection(field, text, 0, 3);
+});
+
+const inlineHomeCases = [
+  {
+    name: "leading code",
+    value: [[{ code: "alpha beta" }, " tail"]],
+    selector: ".rich-code",
+    offset: 4,
+    after: [["x", { code: "alpha beta" }, " tail"]],
+  },
+  {
+    name: "only code",
+    value: [[{ code: "alpha beta" }]],
+    selector: ".rich-code",
+    offset: 4,
+    after: [["x", { code: "alpha beta" }]],
+  },
+  {
+    name: "leading web link",
+    value: [[{ url: "https://example.org", label: "alpha beta" }, " tail"]],
+    selector: ".rich-web-link",
+    offset: 4,
+    after: [
+      ["x", { url: "https://example.org", label: "alpha beta" }, " tail"],
+    ],
+  },
+  {
+    name: "leading word link",
+    value: [
+      [
+        { word: { language: "jbo", spelling: "klama" }, label: "alpha beta" },
+        " tail",
+      ],
+    ],
+    selector: ".rich-word-link",
+    offset: 4,
+    after: [
+      [
+        "x",
+        { word: { language: "jbo", spelling: "klama" }, label: "alpha beta" },
+        " tail",
+      ],
+    ],
+  },
+  {
+    name: "empty leading code",
+    value: [[{ code: "" }, "tail"]],
+    selector: ".rich-code",
+    offset: 0,
+    // An empty container's caret point resolves differently per engine.
+    afterChromium: [[{ code: "" }, "xtail"]],
+    afterFirefox: [["x", { code: "" }, "tail"]],
+  },
+  {
+    name: "empty leading web link",
+    value: [[{ url: "https://example.org", label: "" }, "tail"]],
+    selector: ".rich-web-link",
+    offset: 0,
+    afterChromium: [[{ url: "https://example.org", label: "" }, "xtail"]],
+    afterFirefox: [["x", { url: "https://example.org", label: "" }, "tail"]],
+  },
+  {
+    name: "place selection",
+    value: [[1, " tail"]],
+    selector: ".rich-chip",
+    offset: 0,
+    click: true,
+    after: [["x", 1, " tail"]],
+  },
+  {
+    name: "operand selection",
+    value: [[{ operand: "A" }, " tail"]],
+    selector: ".rich-chip",
+    offset: 0,
+    click: true,
+    after: [["x", { operand: "A" }, " tail"]],
+  },
+] as const;
+
+for (const inlineCase of inlineHomeCases) {
+  test(`repeated Home leaves a leading inline node: ${inlineCase.name}`, async ({
+    page,
+    browserName,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(async (value) => {
+      const { richField } = await import(
+        String("/src/components/rich-field.ts")
+      );
+      const field = richField("Inline Home field", { value });
+      document.body.replaceChildren(field.wrapper);
+    }, inlineCase.value as unknown as RichText);
+    const field = page.getByRole("textbox", {
+      name: "Inline Home field",
+      exact: true,
+    });
+    if ("click" in inlineCase && inlineCase.click)
+      await field.locator(inlineCase.selector).click();
+    else {
+      await field.focus();
+      await field.evaluate(
+        (node, { selector, offset }) => {
+          const container = node.querySelector(selector)!;
+          const point = container.firstChild ?? container;
+          getSelection()!.setBaseAndExtent(point, offset, point, offset);
+          document.dispatchEvent(new Event("selectionchange"));
+        },
+        inlineCase,
+      );
+    }
+    await page.waitForTimeout(60);
+    await field.press("Home");
+    await page.waitForTimeout(40);
+    await field.press("Home");
+    await field.press("x");
+    const stored = () => field.evaluate((node: any) => node.value);
+    const after =
+      "after" in inlineCase
+        ? inlineCase.after
+        : browserName === "firefox"
+          ? inlineCase.afterFirefox
+          : inlineCase.afterChromium;
+    await expect.poll(stored).toEqual(after);
+    await field.press("Control+z");
+    await expect.poll(stored).toEqual(inlineCase.value);
+  });
+}
