@@ -47,6 +47,8 @@ jobs:
         run: cargo test --workspace --locked --jobs 2 -- --test-threads=2
       # The Rust tests write the native parity corpora into the four parity
       # directories above. The parity job below reads them from this artifact.
+      # Each corpus variable lives in three places: the env of this job, the
+      # path list below, and the env of the parity job. Keep all three in step.
       - name: Upload native parity corpora
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -95,6 +97,14 @@ jobs:
         with:
           name: native-parity-corpora
           path: /build/jbovlacku
+      - name: Check native parity corpora
+        run: |
+          for directory in "$JVC_STATE_PARITY_DIR" "$JVC_SHUN_PARITY_DIR" "$JVC_PREPARATION_PARITY_DIR" "$JVC_WORD_RESULT_PARITY_DIR"; do
+            if [ -z "$directory" ] || [ -z "$(ls -A "$directory" 2>/dev/null)" ]; then
+              echo "The native parity corpus is missing or empty: ${directory:-<unset>}" >&2
+              exit 1
+            fi
+          done
       - name: Compare native and Wasm float kernel results
         timeout-minutes: 10
         run: node scripts/test-f64-kernel-parity.mjs
@@ -113,7 +123,8 @@ jobs:
 
   typescript-and-applications:
     runs-on: ubuntu-24.04
-    # In 21 recent attempts this part took 9 to 22 minutes, with a median of 15.
+    # In 21 recent attempts this part took 9 to 22 minutes with the browser
+    # install, which no longer runs in this job.
     timeout-minutes: 35
     env:
       CARGO_BUILD_JOBS: "2"
@@ -133,10 +144,8 @@ jobs:
         run: |
           rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.105 --locked --jobs 2
-      - name: Install JavaScript and browser tools
-        run: |
-          npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
+      - name: Install JavaScript packages
+        run: npm ci --no-audit --no-fund
       - name: Build shared WebAssembly
         run: npm run build:core
       - name: Check TypeScript

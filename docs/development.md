@@ -1126,19 +1126,23 @@ The native composition case uses Chromium's debugging protocol. Firefox keeps th
 GitHub Actions runs native validation, Chromium, Firefox, and the container tests in independent jobs in [the test workflow](../.github/workflows/test.yml).
 The `rust-native` job runs the Rust format check, the Rust lint, and the full Rust test suite.
 The Rust tests write the native parity corpora, and the job uploads them as a build artifact.
-The `wasm-and-browser-parity` job waits for the Rust job to finish, downloads the corpora, and runs all parity comparisons.
+The `wasm-and-browser-parity` job runs only after the Rust job passes. It downloads the corpora and runs all parity comparisons.
 The `typescript-and-applications` job runs the TypeScript check, the core, morphology, and search tests, the service and importer tests, the synthetic activity kit, the application builds, the adapter tests, and the browser model tests.
 The parity and TypeScript jobs each build the shared WebAssembly, and the parity job installs Chromium for the parity scripts.
 The `chromium-browser` job runs the unchanged `Test browser behavior` step with `--project chromium` and one worker.
 It follows the Firefox setup pattern, installs Chromium only, and builds the shared WebAssembly and browser assets.
 The `firefox-editing-and-authoring` job keeps the `firefox-editor`, `firefox-authoring`, and `firefox-wizard` projects with their existing test selection.
 The `standalone-image` job continues to build and test the container separately.
+Put a new step in the job that matches its work. Rust-only checks go in `rust-native`.
+A step that reads the native corpora or compares native code with WebAssembly goes in `wasm-and-browser-parity`.
+TypeScript, service, and application steps go in `typescript-and-applications`.
 
 The Rust job allows 75 minutes. The parity job allows 30 minutes, and the TypeScript job allows 35 minutes.
 The Chromium job allows 75 minutes.
 Firefox keeps its 30-minute timeout, and the container job keeps its 60-minute timeout.
 Before the split, 21 measured attempts of the old combined job took about 28 to 65 minutes in total.
-The Rust part took about 16 to 53 minutes, the parity part about 5 to 15 minutes, and the TypeScript part about 9 to 22 minutes.
+The Rust part took about 16 to 53 minutes, and the parity part about 5 to 15 minutes.
+The TypeScript part took about 9 to 22 minutes in the 20 attempts that finished it.
 The timeouts leave further room over those worst cases for runner and download variation.
 
 The browser tests start their own API and Vite processes. Ports `8797` and `5177` must be free.
