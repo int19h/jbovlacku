@@ -52,12 +52,11 @@ export const SEARCH_LOCAL_WORK_LIMIT = 200_000_000;
 /**
  * Wall-clock bound for one literal local scan or package preparation, in
  * milliseconds. Pattern queries keep their own shorter worker deadline.
- * Preparation runs once per package and dominates the cost: on the measured
- * host it takes about 70 seconds for a package five times the base data, so
- * the default keeps wide headroom above that instead of racing it. The work
- * budget above remains the tight deterministic guard; this deadline only
- * stops runs whose cost the work count cannot see (a much slower device or
- * pathological platform behavior).
+ * Preparation runs once per package and dominates the cost of a cold
+ * request, so the default keeps wide headroom above it instead of racing
+ * it. The work budget above remains the tight deterministic guard; this
+ * deadline only stops runs whose cost the work count cannot see (a much
+ * slower device or pathological platform behavior).
  */
 export const SEARCH_LOCAL_DEADLINE_MS = 300_000;
 /**
@@ -264,9 +263,25 @@ interface PreparedEntry {
   text: string;
   components: Components | null;
   limited: boolean;
+  /** `entryContentUnits` of the entry, measured once when it is prepared. */
+  units: number;
 }
 // Entries belong to immutable packages. A replaced package releases its cache.
 const entryIndex = new WeakMap<LexicalEntry, PreparedEntry>();
+/**
+ * The content units of a scanned entry. A prepared entry reuses the units
+ * measured at preparation, because package entries are immutable; an entry
+ * that was never prepared is measured now. The value is the same either
+ * way, so every charge is unchanged.
+ */
+function scannedUnits(
+  entry: LexicalEntry,
+  budget: SearchRequestBudget,
+): number {
+  return (
+    entryIndex.get(entry)?.units ?? entryContentUnits(entry, budget, "search")
+  );
+}
 const equal = (
   a: string | null,
   b: string | null,
@@ -406,6 +421,7 @@ function indexedComponents(
 }
 function prepareEntry(
   entry: LexicalEntry,
+  units: number,
   metrics?: SearchMetrics,
   allowance = SEARCH_HEADWORD_WORK_LIMIT,
 ): PreparedEntry {
@@ -413,6 +429,7 @@ function prepareEntry(
   if (cached) return cached;
   const spelling = headwordKey(entry.word.spelling);
   const indexed = {
+    units,
     spelling,
     knownSpelling: knownSpelling(spelling),
     canonical: canonicalWord(spelling),
@@ -479,12 +496,19 @@ export class SearchRequestBudget {
   private entries: number;
   private comparisons: number;
   private parserWork: number;
+  /**
+   * With no finite limit, no check can refuse, so checks are skipped (the
+   * server's case). Charges still add up, so the spent total is unchanged.
+   */
+  private readonly unbounded: boolean;
   constructor(
     private metrics: SearchMetrics,
     options?: SearchBudgetOptions,
   ) {
     this.workLimit = options?.workLimit ?? SEARCH_LOCAL_WORK_LIMIT;
     this.deadlineMs = options?.deadlineMs ?? SEARCH_LOCAL_DEADLINE_MS;
+    this.unbounded =
+      this.workLimit === Infinity && this.deadlineMs === Infinity;
     this.entries = metrics.entries;
     this.comparisons = metrics.componentComparisons;
     this.parserWork = metrics.queryParserWork + metrics.headwordParserWork;
@@ -553,6 +577,7 @@ export class SearchRequestBudget {
   }
   /** Enforce the budget and the deadline before the next work runs. */
   check(phase: SearchBudgetError["phase"]): void {
+    if (this.unbounded) return;
     if (this.total() > this.workLimit) throw this.failure(phase);
     if (Date.now() - this.start > this.deadlineMs) throw this.failure(phase);
   }
@@ -565,6 +590,7 @@ export class SearchRequestBudget {
    * enforces the deadline.
    */
   ensure(units: number, phase: SearchBudgetError["phase"]): void {
+    if (this.unbounded) return;
     if (this.total() + units > this.workLimit) throw this.failure(phase);
   }
   /**
@@ -579,6 +605,16 @@ export class SearchRequestBudget {
   }
 }
 const preparedIndexes = new WeakMap<object, SearchIndex<LexicalEntry>>();
+/**
+ * The prepared rows of a scanned collection, when it was prepared as a
+ * whole, so a scan reads each entry's stored units without a lookup.
+ */
+function preparedRows<T extends LexicalEntry>(
+  entries: Iterable<T> | SearchIndex<T>,
+): SearchIndex<T>["rows"] | undefined {
+  if ("rows" in entries) return entries.rows;
+  return (preparedIndexes.get(entries) as SearchIndex<T> | undefined)?.rows;
+}
 /** The caller retains an immutable array for its package or materialized generation. */
 export function prepareIndex<T extends LexicalEntry>(
   entries: readonly T[],
@@ -599,9 +635,12 @@ export function prepareIndex<T extends LexicalEntry>(
     // builds nothing. The unit is ensured before measuring, so an
     // exhausted budget also walks nothing.
     limit.ensure(1, "prepare");
-    limit.reserve(1 + entryContentUnits(entry, limit, "prepare"), "prepare");
+    const units =
+      entryIndex.get(entry)?.units ??
+      entryContentUnits(entry, limit, "prepare");
+    limit.reserve(1 + units, "prepare");
     const allowance = limit.remaining();
-    const indexed = prepareEntry(entry, measured, allowance);
+    const indexed = prepareEntry(entry, units, measured, allowance);
     if (indexed.limited && allowance < SEARCH_HEADWORD_WORK_LIMIT)
       cacheable = false;
     return { entry, indexed };
@@ -799,13 +838,18 @@ export function selectRafsiMatches<T extends LexicalEntry>(
   // The literal comparison key depends only on the query.
   const queryKey = pattern ? null : patternKey(query);
   try {
-    for (const entry of entries) {
+    const known = preparedRows(entries);
+    const source = known ? known.map(({ entry }) => entry) : entries;
+    let position = 0;
+    for (const entry of source) {
       // One scanned entry costs one unit, ensured before the entry is
       // measured or counted, plus its content in proportion to the bytes
       // the scan handles, so neither step walks input or pushes the total
       // past the limit on an exhausted budget.
       limit.ensure(1, "search");
-      const content = entryContentUnits(entry, limit, "search");
+      const content = known
+        ? known[position++].indexed.units
+        : scannedUnits(entry, limit);
       limit.ensure(1 + content, "search");
       measured.entries++;
       limit.reserve(content, "search");
@@ -846,15 +890,21 @@ export function selectMatches<T extends LexicalEntry>(
   if (prepared.pattern !== undefined) {
     const pattern = compilePattern(prepared.pattern);
     try {
-      const source =
-        "rows" in entries ? entries.rows.map(({ entry }) => entry) : entries;
+      const known = preparedRows(entries);
+      // An index always has rows, so without rows this is a plain iterable.
+      const source = known
+        ? known.map(({ entry }) => entry)
+        : (entries as Iterable<T>);
+      let position = 0;
       for (const entry of source) {
         // One scanned entry costs one unit, ensured before the entry is
         // measured or counted, plus its content in proportion to the bytes
         // the scan handles, so neither step walks input or pushes the total
         // past the limit on an exhausted budget.
         limit.ensure(1, "search");
-        const content = entryContentUnits(entry, limit, "search");
+        const content = known
+          ? known[position++].indexed.units
+          : scannedUnits(entry, limit);
         limit.ensure(1 + content, "search");
         measured.entries++;
         limit.reserve(content, "search");
@@ -912,13 +962,18 @@ export function selectMatches<T extends LexicalEntry>(
               // ensured before measuring, so an exhausted budget builds
               // nothing and walks nothing.
               limit.ensure(1, "prepare");
-              limit.reserve(
-                1 + entryContentUnits(entry, limit, "prepare"),
-                "prepare",
-              );
+              const units =
+                entryIndex.get(entry)?.units ??
+                entryContentUnits(entry, limit, "prepare");
+              limit.reserve(1 + units, "prepare");
               yield {
                 entry,
-                indexed: prepareEntry(entry, measured, limit.remaining()),
+                indexed: prepareEntry(
+                  entry,
+                  units,
+                  measured,
+                  limit.remaining(),
+                ),
               };
             }
           })();
@@ -931,7 +986,8 @@ export function selectMatches<T extends LexicalEntry>(
     // the scan handles, so neither step walks input or pushes the total
     // past the limit on an exhausted budget.
     limit.ensure(1, "search");
-    const content = entryContentUnits(entry, limit, "search");
+    // The row was prepared with this entry, so its content units are known.
+    const content = index.units;
     limit.ensure(1 + content, "search");
     measured.entries++;
     limit.reserve(content, "search");
