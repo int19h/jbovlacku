@@ -758,6 +758,10 @@ export class PersonalCalculator {
             throw error;
           }
           this.rememberSent(summary, selectionBinding, overlay, digest, mode);
+          // The worker sends actors only when they may have changed: the
+          // base load was refused, so it had none.
+          if (loaded.actors && this.continuity)
+            this.continuity = { ...this.continuity, actors: loaded.actors };
           const status: Extract<PersonalStatus, { state: "ready" }> = {
             state: "ready",
             mode,

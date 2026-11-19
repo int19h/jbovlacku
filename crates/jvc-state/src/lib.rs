@@ -665,8 +665,7 @@ fn empty_evaluation(input: &EvaluationOptions) -> Evaluation {
 }
 fn event_limit_evaluation(input: &EvaluationOptions) -> Evaluation {
     let mut result = empty_evaluation(input);
-    result.available = false;
-    result.reasons.insert("resource_unavailable".into());
+    resource_unavailable(&mut result);
     result
 }
 #[allow(dead_code)]

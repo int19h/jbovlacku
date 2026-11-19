@@ -634,8 +634,11 @@ impl EvaluatedState {
                         };
                         // A refused state keeps no evidence of how far its
                         // evaluation read the selections (the refusal is
-                        // built from nothing it computed), and its remaining
-                        // work is zero, so a changed vector rebuilds below.
+                        // built from nothing it computed), so it compares
+                        // like any state. A budget refusal has no work
+                        // left, so a changed vector rebuilds below; a cap
+                        // or arena refusal compares within the work it
+                        // kept, and a changed vector rebuilds too.
                         if next_ids.len() > compare_budget {
                             if rebuild_reason.is_none() {
                                 rebuild_reason = Some("configuration_changed".into());
@@ -1968,44 +1971,31 @@ fn check_saved_state(
     {
         return Err("event_limit_state");
     }
+    // Every refusal is the empty shape that `resource_unavailable`
+    // builds: the selected view, the overlay and one reason.
     if resource_refused {
-        if !saved.evaluation.registers.is_empty()
-            || !saved.evaluation.judgments.is_empty()
-            || !saved.evaluation.trust.is_empty()
+        let e = &saved.evaluation;
+        if e.reasons.len() != 1
+            || !e.receipts.is_empty()
+            || !e.publications.is_empty()
+            || !e.accounts.is_empty()
+            || !e.registers.is_empty()
+            || !e.judgments.is_empty()
+            || !e.trust.is_empty()
+            || e.policy.is_some()
+            || !e.policies.is_empty()
+            || !e.policy_history.is_empty()
+            || !e.selections.is_empty()
+            || !e.lifecycle.key_actor.is_empty()
+            || !e.lifecycle.groups.is_empty()
+            || !e.lifecycle.successor.is_empty()
+            || !e.lifecycle.suspended.is_empty()
+            || !e.lifecycle.retired.is_empty()
+            || !e.lifecycle.compromised.is_empty()
             || saved.unmatched_publication_scans != 0
             || !saved.matched_publication_scans.is_empty()
         {
-            return Err("resource_refused_collections");
-        }
-        for receipt in saved.evaluation.receipts.values() {
-            if receipt.interpretation != Interpretation::Inert
-                && (receipt.interpretation != Interpretation::Unavailable
-                    || !receipt.reasons.contains("resource_unavailable"))
-            {
-                return Err("resource_refused_receipt");
-            }
-        }
-        for p in saved.evaluation.publications.values() {
-            if p.authority != Authority::None
-                || p.controller.is_some()
-                || p.claim.is_some()
-                || p.deciding_claim.is_some()
-                || p.status != Status::Unavailable
-                || p.eligible != Eligibility::Unknown
-                || !p.reasons.contains("resource_unavailable")
-            {
-                return Err("resource_refused_publication");
-            }
-        }
-        for a in saved.evaluation.accounts.values() {
-            if !a.unavailable
-                || a.commands
-                || a.controller.is_some()
-                || a.controller_identity.is_some()
-                || !a.reasons.contains("resource_unavailable")
-            {
-                return Err("resource_refused_account");
-            }
+            return Err("resource_refused_state");
         }
     }
     if nodes.is_empty()
