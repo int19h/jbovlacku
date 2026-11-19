@@ -1124,21 +1124,22 @@ Use `npm run test:web -- --project firefox-editor --project firefox-authoring --
 The native composition case uses Chromium's debugging protocol. Firefox keeps the portable composition cases.
 
 GitHub Actions runs native validation, Chromium, Firefox, and the container tests in independent jobs in [the test workflow](../.github/workflows/test.yml).
-The `native-wasm-and-browser` job keeps native tests, all parity comparisons, TypeScript checks, service and importer tests, adapter tests, and browser model tests.
-Its browser installation remains available for the parity scripts.
+The `rust-native` job runs the Rust format check, the Rust lint, and the full Rust test suite.
+The Rust tests write the native parity corpora, and the job uploads them as a build artifact.
+The `wasm-and-browser-parity` job waits for the Rust job to finish, downloads the corpora, and runs all parity comparisons.
+The `typescript-and-applications` job runs the TypeScript check, the core, morphology, and search tests, the service and importer tests, the synthetic activity kit, the application builds, the adapter tests, and the browser model tests.
+The parity and TypeScript jobs each build the shared WebAssembly, and the parity job installs Chromium for the parity scripts.
 The `chromium-browser` job runs the unchanged `Test browser behavior` step with `--project chromium` and one worker.
 It follows the Firefox setup pattern, installs Chromium only, and builds the shared WebAssembly and browser assets.
 The `firefox-editing-and-authoring` job keeps the `firefox-editor`, `firefox-authoring`, and `firefox-wizard` projects with their existing test selection.
 The `standalone-image` job continues to build and test the container separately.
 
-The native job allows 65 minutes. The Chromium job allows 75 minutes.
+The Rust job allows 75 minutes. The parity job allows 30 minutes, and the TypeScript job allows 35 minutes.
+The Chromium job allows 75 minutes.
 Firefox keeps its 30-minute timeout, and the container job keeps its 60-minute timeout.
-Eight successful samples measured about 50 to 86 minutes for the combined native and Chromium job.
-Chromium alone took about 30 to 43 minutes. Subtracting that step leaves about 20 to 46 minutes for the retained native work.
-[Run 42115377179](https://github.com/int19h/jbovlacku/actions/runs/42115377179) took 86m04s overall and 40m40s for Chromium, leaving 45m24s for native work.
-[Run 42117738736](https://github.com/int19h/jbovlacku/actions/runs/42117738736) took 50m03s overall and 29m43s for Chromium, leaving 20m20s for native work.
-Chromium needs separate setup and builds. Allowing up to 15 minutes covers the observed 9 to 11-minute JavaScript installs, Rust setup, and builds.
-The timeouts leave further room for runner and download variation.
+Before the split, 21 measured attempts of the old combined job took about 28 to 65 minutes in total.
+The Rust part took about 16 to 53 minutes, the parity part about 5 to 15 minutes, and the TypeScript part about 9 to 22 minutes.
+The timeouts leave further room over those worst cases for runner and download variation.
 
 The browser tests start their own API and Vite processes. Ports `8797` and `5177` must be free.
 `JVC_TEST_API_PORT` and `JVC_WEB_PORT` select other ports. `JVC_TEST_ROOT` selects the parent directory of the run data. Each run creates a separate `browser-run-*` directory. Workers reuse that directory through `JVC_PLAYWRIGHT_RUN_ROOT`. Runs retain their fixtures and results.
