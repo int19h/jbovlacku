@@ -4272,7 +4272,7 @@ mod rebuild_tests {
     }
 
     #[test]
-    fn overlay_resource_rebuild_matches_policy_early_return_with_suspension() {
+    fn overlay_change_on_a_refused_state_rebuilds_instead_of_applying_the_overlay() {
         let prepared = base();
         let mut graph = Graph::new(prepared.nodes.clone(), &Limits::default());
         let issuer = identity_from_seed(&[1; 32]);
@@ -10703,7 +10703,7 @@ mod rebuild_tests {
     }
 
     #[test]
-    fn event_quota_refusal_and_refused_rebuilds_do_not_rehash_referenced_selections() {
+    fn event_quota_and_refused_rebuilds_reuse_selection_validity_until_selections_are_resupplied() {
         let ids: Vec<String> = (0..4_096usize)
             .map(|i| format!("jve1:{:064x}", i + 1))
             .collect();
@@ -10810,8 +10810,8 @@ mod rebuild_tests {
         assert!(recovered.evaluation().available);
         assert_eq!(recovered.traversal_budget(), 10_000_512 + 4_096);
         // The refused state has no work left to compare the newly supplied
-        // IDs, so it does not read them; the rebuild validates the selection
-        // once, after the resolver has checked its length.
+        // IDs, so it does not read them and copies no verdict into the new
+        // cache; the rebuild validates the resupplied selection once.
         assert_eq!(policy::selection_hash_validations(), 2);
     }
 

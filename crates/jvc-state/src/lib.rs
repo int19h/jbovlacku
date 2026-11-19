@@ -668,7 +668,7 @@ fn event_limit_evaluation(input: &EvaluationOptions) -> Evaluation {
     resource_unavailable(&mut result);
     result
 }
-#[allow(dead_code)]
+#[cfg(test)]
 fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation {
     let mut cache = BTreeMap::new();
     let resolved = policy::resolve_referenced_selections_cached(

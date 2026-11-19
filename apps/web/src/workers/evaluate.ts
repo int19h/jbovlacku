@@ -582,8 +582,10 @@ export class EvaluationWorker {
     if (!this.session || this.sessionKey !== message.base)
       throw new Error("The base evaluation session is not loaded.");
     // A refused base holds no actor map, so an overlay change that makes
-    // it available must send the new one. An available base keeps its
-    // actors under any overlay.
+    // it available must send the new one. From an available base the
+    // reply omits the map and the page keeps the base's map; if the new
+    // overlay makes the session rebuild and refuse, that map still
+    // matches the records.
     const baseAvailable = this.session.summary().available;
     const next = this.session.withOverlay(message.overlay ?? undefined);
     this.release();
