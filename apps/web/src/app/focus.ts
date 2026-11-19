@@ -7,6 +7,10 @@
  * - an element that the reader edits: input, or a key or pointer action on
  *   an editable element, such as typing, caret movement, or selection in a
  *   field that already has the focus;
+ * - an editable element inside the changing page content that receives the
+ *   focus, also without key or pointer events, as a screen reader can move
+ *   it. A page that moves the focus to a field itself uses the explicit
+ *   focus helper, so a bare focus move to a field is the reader's;
  * - an element outside the changing page content that receives the focus,
  *   also without key or pointer events, as a screen reader can move it;
  * - an element inside the page content that receives the focus in the same
@@ -17,8 +21,9 @@
  * not a new choice. A key that only scrolls changes no focus, so the heading
  * still receives it. A focus inside an open dialog is not a reader choice
  * here; the renderer keeps it with its own dialog guard. A page's own focus
- * inside the content is not a reader choice either. A page must use the
- * explicit focus helper to keep its own control focused when it finishes.
+ * on a non-editable element inside the content is not a reader choice
+ * either. A page must use the explicit focus helper to keep its own control
+ * focused when it finishes.
  */
 const NON_TEXT_INPUTS = new Set([
   "button",
@@ -86,6 +91,10 @@ export function watchReaderFocus(
     )
       chosen.add(event.target);
   };
+  // Focus moves made by focus() below are the page's own choice, not the
+  // reader's. Their focusin arrives while focus() runs, so mark the target
+  // first and let onFocus consume the mark instead of recording a choice.
+  const helperFocus = new Set<Element>();
   const onFocus = (event: FocusEvent) => {
     const target = event.target;
     if (
@@ -94,7 +103,9 @@ export function watchReaderFocus(
       target.closest("dialog[open]")
     )
       return;
-    if (!main.contains(target) || readerEvent) chosen.add(target);
+    if (helperFocus.delete(target)) return;
+    if (!main.contains(target) || readerEvent || isEditable(target))
+      chosen.add(target);
   };
   // A touch tap sends pointerdown when the touch starts, but the emulated
   // mousedown and its focus move come later, in another task. The mousedown
@@ -122,8 +133,14 @@ export function watchReaderFocus(
         document.activeElement?.closest("dialog[open]")
       )
         return false;
+      // No focusin fires when the target already has the focus, so only
+      // mark a target that the call will actually move the focus to.
+      if (document.activeElement !== target) helperFocus.add(target);
       target.focus(options);
-      if (document.activeElement !== target) return false;
+      if (document.activeElement !== target) {
+        helperFocus.delete(target);
+        return false;
+      }
       intended.add(target);
       return true;
     },

@@ -1019,6 +1019,65 @@ test("search preview uses strongest lexical entry with stable ties and active-vi
   assert.equal(((await bad.json()) as { code: string }).code, "retired");
   coordinator.close();
 });
+test("server search keeps its own policy past the local product cap", async () => {
+  // The local 4,096-unit cap never applies to remote search: the review's
+  // 4,097-unit input returns the klama word here as on main, both ordinary
+  // and literal, instead of the 503 the shared engine check produced.
+  const { objects, coordinator, options } = await instance();
+  const { createEvent, wordId } = await import("../../core/src/index.ts");
+  const word = { language: "jbo" as const, spelling: "klama" };
+  const action = {
+    kind: "definition.publish",
+    word: wordId(word),
+    language: "en",
+    parents: [],
+    origin: "native",
+  };
+  const body = {
+    word,
+    language: "en",
+    text: [["goes to a destination."]],
+    frame: null,
+    operands: [],
+    glosses: [{ language: "en", text: "book", sense: null }],
+    notes: [],
+    etymology: { text: [], formation: null, compound: null },
+    examples: [],
+    classification: { kind: "gismu", selmaho: [] },
+    labels: [],
+    sources: [],
+    license: {
+      expression: "CC0-1.0",
+      url: null,
+      attribution: "Synthetic search fixture",
+    },
+    legacy: null,
+  };
+  const token = createEvent(seed, [], "7".repeat(32), action, body);
+  const view = viewFixture("7");
+  const service: any = new DictionaryService(objects, coordinator, {
+    ...options,
+    selectedView: view.envelope.id,
+  });
+  await service.admitMany(
+    [token, view].map((entry) => utf8(JSON.stringify(entry))),
+  );
+  const query = " ".repeat(4093) + "book";
+  assert.equal(query.length, 4097);
+  for (const suffix of ["", "&literal=1"]) {
+    const response = await service.fetch(
+      request(`/search?q=${query}&language=en${suffix}`),
+    );
+    assert.equal(response.status, 200);
+    const found: any = await response.json();
+    assert.ok(found.hits.length >= 1);
+    assert.ok(
+      found.hits.some((hit: any) => hit.match === "gloss"),
+      JSON.stringify(found.hits.map((hit: any) => hit.match)),
+    );
+  }
+  coordinator.close();
+});
 test("search text preserves place markers and readable rich nodes without metadata", async () => {
   const { plainDefinitionText } = await import("../src/packages.ts");
   assert.equal(

@@ -14,7 +14,11 @@ import {
 import { listedLanguage, languageName, plural } from "../lib/format.ts";
 import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
-import { downloadPackage, type CachedPackage } from "../data/search.ts";
+import {
+  downloadPackage,
+  reportPackageError,
+  type CachedPackage,
+} from "../data/search.ts";
 import { getCapabilities, getManifest, selfPeer } from "../data/api.ts";
 import type { Preferences } from "../data/store.ts";
 
@@ -261,7 +265,8 @@ export async function preferencesPage(
             );
             await renderPackages();
           } catch (error) {
-            app.announce(describe(error));
+            // A full store reports its own message instead of a raw quota error.
+            app.announce(describe(reportPackageError(error)));
           } finally {
             go.disabled = false;
           }
@@ -290,7 +295,8 @@ export async function preferencesPage(
                 app.announce(`The ${languageName(key)} package is refreshed.`);
                 await renderPackages();
               } catch (error) {
-                app.announce(describe(error));
+                // A full store reports its own message instead of a raw quota error.
+                app.announce(describe(reportPackageError(error)));
               }
             },
             { class: "btn btn-quiet" },

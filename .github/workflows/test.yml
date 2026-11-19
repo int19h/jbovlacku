@@ -13,10 +13,61 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  native-wasm-and-browser:
+  rust-native:
     runs-on: ubuntu-24.04
-    # Measured native work without Chromium took about 20 to 46 minutes.
-    timeout-minutes: 65
+    # In 21 recent attempts this part took 16 to 53 minutes, with a median of 25.
+    # The Rust test step alone took 14 to 50 minutes.
+    timeout-minutes: 75
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: /build/jbovlacku/target
+      JVC_TEST_ROOT: /build/jbovlacku/tests
+      JVC_STATE_PARITY_DIR: /build/jbovlacku/state-parity
+      JVC_SHUN_PARITY_DIR: /build/jbovlacku/shun-parity
+      JVC_PREPARATION_PARITY_DIR: /build/jbovlacku/preparation-parity
+      JVC_WORD_RESULT_PARITY_DIR: /build/jbovlacku/word-result-parity
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.21.0"
+      - name: Prepare test files
+        run: |
+          sudo mkdir -p /build/jbovlacku
+          sudo chown "$(id -u):$(id -g)" /build/jbovlacku
+      - name: Install Rust tools
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.105 --locked --jobs 2
+      - name: Format Rust
+        run: cargo fmt --all --check
+      - name: Lint Rust
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test format, causal state, and ranking
+        run: cargo test --workspace --locked --jobs 2 -- --test-threads=2
+      # The Rust tests write the native parity corpora into the four parity
+      # directories above. The parity job below reads them from this artifact.
+      # Each corpus variable lives in four places: the env of this job, the
+      # path list below, the env of the parity job, and the check step of
+      # the parity job. Keep all four in step.
+      - name: Upload native parity corpora
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-parity-corpora
+          path: |
+            /build/jbovlacku/state-parity
+            /build/jbovlacku/shun-parity
+            /build/jbovlacku/preparation-parity
+            /build/jbovlacku/word-result-parity
+          if-no-files-found: error
+          retention-days: 7
+
+  wasm-and-browser-parity:
+    needs: rust-native
+    runs-on: ubuntu-24.04
+    # Since the browser install stopped using apt, this part took 5 to 7
+    # minutes in 4 runs, with a median of 6.
+    timeout-minutes: 30
     env:
       CARGO_BUILD_JOBS: "2"
       CARGO_TARGET_DIR: /build/jbovlacku/target
@@ -40,15 +91,30 @@ jobs:
           rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.105 --locked --jobs 2
       - name: Install JavaScript and browser tools
+        # The runner image has the browser libraries. Probe a launch.
+        # After a failed probe, install the libraries with apt and probe again.
         run: |
           npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
-      - name: Format Rust
-        run: cargo fmt --all --check
-      - name: Lint Rust
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Test format, causal state, and ranking
-        run: cargo test --workspace --locked --jobs 2 -- --test-threads=2
+          npx playwright install chromium
+          if ! node scripts/ci/probe-browser.mjs chromium; then
+            echo "::warning::Browser launch failed. Installing system packages with apt."
+            npx playwright install-deps chromium
+            node scripts/ci/probe-browser.mjs chromium
+          fi
+      - name: Download native parity corpora
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-parity-corpora
+          path: /build/jbovlacku
+      - name: Check native parity corpora
+        run: |
+          for name in JVC_STATE_PARITY_DIR JVC_SHUN_PARITY_DIR JVC_PREPARATION_PARITY_DIR JVC_WORD_RESULT_PARITY_DIR; do
+            directory="${!name}"
+            if [ ! -d "$directory" ] || [ -z "$(find "$directory" -maxdepth 1 -type f -print -quit)" ]; then
+              echo "$name: the native parity corpus is missing or empty: ${directory:-<unset>}" >&2
+              exit 1
+            fi
+          done
       - name: Compare native and Wasm float kernel results
         timeout-minutes: 10
         run: node scripts/test-f64-kernel-parity.mjs
@@ -64,6 +130,34 @@ jobs:
         run: node scripts/test-f64-word-results-parity.mjs
       - name: Compare native and WebAssembly float row bits
         run: node scripts/test-f64-row-parity.mjs
+
+  typescript-and-applications:
+    runs-on: ubuntu-24.04
+    # In 20 recent attempts this part took 9 to 22 minutes with the browser
+    # install, which no longer runs in this job.
+    timeout-minutes: 35
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: /build/jbovlacku/target
+      JVC_TEST_ROOT: /build/jbovlacku/tests
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.21.0"
+          cache: npm
+      - name: Prepare test files
+        run: |
+          sudo mkdir -p /build/jbovlacku
+          sudo chown "$(id -u):$(id -g)" /build/jbovlacku
+      - name: Install Rust tools
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.105 --locked --jobs 2
+      - name: Install JavaScript packages
+        run: npm ci --no-audit --no-fund
+      - name: Build shared WebAssembly
+        run: npm run build:core
       - name: Check TypeScript
         run: npm run typecheck
       - name: Test core session results and cache
@@ -90,7 +184,8 @@ jobs:
 
   chromium-browser:
     runs-on: ubuntu-24.04
-    # Chromium took about 30 to 43 minutes, plus up to 15 minutes for setup.
+    # Chromium took about 38 minutes in 4 runs since the browser install
+    # stopped using apt.
     timeout-minutes: 75
     env:
       CARGO_BUILD_JOBS: "2"
@@ -111,9 +206,16 @@ jobs:
           rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.105 --locked --jobs 2
       - name: Install JavaScript and browser tools
+        # The runner image has the browser libraries. Probe a launch.
+        # After a failed probe, install the libraries with apt and probe again.
         run: |
           npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
+          if ! node scripts/ci/probe-browser.mjs chromium; then
+            echo "::warning::Browser launch failed. Installing system packages with apt."
+            npx playwright install-deps chromium
+            node scripts/ci/probe-browser.mjs chromium
+          fi
       - name: Build shared WebAssembly
         run: npm run build:core
       - name: Build browser application
@@ -123,7 +225,8 @@ jobs:
 
   firefox-editing-and-authoring:
     runs-on: ubuntu-24.04
-    # Firefox took about 10 minutes, plus about 4 minutes for setup and builds.
+    # Firefox took 11 to 12 minutes in 4 runs since the browser install
+    # stopped using apt.
     timeout-minutes: 30
     env:
       CARGO_BUILD_JOBS: "2"
@@ -144,9 +247,16 @@ jobs:
           rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.105 --locked --jobs 2
       - name: Install JavaScript and browser tools
+        # The runner image has the browser libraries. Probe a launch.
+        # After a failed probe, install the libraries with apt and probe again.
         run: |
           npm ci --no-audit --no-fund
-          npx playwright install --with-deps firefox
+          npx playwright install firefox
+          if ! node scripts/ci/probe-browser.mjs firefox; then
+            echo "::warning::Browser launch failed. Installing system packages with apt."
+            npx playwright install-deps firefox
+            node scripts/ci/probe-browser.mjs firefox
+          fi
       - name: Build shared WebAssembly
         run: npm run build:core
       - name: Build browser application

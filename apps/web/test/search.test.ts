@@ -121,9 +121,9 @@ test("hash-correct packages reject malformed descriptors and every entry field b
         { name: "negative count", descriptor: { count: -1 } },
         { name: "fractional count", descriptor: { count: 1.5 } },
         { name: "missing hash", descriptor: { hash: null } },
-        { name: "too many parts", parts: 129 },
-        { name: "too many bytes", parts: 33, huge: true },
-        { name: "too many entries", parts: 101, many: true },
+        { name: "part over 4 MiB", descriptor: { bytes: 4194305 } },
+        { name: "part over 2000 entries", descriptor: { count: 2001 } },
+        { name: "manifest over 1 MiB", manifestBytes: 1048577 },
         ...[
           "event",
           "word",
@@ -173,7 +173,7 @@ test("hash-correct packages reject malformed descriptors and every entry field b
             {
               language: "en",
               hash: core.contentHash(pkgBytes),
-              bytes: pkgBytes.length,
+              bytes: scenario.manifestBytes ?? pkgBytes.length,
             },
           ],
         };
@@ -217,6 +217,701 @@ test("hash-correct packages reject malformed descriptors and every entry field b
       result.name !== "valid",
   ))
     expect(result.partRequests, result.name).toBe(0);
+});
+
+test("a valid package above the old per-language totals downloads and searches", async ({
+  page,
+}) => {
+  test.setTimeout(240000);
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { downloadPackage, localSearch } = await import(
+      String("/src/data/search.ts")
+    );
+    const snapshot = "sha256:" + "a".repeat(64);
+    const bytes = (value: unknown) =>
+      core.utf8(core.canonicalize(core.utf8(JSON.stringify(value))));
+    const event = (index: number) =>
+      "jve1:" + index.toString(16).padStart(64, "0");
+    // 200 parts of one entry each: above the old 128-part total.
+    const parts: { hash: string; bytes: number; count: number }[] = [];
+    const partByHash = new Map<string, Uint8Array<ArrayBuffer>>();
+    for (let index = 0; index < 200; index++) {
+      const partBytes = bytes([
+        {
+          event: event(index + 1),
+          word: { language: "jbo", spelling: "broda" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "x1 is a book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        },
+      ]);
+      parts.push({
+        hash: core.contentHash(partBytes),
+        bytes: partBytes.length,
+        count: 1,
+      });
+      partByHash.set(core.contentHash(partBytes), partBytes);
+    }
+    const pkgBytes = core.utf8(
+      JSON.stringify({ version: 1, language: "en", snapshot, parts }),
+    );
+    const manifest = {
+      snapshot,
+      packages: [
+        {
+          language: "en",
+          hash: core.contentHash(pkgBytes),
+          bytes: pkgBytes.length,
+        },
+      ],
+    };
+    const oldFetch = window.fetch;
+    let partRequests = 0;
+    window.fetch = async (url) => {
+      if (String(url).endsWith("/manifest"))
+        return new Response(JSON.stringify(manifest));
+      if (String(url).includes("/package-parts/")) {
+        partRequests++;
+        const hash = decodeURIComponent(String(url).split("/package-parts/")[1]);
+        return new Response(partByHash.get(hash) ?? new Uint8Array());
+      }
+      return new Response(pkgBytes);
+    };
+    try {
+      const pkg = await downloadPackage("en");
+      const hits = localSearch(pkg.entries, "book");
+      return {
+        entries: pkg.entries.length,
+        partRequests,
+        groups: hits.length,
+        definitions: hits[0]?.definitions.length ?? 0,
+      };
+    } finally {
+      window.fetch = oldFetch;
+    }
+  }, corePath);
+  expect(result.entries).toBe(200);
+  expect(result.partRequests).toBe(200);
+  expect(result.groups).toBe(1);
+  expect(result.definitions).toBe(200);
+});
+
+test("a valid package above 200,000 entries and 128 MiB downloads", async ({
+  page,
+}) => {
+  test.setTimeout(300000);
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { downloadPackage, localSearch } = await import(
+      String("/src/data/search.ts")
+    );
+    const snapshot = "sha256:" + "a".repeat(64);
+    const bytes = (value: unknown) =>
+      core.utf8(core.canonicalize(core.utf8(JSON.stringify(value))));
+    const padding = "x".repeat(480);
+    let serial = 0;
+    const partBlobs: { hash: string; bytes: number; count: number }[] = [];
+    const partByHash = new Map<string, Uint8Array<ArrayBuffer>>();
+    // 101 parts of 2,000 entries: 202,000 entries and about 140 MiB,
+    // above both old totals while each part keeps the 4 MiB bound.
+    let totalBytes = 0;
+    for (let part = 0; part < 101; part++) {
+      const data = [];
+      for (let index = 0; index < 2000; index++) {
+        serial++;
+        data.push({
+          event: "jve1:" + serial.toString(16).padStart(64, "0"),
+          word: { language: "jbo", spelling: "broda" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: `x1 is a book ${padding}`,
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        });
+      }
+      const partBytes = bytes(data);
+      totalBytes += partBytes.length;
+      partBlobs.push({
+        hash: core.contentHash(partBytes),
+        bytes: partBytes.length,
+        count: data.length,
+      });
+      partByHash.set(core.contentHash(partBytes), partBytes);
+    }
+    const pkgBytes = core.utf8(
+      JSON.stringify({ version: 1, language: "en", snapshot, parts: partBlobs }),
+    );
+    const manifest = {
+      snapshot,
+      packages: [
+        {
+          language: "en",
+          hash: core.contentHash(pkgBytes),
+          bytes: pkgBytes.length,
+        },
+      ],
+    };
+    const oldFetch = window.fetch;
+    let partRequests = 0;
+    window.fetch = async (url) => {
+      if (String(url).endsWith("/manifest"))
+        return new Response(JSON.stringify(manifest));
+      if (String(url).includes("/package-parts/")) {
+        partRequests++;
+        const hash = decodeURIComponent(String(url).split("/package-parts/")[1]);
+        return new Response(partByHash.get(hash) ?? new Uint8Array());
+      }
+      return new Response(pkgBytes);
+    };
+    try {
+      const pkg = await downloadPackage("en");
+      const hits = localSearch(pkg.entries, "book");
+      return {
+        entries: pkg.entries.length,
+        partRequests,
+        totalBytes,
+        groups: hits.length,
+      };
+    } finally {
+      window.fetch = oldFetch;
+    }
+  }, corePath);
+  expect(result.entries).toBe(202000);
+  expect(result.partRequests).toBe(101);
+  expect(result.totalBytes).toBeGreaterThan(134217728);
+  expect(result.groups).toBe(1);
+});
+
+test("storage-full and configured-quota failures name their own cause", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { downloadPackage } = await import(String("/src/data/search.ts"));
+    const snapshot = "sha256:" + "a".repeat(64);
+    const entry = {
+      event: "jve1:" + "b".repeat(64),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    };
+    const second = { ...entry, event: "jve1:" + "c".repeat(64) };
+    const bytes = (value: unknown) =>
+      core.utf8(core.canonicalize(core.utf8(JSON.stringify(value))));
+    const partBytes = bytes([entry, second]);
+    const pkgBytes = core.utf8(
+      core.canonicalize(
+        core.utf8(
+          JSON.stringify({
+            version: 1,
+            language: "en",
+            snapshot,
+            parts: [
+              {
+                hash: core.contentHash(partBytes),
+                bytes: partBytes.length,
+                count: 2,
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+    const manifest = {
+      snapshot,
+      packages: [
+        {
+          language: "en",
+          hash: core.contentHash(pkgBytes),
+          bytes: pkgBytes.length,
+        },
+      ],
+    };
+    const oldFetch = window.fetch;
+    const outcomes: string[] = [];
+    try {
+      // The platform reports no room mid-download.
+      window.fetch = async (url) => {
+        if (String(url).endsWith("/manifest"))
+          return new Response(JSON.stringify(manifest));
+        if (String(url).includes("/package-parts/"))
+          throw new DOMException("Persistent storage is full.", "QuotaExceededError");
+        return new Response(pkgBytes);
+      };
+      try {
+        await downloadPackage("en");
+        outcomes.push("storage: resolved");
+      } catch (error) {
+        outcomes.push(`storage: ${(error as Error).message}`);
+      }
+      // A configured quota below the package size.
+      window.fetch = async (url) => {
+        if (String(url).endsWith("/manifest"))
+          return new Response(JSON.stringify(manifest));
+        if (String(url).includes("/package-parts/"))
+          return new Response(partBytes);
+        return new Response(pkgBytes);
+      };
+      try {
+        await downloadPackage("en", { packageQuota: { entries: 1 } });
+        outcomes.push("quota: resolved");
+      } catch (error) {
+        outcomes.push(`quota: ${(error as Error).message}`);
+      }
+      // A quota above the package size changes nothing.
+      const pkg = await downloadPackage("en", {
+        packageQuota: { parts: 4, entries: 10, bytes: 1 << 20 },
+      });
+      outcomes.push(`unlimited: ${pkg.entries.length}`);
+      // An allocation failure while a part decodes reports the storage
+      // message instead of the raw error.
+      const realParse = JSON.parse;
+      let parses = 0;
+      JSON.parse = ((text: string, reviver?: unknown) => {
+        if (++parses === 3)
+          throw new RangeError("Invalid string length");
+        return realParse(text, reviver as undefined);
+      }) as typeof JSON.parse;
+      try {
+        await downloadPackage("en");
+        outcomes.push("range: resolved");
+      } catch (error) {
+        outcomes.push(`range: ${(error as Error).message}`);
+      } finally {
+        JSON.parse = realParse;
+      }
+      return outcomes;
+    } finally {
+      window.fetch = oldFetch;
+    }
+  }, corePath);
+  expect(result[0]).toContain("does not fit");
+  expect(result[0]).not.toContain("invalid");
+  expect(result[1]).toContain("quota");
+  expect(result[2]).toBe("unlimited: 2");
+  expect(result[3]).toContain("does not fit");
+});
+
+test("a full store reports does-not-fit when saving a downloaded package", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const snapshot = "sha256:" + "a".repeat(64);
+  const fixture = await page.evaluate(
+    async ({ corePath, snapshot, helpers }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const build = new Function("core", helpers + "return { build, v1 };")(
+        core,
+      );
+      return { v1: build.build(1, snapshot, [build.v1("cukta", "1")]) };
+    },
+    { corePath, snapshot, helpers: packageFixture },
+  );
+  await servePackages(page, snapshot, {
+    v1: fixture.v1 as Built,
+    v2: null,
+  });
+  await page.goto("/preferences");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const real = LocalStore.prototype.put;
+    LocalStore.prototype.put = function (store: string, id: string, value: unknown) {
+      if (store === "packages")
+        return Promise.reject(
+          new DOMException(
+            "Persistent storage is full.",
+            "QuotaExceededError",
+          ),
+        );
+      return real.call(this, store, id, value);
+    };
+  });
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  // The platform reports no room while the downloaded package is saved.
+  await expect(page.locator("#app > [role=status]")).toContainText(
+    "does not fit",
+  );
+});
+
+test("a worker preparation over budget reports its limit through local search", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const message = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    try {
+      await searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), entries },
+        "en",
+        ["book"],
+        { workLimit: 1 },
+      );
+      return "resolved";
+    } catch (error) {
+      return (error as Error).message;
+    }
+  }, corePath);
+  // Validation charges the shared request budget before preparation runs, so
+  // the failure names the preparation phase instead of the scan.
+  expect(message).toContain("preparation");
+});
+
+test("the worker continues the transferred budget state", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const entries = Array.from({ length: 10000 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    try {
+      await searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), entries },
+        "en",
+        ["book"],
+        { workLimit: 200000 },
+      );
+      return "resolved";
+    } catch (error) {
+      return `${(error as Error).constructor.name}: ${(error as Error).message}`;
+    }
+  }, corePath);
+  // Per-entry content charges lift the shared-budget spend: validation,
+  // preparation, maps, scan, grouping, and response mapping spend about
+  // 210,000 units, so the response mapping refuses. Without the transferred
+  // and mapped stages the same request costs about 190,000 units and
+  // completes.
+  expect(outcome).toContain("work or time limit");
+});
+
+test("the worker charges the response transfer it posts", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    // One word shared by every entry keeps the whole response in a single
+    // hit: the transfer of its 20 references is what exceeds the budget.
+    const entries = Array.from({ length: 20 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    try {
+      await searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), entries },
+        "en",
+        ["/.*/"],
+        { workLimit: 450 },
+      );
+      return "resolved";
+    } catch (error) {
+      return `${(error as Error).constructor.name}: ${(error as Error).message}`;
+    }
+  }, corePath);
+  // A pattern query spends no parser work, so only the transfer and rebuild
+  // charges can refuse. Per-entry content charges lift the shared-budget
+  // spend to about 465 units with the transfer; at 450 the previous head
+  // still resolves while only the reply-transfer charge refuses.
+  expect(outcome).toContain("work or time limit");
+});
+
+test("the worker charges every matching rafsi in the response transfer", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    // One word shared by every entry keeps the whole response in a single
+    // hit; each entry carries four distinct retained rafsi, so the hit
+    // reports 80 matching rafsi. A rafsi-only pattern query matches them
+    // all without parser work.
+    const entries = Array.from({ length: 20 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+      issuer: "ed25519:" + "a".repeat(64),
+      notes: false,
+      rafsi: Array.from({ length: 4 }, (_, j) => `raf${index}x${j}`),
+      rafsi_complete: true,
+      attribution: null,
+    }));
+    try {
+      await searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), version: 2, entries },
+        "en",
+        ["/raf/"],
+        { rafsiOnly: true, workLimit: 1100 },
+      );
+      return "resolved";
+    } catch (error) {
+      return `${(error as Error).constructor.name}: ${(error as Error).message}`;
+    }
+  }, corePath);
+  // The mapping and rebuild charges alone leave the request under the limit,
+  // so only the per-spelling reply-transfer charge refuses it. The previous
+  // head, which clones the 80 spellings for free, resolves the same request.
+  expect(outcome).toContain("work or time limit");
+});
+
+test("a worker validation budget refusal keeps its resource type", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const { PackageValidationError } = await import(
+      String("/src/data/package-search.ts")
+    );
+    // Ten ordinary entries cost 40 units to transfer and 40 more to
+    // validate: at 60 the worker still validates, but its budget refusal
+    // reports a resource failure instead of an invalid package.
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    try {
+      await searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), entries },
+        "en",
+        ["book"],
+        { workLimit: 60 },
+      );
+      return "resolved";
+    } catch (error) {
+      return `${(error as Error).constructor.name}: ${(error as Error).message} :: notInvalid=${!(error instanceof PackageValidationError)}`;
+    }
+  }, corePath);
+  expect(outcome).toContain("SearchBudgetError");
+  expect(outcome).toContain("too costly to build");
+  expect(outcome).toContain("notInvalid=true");
+});
+
+test("a reply held past the deadline refuses through local search", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    // Hold every worker reply for 600 ms: with a 250 ms deadline the
+    // resumed budget has expired by the time any result arrives. The
+    // client assigns worker.onmessage, so the harness wraps that setter.
+    const Original = window.Worker;
+    const delay = (
+      listener: EventListenerOrEventListenerObject,
+      target: WindowProxy | Worker,
+    ) => {
+      const delayed = (event: MessageEvent) => {
+        setTimeout(() => {
+          if (typeof listener === "function") listener.call(target, event);
+          else listener.handleEvent(event);
+        }, 600);
+      };
+      return delayed as EventListener;
+    };
+    window.Worker = class extends Original {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        if (!String(url).includes("package-search-worker")) return;
+        const originalAdd = this.addEventListener.bind(this);
+        this.addEventListener = ((
+          type: string,
+          listener: EventListenerOrEventListenerObject | null,
+          options?: AddEventListenerOptions,
+        ) => {
+          if (type === "message" && listener)
+            return originalAdd(type, delay(listener, this), options);
+          return originalAdd(
+            type,
+            listener as EventListener,
+            options as AddEventListenerOptions,
+          );
+        }) as typeof this.addEventListener;
+        // The own accessor shadows the prototype's, so it forwards the
+        // wrapped handler to the real registration as well; otherwise the
+        // browser would dispatch to nothing and every request would hang.
+        let handler: EventListenerOrEventListenerObject | null = null;
+        const protoSetter = Object.getOwnPropertyDescriptor(
+          Original.prototype,
+          "onmessage",
+        )?.set;
+        Object.defineProperty(this, "onmessage", {
+          configurable: true,
+          get: () => handler,
+          set: (next: EventListenerOrEventListenerObject | null) => {
+            handler = next;
+            const wrapped = next ? delay(next, this) : next;
+            if (protoSetter) protoSetter.call(this, wrapped);
+            else if (wrapped) originalAdd("message", wrapped);
+          },
+        });
+      }
+    };
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    const attempts: string[] = [];
+    for (const query of ["zzz-no-such-word", "book"]) {
+      try {
+        const found = await searchPackage(
+          { snapshot: "sha256:" + "a".repeat(64), entries },
+          "en",
+          [query],
+          { deadlineMs: 250 },
+        );
+        attempts.push(`${query}:resolved:${found.hits[0].length}`);
+      } catch (error) {
+        attempts.push(
+          `${query}:${(error as Error).constructor.name}:${(error as Error).message}`,
+        );
+      }
+    }
+    return attempts.join(" | ");
+  }, corePath);
+  // Even the zero-hit reply arrives past the deadline, so the resumed
+  // budget refuses before returning it; the non-empty reply refuses too.
+  expect(outcome).toContain("zzz-no-such-word:SearchBudgetError");
+  expect(outcome).toContain("work or time limit");
+  expect(outcome).toContain("book:SearchBudgetError");
+});
+
+test("a physical package-transfer failure reports does-not-fit", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const outcome = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const { PackageStorageError } = await import(
+      String("/src/data/search.ts")
+    );
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "x1 is a book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    }));
+    const pkg = { snapshot: "sha256:" + "a".repeat(64), entries };
+    const results: string[] = [];
+    const Original = window.Worker;
+    // A constructor parameter property would shadow the failure with its
+    // own undefined, so the injected failure lives in a closure.
+    let fail: unknown;
+    window.Worker = class extends Original {
+      override postMessage(message: unknown, ...rest: never[]) {
+        if (
+          message &&
+          typeof message === "object" &&
+          "pkg" in (message as Record<string, unknown>) &&
+          fail !== undefined
+        )
+          throw fail;
+        return super.postMessage(message, ...rest);
+      }
+    };
+    // An allocation failure while posting reports does-not-fit.
+    fail = new RangeError("Array buffer allocation failed");
+    try {
+      await searchPackage(pkg, "en", ["book"]);
+      results.push("allocation:resolved");
+    } catch (error) {
+      results.push(
+        `allocation:${(error as Error).constructor.name}:${error instanceof PackageStorageError}`,
+      );
+    }
+    // Any other clone error keeps its own rejection.
+    fail = new Error("clone boom");
+    try {
+      await searchPackage(pkg, "en", ["book"]);
+      results.push("other:resolved");
+    } catch (error) {
+      results.push(
+        `other:${(error as Error).constructor.name}:${(error as Error).message}`,
+      );
+    }
+    window.Worker = Original;
+    return results.join(" | ");
+  }, corePath);
+  expect(outcome).toContain("allocation:PackageStorageError:true");
+  expect(outcome).toContain("other:Error:clone boom");
 });
 
 test("an invalid cached package is reported and server search stays usable", async ({
@@ -1316,4 +2011,98 @@ test("the local-query guard blocks result fetches and query-bearing capability v
   });
   expect(guard.forbidden).toHaveLength(5);
   expect(guard.leaks).toHaveLength(4);
+});
+
+test("an over-cap query is refused with a message before any search", async ({
+  page,
+}) => {
+  // Past the 4,096-character product limit the page reports the typed
+  // error instead of classifying, transferring, or matching the query.
+  // The package seed makes the query local; without one the page would
+  // fall back to remote search and keep the server policy.
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "en", {
+      snapshot: "sha256:" + "a".repeat(64),
+      version: 1,
+      entries: [
+        {
+          event: "jve1:" + "1".repeat(64),
+          word: { language: "jbo", spelling: "broda" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        },
+      ],
+    });
+  });
+  const query = "z".repeat(5000);
+  await page.goto(`/search?q=${query}&lang=en`);
+  await expect(
+    page.getByText("The search query is too long. Queries accept at most 4096 characters."),
+  ).toBeVisible();
+});
+
+for (const [label, saved] of [
+  ["a stored null", null],
+  [
+    "an invalid package",
+    { version: 2, snapshot: "sha256:" + "a".repeat(64), entries: [null] },
+  ],
+] as const)
+  test(`${label} keeps the server fallback past the local product cap`, async ({
+    page,
+  }) => {
+    // Local mode with an unusable saved package falls back to server search
+    // as on main. The length refusal belongs to local search on a usable
+    // package, so both group requests go out and no too-long notice shows.
+    await page.goto("/");
+    await page.evaluate(async (saved) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      await store.setPreferences({ searchMode: "local" });
+      await store.put("packages", "en", saved);
+    }, saved);
+    const requested: string[] = [];
+    await page.route("**/api/v1/search?**", (route) => {
+      requested.push(route.request().url());
+      return route.abort();
+    });
+    const query = " ".repeat(4093) + "book";
+    await page.goto(`/search?${new URLSearchParams({ q: query, lang: "en" })}`);
+    await expect.poll(() => requested.length, { timeout: 10000 }).toBe(2);
+    expect(requested.some((url) => url.includes("group=lojban"))).toBe(true);
+    expect(requested.some((url) => url.includes("group=definitions"))).toBe(
+      true,
+    );
+    await expect(page.getByText("The search query is too long.")).toHaveCount(
+      0,
+    );
+  });
+
+test("a remote search skips the local product cap", async ({ page }) => {
+  // Remote search keeps the server policy: a 4,097-unit query is sent to
+  // the server for both groups, not refused with the local notice.
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().setPreferences({ searchMode: "remote" });
+  });
+  const requested: string[] = [];
+  await page.route("**/api/v1/search?**", (route) => {
+    requested.push(route.request().url());
+    return route.abort();
+  });
+  await page.goto(`/search?q=${"z".repeat(4097)}&lang=en`);
+  await expect.poll(() => requested.length, { timeout: 10000 }).toBe(2);
+  expect(requested.some((url) => url.includes("group=lojban"))).toBe(true);
+  expect(requested.some((url) => url.includes("group=definitions"))).toBe(
+    true,
+  );
+  await expect(
+    page.getByText("The search query is too long."),
+  ).toHaveCount(0);
 });

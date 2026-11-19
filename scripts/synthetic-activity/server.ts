@@ -1,9 +1,9 @@
 /** Small local HTTP adapter for tests. It uses the product service. */
 import { createServer } from "node:http";
-import { createHash } from "node:crypto";
-import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { readFile, mkdir, rename, open } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { initializeCore, coreCheckpointVersion } from "../../packages/core/src/index.ts";
 import { DictionaryService } from "../../packages/service/src/service.ts";
 import { FileObjectStore, SqliteCoordinator, SqliteIndexStore } from "../../apps/server/src/storage.ts";
@@ -12,6 +12,43 @@ import { FileCheckpointStore } from "../../apps/server/src/checkpoint.ts";
 import { readLoadedView, checkLoadedView, stateTraversalLimit } from "../../packages/importer/src/load-config.ts";
 import { lockDataDirectory } from "../../packages/importer/src/load-lock.ts";
 export interface ServerOptions { marker?: boolean; selectedView?: string }
+interface ProvenRun { source_server_id: string; event_ids: string[] }
+/** Event ids the running service retains, in the inventory's sorted order. */
+async function retainedEventIds(service: DictionaryService): Promise<string[]> {
+  const ids: string[] = [];
+  let after: string | null = null;
+  for (;;) {
+    const query = `/api/v1/inventory?kind=events&limit=1000${after ? `&after=${encodeURIComponent(after)}` : ""}`;
+    const response = await service.fetch(new Request(`http://127.0.0.1${query}`));
+    if (!response.ok) throw new Error("cannot read the event inventory");
+    const page = await response.json() as { ids?: string[]; next?: string | null };
+    ids.push(...(page.ids ?? []));
+    if (!page.next) break;
+    after = page.next;
+  }
+  ids.sort();
+  return ids;
+}
+async function readProvenRuns(path: string): Promise<ProvenRun[]> {
+  let parsed: any;
+  try { parsed = JSON.parse(await readFile(path, "utf8")); }
+  catch (error: any) { if (error?.code === "ENOENT") return []; throw error; }
+  if (!Array.isArray(parsed?.runs)) return [];
+  return parsed.runs.filter((run: any) => typeof run?.source_server_id === "string" && Array.isArray(run.event_ids) && run.event_ids.every((id: unknown) => typeof id === "string"));
+}
+/** Store bytes, publish the name, then store the directory update. */
+async function writeDurable(path: string, text: string): Promise<void> {
+  const tmp = `${path}.tmp-${randomBytes(8).toString("hex")}`;
+  const handle = await open(tmp, "w");
+  try {
+    await handle.writeFile(text);
+    await handle.sync();
+  } finally { await handle.close(); }
+  await rename(tmp, path);
+  const dir = await open(dirname(path), "r");
+  try { await dir.sync(); }
+  finally { await dir.close(); }
+}
 /**
  * A server for synthetic activity must hold a disposable copy.
  * A fresh empty directory gets a marker. A directory that already
@@ -20,31 +57,43 @@ export interface ServerOptions { marker?: boolean; selectedView?: string }
 export async function startServer(directory: string, port: number, selectedView?: string, options: ServerOptions = {}) {
   await mkdir(directory, { recursive: true });
   const markerPath = join(directory, "disposable.json");
+  const restoredPath = join(directory, "restored-runs.json");
+  // The data lock covers marker publication. A startup that loses
+  // the lock must not replace the winner's marker. A failed marker
+  // check releases the lock before the error leaves this function.
+  const release = await lockDataDirectory(directory, "node-server");
   // The marker's content decides, not only its presence. A file that
   // does not parse, or that does not say disposable: true, refuses
   // startup and never answers the marker endpoint.
   let markerValid = false;
-  if (options.marker !== false) {
-    const hasData = existsSync(join(directory, "coordinator.sqlite")) || existsSync(join(directory, "objects"));
-    if (existsSync(markerPath)) {
-      let parsed: any;
-      try { parsed = JSON.parse(await readFile(markerPath, "utf8")); } catch { parsed = null; }
-      if (parsed?.disposable !== true)
-        throw new Error("refused: disposable.json does not say disposable: true; the copy is not marked disposable");
-      markerValid = true;
-    } else if (hasData) {
-      throw new Error("refused: data directory has no disposable marker; mark a disposable copy before it is served");
-    } else {
-      await writeFile(markerPath, JSON.stringify({ disposable: true, created_at: new Date().toISOString() }) + "\n");
-      markerValid = true;
-    }
-  }
-  // The standalone server holds one lock for the whole data directory.
-  const release = await lockDataDirectory(directory, "node-server");
+  let serverId: string | undefined;
   let coordinator: SqliteCoordinator | undefined;
   let index: SqliteIndexStore | undefined;
   let evaluationRuntime: NodeEvaluationRuntime | undefined;
   try {
+    if (options.marker !== false) {
+      const hasData = existsSync(join(directory, "coordinator.sqlite")) || existsSync(join(directory, "objects"));
+      if (existsSync(markerPath)) {
+        let parsed: any;
+        try { parsed = JSON.parse(await readFile(markerPath, "utf8")); } catch { parsed = null; }
+        if (parsed?.disposable !== true)
+          throw new Error("refused: disposable.json does not say disposable: true; the copy is not marked disposable");
+        // A marker written before server ids existed gets one now.
+        // The id stays with this data directory, including a copy of it.
+        if (typeof parsed.server_id !== "string" || !/^[0-9a-f]{32}$/.test(parsed.server_id)) {
+          parsed.server_id = randomBytes(16).toString("hex");
+          await writeDurable(markerPath, JSON.stringify(parsed) + "\n");
+        }
+        serverId = parsed.server_id;
+        markerValid = true;
+      } else if (hasData) {
+        throw new Error("refused: data directory has no disposable marker; mark a disposable copy before it is served");
+      } else {
+        serverId = randomBytes(16).toString("hex");
+        await writeDurable(markerPath, JSON.stringify({ disposable: true, server_id: serverId, created_at: new Date().toISOString() }) + "\n");
+        markerValid = true;
+      }
+    }
     const coreBytes = await readFile(new URL("../../packages/core/generated/jvc_runtime_bg.wasm", import.meta.url));
     await initializeCore(coreBytes);
     // A loaded-view file that exists must be valid. Reading it needs
@@ -79,11 +128,50 @@ export async function startServer(directory: string, port: number, selectedView?
       try {
         if (markerValid && req.method === "GET" && req.url === "/synthetic-disposable") {
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ disposable: true }));
+          res.end(JSON.stringify({ disposable: true, server_id: serverId }));
+          return;
+        }
+        if (markerValid && req.method === "GET" && req.url === "/synthetic-restored") {
+          const runs = await readProvenRuns(restoredPath);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ runs }));
           return;
         }
         const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
         const body = Buffer.concat(chunks);
+        if (markerValid && req.method === "POST" && req.url === "/synthetic-restored") {
+          let parsed: any;
+          try { parsed = JSON.parse(body.toString("utf8")); } catch { parsed = null; }
+          const source = parsed?.source_server_id;
+          const eventIds = parsed?.event_ids;
+          const bad = typeof source !== "string" || !/^[0-9a-f]{32}$/.test(source) || !Array.isArray(eventIds) || eventIds.length === 0 || eventIds.some((id: unknown) => typeof id !== "string" || id.length === 0);
+          if (bad) {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify({ code: "bad_restored_run", message: "A proven copy needs a source server id and the event ids of that inventory." }));
+            return;
+          }
+          const claimed = [...eventIds].sort();
+          if (claimed.some((id: string, index: number) => index > 0 && id === claimed[index - 1])) {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify({ code: "bad_restored_run", message: "A proven copy lists each event id once." }));
+            return;
+          }
+          const held = await retainedEventIds(service);
+          if (claimed.length !== held.length || claimed.some((id: string, index: number) => id !== held[index])) {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify({ code: "bad_restored_run", message: "The server inventory does not equal the claimed proven copy." }));
+            return;
+          }
+          const runs = await readProvenRuns(restoredPath);
+          const known = runs.some((run) => run.source_server_id === source && run.event_ids.length === claimed.length && run.event_ids.every((id, index) => id === claimed[index]));
+          if (!known) {
+            runs.push({ source_server_id: source, event_ids: claimed });
+            await writeDurable(restoredPath, JSON.stringify({ runs }, null, 2) + "\n");
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ recorded: true }));
+          return;
+        }
         const request = new Request(`http://127.0.0.1:${port}${req.url}`, { method: req.method, headers: req.headers as HeadersInit, body: ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : body });
         const response = await service.fetch(request);
         res.writeHead(response.status, Object.fromEntries(response.headers.entries()));

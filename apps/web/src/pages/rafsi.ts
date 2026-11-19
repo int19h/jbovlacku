@@ -28,7 +28,11 @@ import {
   comparePatternSpelling,
   patternKey,
 } from "../../../../packages/search/src/pattern.ts";
-import { searchPackage } from "../data/package-search.ts";
+import {
+  SEARCH_QUERY_LENGTH_LIMIT,
+  SearchQueryTooLongError,
+} from "../../../../packages/search/src/index.ts";
+import { searchPackage, takeRafsiRows } from "../data/package-search.ts";
 
 /** Loads the version 2 package for a language, from cache or the server. */
 async function packageFor(
@@ -94,21 +98,15 @@ export async function wordsWithRafsi(
       signal,
     });
     limited ||= result.totals[0] > 1000;
-    for (const hit of result.hits[0]) {
+    for (const hit of result.hits[0])
       identities.set(hit.word.spelling, hit.word_id);
-      for (const spelling of hit.matchingRafsi ?? []) {
-        const key = `${hit.word_id}|${spelling}`;
-        if (!found.has(key) && found.size >= 1000) {
-          limited = true;
-          continue;
-        }
-        found.set(key, {
-          spelling: hit.word.spelling,
-          language,
-          rafsi: spelling,
-        });
-      }
-    }
+    // Rows stay capped at what the page renders: takeRafsiRows skips novel
+    // spellings past the cap but keeps visiting, so later duplicates still
+    // take the later language, as on main. The page sets limited only when
+    // a row was actually left out. Exactly 1,000 rows across every language
+    // show no notice, as on main. Later languages still run their own
+    // package checks because the loop continues.
+    if (takeRafsiRows(result.hits[0], language, found, 1000)) limited = true;
   }
   return Object.assign(
     [...found.values()].sort(
@@ -232,7 +230,14 @@ export async function rafsiPage(
 ) {
   const { main } = context;
   main.className = "surface-word";
-  const rafsi = (route.segments[1] ?? "").normalize("NFC");
+  // The cap is decided on the raw spelling before anything normalizes it:
+  // normalization can shrink the input (padded patterns) or expand it.
+  const raw = route.segments[1] ?? "";
+  if (raw.length > SEARCH_QUERY_LENGTH_LIMIT) {
+    main.append(p(describe(new SearchQueryTooLongError()), "notice"));
+    return;
+  }
+  const rafsi = raw.normalize("NFC");
   context.title(`Rafsi ${rafsi}`);
   main.append(
     el(
@@ -248,7 +253,9 @@ export async function rafsiPage(
   }
   let words: RafsiWords;
   try {
-    words = await wordsWithRafsi(app, rafsi, context.signal);
+    // The raw spelling goes to the search: the engine normalizes it
+    // internally, so the result matches a pre-normalized input exactly.
+    words = await wordsWithRafsi(app, raw, context.signal);
   } catch (error) {
     if (context.live()) main.append(p(describe(error), "notice"));
     return;

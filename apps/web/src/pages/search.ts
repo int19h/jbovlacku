@@ -6,12 +6,16 @@ import {
 } from "../../../../packages/search/src/index.ts";
 import { naturalLanguageNote } from "../../../../packages/search/src/pattern.ts";
 import {
+  previewEntryForHit,
   searchPackage,
   PackageValidationError,
   type PackageSearchResult,
 } from "../data/package-search.ts";
 import { kindLabel } from "../model/types.ts";
-import { isPatternQuery } from "../../../../packages/search/src/index.ts";
+import {
+  isPatternQuery,
+  SEARCH_QUERY_LENGTH_LIMIT,
+} from "../../../../packages/search/src/index.ts";
 /**
  * Search results. The header holds the query. The page shows a count line,
  * the definition-language select, and compact three-line rows.
@@ -257,7 +261,12 @@ export async function searchPage(
           signal: context.signal,
           view: getPreferredView(),
           includeRetired,
-          ...(query && isPatternQuery(query)
+          // The client refuses an over-long query with a typed error once
+          // the package is usable, and the catch below shows it as a notice,
+          // so the group choice does not scan that query.
+          ...(query &&
+          query.length <= SEARCH_QUERY_LENGTH_LIMIT &&
+          isPatternQuery(query)
             ? { group: "lojban" as const }
             : { grouped: true }),
         },
@@ -1010,7 +1019,9 @@ function hitRow(
     controlSlot.replaceChildren(
       judgmentControl(app, target, { score: null, unavailable: true }),
     );
-    const entry = (hit as LocalHit).entries?.find((e) => e.event === previewId);
+    // Local grouping keeps the preview entry first, so the row reads it in
+    // O(1) instead of scanning every entry of the hit.
+    const entry = previewEntryForHit(hit as LocalHit, previewId);
     if (entry && isV2(entry)) {
       if (entry.attribution) {
         const author = entry.attribution.author;

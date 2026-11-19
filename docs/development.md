@@ -1124,21 +1124,27 @@ Use `npm run test:web -- --project firefox-editor --project firefox-authoring --
 The native composition case uses Chromium's debugging protocol. Firefox keeps the portable composition cases.
 
 GitHub Actions runs native validation, Chromium, Firefox, and the container tests in independent jobs in [the test workflow](../.github/workflows/test.yml).
-The `native-wasm-and-browser` job keeps native tests, all parity comparisons, TypeScript checks, service and importer tests, adapter tests, and browser model tests.
-Its browser installation remains available for the parity scripts.
+The `rust-native` job runs the Rust format check, the Rust lint, and the full Rust test suite.
+The Rust tests write the native parity corpora, and the job uploads them as a build artifact.
+The `wasm-and-browser-parity` job runs only after the Rust job passes. It downloads the corpora and runs all parity comparisons.
+The `typescript-and-applications` job runs the TypeScript check, the core, morphology, and search tests, the service and importer tests, the synthetic activity kit, the application builds, the adapter tests, and the browser model tests.
+The parity and TypeScript jobs each build the shared WebAssembly, and the parity job installs Chromium for the parity scripts.
 The `chromium-browser` job runs the unchanged `Test browser behavior` step with `--project chromium` and one worker.
 It follows the Firefox setup pattern, installs Chromium only, and builds the shared WebAssembly and browser assets.
 The `firefox-editing-and-authoring` job keeps the `firefox-editor`, `firefox-authoring`, and `firefox-wizard` projects with their existing test selection.
 The `standalone-image` job continues to build and test the container separately.
+Put a new step in the job that matches its work. Rust-only checks go in `rust-native`.
+A step that reads the native corpora or compares native code with WebAssembly goes in `wasm-and-browser-parity`.
+TypeScript, service, and application steps that run without a browser go in `typescript-and-applications`.
+Any other step that starts a browser goes in the matching browser job, `chromium-browser` or `firefox-editing-and-authoring`.
 
-The native job allows 65 minutes. The Chromium job allows 75 minutes.
+The Rust job allows 75 minutes. The parity job allows 30 minutes, and the TypeScript job allows 35 minutes.
+The Chromium job allows 75 minutes.
 Firefox keeps its 30-minute timeout, and the container job keeps its 60-minute timeout.
-Eight successful samples measured about 50 to 86 minutes for the combined native and Chromium job.
-Chromium alone took about 30 to 43 minutes. Subtracting that step leaves about 20 to 46 minutes for the retained native work.
-[Run 42115377179](https://github.com/int19h/jbovlacku/actions/runs/42115377179) took 86m04s overall and 40m40s for Chromium, leaving 45m24s for native work.
-[Run 42117738736](https://github.com/int19h/jbovlacku/actions/runs/42117738736) took 50m03s overall and 29m43s for Chromium, leaving 20m20s for native work.
-Chromium needs separate setup and builds. Allowing up to 15 minutes covers the observed 9 to 11-minute JavaScript installs, Rust setup, and builds.
-The timeouts leave further room for runner and download variation.
+Before the split, 21 measured attempts of the old combined job took about 28 to 65 minutes in total.
+The Rust part took about 16 to 53 minutes, and the parity part about 5 to 15 minutes.
+The TypeScript part took about 9 to 22 minutes in the 20 attempts that finished it.
+The timeouts leave further room over those worst cases for runner and download variation.
 
 The browser tests start their own API and Vite processes. Ports `8797` and `5177` must be free.
 `JVC_TEST_API_PORT` and `JVC_WEB_PORT` select other ports. `JVC_TEST_ROOT` selects the parent directory of the run data. Each run creates a separate `browser-run-*` directory. Workers reuse that directory through `JVC_PLAYWRIGHT_RUN_ROOT`. Runs retain their fixtures and results.
@@ -1175,10 +1181,12 @@ mkdir -p .cache
 export JVC_STATE_PARITY_DIR="$(mktemp -d "$PWD/.cache/state-parity.XXXXXX")"
 export JVC_SHUN_PARITY_DIR="$(mktemp -d "$PWD/.cache/shun-parity.XXXXXX")"
 export JVC_PREPARATION_PARITY_DIR="$(mktemp -d "$PWD/.cache/preparation-parity.XXXXXX")"
+export JVC_WORD_RESULT_PARITY_DIR="$(mktemp -d "$PWD/.cache/word-result-parity.XXXXXX")"
 cargo test -p jvc-state -p jvc-runtime --locked --jobs 2 -- --test-threads=2
 npm run build:core
 node scripts/test-state-parity.mjs
 node scripts/test-f64-preparation-parity.mjs
+node scripts/test-f64-word-results-parity.mjs
 node scripts/test-f64-row-parity.mjs
 ```
 
@@ -1186,7 +1194,8 @@ The runner initializes the browser WebAssembly module before it compares complet
 It also compares host-only extraction and trusted insertion with the original verifying builder.
 Ranking cases compare `rank_word`, session ranking, and `rank_with_reviewers`, including `public_shun_block` and `private_block` details.
 When `JVC_SHUN_PARITY_DIR` is set, the runner requires shun-profile cases and both block reasons, separately and together.
-Without that variable, the runner compares state only. CI sets both corpus variables before the native tests and browser comparison.
+Without that variable, the runner compares state only. CI sets all four corpus variables before the native tests and browser comparison.
+Before comparisons start, CI requires each corpus variable to name a directory with at least one regular file at its top level.
 Ranking preparation has no default whole-dictionary quota. Its record, setup-envelope, and source-byte limits are optional caller quotas. The default setup-unit budget, computed by `effective_setup_units` for index entries `I` and copied key bytes `K`, is exactly `100,000,000 + 1,040 * I + K * (6 + 11 * bit_length(I + 1))`. The last term charges key comparison bytes during index construction: each key byte can be read in at most eleven comparisons per tree level. Those allowances cover the setup charge at the widest bit length, so the margin never falls below the fixed allowance as an ordinary dictionary grows. For the recorded base counts `I = 457930` and `K = 34112650`, the budget is 7,910,466,950 units. An explicit policy value replaces that default.
 The preparation comparison uses native fixtures across fresh, compact-record, forked, full-restore, and result-restore Wasm sessions.
 It compares descriptor bindings, effective targets, context graph metadata, and charged usage.

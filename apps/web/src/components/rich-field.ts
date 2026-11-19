@@ -2,7 +2,9 @@
 import "prosemirror-view/style/prosemirror.css";
 import { Slice, type Node as EditorNode } from "prosemirror-model";
 import {
+  AllSelection,
   EditorState,
+  NodeSelection,
   Plugin,
   TextSelection,
   type Selection,
@@ -301,6 +303,11 @@ function linkNodeView(node: EditorNode) {
   update(node);
   return { dom, contentDOM: dom, update };
 }
+
+// Keys whose native default moves the caret or selection.
+const MOTION_KEY =
+  /^(?:Home|End|PageUp|PageDown|Arrow(?:Left|Right|Up|Down))$/u;
+
 export function richField(label: string, options: RichFieldOptions) {
   const id = fieldId("rich"),
     labelId = `${id}-label`,
@@ -354,6 +361,12 @@ export function richField(label: string, options: RichFieldOptions) {
   let moved = false;
   let resetSelection: { doc: EditorNode; selection: Selection } | null = null;
   let pointerFocus = false;
+  // Motion-key names (event.key) whose keydown or repeat this editor
+  // received since its last focus event. On keyup, the editor syncs if the
+  // released key name matches a recorded name; the release consumes that
+  // name. Names, not physical keys, are recorded, so two keys with one
+  // name share an entry.
+  const motionKeys = new Set<string>();
   let tabSelection: boolean | null = null;
   let tabTimer: number | undefined;
   let blurSelection: { doc: EditorNode; selection: Selection | null } | null =
@@ -918,6 +931,7 @@ export function richField(label: string, options: RichFieldOptions) {
     },
     handleDOMEvents: {
       keydown(_view, event) {
+        if (MOTION_KEY.test(event.key)) motionKeys.add(event.key);
         if (
           /^(Arrow(?:Left|Right|Up|Down)|Home|End|PageUp|PageDown|Tab)$/u.test(
             event.key,
@@ -943,7 +957,14 @@ export function richField(label: string, options: RichFieldOptions) {
           return true;
         }
         const type = deletionKey(event);
-        if (!type) return false;
+        if (!type) {
+          // Not a deletion key. The keyup handler below reads the
+          // selection this key's native motion leaves behind. Under
+          // slow execution an overdue focus timer can still fire
+          // between a motion keydown and its keyup, as it can on main;
+          // no public hook runs in that gap.
+          return false;
+        }
         const selection = readNativeSelection();
         if (deleteRecovery)
           settleDeleteRecovery(
@@ -955,6 +976,15 @@ export function richField(label: string, options: RichFieldOptions) {
         const { transaction } = prepareDeletion(type, undefined, selection);
         if (transaction) dispatchEdit(transaction);
         return true;
+      },
+      keyup(_view, event) {
+        // The native motion for this key has landed by keyup, so read
+        // the resulting selection into state now; in ordinary delivery
+        // that is before the focus-time write-back can restore the
+        // previous caret. The editor syncs only if the released key name
+        // matches a motion-key name recorded since the last focus event.
+        if (motionKeys.delete(event.key)) syncNativeSelection();
+        return false;
       },
       input(_view, event) {
         const stage = deleteRecovery;
@@ -1040,6 +1070,9 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       focus(view) {
+        // Start a new record: names recorded before this focus event do
+        // not sync on a later release.
+        motionKeys.clear();
         const reset =
           resetSelection?.doc === view.state.doc ? resetSelection : null;
         const before =
@@ -1445,6 +1478,62 @@ export function richField(label: string, options: RichFieldOptions) {
   });
   rememberDOM();
   const input = view.dom as RichInput;
+  /**
+   * Read the browser selection into editor state after a motion key.
+   * ProseMirror writes its tracked selection back to the DOM about
+   * 20 ms after the editor takes focus; a native selection the reader
+   * makes with a motion key in that window (Home, an arrow) is newer
+   * than the tracked one and must be in state before the write runs,
+   * or the write restores the caret the reader just moved from. The
+   * sync runs on keyup, once the key's native move has landed, if the
+   * released key name matches a motion-key name recorded since the last
+   * focus event; the release consumes that name. The field has no
+   * general focus-time or selectionchange sync. Other code still reads
+   * the browser selection into state in specific cases: the focus
+   * handler after a wrapper move, the toolbar focus and pointer
+   * handlers, and Tab and Enter keydown. So a state change made while
+   * the field is blurred can still be replaced by one of those reads.
+   */
+  function syncNativeSelection() {
+    if (view.isDestroyed || view.composing) return;
+    // Firefox can hold several ranges (Ctrl+drag). ProseMirror normalizes
+    // those to their outer bounds itself; mapping only the anchor and
+    // focus here would record just the last range, so leave them to it.
+    const ranges = input.ownerDocument.getSelection();
+    if (ranges && ranges.rangeCount > 1) return;
+    const current = view.state.selection;
+    if (current instanceof NodeSelection) {
+      // A selected chip is editor state of its own kind. Leave it while
+      // the browser selection still covers that node; mapping the range
+      // to text would demote it and lose the selected-node commands.
+      const native = input.ownerDocument.getSelection();
+      if (
+        native?.anchorNode &&
+        native.focusNode &&
+        input.contains(native.anchorNode) &&
+        input.contains(native.focusNode)
+      ) {
+        try {
+          if (
+            view.posAtDOM(native.anchorNode, native.anchorOffset, -1) ===
+              current.from &&
+            view.posAtDOM(native.focusNode, native.focusOffset, 1) ===
+              current.to
+          )
+            return;
+        } catch {
+          return;
+        }
+      }
+    }
+    // Select-all is editor state of its own kind, like a selected chip.
+    // Mapping its root range to a text range would demote it and lose
+    // the selection the reader made, so leave it to ProseMirror.
+    if (current instanceof AllSelection) return;
+    const selection = readNativeSelection();
+    if (selection && !selection.eq(view.state.selection))
+      view.dispatch(view.state.tr.setSelection(selection));
+  }
   function readNativeSelection(): Selection | null {
     const selection = input.ownerDocument.getSelection();
     if (

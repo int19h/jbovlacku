@@ -1031,6 +1031,35 @@ test("explicit page focus keeps a connected control, rejects stale or detached t
       const after = new AbortController();
       const nextFocus = watchReaderFocus(main, after.signal);
       try {
+        // A bare focus move to an editable field inside the page, with no
+        // key or pointer event, is a reader choice (a screen reader move).
+        const field = document.createElement("input");
+        main.append(field);
+        field.focus();
+        const keepsEditable =
+          nextFocus.keeps() && document.activeElement === field;
+        field.remove();
+        // The same bare move to a contenteditable field, as in the rich
+        // editors, is a reader choice too.
+        const editable = document.createElement("div");
+        editable.contentEditable = "true";
+        main.append(editable);
+        editable.focus();
+        const keepsContentEditable =
+          nextFocus.keeps() && document.activeElement === editable;
+        editable.remove();
+        // Focus that the page itself moves through the explicit helper is
+        // its own choice, not the reader's: it must not block a later
+        // explicit focus move to another control.
+        const pageField = document.createElement("input");
+        const errorHeading = document.createElement("h2");
+        errorHeading.tabIndex = -1;
+        main.append(pageField, errorHeading);
+        const explicitFirst = nextFocus.focus(pageField);
+        const explicitSecond = nextFocus.focus(errorHeading);
+        const explicitKeeps = document.activeElement === errorHeading;
+        pageField.remove();
+        errorHeading.remove();
         const dialog = document.createElement("dialog");
         const inside = document.createElement("button");
         dialog.append(inside);
@@ -1054,6 +1083,11 @@ test("explicit page focus keeps a connected control, rejects stale or detached t
           acceptsOutside,
           acceptsDisabled,
           acceptsAborted,
+          keepsEditable,
+          keepsContentEditable,
+          explicitFirst,
+          explicitSecond,
+          explicitKeeps,
           acceptsWithDialog,
           keepsDialog,
           acceptsAfterReader,
@@ -1076,6 +1110,11 @@ test("explicit page focus keeps a connected control, rejects stale or detached t
     acceptsOutside: false,
     acceptsDisabled: false,
     acceptsAborted: false,
+    keepsEditable: true,
+    keepsContentEditable: true,
+    explicitFirst: true,
+    explicitSecond: true,
+    explicitKeeps: true,
     acceptsWithDialog: false,
     keepsDialog: true,
     acceptsAfterReader: false,
