@@ -99,14 +99,12 @@ pub(crate) fn resolve_referenced_selections_cached<'a>(
             resolved.invalid.insert(selection_id.to_owned());
             continue;
         };
-        // Validation reads every ID. Check the length against what is
-        // left of the base budget first, as if the selection were
-        // invalid; a valid selection then adds its own length back to
-        // the budget as allowance.
-        if !cache.contains_key(selection_id) && invalid_work.saturating_add(ids.len()) > base_budget
-        {
-            break;
-        }
+        // Validity decides the budget: a valid selection adds its length
+        // to the default budget, so the resolver cannot stop on a length
+        // before it knows the verdict (a cached verdict would then change
+        // the result). Validation reads at most one selection's 16 MiB
+        // limit; an invalid selection's length counts against the base
+        // budget after it, and the walk stops once that is used up.
         match valid_selection_cached(import_selections, selection_id, cache) {
             Some(valid_ids) => {
                 resolved.allowance = resolved.allowance.saturating_add(valid_ids.len());

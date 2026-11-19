@@ -5499,54 +5499,104 @@ mod rebuild_tests {
         assert_eq!(compared, ids.len());
     }
 
-    /// The resolver checks a selection's length against what is left of
-    /// its base budget before it hashes the IDs.
+    /// An invalid prefix of selections followed by a valid one gives the
+    /// same default budget and result fresh, under the equal explicit
+    /// limit, in a fork that inherits the selections (cached validity),
+    /// and after both restore formats.
     #[test]
-    fn resolver_charges_a_selection_before_hashing_it() {
-        let lists: Vec<Vec<String>> = (0..2u8)
-            .map(|k| (0..64).map(|i| format!("jve1:{:062x}{k:02x}", i)).collect())
+    fn invalid_selection_prefix_then_valid_list_gives_one_budget_in_every_mode() {
+        // Ten invalid lists of 98 empty strings nearly use up a resolver base of
+        // 1,000 units with their entries; the valid list comes last.
+        let base = 1_000usize;
+        let valid: Vec<String> = (0..512).map(|i| format!("jve1:{i:064x}")).collect();
+        let valid_digest =
+            jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(valid)).unwrap());
+        let mut selections: BTreeMap<String, Vec<String>> = (0..10)
+            .map(|i| (format!("sha256:{:064x}", i + 1), vec![String::new(); 98]))
             .collect();
-        // Supplied under digests that do not match, so both are invalid.
-        let digests: Vec<String> = (0..2).map(|i| format!("sha256:{:064x}", i + 1)).collect();
+        selections.insert(valid_digest.clone(), valid);
         let importer = identity_from_seed(&[3; 32]);
-        let import_sets: Vec<Value> = digests
-            .iter()
-            .map(|d| json!({"source": d, "importer": importer, "selection": d}))
+        let mut import_sets: Vec<Value> = (0..10)
+            .map(|i| json!({"source": format!("{i:03}"), "importer": importer, "selection": format!("sha256:{:064x}", i + 1)}))
             .collect();
+        import_sets.push(json!({"source": "010", "importer": importer, "selection": valid_digest}));
         let (view, view_body) = event(
             3,
             1,
             json!({"kind":"view.publish","parents":[]}),
             Some(json!({
-                "name":"resolver","description":[],"roots":[],
+                "name":"prefix","description":[],"roots":[],
                 "rafsi_threshold":{"numerator":1,"denominator":1},
                 "H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},
                 "excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,
                 "import_sets":import_sets,"account_witnesses":[],"account_authority":false,"notes":[]
             })),
         );
-        let options = EvaluationOptions {
+        let options = |traversal: Option<usize>| EvaluationOptions {
             selected_view: view.id().into(),
             overlay: None,
-            import_selections: digests.iter().cloned().zip(lists).collect(),
-            limits: Limits::default(),
+            import_selections: selections.clone(),
+            limits: Limits {
+                traversal,
+                ..Limits::default()
+            },
         };
-        let mut prepared = PreparedEvaluationInput::new(options.clone());
-        prepared.add_record(&view, view_body.as_deref());
-        // Room for the first list (1 entry + 64 IDs) but not the second.
-        policy::RESOLVER_BASE_OVERRIDE.with(|o| o.set(Some(100)));
-        let before = policy::selection_hash_validations();
-        let mut cache = BTreeMap::new();
-        let resolved = policy::resolve_referenced_selections_cached(
-            &options,
-            &options.import_selections,
-            &prepared.nodes,
-            &mut cache,
+        let build = |options: EvaluationOptions| {
+            let mut prepared = PreparedEvaluationInput::new(options);
+            prepared.add_record(&view, view_body.as_deref());
+            prepared.into_state()
+        };
+        policy::RESOLVER_BASE_OVERRIDE.with(|o| o.set(Some(base)));
+        let fresh = build(options(None));
+        let expected_budget = Limits::default().traversal_budget_with_selections(1, 512);
+        let explicit = build(options(Some(expected_budget)));
+        let fork_delta = {
+            let mut delta = PreparedEvaluationInput::new(options(None));
+            delta.inherit_import_selections(&explicit);
+            delta
+        };
+        let fork = explicit.clone().advance(fork_delta, &[]);
+        let full = EvaluatedState::restore_host_checkpoint(&fork.checkpoint("r18").unwrap(), "r18");
+        let records: Vec<HostVerifiedRecord> = fork
+            .prepared
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let results = EvaluatedState::restore_host_result_checkpoint(
+            &fork.result_checkpoint("r18").unwrap(),
+            "r18",
+            records,
         );
-        let hashed = policy::selection_hash_validations() - before;
         policy::RESOLVER_BASE_OVERRIDE.with(|o| o.set(None));
-        assert_eq!(resolved.invalid.len(), 1);
-        assert_eq!(hashed, 1);
+        // Collect every mode's outcome before asserting, so a failure
+        // names all modes that disagree.
+        let mut wrong = Vec::new();
+        let admitted =
+            |state: &EvaluatedState| state.evaluation().selections.contains_key(&valid_digest);
+        for (mode, state) in [
+            ("fresh", Some(&fresh)),
+            ("explicit", Some(&explicit)),
+            ("fork", Some(&fork)),
+            ("full restore", full.as_ref().ok()),
+            ("results restore", results.as_ref().ok()),
+        ] {
+            match state {
+                None => wrong.push(format!("{mode}: checkpoint refused")),
+                Some(state) => {
+                    if state.traversal_budget() != expected_budget {
+                        wrong.push(format!("{mode}: budget {}", state.traversal_budget()));
+                    }
+                    if !admitted(state) {
+                        wrong.push(format!("{mode}: valid list not admitted"));
+                    }
+                    if state.evaluation() != explicit.evaluation() {
+                        wrong.push(format!("{mode}: evaluation differs from explicit"));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:?}");
     }
 
     /// When a register head lies outside the new judgment's closure, a
