@@ -1181,10 +1181,12 @@ mkdir -p .cache
 export JVC_STATE_PARITY_DIR="$(mktemp -d "$PWD/.cache/state-parity.XXXXXX")"
 export JVC_SHUN_PARITY_DIR="$(mktemp -d "$PWD/.cache/shun-parity.XXXXXX")"
 export JVC_PREPARATION_PARITY_DIR="$(mktemp -d "$PWD/.cache/preparation-parity.XXXXXX")"
+export JVC_WORD_RESULT_PARITY_DIR="$(mktemp -d "$PWD/.cache/word-result-parity.XXXXXX")"
 cargo test -p jvc-state -p jvc-runtime --locked --jobs 2 -- --test-threads=2
 npm run build:core
 node scripts/test-state-parity.mjs
 node scripts/test-f64-preparation-parity.mjs
+node scripts/test-f64-word-results-parity.mjs
 node scripts/test-f64-row-parity.mjs
 ```
 
@@ -1192,7 +1194,7 @@ The runner initializes the browser WebAssembly module before it compares complet
 It also compares host-only extraction and trusted insertion with the original verifying builder.
 Ranking cases compare `rank_word`, session ranking, and `rank_with_reviewers`, including `public_shun_block` and `private_block` details.
 When `JVC_SHUN_PARITY_DIR` is set, the runner requires shun-profile cases and both block reasons, separately and together.
-Without that variable, the runner compares state only. CI sets both corpus variables before the native tests and browser comparison.
+Without that variable, the runner compares state only. CI sets all four corpus variables before the native tests and browser comparison.
 Before comparisons start, CI requires each corpus variable to name a directory with at least one regular file at its top level.
 Ranking preparation has no default whole-dictionary quota. Its record, setup-envelope, and source-byte limits are optional caller quotas. The default setup-unit budget, computed by `effective_setup_units` for index entries `I` and copied key bytes `K`, is exactly `100,000,000 + 1,040 * I + K * (6 + 11 * bit_length(I + 1))`. The last term charges key comparison bytes during index construction: each key byte can be read in at most eleven comparisons per tree level. Those allowances cover the setup charge at the widest bit length, so the margin never falls below the fixed allowance as an ordinary dictionary grows. For the recorded base counts `I = 457930` and `K = 34112650`, the budget is 7,910,466,950 units. An explicit policy value replaces that default.
 The preparation comparison uses native fixtures across fresh, compact-record, forked, full-restore, and result-restore Wasm sessions.
