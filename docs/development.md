@@ -1128,7 +1128,7 @@ The `rust-native` job runs the Rust format check, the Rust lint, and the full Ru
 The Rust tests write the native parity corpora, and the job uploads them as a build artifact.
 The `wasm-and-browser-parity` job waits for the Rust job to finish, downloads the corpora, and runs all parity comparisons.
 The `typescript-and-applications` job runs the TypeScript check, the core, morphology, and search tests, the service and importer tests, the synthetic activity kit, the application builds, the adapter tests, and the browser model tests.
-The parity and TypeScript jobs each build the shared WebAssembly, and their browser installation remains available for the parity scripts.
+The parity and TypeScript jobs each build the shared WebAssembly, and the parity job installs Chromium for the parity scripts.
 The `chromium-browser` job runs the unchanged `Test browser behavior` step with `--project chromium` and one worker.
 It follows the Firefox setup pattern, installs Chromium only, and builds the shared WebAssembly and browser assets.
 The `firefox-editing-and-authoring` job keeps the `firefox-editor`, `firefox-authoring`, and `firefox-wizard` projects with their existing test selection.

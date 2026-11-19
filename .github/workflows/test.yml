@@ -31,7 +31,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24.21.0"
-          cache: npm
       - name: Prepare test files
         run: |
           sudo mkdir -p /build/jbovlacku
@@ -58,7 +57,7 @@ jobs:
             /build/jbovlacku/preparation-parity
             /build/jbovlacku/word-result-parity
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   wasm-and-browser-parity:
     needs: rust-native
