@@ -433,3 +433,184 @@ fn state_clone_does_not_copy_the_overlay() {
         "allocations at 1 and 4096 overlay entries: {counts:?}"
     );
 }
+
+/// A view with two import sets: the first selection names one ID, the
+/// second 32 IDs. The first is supplied wrong, so evaluation finds it
+/// invalid; the limit then runs out on the second.
+fn two_selection_state(
+    limit: usize,
+    mode: usize,
+) -> (EvaluatedState, EvaluationOptions, VerifiedEnvelope, Vec<u8>) {
+    let right = vec![format!("jve1:{:064x}", 1)];
+    let wrong = vec![format!("jve1:{:064x}", 2)];
+    let long: Vec<String> = (100..132).map(|i| format!("jve1:{i:064x}")).collect();
+    let digest =
+        |ids: &Vec<String>| hash_id("sha256:", b"", &canonical_value(&json!(ids)).unwrap());
+    let (first, second) = (digest(&right), digest(&long));
+    let importer = identity_from_seed(&[3; 32]);
+    let (view, body) = view(json!([
+        {"source": "a", "importer": importer, "selection": first},
+        {"source": "b", "importer": importer, "selection": second}
+    ]));
+    let mut options = options(&view);
+    options.limits.traversal = Some(limit);
+    options.import_selections.insert(first.clone(), wrong);
+    options.import_selections.insert(second, long);
+    let mut prepared = PreparedEvaluationInput::new(options.clone());
+    prepared.add_record(&view, Some(&body));
+    let mut state = prepared.into_state();
+    match mode {
+        1 => {
+            state = EvaluatedState::restore_host_checkpoint(&state.checkpoint("s").unwrap(), "s")
+                .unwrap();
+        }
+        2 => {
+            let row = jvc_state::HostVerifiedRecord::extract_with(
+                view.id(),
+                view.header(),
+                inspect_body(&view, Some(&body)),
+                |_| (),
+            )
+            .0;
+            state = EvaluatedState::restore_host_result_checkpoint(
+                &state.result_checkpoint("s").unwrap(),
+                "s",
+                vec![row],
+            )
+            .unwrap();
+        }
+        _ => {}
+    }
+    options.import_selections.insert(first, right);
+    (state, options, view, body)
+}
+
+#[test]
+fn corrected_selection_after_restore_matches_fresh_evaluation() {
+    // Live, after a full restore, and after a results restore, an empty
+    // advance that corrects the invalid first selection must give the
+    // same evaluation as a fresh one with the corrected selection.
+    for mode in 0..3 {
+        for limit in [15usize, 24, 64] {
+            let (state, corrected, view, body) = two_selection_state(limit, mode);
+            assert!(
+                state
+                    .evaluation()
+                    .reasons
+                    .contains("import_selection_unavailable"),
+                "mode={mode} limit={limit}"
+            );
+            let mut fresh = PreparedEvaluationInput::new(corrected.clone());
+            fresh.add_record(&view, Some(&body));
+            let fresh = fresh.into_state();
+            let next = state.advance(PreparedEvaluationInput::new(corrected), &[]);
+            eprintln!(
+                "mode={mode} limit={limit} reason={:?} reasons={:?}",
+                next.statistics().reason,
+                next.evaluation().reasons
+            );
+            assert_eq!(
+                next.evaluation(),
+                fresh.evaluation(),
+                "mode={mode} limit={limit}"
+            );
+            assert_eq!(
+                next.consumed_work(),
+                fresh.consumed_work(),
+                "mode={mode} limit={limit}"
+            );
+        }
+    }
+}
+
+/// Judgments from one issuer for one definition, `roots` of them as
+/// separate roots joined by `identity.merge` records of at most 16
+/// predecessors, and one more judgment after the final merge.
+fn many_heads(roots: usize) -> (EvaluatedState, PreparedEvaluationInput) {
+    let (view, view_body) = view(json!([]));
+    let options = options(&view);
+    let (definition, definition_body) = definition(22, vec![]);
+    let mut prepared = PreparedEvaluationInput::new(options.clone());
+    prepared.add_record(&view, Some(&view_body));
+    prepared.add_record(&definition, Some(&definition_body));
+    let vote = json!({"kind": "judgment.set", "target": definition.id(), "value": "bless"});
+    let mut parents = Vec::new();
+    for i in 0..roots {
+        let event = signed(23, i, vec![], vote.clone());
+        prepared.add_record(&event, None);
+        parents.push(event.id().to_owned());
+    }
+    let mut nonce = roots;
+    while parents.len() > 1 {
+        let mut links = Vec::new();
+        for group in parents.chunks(16) {
+            let event = signed(23, nonce, group.to_vec(), json!({"kind": "identity.merge"}));
+            nonce += 1;
+            prepared.add_record(&event, None);
+            links.push(event.id().to_owned());
+        }
+        parents = links;
+    }
+    let state = prepared.into_state();
+    let next = signed(23, nonce, parents, vote);
+    let delta = delta(&state, &options, &next, None);
+    (state, delta)
+}
+
+#[test]
+fn judgment_append_over_many_register_heads_rebuilds() {
+    // The fast path tests every current head against the new closure.
+    // Up to a fixed number of heads it appends; past it, it rebuilds.
+    for (roots, fast) in [(8usize, true), (64, false), (256, false)] {
+        let (state, delta) = many_heads(roots);
+        let next = state.advance(delta, &[]);
+        eprintln!(
+            "roots={roots} incremental={} reason={:?}",
+            next.statistics().incremental_records,
+            next.statistics().reason
+        );
+        if fast {
+            assert_eq!(next.statistics().incremental_records, 1, "roots={roots}");
+        } else {
+            assert_eq!(
+                next.statistics().reason.as_deref(),
+                Some("register_heads"),
+                "roots={roots}"
+            );
+        }
+    }
+}
+
+#[test]
+fn state_clone_does_not_copy_the_previous_judgment_changes() {
+    let mut counts = Vec::new();
+    for votes in [1usize, 256] {
+        let (view, view_body) = view(json!([]));
+        let options = options(&view);
+        let (definition, definition_body) = definition(22, vec![]);
+        let mut prepared = PreparedEvaluationInput::new(options.clone());
+        prepared.add_record(&view, Some(&view_body));
+        prepared.add_record(&definition, Some(&definition_body));
+        let vote = json!({"kind": "judgment.set", "target": definition.id(), "value": "bless"});
+        prepared.add_record(&signed(23, 0, vec![], vote.clone()), None);
+        let base = prepared.into_state();
+        let mut batch = PreparedEvaluationInput::new(options.clone());
+        for i in 1..=votes {
+            batch.add_record(&signed(23, i, vec![], vote.clone()), None);
+        }
+        let state = base.advance(batch, &[]);
+        assert_eq!(state.judgment_changes().unwrap().receipts.len(), votes);
+        let (fork, clone_count) = allocations(|| state.clone());
+        let (sibling, overlay_count) = allocations(|| state.with_overlay(None));
+        assert_eq!(fork.consumed_work(), state.consumed_work());
+        assert_eq!(sibling.consumed_work(), state.consumed_work());
+        eprintln!(
+            "votes={votes} clone_allocations={clone_count} overlay_allocations={overlay_count}"
+        );
+        counts.push((clone_count, overlay_count));
+    }
+    assert!(
+        counts[1].0 <= counts[0].0 + 8 && counts[1].1 <= counts[0].1 + 8,
+        "allocations at 1 and 256 changed receipts: {counts:?}"
+    );
+}

@@ -5,10 +5,19 @@ pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v8";
 const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v8";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
+/// Most register heads a fast judgment append tests against its new
+/// closure. A register with more heads rebuilds.
+const MAX_FAST_REGISTER_HEADS: usize = 16;
 
 #[cfg(test)]
 thread_local! {
     static DIGEST_REJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Selection IDs that empty-advance comparisons read.
+    static SELECTION_IDS_COMPARED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -67,7 +76,8 @@ pub struct EvaluatedState {
     saved_ancestry_bytes: Option<usize>,
     checkpoint_restored: bool,
     statistics: UpdateStatistics,
-    judgment_changes: Option<JudgmentChanges>,
+    /// Shared, so that a clone copies one pointer.
+    judgment_changes: Option<std::rc::Rc<JudgmentChanges>>,
     ranking_index: std::cell::RefCell<Option<policy::ApproximateContextIndex>>,
 }
 
@@ -255,7 +265,7 @@ impl EvaluatedState {
     }
 
     pub fn judgment_changes(&self) -> Option<&JudgmentChanges> {
-        self.judgment_changes.as_ref()
+        self.judgment_changes.as_deref()
     }
 
     /// Hash retained authenticated projections without another input buffer.
@@ -586,6 +596,10 @@ impl EvaluatedState {
                     let next_selections = &delta.import_selections;
                     let prev_cache = self.prepared.validated_selections.borrow();
                     let mut next_cache = delta.validated_selections.borrow_mut();
+                    // Each distinct selection is compared once, however
+                    // many import sets name it, so the comparison reads
+                    // each supplied ID at most once.
+                    let mut compared: BTreeSet<String> = BTreeSet::new();
                     for entry in body
                         .view()
                         .index("import_sets")
@@ -597,6 +611,9 @@ impl EvaluatedState {
                         let Some(sel_id) = sel_field.as_str() else {
                             continue;
                         };
+                        if !compared.insert(sel_id.to_owned()) {
+                            continue;
+                        }
                         let prev = prev_selections.get(sel_id);
                         let next = next_selections.get(sel_id);
                         if prev.map(Vec::len) != next.map(Vec::len) {
@@ -615,12 +632,19 @@ impl EvaluatedState {
                         // Otherwise processing stopped at or before the
                         // selection's length charge, and equal lengths
                         // already give the same refusal.
+                        // A restored state has no validity evidence from the
+                        // evaluation that refused (restore starts the cache
+                        // without it), so it always compares.
                         if exhausted_empty_advance
+                            && !self.checkpoint_restored
                             && !self.evaluation.selections.contains_key(sel_id)
                             && prev_cache.get(sel_id) != Some(&false)
                         {
                             continue;
                         }
+                        #[cfg(test)]
+                        SELECTION_IDS_COMPARED
+                            .with(|count| count.set(count.get() + prev_ids.len()));
                         if prev_ids != next_ids {
                             if rebuild_reason.is_none() {
                                 rebuild_reason = Some("configuration_changed".into());
@@ -637,7 +661,7 @@ impl EvaluatedState {
             self.prepared.validated_selections = delta.validated_selections;
         }
         self.statistics = UpdateStatistics::default();
-        self.judgment_changes = Some(JudgmentChanges::default());
+        self.judgment_changes = Some(Default::default());
         if self.prepared.event_limit_exceeded {
             rebuild_reason = Some("event_limit".into());
         }
@@ -736,7 +760,8 @@ impl EvaluatedState {
             self.statistics.reason = Some(reason);
             self.statistics.incremental_records = 0;
             if let Some(base) = base_evaluation {
-                self.judgment_changes = judgment_diff(&base, &self.evaluation);
+                self.judgment_changes =
+                    judgment_diff(&base, &self.evaluation).map(std::rc::Rc::new);
             }
         }
         self
@@ -794,6 +819,17 @@ impl EvaluatedState {
         if node.kind == "judgment.set" {
             let target = node.action.view().index("target");
             let target = target.as_str().unwrap_or_default();
+            // `append` tests every current head of the register against
+            // the new closure. Past a fixed number of heads, rebuild
+            // instead, so that test stays within a fixed cap.
+            if self
+                .evaluation
+                .registers
+                .get(&format!("{}|judgment|{target}", node.issuer))
+                .is_some_and(|register| register.heads.len() > MAX_FAST_REGISTER_HEADS)
+            {
+                return Err("register_heads");
+            }
             let known = if target.starts_with("jvr1:") {
                 let mut found = false;
                 for p in self.evaluation.publications.values() {
@@ -1122,7 +1158,7 @@ impl EvaluatedState {
                 }
             }
             let key = format!("{}|judgment|{target}", node.issuer);
-            if let Some(changes) = &mut self.judgment_changes {
+            if let Some(changes) = self.judgment_changes.as_mut().map(std::rc::Rc::make_mut) {
                 changes.receipts.insert(node.id.clone());
                 changes.registers.insert(key.clone());
                 changes.actors.insert(node.issuer.clone());
@@ -5382,6 +5418,45 @@ mod rebuild_tests {
         delta.add_host_verified_record(next);
         let advanced = rebuilt.advance(delta, &[]);
         assert_matches_full(&advanced, &prepared);
+    }
+
+    /// An empty advance with a new copy of a selection compares it once,
+    /// however many import sets of the view name it.
+    #[test]
+    fn empty_advance_compares_a_repeated_selection_once() {
+        let ids: Vec<String> = (0..2048).map(|i| format!("jve1:{i:064x}")).collect();
+        let digest = jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(ids)).unwrap());
+        let importer = identity_from_seed(&[3; 32]);
+        let import_sets: Vec<Value> = (0..64)
+            .map(|i| json!({"source": format!("source-{i:02}"), "importer": importer, "selection": digest}))
+            .collect();
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"repeated","description":[],"roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},
+                "excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,
+                "import_sets":import_sets,"account_witnesses":[],"account_authority":false,"notes":[]
+            })),
+        );
+        let options = EvaluationOptions {
+            selected_view: view.id().into(),
+            overlay: None,
+            import_selections: BTreeMap::from([(digest.clone(), ids.clone())]),
+            limits: Limits::default(),
+        };
+        let mut prepared = PreparedEvaluationInput::new(options.clone());
+        prepared.add_record(&view, view_body.as_deref());
+        let state = prepared.into_state();
+        assert!(state.evaluation().selections.contains_key(&digest));
+        let before = SELECTION_IDS_COMPARED.with(std::cell::Cell::get);
+        let next = state.advance(PreparedEvaluationInput::new(options), &[]);
+        let compared = SELECTION_IDS_COMPARED.with(std::cell::Cell::get) - before;
+        assert!(!next.statistics().rebuilt);
+        assert_eq!(compared, ids.len());
     }
 
     /// When a register head lies outside the new judgment's closure, a

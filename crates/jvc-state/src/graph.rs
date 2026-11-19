@@ -45,6 +45,15 @@ impl<T: Clone> std::ops::DerefMut for Shared<T> {
 
 #[cfg(test)]
 thread_local! {
+    /// Records whose predecessor count the layout charge read.
+    static LAYOUT_EDGE_READS: Cell<usize> = const { Cell::new(0) };
+}
+#[cfg(test)]
+pub(super) fn layout_edge_reads() -> usize {
+    LAYOUT_EDGE_READS.with(Cell::get)
+}
+#[cfg(test)]
+thread_local! {
     static CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
 }
 #[cfg(test)]
@@ -357,7 +366,8 @@ impl Graph {
         // The layout scan costs one unit per record and per predecessor
         // edge. Charge it before the scan runs, so a tiny budget refuses
         // before any layout allocation.
-        let layout_work = nodes.len() + nodes.values().map(|n| n.previous.len()).sum::<usize>();
+        // The record count is known without a walk: charge it before
+        // reading the predecessor counts, then charge the edges.
         let mut graph = Self {
             nodes,
             space: super::ancestors::Space::empty(),
@@ -389,7 +399,17 @@ impl Graph {
             resource: Cell::new(false),
             appended: 0,
         };
-        if !graph.charge(layout_work) {
+        if !graph.charge(graph.nodes.len()) {
+            return graph;
+        }
+        #[cfg(test)]
+        LAYOUT_EDGE_READS.with(|count| count.set(count.get() + graph.nodes.len()));
+        let edges = graph
+            .nodes
+            .values()
+            .map(|n| n.previous.len())
+            .sum::<usize>();
+        if !graph.charge(edges) {
             return graph;
         }
         graph.space = super::ancestors::Space::new(&graph.nodes);
@@ -2201,8 +2221,18 @@ mod tests {
             traversal: Some(0),
             ..Limits::default()
         };
+        let before = layout_edge_reads();
         let graph = Graph::new(nodes(64, true), &limits);
         assert!(graph.resource.get());
         assert!(graph.own.is_empty());
+        // The record count is charged before any predecessor count is read.
+        assert_eq!(layout_edge_reads(), before);
+        let limits = Limits {
+            traversal: Some(64),
+            ..Limits::default()
+        };
+        let graph = Graph::new(nodes(64, true), &limits);
+        assert!(graph.resource.get());
+        assert_eq!(layout_edge_reads(), before + 64);
     }
 }
