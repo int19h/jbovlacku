@@ -5,9 +5,6 @@ pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v8";
 const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v8";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
-/// Most register heads a fast judgment append tests against its new
-/// closure. A register with more heads rebuilds.
-const MAX_FAST_REGISTER_HEADS: usize = 16;
 
 #[cfg(test)]
 thread_local! {
@@ -820,15 +817,15 @@ impl EvaluatedState {
             let target = node.action.view().index("target");
             let target = target.as_str().unwrap_or_default();
             // `append` tests every current head of the register against
-            // the new closure. Past a fixed number of heads, rebuild
-            // instead, so that test stays within a fixed cap.
-            if self
+            // the new closure. Check that count against the budget before
+            // the test runs, as the coverage sweep below is checked.
+            let heads = self
                 .evaluation
                 .registers
                 .get(&format!("{}|judgment|{target}", node.issuer))
-                .is_some_and(|register| register.heads.len() > MAX_FAST_REGISTER_HEADS)
-            {
-                return Err("register_heads");
+                .map_or(0, |register| register.heads.len());
+            if !graph.charge(heads) {
+                return Err("work_budget");
             }
             let known = if target.starts_with("jvr1:") {
                 let mut found = false;

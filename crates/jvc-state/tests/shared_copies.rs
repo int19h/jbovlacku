@@ -525,56 +525,71 @@ fn corrected_selection_after_restore_matches_fresh_evaluation() {
 
 /// Judgments from one issuer for one definition, `roots` of them as
 /// separate roots joined by `identity.merge` records of at most 16
-/// predecessors, and one more judgment after the final merge.
-fn many_heads(roots: usize) -> (EvaluatedState, PreparedEvaluationInput) {
+/// predecessors, and one more judgment after the final merge. `extra`
+/// sets an explicit limit of the base evaluation's work plus `extra`.
+fn many_heads(roots: usize, extra: Option<usize>) -> (EvaluatedState, PreparedEvaluationInput) {
     let (view, view_body) = view(json!([]));
-    let options = options(&view);
+    let mut options = options(&view);
     let (definition, definition_body) = definition(22, vec![]);
-    let mut prepared = PreparedEvaluationInput::new(options.clone());
-    prepared.add_record(&view, Some(&view_body));
-    prepared.add_record(&definition, Some(&definition_body));
     let vote = json!({"kind": "judgment.set", "target": definition.id(), "value": "bless"});
-    let mut parents = Vec::new();
-    for i in 0..roots {
-        let event = signed(23, i, vec![], vote.clone());
-        prepared.add_record(&event, None);
-        parents.push(event.id().to_owned());
-    }
-    let mut nonce = roots;
-    while parents.len() > 1 {
-        let mut links = Vec::new();
-        for group in parents.chunks(16) {
-            let event = signed(23, nonce, group.to_vec(), json!({"kind": "identity.merge"}));
-            nonce += 1;
+    let build = |options: &EvaluationOptions| {
+        let mut prepared = PreparedEvaluationInput::new(options.clone());
+        prepared.add_record(&view, Some(&view_body));
+        prepared.add_record(&definition, Some(&definition_body));
+        let mut parents = Vec::new();
+        for i in 0..roots {
+            let event = signed(23, i, vec![], vote.clone());
             prepared.add_record(&event, None);
-            links.push(event.id().to_owned());
+            parents.push(event.id().to_owned());
         }
-        parents = links;
+        let mut nonce = roots;
+        while parents.len() > 1 {
+            let mut links = Vec::new();
+            for group in parents.chunks(16) {
+                let event = signed(23, nonce, group.to_vec(), json!({"kind": "identity.merge"}));
+                nonce += 1;
+                prepared.add_record(&event, None);
+                links.push(event.id().to_owned());
+            }
+            parents = links;
+        }
+        (
+            prepared.into_state(),
+            signed(23, nonce, parents, vote.clone()),
+        )
+    };
+    if let Some(extra) = extra {
+        let consumed = build(&options).0.consumed_work();
+        options.limits.traversal = Some(consumed + extra);
     }
-    let state = prepared.into_state();
-    let next = signed(23, nonce, parents, vote);
+    let (state, next) = build(&options);
+    assert!(state.evaluation().available);
     let delta = delta(&state, &options, &next, None);
     (state, delta)
 }
 
 #[test]
-fn judgment_append_over_many_register_heads_rebuilds() {
+fn judgment_append_checks_register_heads_against_the_budget() {
     // The fast path tests every current head against the new closure.
-    // Up to a fixed number of heads it appends; past it, it rebuilds.
-    for (roots, fast) in [(8usize, true), (64, false), (256, false)] {
-        let (state, delta) = many_heads(roots);
+    // It checks the head count against the remaining work first, so a
+    // register with more heads than that rebuilds before the test runs.
+    for roots in [8usize, 64, 256] {
+        let (state, delta) = many_heads(roots, None);
+        let next = state.advance(delta, &[]);
+        assert_eq!(next.statistics().incremental_records, 1, "roots={roots}");
+        let (state, delta) = many_heads(roots, Some(48));
         let next = state.advance(delta, &[]);
         eprintln!(
-            "roots={roots} incremental={} reason={:?}",
+            "roots={roots} tight incremental={} reason={:?}",
             next.statistics().incremental_records,
             next.statistics().reason
         );
-        if fast {
+        if roots <= 48 {
             assert_eq!(next.statistics().incremental_records, 1, "roots={roots}");
         } else {
             assert_eq!(
                 next.statistics().reason.as_deref(),
-                Some("register_heads"),
+                Some("work_budget"),
                 "roots={roots}"
             );
         }
