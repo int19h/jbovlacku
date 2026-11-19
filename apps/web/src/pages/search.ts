@@ -47,6 +47,7 @@ import {
 import type { App } from "../app/context.ts";
 import {
   downloadPackage,
+  invalidPackage,
   isV2,
   type CachedPackage,
   type LocalHit,
@@ -247,9 +248,14 @@ export async function searchPage(
     app.session.preferences.searchMode === "local" &&
     app.session.storageAvailable
   ) {
-    cached = await app.store
+    const raw = await app.store
       .get<CachedPackage>("packages", language)
       .catch(() => undefined);
+    // A stored null is a saved package, not a missing one: it keeps the
+    // invalid-package message and the server fallback below. Other saved
+    // values keep the worker validation in searchPackage.
+    if (raw === null) app.announce(invalidPackage().message);
+    else cached = raw;
   }
   if (cached) {
     try {

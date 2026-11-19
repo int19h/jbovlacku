@@ -15,7 +15,10 @@ import {
   type MorphologyProfile,
   type RecoveredPart,
 } from "../../../../packages/core/src/browser.ts";
-import type { CachedPackage } from "../data/search.ts";
+import {
+  checkSavedPackage,
+  type CachedPackage,
+} from "../data/package-check.ts";
 import type {
   Compound,
   Formation,
@@ -665,6 +668,7 @@ export function sourceOptions(
   cached: CachedPackage | null,
   wholeWord = false,
 ) {
+  if (cached) checkSavedPackage(cached);
   const words = new Map<string, LujvoComponentState>();
   for (const entry of cached?.entries ?? []) {
     const spelling = entry.word.spelling;

@@ -16,7 +16,12 @@ import {
   type Route,
 } from "../app/router.ts";
 import type { App } from "../app/context.ts";
-import { downloadPackage, isV2, type CachedPackage } from "../data/search.ts";
+import {
+  downloadPackage,
+  isV2,
+  savedPackage,
+  type CachedPackage,
+} from "../data/search.ts";
 import { getWord, loadRecord } from "../data/api.ts";
 import type { PackageEntryV2, RafsiBody } from "../model/types.ts";
 import { identityLink } from "../components/attribution.ts";
@@ -52,10 +57,19 @@ async function packageFor(
     }
   } catch {}
   if (!app.session.storageAvailable) return fallback;
-  const cached =
-    (await app.store
-      .get<CachedPackage>("packages", language)
-      .catch(() => null)) ?? null;
+  // A malformed saved package raises the invalid-package error here, before
+  // any page reads its rows. Storage failures keep the download fallback.
+  let cached: CachedPackage | null = null;
+  try {
+    cached = await savedPackage(app.store, language);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("The search package is invalid.")
+    )
+      throw error;
+    return fallback;
+  }
   return cached?.version === 2 ? cached : fallback;
 }
 interface RafsiWord {

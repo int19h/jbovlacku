@@ -108,14 +108,22 @@ export async function lujvoPage(
     return;
   }
   saver.touch();
-  const cached = await cachedPackage(app.store);
+  // A malformed saved package shows its message and the builder continues
+  // without a local package, so parts can still be added as entered.
+  let cached: Awaited<ReturnType<typeof cachedPackage>> = null;
+  let packageError: string | null = null;
+  try {
+    cached = await cachedPackage(app.store);
+  } catch (error) {
+    packageError = describe(error);
+  }
   if (!context.live()) return;
   let state;
   try {
     state = prepareLujvoBuilder(draft, cached);
     saver.touch();
   } catch (error) {
-    main.append(p(String(error), "notice"));
+    main.append(p(describe(error), "notice"));
     return;
   }
   const inventory: PackageInventory = inventoryFromPackage(cached);
@@ -158,6 +166,7 @@ export async function lujvoPage(
   section.append(
     el("h1", { id: "h1", class: "page", text: "Build the lujvo" }),
   );
+  if (packageError) section.append(p(packageError, "notice"));
   section.append(
     el(
       "p",

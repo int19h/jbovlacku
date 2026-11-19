@@ -17,6 +17,7 @@ import type { App } from "../app/context.ts";
 import {
   downloadPackage,
   reportPackageError,
+  savedPackage,
   type CachedPackage,
 } from "../data/search.ts";
 import { getCapabilities, getManifest, selfPeer } from "../data/api.ts";
@@ -207,7 +208,15 @@ export async function preferencesPage(
     }
     const keys = await app.store.keys("packages");
     for (const key of keys) {
-      const cached = await app.store.get<CachedPackage>("packages", key);
+      // A malformed saved package keeps its row and Remove control, with
+      // the invalid-package message instead of its entry count.
+      let cached: CachedPackage | null = null;
+      let packageError: string | null = null;
+      try {
+        cached = await savedPackage(app.store, key);
+      } catch (error) {
+        packageError = describe(error);
+      }
       const row = el("div", { class: "row" });
       row.append(
         el(
@@ -215,13 +224,15 @@ export async function preferencesPage(
           { class: "t" },
           text(languageName(key)),
           el("small", {
-            text: cached
-              ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}… · version ${cached.version ?? 1}${
-                  cached.downgrade
-                    ? `. Version 1 was saved instead of version 2: ${cached.downgrade}`
-                    : ""
-                }`
-              : "unreadable",
+            text: packageError
+              ? packageError
+              : cached
+                ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}… · version ${cached.version ?? 1}${
+                    cached.downgrade
+                      ? `. Version 1 was saved instead of version 2: ${cached.downgrade}`
+                      : ""
+                  }`
+                : "unreadable",
           }),
         ),
         button(

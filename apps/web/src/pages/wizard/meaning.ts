@@ -31,7 +31,11 @@ import {
   type Route,
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
-import { packageWordEntries, type CachedPackage } from "../../data/search.ts";
+import {
+  packageWordEntries,
+  savedPackage,
+  type CachedPackage,
+} from "../../data/search.ts";
 import { getWord, loadRecord, remoteDraftSearch } from "../../data/api.ts";
 import { placeholderCount, type Draft } from "../../model/draft.ts";
 import { countNodes, placeMarker } from "../../model/richtext.ts";
@@ -328,7 +332,10 @@ export async function meaningPage(
   left.append(typedStatus);
   let typedConsent: string | null = null;
   let typedRequest = 0;
-  const typedPackages = new Map<string, Promise<CachedPackage | undefined>>();
+  const typedPackages = new Map<
+    string,
+    Promise<CachedPackage | null | undefined>
+  >();
   const typedKey = () =>
     JSON.stringify([typedWord(draft.spelling), draft.language]);
   const checkTypedWord = async () => {
@@ -349,11 +356,25 @@ export async function meaningPage(
     if (!typedPackages.has(draft.language))
       typedPackages.set(
         draft.language,
-        app.store
-          .get<CachedPackage>("packages", draft.language)
-          .catch(() => undefined),
+        savedPackage(app.store, draft.language).catch((error) => {
+          // A storage failure keeps the old no-package wording. A malformed
+          // saved package keeps its own error for the status area below.
+          if (
+            error instanceof Error &&
+            error.message.startsWith("The search package is invalid.")
+          )
+            throw error;
+          return undefined;
+        }),
       );
-    const packageData = await typedPackages.get(draft.language);
+    let packageData: CachedPackage | null | undefined;
+    try {
+      packageData = await typedPackages.get(draft.language);
+    } catch (error) {
+      if (!valid()) return;
+      typedStatus.append(p(describe(error), "notice"));
+      return;
+    }
     if (!valid()) return;
     let id: string;
     try {
@@ -744,7 +765,14 @@ export async function meaningPage(
       value === meaning.input.value &&
       language === draft.language;
     try {
-      const pkg = await app.store.get<CachedPackage>("packages", language);
+      const pkg = await savedPackage(app.store, language).catch((error) => {
+        if (
+          error instanceof Error &&
+          error.message.startsWith("The search package is invalid.")
+        )
+          throw error;
+        return null;
+      });
       if (!current()) return;
       cached = pkg ?? null;
       renderMode();

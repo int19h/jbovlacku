@@ -275,8 +275,16 @@ export async function publishPage(
     "aria-label": "Known conflicts",
   });
   left.append(conflicts);
-  const inventory = inventoryFromPackage(await cachedPackage(app.store));
+  let inventory: ReturnType<typeof inventoryFromPackage>;
+  let packageError: string | null = null;
+  try {
+    inventory = inventoryFromPackage(await cachedPackage(app.store));
+  } catch (error) {
+    packageError = describe(error);
+    inventory = inventoryFromPackage(null);
+  }
   if (!context.live()) return;
+  if (packageError) conflicts.append(p(packageError, "notice"));
   for (const claim of claims)
     for (const known of inventory.claims)
       if (known.rafsi === claim.rafsi && known.word !== wordId)
@@ -752,9 +760,15 @@ export async function publishPage(
           `Publishing ${body.word.spelling}`,
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
-            const latestInventory = inventoryFromPackage(
-              await cachedPackage(app.store),
-            );
+            let latestInventory: ReturnType<typeof inventoryFromPackage>;
+            try {
+              latestInventory = inventoryFromPackage(
+                await cachedPackage(app.store),
+              );
+            } catch (error) {
+              outcome.replaceChildren(p(describe(error), "notice"));
+              return;
+            }
             if (reviewedInventory !== inventoryVersion(latestInventory)) {
               outcome.replaceChildren(
                 p(

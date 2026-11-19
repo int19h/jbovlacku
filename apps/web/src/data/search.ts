@@ -43,6 +43,20 @@ import {
   type PackageEntryV2,
   type SearchHit,
 } from "../model/types.ts";
+import {
+  invalidPackage,
+  validateEntry,
+  type CachedPackage,
+} from "./package-check.ts";
+export {
+  checkSavedPackage,
+  invalidPackage,
+  savedPackage,
+  validateCachedPackage,
+  validateEntry,
+  PACKAGE_RAFSI_LIMIT,
+  type CachedPackage,
+} from "./package-check.ts";
 
 /** Package objects are immutable snapshots. Reuse their identity index across renders. */
 export function createPackageWordIndex(identify: typeof wordId = wordId) {
@@ -78,24 +92,8 @@ export function createPackageWordIndex(identify: typeof wordId = wordId) {
 }
 export const packageWordEntries = createPackageWordIndex();
 
-export interface CachedPackage {
-  snapshot: string;
-  /** The server view that binds compact per-entry ordering statuses. */
-  search_view?: string;
-  /** 1 for the default package, 2 when the entries carry row metadata. */
-  version?: 1 | 2;
-  entries: PackageEntry[];
-  /**
-   * Set when the server advertised version 2 and that download failed, so
-   * the version 1 package is in use instead. The text explains the failure.
-   * Pages that describe the package show this state.
-   */
-  downgrade?: string | null;
-}
-/** Rafsi spellings per version 2 entry. The server applies the same bound. */
-export const PACKAGE_RAFSI_LIMIT = 64;
 export function isV2(entry: PackageEntry): entry is PackageEntryV2 {
-  return "issuer" in entry;
+  return !!entry && typeof entry === "object" && "issuer" in entry;
 }
 /**
  * Per-artifact bounds (W07). A package manifest is one HTTP object of at most
@@ -120,17 +118,6 @@ const count = (value: unknown, maximum: number): value is number =>
   Number.isSafeInteger(value) &&
   value >= 0 &&
   value <= maximum;
-/**
- * A downloaded package that fails shape checks is malformed. This error never
- * covers a valid large package: per-language totals were removed, so size
- * alone never rejects a package. A package that fails for a physical reason
- * (storage full, out of memory) reports PackageStorageError instead, and a
- * configured quota reports PackageQuotaError.
- */
-export const invalidPackage = () =>
-  new Error(
-    "The search package is invalid. Search this server or download another package.",
-  );
 /** A package download or save that the device cannot fit. */
 export class PackageStorageError extends Error {
   constructor(
@@ -166,166 +153,6 @@ export interface PackageQuota {
 }
 export interface PackageDownloadOptions extends RequestOptions {
   packageQuota?: PackageQuota;
-}
-const V1_FIELDS = [
-  "event",
-  "word",
-  "language",
-  "glosses",
-  "plain_text",
-  "classification",
-  "body",
-];
-const V2_FIELDS = [...V1_FIELDS, "issuer", "notes", "rafsi", "attribution"];
-/** A server that bounds the rafsi list also says whether it is complete. */
-const V2_BOUNDED_FIELDS = [...V2_FIELDS, "rafsi_complete"];
-export function validateEntry(
-  value: unknown,
-  language: string,
-  version: 1 | 2 = 1,
-  packageView?: string,
-): asserts value is PackageEntry {
-  if (
-    version === 2 &&
-    value &&
-    typeof value === "object" &&
-    "search_status" in value
-  ) {
-    const { search_status, ...base } = value as Record<string, any>;
-    if (
-      packageView !== undefined
-        ? !eventId(packageView) ||
-          !["active", "retired", "ineligible"].includes(search_status)
-        : !fields(search_status, ["view", "status"]) ||
-          !eventId(search_status.view) ||
-          !["active", "retired", "ineligible"].includes(search_status.status)
-    )
-      throw invalidPackage();
-    validateEntry(base, language, version);
-    return;
-  }
-  if (version === 2) {
-    if (
-      !(fields(value, V2_FIELDS) || fields(value, V2_BOUNDED_FIELDS)) ||
-      !identityId(value.issuer) ||
-      typeof value.notes !== "boolean" ||
-      !Array.isArray(value.rafsi) ||
-      value.rafsi.length > PACKAGE_RAFSI_LIMIT ||
-      value.rafsi.some((r: unknown) => typeof r !== "string") ||
-      !(
-        value.rafsi_complete === undefined ||
-        typeof value.rafsi_complete === "boolean"
-      ) ||
-      !(
-        value.attribution === null ||
-        (fields(value.attribution, ["source", "author", "account", "dates"]) &&
-          typeof value.attribution.source === "string" &&
-          (value.attribution.author === null ||
-            typeof value.attribution.author === "string") &&
-          (value.attribution.account === null ||
-            (fields(value.attribution.account, ["origin", "account"]) &&
-              typeof value.attribution.account.origin === "string" &&
-              Number.isSafeInteger(value.attribution.account.account))) &&
-          value.attribution.dates !== null &&
-          typeof value.attribution.dates === "object" &&
-          Object.values(value.attribution.dates).every(
-            (d) => typeof d === "string",
-          ))
-      )
-    )
-      throw invalidPackage();
-    const { issuer, notes, rafsi, rafsi_complete, attribution, ...base } =
-      value;
-    void issuer;
-    void notes;
-    void rafsi;
-    void rafsi_complete;
-    void attribution;
-    validateEntry(base, language, 1);
-    return;
-  }
-  if (
-    !fields(value, V1_FIELDS) ||
-    !eventId(value.event) ||
-    value.language !== language ||
-    !languageTag(value.language) ||
-    !fields(value.word, ["language", "spelling"]) ||
-    value.word.language !== "jbo" ||
-    typeof value.word.spelling !== "string" ||
-    typeof value.plain_text !== "string" ||
-    !(value.body === null || hashId(value.body)) ||
-    !Array.isArray(value.glosses) ||
-    value.glosses.length > 8192 ||
-    value.glosses.some(
-      (gloss: unknown) =>
-        !fields(gloss, ["language", "text", "sense"]) ||
-        !languageTag(gloss.language) ||
-        typeof gloss.text !== "string" ||
-        !(gloss.sense === null || typeof gloss.sense === "string"),
-    ) ||
-    !fields(value.classification, ["kind", "selmaho"]) ||
-    !lexicalKinds.includes(value.classification.kind) ||
-    !Array.isArray(value.classification.selmaho) ||
-    value.classification.selmaho.some(
-      (item: unknown) => typeof item !== "string",
-    )
-  )
-    throw invalidPackage();
-  try {
-    wordId({ language: "jbo", spelling: value.word.spelling });
-  } catch {
-    throw invalidPackage();
-  }
-}
-export function validateCachedPackage(
-  value: unknown,
-  language: string,
-  budget?: SearchRequestBudget,
-): asserts value is CachedPackage {
-  if (
-    !(
-      fields(value, ["snapshot", "entries"]) ||
-      fields(value, ["snapshot", "version", "entries"]) ||
-      fields(value, ["snapshot", "version", "entries", "downgrade"]) ||
-      fields(value, ["snapshot", "version", "entries", "search_view"]) ||
-      fields(value, [
-        "snapshot",
-        "version",
-        "entries",
-        "search_view",
-        "downgrade",
-      ])
-    ) ||
-    !hashId(value.snapshot) ||
-    !Array.isArray(value.entries) ||
-    !(
-      value.version === undefined ||
-      value.version === 1 ||
-      value.version === 2
-    ) ||
-    (Object.hasOwn(value, "search_view") &&
-      (value.version !== 2 || !eventId(value.search_view))) ||
-    !(
-      value.downgrade === undefined ||
-      value.downgrade === null ||
-      typeof value.downgrade === "string"
-    )
-  )
-    throw invalidPackage();
-  const version = value.version === 2 ? 2 : 1;
-  let previous = "";
-  for (const entry of value.entries) {
-    // One validated entry costs one unit plus its content, charged before
-    // the entry is read so a bloated package refuses up front. The unit is
-    // ensured before measuring, so an exhausted budget walks nothing.
-    budget?.ensure(1, "prepare");
-    budget?.reserve(1 + entryContentUnits(entry, budget, "prepare"), "prepare");
-    validateEntry(entry, language, version, value.search_view);
-    if (value.search_view && typeof entry.search_status !== "string")
-      throw invalidPackage();
-    if (entry.event <= previous) throw invalidPackage();
-    previous = entry.event;
-  }
 }
 /**
  * Downloads a search package. Version 2 is requested when the manifest offers it,

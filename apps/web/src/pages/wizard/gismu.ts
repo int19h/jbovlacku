@@ -136,7 +136,13 @@ export async function gismuPage(
     state.rows = presetRows(presets[0], []);
     saver.touch();
   }
-  const cached = await cachedPackage(app.store);
+  let cached: Awaited<ReturnType<typeof cachedPackage>> = null;
+  let packageError: string | null = null;
+  try {
+    cached = await cachedPackage(app.store);
+  } catch (error) {
+    packageError = describe(error);
+  }
   if (!context.live()) return;
   const inventory: PackageInventory = inventoryFromPackage(cached);
   main.append(stepBar(draft, 3));
@@ -147,6 +153,7 @@ export async function gismuPage(
     style: "flex-basis:520px",
   });
   section.append(el("h1", { id: "h1", class: "page", text: "Make a gismu" }));
+  if (packageError) section.append(p(packageError, "notice"));
   section.append(
     el(
       "p",

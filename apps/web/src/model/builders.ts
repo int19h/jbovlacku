@@ -15,7 +15,10 @@ import {
   type MorphologyProfile,
   type RafsiInventoryClaim,
 } from "../../../../packages/core/src/browser.ts";
-import type { CachedPackage } from "../data/search.ts";
+import {
+  checkSavedPackage,
+  type CachedPackage,
+} from "../data/package-check.ts";
 import type {
   Compound,
   Formation,
@@ -379,27 +382,53 @@ export interface PackageInventory {
   /** False when any word's rafsi list was cut. A cut inventory is not a complete conflict check. */
   complete: boolean;
 }
-/** The cached package with the most entries, preferring version 2, for inventories and search. */
+/**
+ * The cached package with the most entries, preferring version 2, for
+ * inventories and search. Every saved package is checked before its rows
+ * are read; a malformed saved package raises the invalid-package error
+ * instead of returning a package a page would crash on. A store that
+ * cannot be read at all still counts as no package.
+ */
 export async function cachedPackage(store: {
   list<T>(name: string): Promise<T[]>;
+  keys?(name: string): Promise<string[]>;
+  get?<T>(name: string, id: string): Promise<T | undefined>;
 }): Promise<CachedPackage | null> {
+  let all: CachedPackage[];
   try {
-    const all = await store.list<CachedPackage>("packages");
-    return (
-      all.sort(
-        (a, b) =>
-          (b.version ?? 1) - (a.version ?? 1) ||
-          b.entries.length - a.entries.length,
-      )[0] ?? null
-    );
-  } catch {
+    if (store.keys && store.get) {
+      all = [];
+      for (const key of await store.keys("packages")) {
+        const raw = await store.get<CachedPackage>("packages", key);
+        if (raw !== undefined) all.push(checkSavedPackage(raw, key));
+      }
+    } else {
+      const listed = await store.list<CachedPackage>("packages");
+      all = listed.map((pkg) => checkSavedPackage(pkg));
+    }
+  } catch (error) {
+    // A check failure is the invalid-package error and must reach the
+    // page. Only a store read failure counts as no package.
+    if (
+      error instanceof Error &&
+      error.message.startsWith("The search package is invalid.")
+    )
+      throw error;
     return null;
   }
+  return (
+    all.sort(
+      (a, b) =>
+        (b.version ?? 1) - (a.version ?? 1) ||
+        b.entries.length - a.entries.length,
+    )[0] ?? null
+  );
 }
-/** The conflict inventory from the local package. */
+/** The conflict inventory from the local package. A malformed package raises the invalid-package error. */
 export function inventoryFromPackage(
   cached: CachedPackage | null,
 ): PackageInventory {
+  if (cached) checkSavedPackage(cached);
   if (!cached)
     return {
       snapshot: null,
