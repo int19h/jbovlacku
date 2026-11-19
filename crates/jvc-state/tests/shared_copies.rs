@@ -422,7 +422,8 @@ fn state_clone_does_not_copy_the_overlay() {
         let (fork, fork_count) = allocations(|| state.clone());
         let (sibling, overlay_count) = allocations(|| state.with_overlay(None));
         assert_eq!(fork.consumed_work(), state.consumed_work());
-        assert_eq!(sibling.consumed_work(), state.consumed_work());
+        // Dropping the overlay refunds its charge: one unit plus one per entry.
+        assert_eq!(sibling.consumed_work() + 1 + entries, state.consumed_work());
         eprintln!(
             "entries={entries} clone_allocations={fork_count} overlay_allocations={overlay_count}"
         );

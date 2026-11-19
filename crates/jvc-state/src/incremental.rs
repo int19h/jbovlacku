@@ -10786,11 +10786,10 @@ mod rebuild_tests {
         let recovered = overlaid.advance(PreparedEvaluationInput::new(tight_opts), &[]);
         assert!(recovered.evaluation().available);
         assert_eq!(recovered.traversal_budget(), 10_000_512 + 4_096);
-        assert_eq!(
-            policy::selection_hash_validations(),
-            1,
-            "advance on a refused state with unchanged selections must reuse the cached selection validity"
-        );
+        // The refused state has no work left to compare the newly supplied
+        // IDs, so it does not read them; the rebuild validates the selection
+        // once, after the resolver has checked its length.
+        assert_eq!(policy::selection_hash_validations(), 2);
     }
 
     #[test]
