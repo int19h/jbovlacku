@@ -1136,7 +1136,7 @@ The `standalone-image` job continues to build and test the container separately.
 Put a new step in the job that matches its work. Rust-only checks go in `rust-native`.
 A step that reads the native corpora or compares native code with WebAssembly goes in `wasm-and-browser-parity`.
 TypeScript, service, and application steps that run without a browser go in `typescript-and-applications`.
-A step that starts a browser goes in the matching browser job, `chromium-browser` or `firefox-editing-and-authoring`.
+Any other step that starts a browser goes in the matching browser job, `chromium-browser` or `firefox-editing-and-authoring`.
 
 The Rust job allows 75 minutes. The parity job allows 30 minutes, and the TypeScript job allows 35 minutes.
 The Chromium job allows 75 minutes.
