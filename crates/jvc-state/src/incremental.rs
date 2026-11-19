@@ -223,9 +223,17 @@ impl EvaluatedState {
         let overlay = overlay.map(std::rc::Rc::new);
         let mut state = self.clone();
         state.prepared.options.overlay = overlay.clone();
-        if self.evaluation.reasons.contains("resource_unavailable") {
+        // A full evaluation charges the overlay's entries before it
+        // validates them (`overlay_units`). The state already paid for
+        // its old overlay; swap that charge for the new one before the
+        // new overlay is read, and rebuild when the budget cannot cover it.
+        let old_units = overlay_units(self.prepared.options.overlay.as_deref());
+        let new_units = overlay_units(overlay.as_deref());
+        let available = self.remaining_work.saturating_add(old_units);
+        if self.evaluation.reasons.contains("resource_unavailable") || new_units > available {
             rebuild(&mut state);
         } else {
+            state.remaining_work = available - new_units;
             state.evaluation = self.evaluation.with_overlay(overlay, |issuer| {
                 let lifecycle = &self.evaluation.lifecycle;
                 let actor = lifecycle
@@ -538,7 +546,7 @@ impl EvaluatedState {
     pub fn advance(mut self, delta: PreparedEvaluationInput, removed: &[String]) -> Self {
         self.ranking_index = Default::default();
         let mut rebuild_reason =
-            (self.prepared.options != delta.options).then(|| "configuration_changed".to_owned());
+            (!self.same_options(&delta.options)).then(|| "configuration_changed".to_owned());
         let arena_error = delta.arena_error();
         self.prepared.options = delta.options;
         if let Some(error) = arena_error {
@@ -597,6 +605,10 @@ impl EvaluatedState {
                     // many import sets name it, so the comparison reads
                     // each supplied ID at most once.
                     let mut compared: BTreeSet<String> = BTreeSet::new();
+                    // Each comparison reads the supplied IDs: it runs only
+                    // while the remaining work covers them, and otherwise
+                    // the advance rebuilds, which charges the selection.
+                    let mut compare_budget = self.remaining_work;
                     for entry in body
                         .view()
                         .index("import_sets")
@@ -639,6 +651,13 @@ impl EvaluatedState {
                         {
                             continue;
                         }
+                        if next_ids.len() > compare_budget {
+                            if rebuild_reason.is_none() {
+                                rebuild_reason = Some("configuration_changed".into());
+                            }
+                            continue;
+                        }
+                        compare_budget -= next_ids.len();
                         #[cfg(test)]
                         SELECTION_IDS_COMPARED
                             .with(|count| count.set(count.get() + prev_ids.len()));
@@ -762,6 +781,33 @@ impl EvaluatedState {
             }
         }
         self
+    }
+
+    /// Whether `next` equals the retained options. A newly supplied
+    /// overlay that is not the retained value is compared only when the
+    /// remaining work covers its entries (`overlay_units`); otherwise it
+    /// counts as changed and the rebuild charges it. The view name is
+    /// compared by length first, so its bytes are read at most up to the
+    /// retained name's length.
+    fn same_options(&self, next: &EvaluationOptions) -> bool {
+        let EvaluationOptions {
+            selected_view,
+            import_selections,
+            overlay,
+            limits,
+        } = next;
+        let retained = &self.prepared.options;
+        retained.selected_view == *selected_view
+            && retained.import_selections == *import_selections
+            && retained.limits == *limits
+            && match (&retained.overlay, overlay) {
+                (None, None) => true,
+                (Some(old), Some(new)) => {
+                    std::rc::Rc::ptr_eq(old, new)
+                        || (overlay_units(Some(new)) <= self.remaining_work && old == new)
+                }
+                _ => false,
+            }
     }
 
     fn fast_work(&self, node: &Node) -> std::result::Result<usize, &'static str> {
@@ -5454,6 +5500,56 @@ mod rebuild_tests {
         let compared = SELECTION_IDS_COMPARED.with(std::cell::Cell::get) - before;
         assert!(!next.statistics().rebuilt);
         assert_eq!(compared, ids.len());
+    }
+
+    /// The resolver checks a selection's length against what is left of
+    /// its base budget before it hashes the IDs.
+    #[test]
+    fn resolver_charges_a_selection_before_hashing_it() {
+        let lists: Vec<Vec<String>> = (0..2u8)
+            .map(|k| (0..64).map(|i| format!("jve1:{:062x}{k:02x}", i)).collect())
+            .collect();
+        // Supplied under digests that do not match, so both are invalid.
+        let digests: Vec<String> = (0..2).map(|i| format!("sha256:{:064x}", i + 1)).collect();
+        let importer = identity_from_seed(&[3; 32]);
+        let import_sets: Vec<Value> = digests
+            .iter()
+            .map(|d| json!({"source": d, "importer": importer, "selection": d}))
+            .collect();
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"resolver","description":[],"roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},
+                "excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,
+                "import_sets":import_sets,"account_witnesses":[],"account_authority":false,"notes":[]
+            })),
+        );
+        let options = EvaluationOptions {
+            selected_view: view.id().into(),
+            overlay: None,
+            import_selections: digests.iter().cloned().zip(lists).collect(),
+            limits: Limits::default(),
+        };
+        let mut prepared = PreparedEvaluationInput::new(options.clone());
+        prepared.add_record(&view, view_body.as_deref());
+        // Room for the first list (1 entry + 64 IDs) but not the second.
+        policy::RESOLVER_BASE_OVERRIDE.with(|o| o.set(Some(100)));
+        let before = policy::selection_hash_validations();
+        let mut cache = BTreeMap::new();
+        let resolved = policy::resolve_referenced_selections_cached(
+            &options,
+            &options.import_selections,
+            &prepared.nodes,
+            &mut cache,
+        );
+        let hashed = policy::selection_hash_validations() - before;
+        policy::RESOLVER_BASE_OVERRIDE.with(|o| o.set(None));
+        assert_eq!(resolved.invalid.len(), 1);
+        assert_eq!(hashed, 1);
     }
 
     /// When a register head lies outside the new judgment's closure, a

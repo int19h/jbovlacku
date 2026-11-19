@@ -629,3 +629,116 @@ fn state_clone_does_not_copy_the_previous_judgment_changes() {
         "allocations at 1 and 256 changed receipts: {counts:?}"
     );
 }
+
+#[test]
+fn new_overlay_is_charged_before_it_is_validated() {
+    // An available state at a limit of 16 units receives an overlay with
+    // 2,048 root changes. The entries are charged before validation, so
+    // the call refuses as a fresh evaluation with that overlay does.
+    let (view, body) = view(json!([]));
+    let mut options = options(&view);
+    options.limits.traversal = Some(16);
+    let mut prepared = PreparedEvaluationInput::new(options.clone());
+    prepared.add_record(&view, Some(&body));
+    let state = prepared.into_state();
+    assert!(state.evaluation().available);
+    let overlay = json!({
+        "version": 1, "base_view": view.id(), "trust": [], "blocked": [], "work": null,
+        "root_changes": (0..2048)
+            .map(|i| json!({"identity": format!("ed25519:{i:064x}"), "q": null}))
+            .collect::<Vec<_>>()
+    });
+    let changed = state.with_overlay(Some(overlay.clone()));
+    let mut fresh_options = options;
+    fresh_options.overlay = Some(overlay.into());
+    let mut fresh = PreparedEvaluationInput::new(fresh_options);
+    fresh.add_record(&view, Some(&body));
+    let fresh = fresh.into_state();
+    eprintln!(
+        "reasons={:?} consumed={}",
+        changed.evaluation().reasons,
+        changed.consumed_work()
+    );
+    assert!(
+        changed
+            .evaluation()
+            .reasons
+            .contains("resource_unavailable")
+    );
+    assert_eq!(changed.evaluation(), fresh.evaluation());
+    assert_eq!(changed.consumed_work(), fresh.consumed_work());
+}
+
+#[test]
+fn resupplied_selection_is_compared_only_within_the_remaining_work() {
+    // An available state admits a selection of 2,048 IDs and has fewer
+    // units left than that. An empty advance with a new copy of the same
+    // IDs cannot compare them within the budget, so it rebuilds.
+    let ids: Vec<String> = (0..2048).map(|i| format!("jve1:{i:064x}")).collect();
+    let digest = hash_id("sha256:", b"", &canonical_value(&json!(ids)).unwrap());
+    let (view, body) = view(json!([{
+        "source": "fixture", "importer": identity_from_seed(&[3; 32]), "selection": digest.clone()
+    }]));
+    let mut options = options(&view);
+    options.import_selections.insert(digest.clone(), ids);
+    let build = |options: &EvaluationOptions| {
+        let mut prepared = PreparedEvaluationInput::new(options.clone());
+        prepared.add_record(&view, Some(&body));
+        prepared.into_state()
+    };
+    let consumed = build(&options).consumed_work();
+    options.limits.traversal = Some(consumed + 100);
+    let state = build(&options);
+    assert!(
+        serde_json::to_value(state.evaluation()).unwrap()["selections"]
+            .get(&digest)
+            .is_some()
+    );
+    let fresh = build(&options);
+    let next = state.advance(PreparedEvaluationInput::new(options.clone()), &[]);
+    eprintln!("reason={:?}", next.statistics().reason);
+    assert_eq!(
+        next.statistics().reason.as_deref(),
+        Some("configuration_changed")
+    );
+    assert_eq!(next.evaluation(), fresh.evaluation());
+    assert_eq!(next.consumed_work(), fresh.consumed_work());
+}
+
+#[test]
+fn view_parents_are_charged_before_they_are_collected() {
+    // At a limit of 16 units, a view that names 64 parents refuses at
+    // the parent charge. The charge comes first, so building the state
+    // allocates no parent IDs.
+    let mut counts = Vec::new();
+    for parents in [1usize, 64] {
+        let body = view_body(json!([]));
+        let parent_ids: Vec<String> = (0..parents)
+            .map(|i| format!("jve1:{:064x}", i + 1))
+            .collect();
+        let view = signed_with_body(
+            3,
+            1,
+            vec![],
+            json!({"kind": "view.publish", "parents": parent_ids}),
+            Some(&body),
+        );
+        let mut options = options(&view);
+        options.limits.traversal = Some(16);
+        let mut prepared = PreparedEvaluationInput::new(options);
+        prepared.add_record(&view, Some(&body));
+        let (state, count) = allocations(|| prepared.into_state());
+        eprintln!(
+            "parents={parents} allocations={count} reasons={:?}",
+            state.evaluation().reasons
+        );
+        if parents == 64 {
+            assert!(state.evaluation().reasons.contains("resource_unavailable"));
+        }
+        counts.push(count);
+    }
+    assert!(
+        counts[1] <= counts[0] + 8,
+        "building with 1 and 64 parents made {counts:?} allocations"
+    );
+}

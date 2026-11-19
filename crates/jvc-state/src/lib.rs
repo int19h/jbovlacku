@@ -545,6 +545,16 @@ impl Evaluation {
         result
     }
 }
+/// Work units to validate or compare an overlay: one for the value and
+/// one per entry of its three lists. Each count is read without a walk.
+pub(crate) fn overlay_units(overlay: Option<&Value>) -> usize {
+    overlay.map_or(0, |overlay| {
+        ["root_changes", "trust", "blocked"]
+            .iter()
+            .map(|name| overlay[*name].as_array().map_or(0, Vec::len))
+            .fold(1usize, usize::saturating_add)
+    })
+}
 fn apply_overlay(result: &mut Evaluation, suspended: &impl Fn(&str) -> bool) {
     if result
         .overlay
@@ -742,6 +752,11 @@ fn evaluate_graph_with_selections_cached(
         &mut result,
     );
     if graph.resource.get() || result.reasons.contains("resource_unavailable") {
+        resource_unavailable(&mut result);
+        return result;
+    }
+    // Overlay validation reads every entry: charge them first.
+    if !graph.charge(overlay_units(result.overlay.as_deref())) {
         resource_unavailable(&mut result);
         return result;
     }

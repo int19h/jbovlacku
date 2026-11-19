@@ -72,6 +72,10 @@ pub(crate) fn resolve_referenced_selections_cached<'a>(
     };
     let base_budget = DEFAULT_TRAVERSAL_BASE
         .saturating_add(nodes.len().saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD));
+    #[cfg(test)]
+    let base_budget = RESOLVER_BASE_OVERRIDE
+        .with(|o| o.get())
+        .unwrap_or(base_budget);
     let mut invalid_work = 0usize;
     for entry in body
         .view()
@@ -95,6 +99,14 @@ pub(crate) fn resolve_referenced_selections_cached<'a>(
             resolved.invalid.insert(selection_id.to_owned());
             continue;
         };
+        // Validation reads every ID. Check the length against what is
+        // left of the base budget first, as if the selection were
+        // invalid; a valid selection then adds its own length back to
+        // the budget as allowance.
+        if !cache.contains_key(selection_id) && invalid_work.saturating_add(ids.len()) > base_budget
+        {
+            break;
+        }
         match valid_selection_cached(import_selections, selection_id, cache) {
             Some(valid_ids) => {
                 resolved.allowance = resolved.allowance.saturating_add(valid_ids.len());
@@ -170,6 +182,18 @@ pub(crate) fn select(
         }
         result.policies.push(body.clone());
         result.policy_history.insert(id.clone(), body.clone());
+        // Charge the parent count before the IDs are read.
+        let parent_count = n
+            .action
+            .view()
+            .index("parents")
+            .as_array()
+            .map_or(0, |parents| parents.len());
+        if parent_count > 0 && !graph.charge(parent_count) {
+            result.available = false;
+            result.reasons.insert("resource_unavailable".into());
+            break;
+        }
         let parents = n
             .action
             .view()
@@ -179,11 +203,6 @@ pub(crate) fn select(
             .flatten()
             .filter_map(|v| v.as_str().map(str::to_owned))
             .collect::<Vec<_>>();
-        if !parents.is_empty() && !graph.charge(parents.len()) {
-            result.available = false;
-            result.reasons.insert("resource_unavailable".into());
-            break;
-        }
         todo.extend(parents);
         if id == input.selected_view {
             let mut invalid_selections = resolved.invalid.clone();
@@ -1557,6 +1576,12 @@ pub(crate) fn reset_selection_hash_validations() {
     SELECTION_HASH_VALIDATIONS.with(|count| count.set(0));
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test override of the resolver's base budget.
+    pub(crate) static RESOLVER_BASE_OVERRIDE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
 #[cfg(test)]
 pub(crate) fn selection_hash_validations() -> usize {
     SELECTION_HASH_VALIDATIONS.with(std::cell::Cell::get)
