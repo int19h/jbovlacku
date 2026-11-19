@@ -49,6 +49,7 @@ jobs:
       # directories above. The parity job below reads them from this artifact.
       # Each corpus variable lives in three places: the env of this job, the
       # path list below, and the env of the parity job. Keep all three in step.
+      # A new corpus variable also goes in the check step of the parity job.
       - name: Upload native parity corpora
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -91,7 +92,8 @@ jobs:
       - name: Install JavaScript and browser tools
         run: |
           npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
+          node -e 'import("playwright").then(async p => (await (await p.chromium.launch()).close()))' || npx playwright install-deps chromium
       - name: Download native parity corpora
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -99,9 +101,10 @@ jobs:
           path: /build/jbovlacku
       - name: Check native parity corpora
         run: |
-          for directory in "$JVC_STATE_PARITY_DIR" "$JVC_SHUN_PARITY_DIR" "$JVC_PREPARATION_PARITY_DIR" "$JVC_WORD_RESULT_PARITY_DIR"; do
-            if [ -z "$directory" ] || [ ! -d "$directory" ] || [ -z "$(find "$directory" -maxdepth 1 -type f -print -quit)" ]; then
-              echo "The native parity corpus is missing or empty: ${directory:-<unset>}" >&2
+          for name in JVC_STATE_PARITY_DIR JVC_SHUN_PARITY_DIR JVC_PREPARATION_PARITY_DIR JVC_WORD_RESULT_PARITY_DIR; do
+            directory="${!name}"
+            if [ ! -d "$directory" ] || [ -z "$(find "$directory" -maxdepth 1 -type f -print -quit)" ]; then
+              echo "$name: the native parity corpus is missing or empty: ${directory:-<unset>}" >&2
               exit 1
             fi
           done
@@ -197,7 +200,8 @@ jobs:
       - name: Install JavaScript and browser tools
         run: |
           npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
+          node -e 'import("playwright").then(async p => (await (await p.chromium.launch()).close()))' || npx playwright install-deps chromium
       - name: Build shared WebAssembly
         run: npm run build:core
       - name: Build browser application
@@ -230,7 +234,8 @@ jobs:
       - name: Install JavaScript and browser tools
         run: |
           npm ci --no-audit --no-fund
-          npx playwright install --with-deps firefox
+          npx playwright install firefox
+          node -e 'import("playwright").then(async p => (await (await p.firefox.launch()).close()))' || npx playwright install-deps firefox
       - name: Build shared WebAssembly
         run: npm run build:core
       - name: Build browser application
