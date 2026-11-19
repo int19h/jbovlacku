@@ -423,6 +423,7 @@ impl EvaluatedState {
         }
         Ok(())
     }
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn replace_evaluation_for_test(&mut self, evaluation: Evaluation, overlay: Option<Value>) {
         self.prepared.options.overlay = overlay.map(std::rc::Rc::new);
@@ -580,13 +581,10 @@ impl EvaluatedState {
                     self.prepared.nodes.len().saturating_add(added.len()) > limit
                 });
         if !std::rc::Rc::ptr_eq(&self.prepared.import_selections, &delta.import_selections) {
-            let exhausted_empty_advance = rebuild_reason.is_none()
-                && added.is_empty()
-                && self.evaluation.reasons.contains("resource_unavailable")
-                && self.prepared.options.limits.traversal.is_some();
+            // A zero budget refuses whatever the selections hold, and an
+            // event-limit state rebuilds anyway.
             if !self.prepared.event_limit_exceeded
                 && self.prepared.options.limits.traversal != Some(0)
-                && !(exhausted_empty_advance && self.evaluation.policy.is_none())
             {
                 let view_node = added.get(&self.prepared.options.selected_view).or_else(|| {
                     self.prepared
@@ -634,23 +632,10 @@ impl EvaluatedState {
                         let Some((prev_ids, next_ids)) = prev.zip(next) else {
                             continue;
                         };
-                        // The refused evaluation read this selection's IDs
-                        // only if selection processing reached it: then it
-                        // either admitted the selection into `selections`
-                        // or recorded it as invalid in the validity cache.
-                        // Otherwise processing stopped at or before the
-                        // selection's length charge, and equal lengths
-                        // already give the same refusal.
-                        // A restored state has no validity evidence from the
-                        // evaluation that refused (restore starts the cache
-                        // without it), so it always compares.
-                        if exhausted_empty_advance
-                            && !self.checkpoint_restored
-                            && !self.evaluation.selections.contains_key(sel_id)
-                            && prev_cache.get(sel_id) != Some(&false)
-                        {
-                            continue;
-                        }
+                        // A refused state keeps no evidence of how far its
+                        // evaluation read the selections (the refusal is
+                        // built from nothing it computed), and its remaining
+                        // work is zero, so a changed vector rebuilds below.
                         if next_ids.len() > compare_budget {
                             if rebuild_reason.is_none() {
                                 rebuild_reason = Some("configuration_changed".into());
@@ -4311,7 +4296,8 @@ mod rebuild_tests {
         state.graph = Some(graph);
         assert!(state.evaluation.reasons.contains("resource_unavailable"));
         assert!(state.evaluation.publications.is_empty());
-        assert!(state.evaluation.lifecycle.suspended.contains_key(&issuer));
+        // The refusal keeps nothing the evaluation computed.
+        assert!(state.evaluation.lifecycle.suspended.is_empty());
         let suspended = json!({
             "version":2,
             "base_view":state.prepared.options.selected_view,
@@ -11563,7 +11549,7 @@ mod rebuild_tests {
     }
 
     #[test]
-    fn empty_advance_on_budget_exhausted_state_skips_referenced_selection_comparison() {
+    fn empty_advance_on_budget_exhausted_state_rebuilds_on_a_changed_selection() {
         let ids: Vec<String> = (0..4_096usize).map(|i| format!("jve1:{i:064x}")).collect();
         let sel_bytes = jvc_core::canonical_value(&json!(ids)).unwrap();
         let digest = jvc_core::hash_id("sha256:", b"", &sel_bytes);
@@ -11615,12 +11601,16 @@ mod rebuild_tests {
                 .unwrap() = format!("jve1:{:064x}", 4_096usize);
             let delta = PreparedEvaluationInput::new(modified_options);
             let advanced = state.advance(delta, &[]);
-            assert!(
-                advanced.statistics().reason.is_none(),
-                "limit={limit}: empty advance on budget-exhausted state must not scan 4,096 selection IDs or trigger configuration_changed (got {:?})",
-                advanced.statistics().reason
+            // A zero budget refuses whatever the selection holds, so it
+            // skips the comparison. Otherwise the exhausted state has no
+            // work left to compare the 4,096 IDs, so it rebuilds, which
+            // is charged, instead of reading them.
+            let expected = (limit > 0).then_some("configuration_changed");
+            assert_eq!(
+                advanced.statistics().reason.as_deref(),
+                expected,
+                "limit={limit}"
             );
-            assert!(!advanced.statistics().rebuilt);
             assert_eq!(advanced.consumed_work(), limit);
             assert!(!advanced.evaluation().available);
         }

@@ -331,11 +331,11 @@ fn append_charges_node_map_held_by_prepared_input() {
 }
 
 #[test]
-fn exhausted_empty_advance_skips_selection_that_was_never_admitted() {
-    // A refused evaluation that stopped before admitting the selection
-    // read only its length. Changing one ID in a selection of the same
-    // length then needs no comparison and no rebuild, at any limit the
-    // selection cannot fit in. A limit that admits it still compares.
+fn exhausted_empty_advance_rebuilds_on_a_changed_selection() {
+    // A refused evaluation keeps nothing it computed, so it cannot show
+    // that it never read the selection, and it has no work left to
+    // compare it. Changing one ID rebuilds (which is charged) and gives
+    // the fresh result. A limit that admits the selection compares it.
     for ids in [32usize, 4096] {
         for (limit, admitted) in [
             (ids - 1, false),
@@ -371,10 +371,6 @@ fn exhausted_empty_advance_skips_selection_that_was_never_admitted() {
                 assert!(state.evaluation().available, "ids={ids} limit={limit}");
             } else {
                 assert!(!state.evaluation().available, "ids={ids} limit={limit}");
-                assert!(
-                    state.evaluation().policy.is_some(),
-                    "ids={ids} limit={limit}"
-                );
             }
             let next = state.advance(PreparedEvaluationInput::new(changed), &[]);
             assert_eq!(
@@ -387,10 +383,9 @@ fn exhausted_empty_advance_skips_selection_that_was_never_admitted() {
                 next.statistics().reason,
                 next.consumed_work()
             );
-            let expected = admitted.then(|| "configuration_changed".to_owned());
             assert_eq!(
-                next.statistics().reason,
-                expected,
+                next.statistics().reason.as_deref(),
+                Some("configuration_changed"),
                 "ids={ids} limit={limit}"
             );
         }
@@ -494,11 +489,14 @@ fn corrected_selection_after_restore_matches_fresh_evaluation() {
     for mode in 0..3 {
         for limit in [15usize, 24, 64] {
             let (state, corrected, view, body) = two_selection_state(limit, mode);
+            // A refused state keeps only the refusal reason.
             assert!(
                 state
                     .evaluation()
                     .reasons
-                    .contains("import_selection_unavailable"),
+                    .contains("import_selection_unavailable")
+                    || state.evaluation().reasons
+                        == std::collections::BTreeSet::from(["resource_unavailable".to_owned()]),
                 "mode={mode} limit={limit}"
             );
             let mut fresh = PreparedEvaluationInput::new(corrected.clone());

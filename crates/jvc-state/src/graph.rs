@@ -485,6 +485,20 @@ impl Graph {
             resource: false,
         }
     }
+    /// Take `amount` units from the budget before the work runs. On
+    /// exhaustion this sets the sticky `resource` flag and returns
+    /// `false`; the caller stops, but a charged helper may still return
+    /// an ordinary-looking value (an empty set, `false`). That value
+    /// never reaches a result: every evaluation path checks `resource`
+    /// before it returns, and a refusal is rebuilt from nothing the
+    /// evaluation computed (`resource_unavailable` in `lib.rs`); the fast
+    /// path rebuilds when `resource` is set after an append.
+    ///
+    /// A new charge on a path that a `judgment.set` or native
+    /// `definition.publish` append takes must also be priced in
+    /// `EvaluatedState::fast_work`, which repeats the full build's
+    /// charge formula for one record.
+    #[must_use]
     pub(crate) fn charge(&self, amount: usize) -> bool {
         if amount > self.budget.get() {
             self.resource.set(true);

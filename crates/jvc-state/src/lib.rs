@@ -774,34 +774,40 @@ fn evaluate_graph_with_selections_cached(
     rafsi_gate(&mut result);
     result
 }
+/// Replace `result` with the whole-evaluation refusal. Every charged
+/// helper (`Graph::retained`, `maxima`, `downstream`, `lineage` and the
+/// rest) returns an ordinary-looking value once the budget runs out, and
+/// the exhaustion flag is sticky. Because every refusal is built here
+/// from nothing the evaluation computed (only the selected view, the
+/// overlay and the refusal reason), a caller that does not read the flag
+/// cannot leak a value decided by a failed charge.
 fn resource_unavailable(result: &mut Evaluation) {
-    result.available = false;
-    result.reasons.insert("resource_unavailable".into());
-    result.registers.clear();
-    result.judgments.clear();
-    result.trust.clear();
-    for p in result.publications.values_mut() {
-        p.authority = Authority::None;
-        p.controller = None;
-        p.claim = None;
-        p.deciding_claim = None;
-        p.status = Status::Unavailable;
-        p.eligible = Eligibility::Unknown;
-        p.reasons.insert("resource_unavailable".into());
-    }
-    for a in result.accounts.values_mut() {
-        a.unavailable = true;
-        a.commands = false;
-        a.controller = None;
-        a.controller_identity = None;
-        a.reasons.insert("resource_unavailable".into());
-    }
-    for receipt in result.receipts.values_mut() {
-        if receipt.interpretation != Interpretation::Inert {
-            receipt.interpretation = Interpretation::Unavailable;
-            receipt.reasons.insert("resource_unavailable".into());
-        }
-    }
+    *result = Evaluation {
+        selected_view: std::mem::take(&mut result.selected_view),
+        available: false,
+        reasons: BTreeSet::from(["resource_unavailable".to_owned()]),
+        results: std::rc::Rc::new(EvaluationResults {
+            receipts: BTreeMap::new(),
+            lifecycle: Lifecycle {
+                key_actor: BTreeMap::new(),
+                groups: BTreeMap::new(),
+                successor: BTreeMap::new(),
+                suspended: BTreeMap::new(),
+                retired: BTreeSet::new(),
+                compromised: BTreeSet::new(),
+            },
+            publications: BTreeMap::new(),
+            accounts: BTreeMap::new(),
+            registers: BTreeMap::new(),
+            judgments: BTreeMap::new(),
+            policy: None,
+            policies: Vec::new(),
+            policy_history: BTreeMap::new(),
+            selections: BTreeMap::new(),
+            trust: Vec::new(),
+        }),
+        overlay: result.overlay.take(),
+    };
 }
 
 fn publications(graph: &graph::Graph, result: &mut Evaluation) {
