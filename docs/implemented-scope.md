@@ -709,7 +709,7 @@ Each stored range costs 8 bytes. A fragmented history (for example interleaved c
 The Node loader can retain an explicit traversal budget for a local import.
 A larger traversal budget does not remove memory limits.
 
-Evaluation work is bounded by this budget across ancestry construction and every evaluator inner loop, including register maxima, retention and cutoffs, policy and selection scans, account claim and certificate loops, and downstream passes. Ordinary histories grow linearly with their record count and pass the default budget, while super-linear inputs refuse deterministically with `resource_unavailable`.
+Evaluation work is bounded by this budget across ancestry construction and the evaluator's inner loops, including register maxima, retention and cutoffs, policy and selection scans, account claim and certificate loops, and downstream passes. One linear pass or copy per operation over state that the host already supplied and keeps (the retained records, the record arena, a retained overlay, inherited import selections, and option strings) is input handling, and the budget does not count it. Ordinary histories grow linearly with their record count and pass the default budget, while super-linear inputs refuse deterministically with `resource_unavailable`.
 
 The server, worker, and Wasm artifacts at `fedfec3` match the earlier measurement at `b6c0354`.
 That run restored its checkpoint in 22.68 seconds. A later restart took 29.33 seconds.
