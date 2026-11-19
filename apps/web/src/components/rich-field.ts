@@ -361,9 +361,11 @@ export function richField(label: string, options: RichFieldOptions) {
   let moved = false;
   let resetSelection: { doc: EditorNode; selection: Selection } | null = null;
   let pointerFocus = false;
-  // Motion keys whose keydown (or repeat) this editor received during its
-  // current focus visit. Only their release syncs the native selection; a
-  // key pressed on another control and released here moved no caret here.
+  // Motion-key names (event.key) whose keydown or repeat this editor
+  // received since its last focus event. On keyup, the editor syncs if the
+  // released key name matches a recorded name; the release consumes that
+  // name. Names, not physical keys, are recorded, so two keys with one
+  // name share an entry.
   const motionKeys = new Set<string>();
   let tabSelection: boolean | null = null;
   let tabTimer: number | undefined;
@@ -979,8 +981,8 @@ export function richField(label: string, options: RichFieldOptions) {
         // The native motion for this key has landed by keyup, so read
         // the resulting selection into state now; in ordinary delivery
         // that is before the focus-time write-back can restore the
-        // previous caret. Only a key that this editor received during
-        // this focus visit moved the caret here.
+        // previous caret. The editor syncs only if the released key name
+        // matches a motion-key name recorded since the last focus event.
         if (motionKeys.delete(event.key)) syncNativeSelection();
         return false;
       },
@@ -1068,8 +1070,8 @@ export function richField(label: string, options: RichFieldOptions) {
         return true;
       },
       focus(view) {
-        // A new focus visit: keys pressed before it went to another
-        // control, so their release here must not sync.
+        // Start a new record: names recorded before this focus event do
+        // not sync on a later release.
         motionKeys.clear();
         const reset =
           resetSelection?.doc === view.state.doc ? resetSelection : null;
@@ -1483,9 +1485,10 @@ export function richField(label: string, options: RichFieldOptions) {
    * makes with a motion key in that window (Home, an arrow) is newer
    * than the tracked one and must be in state before the write runs,
    * or the write restores the caret the reader just moved from. The
-   * sync runs on keyup, once the key's native move has landed, and only
-   * for a key whose keydown the editor received in its current focus
-   * visit. It is the only selection sync: no focus-time or
+   * sync runs on keyup, once the key's native move has landed, if the
+   * released key name matches a motion-key name recorded since the last
+   * focus event; the release consumes that name. It is the only
+   * selection sync: no focus-time or
    * selectionchange sync reads the browser selection, so code that
    * changes state while the field is blurred keeps the selection its
    * transaction chose.
