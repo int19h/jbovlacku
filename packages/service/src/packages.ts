@@ -89,7 +89,12 @@ export function preparePackageSearch<T extends MaterializedPackages>(
 ): T {
   measurement?.start?.();
   try {
-    prepareIndex(packages.entries, measurement?.metrics);
+    // Server materialization keeps the existing execution policy: the browser
+    // product budget does not apply here, so the budget is explicitly off.
+    prepareIndex(packages.entries, measurement?.metrics, {
+      workLimit: Infinity,
+      deadlineMs: Infinity,
+    });
   } finally {
     measurement?.finish?.();
   }

@@ -338,6 +338,96 @@ test("rafsi lookup reports version 1 metadata as unavailable", async ({
   await expect(page.getByText(/No retained claim assigns/)).toHaveCount(0);
 });
 
+test("a padded rafsi pattern at the cap still finds its word", async ({
+  page,
+}) => {
+  // The cap is decided on the raw spelling: this pattern is exactly 4,096
+  // units, so it searches even though normalization expands क़ (U+0958) to
+  // two units. Main finds cukta through the same path. The manifest stub
+  // forces the seeded cache, as in cachedRafsiRows.
+  await page.goto("/");
+  await page.route("**/api/v1/manifest", (route) => route.abort());
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "en", {
+      snapshot: "sha256:" + "a".repeat(64),
+      version: 2,
+      entries: [
+        {
+          event: "jve1:" + "1".repeat(64),
+          word: { language: "jbo", spelling: "cukta" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "a book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+          issuer: "ed25519:" + "a".repeat(64),
+          notes: false,
+          attribution: null,
+          rafsi: ["cuk"],
+          rafsi_complete: true,
+        },
+      ],
+    });
+    await new LocalStore().put("prefs", "preferences", { searchMode: "local" });
+  });
+  const query = "/cuk|\u0958/".padStart(4096, " ");
+  await page.evaluate(async (raw: string) => {
+    const { navigate, routes } = await import(String("/src/app/router.ts"));
+    navigate(routes.rafsi(raw));
+  }, query);
+  await expect(
+    page.getByRole("link", { name: "cukta", exact: true }).first(),
+  ).toBeVisible();
+  await expect(page.getByText("The search query is too long.")).toHaveCount(
+    0,
+  );
+});
+
+test("an over-long rafsi spelling is refused before any lookup", async ({
+  page,
+}) => {
+  // "é" as e plus combining acute is two units, so this spelling is 4,097
+  // raw units. Normalization would shrink it, but the cap is decided on the
+  // raw spelling, so the page refuses instead of searching.
+  await page.goto("/");
+  const query = "e\u0301".repeat(2048) + "z";
+  await page.evaluate(async (raw: string) => {
+    const { navigate, routes } = await import(String("/src/app/router.ts"));
+    navigate(routes.rafsi(raw));
+  }, query);
+  await expect(
+    page.getByText(
+      "The search query is too long. Queries accept at most 4096 characters.",
+    ),
+  ).toBeVisible();
+});
+
+test("an over-long rafsi spelling is refused before package discovery", async ({
+  page,
+}) => {
+  // With no package anywhere, the page must refuse the 4,097-unit spelling
+  // before downloading anything: no manifest or part request goes out.
+  // The page loads straight onto the rafsi route, so every recorded
+  // request would come from package discovery.
+  const requested: string[] = [];
+  await page.route("**/api/v1/manifest", (route) => {
+    requested.push("manifest");
+    return route.abort();
+  });
+  await page.route("**/api/v1/package-parts/*", (route) => {
+    requested.push("part");
+    return route.abort();
+  });
+  await page.goto(`/rafsi/${"z".repeat(4097)}`);
+  await expect(
+    page.getByText(
+      "The search query is too long. Queries accept at most 4096 characters.",
+    ),
+  ).toBeVisible();
+  expect(requested).toEqual([]);
+});
+
 test("a real blocked worker reaches its deadline without blocking the page and recovers", async ({
   page,
 }) => {

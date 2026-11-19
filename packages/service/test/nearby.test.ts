@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nearbyQuery, rankNearby } from "../src/nearby.ts";
+import {
+  nearbyQuery,
+  nearbyTermText,
+  nearbyTerms,
+  rankNearby,
+} from "../src/nearby.ts";
+import {
+  searchMetrics,
+  SearchBudgetError,
+  SearchRequestBudget,
+} from "../../search/src/index.ts";
 test("nearby queries remove place marks and punctuation, then cap distinct words", () => {
   assert.deepEqual(
     nearbyQuery(
@@ -67,4 +77,47 @@ test("circled and braced place markers separate adjacent words", () => {
     "4x4",
     "cu'i",
   ]);
+});
+
+test("nearby ranking charges every ranked hit against the request budget", () => {
+  const lists = Array.from({ length: 6 }, (_, group) =>
+    Array.from({ length: 100 }, (_, index) => ({
+      word_id: `w${group}-${index}`,
+    })),
+  );
+  const metrics = searchMetrics();
+  const shared = new SearchRequestBudget(metrics, {
+    workLimit: 100,
+    deadlineMs: Infinity,
+  });
+  assert.throws(
+    () => rankNearby(lists, shared),
+    (error: unknown) =>
+      error instanceof SearchBudgetError && error.phase === "search",
+  );
+  assert.equal(rankNearby(lists).length, 600);
+});
+
+test("nearby ranking charges the final mapping pass", () => {
+  const metrics = searchMetrics();
+  const shared = new SearchRequestBudget(metrics, {
+    workLimit: 1,
+    deadlineMs: Infinity,
+  });
+  // One input hit passes the scan, but copying it to the output exceeds it.
+  assert.throws(
+    () => rankNearby([[{ word_id: "a" }]], shared),
+    (error: unknown) => error instanceof SearchBudgetError,
+  );
+  assert.deepEqual(rankNearby([[{ word_id: "a" }]]), [{ word_id: "a" }]);
+});
+
+test("nearby terms keep the typed spelling of each selected word", () => {
+  const meaning = "Book, BOOK book İİİ " + "İ".repeat(2049) + " $x_1$ ab";
+  assert.deepEqual(nearbyTerms(meaning), ["Book", "İİİ", "İ".repeat(2049)]);
+  assert.deepEqual(
+    nearbyQuery(meaning),
+    nearbyTerms(meaning).map(nearbyTermText),
+  );
+  assert.equal(nearbyQuery(meaning)[2].length, 4098);
 });

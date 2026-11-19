@@ -67,6 +67,10 @@ export function lexicalSearch(
         },
         {
           ...options,
+          // Server remote search keeps the existing request policy: the
+          // browser product budget does not apply here, so it is off.
+          workLimit: Infinity,
+          deadlineMs: Infinity,
           rafsiFor: (entry) =>
             rafsi[
               evaluation.publications[(entry as SearchEntry).event]?.word

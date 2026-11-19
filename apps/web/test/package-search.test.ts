@@ -313,3 +313,451 @@ test("download, saved cache, and search worker retain the package view once", as
   expect(result.known).toBe(true);
   expect(result.downgrade).toBeNull();
 });
+
+test("a zero-unit transfer walks no attribution dates", async ({ page }) => {
+  // The review input: 100 valid version-2 entries with 128 attribution
+  // dates each. A request with workLimit 0 must refuse before walking any
+  // date map on the page thread, while the default budget still returns
+  // the one hit with all 100 entries.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const dates = () =>
+      Object.fromEntries(
+        Array.from({ length: 128 }, (_, index) => [
+          `d${index}`,
+          "2020-01-01",
+        ]),
+      );
+    const entries = Array.from({ length: 100 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [],
+      plain_text: "book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+      issuer: "ed25519:" + "a".repeat(64),
+      notes: false,
+      rafsi: [],
+      attribution: { source: "test", author: null, account: null, dates: dates() },
+    }));
+    const pkg = { snapshot: "sha256:" + "a".repeat(64), version: 2, entries };
+    const maps = new WeakSet<object>(
+      entries.map((entry) => entry.attribution.dates),
+    );
+    let visits = 0;
+    let pairs = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const original: any = Object.entries;
+    const hooked = function (obj: object): [string, unknown][] {
+      const result = original(obj) as [string, unknown][];
+      if (maps.has(obj)) {
+        visits++;
+        pairs += result.length;
+      }
+      return result;
+    };
+    Object.entries = hooked as typeof Object.entries;
+    try {
+      try {
+        await searchPackage(pkg as never, "en", ["book"], { workLimit: 0 });
+        return { refused: false, visits, pairs };
+      } catch (error) {
+        return {
+          refused: true,
+          constructor: (error as Error).constructor.name,
+          visits,
+          pairs,
+        };
+      }
+    } finally {
+      Object.entries = original;
+    }
+  });
+  expect(result.refused).toBe(true);
+  expect(result.constructor).toBe("SearchBudgetError");
+  expect(result.visits).toBe(0);
+  expect(result.pairs).toBe(0);
+  const control = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const dates = () =>
+      Object.fromEntries(
+        Array.from({ length: 128 }, (_, index) => [
+          `d${index}`,
+          "2020-01-01",
+        ]),
+      );
+    const entries = Array.from({ length: 100 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [],
+      plain_text: "book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+      issuer: "ed25519:" + "a".repeat(64),
+      notes: false,
+      rafsi: [],
+      attribution: { source: "test", author: null, account: null, dates: dates() },
+    }));
+    const hits = await searchPackage(
+      { snapshot: "sha256:" + "a".repeat(64), version: 2, entries } as never,
+      "en",
+      ["book"],
+    );
+    return { hits: hits.hits[0].length, entries: hits.hits[0][0]?.entries.length };
+  });
+  expect(control).toEqual({ hits: 1, entries: 100 });
+});
+
+test("a malformed saved package reports an invalid package", async ({
+  page,
+}) => {
+  // A stored package whose entries field is missing, null, or not an
+  // array must report PackageValidationError (so the page clears it and
+  // falls back to server search), not a raw TypeError. A null row still
+  // reports invalid, and an empty package still returns zero hits.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage, PackageValidationError } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const snapshot = "sha256:" + "a".repeat(64);
+    const attempt = async (entries: unknown) => {
+      try {
+        const outcome = await searchPackage(
+          { snapshot, version: 1, entries } as never,
+          "en",
+          ["book"],
+        );
+        return { resolved: true, hits: outcome.hits[0].length };
+      } catch (error) {
+        return {
+          resolved: false,
+          constructor: (error as Error).constructor.name,
+          invalid:
+            error instanceof PackageValidationError ||
+            (error as Error).constructor.name ===
+              "PackageValidationError",
+          message: (error as Error).message,
+        };
+      }
+    };
+    return {
+      missing: await attempt(undefined),
+      null: await attempt(null),
+      object: await attempt({}),
+      nullRow: await attempt([null]),
+      empty: await attempt([]),
+    };
+  });
+  for (const label of ["missing", "null", "object"] as const) {
+    expect(result[label].resolved).toBe(false);
+    expect(result[label].invalid).toBe(true);
+    expect(result[label].constructor).toBe("PackageValidationError");
+  }
+  expect(result.nullRow.resolved).toBe(false);
+  expect(result.nullRow.invalid).toBe(true);
+  expect(result.empty).toEqual({ resolved: true, hits: 0 });
+});
+
+test("a cold request does not copy other pending transfers", async ({
+  page,
+}) => {
+  // Overlapping calls with distinct packages used to copy every pending
+  // transfer key into an array and search it, so one cold request did work
+  // proportional to unrelated transfers. The client now looks up the
+  // package key directly: no pending-key array is ever built or searched,
+  // even with 32 transfers in flight.
+  await page.goto("/");
+  const result = await page.evaluate(async (count) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const store = new LocalStore("pending-keys");
+    const packages = [];
+    for (let index = 0; index <= count; index++) {
+      const language = `en-x-p${index}`;
+      await store.put("packages", language, {
+        version: 1,
+        snapshot: "sha256:" + "a".repeat(64),
+        entries: [],
+      });
+      packages.push({
+        pkg: await store.get("packages", language),
+        language,
+      });
+    }
+    const calls = [];
+    for (let index = 0; index < count; index++)
+      calls.push(
+        searchPackage(packages[index].pkg, packages[index].language, [], {
+          workLimit: 0,
+        }),
+      );
+    const lengths: number[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const native: any = Array.prototype.includes;
+    const hooked = function (
+      this: unknown[],
+      needle: unknown,
+      ...rest: unknown[]
+    ): boolean {
+      if (
+        typeof needle === "string" &&
+        needle.startsWith('["en-x-p') &&
+        this.every(
+          (item) => typeof item === "string" && item.startsWith('["en-x-p'),
+        )
+      )
+        lengths.push(this.length);
+      return native.call(this, needle, ...rest);
+    };
+    try {
+      Array.prototype.includes = hooked;
+      calls.push(
+        searchPackage(packages[count].pkg, packages[count].language, [], {
+          workLimit: 0,
+        }),
+      );
+    } finally {
+      Array.prototype.includes = native;
+    }
+    const settled = await Promise.all(calls);
+    return {
+      lengths,
+      fulfilled: settled.length,
+      groups: settled[settled.length - 1].hits.length,
+    };
+  }, 32);
+  expect(result.fulfilled).toBe(33);
+  expect(result.groups).toBe(0);
+  expect(result.lengths).toEqual([]);
+});
+
+test("an over-cap query is refused before any detector or transfer", async ({
+  page,
+}) => {
+  // A query past the product length cap must not reach the wildcard
+  // detector or the worker: the client refuses with a typed error. The
+  // worker may still validate the package, but no posted message carries
+  // the query.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage } = await import(String("/src/data/package-search.ts"));
+    const pkg = {
+      snapshot: "sha256:" + "b".repeat(64),
+      version: 1,
+      entries: [
+        {
+          event: "jve1:" + "1".repeat(64),
+          word: { language: "jbo", spelling: "broda" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        },
+      ],
+    };
+    const query = "z".repeat(5000);
+    const originalTest = RegExp.prototype.test;
+    let detectorCalls = 0;
+    RegExp.prototype.test = function (this: RegExp, value: string): boolean {
+      if (this.source === "[*?@$]" && value === query) detectorCalls++;
+      return originalTest.call(this, value);
+    };
+    const originalPost = Worker.prototype.postMessage;
+    let queryUnits = 0;
+    (Worker.prototype as any).postMessage = function (
+      this: unknown,
+      ...args: [unknown]
+    ) {
+      const message = args[0] as { queries?: string[] };
+      for (const text of message?.queries ?? []) queryUnits += text.length;
+      return originalPost.apply(this, args);
+    };
+    try {
+      await searchPackage(pkg as never, "en", [query]);
+      return { refused: false, detectorCalls, queryUnits };
+    } catch (error) {
+      return {
+        refused: true,
+        constructor: (error as Error).constructor.name,
+        message: (error as Error).message,
+        detectorCalls,
+        queryUnits,
+      };
+    } finally {
+      RegExp.prototype.test = originalTest;
+      Worker.prototype.postMessage = originalPost;
+    }
+  });
+  expect(result.refused).toBe(true);
+  expect(result.constructor).toBe("SearchQueryTooLongError");
+  expect(result.detectorCalls).toBe(0);
+  expect(result.queryUnits).toBe(0);
+});
+
+test("an over-cap query on an invalid package reports the invalid package", async ({
+  page,
+}) => {
+  // The length refusal waits until the package is known to be usable, so a
+  // malformed package keeps its validation error and the page fallback.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const pkg = {
+      snapshot: "sha256:" + "c".repeat(64),
+      version: 2,
+      entries: [null],
+    };
+    try {
+      await searchPackage(pkg as never, "en", ["z".repeat(4097)], {
+        grouped: true,
+      });
+      return "completed";
+    } catch (error) {
+      return (error as Error).constructor.name;
+    }
+  });
+  expect(result).toBe("PackageValidationError");
+});
+
+test("a retry sends the strings that passed the length check", async ({
+  page,
+}) => {
+  // A canceled cold transfer makes the next request retry with the package.
+  // The caller's array changes after the call; the retry must still send
+  // the four-unit query that was checked, not the 4,097-unit replacement.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const replacement = "e\u0301".repeat(2048) + "z";
+    const originalTest = RegExp.prototype.test;
+    let detectorCalls = 0;
+    RegExp.prototype.test = function (this: RegExp, value: string): boolean {
+      if (this.source === "[*?@$]" && value === replacement) detectorCalls++;
+      return originalTest.call(this, value);
+    };
+    const originalPost = Worker.prototype.postMessage;
+    const sent: number[][] = [];
+    (Worker.prototype as any).postMessage = function (
+      this: unknown,
+      ...args: [unknown]
+    ) {
+      const message = args[0] as { queries?: string[] };
+      if (message?.queries) sent.push(message.queries.map((q) => q.length));
+      return originalPost.apply(this, args);
+    };
+    const pkg = {
+      version: 1,
+      snapshot: "sha256:" + "d".repeat(64),
+      entries: [
+        {
+          event: "jve1:" + "2".repeat(64),
+          word: { language: "jbo", spelling: "cukta" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        },
+      ],
+    };
+    try {
+      const controller = new AbortController();
+      const starter = searchPackage(pkg as never, "en", [], {
+        signal: controller.signal,
+      });
+      controller.abort();
+      const terms = ["book"];
+      const waiting = searchPackage(pkg as never, "en", terms, {
+        group: "definitions",
+      });
+      terms[0] = replacement;
+      const [, settled] = await Promise.allSettled([starter, waiting]);
+      return {
+        sent,
+        detectorCalls,
+        outcome:
+          settled.status === "fulfilled"
+            ? settled.value.hits
+                .flat()
+                .map((hit: { word: { spelling: string } }) => hit.word.spelling)
+            : (settled.reason as Error).constructor.name,
+      };
+    } finally {
+      RegExp.prototype.test = originalTest;
+      Worker.prototype.postMessage = originalPost;
+    }
+  });
+  // The second request ran twice: once without the package, then the retry.
+  expect(result.sent.filter((lengths) => lengths.length === 1)).toEqual([
+    [4],
+    [4],
+  ]);
+  expect(result.detectorCalls).toBe(0);
+  expect(result.outcome).toEqual(["cukta"]);
+});
+
+test("a grouped rafsi query completes after lowercasing expands it", async ({
+  page,
+}) => {
+  // "z".repeat(4095) + "İ" fits the cap at 4,096 raw units, but lowercasing
+  // expands İ, so the worker-side text is over the cap. The cap was decided
+  // on the raw spelling at entry, so both groups complete as on main
+  // instead of failing with a plain error.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const pkg = {
+      snapshot: "sha256:" + "b".repeat(64),
+      version: 1,
+      entries: [
+        {
+          event: "jve1:" + "1".repeat(64),
+          word: { language: "jbo", spelling: "broda" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        },
+      ],
+    };
+    const query = "z".repeat(4095) + "İ";
+    try {
+      const found = await searchPackage(pkg as never, "en", [query], {
+        grouped: true,
+        rafsiOnly: true,
+        patterns: false,
+      });
+      return {
+        completed: true,
+        groups: found.hits.length,
+        constructor: "",
+      };
+    } catch (error) {
+      return {
+        completed: false,
+        groups: 0,
+        constructor: (error as Error).constructor.name,
+      };
+    }
+  });
+  expect(result.completed).toBe(true);
+  expect(result.groups).toBe(2);
+});

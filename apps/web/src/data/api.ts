@@ -132,6 +132,10 @@ export async function objectBytes(
       signal,
     });
   } catch (error) {
+    // A quota failure is a physical failure, not a lost connection. It keeps
+    // its own error so package downloads can report it as running out of room.
+    if ((error as { name?: string } | null)?.name === "QuotaExceededError")
+      throw error;
     if ((error as { name?: string } | null)?.name === "TimeoutError")
       throw new TransportError("The server did not answer in time.", "timeout");
     if (options.signal?.aborted) throw error;
@@ -141,6 +145,8 @@ export async function objectBytes(
   try {
     bytes = await readBounded(response, limit, signal);
   } catch (error) {
+    if ((error as { name?: string } | null)?.name === "QuotaExceededError")
+      throw error;
     if ((error as { name?: string } | null)?.name === "TimeoutError")
       throw new TransportError("The server did not answer in time.", "timeout");
     if (options.signal?.aborted) throw error;

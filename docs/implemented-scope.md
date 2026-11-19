@@ -116,6 +116,7 @@ A settled meaning update includes those lexical counts before its meaning count.
 Each expansion preserves keyboard focus. Search cards keep votes beside attribution and omit reviewer disclosures.
 Word pages fold snapshot and view IDs and the local score comparison into Source and scores. Reading language lists show names and omit the test tag unless it is active.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
+A package has no per-language totals: any part, entry, or byte count downloads, and each part keeps its 4 MiB and 2,000-entry bound. An optional package download quota (`packageQuota`: parts, entries, bytes) can cap one download. It is off by default.
 
 Local and server search share TypeScript morphology and match ranking. Compound cmavo match exact component sequences, contiguous runs, and ordered subsequences.
 For example, `i seri'a bo`, `ise ri'abo`, and `iseri'abo` find the same compound. `i bo` also finds `iseri'abo`.
@@ -128,9 +129,10 @@ Long lists offer "show all". Case and acute headword stress marks do not change 
 
 Queries permit 512 recognized words and 300,000 parser steps, with 128 phonemes per run. The index covers dictionary headwords through 256 bytes.
 A limit notice preserves ordinary text search and states incomplete sequence coverage.
+One work budget (200,000,000 work units) and one deadline (300,000 milliseconds) cover a whole local-search request in the style of the pattern-search bounds: package validation, index preparation, map building, query parsing, scanning, grouping, sorting, nearby ranking, response mapping and transfer, and the page-side reference rebuild. Each stage charges its work before doing it, so an exhausted budget stops the next unit instead of letting a batch run past it. Scans, grouping, sorting, ranking, and mapping failures report the local-search limit message; preparation and validation failures report that the package index is too costly to build. The defaults complete an ordinary query on a package five times the base data. A configured `workLimit` or `deadlineMs` value overrides them. A valid large package is never reported as malformed: malformed input reports an invalid package, a package the device cannot fit reports that it does not fit (an allocation-failure message — `Array buffer allocation failed` or `out of memory` — or a storage quota error; an `invalid array length`, an engine string-capacity failure, or any other crash keeps the startup message), and a configured quota reports the quota. The server does not use this product budget: package building and remote search keep the existing server execution policy with the budget explicitly off.
 
 Saved-package validation and search run in a static module worker. Search pages, nearby lookup, and lujvo part lookup share two prepared package revisions.
-Local search transfers references for 20 results per group initially. Show all fetches only the remaining results through the 1,000-word browser limit.
+Local search transfers references for 20 results per group initially. Show all fetches only the remaining results through the 1,000-word browser limit. Displays cap what they render: part lookup shows at most 1,000 entries of one hit and names how many more the hit carries, the rafsi page shows at most 1,000 matching pairs, and the typed-word check shows the first 100 definitions with a Show all action that renders the rest in batches of 50. Actions use the whole set: lujvo Add records every definition and claim of the hit in one synchronous step, and the typed-word Show all renders every remaining definition.
 Nearby lookup ignores late results after meaning or language edits and recovers when the current language package returns.
 
 The server prepares lexical indexes during package materialization, before completed snapshots become readable.

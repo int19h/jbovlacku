@@ -320,6 +320,7 @@ Nearby lookup in the meaning step and part lookup in the lujvo builder use the s
 Each nearby call reads the package for its current language, including an empty meaning. A missing package never disables later local lookups.
 Changes to the meaning or language invalidate pending results and errors before the next debounced lookup starts.
 The worker ranks all nearby query lists before selecting six rows.
+Nearby lookup sends each selected word as the reader typed it, and the worker lowercases the word after the length check.
 
 Ordinary local search transfers up to 20 rows per lexical group initially, so two groups can transfer 40 rows.
 Show all requests only the remaining rows within each group's limit of 1,000 hits.
@@ -348,6 +349,13 @@ If a headword reaches its indexing limit, ordinary matching remains available an
 
 The response and interface expose either limit through `segmentation: "limited"`.
 The interface preserves that notice through pagination and browser Back.
+
+One work budget and one deadline cover a whole ordinary local-search request, in the style of the pattern-search bounds: package validation, index preparation, map building, query parsing, scanning, grouping, and sorting.
+The default budget is 200,000,000 work units. A validated, prepared, transferred, or scanned entry costs `1 + items + ceil(chars / 64)`, where items counts its glosses, rafsi spellings, selmaho names, and attribution dates, and chars counts the characters of its spelling, plain text, event ID, issuer, gloss texts and senses, rafsi spellings, selmaho names, and attribution strings. All other work costs one unit each: a component comparison, a map insertion, a sort comparison, a morphology parser step, or a mapped reply reference. The query itself costs `ceil(length / 64)` units, and the reply transfer charges each mapped reference once more, plus `max(1, ceil(length / 64))` units for each matching rafsi string. A component-comparison block reserves its upper bound before it runs, and each comparison that runs is also counted. Nearby ranking, response mapping, and the page-side reference rebuild charge the same budget. That budget is a bound, not an exact meter: every unit of work is either charged before it runs, or bounded by a constant factor of work already charged in the same request, or bounded by a fixed per-request or per-item cap. Uncharged overhead inside those classes does not block a request. A local search query accepts at most 4,096 UTF-16 code units, counted on the spelling that the reader typed, before lowercasing or normalization. A longer query is refused with a typed too-long error before any detector, transfer, parsing, or matching reads it, so every per-query step is bounded by that fixed cap. Lowercasing and normalization make a string longer by at most a small constant factor. Search, nearby lookup, and part lookup refuse only after the worker accepts the saved package, so an unusable package keeps its own error and, on the search page, its server fallback. The rafsi page has no server fallback, so it refuses an over-long rafsi before it looks for a package. Server search keeps its own query limits. For example, measuring an entry walks its fields in proportion to the charged content units (and stops an exhausted walk partway); splitting the query reads at most the capped query above; the grouped hit set holds at most one entry per returned row (and the definitions group, which never uses it, skips building it); each rendered preview reads at most 480 units.
+The default deadline is 300,000 milliseconds from the start of the request, including any package transfer the request carries.
+The defaults complete an ordinary query on a package five times the base data. A configured `workLimit` or `deadlineMs` value overrides them.
+A scan, grouping pass, sort, nearby ranking, or response mapping that exceeds either reports “Local search reached its work or time limit. Use a shorter or more specific query.”
+A preparation or validation stage that exceeds either reports that the package index is too costly to build on this device and suggests server search instead.
 
 Sequence matching never enumerates query subsets.
 For E entries, Q query tokens, and H maximum headword components, its comparison cost is O(E × (Q + H)).
@@ -682,7 +690,7 @@ An acute on a recognized nonname or a misplaced acute blocks signing, including 
 An unknown spelling with a valid name mark follows the ordinary experimental classification rules.
 An accented spelling requires the `cmevla` classification, or `lujvo` under the format's [bounded `zei` rule](format.md#definition-payload).
 The app compares its `wordId` with the local language package. Remote lookup requires explicit consent for that word and language.
-An existing word shows “Already exists”, its linked word page, its definitions, and “Add a definition”.
+An existing word shows “Already exists”, its linked word page, its first 100 definitions with a Show all action when it has more, and “Add a definition”.
 Conversion-shaped typed headwords also follow the [place conversion flow](#place-conversions), without an AI request.
 The conversion offer reads “Use te vecnu” for either `te vecnu` or an unambiguous `tervecnu` analysis.
 The author can inspect the conversion, edit the base places, or write a different meaning through the ordinary lujvo or Other path.
@@ -2097,6 +2105,12 @@ Each part contains `hash`, `bytes`, and `count`. Its hash identifies a canonical
 Each part holds at most 2,000 rows and 4 MiB uncompressed. Split larger data into additional parts.
 The manifest hash covers its canonical bytes. Compression remains outside the hashes.
 These derived parts use their dedicated endpoint, rather than the 256 KiB event-body limit.
+There is no per-language total for parts, rows, or bytes: a valid package of any size downloads, and only the per-artifact bounds above reject a download.
+An optional client download quota can cap one download. It is off by default.
+Malformed input rejects the package as invalid. A valid package is never reported as malformed for its size.
+A download that the device cannot fit reports that the package does not fit in this browser's storage or memory.
+A download that a configured quota stops names the quota.
+Worker validation reports malformed input as an invalid package. A query longer than 4,096 characters is refused as too long instead of being matched, transferred, or parsed. A package the device cannot fit reports does-not-fit instead of a raw allocation error, whether the allocation fails during download, validation, preparation, or indexing. A work-budget or deadline refusal reports the local-search limit failure instead of the malformed-package message, and preparation or indexing stopped by the budget reports that the package index is too costly to build. A live worker crash reports does-not-fit only for an allocation-failure message (`Array buffer allocation failed` or `out of memory`) or a storage quota error; an `invalid array length`, an engine string-capacity failure, or any other crash, including a worker that never starts, keeps the startup message.
 
 `search_view` is the selected signed view ID that binds ordering evidence for every row in that snapshot.
 The browser retains that binding once per saved package and passes it to local search.

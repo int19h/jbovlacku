@@ -159,6 +159,23 @@ test("nearby invalidates pending work during the input debounce", async ({
   expect(shown).toEqual([]);
 });
 
+test("nearby measures each typed word before lowercasing", async ({ page }) => {
+  // Each İ lowercases to two units, so the second word is 2,049 typed
+  // units but 4,098 lowercased ones. The local length limit reads the
+  // typed spelling, so nearby search still finds cukta as on main.
+  await seed(page);
+  await open(page, "/new/meaning?lang=en");
+  const panel = page.getByRole("region", {
+    name: "Close in meaning",
+    exact: true,
+  });
+  await page
+    .getByRole("textbox", { name: "Meaning", exact: true })
+    .fill("book " + "\u0130".repeat(2049));
+  await expect(panel.locator(".hw")).toHaveText("cukta");
+  await expect(page.getByText("The search query is too long.")).toHaveCount(0);
+});
+
 test("nearby returns to a saved language after a package miss", async ({
   page,
 }) => {

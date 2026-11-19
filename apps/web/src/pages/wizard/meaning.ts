@@ -1,7 +1,10 @@
 import { CIRCLED, circledPlace } from "../../model/place-glyphs.ts";
 import { searchPackage } from "../../data/package-search.ts";
 import { kindLabel } from "../../model/types.ts";
-import { nearbyQuery as meaningQueries } from "../../../../../packages/service/src/nearby.ts";
+import {
+  nearbyQuery as meaningQueries,
+  nearbyTerms,
+} from "../../../../../packages/service/src/nearby.ts";
 import { wordId } from "../../../../../packages/core/src/browser.ts";
 import {
   changeTypedWord,
@@ -48,7 +51,11 @@ import {
   DRAFT_KEY,
 } from "./common.ts";
 import { assistanceVisibility } from "../../components/assistance.ts";
-import type { DefinitionBody, SearchHit } from "../../model/types.ts";
+import type {
+  DefinitionBody,
+  PackageEntry,
+  SearchHit,
+} from "../../model/types.ts";
 
 function highlightPlaceholders(meaning: string): HTMLElement {
   const node = el("p", { style: "margin-top:4px" });
@@ -360,8 +367,14 @@ export async function meaningPage(
       );
       return;
     }
+    // The status area renders at most this many existing definitions up
+    // front. A word can carry entries for the whole package, so longer
+    // lists offer the rest on demand and build only the rows they render.
+    // Further rows render in the app's usual 50-row batches.
+    const MAX_SHOWN_DEFINITIONS = 100;
+    const SHOW_BATCH = 50;
     const showExisting = (
-      definitions: { event: string; text: string }[],
+      entries: readonly PackageEntry[],
       coverage: string,
     ) => {
       typedStatus.append(
@@ -373,18 +386,76 @@ export async function meaningPage(
           text(`. ${coverage}`),
         ),
       );
-      const definitionsList = el("ul", { class: "small" });
-      for (const definition of definitions)
-        definitionsList.append(
-          el(
-            "li",
-            {},
-            link(
-              definition.text || "Open this definition",
-              routes.definition(definition.event),
-            ),
+      // Only rendered rows are built, so initial page work stays bounded by
+      // what the page shows no matter how many entries the word carries.
+      const toRow = (entry: PackageEntry) =>
+        el(
+          "li",
+          { tabindex: "-1" },
+          link(
+            entry.plain_text || "Open this definition",
+            routes.definition(entry.event),
           ),
         );
+      const definitionsList = el("ul", { class: "small" });
+      let shown = 0;
+      for (const entry of entries.slice(0, MAX_SHOWN_DEFINITIONS)) {
+        definitionsList.append(toRow(entry));
+        shown += 1;
+      }
+      if (entries.length > MAX_SHOWN_DEFINITIONS) {
+        const showAll = button(
+          `Show all ${entries.length} definitions`,
+          () => {
+            void renderRest();
+          },
+          { class: "btn btn-quiet" },
+        );
+        definitionsList.append(el("li", { class: "small" }, showAll));
+      }
+      // One activation renders everything that is left in the app's usual
+      // 50-row batches. Each batch lands in one fragment append, and the
+      // first new row of each batch takes focus — including the final
+      // batch — so keyboard activation never leaves focus on the removed
+      // button or the body. Tasks yield every few batches: yielding after
+      // every batch would pay a paint and layout pass per 50 rows, which
+      // turns a hundred-thousand-row render quadratic.
+      async function renderRest() {
+        const holder = definitionsList.querySelector(
+          ":scope > li:last-child",
+        );
+        let opened = false;
+        let sinceYield = 0;
+        let lastFirst: HTMLElement | undefined;
+        while (shown < entries.length) {
+          if (!valid()) return;
+          const fragment = document.createDocumentFragment();
+          let firstRow: HTMLElement | undefined;
+          for (const entry of entries.slice(shown, shown + SHOW_BATCH)) {
+            const row = toRow(entry);
+            if (!firstRow) firstRow = row;
+            fragment.append(row);
+            shown += 1;
+          }
+          definitionsList.append(fragment);
+          if (!opened) {
+            opened = true;
+            holder?.remove();
+          }
+          // Focus stays on the new rows without scrolling the page for
+          // every batch.
+          firstRow?.focus({ preventScroll: true });
+          if (firstRow) lastFirst = firstRow;
+          sinceYield += 1;
+          if (shown < entries.length && sinceYield >= 10) {
+            sinceYield = 0;
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+        }
+        // The final focus target scrolls into view once rendering finishes,
+        // so the focused row is visible instead of far below the viewport.
+        lastFirst?.scrollIntoView({ block: "nearest" });
+      }
       typedStatus.append(
         definitionsList,
         button(
@@ -402,10 +473,7 @@ export async function meaningPage(
       const entries = packageWordEntries(packageData, id);
       if (entries.length)
         showExisting(
-          entries.map((entry) => ({
-            event: entry.event,
-            text: entry.plain_text,
-          })),
+          entries,
           `Local package for ${draft.language}, snapshot ${packageData.snapshot}.`,
         );
       else
@@ -669,7 +737,7 @@ export async function meaningPage(
     const request = ++nearbyRequest;
     const value = meaning.input.value;
     const language = draft.language;
-    const query = nearbyQuery();
+    const terms = nearbyTerms(value);
     const current = () =>
       context.live() &&
       request === nearbyRequest &&
@@ -680,13 +748,15 @@ export async function meaningPage(
       if (!current()) return;
       cached = pkg ?? null;
       renderMode();
-      if (!query) {
+      if (!terms.length) {
         renderHits([], "local");
         return;
       }
       if (pkg) {
         // Rank all query lists in the worker before selecting six nearby rows.
-        const found = await searchPackage(pkg, language, query.split(" "), {
+        // Each word goes in its typed spelling, so the local length limit
+        // reads what the reader typed; the worker lowercases it afterwards.
+        const found = await searchPackage(pkg, language, terms, {
           patterns: false,
           nearby: true,
           limit: 6,

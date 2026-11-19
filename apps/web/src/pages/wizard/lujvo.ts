@@ -49,8 +49,13 @@ import type { App } from "../../app/context.ts";
 import { getWord, RequestError } from "../../data/api.ts";
 import type { Draft } from "../../model/draft.ts";
 import type { CachedPackage, LocalHit } from "../../data/search.ts";
-import { searchPackage } from "../../data/package-search.ts";
-import { isV2 } from "../../data/search.ts";
+import {
+  cappedHitEntries,
+  distinctHitRafsi,
+  searchPackage,
+  summarizeHitEntries,
+} from "../../data/package-search.ts";
+import { plural } from "../../lib/format.ts";
 import {
   cachedPackage,
   componentId,
@@ -360,7 +365,41 @@ export async function lujvoPage(
       const entry = hit.entries[0];
       const kind =
         (entry.classification as { kind?: string } | null)?.kind ?? "other";
-      const rafsi = hit.entries.flatMap((e) => (isV2(e) ? e.rafsi : []));
+      // The request bounds hits, not the entries inside each hit: one word
+      // can carry entries for the whole package, so the display reads at
+      // most HIT_CONTENT_LIMIT entries per hit and names how many more the
+      // hit carries. Real words keep far fewer, so their rows are unchanged.
+      const shown = cappedHitEntries(hit);
+      const displayRafsi = distinctHitRafsi(shown);
+      const hidden = hit.entries.length - shown.length;
+      // The action needs the whole set, as on main: one synchronous step,
+      // so concurrent Adds keep their click order and the component
+      // survives immediate navigation. Nothing is silently truncated.
+      const pushPart = () => {
+        const id = wordId({ language: "jbo", spelling: hit.word.spelling });
+        const claims = distinctHitRafsi(hit.entries);
+        editLujvoRows(state, (rows) =>
+          rows.push({
+            id: componentId(),
+            spelling: hit.word.spelling,
+            kind,
+            // A specific definition is recorded only when the author chooses one below.
+            definition: null,
+            definitions: summarizeHitEntries(hit.entries),
+            gloss: entry.glosses[0]?.text ?? "",
+            claims: claims.map((r) => ({
+              rafsi: r,
+              pair: rafsiPairId(id, r),
+            })),
+            locked: null,
+          }),
+        );
+        addField.input.value = "";
+        addResults.replaceChildren();
+        saver.touch();
+        renderRows();
+        rebuild();
+      };
       const item = el("li", { class: "similar-item" });
       item.append(
         el("span", { class: "hw", lang: "jbo", text: hit.word.spelling }),
@@ -369,39 +408,16 @@ export async function lujvoPage(
           ` · ${entry.glosses.map((g) => g.text).join(", ") || entry.plain_text.slice(0, 60)}`,
           "meta",
         ),
-        rafsi.length
-          ? text(` · rafsi ${[...new Set(rafsi)].join(", ")}`, "meta")
+        displayRafsi.length
+          ? text(` · rafsi ${displayRafsi.join(", ")}`, "meta")
           : text(" · no listed rafsi", "meta"),
+        ...(hidden > 0
+          ? [text(` · also: ${plural(hidden, "other matching definition")}`, "meta")]
+          : []),
         button(
           "Add",
           () => {
-            const id = wordId({ language: "jbo", spelling: hit.word.spelling });
-            editLujvoRows(state, (rows) =>
-              rows.push({
-                id: componentId(),
-                spelling: hit.word.spelling,
-                kind,
-                // A specific definition is recorded only when the author chooses one below.
-                definition: null,
-                definitions: hit.entries.map((e) => ({
-                  event: e.event,
-                  summary:
-                    e.glosses.map((g) => g.text).join(", ") ||
-                    Array.from(e.plain_text).slice(0, 60).join(""),
-                })),
-                gloss: entry.glosses[0]?.text ?? "",
-                claims: [...new Set(rafsi)].map((r) => ({
-                  rafsi: r,
-                  pair: rafsiPairId(id, r),
-                })),
-                locked: null,
-              }),
-            );
-            addField.input.value = "";
-            addResults.replaceChildren();
-            saver.touch();
-            renderRows();
-            rebuild();
+            pushPart();
           },
           {
             class: "btn btn-quiet",
