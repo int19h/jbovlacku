@@ -859,6 +859,28 @@ async function chooseKeyboardSelection(
   );
 }
 
+// The collapsed browser caret as a paragraph index and a text offset in
+// that paragraph, or -1 values when the selection is not a collapsed
+// caret in a paragraph of the field.
+async function collapsedCaret(field: Locator) {
+  return field.evaluate((node) => {
+    const selection = getSelection()!;
+    const paragraph =
+      selection.focusNode?.nodeType === 3
+        ? selection.focusNode.parentElement?.closest("p")
+        : (selection.focusNode as Element)?.closest?.("p");
+    if (!paragraph || !selection.isCollapsed || !node.contains(paragraph))
+      return { paragraph: -1, offset: -1 };
+    const range = document.createRange();
+    range.setStart(paragraph, 0);
+    range.setEnd(selection.focusNode!, selection.focusOffset);
+    return {
+      paragraph: [...node.querySelectorAll("p")].indexOf(paragraph),
+      offset: range.toString().length,
+    };
+  });
+}
+
 async function expectKeyboardSelection(
   field: Locator,
   text: string,
@@ -1112,6 +1134,8 @@ const resetFocusCases = [
     after: [["reset prefix"], ["alpha beta"]],
     typed: [["reset prefix"], ["alpha betax"]],
     typedFirefox: [["reset prefixx"], ["alpha beta"]],
+    caret: { paragraph: 1, offset: 10 },
+    caretFirefox: { paragraph: 0, offset: 12 },
   },
   {
     name: "shorten first paragraph",
@@ -1119,6 +1143,8 @@ const resetFocusCases = [
     after: [["new"], ["omega end"]],
     typed: [["new"], ["omega endx"]],
     typedFirefox: [["newx"], ["omega end"]],
+    caret: { paragraph: 1, offset: 9 },
+    caretFirefox: { paragraph: 0, offset: 3 },
   },
 ] as const;
 
@@ -1170,7 +1196,13 @@ for (const resetCase of resetFocusCases) {
           input.focus();
         }, resetCase.after as unknown as RichText);
       }
-      await page.waitForTimeout(60);
+      // Wait for the browser caret to settle where this engine leaves
+      // it, however long the focus-time selection write takes.
+      await expect
+        .poll(() => collapsedCaret(field))
+        .toEqual(
+          browserName === "firefox" ? resetCase.caretFirefox : resetCase.caret,
+        );
       await field.press("x");
       await expect
         .poll(() => field.evaluate((node: any) => node.value))
@@ -1303,7 +1335,12 @@ test("tab into the field after a reset types at the document end once focus sett
     .click();
   await page.waitForTimeout(40);
   await page.keyboard.press("Tab");
-  await page.waitForTimeout(80);
+  await expect(field).toBeFocused();
+  // Wait for the browser caret to settle at the document end, however
+  // long the focus-time selection write takes.
+  await expect
+    .poll(() => collapsedCaret(field))
+    .toEqual({ paragraph: 1, offset: 10 });
   await page.keyboard.press("x");
   await expect
     .poll(() => field.evaluate((node: any) => node.value))
@@ -1413,7 +1450,12 @@ for (const route of ["click", "selectall"] as const) {
       .click();
     await page.waitForTimeout(40);
     await page.keyboard.press("Tab");
-    await page.waitForTimeout(80);
+    await expect(field).toBeFocused();
+    // Let the focus-time selection write settle the caret at the
+    // document end before the reader's own choice, however long it takes.
+    await expect
+      .poll(() => collapsedCaret(field))
+      .toEqual({ paragraph: 1, offset: 10 });
     if (route === "click") {
       const box = await field.locator("p").first().boundingBox();
       await page.mouse.click(box!.x + 35, box!.y + 8);

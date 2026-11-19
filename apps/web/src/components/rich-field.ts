@@ -1487,11 +1487,12 @@ export function richField(label: string, options: RichFieldOptions) {
    * or the write restores the caret the reader just moved from. The
    * sync runs on keyup, once the key's native move has landed, if the
    * released key name matches a motion-key name recorded since the last
-   * focus event; the release consumes that name. It is the only
-   * selection sync: no focus-time or
-   * selectionchange sync reads the browser selection, so code that
-   * changes state while the field is blurred keeps the selection its
-   * transaction chose.
+   * focus event; the release consumes that name. The field has no
+   * general focus-time or selectionchange sync. Other code still reads
+   * the browser selection into state in specific cases: the focus
+   * handler after a wrapper move, the toolbar focus and pointer
+   * handlers, and Tab and Enter keydown. So a state change made while
+   * the field is blurred can still be replaced by one of those reads.
    */
   function syncNativeSelection() {
     if (view.isDestroyed || view.composing) return;
