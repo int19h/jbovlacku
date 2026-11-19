@@ -525,6 +525,13 @@ impl Evaluation {
         overlay: Option<std::rc::Rc<Value>>,
         suspended: impl Fn(&str) -> bool,
     ) -> Self {
+        // A resource refusal stays the clean refusal: only its overlay
+        // changes, as a rebuild with the new overlay would refuse again.
+        if self.reasons.contains("resource_unavailable") {
+            let mut result = self.clone();
+            result.overlay = overlay;
+            return result;
+        }
         let overlay_reason = self.reasons.contains("invalid_overlay")
             || self.reasons.contains("public_shun_issuer_unavailable");
         let mut result = Self {

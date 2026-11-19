@@ -314,3 +314,32 @@ fn every_limit_below_the_covered_work_gives_the_covered_result_or_the_clean_refu
         started.elapsed()
     );
 }
+
+#[test]
+fn an_overlay_on_a_refused_evaluation_keeps_the_clean_refusal() {
+    // Zero records, a zero budget and a selected view that is absent:
+    // the evaluation refuses. The public `Evaluation::with_overlay` with
+    // an invalid overlay must keep the single refusal reason, as the
+    // session method (which rebuilds) does.
+    let options = EvaluationOptions {
+        selected_view: format!("jve1:{}", "0".repeat(64)),
+        import_selections: BTreeMap::new(),
+        overlay: None,
+        limits: Limits {
+            traversal: Some(0),
+            ..Limits::default()
+        },
+    };
+    let state = PreparedEvaluationInput::new(options).into_state();
+    let refusal = std::collections::BTreeSet::from(["resource_unavailable".to_owned()]);
+    assert_eq!(state.evaluation().reasons, refusal);
+    let overlay = std::rc::Rc::new(json!({}));
+    let direct = state
+        .evaluation()
+        .with_overlay(Some(overlay.clone()), |_| false);
+    assert!(!direct.available);
+    assert_eq!(direct.reasons, refusal);
+    assert!(direct.receipts.is_empty());
+    let session = state.with_overlay(Some(json!({})));
+    assert_eq!(&direct, session.evaluation());
+}
