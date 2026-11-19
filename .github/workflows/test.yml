@@ -65,7 +65,8 @@ jobs:
   wasm-and-browser-parity:
     needs: rust-native
     runs-on: ubuntu-24.04
-    # In 21 recent attempts this part took 5 to 15 minutes, with a median of 7.
+    # Since the browser install stopped using apt, this part took 5 to 7
+    # minutes in 4 runs, with a median of 6.
     timeout-minutes: 30
     env:
       CARGO_BUILD_JOBS: "2"
@@ -90,10 +91,16 @@ jobs:
           rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.105 --locked --jobs 2
       - name: Install JavaScript and browser tools
+        # The runner image has the browser libraries. Probe a launch.
+        # After a failed probe, install the libraries with apt and probe again.
         run: |
           npm ci --no-audit --no-fund
           npx playwright install chromium
-          node -e 'import("playwright").then(async p => (await (await p.chromium.launch()).close()))' || { npx playwright install-deps chromium && node -e 'import("playwright").then(async p => (await (await p.chromium.launch()).close()))'; }
+          if ! node scripts/ci/probe-browser.mjs chromium; then
+            echo "::warning::Browser launch failed. Installing system packages with apt."
+            npx playwright install-deps chromium
+            node scripts/ci/probe-browser.mjs chromium
+          fi
       - name: Download native parity corpora
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -177,7 +184,8 @@ jobs:
 
   chromium-browser:
     runs-on: ubuntu-24.04
-    # Chromium took about 30 to 43 minutes, plus up to 15 minutes for setup.
+    # Chromium took about 38 minutes in 4 runs since the browser install
+    # stopped using apt.
     timeout-minutes: 75
     env:
       CARGO_BUILD_JOBS: "2"
@@ -198,10 +206,16 @@ jobs:
           rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.105 --locked --jobs 2
       - name: Install JavaScript and browser tools
+        # The runner image has the browser libraries. Probe a launch.
+        # After a failed probe, install the libraries with apt and probe again.
         run: |
           npm ci --no-audit --no-fund
           npx playwright install chromium
-          node -e 'import("playwright").then(async p => (await (await p.chromium.launch()).close()))' || { npx playwright install-deps chromium && node -e 'import("playwright").then(async p => (await (await p.chromium.launch()).close()))'; }
+          if ! node scripts/ci/probe-browser.mjs chromium; then
+            echo "::warning::Browser launch failed. Installing system packages with apt."
+            npx playwright install-deps chromium
+            node scripts/ci/probe-browser.mjs chromium
+          fi
       - name: Build shared WebAssembly
         run: npm run build:core
       - name: Build browser application
@@ -211,7 +225,8 @@ jobs:
 
   firefox-editing-and-authoring:
     runs-on: ubuntu-24.04
-    # Firefox took about 10 minutes, plus about 4 minutes for setup and builds.
+    # Firefox took 11 to 12 minutes in 4 runs since the browser install
+    # stopped using apt.
     timeout-minutes: 30
     env:
       CARGO_BUILD_JOBS: "2"
@@ -232,10 +247,16 @@ jobs:
           rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown
           cargo install wasm-bindgen-cli --version 0.2.105 --locked --jobs 2
       - name: Install JavaScript and browser tools
+        # The runner image has the browser libraries. Probe a launch.
+        # After a failed probe, install the libraries with apt and probe again.
         run: |
           npm ci --no-audit --no-fund
           npx playwright install firefox
-          node -e 'import("playwright").then(async p => (await (await p.firefox.launch()).close()))' || { npx playwright install-deps firefox && node -e 'import("playwright").then(async p => (await (await p.firefox.launch()).close()))'; }
+          if ! node scripts/ci/probe-browser.mjs firefox; then
+            echo "::warning::Browser launch failed. Installing system packages with apt."
+            npx playwright install-deps firefox
+            node scripts/ci/probe-browser.mjs firefox
+          fi
       - name: Build shared WebAssembly
         run: npm run build:core
       - name: Build browser application
