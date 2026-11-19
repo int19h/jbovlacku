@@ -28,6 +28,10 @@ import {
   comparePatternSpelling,
   patternKey,
 } from "../../../../packages/search/src/pattern.ts";
+import {
+  SEARCH_QUERY_LENGTH_LIMIT,
+  SearchQueryTooLongError,
+} from "../../../../packages/search/src/index.ts";
 import { searchPackage, takeRafsiRows } from "../data/package-search.ts";
 
 /** Loads the version 2 package for a language, from cache or the server. */
@@ -226,7 +230,14 @@ export async function rafsiPage(
 ) {
   const { main } = context;
   main.className = "surface-word";
-  const rafsi = (route.segments[1] ?? "").normalize("NFC");
+  // The cap is decided on the raw spelling before anything normalizes it:
+  // normalization can shrink the input (padded patterns) or expand it.
+  const raw = route.segments[1] ?? "";
+  if (raw.length > SEARCH_QUERY_LENGTH_LIMIT) {
+    main.append(p(describe(new SearchQueryTooLongError()), "notice"));
+    return;
+  }
+  const rafsi = raw.normalize("NFC");
   context.title(`Rafsi ${rafsi}`);
   main.append(
     el(
@@ -242,7 +253,9 @@ export async function rafsiPage(
   }
   let words: RafsiWords;
   try {
-    words = await wordsWithRafsi(app, rafsi, context.signal);
+    // The raw spelling goes to the search: the engine normalizes it
+    // internally, so the result matches a pre-normalized input exactly.
+    words = await wordsWithRafsi(app, raw, context.signal);
   } catch (error) {
     if (context.live()) main.append(p(describe(error), "notice"));
     return;

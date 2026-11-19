@@ -239,15 +239,8 @@ export async function searchPage(
     if (context.live() && request === languageRequest)
       navigate(routes.search(query, value));
   });
-  // The product query limit applies before any classification, transfer,
-  // or worker call reads the query. The page shows the refusal as a message.
-  if (query.length > SEARCH_QUERY_LENGTH_LIMIT) {
-    results.append(p(describe(new SearchQueryTooLongError()), "notice"));
-    return;
-  }
-  const punctuationNote = naturalLanguageNote(query);
-  if (punctuationNote) main.append(p(punctuationNote, "meta"));
   // Search source: the downloaded package in local mode, otherwise this server.
+  // Locality is known only after the cache lookup, so the lookup runs first.
   let cached: CachedPackage | undefined;
   let initialLocal: PackageSearchResult | undefined;
   if (
@@ -258,6 +251,14 @@ export async function searchPage(
       .get<CachedPackage>("packages", language)
       .catch(() => undefined);
   }
+  // The product query limit applies only to a query that will run locally:
+  // remote search keeps the server policy. A cached package means local.
+  if (cached !== undefined && query.length > SEARCH_QUERY_LENGTH_LIMIT) {
+    results.append(p(describe(new SearchQueryTooLongError()), "notice"));
+    return;
+  }
+  const punctuationNote = naturalLanguageNote(query);
+  if (punctuationNote) main.append(p(punctuationNote, "meta"));
   if (cached) {
     try {
       initialLocal = await searchPackage(

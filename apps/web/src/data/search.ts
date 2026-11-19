@@ -552,7 +552,14 @@ export function localSearch(
   const queryText =
     typeof query === "string" ? query : (query.pattern ?? query.text);
   const selected = rafsiOnly
-    ? selectRafsiMatches(entries, queryText, measured, childOptions)
+    ? selectRafsiMatches(entries, queryText, measured, {
+        ...childOptions,
+        // A prepared query already passed the cap on its raw spelling in
+        // prepareQuery; only a raw string query is checked again here, so
+        // text expanded by normalization or lowercasing still completes.
+        enforceQueryLengthCap:
+          typeof query === "string" && childOptions.enforceQueryLengthCap,
+      })
     : selectMatches(entries, query, measured, undefined, {
         ...childOptions,
         knownWord: (entry) => {

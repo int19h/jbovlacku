@@ -536,12 +536,13 @@ test("a zero-unit budget refuses before parsing the query", () => {
 });
 
 test("an over-long query is refused before parsing", () => {
-  // Past the product length cap the query never reaches the budget:
-  // splitting, normalization, and parsing must not see it.
+  // Past the local product length cap the query never reaches the budget:
+  // splitting, normalization, and parsing must not see it. The server
+  // never sets the flag, so the same input still parses there.
   const long = "z ".repeat(9000) + "z";
   const measured = searchMetrics();
   assert.throws(
-    () => prepareQuery(long, measured),
+    () => prepareQuery(long, measured, { enforceQueryLengthCap: true }),
     (error: unknown) =>
       error instanceof Error &&
       error.constructor.name === "SearchQueryTooLongError",
@@ -585,10 +586,70 @@ test("an over-long rafsi query is refused before matching", () => {
   ];
   const measured = searchMetrics();
   assert.throws(
-    () => selectRafsiMatches(rows, "z".repeat(5000), measured),
+    () =>
+      selectRafsiMatches(rows, "z".repeat(5000), measured, {
+        enforceQueryLengthCap: true,
+      }),
     (error: unknown) =>
       error instanceof Error &&
       error.constructor.name === "SearchQueryTooLongError",
   );
   assert.equal(measured.entries, 0);
+});
+
+test("an over-long query still parses without the local cap", () => {
+  // The server path never sets the flag: its own byte policy applies, so
+  // the review's 4,097-unit input parses instead of throwing the product
+  // length error.
+  const measured = searchMetrics();
+  const prepared = prepareQuery(" ".repeat(4093) + "book", measured);
+  assert.equal(prepared.text, "book");
+  assert.equal(prepared.segmentation, "complete");
+});
+
+test("an over-long rafsi query still scans without the local cap", () => {
+  // Without the flag there is no refusal, only the query-size charge, so a
+  // long input scans and simply finds nothing.
+  const rows = [
+    {
+      word: { spelling: "broda" },
+      glosses: [],
+      plain_text: "book",
+      rafsi: ["bau"],
+    } as LexicalEntry,
+  ];
+  const measured = searchMetrics();
+  const result = selectRafsiMatches(rows, "z".repeat(5000), measured);
+  assert.equal(result.rows.length, 0);
+  assert.equal(result.segmentation, "complete");
+});
+
+test("a refused rafsi query charge runs before the detector", () => {
+  // With no allowance left, the query-size reservation refuses before the
+  // pattern detector or the WebAssembly matcher runs, so the refusal
+  // happens with no matcher alive to free.
+  const original = RegExp.prototype.test;
+  let detectorRuns = 0;
+  RegExp.prototype.test = function (this: RegExp, value: string): boolean {
+    if (this.source === "[*?@$]") detectorRuns++;
+    return original.call(this, value);
+  };
+  try {
+    const measured = searchMetrics();
+    const budget = new SearchRequestBudget(measured, {
+      workLimit: 0,
+      deadlineMs: Infinity,
+    });
+    assert.throws(
+      () =>
+        selectRafsiMatches([], "k*", measured, {
+          requestBudget: budget,
+          enforceQueryLengthCap: true,
+        }),
+      (error: unknown) => error instanceof SearchBudgetError,
+    );
+  } finally {
+    RegExp.prototype.test = original;
+  }
+  assert.equal(detectorRuns, 0);
 });

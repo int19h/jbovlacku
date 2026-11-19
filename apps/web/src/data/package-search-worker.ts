@@ -297,6 +297,11 @@ self.onmessage = ({ data }) => {
         request: data.request,
         key: data.key,
         ...(error instanceof PatternError ? { code: error.code } : {}),
+        // A length refusal from any later stage keeps its typed code across
+        // the boundary, so the client reports it instead of a plain Error.
+        ...(error instanceof SearchQueryTooLongError
+          ? { code: "query-too-long" as const }
+          : {}),
         error: error instanceof Error ? error.message : String(error),
       });
     }

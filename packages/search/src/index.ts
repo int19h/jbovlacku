@@ -613,6 +613,13 @@ export function prepareIndex<T extends LexicalEntry>(
 }
 export interface SearchOptions extends SearchBudgetOptions {
   patterns?: boolean;
+  /**
+   * Check SEARCH_QUERY_LENGTH_LIMIT against the given string, which must be
+   * the raw input spelling. Local entry points decide the cap once on the
+   * raw query; normalized, lowercased, or trimmed text is never rechecked.
+   * The server never sets this, so remote search keeps its own byte policy.
+   */
+  enforceQueryLengthCap?: boolean;
   group?: SearchGroup;
   includeRetired?: boolean;
   view?: string | null;
@@ -634,19 +641,20 @@ export function prepareQuery(
   metrics?: SearchMetrics,
   options: SearchOptions = {},
 ): PreparedQuery {
-  // Queries longer than the product limit never reach the budget: split,
-  // normalize, and parse all scale with the full input.
-  if (query.length > SEARCH_QUERY_LENGTH_LIMIT)
+  // The local product cap applies only when the caller asks for it, on the
+  // raw input spelling: the server keeps its own byte policy, and callers
+  // that already decided it on the raw query pass the prepared result on.
+  if (options.enforceQueryLengthCap && query.length > SEARCH_QUERY_LENGTH_LIMIT)
     throw new SearchQueryTooLongError();
   // Query parsing belongs to the request budget, so a grouped query that
   // parses before the scan still counts its parser work.
   const measured = metrics ?? searchMetrics();
   const limit = SearchRequestBudget.for(measured, options);
   limit.check("search");
-  // The raw query has no length limit on the product path, so its size is
-  // charged before anything that scales with it runs: normalization, the
-  // byte check, parsing, and the per-group word splits below all read the
-  // whole query. One unit per 64 UTF-16 code units, like entry content.
+  // The query size is charged before anything that scales with it runs:
+  // normalization, the byte check, parsing, and the per-group word splits
+  // below all read the whole query. One unit per 64 UTF-16 code units,
+  // like entry content.
   limit.reserve(contentUnits(0, query.length), "search");
   const text = normalizeQuery(query);
   const headword = headwordKey(text);
@@ -774,19 +782,20 @@ export function selectRafsiMatches<T extends LexicalEntry>(
   metrics?: SearchMetrics,
   options: SearchOptions = {},
 ) {
-  // Rafsi searches skip prepareQuery, so they enforce the cap and charge
-  // the query size here: normalization and the pattern test below both
-  // scale with the full input.
-  if (query.length > SEARCH_QUERY_LENGTH_LIMIT)
+  // Rafsi searches skip prepareQuery, so a local caller enforces the cap
+  // here on the raw input spelling; the server never asks for it. The
+  // query charge is reserved before the detector and the matcher below,
+  // so a refusal happens with no matcher alive to free.
+  if (options.enforceQueryLengthCap && query.length > SEARCH_QUERY_LENGTH_LIMIT)
     throw new SearchQueryTooLongError();
+  const measured = metrics ?? searchMetrics();
+  const limit = SearchRequestBudget.for(measured, options);
+  limit.reserve(contentUnits(0, query.length), "search");
   const pattern =
     options.patterns !== false && isPatternQuery(query)
       ? compilePattern(query)
       : null;
   const rows: LexicalMatch<T>[] = [];
-  const measured = metrics ?? searchMetrics();
-  const limit = SearchRequestBudget.for(measured, options);
-  limit.reserve(contentUnits(0, query.length), "search");
   // The literal comparison key depends only on the query.
   const queryKey = pattern ? null : patternKey(query);
   try {

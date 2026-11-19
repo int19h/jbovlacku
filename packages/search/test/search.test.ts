@@ -146,9 +146,12 @@ test("resource limits keep ordinary search and never use a partial component que
       ["gloss"],
     );
   }
-  // Past the product length cap the query never reaches the matchers.
+  // Past the local product length cap the query never reaches the matchers.
   assert.throws(
-    () => selectMatches([entry("i")], "x".repeat(16_385)),
+    () =>
+      selectMatches([entry("i")], "x".repeat(16_385), undefined, undefined, {
+        enforceQueryLengthCap: true,
+      }),
     (error: unknown) => error instanceof SearchQueryTooLongError,
   );
   const oversized = entry("ba".repeat(128) + "bo");

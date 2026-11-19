@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { initializeCore } from "../../../../packages/core/src/index.ts";
 import {
+  prepareQuery,
   searchMetrics,
   SearchBudgetError,
   SearchRequestBudget,
@@ -542,4 +543,22 @@ test("grouped sorting classifies the query once, not per comparison", () => {
   }
   // One classification for the pattern branch plus the hoisted sort check.
   assert.ok(wildcardTests <= 2, `classified the query ${wildcardTests} times`);
+});
+
+test("a prepared rafsi query completes after lowercasing expands it", () => {
+  // "z".repeat(4095) + "İ" fits the cap at 4,096 raw units, but lowercasing
+  // expands İ, so the prepared text is over the cap. The cap was decided
+  // on the raw spelling in prepareQuery, so the grouped rafsi scan still
+  // completes instead of refusing the transformed text.
+  const raw = "z".repeat(4095) + "İ";
+  assert.equal(raw.length, 4096);
+  const measured = searchMetrics();
+  const prepared = prepareQuery(raw, measured, {
+    enforceQueryLengthCap: true,
+  });
+  assert.ok(prepared.text.length > 4096);
+  const selected = localSearch([packageEntry(0)], prepared, searchMetrics(), true, {
+    enforceQueryLengthCap: true,
+  });
+  assert.equal(selected.segmentation, "complete");
 });

@@ -601,3 +601,54 @@ test("an over-cap query is refused before any detector or transfer", async ({
   expect(result.detectorCalls).toBe(0);
   expect(result.posts).toBe(0);
 });
+
+test("a grouped rafsi query completes after lowercasing expands it", async ({
+  page,
+}) => {
+  // "z".repeat(4095) + "İ" fits the cap at 4,096 raw units, but lowercasing
+  // expands İ, so the worker-side text is over the cap. The cap was decided
+  // on the raw spelling at entry, so both groups complete as on main
+  // instead of failing with a plain error.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const pkg = {
+      snapshot: "sha256:" + "b".repeat(64),
+      version: 1,
+      entries: [
+        {
+          event: "jve1:" + "1".repeat(64),
+          word: { language: "jbo", spelling: "broda" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        },
+      ],
+    };
+    const query = "z".repeat(4095) + "İ";
+    try {
+      const found = await searchPackage(pkg as never, "en", [query], {
+        grouped: true,
+        rafsiOnly: true,
+        patterns: false,
+      });
+      return {
+        completed: true,
+        groups: found.hits.length,
+        constructor: "",
+      };
+    } catch (error) {
+      return {
+        completed: false,
+        groups: 0,
+        constructor: (error as Error).constructor.name,
+      };
+    }
+  });
+  expect(result.completed).toBe(true);
+  expect(result.groups).toBe(2);
+});

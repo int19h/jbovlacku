@@ -2018,9 +2018,54 @@ test("an over-cap query is refused with a message before any search", async ({
 }) => {
   // Past the 4,096-character product limit the page reports the typed
   // error instead of classifying, transferring, or matching the query.
+  // The package seed makes the query local; without one the page would
+  // fall back to remote search and keep the server policy.
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "en", {
+      snapshot: "sha256:" + "a".repeat(64),
+      version: 1,
+      entries: [
+        {
+          event: "jve1:" + "1".repeat(64),
+          word: { language: "jbo", spelling: "broda" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        },
+      ],
+    });
+  });
   const query = "z".repeat(5000);
   await page.goto(`/search?q=${query}&lang=en`);
   await expect(
     page.getByText("The search query is too long. Queries accept at most 4096 characters."),
   ).toBeVisible();
+});
+
+test("a remote search skips the local product cap", async ({ page }) => {
+  // Remote search keeps the server policy: a 4,097-unit query is sent to
+  // the server for both groups, not refused with the local notice.
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().setPreferences({ searchMode: "remote" });
+  });
+  const requested: string[] = [];
+  await page.route("**/api/v1/search?**", (route) => {
+    requested.push(route.request().url());
+    return route.abort();
+  });
+  await page.goto(`/search?q=${"z".repeat(4097)}&lang=en`);
+  await expect.poll(() => requested.length, { timeout: 10000 }).toBe(2);
+  expect(requested.some((url) => url.includes("group=lojban"))).toBe(true);
+  expect(requested.some((url) => url.includes("group=definitions"))).toBe(
+    true,
+  );
+  await expect(
+    page.getByText("The search query is too long."),
+  ).toHaveCount(0);
 });
