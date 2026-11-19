@@ -43,7 +43,7 @@ import type { RichText } from "../../model/types.ts";
 import { richTextToText, textToRichText } from "../../model/richtext.ts";
 import type { CachedPackage } from "../../data/search.ts";
 import {
-  cachedPackage,
+  cachedPackagePick,
   decimal,
   formationMetadata,
   inventoryFromPackage,
@@ -136,13 +136,9 @@ export async function gismuPage(
     state.rows = presetRows(presets[0], []);
     saver.touch();
   }
-  let cached: Awaited<ReturnType<typeof cachedPackage>> = null;
-  let packageError: string | null = null;
-  try {
-    cached = await cachedPackage(app.store);
-  } catch (error) {
-    packageError = describe(error);
-  }
+  const pick = await cachedPackagePick(app.store);
+  const cached = pick.pkg;
+  const packageError = pick.invalid;
   if (!context.live()) return;
   const inventory: PackageInventory = inventoryFromPackage(cached);
   main.append(stepBar(draft, 3));

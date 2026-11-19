@@ -368,14 +368,18 @@ export async function meaningPage(
         }),
       );
     let packageData: CachedPackage | null | undefined;
+    let packageError: string | null = null;
     try {
       packageData = await typedPackages.get(draft.language);
     } catch (error) {
       if (!valid()) return;
-      typedStatus.append(p(describe(error), "notice"));
-      return;
+      // A malformed saved package shows its message and the check goes on
+      // without a local package, so the server check below stays available.
+      packageError = describe(error);
+      packageData = null;
     }
     if (!valid()) return;
+    if (packageError) typedStatus.append(p(packageError, "notice"));
     let id: string;
     try {
       id = wordId({ language: "jbo", spelling });
@@ -504,7 +508,7 @@ export async function meaningPage(
             "meta",
           ),
         );
-    } else
+    } else if (!packageError)
       typedStatus.append(
         p(
           "The word could not be checked. No local package is downloaded for this language.",
@@ -683,6 +687,9 @@ export async function meaningPage(
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let nearbyRequest = 0;
+  // The invalid-package message is announced once per page, however many
+  // nearby lookups the reader's edits start.
+  let invalidAnnounced = false;
   const scheduleNearby = () => {
     nearbyRequest++;
     if (remoteConsent !== consentKey()) remoteConsent = null;
@@ -765,14 +772,25 @@ export async function meaningPage(
       value === meaning.input.value &&
       language === draft.language;
     try {
-      const pkg = await savedPackage(app.store, language).catch((error) => {
+      // A malformed saved package is announced once and then treated as
+      // no local package, like the search page's fallback: the consent
+      // and server branch below still runs, so server search is never
+      // blocked by a bad or missing local package.
+      let pkg: CachedPackage | null = null;
+      try {
+        pkg = await savedPackage(app.store, language);
+      } catch (error) {
         if (
           error instanceof Error &&
           error.message.startsWith("The search package is invalid.")
-        )
-          throw error;
-        return null;
-      });
+        ) {
+          if (current() && !invalidAnnounced) {
+            invalidAnnounced = true;
+            app.announce(error.message);
+          }
+        }
+        pkg = null;
+      }
       if (!current()) return;
       cached = pkg ?? null;
       renderMode();

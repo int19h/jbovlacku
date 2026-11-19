@@ -2,7 +2,7 @@ import { wordFormStatus } from "../../components/word-form-feedback.ts";
 import { kindLabel } from "../../model/types.ts";
 import { detectWord, typedWord } from "../../model/typed-headword.ts";
 import {
-  cachedPackage,
+  cachedPackagePick,
   inventoryFromPackage,
   currentRootConflicts,
 } from "../../model/builders.ts";
@@ -11,7 +11,7 @@ import {
   assistanceVisibility,
 } from "../../components/assistance.ts";
 /** Step 2: the word type, with manual entry for authors who already have the spelling. */
-import { el, p, text, link, button, describe } from "../../lib/dom.ts";
+import { el, p, text, link, button } from "../../lib/dom.ts";
 import { navigate, type RenderContext, type Route } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import type { Draft } from "../../model/draft.ts";
@@ -169,13 +169,9 @@ export async function typePage(
     role: "region",
     "aria-label": "Gismu closeness",
   });
-  let packageData: Awaited<ReturnType<typeof cachedPackage>> = null;
-  let packageError: string | null = null;
-  try {
-    packageData = await cachedPackage(app.store);
-  } catch (error) {
-    packageError = describe(error);
-  }
+  const pick = await cachedPackagePick(app.store);
+  const packageData = pick.pkg;
+  const packageError = pick.invalid;
   if (!context.live()) return;
   const renderRoots = () => {
     rootWarnings.replaceChildren();

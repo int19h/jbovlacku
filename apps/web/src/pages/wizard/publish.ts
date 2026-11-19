@@ -31,7 +31,7 @@ import {
 import type { App } from "../../app/context.ts";
 import { draftToBody } from "../../model/draft.ts";
 import {
-  cachedPackage,
+  cachedPackagePick,
   inventoryFromPackage,
   inventoryCoverage,
   conflictReviewKey,
@@ -275,14 +275,9 @@ export async function publishPage(
     "aria-label": "Known conflicts",
   });
   left.append(conflicts);
-  let inventory: ReturnType<typeof inventoryFromPackage>;
-  let packageError: string | null = null;
-  try {
-    inventory = inventoryFromPackage(await cachedPackage(app.store));
-  } catch (error) {
-    packageError = describe(error);
-    inventory = inventoryFromPackage(null);
-  }
+  const pick = await cachedPackagePick(app.store);
+  const inventory = inventoryFromPackage(pick.pkg);
+  const packageError = pick.invalid;
   if (!context.live()) return;
   if (packageError) conflicts.append(p(packageError, "notice"));
   for (const claim of claims)
@@ -760,15 +755,12 @@ export async function publishPage(
           `Publishing ${body.word.spelling}`,
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
-            let latestInventory: ReturnType<typeof inventoryFromPackage>;
-            try {
-              latestInventory = inventoryFromPackage(
-                await cachedPackage(app.store),
-              );
-            } catch (error) {
-              outcome.replaceChildren(p(describe(error), "notice"));
+            const latestPick = await cachedPackagePick(app.store);
+            if (latestPick.invalid && !latestPick.pkg) {
+              outcome.replaceChildren(p(latestPick.invalid, "notice"));
               return;
             }
+            const latestInventory = inventoryFromPackage(latestPick.pkg);
             if (reviewedInventory !== inventoryVersion(latestInventory)) {
               outcome.replaceChildren(
                 p(

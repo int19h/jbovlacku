@@ -483,6 +483,40 @@ export class LocalStore {
       request.onerror = () => reject(request.error);
     });
   }
+  /** Keys and values of one store from a single transaction, in key order. */
+  async entries<T>(
+    store: string,
+  ): Promise<{ key: string; value: T }[]> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const objectStore = db.transaction(store).objectStore(store);
+      const keysRequest = objectStore.getAllKeys();
+      const valuesRequest = objectStore.getAll();
+      let keys: IDBValidKey[] | undefined;
+      let values: T[] | undefined;
+      const done = () => {
+        const ks = keys;
+        const vs = values;
+        if (ks && vs)
+          resolve(
+            ks.map((key, index) => ({
+              key: String(key),
+              value: vs[index],
+            })),
+          );
+      };
+      keysRequest.onsuccess = () => {
+        keys = keysRequest.result;
+        done();
+      };
+      valuesRequest.onsuccess = () => {
+        values = valuesRequest.result;
+        done();
+      };
+      keysRequest.onerror = () => reject(keysRequest.error);
+      valuesRequest.onerror = () => reject(valuesRequest.error);
+    });
+  }
   async readRecords(ids: string[]): Promise<(StoredRecord | undefined)[]> {
     if (!ids.length) return [];
     const db = await this.database;

@@ -217,95 +217,62 @@ export function validateCachedPackage(
     previous = entry.event;
   }
 }
+/** Packages already checked, by object and language. The store returns the same object until the package changes, so a repeat check is free. */
+const checkedPackages = new WeakMap<object, Set<string>>();
+/** Packages that already failed the check, by object and language, so a bad package is not rechecked on every reader either. */
+const failedPackages = new WeakMap<object, Set<string>>();
 /**
  * Checks a saved package before a page reads its rows on the main thread.
- * The worker checks packages with `validateCachedPackage`; pages that build
- * inventories or word indexes from saved rows use this check instead of
- * reading fields first. It checks the package fields and row fields those
- * readers use, so a package the readers can use keeps working. A bad
- * package or row raises the documented invalid-package error.
+ * This runs the same full validation the worker uses
+ * (`validateCachedPackage`), so whatever the worker would reject never
+ * reaches a page. The result is remembered per package object and
+ * language: the store returns the same object until the package changes,
+ * so each saved package is checked once, not once per reader or edit.
+ * A bad package or row raises the documented invalid-package error.
  */
 export function checkSavedPackage(
   value: unknown,
   language?: string,
 ): CachedPackage {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    !Array.isArray((value as { entries?: unknown }).entries) ||
-    typeof (value as { snapshot?: unknown }).snapshot !== "string" ||
-    !hashId((value as { snapshot: string }).snapshot) ||
-    !(
-      (value as { version?: unknown }).version === undefined ||
-      (value as { version?: unknown }).version === 1 ||
-      (value as { version?: unknown }).version === 2
-    ) ||
-    ((value as { search_view?: unknown }).search_view !== undefined &&
-      ((value as { version?: unknown }).version !== 2 ||
-        !eventId((value as { search_view: string }).search_view))) ||
-    !(
-      (value as { downgrade?: unknown }).downgrade === undefined ||
-      (value as { downgrade?: unknown }).downgrade === null ||
-      typeof (value as { downgrade?: unknown }).downgrade === "string"
-    )
-  )
-    throw invalidPackage();
-  const pkg = value as CachedPackage & { search_view?: string };
-  // Rows are checked for the fields the main-thread readers read: a word
-  // spelling that names a word, its language and classification, its
-  // glosses and text, its event, and a rafsi list when one is present.
-  // A package whose rows carry extra version 2 fields beside a version 1
-  // marker still reads the same way it did before this check, so those
-  // fields do not reject it here. The worker keeps the full shape check.
-  for (const entry of pkg.entries) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry))
-      throw invalidPackage();
-    const word = (entry as { word?: unknown }).word as {
-      language?: unknown;
-      spelling?: unknown;
-    } | null;
-    if (
-      !word ||
-      typeof word !== "object" ||
-      word.language !== "jbo" ||
-      typeof word.spelling !== "string" ||
-      typeof (entry as { language?: unknown }).language !== "string" ||
-      !languageTag((entry as { language: string }).language) ||
-      (language !== undefined &&
-        (entry as { language: string }).language !== language) ||
-      !(entry as { classification?: unknown }).classification ||
-      typeof (entry as { classification?: unknown }).classification !==
-        "object" ||
-      typeof (entry as { classification: { kind?: unknown } }).classification
-        .kind !== "string" ||
-      !Array.isArray((entry as { glosses?: unknown }).glosses) ||
-      ((entry as { glosses: unknown[] }).glosses as unknown[]).some(
-        (gloss) =>
-          !gloss ||
-          typeof gloss !== "object" ||
-          typeof (gloss as { text?: unknown }).text !== "string",
-      ) ||
-      typeof (entry as { plain_text?: unknown }).plain_text !== "string" ||
-      typeof (entry as { event?: unknown }).event !== "string" ||
-      !eventId((entry as { event: string }).event) ||
-      ((entry as { rafsi?: unknown }).rafsi !== undefined &&
-        (!Array.isArray((entry as { rafsi?: unknown }).rafsi) ||
-          ((entry as unknown as { rafsi: unknown[] }).rafsi as unknown[]).some(
-            (rafsi) => typeof rafsi !== "string",
-          ))) ||
-      (pkg.search_view &&
-        "search_status" in entry &&
-        typeof entry.search_status !== "string")
-    )
-      throw invalidPackage();
-    try {
-      wordId({ language: "jbo", spelling: word.spelling as string });
-    } catch {
-      throw invalidPackage();
-    }
+  const lang =
+    language ??
+    (value &&
+    typeof value === "object" &&
+    Array.isArray((value as { entries?: unknown }).entries)
+      ? ((value as { entries: unknown[] }).entries.find(
+          (entry) =>
+            entry &&
+            typeof entry === "object" &&
+            typeof (entry as { language?: unknown }).language === "string",
+        ) as { language: string } | undefined)?.language
+      : undefined) ??
+    "en";
+  if (value && typeof value === "object") {
+    if (checkedPackages.get(value)?.has(lang)) return value as CachedPackage;
+    if (failedPackages.get(value)?.has(lang)) throw invalidPackage();
   }
-  return pkg;
+  try {
+    validateCachedPackage(value, lang);
+  } catch (error) {
+    if (value && typeof value === "object") {
+      let langs = failedPackages.get(value);
+      if (!langs) {
+        langs = new Set();
+        failedPackages.set(value, langs);
+      }
+      langs.add(lang);
+    }
+    throw error;
+  }
+  if (value && typeof value === "object") {
+    let langs = checkedPackages.get(value);
+    if (!langs) {
+      langs = new Set();
+      checkedPackages.set(value, langs);
+    }
+    langs.add(lang);
+  }
+  return value as CachedPackage;
 }
 /**
  * Reads one language package from the store through `checkSavedPackage`.

@@ -3,11 +3,11 @@ import { fixture } from "./helpers.ts";
 
 const INVALID =
   "The search package is invalid. Search this server or download another package.";
-const RAW_ERRORS = [
-  "Cannot use 'in' operator",
-  "Cannot read properties of null",
-  "Cannot read properties of undefined",
-];
+// Raw runtime errors look different in each engine, so the check bans the
+// shapes every engine produces: error class names, property-access and
+// iteration wording, and the core's schema JSON.
+const RAW_ERROR =
+  /TypeError|ReferenceError|\{"code":|is not iterable|not iterable|Cannot read|Cannot use|can't access|is undefined|is null/;
 
 const savedPackages: [string, unknown][] = [
   [
@@ -42,7 +42,7 @@ async function seed(
 async function expectInvalidOnly(page: Page) {
   await expect(page.getByText(INVALID).first()).toBeVisible();
   const body = await page.locator("body").innerText();
-  for (const raw of RAW_ERRORS) expect(body).not.toContain(raw);
+  expect(body).not.toMatch(RAW_ERROR);
 }
 
 /** The rafsi pages try this server first, so a failed download reaches the saved package. */
@@ -171,6 +171,92 @@ for (const [label, saved] of savedPackages) {
     await expect(
       page.getByRole("button", { name: "Remove", exact: true }),
     ).toBeVisible();
+  });
+}
+
+const rowShapes: [string, Record<string, unknown>][] = [
+  [
+    "a version 2 row with no rafsi",
+    {
+      version: 2,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: [
+        {
+          event: "jve1:" + "1".repeat(64),
+          word: { language: "jbo", spelling: "cukta" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+          issuer: "ed25519:" + "a".repeat(64),
+          notes: false,
+          attribution: null,
+        },
+      ],
+    },
+  ],
+  [
+    "a word object with an extra field",
+    {
+      version: 2,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: [
+        {
+          event: "jve1:" + "1".repeat(64),
+          word: { language: "jbo", spelling: "cukta", extra: 1 },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+          issuer: "ed25519:" + "a".repeat(64),
+          notes: false,
+          rafsi: ["cuk"],
+          rafsi_complete: true,
+          attribution: null,
+        },
+      ],
+    },
+  ],
+];
+
+for (const [label, saved] of rowShapes) {
+  test(`the rafsi pair page reports ${label} instead of crashing`, async ({
+    page,
+  }) => {
+    await seed(page, saved);
+    await blockDownloads(page);
+    await page.goto(`/rafsi-pair/${fixture().pair}`);
+    await expectInvalidOnly(page);
+  });
+
+  test(`the lujvo builder reports ${label} and keeps its part field`, async ({
+    page,
+  }) => {
+    await seed(page, saved, { meaning: "book", kind: "lujvo", step: 3 });
+    await page.goto("/new/lujvo");
+    await expectInvalidOnly(page);
+    await expect(page.getByLabel("Add a part")).toBeVisible();
+  });
+}
+
+for (const [label, saved] of savedPackages) {
+  test(`the meaning page still searches the server for ${label}`, async ({
+    page,
+  }) => {
+    // A malformed or missing local package must not block server search:
+    // after the reader allows it, the server results appear, as on main
+    // for a stored null.
+    await seed(page, saved, { meaning: "book", step: 1 });
+    page.on("dialog", (dialog) => void dialog.accept());
+    await page.goto("/new/meaning");
+    await page
+      .getByRole("button", { name: "search this server" })
+      .click();
+    await expect(page.locator("ol.similar")).toContainText("cukta");
+    const body = await page.locator("body").innerText();
+    expect(body).not.toMatch(RAW_ERROR);
   });
 }
 

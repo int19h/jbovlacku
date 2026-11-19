@@ -57,7 +57,7 @@ import {
 } from "../../data/package-search.ts";
 import { plural } from "../../lib/format.ts";
 import {
-  cachedPackage,
+  cachedPackagePick,
   componentId,
   compoundMetadata,
   inventoryFromPackage,
@@ -110,13 +110,9 @@ export async function lujvoPage(
   saver.touch();
   // A malformed saved package shows its message and the builder continues
   // without a local package, so parts can still be added as entered.
-  let cached: Awaited<ReturnType<typeof cachedPackage>> = null;
-  let packageError: string | null = null;
-  try {
-    cached = await cachedPackage(app.store);
-  } catch (error) {
-    packageError = describe(error);
-  }
+  const pick = await cachedPackagePick(app.store);
+  const cached = pick.pkg;
+  const packageError = pick.invalid;
   if (!context.live()) return;
   let state;
   try {

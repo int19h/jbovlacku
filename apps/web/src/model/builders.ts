@@ -382,56 +382,83 @@ export interface PackageInventory {
   /** False when any word's rafsi list was cut. A cut inventory is not a complete conflict check. */
   complete: boolean;
 }
+/** A store that can list saved packages, with their keys when it has them. */
+export interface PackageListStore {
+  list<T>(name: string): Promise<T[]>;
+  keys?(name: string): Promise<string[]>;
+  entries?<T>(name: string): Promise<{ key: string; value: T }[]>;
+}
+/** The best valid saved package, plus the first invalid-package message when a saved package failed its check. */
+export interface CachedPackagePick {
+  pkg: CachedPackage | null;
+  invalid: string | null;
+}
 /**
  * The cached package with the most entries, preferring version 2, for
  * inventories and search. Every saved package is checked before its rows
- * are read; a malformed saved package raises the invalid-package error
- * instead of returning a package a page would crash on. A store that
- * cannot be read at all still counts as no package.
+ * are read. A malformed package does not hide a valid package of another
+ * language: it is skipped and its message is reported in `invalid`, so
+ * the page can show the message and still use the valid package. When
+ * every saved package is malformed, `pkg` is null and `invalid` carries
+ * the message. A store that cannot be read at all counts as no package.
+ * Keys and values come from one store transaction when the store offers
+ * `entries`, so a writer in another tab cannot pair a key with the wrong
+ * package between two reads.
  */
-export async function cachedPackage(store: {
-  list<T>(name: string): Promise<T[]>;
-  keys?(name: string): Promise<string[]>;
-  get?<T>(name: string, id: string): Promise<T | undefined>;
-}): Promise<CachedPackage | null> {
-  let all: CachedPackage[];
+export async function cachedPackagePick(
+  store: PackageListStore,
+): Promise<CachedPackagePick> {
+  let pairs: { key?: string; value: CachedPackage }[] = [];
   try {
-    if (store.keys) {
-      // Keys and values both come from fresh store reads in key order, so
-      // each package is checked against its own language. A revision-cached
-      // read could miss a package another writer replaced.
+    if (store.entries) {
+      pairs = await store.entries<CachedPackage>("packages");
+    } else if (store.keys) {
       const keys = await store.keys("packages");
       const listed = await store.list<CachedPackage>("packages");
-      all = listed.map((pkg, index) =>
-        checkSavedPackage(pkg, keys[index]),
-      );
+      pairs = listed.map((value, index) => ({ key: keys[index], value }));
     } else {
       const listed = await store.list<CachedPackage>("packages");
-      all = listed.map((pkg) => checkSavedPackage(pkg));
+      pairs = listed.map((value) => ({ value }));
     }
-  } catch (error) {
-    // A check failure is the invalid-package error and must reach the
-    // page. Only a store read failure counts as no package.
-    if (
-      error instanceof Error &&
-      error.message.startsWith("The search package is invalid.")
-    )
-      throw error;
-    return null;
+  } catch {
+    return { pkg: null, invalid: null };
   }
-  return (
-    all.sort(
-      (a, b) =>
-        (b.version ?? 1) - (a.version ?? 1) ||
-        b.entries.length - a.entries.length,
-    )[0] ?? null
-  );
+  const valid: CachedPackage[] = [];
+  let invalid: string | null = null;
+  for (const { key, value } of pairs) {
+    try {
+      valid.push(checkSavedPackage(value, key));
+    } catch (error) {
+      invalid ??=
+        error instanceof Error
+          ? error.message
+          : "The search package is invalid. Search this server or download another package.";
+    }
+  }
+  return {
+    pkg:
+      valid.sort(
+        (a, b) =>
+          (b.version ?? 1) - (a.version ?? 1) ||
+          b.entries.length - a.entries.length,
+      )[0] ?? null,
+    invalid,
+  };
 }
-/** The conflict inventory from the local package. A malformed package raises the invalid-package error. */
+/**
+ * The best valid cached package, or null. Kept for callers that do not
+ * show the invalid-package message themselves; wizard pages use
+ * `cachedPackagePick` so a malformed package stays visible.
+ */
+export async function cachedPackage(
+  store: PackageListStore,
+): Promise<CachedPackage | null> {
+  return (await cachedPackagePick(store)).pkg;
+}
+/** The conflict inventory from the local package. Callers pass a package checked by `cachedPackage`. */
 export function inventoryFromPackage(
   cached: CachedPackage | null,
 ): PackageInventory {
-  if (cached) checkSavedPackage(cached);
   if (!cached)
     return {
       snapshot: null,
