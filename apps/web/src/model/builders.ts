@@ -396,12 +396,15 @@ export async function cachedPackage(store: {
 }): Promise<CachedPackage | null> {
   let all: CachedPackage[];
   try {
-    if (store.keys && store.get) {
-      all = [];
-      for (const key of await store.keys("packages")) {
-        const raw = await store.get<CachedPackage>("packages", key);
-        if (raw !== undefined) all.push(checkSavedPackage(raw, key));
-      }
+    if (store.keys) {
+      // Keys and values both come from fresh store reads in key order, so
+      // each package is checked against its own language. A revision-cached
+      // read could miss a package another writer replaced.
+      const keys = await store.keys("packages");
+      const listed = await store.list<CachedPackage>("packages");
+      all = listed.map((pkg, index) =>
+        checkSavedPackage(pkg, keys[index]),
+      );
     } else {
       const listed = await store.list<CachedPackage>("packages");
       all = listed.map((pkg) => checkSavedPackage(pkg));
