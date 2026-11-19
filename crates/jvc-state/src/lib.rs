@@ -1368,6 +1368,18 @@ fn rafsi_gate(result: &mut Evaluation) {
 }
 
 fn lineage(graph: &graph::Graph, node: &graph::Node) -> BTreeMap<String, String> {
+    // Charge the parent count before the IDs are read. A semantic
+    // record's parents are all strings (schema), so the array length is
+    // the count that the charge has always used.
+    let count = node
+        .action
+        .view()
+        .index("parents")
+        .as_array()
+        .map_or(0, |parents| parents.len());
+    if count > 1 && !graph.charge(count - 1) {
+        return BTreeMap::new();
+    }
     let parents: Vec<_> = node
         .action
         .view()
@@ -1377,9 +1389,6 @@ fn lineage(graph: &graph::Graph, node: &graph::Node) -> BTreeMap<String, String>
         .flatten()
         .filter_map(|v| v.as_str().map(str::to_owned))
         .collect();
-    if parents.len() > 1 && !graph.charge(parents.len() - 1) {
-        return BTreeMap::new();
-    }
     parents
         .into_iter()
         .map(|id| {

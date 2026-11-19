@@ -1038,10 +1038,7 @@ impl EvaluatedState {
                 .view()
                 .index("parents")
                 .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|v| v.as_str().is_some())
-                .count()
+                .map_or(0, |parents| parents.len())
                 .saturating_sub(1)
         } else {
             0
