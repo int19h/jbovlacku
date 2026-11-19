@@ -545,7 +545,9 @@ test("an over-cap query is refused before any detector or transfer", async ({
   page,
 }) => {
   // A query past the product length cap must not reach the wildcard
-  // detector or the worker: the client refuses with a typed error first.
+  // detector or the worker: the client refuses with a typed error. The
+  // worker may still validate the package, but no posted message carries
+  // the query.
   await page.goto("/");
   const result = await page.evaluate(async () => {
     const { searchPackage } = await import(String("/src/data/package-search.ts"));
@@ -572,24 +574,25 @@ test("an over-cap query is refused before any detector or transfer", async ({
       return originalTest.call(this, value);
     };
     const originalPost = Worker.prototype.postMessage;
-    let posts = 0;
+    let queryUnits = 0;
     (Worker.prototype as any).postMessage = function (
       this: unknown,
       ...args: [unknown]
     ) {
-      posts++;
+      const message = args[0] as { queries?: string[] };
+      for (const text of message?.queries ?? []) queryUnits += text.length;
       return originalPost.apply(this, args);
     };
     try {
       await searchPackage(pkg as never, "en", [query]);
-      return { refused: false, detectorCalls, posts };
+      return { refused: false, detectorCalls, queryUnits };
     } catch (error) {
       return {
         refused: true,
         constructor: (error as Error).constructor.name,
         message: (error as Error).message,
         detectorCalls,
-        posts,
+        queryUnits,
       };
     } finally {
       RegExp.prototype.test = originalTest;
@@ -599,7 +602,113 @@ test("an over-cap query is refused before any detector or transfer", async ({
   expect(result.refused).toBe(true);
   expect(result.constructor).toBe("SearchQueryTooLongError");
   expect(result.detectorCalls).toBe(0);
-  expect(result.posts).toBe(0);
+  expect(result.queryUnits).toBe(0);
+});
+
+test("an over-cap query on an invalid package reports the invalid package", async ({
+  page,
+}) => {
+  // The length refusal waits until the package is known to be usable, so a
+  // malformed package keeps its validation error and the page fallback.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const pkg = {
+      snapshot: "sha256:" + "c".repeat(64),
+      version: 2,
+      entries: [null],
+    };
+    try {
+      await searchPackage(pkg as never, "en", ["z".repeat(4097)], {
+        grouped: true,
+      });
+      return "completed";
+    } catch (error) {
+      return (error as Error).constructor.name;
+    }
+  });
+  expect(result).toBe("PackageValidationError");
+});
+
+test("a retry sends the strings that passed the length check", async ({
+  page,
+}) => {
+  // A canceled cold transfer makes the next request retry with the package.
+  // The caller's array changes after the call; the retry must still send
+  // the four-unit query that was checked, not the 4,097-unit replacement.
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const replacement = "e\u0301".repeat(2048) + "z";
+    const originalTest = RegExp.prototype.test;
+    let detectorCalls = 0;
+    RegExp.prototype.test = function (this: RegExp, value: string): boolean {
+      if (this.source === "[*?@$]" && value === replacement) detectorCalls++;
+      return originalTest.call(this, value);
+    };
+    const originalPost = Worker.prototype.postMessage;
+    const sent: number[][] = [];
+    (Worker.prototype as any).postMessage = function (
+      this: unknown,
+      ...args: [unknown]
+    ) {
+      const message = args[0] as { queries?: string[] };
+      if (message?.queries) sent.push(message.queries.map((q) => q.length));
+      return originalPost.apply(this, args);
+    };
+    const pkg = {
+      version: 1,
+      snapshot: "sha256:" + "d".repeat(64),
+      entries: [
+        {
+          event: "jve1:" + "2".repeat(64),
+          word: { language: "jbo", spelling: "cukta" },
+          language: "en",
+          glosses: [{ language: "en", text: "book", sense: null }],
+          plain_text: "book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+        },
+      ],
+    };
+    try {
+      const controller = new AbortController();
+      const starter = searchPackage(pkg as never, "en", [], {
+        signal: controller.signal,
+      });
+      controller.abort();
+      const terms = ["book"];
+      const waiting = searchPackage(pkg as never, "en", terms, {
+        group: "definitions",
+      });
+      terms[0] = replacement;
+      const [, settled] = await Promise.allSettled([starter, waiting]);
+      return {
+        sent,
+        detectorCalls,
+        outcome:
+          settled.status === "fulfilled"
+            ? settled.value.hits
+                .flat()
+                .map((hit: { word: { spelling: string } }) => hit.word.spelling)
+            : (settled.reason as Error).constructor.name,
+      };
+    } finally {
+      RegExp.prototype.test = originalTest;
+      Worker.prototype.postMessage = originalPost;
+    }
+  });
+  // The second request ran twice: once without the package, then the retry.
+  expect(result.sent.filter((lengths) => lengths.length === 1)).toEqual([
+    [4],
+    [4],
+  ]);
+  expect(result.detectorCalls).toBe(0);
+  expect(result.outcome).toEqual(["cukta"]);
 });
 
 test("a grouped rafsi query completes after lowercasing expands it", async ({

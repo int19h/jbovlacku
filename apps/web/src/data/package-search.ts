@@ -39,7 +39,10 @@ export interface PackageSearchResult {
 export interface PackageSearchOptions {
   offset?: number;
   limit?: number;
-  /** Rank all query lists together before selecting the nearby page. */
+  /**
+   * Rank all query lists together before selecting the nearby page. Each
+   * query is a word as the reader typed it; the worker lowercases it.
+   */
   nearby?: boolean;
   /** Return independent Lojban and definition pages for one query. */
   grouped?: boolean;
@@ -319,12 +322,19 @@ export async function searchPackage(
     !Array.isArray((pkg as { entries?: unknown }).entries)
   )
     throw new PackageValidationError(invalidPackage().message);
-  // The product length cap applies before any detector, transfer or group
-  // choice reads a query; longer input is refused with a typed error.
-  for (const text of queries) {
-    if (text.length > SEARCH_QUERY_LENGTH_LIMIT)
-      throw new SearchQueryTooLongError();
-  }
+  // The strings are captured once, so the length check and every send,
+  // including a retry, read the same accepted strings.
+  const accepted = Array.from(queries);
+  // The local length limit applies before any detector, transfer or group
+  // choice reads a query. A longer query never leaves the client.
+  const tooLong = accepted.some(
+    (text) => text.length > SEARCH_QUERY_LENGTH_LIMIT,
+  );
+  // An over-long query is refused only once the package is known to be
+  // usable: the worker validates and prepares the package with no query, so
+  // an unusable package still reports its own error and the page keeps its
+  // fallback.
+  const texts = tooLong ? [] : accepted;
   const { signal, ...workerOptions } = options;
   let identity: string | number | undefined =
     packageStorageKey(pkg) ?? packageIds.get(pkg);
@@ -365,7 +375,7 @@ export async function searchPackage(
       const pattern =
         options.patterns !== false &&
         !options.nearby &&
-        queries.some(isPatternQuery);
+        texts.some(isPatternQuery);
       const clean = () => {
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
@@ -426,7 +436,7 @@ export async function searchPackage(
           request,
           key,
           language,
-          queries,
+          queries: texts,
           options: workerOptions,
           ...(prepare ? { pkg } : {}),
           budget: clientBudget.snapshot(),
@@ -452,6 +462,7 @@ export async function searchPackage(
     // An evicted or canceled queued preparation can require one captured retry.
     result = await send(true);
   }
+  if (tooLong) throw new SearchQueryTooLongError();
   const continued = isSearchBudgetState(result.budget)
     ? SearchRequestBudget.resume(result.budget)
     : SearchRequestBudget.for(searchMetrics(), {

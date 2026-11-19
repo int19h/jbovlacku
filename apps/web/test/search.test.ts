@@ -2046,6 +2046,43 @@ test("an over-cap query is refused with a message before any search", async ({
   ).toBeVisible();
 });
 
+for (const [label, saved] of [
+  ["a stored null", null],
+  [
+    "an invalid package",
+    { version: 2, snapshot: "sha256:" + "a".repeat(64), entries: [null] },
+  ],
+] as const)
+  test(`${label} keeps the server fallback past the local product cap`, async ({
+    page,
+  }) => {
+    // Local mode with an unusable saved package falls back to server search
+    // as on main. The length refusal belongs to local search on a usable
+    // package, so both group requests go out and no too-long notice shows.
+    await page.goto("/");
+    await page.evaluate(async (saved) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      await store.setPreferences({ searchMode: "local" });
+      await store.put("packages", "en", saved);
+    }, saved);
+    const requested: string[] = [];
+    await page.route("**/api/v1/search?**", (route) => {
+      requested.push(route.request().url());
+      return route.abort();
+    });
+    const query = " ".repeat(4093) + "book";
+    await page.goto(`/search?${new URLSearchParams({ q: query, lang: "en" })}`);
+    await expect.poll(() => requested.length, { timeout: 10000 }).toBe(2);
+    expect(requested.some((url) => url.includes("group=lojban"))).toBe(true);
+    expect(requested.some((url) => url.includes("group=definitions"))).toBe(
+      true,
+    );
+    await expect(page.getByText("The search query is too long.")).toHaveCount(
+      0,
+    );
+  });
+
 test("a remote search skips the local product cap", async ({ page }) => {
   // Remote search keeps the server policy: a 4,097-unit query is sent to
   // the server for both groups, not refused with the local notice.

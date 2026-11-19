@@ -15,7 +15,6 @@ import { kindLabel } from "../model/types.ts";
 import {
   isPatternQuery,
   SEARCH_QUERY_LENGTH_LIMIT,
-  SearchQueryTooLongError,
 } from "../../../../packages/search/src/index.ts";
 /**
  * Search results. The header holds the query. The page shows a count line,
@@ -239,8 +238,9 @@ export async function searchPage(
     if (context.live() && request === languageRequest)
       navigate(routes.search(query, value));
   });
+  const punctuationNote = naturalLanguageNote(query);
+  if (punctuationNote) main.append(p(punctuationNote, "meta"));
   // Search source: the downloaded package in local mode, otherwise this server.
-  // Locality is known only after the cache lookup, so the lookup runs first.
   let cached: CachedPackage | undefined;
   let initialLocal: PackageSearchResult | undefined;
   if (
@@ -251,14 +251,6 @@ export async function searchPage(
       .get<CachedPackage>("packages", language)
       .catch(() => undefined);
   }
-  // The product query limit applies only to a query that will run locally:
-  // remote search keeps the server policy. A cached package means local.
-  if (cached !== undefined && query.length > SEARCH_QUERY_LENGTH_LIMIT) {
-    results.append(p(describe(new SearchQueryTooLongError()), "notice"));
-    return;
-  }
-  const punctuationNote = naturalLanguageNote(query);
-  if (punctuationNote) main.append(p(punctuationNote, "meta"));
   if (cached) {
     try {
       initialLocal = await searchPackage(
@@ -269,7 +261,12 @@ export async function searchPage(
           signal: context.signal,
           view: getPreferredView(),
           includeRetired,
-          ...(query && isPatternQuery(query)
+          // The client refuses an over-long query with a typed error once
+          // the package is usable, and the catch below shows it as a notice,
+          // so the group choice does not scan that query.
+          ...(query &&
+          query.length <= SEARCH_QUERY_LENGTH_LIMIT &&
+          isPatternQuery(query)
             ? { group: "lojban" as const }
             : { grouped: true }),
         },

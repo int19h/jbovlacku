@@ -1,22 +1,37 @@
 import type { SearchRequestBudget } from "../../search/src/index.ts";
+/** The search text of one nearby word: its typed spelling, lowercased. */
+export function nearbyTermText(spelling: string): string {
+  return spelling.toLocaleLowerCase("en");
+}
+
+/**
+ * The typed spellings of the words that meaning search uses: at most six
+ * distinct words. Place marks are not words. Words are distinct and long
+ * enough by their search text, and each keeps the spelling of its first
+ * occurrence, so `nearbyQuery` is this list mapped through `nearbyTermText`.
+ */
+export function nearbyTerms(meaning: string): string[] {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const word of meaning
+    .replace(
+      /(?<![\p{L}\p{N}])\$?x_?\{?\d+\}?\$?(?![\p{L}\p{N}])|\{place\s+\d+\}|[①-⑳㉑-㉟㊱-㊿]/giu,
+      " ",
+    )
+    .split(/\s+/u)) {
+    const spelling = word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    const text = nearbyTermText(spelling);
+    if (Array.from(text).length <= 2 || seen.has(text)) continue;
+    seen.add(text);
+    terms.push(spelling);
+    if (terms.length === 6) break;
+  }
+  return terms;
+}
+
 /** Meaning search uses at most six distinct words. Place marks are not words. */
 export function nearbyQuery(meaning: string): string[] {
-  return [
-    ...new Set(
-      meaning
-        .replace(
-          /(?<![\p{L}\p{N}])\$?x_?\{?\d+\}?\$?(?![\p{L}\p{N}])|\{place\s+\d+\}|[①-⑳㉑-㉟㊱-㊿]/giu,
-          " ",
-        )
-        .split(/\s+/u)
-        .map((word) =>
-          word
-            .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
-            .toLocaleLowerCase("en"),
-        )
-        .filter((word) => Array.from(word).length > 2),
-    ),
-  ].slice(0, 6);
+  return nearbyTerms(meaning).map(nearbyTermText);
 }
 
 /** Count matching query words, then use summed search positions and word ID. */

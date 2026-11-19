@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nearbyQuery, rankNearby } from "../src/nearby.ts";
+import {
+  nearbyQuery,
+  nearbyTermText,
+  nearbyTerms,
+  rankNearby,
+} from "../src/nearby.ts";
 import {
   searchMetrics,
   SearchBudgetError,
@@ -105,4 +110,14 @@ test("nearby ranking charges the final mapping pass", () => {
     (error: unknown) => error instanceof SearchBudgetError,
   );
   assert.deepEqual(rankNearby([[{ word_id: "a" }]]), [{ word_id: "a" }]);
+});
+
+test("nearby terms keep the typed spelling of each selected word", () => {
+  const meaning = "Book, BOOK book İİİ " + "İ".repeat(2049) + " $x_1$ ab";
+  assert.deepEqual(nearbyTerms(meaning), ["Book", "İİİ", "İ".repeat(2049)]);
+  assert.deepEqual(
+    nearbyQuery(meaning),
+    nearbyTerms(meaning).map(nearbyTermText),
+  );
+  assert.equal(nearbyQuery(meaning)[2].length, 4098);
 });

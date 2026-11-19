@@ -17,7 +17,10 @@ import {
   PackageStorageError,
   type CachedPackage,
 } from "./search.ts";
-import { rankNearby } from "../../../../packages/service/src/nearby.ts";
+import {
+  nearbyTermText,
+  rankNearby,
+} from "../../../../packages/service/src/nearby.ts";
 import type {
   PackageSearchOptions,
   PackageHitReferences,
@@ -176,15 +179,20 @@ self.onmessage = ({ data }) => {
         data.queries.some(isPatternQuery)
       )
         reply({ request: data.request, started: true });
+      // Nearby words arrive in their typed spelling, which passed the length
+      // check above. Lowercasing at most doubles each one.
+      const texts: string[] = options.nearby
+        ? data.queries.map(nearbyTermText)
+        : data.queries;
       // Both groups share one bounded query parse on the request budget.
       const queries = options.grouped
-        ? data.queries.map((query: string) =>
+        ? texts.map((query) =>
             prepareQuery(query, metrics, {
               patterns: options.patterns !== false && !options.nearby,
               requestBudget,
             }),
           )
-        : data.queries;
+        : texts;
       const hits: ReturnType<typeof localSearch>[] = (
         options.grouped ? ["lojban", "definitions"] : [options.group]
       ).flatMap((group) =>

@@ -1,7 +1,10 @@
 import { CIRCLED, circledPlace } from "../../model/place-glyphs.ts";
 import { searchPackage } from "../../data/package-search.ts";
 import { kindLabel } from "../../model/types.ts";
-import { nearbyQuery as meaningQueries } from "../../../../../packages/service/src/nearby.ts";
+import {
+  nearbyQuery as meaningQueries,
+  nearbyTerms,
+} from "../../../../../packages/service/src/nearby.ts";
 import { wordId } from "../../../../../packages/core/src/browser.ts";
 import {
   changeTypedWord,
@@ -734,7 +737,7 @@ export async function meaningPage(
     const request = ++nearbyRequest;
     const value = meaning.input.value;
     const language = draft.language;
-    const query = nearbyQuery();
+    const terms = nearbyTerms(value);
     const current = () =>
       context.live() &&
       request === nearbyRequest &&
@@ -745,13 +748,15 @@ export async function meaningPage(
       if (!current()) return;
       cached = pkg ?? null;
       renderMode();
-      if (!query) {
+      if (!terms.length) {
         renderHits([], "local");
         return;
       }
       if (pkg) {
         // Rank all query lists in the worker before selecting six nearby rows.
-        const found = await searchPackage(pkg, language, query.split(" "), {
+        // Each word goes in its typed spelling, so the local length limit
+        // reads what the reader typed; the worker lowercases it afterwards.
+        const found = await searchPackage(pkg, language, terms, {
           patterns: false,
           nearby: true,
           limit: 6,
