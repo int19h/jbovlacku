@@ -224,7 +224,7 @@ impl Fixture {
                 let mut delta = PreparedEvaluationInput::new(EvaluationOptions {
                     selected_view: input.selected_view.clone(),
                     import_selections: input.import_selections.clone(),
-                    overlay: input.overlay.clone(),
+                    overlay: input.overlay.clone().map(Into::into),
                     limits: input.limits.clone(),
                 });
                 delta.add_record(e, input.bodies.get(e.id()).map(Vec::as_slice));
@@ -233,6 +233,11 @@ impl Fixture {
                     incremental.evaluation(),
                     &evaluate(&input),
                     "H{case:02} delivery {order} incremental"
+                );
+                assert_checkpoint_roundtrip_and_append(
+                    &input,
+                    &incremental,
+                    &format!("H{case:02} delivery {order} incremental"),
                 );
             }
             input.events.extend(events);
@@ -944,7 +949,7 @@ fn long_history_uses_explicit_global_limit_without_stack_recursion() {
         let id = f.event(30, previous, json!({"kind":"identity.merge"}), None);
         previous = vec![id];
     }
-    f.input.limits.traversal = 10_000;
+    f.input.limits.traversal = Some(10_000);
     let result = evaluate_observed(&f.input);
     assert!(!result.available);
     assert!(result.reasons.contains("resource_unavailable"));
@@ -1807,17 +1812,145 @@ fn missing_selected_policy_makes_account_status_actions_unavailable() {
     assert_eq!(result.publications[&f.d].status, Status::Unavailable);
 }
 
+static HANDOVER_ROUNDTRIP_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn host_records_for(input: &EvaluationInput) -> Vec<jvc_state::HostVerifiedRecord> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut records = Vec::new();
+    for event in &input.events {
+        if !seen.insert(event.id().to_owned()) {
+            continue;
+        }
+        let body = input.bodies.get(event.id()).map(Vec::as_slice);
+        let availability = jvc_core::inspect_body(event, body);
+        let (record, _) = jvc_state::HostVerifiedRecord::extract_with(
+            event.id(),
+            event.header(),
+            availability,
+            |_| (),
+        );
+        records.push(record);
+    }
+    records
+}
+
+fn assert_checkpoint_roundtrip_and_append(
+    input: &EvaluationInput,
+    state: &jvc_state::EvaluatedState,
+    label: &str,
+) {
+    let full_cp = state
+        .checkpoint("handover-rt")
+        .unwrap_or_else(|e| panic!("{label}: full checkpoint serialize failed: {e}"));
+    let res_cp = state
+        .result_checkpoint("handover-rt")
+        .unwrap_or_else(|e| panic!("{label}: result checkpoint serialize failed: {e}"));
+    let records = host_records_for(input);
+    let restored_full = jvc_state::EvaluatedState::restore_host_checkpoint(&full_cp, "handover-rt")
+        .unwrap_or_else(|e| panic!("{label}: full checkpoint restore failed: {e}"));
+    let restored_res =
+        jvc_state::EvaluatedState::restore_host_result_checkpoint(&res_cp, "handover-rt", records)
+            .unwrap_or_else(|e| panic!("{label}: result checkpoint restore failed: {e}"));
+    assert_eq!(restored_full.evaluation(), state.evaluation(), "{label}");
+    assert_eq!(restored_res.evaluation(), state.evaluation(), "{label}");
+    assert_eq!(
+        restored_full.consumed_work(),
+        state.consumed_work(),
+        "{label}"
+    );
+    assert_eq!(
+        restored_res.consumed_work(),
+        state.consumed_work(),
+        "{label}"
+    );
+
+    let word = json!({"language":"jbo","spelling":"appendcheck"});
+    let wid = word_id(&word).unwrap();
+    let append_body = canonical_value(&json!({
+        "word":word,
+        "language":"en",
+        "text":[["append check"]],
+        "frame":null,
+        "operands":[],
+        "glosses":[],
+        "notes":[],
+        "etymology":{"text":[],"formation":null,"compound":null},
+        "examples":[],
+        "classification":{"kind":"gismu","selmaho":[]},
+        "labels":[],
+        "sources":[],
+        "license":{"expression":"CC0-1.0","url":null,"attribution":"fixture"},
+        "legacy":null
+    }))
+    .unwrap();
+    let append_header = Header {
+        version: 1,
+        issuer: key(250),
+        previous: vec![],
+        nonce: format!("{:032x}", 999_999_999u64),
+        action: json!({"kind":"definition.publish","word":wid,"language":"en","parents":[],"origin":"native"}),
+        content: Some(body_descriptor(&append_body).unwrap()),
+    };
+    let append_event = sign_header(&[250; 32], append_header).unwrap();
+
+    let options = EvaluationOptions {
+        selected_view: input.selected_view.clone(),
+        import_selections: input.import_selections.clone(),
+        overlay: input.overlay.clone().map(Into::into),
+        limits: input.limits.clone(),
+    };
+    let mut delta_full = PreparedEvaluationInput::new(options.clone());
+    delta_full.add_record(&append_event, Some(&append_body));
+    let mut delta_res = PreparedEvaluationInput::new(options);
+    delta_res.add_record(&append_event, Some(&append_body));
+
+    let mut expected_input = input.clone();
+    expected_input
+        .bodies
+        .insert(append_event.id().to_owned(), append_body);
+    expected_input.events.push(append_event);
+    let expected_state = jvc_state::EvaluatedState::from_input(&expected_input);
+
+    let after_full = restored_full.advance(delta_full, &[]);
+    let after_res = restored_res.advance(delta_res, &[]);
+    assert_eq!(
+        after_full.evaluation(),
+        expected_state.evaluation(),
+        "{label} after_full evaluation"
+    );
+    assert_eq!(
+        after_res.evaluation(),
+        expected_state.evaluation(),
+        "{label} after_res evaluation"
+    );
+    assert_eq!(
+        after_full.consumed_work(),
+        expected_state.consumed_work(),
+        "{label} after_full consumed_work"
+    );
+    assert_eq!(
+        after_res.consumed_work(),
+        expected_state.consumed_work(),
+        "{label} after_res consumed_work"
+    );
+    HANDOVER_ROUNDTRIP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn evaluate_observed(input: &EvaluationInput) -> Evaluation {
     let result = evaluate(input);
     let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
         selected_view: input.selected_view.clone(),
         import_selections: input.import_selections.clone(),
-        overlay: input.overlay.clone(),
+        overlay: input.overlay.clone().map(Into::into),
         limits: input.limits.clone(),
     });
     for event in &input.events {
         prepared.add_record(event, input.bodies.get(event.id()).map(Vec::as_slice));
     }
+    let state = prepared.clone().into_state();
+    assert_eq!(state.evaluation(), &result);
+    assert_checkpoint_roundtrip_and_append(input, &state, "evaluate_observed");
     assert_eq!(prepared.evaluate(), result);
     if let Ok(directory) = std::env::var("JVC_STATE_PARITY_DIR") {
         let events: Vec<String> = input
@@ -1884,7 +2017,7 @@ fn incremental_record_growth_with_carried_account_history_keeps_resource_results
     let (mut low, mut high) = (0, 100_000);
     while low < high {
         let middle = (low + high) / 2;
-        f.input.limits.traversal = middle;
+        f.input.limits.traversal = Some(middle);
         if evaluate(&f.input).reasons.contains("resource_unavailable") {
             low = middle + 1;
         } else {
@@ -1893,13 +2026,13 @@ fn incremental_record_growth_with_carried_account_history_keeps_resource_results
     }
     for budget in [low - 1, low, low + 100] {
         let mut base = before.clone();
-        base.limits.traversal = budget;
-        f.input.limits.traversal = budget;
+        base.limits.traversal = Some(budget);
+        f.input.limits.traversal = Some(budget);
         let state = jvc_state::EvaluatedState::from_input(&base);
         let mut delta = PreparedEvaluationInput::new(EvaluationOptions {
             selected_view: f.input.selected_view.clone(),
             import_selections: f.input.import_selections.clone(),
-            overlay: f.input.overlay.clone(),
+            overlay: f.input.overlay.clone().map(Into::into),
             limits: f.input.limits.clone(),
         });
         let event = f
@@ -1950,6 +2083,8 @@ fn historical_guard_survives_missing_observation_body() {
     f.input.bodies.remove(&missing);
     f.view(vec![12, 13], vec![f.base_view.clone()]);
     assert_pending_observation(&f, &missing);
+    f.input.limits.claim_depth = 0;
+    assert_pending_observation(&f, &missing);
 }
 #[test]
 fn historical_guard_survives_missing_witness_predecessor() {
@@ -1959,6 +2094,8 @@ fn historical_guard_survives_missing_witness_predecessor() {
     f.remove(&predecessor);
     f.retirement("deprecated");
     f.view(vec![12, 13], vec![f.base_view.clone()]);
+    assert_pending_observation(&f, &predecessor);
+    f.input.limits.claim_depth = 0;
     assert_pending_observation(&f, &predecessor);
 }
 #[test]
@@ -2292,7 +2429,7 @@ fn growing_missing_predecessor_sets_stop_at_global_budget() {
         heads.extend(previous);
         previous = Some(f.event(30, heads, json!({"kind":"identity.merge"}), None));
     }
-    f.input.limits.traversal = 20_000;
+    f.input.limits.traversal = Some(20_000);
     let result = evaluate_observed(&f.input);
     assert!(!result.available);
     assert!(result.reasons.contains("resource_unavailable"));
@@ -2871,4 +3008,140 @@ fn personal_overlay_versions_keep_exact_fields_and_null_issuer_compatibility() {
     assert_eq!(old.rows, graph.rows);
     assert_eq!(old.roots, graph.roots);
     assert!(old.public_shun_blocked.is_empty());
+}
+
+#[test]
+fn selection_above_200000_ids_and_multiple_selections_authorize_imports() {
+    let mut f = Fixture::new();
+    let d2 = f.publish(2);
+    let mut large_ids: Vec<String> = (0..200_005usize)
+        .map(|i| format!("jve1:{i:064x}"))
+        .collect();
+    large_ids.push(f.d.clone());
+    large_ids.sort();
+    let selection_a = hash_id("sha256:", b"", &canonical_value(&json!(large_ids)).unwrap());
+    let small_ids = vec![d2.clone()];
+    let selection_b = hash_id("sha256:", b"", &canonical_value(&json!(small_ids)).unwrap());
+    f.input.import_selections.clear();
+    f.input
+        .import_selections
+        .insert(selection_a.clone(), large_ids);
+    f.input
+        .import_selections
+        .insert(selection_b.clone(), small_ids);
+    let mut witnesses = vec![key(10), key(11)];
+    witnesses.sort();
+    let mut selections = [selection_a, selection_b];
+    selections.sort();
+    f.input.selected_view = f.event(
+        20,
+        vec![],
+        json!({"kind":"view.publish","parents":[]}),
+        Some(json!({
+            "name":"fixture",
+            "description":[],
+            "roots":[],
+            "rafsi_threshold":{"numerator":1,"denominator":1},
+            "H":{"numerator":3,"denominator":1},
+            "alpha":{"numerator":1,"denominator":2},
+            "excluded":[],
+            "calculation":"simple-routes-bounds-v1",
+            "work":1000,
+            "import_sets":[
+                {"source":"fixture","importer":key(9),"selection":selections[0]},
+                {"source":"fixture","importer":key(9),"selection":selections[1]}
+            ],
+            "account_witnesses":witnesses,
+            "account_authority":true,
+            "notes":[]
+        })),
+    );
+    let result = evaluate_observed(&f.input);
+    assert!(result.available);
+    assert_eq!(result.publications[&f.d].status, Status::Active);
+    assert_eq!(result.publications[&d2].status, Status::Active);
+}
+
+#[test]
+fn all_handover_fixtures_and_delivery_orders_roundtrip_both_checkpoints_and_append() {
+    let before = HANDOVER_ROUNDTRIP_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+    for n in 1..=48 {
+        case(n);
+    }
+    historical_witness_chain_does_not_require_selected_intermediate_key();
+    invalid_overlay_denominator_never_panics();
+    overlay_exact_schema_and_order_are_required();
+    lineage_pending_and_wrong_word_do_not_suppress_candidate();
+    unknown_judgment_target_is_pending_and_contributes_nothing();
+    invalid_header_action_keeps_causal_position();
+    newer_unavailable_profile_does_not_restore_old_body();
+    incomplete_group_loses_judgments_but_keeps_publication_content();
+    matching_transfers_with_multiple_successor_roots_do_not_inherit();
+    import_artifact_hash_is_authenticated();
+    root_overlay_changes_raw_keys_before_continuity_maximum();
+    continuity_group_private_weight_conflict_blocks_edge();
+    block_does_not_redistribute_preexisting_row_share();
+    narrow_clear_falls_back_and_incomparable_shun_blocks();
+    exact_status_and_account_api_expose_committed_evidence();
+    conflicting_source_revisions_across_chunks_are_unresolved();
+    accepted_importer_succession_keeps_one_source_slot();
+    repeated_publication_id_across_chunks_is_one_source_revision();
+    rafsi_word_gate_uses_all_languages_and_restores_existing_claims();
+    missing_selection_does_not_prove_all_definitions_deprecated();
+    independent_active_definition_makes_rafsi_eligible_with_other_missing_inputs();
+    deprecating_one_rafsi_claim_preserves_another_claim_and_pair_judgments();
+    pending_cutoff_definition_keeps_rafsi_unknown_until_safe_history_arrives();
+    pending_cutoff_claim_keeps_rafsi_unknown_until_safe_history_arrives();
+    pending_cutoff_keeps_explicit_view_adoption_and_ordinary_incomplete_content_rules();
+    resolved_exclusion_from_complete_cutoff_survives_a_pending_cutoff();
+    resolved_exclusion_from_transfer_survives_a_pending_cutoff();
+    incomplete_transfer_does_not_make_a_pending_cutoff_publication_certainly_excluded();
+    rafsi_gate_ignores_inert_definitions_without_losing_missing_definition_uncertainty();
+    rafsi_gate_ignores_inert_claims_without_losing_missing_claim_uncertainty();
+    native_post_transfer_old_key_status_is_inert();
+    native_contested_successor_status_remains_uncertain();
+    native_same_key_compromise_cutoff_excludes_status_value();
+    concurrent_equal_profiles_count_once();
+    bridge_register_changes_target_and_requires_current_source_link();
+    disabled_account_authority_keeps_import_active_and_status_inert();
+    missing_selected_policy_makes_account_status_actions_unavailable();
+    historical_guard_survives_missing_observation_body();
+    historical_guard_survives_missing_witness_predecessor();
+    pending_descendant_observation_body_prevents_older_controller_fallback();
+    pending_descendant_witness_history_prevents_older_controller_fallback();
+    pending_historical_descendant_cannot_restore_closed_period_under_new_witnesses();
+    complete_descendant_closure_does_not_require_old_observation_body();
+    known_invalid_observation_body_does_not_create_certificate_guard();
+    selected_import_missing_body_keeps_rafsi_gate_unknown();
+    unrelated_signers_are_absent_from_sparse_context();
+    missing_parent_view_preserves_native_ranking_and_marks_import_guard_unavailable();
+    disabled_status_authority_preserves_bridge_management_link();
+    missing_maximal_observation_body_cannot_choose_an_already_certified_claim();
+    historical_witness_forks_do_not_merge_unrelated_successor_paths();
+    malformed_maximal_observation_body_preserves_certified_period_frontier();
+    malformed_body_cannot_certify_a_never_certified_period();
+    growing_missing_predecessor_sets_stop_at_global_budget();
+    retirement_of_one_conflicting_source_revision_keeps_all_members_unavailable();
+    narrow_heed_overrides_broad_shun_and_narrow_clear_restores_it();
+    retained_conflict_refuses_only_when_it_contains_shun();
+    continuity_resolves_both_shun_ends_and_ignores_self_shuns();
+    equal_positive_graphs_keep_distinct_scoped_refusals_and_profiles();
+    private_overlay_replaces_public_heeds_and_shuns_at_the_same_scope();
+    private_overlay_clear_of_narrow_public_shun_falls_back_to_broad_shun();
+    personal_public_shuns_resolve_language_and_rafsi_scopes_under_both_profiles();
+    personal_public_shuns_keep_conflicts_clear_fallback_and_incomparable_scopes();
+    personal_public_shuns_precede_private_replacement_and_private_ignore_survives_public_clear();
+    personal_public_shuns_resolve_both_handovers_and_ignore_self_shuns();
+    personal_public_shuns_do_not_invent_unresolved_continuity_or_suspended_history();
+    personal_overlay_versions_keep_exact_fields_and_null_issuer_compatibility();
+    selection_above_200000_ids_and_multiple_selections_authorize_imports();
+    let after = HANDOVER_ROUNDTRIP_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+    let count = after - before;
+    eprintln!(
+        "all_handover_fixtures_and_delivery_orders_roundtrip_both_checkpoints_and_append: {count} states"
+    );
+    assert!(
+        count >= 2500,
+        "expected >= 2500 round-tripped states, got {count}"
+    );
 }

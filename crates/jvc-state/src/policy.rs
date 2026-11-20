@@ -32,11 +32,113 @@ pub struct ContextGraph<T = Rational> {
     pub available: bool,
     pub reasons: BTreeSet<String>,
 }
-pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &mut Evaluation) {
+#[derive(Default)]
+pub(crate) struct ResolvedSelections<'a> {
+    pub allowance: usize,
+    pub valid: BTreeMap<String, &'a Vec<String>>,
+    pub invalid: BTreeSet<String>,
+}
+
+pub(crate) fn resolve_referenced_selections<'a>(
+    input: &'a EvaluationOptions,
+    nodes: &BTreeMap<String, graph::Node>,
+) -> ResolvedSelections<'a> {
+    let mut cache = BTreeMap::new();
+    resolve_referenced_selections_cached(input, &input.import_selections, nodes, &mut cache)
+}
+
+pub(crate) fn resolve_referenced_selections_cached<'a>(
+    input: &EvaluationOptions,
+    import_selections: &'a BTreeMap<String, Vec<String>>,
+    nodes: &BTreeMap<String, graph::Node>,
+    cache: &mut BTreeMap<String, bool>,
+) -> ResolvedSelections<'a> {
+    let mut resolved = ResolvedSelections {
+        allowance: 0,
+        valid: BTreeMap::new(),
+        invalid: BTreeSet::new(),
+    };
+    if input.limits.traversal.is_some() {
+        return resolved;
+    }
+    let Some(node) = nodes.get(&input.selected_view) else {
+        return resolved;
+    };
+    if !node.semantic || node.kind != "view.publish" {
+        return resolved;
+    }
+    let Some(body) = node.body.as_ref() else {
+        return resolved;
+    };
+    let base_budget = DEFAULT_TRAVERSAL_BASE
+        .saturating_add(nodes.len().saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD));
+    #[cfg(test)]
+    let base_budget = RESOLVER_BASE_OVERRIDE
+        .with(|o| o.get())
+        .unwrap_or(base_budget);
+    let mut invalid_work = 0usize;
+    for entry in body
+        .view()
+        .index("import_sets")
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        invalid_work = invalid_work.saturating_add(1);
+        if invalid_work > base_budget {
+            break;
+        }
+        let selection_field = entry.index("selection");
+        let Some(selection_id) = selection_field.as_str() else {
+            continue;
+        };
+        if resolved.valid.contains_key(selection_id) || resolved.invalid.contains(selection_id) {
+            continue;
+        }
+        let Some(ids) = import_selections.get(selection_id) else {
+            resolved.invalid.insert(selection_id.to_owned());
+            continue;
+        };
+        // Validity decides the budget: a valid selection adds its length
+        // to the default budget, so the resolver cannot stop on a length
+        // before it knows the verdict (a cached verdict would then change
+        // the result). Validation reads at most one selection's 16 MiB
+        // limit; an invalid selection's length counts against the base
+        // budget after it, and the walk stops once that is used up.
+        match valid_selection_cached(import_selections, selection_id, cache) {
+            Some(valid_ids) => {
+                resolved.allowance = resolved.allowance.saturating_add(valid_ids.len());
+                resolved.valid.insert(selection_id.to_owned(), valid_ids);
+            }
+            None => {
+                resolved.invalid.insert(selection_id.to_owned());
+                invalid_work = invalid_work.saturating_add(ids.len());
+                if invalid_work > base_budget {
+                    break;
+                }
+            }
+        }
+    }
+    resolved
+}
+
+pub(crate) fn select(
+    graph: &graph::Graph,
+    input: &EvaluationOptions,
+    import_selections: &BTreeMap<String, Vec<String>>,
+    resolved: &ResolvedSelections<'_>,
+    cache: &mut BTreeMap<String, bool>,
+    result: &mut Evaluation,
+) {
     let mut todo = vec![input.selected_view.clone()];
     let mut seen = BTreeSet::new();
     while let Some(id) = todo.pop() {
-        if seen.len() >= input.limits.traversal {
+        if input
+            .limits
+            .traversal
+            .is_some_and(|limit| seen.len() >= limit)
+            || !graph.charge(1)
+        {
             result.available = false;
             result.reasons.insert("resource_unavailable".into());
             break;
@@ -78,36 +180,81 @@ pub(crate) fn select(graph: &graph::Graph, input: &EvaluationOptions, result: &m
         }
         result.policies.push(body.clone());
         result.policy_history.insert(id.clone(), body.clone());
-        todo.extend(
-            n.action
-                .view()
-                .index("parents")
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v.as_str().map(str::to_owned)),
-        );
-        for entry in body
+        // Charge the parent count before the IDs are read.
+        let parent_count = n
+            .action
             .view()
-            .index("import_sets")
+            .index("parents")
+            .as_array()
+            .map_or(0, |parents| parents.len());
+        if parent_count > 0 && !graph.charge(parent_count) {
+            result.available = false;
+            result.reasons.insert("resource_unavailable".into());
+            break;
+        }
+        let parents = n
+            .action
+            .view()
+            .index("parents")
             .as_array()
             .into_iter()
             .flatten()
-        {
-            if id == input.selected_view {
-                match entry
-                    .index("selection")
-                    .as_str()
-                    .and_then(|id| valid_selection(input, id))
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        todo.extend(parents);
+        if id == input.selected_view {
+            let mut invalid_selections = resolved.invalid.clone();
+            for entry in body
+                .view()
+                .index("import_sets")
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                if input
+                    .limits
+                    .traversal
+                    .is_some_and(|limit| seen.len() >= limit)
+                    || !graph.charge(1)
                 {
+                    result.available = false;
+                    result.reasons.insert("resource_unavailable".into());
+                    return;
+                }
+                let selection_field = entry.index("selection");
+                let Some(selection_id) = selection_field.as_str() else {
+                    result.reasons.insert("import_selection_unavailable".into());
+                    continue;
+                };
+                if let Some(ids) = import_selections.get(selection_id)
+                    && !ids.is_empty()
+                    && !graph.charge(ids.len())
+                {
+                    result.available = false;
+                    result.reasons.insert("resource_unavailable".into());
+                    return;
+                }
+                if result.selections.contains_key(selection_id) {
+                    continue;
+                }
+                if invalid_selections.contains(selection_id) {
+                    result.reasons.insert("import_selection_unavailable".into());
+                    continue;
+                }
+                let valid_ids = resolved
+                    .valid
+                    .get(selection_id)
+                    .copied()
+                    .or_else(|| valid_selection_cached(import_selections, selection_id, cache));
+                match valid_ids {
                     None => {
+                        invalid_selections.insert(selection_id.to_owned());
                         result.reasons.insert("import_selection_unavailable".into());
                     }
                     Some(ids) => {
-                        result.selections.insert(
-                            entry.index("selection").as_str().unwrap().into(),
-                            ids.iter().cloned().collect(),
-                        );
+                        result
+                            .selections
+                            .insert(selection_id.into(), ids.iter().cloned().collect());
                         if ids.iter().any(|id| !graph.nodes.contains_key(id)) {
                             result
                                 .reasons
@@ -1417,14 +1564,67 @@ fn resolve_context_indexed<A: RowArithmetic>(
     }
 }
 
-pub(crate) fn valid_selection<'a>(
-    input: &'a EvaluationOptions,
+#[cfg(test)]
+thread_local! {
+    static SELECTION_HASH_VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_selection_hash_validations() {
+    SELECTION_HASH_VALIDATIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test override of the resolver's base budget.
+    pub(crate) static RESOLVER_BASE_OVERRIDE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn selection_hash_validations() -> usize {
+    SELECTION_HASH_VALIDATIONS.with(std::cell::Cell::get)
+}
+
+pub(crate) fn valid_selection_cached<'a>(
+    import_selections: &'a BTreeMap<String, Vec<String>>,
+    id: &str,
+    cache: &mut BTreeMap<String, bool>,
+) -> Option<&'a Vec<String>> {
+    let ids = import_selections.get(id)?;
+    if let Some(&is_valid) = cache.get(id) {
+        return is_valid.then_some(ids);
+    }
+    let valid = valid_selection_map(import_selections, id);
+    cache.insert(id.to_owned(), valid.is_some());
+    valid
+}
+
+pub(crate) fn valid_selection_map<'a>(
+    import_selections: &'a BTreeMap<String, Vec<String>>,
     id: &str,
 ) -> Option<&'a Vec<String>> {
-    let ids = input.import_selections.get(id)?;
-    jvc_core::sorted_ids(ids, "jve1:", 200_000).ok()?;
-    let bytes = jvc_core::canonical_value(&serde_json::json!(ids)).ok()?;
-    if bytes.len() > 16 * 1024 * 1024 || jvc_core::hash_id("sha256:", b"", &bytes) != id {
+    use std::io::Write;
+    let ids = import_selections.get(id)?;
+    #[cfg(test)]
+    SELECTION_HASH_VALIDATIONS.with(|count| count.set(count.get() + 1));
+    let mut writer = jvc_core::HashWriter::new(b"", 16 * 1024 * 1024);
+    writer.write_all(b"[").ok()?;
+    let mut previous: Option<&str> = None;
+    for (index, item) in ids.iter().enumerate() {
+        if !jvc_core::valid_id(item, "jve1:") || previous.is_some_and(|prev| prev >= item.as_str())
+        {
+            return None;
+        }
+        previous = Some(item.as_str());
+        if index > 0 {
+            writer.write_all(b",").ok()?;
+        }
+        writer.write_all(b"\"").ok()?;
+        writer.write_all(item.as_bytes()).ok()?;
+        writer.write_all(b"\"").ok()?;
+    }
+    writer.write_all(b"]").ok()?;
+    if writer.finish("sha256:").0 != id {
         return None;
     }
     Some(ids)
@@ -1721,7 +1921,8 @@ mod tests {
         evaluation.policy =
             Some(json!({"calculation":"simple-routes-bounds-v1","roots":[],"excluded":[]}).into());
         evaluation.overlay = Some(
-            json!({"version":2,"public_shun_issuer":issuer,"root_changes":[],"trust":[],"blocked":[]}),
+            json!({"version":2,"public_shun_issuer":issuer,"root_changes":[],"trust":[],"blocked":[]})
+                .into(),
         );
         evaluation.trust = [2, 3]
             .into_iter()

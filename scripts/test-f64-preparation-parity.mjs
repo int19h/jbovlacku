@@ -212,30 +212,81 @@ for (const limits of [{ events: 1 }, { traversal: 0 }]) {
     session.free();
   }
 }
-const resourceOriginal = new wasm.EvaluationSession(utf8(JSON.parse(resourceRow.input)));
+const resourceUnavailable = new wasm.EvaluationSession(
+  utf8({
+    ...JSON.parse(resourceRow.input),
+    limits: { traversal: 0 },
+    overlay: rawOverlay,
+  }),
+);
 try {
-  const checkpoint = JSON.parse(new TextDecoder().decode(resourceOriginal.checkpoint("raw-overlay")));
+  const unavailCheckpoint = resourceUnavailable.checkpoint("raw-overlay");
+  const restoredUnavail = wasm.EvaluationSession.restore_host_checkpoint(
+    unavailCheckpoint,
+    "raw-overlay",
+  );
+  try {
+    assert.throws(
+      () => restoredUnavail.ranking_descriptor(utf8(smallPolicy)),
+      /resource_unavailable/,
+    );
+    const descriptor = JSON.parse(
+      restoredUnavail.ranking_descriptor(utf8(diagnosticPolicy)),
+    );
+    assert.equal(descriptor.available, false);
+    assert.equal(descriptor.setup.setup_bytes, 0);
+    assert.equal(descriptor.setup.setup_units, 0);
+    assert.equal(JSON.parse(restoredUnavail.state()).available, false);
+  } finally {
+    restoredUnavail.free();
+  }
+} finally {
+  resourceUnavailable.free();
+}
+const resourceOriginal = new wasm.EvaluationSession(
+  utf8(JSON.parse(resourceRow.input)),
+);
+try {
+  const checkpoint = JSON.parse(
+    new TextDecoder().decode(resourceOriginal.checkpoint("raw-overlay")),
+  );
   checkpoint.options.overlay = rawOverlay;
   checkpoint.evaluation.overlay = rawOverlay;
-  for (const available of [false, true]) {
-    checkpoint.evaluation.available = available;
-    checkpoint.evaluation.reasons = available ? [] : ["resource_unavailable"];
-    const restored = wasm.EvaluationSession.restore_host_checkpoint(utf8(checkpoint), "raw-overlay");
-    try {
-      if (available) {
-        assert.throws(() => restored.ranking_descriptor(utf8(resourceRow.policy)), /invalid_overlay/);
-      } else {
-        assert.throws(() => restored.ranking_descriptor(utf8(smallPolicy)), /resource_unavailable/);
-        const descriptor = JSON.parse(restored.ranking_descriptor(utf8(diagnosticPolicy)));
-        assert.equal(descriptor.available, false);
-        assert.equal(descriptor.setup.setup_bytes, 0);
-        assert.equal(descriptor.setup.setup_units, 0);
-      }
-      assert.equal(JSON.parse(restored.state()).available, available);
-    } finally {
-      restored.free();
-    }
+  assert.throws(
+    () =>
+      wasm.EvaluationSession.restore_host_checkpoint(
+        utf8(checkpoint),
+        "raw-overlay",
+      ),
+    /checkpoint version or binding does not match/,
+  );
+  delete checkpoint.digest;
+  checkpoint.digest = wasm.content_hash(utf8(checkpoint));
+  const restored = wasm.EvaluationSession.restore_host_checkpoint(
+    utf8(checkpoint),
+    "raw-overlay",
+  );
+  try {
+    assert.throws(
+      () => restored.ranking_descriptor(utf8(resourceRow.policy)),
+      /invalid_overlay/,
+    );
+    assert.equal(JSON.parse(restored.state()).available, true);
+  } finally {
+    restored.free();
   }
+  checkpoint.evaluation.available = false;
+  checkpoint.evaluation.reasons = ["resource_unavailable"];
+  delete checkpoint.digest;
+  checkpoint.digest = wasm.content_hash(utf8(checkpoint));
+  assert.throws(
+    () =>
+      wasm.EvaluationSession.restore_host_checkpoint(
+        utf8(checkpoint),
+        "raw-overlay",
+      ),
+    /checkpoint version or binding does not match/,
+  );
 } finally {
   resourceOriginal.free();
 }

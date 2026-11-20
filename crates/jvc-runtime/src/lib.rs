@@ -146,12 +146,6 @@ fn try_canonical_selection(bytes: &[u8]) -> Option<Result<usize>> {
         }
         prev = Some(id);
     }
-    if count > 200_000 {
-        return Some(Err(Error::new(
-            "identifier",
-            "identifiers must be valid, sorted, unique, and within their limit",
-        )));
-    }
     Some(Ok(count))
 }
 fn stream_canonical_selection(bytes: &[u8]) -> std::result::Result<String, ()> {
@@ -171,8 +165,7 @@ fn stream_canonical_selection(bytes: &[u8]) -> std::result::Result<String, ()> {
             let mut count = 0usize;
             while let Some(id) = seq.next_element::<String>()? {
                 count += 1;
-                if count > 200_000
-                    || !jvc_core::valid_id(&id, "jve1:")
+                if !jvc_core::valid_id(&id, "jve1:")
                     || prev.as_deref().is_some_and(|p| p >= id.as_str())
                 {
                     return Err(serde::de::Error::custom("invalid identifier"));
@@ -205,7 +198,7 @@ fn validate_selection_ids(bytes: &[u8]) -> Result<Vec<String>> {
     let value = parse_json(bytes)?;
     let ids: Vec<String> = serde_json::from_value(value)
         .map_err(|_| Error::new("selection", "selection must be an identifier array"))?;
-    jvc_core::sorted_ids(&ids, "jve1:", 200_000)?;
+    jvc_core::sorted_ids(&ids, "jve1:", usize::MAX)?;
     Ok(ids)
 }
 fn format_canonical_ids(ids: &[String]) -> String {
@@ -278,6 +271,34 @@ pub fn prepare_selection(bytes: &[u8]) -> std::result::Result<String, JsValue> {
     let len = canonical.len();
     output(json!({"hash":hash,"bytes":len,"count":ids.len(),"canonical":canonical,"ids":ids}))
 }
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LimitsWire {
+    #[serde(default)]
+    events: Option<usize>,
+    #[serde(default)]
+    traversal: Option<usize>,
+    claim_depth: usize,
+}
+impl Default for LimitsWire {
+    fn default() -> Self {
+        let defaults = jvc_state::Limits::default();
+        Self {
+            events: defaults.events,
+            traversal: defaults.traversal,
+            claim_depth: defaults.claim_depth,
+        }
+    }
+}
+impl From<LimitsWire> for jvc_state::Limits {
+    fn from(wire: LimitsWire) -> Self {
+        Self {
+            events: wire.events,
+            traversal: wire.traversal,
+            claim_depth: wire.claim_depth,
+        }
+    }
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EvaluationWire {
@@ -288,7 +309,7 @@ struct EvaluationWire {
     #[serde(default)]
     overlay: Option<Value>,
     #[serde(default)]
-    limits: jvc_state::Limits,
+    limits: LimitsWire,
 }
 fn evaluation_input(bytes: &[u8]) -> Result<jvc_state::EvaluationInput> {
     evaluation_input_with_verifier(bytes, &mut jvc_core::EnvelopeVerifier::default())
@@ -314,7 +335,7 @@ fn evaluation_input_with_verifier(
         selected_view: wire.selected_view,
         import_selections: wire.import_selections,
         overlay: wire.overlay,
-        limits: wire.limits,
+        limits: wire.limits.into(),
     })
 }
 #[derive(Serialize)]
@@ -905,7 +926,7 @@ fn rank_word_state(
     let calculation = if graphs.is_empty() {
         Value::Null
     } else {
-        let overlay = evaluation.overlay.as_ref().unwrap_or(&Value::Null);
+        let overlay = evaluation.overlay.as_deref().unwrap_or(&Value::Null);
         let suspensions=evaluation.lifecycle.suspended.iter().flat_map(|(identity,causes)|causes.iter().map(move|cause|json!({"identity":identity,"cause":cause,"reason":"incomplete_history"}))).collect::<Vec<_>>();
         json!({"algorithm":profile.unwrap().name(),"budget":params.as_ref().unwrap().work,"completed":graphs.values().map(|r|r.completed_work).sum::<u64>(),"exact":exact,"overlay":jvc_core::hash_id("sha256:",b"",&canonical_value(overlay)?),"incomplete_identities":evaluation.lifecycle.suspended.keys().collect::<Vec<_>>(),"suspensions":suspensions})
     };
@@ -1414,7 +1435,7 @@ struct EvaluationOptionsWire {
     #[serde(default)]
     overlay: Option<Value>,
     #[serde(default)]
-    limits: jvc_state::Limits,
+    limits: LimitsWire,
 }
 
 #[wasm_bindgen]
@@ -1428,8 +1449,8 @@ impl EvaluationSessionBuilder {
         let options = jvc_state::EvaluationOptions {
             selected_view: wire.selected_view,
             import_selections: wire.import_selections.unwrap_or_default(),
-            overlay: wire.overlay,
-            limits: wire.limits,
+            overlay: wire.overlay.map(Into::into),
+            limits: wire.limits.into(),
         };
         Ok(Self {
             prepared: jvc_state::PreparedEvaluationInput::new(options),

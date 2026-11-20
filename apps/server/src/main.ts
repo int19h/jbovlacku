@@ -164,7 +164,6 @@ async function initializeService() {
         traversal === undefined
           ? undefined
           : {
-              events: 200_000,
               traversal,
               claim_depth: 1024,
             },

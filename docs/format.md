@@ -1069,7 +1069,7 @@ Each import entry pins a source namespace, importer identity, and import-selecti
 
 An import is eligible only when its source and signing key match the entry and its event ID belongs to that selection.
 The selection is a canonical sorted JSON array of unique publication event IDs. Its ID hashes its canonical bytes with SHA-256.
-Each selection contains at most 200,000 IDs and 16 MiB. Larger selections use several entries with distinct hashes.
+Each selection is at most 16 MiB. Larger selections use several entries with distinct hashes.
 
 A selection can span source snapshots and extraction versions. Each publication retains its own original provenance.
 Selections are unsigned artifacts. A chosen signed view authenticates their selection through their hashes.

@@ -5,6 +5,35 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LimitsWire {
+    #[serde(default)]
+    events: Option<usize>,
+    #[serde(default)]
+    traversal: Option<usize>,
+    claim_depth: usize,
+}
+impl Default for LimitsWire {
+    fn default() -> Self {
+        let defaults = Limits::default();
+        Self {
+            events: defaults.events,
+            traversal: defaults.traversal,
+            claim_depth: defaults.claim_depth,
+        }
+    }
+}
+impl From<LimitsWire> for Limits {
+    fn from(wire: LimitsWire) -> Self {
+        Self {
+            events: wire.events,
+            traversal: wire.traversal,
+            claim_depth: wire.claim_depth,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct Wire {
     events: Vec<String>,
@@ -14,14 +43,14 @@ struct Wire {
     #[serde(default)]
     overlay: Option<Value>,
     #[serde(default)]
-    limits: Limits,
+    limits: LimitsWire,
 }
 
 fn options(wire: &Wire, limits: Limits) -> EvaluationOptions {
     EvaluationOptions {
         selected_view: wire.selected_view.clone(),
         import_selections: wire.import_selections.clone(),
-        overlay: wire.overlay.clone(),
+        overlay: wire.overlay.clone().map(Into::into),
         limits,
     }
 }
@@ -37,10 +66,11 @@ fn build_state(wire: &Wire, limits: Limits) -> EvaluatedState {
 }
 
 fn build_projection_session(wire: &Wire) -> jvc_runtime::EvaluationSession {
+    let limits: Limits = wire.limits.clone().into();
     let options = serde_json::to_vec(&json!({
         "selected_view": wire.selected_view,
         "overlay": wire.overlay,
-        "limits": wire.limits,
+        "limits": limits,
     }))
     .unwrap();
     let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
@@ -263,7 +293,7 @@ fn main() {
         .unwrap();
     }
 
-    let bounds_state = build_state(&wire, wire.limits.clone());
+    let bounds_state = build_state(&wire, wire.limits.clone().into());
     let ranking_bound = bounds_state.ranking_index_bound().unwrap();
     let source_records = bounds_state.ranking_source_records().unwrap();
     bounds_state.ensure_ranking_index().unwrap();
@@ -336,29 +366,29 @@ fn main() {
         return;
     }
 
-    let consumed_work = wire.limits.traversal - remaining_work(&bounds_state);
+    let consumed_work = bounds_state.consumed_work();
     assert!(consumed_work > 0);
     let event_count = bounds_state.event_count();
     drop(bounds_state);
-    let mut limits = wire.limits.clone();
-    limits.events = event_count;
+    let mut limits: Limits = wire.limits.clone().into();
+    limits.events = Some(event_count);
     let state = build_state(&wire, limits.clone());
     assert!(state.evaluation().available);
     boundary(output, "event-accept", &state, &limits);
     drop(state);
-    limits.events = event_count - 1;
+    limits.events = Some(event_count - 1);
     let state = build_state(&wire, limits.clone());
     assert!(!state.evaluation().available);
     boundary(output, "event-refuse", &state, &limits);
     drop(state);
 
-    let mut limits = wire.limits.clone();
-    limits.traversal = consumed_work;
+    let mut limits: Limits = wire.limits.clone().into();
+    limits.traversal = Some(consumed_work);
     let state = build_state(&wire, limits.clone());
     assert!(state.evaluation().available);
     boundary(output, "traversal-accept", &state, &limits);
     drop(state);
-    limits.traversal = consumed_work - 1;
+    limits.traversal = Some(consumed_work - 1);
     let state = build_state(&wire, limits.clone());
     assert!(!state.evaluation().available);
     boundary(output, "traversal-refuse", &state, &limits);

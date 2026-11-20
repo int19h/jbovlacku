@@ -15,6 +15,10 @@ num-traits = "=0.2.19"
 jvc-rank = { path = "../jvc-rank" }
 hex = "=0.4.3"
 
+[features]
+# Test-only helpers for other crates' tests. Never enabled in a build.
+test-support = []
+
 [dev-dependencies]
 sha2 = "=0.10.9"
 hex = "=0.4.3"

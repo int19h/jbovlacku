@@ -66,6 +66,8 @@ class RecordingWorker {
   rankStarted: (() => void) | null = null;
   terminateCalls = 0;
   selectedView = view;
+  /** Actors in an overlay reply; the real worker sends them only after a refused load. */
+  overlayActors: Record<string, string> | null = null;
 
   postMessage(message: WorkerRequest) {
     this.messages.push(structuredClone(message));
@@ -187,7 +189,11 @@ class RecordingWorker {
             reasons: [],
             selected_view: this.selectedView,
             events: this.events,
-            actors: {},
+            ...(message.type !== "overlay"
+              ? { actors: {} }
+              : this.overlayActors
+                ? { actors: this.overlayActors }
+                : {}),
             projection_digest:
               message.type === "load" ? currentProjectionDigest : undefined,
           },
@@ -710,6 +716,20 @@ test("an overlay change alone keeps the graph without invalidation", async () =>
   assert.equal(loaded?.type, "overlay");
   if (loaded?.type === "overlay")
     assert.equal((loaded.overlay as { blocked: unknown[] }).blocked.length, 1);
+  h.calculator.cancel();
+});
+
+test("an overlay reply with actors replaces the continuity actors", async () => {
+  const h = harness();
+  await h.calculator.ensure({ mode: "personal" });
+  assert.deepEqual(h.calculator.loadedContinuity?.actors, {});
+  const key = "ed25519:" + "4".repeat(64);
+  const actors = { [key]: key };
+  h.worker.overlayActors = actors;
+  h.setOverlay(privateOverlay());
+  await h.calculator.ensure({ mode: "personal" });
+  assert.equal(h.worker.messages.at(-1)?.type, "overlay");
+  assert.deepEqual(h.calculator.loadedContinuity?.actors, actors);
   h.calculator.cancel();
 });
 

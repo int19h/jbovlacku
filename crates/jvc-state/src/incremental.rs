@@ -1,9 +1,31 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v3";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v8";
+const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v8";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
+
+#[cfg(test)]
+thread_local! {
+    static DIGEST_REJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Selection IDs that empty-advance comparisons read.
+    static SELECTION_IDS_COMPARED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_digest_rejections() {
+    DIGEST_REJECTIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn digest_rejections() -> usize {
+    DIGEST_REJECTIONS.with(std::cell::Cell::get)
+}
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct UpdateStatistics {
@@ -21,14 +43,26 @@ pub struct JudgmentChanges {
     pub actors: BTreeSet<String>,
 }
 
+#[derive(Serialize)]
+struct SavedOptions<'a> {
+    selected_view: &'a str,
+    import_selections: &'a BTreeMap<String, Vec<String>>,
+    overlay: &'a Option<std::rc::Rc<Value>>,
+    limits: &'a Limits,
+}
+
 /// Retained authenticated input and its evaluated state.
 /// A fork owns its result and shares the record projection and immutable ancestor payloads.
 pub struct EvaluatedState {
     prepared: PreparedEvaluationInput,
     evaluation: Evaluation,
     graph: Option<Graph>,
-    unresolved: BTreeSet<String>,
+    unresolved: std::rc::Rc<BTreeSet<String>>,
+    rafsi_words: std::rc::Rc<BTreeSet<String>>,
+    selection_allowance: usize,
     remaining_work: usize,
+    unmatched_publication_scans: usize,
+    matched_publication_scans: std::rc::Rc<BTreeMap<String, usize>>,
     /// Ancestry bytes spent by the evaluation this state carries,
     /// saved across a checkpoint. A restored state has no graph, so
     /// the first advance seeds the rebuilt graph's cap counter with
@@ -39,7 +73,8 @@ pub struct EvaluatedState {
     saved_ancestry_bytes: Option<usize>,
     checkpoint_restored: bool,
     statistics: UpdateStatistics,
-    judgment_changes: Option<JudgmentChanges>,
+    /// Shared, so that a clone copies one pointer.
+    judgment_changes: Option<std::rc::Rc<JudgmentChanges>>,
     ranking_index: std::cell::RefCell<Option<policy::ApproximateContextIndex>>,
 }
 
@@ -64,7 +99,11 @@ impl Clone for EvaluatedState {
             evaluation: self.evaluation.clone(),
             graph: self.graph.clone(),
             unresolved: self.unresolved.clone(),
+            rafsi_words: self.rafsi_words.clone(),
+            selection_allowance: self.selection_allowance,
             remaining_work: self.remaining_work,
+            unmatched_publication_scans: self.unmatched_publication_scans,
+            matched_publication_scans: self.matched_publication_scans.clone(),
             saved_ancestry_bytes: self.saved_ancestry_bytes,
             checkpoint_restored: self.checkpoint_restored,
             statistics: self.statistics.clone(),
@@ -79,7 +118,7 @@ impl EvaluatedState {
         let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
             selected_view: input.selected_view.clone(),
             import_selections: input.import_selections.clone(),
-            overlay: input.overlay.clone(),
+            overlay: input.overlay.clone().map(std::rc::Rc::new),
             limits: input.limits.clone(),
         });
         for event in &input.events {
@@ -92,8 +131,12 @@ impl EvaluatedState {
             evaluation: empty_evaluation(&prepared.options),
             prepared,
             graph: None,
-            unresolved: BTreeSet::new(),
+            unresolved: Default::default(),
+            rafsi_words: Default::default(),
+            selection_allowance: 0,
             remaining_work: 0,
+            unmatched_publication_scans: 0,
+            matched_publication_scans: Default::default(),
             saved_ancestry_bytes: None,
             checkpoint_restored: false,
             statistics: UpdateStatistics::default(),
@@ -110,7 +153,26 @@ impl EvaluatedState {
     }
 
     pub fn import_selections(&self) -> &BTreeMap<String, Vec<String>> {
-        &self.prepared.options.import_selections
+        &self.prepared.import_selections
+    }
+
+    pub(crate) fn shared_import_selections(&self) -> &std::rc::Rc<BTreeMap<String, Vec<String>>> {
+        &self.prepared.import_selections
+    }
+
+    pub(crate) fn shared_validated_selections(
+        &self,
+    ) -> &std::rc::Rc<std::cell::RefCell<BTreeMap<String, bool>>> {
+        &self.prepared.validated_selections
+    }
+
+    fn saved_options(&self) -> SavedOptions<'_> {
+        SavedOptions {
+            selected_view: &self.prepared.options.selected_view,
+            import_selections: &self.prepared.import_selections,
+            overlay: &self.prepared.options.overlay,
+            limits: &self.prepared.options.limits,
+        }
     }
 
     #[doc(hidden)]
@@ -143,7 +205,9 @@ impl EvaluatedState {
         observe("other_evaluation_cleared");
         self.graph = None;
         observe("graph_cleared");
-        self.unresolved.clear();
+        self.unresolved = Default::default();
+        self.rafsi_words = Default::default();
+        self.matched_publication_scans = Default::default();
         observe("unresolved_cleared");
     }
 
@@ -156,11 +220,20 @@ impl EvaluatedState {
         overlay: Option<Value>,
         rebuild: impl FnOnce(&mut Self),
     ) -> Self {
+        let overlay = overlay.map(std::rc::Rc::new);
         let mut state = self.clone();
         state.prepared.options.overlay = overlay.clone();
-        if self.evaluation.reasons.contains("resource_unavailable") {
+        // A full evaluation charges the overlay's entries before it
+        // validates them (`overlay_units`). The state already paid for
+        // its old overlay; swap that charge for the new one before the
+        // new overlay is read, and rebuild when the budget cannot cover it.
+        let old_units = overlay_units(self.prepared.options.overlay.as_deref());
+        let new_units = overlay_units(overlay.as_deref());
+        let available = self.remaining_work.saturating_add(old_units);
+        if self.evaluation.reasons.contains("resource_unavailable") || new_units > available {
             rebuild(&mut state);
         } else {
+            state.remaining_work = available - new_units;
             state.evaluation = self.evaluation.with_overlay(overlay, |issuer| {
                 let lifecycle = &self.evaluation.lifecycle;
                 let actor = lifecycle
@@ -181,12 +254,23 @@ impl EvaluatedState {
         self.prepared.nodes.len()
     }
 
+    pub fn traversal_budget(&self) -> usize {
+        self.prepared
+            .options
+            .limits
+            .traversal_budget_with_selections(self.prepared.nodes.len(), self.selection_allowance)
+    }
+
+    pub fn consumed_work(&self) -> usize {
+        self.traversal_budget().saturating_sub(self.remaining_work)
+    }
+
     pub fn statistics(&self) -> &UpdateStatistics {
         &self.statistics
     }
 
     pub fn judgment_changes(&self) -> Option<&JudgmentChanges> {
-        self.judgment_changes.as_ref()
+        self.judgment_changes.as_deref()
     }
 
     /// Hash retained authenticated projections without another input buffer.
@@ -234,10 +318,11 @@ impl EvaluatedState {
             check: &mut within_deadline,
             remaining: 256 * 1024,
         };
+        let saved_options = self.saved_options();
         serde_json::to_writer(
             &mut writer,
             &(
-                &self.prepared.options,
+                &saved_options,
                 self.prepared.nodes.as_ref(),
                 self.prepared.event_limit_exceeded,
                 &self.evaluation,
@@ -338,6 +423,13 @@ impl EvaluatedState {
         }
         Ok(())
     }
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn replace_evaluation_for_test(&mut self, evaluation: Evaluation, overlay: Option<Value>) {
+        self.prepared.options.overlay = overlay.map(std::rc::Rc::new);
+        self.evaluation = evaluation;
+        *self.ranking_index.borrow_mut() = None;
+    }
     /// Borrow publications from this state, using its own bounded derived index.
     pub fn ranking_publications(
         &self,
@@ -387,29 +479,67 @@ impl EvaluatedState {
 
     fn rebuild(&mut self) {
         self.judgment_changes = None;
+        // Discard this state's old ancestry before any early exit or replacement.
+        self.saved_ancestry_bytes = None;
+        self.checkpoint_restored = false;
+        self.graph = None;
         if self.prepared.arena_error().is_some() {
+            self.selection_allowance = 0;
             self.evaluation = empty_evaluation(&self.prepared.options);
             resource_unavailable(&mut self.evaluation);
-            self.graph = None;
-            self.remaining_work = self.prepared.options.limits.traversal;
-            self.unresolved.clear();
+            self.remaining_work = self.traversal_budget();
+            self.unresolved = Default::default();
+            self.rafsi_words = Default::default();
+            self.unmatched_publication_scans = 0;
+            self.matched_publication_scans = Default::default();
             return;
         }
         if self.prepared.event_limit_exceeded {
+            self.selection_allowance = 0;
             self.evaluation = event_limit_evaluation(&self.prepared.options);
-            self.graph = None;
-            self.remaining_work = self.prepared.options.limits.traversal;
-            self.unresolved.clear();
+            self.remaining_work = self.traversal_budget();
+            self.unresolved = Default::default();
+            self.rafsi_words = Default::default();
+            self.unmatched_publication_scans = 0;
+            self.matched_publication_scans = Default::default();
             return;
         }
-        // Discard this state's old ancestry before allocating its replacement.
-        self.saved_ancestry_bytes = None;
-        self.graph = None;
-        let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
-        self.evaluation = evaluate_graph(&self.prepared.options, &graph);
+        let mut selection_cache = self.prepared.validated_selections.borrow_mut();
+        let resolved = policy::resolve_referenced_selections_cached(
+            &self.prepared.options,
+            &self.prepared.import_selections,
+            &self.prepared.nodes,
+            &mut selection_cache,
+        );
+        self.selection_allowance = resolved.allowance;
+        let budget = self
+            .prepared
+            .options
+            .limits
+            .traversal_budget_with_selections(self.prepared.nodes.len(), self.selection_allowance);
+        let graph = Graph::new_with_budget(self.prepared.nodes.clone(), budget);
+        self.evaluation = evaluate_graph_with_selections_cached(
+            &self.prepared.options,
+            &self.prepared.import_selections,
+            &graph,
+            &resolved,
+            &mut selection_cache,
+        );
+        drop(selection_cache);
         self.remaining_work = graph.budget.get();
+        if !self.evaluation.reasons.contains("resource_unavailable") {
+            self.unmatched_publication_scans = graph.unmatched_publication_scans.get();
+            // Move the counts out: the graph never reads them again,
+            // and a graph clone would otherwise copy them.
+            self.matched_publication_scans =
+                std::rc::Rc::new(graph.matched_publication_scans.take());
+        } else {
+            self.unmatched_publication_scans = 0;
+            self.matched_publication_scans = Default::default();
+        }
         self.graph = Some(graph);
-        self.unresolved = unresolved(&self.prepared);
+        self.unresolved = unresolved(&self.prepared, &self.evaluation);
+        self.rafsi_words = rafsi_words(&self.evaluation);
     }
 
     /// Advance from original records that already passed record preparation.
@@ -417,7 +547,7 @@ impl EvaluatedState {
     pub fn advance(mut self, delta: PreparedEvaluationInput, removed: &[String]) -> Self {
         self.ranking_index = Default::default();
         let mut rebuild_reason =
-            (self.prepared.options != delta.options).then(|| "configuration_changed".to_owned());
+            (!self.same_options(&delta.options)).then(|| "configuration_changed".to_owned());
         let arena_error = delta.arena_error();
         self.prepared.options = delta.options;
         if let Some(error) = arena_error {
@@ -445,11 +575,97 @@ impl EvaluatedState {
                 }
             }
         }
-        self.prepared.event_limit_exceeded = delta.event_limit_exceeded
-            || self.prepared.nodes.len().saturating_add(added.len())
-                > self.prepared.options.limits.events;
+        self.prepared.event_limit_exceeded =
+            delta.event_limit_exceeded
+                || self.prepared.options.limits.events.is_some_and(|limit| {
+                    self.prepared.nodes.len().saturating_add(added.len()) > limit
+                });
+        if !std::rc::Rc::ptr_eq(&self.prepared.import_selections, &delta.import_selections) {
+            // A zero budget refuses whatever the selections hold, and an
+            // event-limit state rebuilds anyway.
+            if !self.prepared.event_limit_exceeded
+                && self.prepared.options.limits.traversal != Some(0)
+            {
+                let view_node = added.get(&self.prepared.options.selected_view).or_else(|| {
+                    self.prepared
+                        .nodes
+                        .get(&self.prepared.options.selected_view)
+                });
+                if let Some(body) = view_node
+                    .filter(|n| n.semantic && n.kind == "view.publish")
+                    .and_then(|n| n.body.as_ref())
+                {
+                    let prev_selections = &self.prepared.import_selections;
+                    let next_selections = &delta.import_selections;
+                    let prev_cache = self.prepared.validated_selections.borrow();
+                    let mut next_cache = delta.validated_selections.borrow_mut();
+                    // Each distinct selection is compared once, however
+                    // many import sets name it, so the comparison reads
+                    // each supplied ID at most once.
+                    let mut compared: BTreeSet<String> = BTreeSet::new();
+                    // Each comparison reads the supplied IDs: it runs only
+                    // while the remaining work covers them, and otherwise
+                    // the advance rebuilds, which charges the selection.
+                    let mut compare_budget = self.remaining_work;
+                    for entry in body
+                        .view()
+                        .index("import_sets")
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                    {
+                        let sel_field = entry.index("selection");
+                        let Some(sel_id) = sel_field.as_str() else {
+                            continue;
+                        };
+                        if !compared.insert(sel_id.to_owned()) {
+                            continue;
+                        }
+                        let prev = prev_selections.get(sel_id);
+                        let next = next_selections.get(sel_id);
+                        if prev.map(Vec::len) != next.map(Vec::len) {
+                            if rebuild_reason.is_none() {
+                                rebuild_reason = Some("configuration_changed".into());
+                            }
+                            continue;
+                        }
+                        let Some((prev_ids, next_ids)) = prev.zip(next) else {
+                            continue;
+                        };
+                        // A refused state keeps no evidence of how far its
+                        // evaluation read the selections (the refusal is
+                        // built from nothing it computed), so it compares
+                        // like any state. A budget refusal has no work
+                        // left, so a changed vector rebuilds below; a cap
+                        // or arena refusal compares within the work it
+                        // kept, and a changed vector rebuilds too.
+                        if next_ids.len() > compare_budget {
+                            if rebuild_reason.is_none() {
+                                rebuild_reason = Some("configuration_changed".into());
+                            }
+                            continue;
+                        }
+                        compare_budget -= next_ids.len();
+                        #[cfg(test)]
+                        SELECTION_IDS_COMPARED
+                            .with(|count| count.set(count.get() + prev_ids.len()));
+                        if prev_ids != next_ids {
+                            if rebuild_reason.is_none() {
+                                rebuild_reason = Some("configuration_changed".into());
+                            }
+                        } else if !next_cache.contains_key(sel_id)
+                            && let Some(&valid) = prev_cache.get(sel_id)
+                        {
+                            next_cache.insert(sel_id.to_owned(), valid);
+                        }
+                    }
+                }
+            }
+            self.prepared.import_selections = delta.import_selections;
+            self.prepared.validated_selections = delta.validated_selections;
+        }
         self.statistics = UpdateStatistics::default();
-        self.judgment_changes = Some(JudgmentChanges::default());
+        self.judgment_changes = Some(Default::default());
         if self.prepared.event_limit_exceeded {
             rebuild_reason = Some("event_limit".into());
         }
@@ -477,7 +693,8 @@ impl EvaluatedState {
             if self.checkpoint_restored && self.saved_ancestry_bytes.is_none() {
                 rebuild_reason = Some("checkpoint_ancestry_unknown".into());
             } else {
-                let graph = Graph::new(self.prepared.nodes.clone(), &self.prepared.options.limits);
+                let graph =
+                    Graph::new_with_budget(self.prepared.nodes.clone(), self.traversal_budget());
                 if let Some(bytes) = self.saved_ancestry_bytes.take() {
                     graph.ancestry.restore_bytes(bytes);
                 }
@@ -511,8 +728,12 @@ impl EvaluatedState {
                 Ok(work) => {
                     let node = added.remove(&id).unwrap();
                     appended_any = true;
-                    self.append(node, work);
+                    let appended = self.append(node, work);
                     self.statistics.incremental_records += 1;
+                    if !appended {
+                        rebuild_reason = Some("register_members".into());
+                        break;
+                    }
                     if self.graph.as_ref().is_some_and(|g| g.resource.get()) {
                         rebuild_reason = Some("history_resource_unavailable".into());
                         break;
@@ -543,10 +764,38 @@ impl EvaluatedState {
             self.statistics.reason = Some(reason);
             self.statistics.incremental_records = 0;
             if let Some(base) = base_evaluation {
-                self.judgment_changes = judgment_diff(&base, &self.evaluation);
+                self.judgment_changes =
+                    judgment_diff(&base, &self.evaluation).map(std::rc::Rc::new);
             }
         }
         self
+    }
+
+    /// Whether `next` equals the retained options. A newly supplied
+    /// overlay that is not the retained value is compared only when the
+    /// remaining work covers its entries (`overlay_units`); otherwise it
+    /// counts as changed and the rebuild charges it. The view name is
+    /// compared by length first, so its bytes are read at most up to the
+    /// retained name's length.
+    fn same_options(&self, next: &EvaluationOptions) -> bool {
+        let EvaluationOptions {
+            selected_view,
+            import_selections,
+            overlay,
+            limits,
+        } = next;
+        let retained = &self.prepared.options;
+        retained.selected_view == *selected_view
+            && retained.import_selections == *import_selections
+            && retained.limits == *limits
+            && match (&retained.overlay, overlay) {
+                (None, None) => true,
+                (Some(old), Some(new)) => {
+                    std::rc::Rc::ptr_eq(old, new)
+                        || (overlay_units(Some(new)) <= self.remaining_work && old == new)
+                }
+                _ => false,
+            }
     }
 
     fn fast_work(&self, node: &Node) -> std::result::Result<usize, &'static str> {
@@ -590,21 +839,81 @@ impl EvaluatedState {
         }) {
             return Err("history_changed");
         }
+        let record_allowance = if self.prepared.options.limits.traversal.is_none() {
+            DEFAULT_TRAVERSAL_PER_RECORD
+        } else {
+            0
+        };
+        let available_work = self.remaining_work.saturating_add(record_allowance);
+        graph.budget.set(available_work);
+        let mut target_work = 0usize;
         if node.kind == "judgment.set" {
             let target = node.action.view().index("target");
             let target = target.as_str().unwrap_or_default();
+            // `append` tests every current head of the register against
+            // the new closure. Check that count against the budget before
+            // the test runs, as the coverage sweep below is checked.
+            let heads = self
+                .evaluation
+                .registers
+                .get(&format!("{}|judgment|{target}", node.issuer))
+                .map_or(0, |register| register.heads.len());
+            if !graph.charge(heads) {
+                return Err("work_budget");
+            }
             let known = if target.starts_with("jvr1:") {
-                self.evaluation
-                    .publications
-                    .values()
-                    .any(|p| p.assignment.as_deref() == Some(target))
+                let mut found = false;
+                for p in self.evaluation.publications.values() {
+                    target_work += 1;
+                    if p.assignment.as_deref() == Some(target) {
+                        found = true;
+                        break;
+                    }
+                    if target_work > available_work {
+                        break;
+                    }
+                }
+                found
             } else {
                 graph.nodes.get(target).is_some_and(|n| {
                     n.semantic && matches!(n.kind.as_str(), "definition.publish" | "rafsi.publish")
                 })
             };
             if !known {
-                return Err("target_unresolved");
+                return Err(if target_work > available_work {
+                    "work_budget"
+                } else {
+                    "target_unresolved"
+                });
+            }
+            if target_work > available_work {
+                return Err("work_budget");
+            }
+        } else if node.kind == "definition.publish" {
+            let word_field = node.action.view().index("word");
+            let word = word_field.as_str().unwrap_or_default();
+            if self.rafsi_words.contains(word) || (word.is_empty() && !self.rafsi_words.is_empty())
+            {
+                return Err("rafsi_eligibility");
+            }
+            // A new native publication enters `evaluation.publications`
+            // at its record ID. Every existing publication scan that
+            // walks past that ID (all unmatched `jvr1:` judgments and
+            // unlinked valid managed `bridge.set` records, plus matched
+            // scans whose stop publication ID sorts after `node.id`)
+            // visits the new publication once in a full evaluation.
+            target_work = self.unmatched_publication_scans;
+            if target_work > available_work {
+                return Err("work_budget");
+            }
+            for (_, count) in self.matched_publication_scans.range((
+                std::ops::Bound::Excluded(node.id.clone()),
+                std::ops::Bound::Unbounded,
+            )) {
+                target_work = target_work.saturating_add(*count);
+                if target_work > available_work {
+                    return Err("work_budget");
+                }
             }
         }
         // The fast-path invariant: the new record goes last in its
@@ -702,20 +1011,114 @@ impl EvaluatedState {
         } else {
             per_cache(&graph.own) + per_cache(&graph.structural) + per_cache(&graph.accepted)
         };
+        let copy_work = self.append_copy_units(node, graph, shared, available_work)?;
         // The last two units are the lifecycle record and the account
         // history scan. A full evaluation skips the scan when no
         // policy is selected, so the append charges it only then too.
         let work = (1 + node.previous.len())
-            + construction
-            + 1
-            + usize::from(self.evaluation.policy.is_some());
-        if work > self.remaining_work {
+            .saturating_add(construction)
+            .saturating_add(1)
+            .saturating_add(usize::from(self.evaluation.policy.is_some()))
+            .saturating_add(target_work)
+            .saturating_add(copy_work);
+        let lineage_work = if node.kind == "definition.publish" {
+            node.action
+                .view()
+                .index("parents")
+                .as_array()
+                .map_or(0, |parents| parents.len())
+                .saturating_sub(1)
+        } else {
+            0
+        };
+        if work.saturating_add(lineage_work) > available_work {
             return Err("work_budget");
         }
         Ok(work)
     }
 
-    fn append(&mut self, node: Node, work: usize) {
+    /// Units for the copies an append makes of structures that another
+    /// state (a fork, an overlay sibling, or a retained prepared input)
+    /// still shares. `Rc::make_mut` copies a shared structure on its
+    /// first write, so each structure the append writes is tested for
+    /// sharing on its own and its full size is charged, nested members
+    /// included. An unshared structure is written in place and costs
+    /// nothing extra. Returns `work_budget` as soon as the count passes
+    /// `available_work`, before any nested walk past that point.
+    fn append_copy_units(
+        &self,
+        node: &Node,
+        graph: &Graph,
+        closures_shared: bool,
+        available_work: usize,
+    ) -> std::result::Result<usize, &'static str> {
+        use std::rc::Rc;
+        let mut units = CopyUnits {
+            total: 0,
+            limit: available_work,
+        };
+        // The node map: the graph and the prepared input hold it.
+        if Rc::strong_count(&graph.nodes) > 2 {
+            units.add(graph.nodes.len())?;
+            for n in graph.nodes.values() {
+                units.add(n.previous.len())?;
+            }
+        }
+        // Closure maps. Each closure shares its missing IDs and range
+        // list; its appended-record set holds at most
+        // `MAX_INCREMENTAL_RECORDS` IDs, a fixed cap per entry.
+        if closures_shared {
+            // Three references when the modes share one map.
+            if Rc::strong_count(&graph.own) > 3 {
+                units.add(graph.own.len())?;
+            }
+        } else {
+            for cache in [&graph.own, &graph.structural, &graph.accepted] {
+                if Rc::strong_count(cache) > 1 {
+                    units.add(cache.len())?;
+                }
+            }
+        }
+        // Graph indexes that the append writes (`Graph::append_ordinary`).
+        let new_issuer = !graph.lifecycle.key_actor.contains_key(&node.issuer)
+            || !graph
+                .lifecycle
+                .groups
+                .get(&node.issuer)
+                .is_some_and(|group| group.contains(&node.issuer));
+        if new_issuer && graph.lifecycle.is_shared() {
+            lifecycle_copy_units(&graph.lifecycle, &mut units)?;
+        }
+        if !node.previous.is_empty() && graph.boundary.is_shared() {
+            units.add(graph.boundary.len())?;
+        }
+        // Evaluation results: every append adds a receipt.
+        if Rc::strong_count(&self.evaluation.results) > 1 {
+            results_copy_units(&self.evaluation.results, &mut units)?;
+        }
+        if Rc::strong_count(&self.unresolved) > 1
+            && node_has_new_unresolved_references(node, &self.prepared.nodes, &self.unresolved)
+        {
+            units.add(self.unresolved.len())?;
+        }
+        if node.kind == "judgment.set"
+            && node
+                .action
+                .view()
+                .index("target")
+                .as_str()
+                .is_some_and(|t| t.starts_with("jvr1:"))
+            && Rc::strong_count(&self.matched_publication_scans) > 1
+        {
+            units.add(self.matched_publication_scans.len())?;
+        }
+        Ok(units.total)
+    }
+
+    /// Applies an append that `fast_work` priced. Returns `false` when
+    /// the record turns out to need the register member walk; the
+    /// caller then rebuilds, which discards the partial update.
+    fn append(&mut self, node: Node, work: usize) -> bool {
         let graph = self.graph.as_mut().unwrap();
         let prepared_nodes = std::mem::take(&mut self.prepared.nodes);
         debug_assert!(std::rc::Rc::ptr_eq(&graph.nodes, &prepared_nodes));
@@ -727,9 +1130,38 @@ impl EvaluatedState {
         // code a full evaluation runs for this record, and their own
         // charges (closure unions for the new record) come out of the
         // same budget, so the total equals a full evaluation.
+        if self.prepared.options.limits.traversal.is_none() {
+            self.remaining_work = self
+                .remaining_work
+                .saturating_add(DEFAULT_TRAVERSAL_PER_RECORD);
+        }
         self.remaining_work -= work;
         graph.budget.set(self.remaining_work);
-        self.evaluation.lifecycle = graph.lifecycle.clone();
+        if !self
+            .evaluation
+            .lifecycle
+            .key_actor
+            .contains_key(&node.issuer)
+        {
+            self.evaluation
+                .lifecycle
+                .key_actor
+                .insert(node.issuer.clone(), node.issuer.clone());
+        }
+        if !self
+            .evaluation
+            .lifecycle
+            .groups
+            .get(&node.issuer)
+            .is_some_and(|group| group.contains(&node.issuer))
+        {
+            self.evaluation
+                .lifecycle
+                .groups
+                .entry(node.issuer.clone())
+                .or_default()
+                .insert(node.issuer.clone());
+        }
         self.evaluation.receipts.insert(
             node.id.clone(),
             Receipt {
@@ -741,8 +1173,20 @@ impl EvaluatedState {
         if node.kind == "judgment.set" {
             let target = node.action.view().index("target");
             let target = target.as_str().unwrap();
+            if target.starts_with("jvr1:") {
+                if let Some(publication) = self
+                    .evaluation
+                    .publications
+                    .values()
+                    .find(|p| p.assignment.as_deref() == Some(target))
+                {
+                    *std::rc::Rc::make_mut(&mut self.matched_publication_scans)
+                        .entry(publication.id.clone())
+                        .or_insert(0) += 1;
+                }
+            }
             let key = format!("{}|judgment|{target}", node.issuer);
-            if let Some(changes) = &mut self.judgment_changes {
+            if let Some(changes) = self.judgment_changes.as_mut().map(std::rc::Rc::make_mut) {
                 changes.receipts.insert(node.id.clone());
                 changes.registers.insert(key.clone());
                 changes.actors.insert(node.issuer.clone());
@@ -756,13 +1200,20 @@ impl EvaluatedState {
             // evaluation already paid for the previous member set,
             // so refund exactly that and keep the new charge. No
             // unions are replayed to recover the old charge.
-            let previous_charge = self
+            let (previous_charge, previous_work, previous_member_work) = self
                 .evaluation
                 .registers
                 .get(&key)
-                .map(|register| register.maxima_charge)
-                .unwrap_or(0);
+                .map(|register| {
+                    (
+                        register.maxima_charge,
+                        register.maxima_work,
+                        register.maxima_member_work,
+                    )
+                })
+                .unwrap_or((0, 0, 0));
             graph.ancestry.refund(previous_charge);
+            graph.budget.set(graph.budget.get() + previous_work);
             // Closed form, when it applies: the fast path's parents
             // cover the issuer's whole block, so every same-issuer
             // member is an ancestor of the new record. If every
@@ -777,6 +1228,8 @@ impl EvaluatedState {
             // another issuer whose actor is this issuer) keeps the
             // general member-set path below.
             let new_closure = &graph.accepted[&node.id];
+            let new_member_work =
+                previous_member_work + new_closure.ids.fresh_ranges.saturating_sub(1);
             let sole_head = self
                 .evaluation
                 .registers
@@ -788,43 +1241,21 @@ impl EvaluatedState {
                         .all(|head| new_closure.ids.contains(head))
                 })
                 .unwrap_or(true);
-            let (heads, new_charge) = if sole_head {
+            let (heads, new_charge, new_work) = if sole_head && new_closure.ids.fresh_ranges == 1 {
                 let amount = new_closure.ids.fresh_ranges * 8 + 64;
                 if !graph.ancestry.charge(amount) {
                     graph.resource.set(true);
                 }
-                (BTreeSet::from([node.id.clone()]), amount)
+                if new_member_work > 0 {
+                    let _ = graph.charge(new_member_work);
+                }
+                (BTreeSet::from([node.id.clone()]), amount, new_member_work)
             } else {
-                // General path: run maxima over the same member set
-                // a full evaluation uses for this register, so its
-                // (now cap-charged) union work and the resulting
-                // heads match a full build exactly.
-                let members: BTreeSet<String> = graph
-                    .nodes
-                    .values()
-                    .filter(|n| {
-                        n.semantic
-                            && n.kind == "judgment.set"
-                            && graph.actor(&n.issuer) == node.issuer
-                            && n.action.view().index("target").as_str() == Some(target)
-                            && graph.retained(&n.id)
-                            && !graph.suspended(&n.issuer)
-                            && graph.own_complete(&n.id)
-                            && !self.evaluation.receipts[&n.id]
-                                .reasons
-                                .contains("invalid_target")
-                            && !self.evaluation.receipts[&n.id]
-                                .reasons
-                                .contains("target_pending")
-                            && !self.evaluation.receipts[&n.id]
-                                .reasons
-                                .contains("account_binding_unavailable")
-                    })
-                    .map(|n| n.id.clone())
-                    .collect();
-                let charge_before = graph.ancestry.bytes();
-                let heads = graph.maxima(members, false);
-                (heads, graph.ancestry.bytes() - charge_before)
+                // Otherwise a full evaluation's maxima runs over every
+                // member of the register, and finding the members walks
+                // every record. That walk is not part of this append's
+                // price, so the advance rebuilds instead, which charges it.
+                return false;
             };
             let values: BTreeSet<String> = heads
                 .iter()
@@ -861,6 +1292,8 @@ impl EvaluatedState {
                     conflicted: values.len() > 1,
                     values,
                     maxima_charge: new_charge,
+                    maxima_work: new_work,
+                    maxima_member_work: new_member_work,
                 },
             );
         } else {
@@ -872,39 +1305,10 @@ impl EvaluatedState {
             );
             native_status_for(graph, &mut self.evaluation, Some(&node.id));
             action_targets_for(graph, &mut self.evaluation, Some(&node.id));
-            // Pair gates consume eligibility before the gate itself. Restore
-            // that input before evaluating a changed word's gate again.
-            let claims: BTreeSet<_> = self
-                .evaluation
-                .publications
-                .values()
-                .filter(|p| p.kind == "rafsi.publish")
-                .map(|p| p.id.clone())
-                .collect();
-            if !claims.is_empty() {
-                // Recomputing existing rafsi publications charges the
-                // same in a full evaluation as in the base, so it is
-                // not part of this record's marginal charge. Run it
-                // with an unbounded budget cell and restore afterwards;
-                // the ancestry cap still applies.
-                let saved_budget = graph.budget.get();
-                graph.budget.set(usize::MAX);
-                let mut raw = empty_evaluation(&self.prepared.options);
-                raw.policy = self.evaluation.policy.clone();
-                raw.selections = self.evaluation.selections.clone();
-                publications_for(graph, &mut raw, Some(&claims));
-                for (id, publication) in std::rc::Rc::unwrap_or_clone(raw.results).publications {
-                    self.evaluation.publications.get_mut(&id).unwrap().eligible =
-                        publication.eligible;
-                }
-                rafsi_gate(&mut self.evaluation);
-                graph.budget.set(saved_budget);
-            }
         }
         self.remaining_work = graph.budget.get();
-        add_node_references(&node, &mut self.unresolved);
-        self.unresolved
-            .retain(|id| !self.prepared.nodes.contains_key(id));
+        add_unresolved_node_references_cow(&node, &self.prepared.nodes, &mut self.unresolved);
+        true
     }
 
     pub fn checkpoint(&self, binding: &str) -> jvc_core::Result<Vec<u8>> {
@@ -919,46 +1323,104 @@ impl EvaluatedState {
             return Err(jvc_core::Error::new("checkpoint", error.to_string()));
         }
         #[derive(Serialize)]
-        struct Saved<'a> {
+        struct SavedFull<'a> {
             version: &'static str,
             binding: &'a str,
-            options: &'a EvaluationOptions,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            nodes: Option<&'a BTreeMap<String, Node>>,
+            options: SavedOptions<'a>,
+            nodes: &'a BTreeMap<String, Node>,
             evaluation: &'a Evaluation,
             event_limit_exceeded: bool,
+            consumed_work: usize,
             remaining_work: usize,
-            #[serde(skip_serializing_if = "Option::is_none")]
             ancestry_bytes: Option<usize>,
-            /// Maxima charge per register, in `evaluation.registers`
-            /// order at save time.
             register_maxima_charges: Vec<usize>,
+            register_maxima_work: Vec<usize>,
+            register_maxima_member_work: Vec<usize>,
+            unmatched_publication_scans: usize,
+            matched_publication_scans: &'a BTreeMap<String, usize>,
         }
-        serde_json::to_vec(&Saved {
-            version: if results_only {
-                "jvc-evaluation-results-v3"
-            } else {
-                CHECKPOINT_VERSION
-            },
-            binding,
-            options: &self.prepared.options,
-            nodes: (!results_only).then_some(&self.prepared.nodes),
-            evaluation: &self.evaluation,
-            event_limit_exceeded: self.prepared.event_limit_exceeded,
-            remaining_work: self.remaining_work,
-            ancestry_bytes: self
-                .graph
-                .as_ref()
-                .map(|graph| graph.ancestry.bytes())
-                .or(self.saved_ancestry_bytes),
-            register_maxima_charges: self
-                .evaluation
-                .registers
-                .values()
-                .map(|register| register.maxima_charge)
-                .collect(),
-        })
-        .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))
+        #[derive(Serialize)]
+        struct SavedResults<'a> {
+            version: &'static str,
+            binding: &'a str,
+            options: SavedOptions<'a>,
+            evaluation: &'a Evaluation,
+            event_limit_exceeded: bool,
+            consumed_work: usize,
+            remaining_work: usize,
+            ancestry_bytes: Option<usize>,
+            register_maxima_charges: Vec<usize>,
+            register_maxima_work: Vec<usize>,
+            register_maxima_member_work: Vec<usize>,
+            unmatched_publication_scans: usize,
+            matched_publication_scans: &'a BTreeMap<String, usize>,
+        }
+        let consumed_work = self.consumed_work();
+        let ancestry_bytes = self
+            .graph
+            .as_ref()
+            .map(|graph| graph.ancestry.bytes())
+            .or(self.saved_ancestry_bytes);
+        let register_maxima_charges: Vec<usize> = self
+            .evaluation
+            .registers
+            .values()
+            .map(|register| register.maxima_charge)
+            .collect();
+        let register_maxima_work: Vec<usize> = self
+            .evaluation
+            .registers
+            .values()
+            .map(|register| register.maxima_work)
+            .collect();
+        let register_maxima_member_work: Vec<usize> = self
+            .evaluation
+            .registers
+            .values()
+            .map(|register| register.maxima_member_work)
+            .collect();
+        let saved_options = self.saved_options();
+        let mut bytes = if results_only {
+            serde_json::to_vec(&SavedResults {
+                version: RESULTS_CHECKPOINT_VERSION,
+                binding,
+                options: saved_options,
+                evaluation: &self.evaluation,
+                event_limit_exceeded: self.prepared.event_limit_exceeded,
+                consumed_work,
+                remaining_work: self.remaining_work,
+                ancestry_bytes,
+                register_maxima_charges,
+                register_maxima_work,
+                register_maxima_member_work,
+                unmatched_publication_scans: self.unmatched_publication_scans,
+                matched_publication_scans: &self.matched_publication_scans,
+            })
+        } else {
+            serde_json::to_vec(&SavedFull {
+                version: CHECKPOINT_VERSION,
+                binding,
+                options: saved_options,
+                nodes: &self.prepared.nodes,
+                evaluation: &self.evaluation,
+                event_limit_exceeded: self.prepared.event_limit_exceeded,
+                consumed_work,
+                remaining_work: self.remaining_work,
+                ancestry_bytes,
+                register_maxima_charges,
+                register_maxima_work,
+                register_maxima_member_work,
+                unmatched_publication_scans: self.unmatched_publication_scans,
+                matched_publication_scans: &self.matched_publication_scans,
+            })
+        }
+        .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
+        let digest = jvc_core::hash_id("sha256:", b"", &bytes);
+        bytes.pop();
+        bytes.extend_from_slice(b",\"digest\":\"");
+        bytes.extend_from_slice(digest.as_bytes());
+        bytes.extend_from_slice(b"\"}");
+        Ok(bytes)
     }
 
     /// Restore only bytes checked against an independent trusted host pin.
@@ -978,92 +1440,130 @@ impl EvaluatedState {
         binding: &str,
         records: Option<Vec<HostVerifiedRecord>>,
     ) -> jvc_core::Result<Self> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Saved {
-            version: String,
-            binding: String,
-            options: EvaluationOptions,
-            #[serde(default)]
-            nodes: Option<BTreeMap<String, Node>>,
-            evaluation: Evaluation,
-            event_limit_exceeded: bool,
-            remaining_work: usize,
-            #[serde(default)]
-            ancestry_bytes: Option<usize>,
-            register_maxima_charges: Vec<usize>,
+        if !verify_checkpoint_digest(bytes) {
+            return Err(jvc_core::Error::new(
+                "checkpoint",
+                "checkpoint version or binding does not match",
+            ));
         }
-        let saved: Saved = serde_json::from_slice(bytes)
-            .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
-        let expected_version = if records.is_some() {
-            "jvc-evaluation-results-v3"
-        } else {
-            CHECKPOINT_VERSION
-        };
-        let nodes = match (records, saved.nodes) {
-            (Some(records), None) => records
-                .into_iter()
-                .map(|r| (r.node.id.clone(), r.node))
-                .collect(),
-            (None, Some(nodes)) => nodes,
-            _ => {
-                return Err(jvc_core::Error::new(
-                    "checkpoint",
-                    "checkpoint records do not match its format",
-                ));
+        let (saved, expected_version, nodes) = match records {
+            Some(records) => {
+                let saved: SavedResultsCheckpoint = serde_json::from_slice(bytes)
+                    .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
+                let nodes = records
+                    .into_iter()
+                    .map(|r| (r.node.id.clone(), r.node))
+                    .collect();
+                (saved, RESULTS_CHECKPOINT_VERSION, nodes)
+            }
+            None => {
+                let full: SavedFullCheckpoint = serde_json::from_slice(bytes)
+                    .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
+                let nodes = full.nodes;
+                let saved = SavedResultsCheckpoint {
+                    version: full.version,
+                    binding: full.binding,
+                    options: full.options,
+                    evaluation: full.evaluation,
+                    event_limit_exceeded: full.event_limit_exceeded,
+                    consumed_work: full.consumed_work,
+                    remaining_work: full.remaining_work,
+                    ancestry_bytes: full.ancestry_bytes,
+                    register_maxima_charges: full.register_maxima_charges,
+                    register_maxima_work: full.register_maxima_work,
+                    register_maxima_member_work: full.register_maxima_member_work,
+                    unmatched_publication_scans: full.unmatched_publication_scans,
+                    matched_publication_scans: full.matched_publication_scans,
+                    digest: full.digest,
+                };
+                (saved, CHECKPOINT_VERSION, nodes)
             }
         };
+        let mut saved = saved;
+        let mut validated_selections = BTreeMap::new();
+        let resolved = if saved.event_limit_exceeded {
+            policy::ResolvedSelections::default()
+        } else {
+            policy::resolve_referenced_selections_cached(
+                &saved.options,
+                &saved.options.import_selections,
+                &nodes,
+                &mut validated_selections,
+            )
+        };
+        let selection_allowance = resolved.allowance;
+        let expected_budget = saved
+            .options
+            .limits
+            .traversal_budget_with_selections(nodes.len(), selection_allowance);
         if saved.version != expected_version
             || saved.binding != binding
             || saved.evaluation.selected_view != saved.options.selected_view
             || saved.evaluation.overlay != saved.options.overlay
-            || saved.remaining_work > saved.options.limits.traversal
-            || nodes.iter().any(|(id, node)| id != &node.id)
+            || saved.consumed_work.checked_add(saved.remaining_work) != Some(expected_budget)
+            || !valid_saved_state(&saved, &nodes, &resolved, &mut validated_selections)
         {
             return Err(jvc_core::Error::new(
                 "checkpoint",
                 "checkpoint version or binding does not match",
             ));
         }
+        drop(resolved);
         let arena = std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default()));
         let nodes = nodes
             .into_iter()
             .map(|(id, node)| (id, node.repack(&arena)))
             .collect();
+        arena.borrow_mut().finish_load();
         if let Some(error) = arena.borrow().error() {
             return Err(jvc_core::Error::new("checkpoint", error.to_string()));
         }
-        arena.borrow_mut().finish_load();
+        let import_selections =
+            std::rc::Rc::new(std::mem::take(&mut saved.options.import_selections));
         let prepared = PreparedEvaluationInput {
             options: saved.options,
+            import_selections,
             nodes: std::rc::Rc::new(nodes),
             arena,
             arena_error: None,
             event_limit_exceeded: saved.event_limit_exceeded,
+            validated_selections: std::rc::Rc::new(std::cell::RefCell::new(validated_selections)),
         };
         // The registers' charge fields are not serialized with
         // them; the checkpoint's array restores them in register
         // order.
         let mut evaluation = saved.evaluation;
-        if evaluation.registers.len() != saved.register_maxima_charges.len() {
+        if evaluation.registers.len() != saved.register_maxima_charges.len()
+            || evaluation.registers.len() != saved.register_maxima_work.len()
+            || evaluation.registers.len() != saved.register_maxima_member_work.len()
+        {
             return Err(jvc_core::Error::new(
                 "checkpoint",
                 "checkpoint version or binding does not match",
             ));
         }
-        for (register, charge) in evaluation
+        for (((register, charge), work), member_work) in evaluation
             .registers
             .values_mut()
             .zip(saved.register_maxima_charges.iter())
+            .zip(saved.register_maxima_work.iter())
+            .zip(saved.register_maxima_member_work.iter())
         {
             register.maxima_charge = *charge;
+            register.maxima_work = *work;
+            register.maxima_member_work = *member_work;
         }
+        let rafsi_words = rafsi_words(&evaluation);
         Ok(Self {
-            unresolved: unresolved(&prepared),
+            unresolved: unresolved(&prepared, &evaluation),
+            rafsi_words,
             prepared,
             evaluation,
             graph: None,
+            selection_allowance,
             remaining_work: saved.remaining_work,
+            unmatched_publication_scans: saved.unmatched_publication_scans,
+            matched_publication_scans: std::rc::Rc::new(saved.matched_publication_scans),
             saved_ancestry_bytes: saved.ancestry_bytes,
             checkpoint_restored: true,
             statistics: UpdateStatistics::default(),
@@ -1071,6 +1571,1306 @@ impl EvaluatedState {
             ranking_index: Default::default(),
         })
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedFullCheckpoint {
+    version: String,
+    binding: String,
+    options: EvaluationOptions,
+    nodes: BTreeMap<String, Node>,
+    evaluation: Evaluation,
+    event_limit_exceeded: bool,
+    consumed_work: usize,
+    remaining_work: usize,
+    #[serde(deserialize_with = "Option::deserialize")]
+    ancestry_bytes: Option<usize>,
+    register_maxima_charges: Vec<usize>,
+    register_maxima_work: Vec<usize>,
+    register_maxima_member_work: Vec<usize>,
+    unmatched_publication_scans: usize,
+    matched_publication_scans: BTreeMap<String, usize>,
+    #[allow(dead_code)]
+    digest: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedResultsCheckpoint {
+    version: String,
+    binding: String,
+    options: EvaluationOptions,
+    evaluation: Evaluation,
+    event_limit_exceeded: bool,
+    consumed_work: usize,
+    remaining_work: usize,
+    #[serde(deserialize_with = "Option::deserialize")]
+    ancestry_bytes: Option<usize>,
+    register_maxima_charges: Vec<usize>,
+    register_maxima_work: Vec<usize>,
+    register_maxima_member_work: Vec<usize>,
+    unmatched_publication_scans: usize,
+    matched_publication_scans: BTreeMap<String, usize>,
+    #[allow(dead_code)]
+    digest: String,
+}
+
+fn verify_checkpoint_digest(bytes: &[u8]) -> bool {
+    const PREFIX: &[u8] = b",\"digest\":\"";
+    const SCHEME: &[u8] = b"sha256:";
+    const SUFFIX: &[u8] = b"\"}";
+    const DIGEST_VAL_LEN: usize = SCHEME.len() + 64;
+    const DIGEST_FIELD_LEN: usize = PREFIX.len() + DIGEST_VAL_LEN + SUFFIX.len();
+
+    let reject = || {
+        #[cfg(test)]
+        DIGEST_REJECTIONS.with(|count| count.set(count.get() + 1));
+        false
+    };
+
+    if bytes.len() <= DIGEST_FIELD_LEN + 1 || bytes.first() != Some(&b'{') {
+        return reject();
+    }
+    let split = bytes.len() - DIGEST_FIELD_LEN;
+    if &bytes[split..split + PREFIX.len()] != PREFIX
+        || &bytes[bytes.len() - SUFFIX.len()..] != SUFFIX
+    {
+        return reject();
+    }
+    let stored = &bytes[split + PREFIX.len()..bytes.len() - SUFFIX.len()];
+    if !stored.starts_with(SCHEME)
+        || !stored[SCHEME.len()..]
+            .iter()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return reject();
+    }
+    let mut writer = jvc_core::HashWriter::new(b"", usize::MAX);
+    use std::io::Write;
+    let _ = writer.write_all(&bytes[..split]);
+    let _ = writer.write_all(b"}");
+    let (actual, _) = writer.finish("sha256:");
+    if actual.as_bytes() != stored {
+        return reject();
+    }
+    true
+}
+
+fn valid_node_state(node: &Node) -> Result<(), &'static str> {
+    if node.kind
+        != node
+            .action
+            .view()
+            .index("kind")
+            .as_str()
+            .unwrap_or_default()
+    {
+        return Err("node_kind");
+    }
+    let body_consistent = match node.body_label.as_str() {
+        "absent" => node.body_hash.is_none() && node.body.is_none(),
+        "missing" => node.body_hash.is_some() && node.body.is_none(),
+        "valid" => node.body_hash.is_some() && node.body.is_some(),
+        label if label.starts_with("invalid:") => {
+            node.body.is_none()
+                && (label == "invalid:header has no content descriptor" || node.body_hash.is_some())
+        }
+        _ => false,
+    };
+    if !body_consistent {
+        return Err("node_body_consistent");
+    }
+    let Ok(action) = serde_json::to_value(&node.action) else {
+        return Err("node_action_to_value");
+    };
+    let header = jvc_core::Header {
+        version: 1,
+        issuer: node.issuer.clone(),
+        previous: node.previous.clone(),
+        nonce: "00".repeat(16),
+        action,
+        content: node
+            .body_hash
+            .as_ref()
+            .map(|hash| jvc_core::ContentDescriptor {
+                hash: hash.clone(),
+                bytes: 1,
+            }),
+    };
+    if (jvc_core::validate_action(&header).is_ok()) != node.semantic {
+        return Err("node_semantic");
+    }
+    if node.body_label == "valid" {
+        let Some(body) = &node.body else {
+            return Err("node_no_body");
+        };
+        let Ok(body_val) = serde_json::to_value(body) else {
+            return Err("node_body_to_value");
+        };
+        if matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish") {
+            let Some(obj) = body_val.as_object() else {
+                return Err("node_pub_not_obj");
+            };
+            match node.action.view().index("origin").as_str() {
+                Some("native") => {
+                    if !(obj.is_empty()
+                        || (obj.len() == 1 && obj.get("legacy") == Some(&Value::Null)))
+                    {
+                        return Err("node_pub_native_legacy");
+                    }
+                }
+                Some("import") => {
+                    if obj.len() != 1 || !obj.contains_key("legacy") {
+                        return Err("node_pub_no_legacy");
+                    }
+                    let legacy = &obj["legacy"];
+                    let Some(leg_obj) = legacy.as_object() else {
+                        return Err("node_pub_import_not_obj");
+                    };
+                    if leg_obj.len() != 3
+                        || !leg_obj
+                            .get("source")
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| !s.is_empty())
+                    {
+                        return Err("node_pub_import_source");
+                    }
+                    let Some(rec_obj) = leg_obj.get("record").and_then(Value::as_object) else {
+                        return Err("node_pub_import_record_not_obj");
+                    };
+                    if rec_obj.len() != 1 || rec_obj.get("id").and_then(Value::as_u64).is_none() {
+                        return Err("node_pub_import_record_id");
+                    }
+                    let Some(attr_obj) = leg_obj.get("attribution").and_then(Value::as_object)
+                    else {
+                        return Err("node_pub_import_attr_not_obj");
+                    };
+                    if attr_obj.len() != 1 || !attr_obj.contains_key("author_account") {
+                        return Err("node_pub_import_attr_fields");
+                    }
+                    let author_acc = &attr_obj["author_account"];
+                    if !author_acc.is_null() {
+                        let Some(acc_obj) = author_acc.as_object() else {
+                            return Err("node_pub_import_acc_not_obj");
+                        };
+                        if acc_obj.len() != 3
+                            || !acc_obj
+                                .get("origin")
+                                .and_then(Value::as_str)
+                                .is_some_and(|s| !s.is_empty())
+                            || acc_obj.get("account").and_then(Value::as_u64).is_none()
+                        {
+                            return Err("node_pub_import_acc_fields");
+                        }
+                        let Some(ev_obj) = acc_obj.get("evidence").and_then(Value::as_object)
+                        else {
+                            return Err("node_pub_import_ev_not_obj");
+                        };
+                        if ev_obj.len() != 1
+                            || !ev_obj
+                                .get("kind")
+                                .and_then(Value::as_str)
+                                .is_some_and(|s| !s.is_empty())
+                        {
+                            return Err("node_pub_import_ev_fields");
+                        }
+                    }
+                }
+                _ => {
+                    if !obj.is_empty()
+                        && !(obj.len() == 1
+                            && obj
+                                .get("legacy")
+                                .is_some_and(|l| l.is_null() || l.is_object()))
+                    {
+                        return Err("node_pub_other_legacy");
+                    }
+                }
+            }
+        } else {
+            let Ok(canonical) = jvc_core::canonical_value(&body_val) else {
+                return Err("node_other_canonical");
+            };
+            if Some(jvc_core::hash_id("sha256:", b"", &canonical)) != node.body_hash {
+                return Err("node_other_hash");
+            }
+            if node.semantic && jvc_core::validate_body(&header, &body_val).is_err() {
+                return Err("node_other_validate_body");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn optional_policy_matches(actual: Option<&CompactValue>, expected: Option<&CompactValue>) -> bool {
+    match (actual, expected) {
+        (None, None) => true,
+        (Some(a), Some(e)) => {
+            if a == e {
+                return true;
+            }
+            let (Ok(Value::Object(a_obj)), Ok(Value::Object(mut e_obj))) =
+                (serde_json::to_value(a), serde_json::to_value(e))
+            else {
+                return false;
+            };
+            e_obj.insert(
+                "calculation".to_owned(),
+                Value::String(jvc_rank::approximate::ALGORITHM.to_owned()),
+            );
+            a_obj == e_obj
+        }
+        _ => false,
+    }
+}
+
+fn compact_value_digest(value: &CompactValue) -> Result<String, &'static str> {
+    let mut writer = jvc_core::HashWriter::new(b"", usize::MAX);
+    serde_json::to_writer(&mut writer, value).map_err(|_| "policy_digest")?;
+    Ok(writer.finish("sha256:").0)
+}
+
+fn register_key_for_node(node: &Node, lifecycle: &Lifecycle) -> Option<String> {
+    if !node.semantic {
+        return None;
+    }
+    let actor = lifecycle
+        .key_actor
+        .get(&node.issuer)
+        .map(String::as_str)
+        .unwrap_or(node.issuer.as_str());
+    let a = node.action.view();
+    let suffix = match node.kind.as_str() {
+        "judgment.set" => format!(
+            "judgment|{}",
+            a.index("target").as_str().unwrap_or_default()
+        ),
+        "trust.set" => {
+            let subj_view = a.index("subject");
+            let subj = subj_view.as_str().unwrap_or_default();
+            let subj_actor = lifecycle
+                .key_actor
+                .get(subj)
+                .map(String::as_str)
+                .unwrap_or(subj);
+            format!("trust|{subj_actor}|{}", a.index("scope"))
+        }
+        "identity.profile" => "profile".into(),
+        "report.set" => format!("report|{}|{}", a.index("subject"), a.index("category")),
+        "bridge.set" => format!(
+            "bridge|{}|{}",
+            a.index("origin"),
+            a.index("source_definition")
+        ),
+        "account.set" => format!("account|{}|{}", a.index("origin"), a.index("account")),
+        "account.observe" => format!("observe|{}|{}", a.index("origin"), a.index("account")),
+        _ => return None,
+    };
+    Some(format!("{actor}|{suffix}"))
+}
+
+fn register_value_for_node(node: &Node) -> String {
+    let a = node.action.view();
+    match node.kind.as_str() {
+        "identity.profile" => node.body_hash.clone().unwrap_or_default(),
+        "bridge.set" if a.index("value") == "managed" => {
+            format!("managed|{}", a.index("target"))
+        }
+        "account.observe" => format!("{}|{}", a.index("result"), a.index("claim")),
+        "account.set" if a.index("value") == "claim" => node.id.clone(),
+        _ => a.index("value").as_str().unwrap_or_default().into(),
+    }
+}
+
+fn valid_saved_state(
+    saved: &SavedResultsCheckpoint,
+    nodes: &BTreeMap<String, Node>,
+    resolved: &policy::ResolvedSelections<'_>,
+    validated_selections: &mut BTreeMap<String, bool>,
+) -> bool {
+    check_saved_state(saved, nodes, resolved, validated_selections).is_ok()
+}
+
+fn check_saved_state(
+    saved: &SavedResultsCheckpoint,
+    nodes: &BTreeMap<String, Node>,
+    resolved: &policy::ResolvedSelections<'_>,
+    validated_selections: &mut BTreeMap<String, bool>,
+) -> Result<(), &'static str> {
+    if saved.evaluation.registers.len() != saved.register_maxima_charges.len()
+        || saved.evaluation.registers.len() != saved.register_maxima_work.len()
+        || saved.evaluation.registers.len() != saved.register_maxima_member_work.len()
+    {
+        return Err("register_counter_lens");
+    }
+    for (id, node) in nodes {
+        if id != &node.id {
+            return Err("node_id");
+        }
+        valid_node_state(node)?;
+    }
+
+    let expected_event_limit_exceeded = saved
+        .options
+        .limits
+        .events
+        .is_some_and(|limit| nodes.len() > limit);
+    if saved.event_limit_exceeded != expected_event_limit_exceeded {
+        return Err("event_limit_exceeded");
+    }
+
+    let resource_refused =
+        saved.event_limit_exceeded || saved.evaluation.reasons.contains("resource_unavailable");
+    let has_blocking_reason = resource_refused
+        || saved.evaluation.reasons.contains("view_unavailable")
+        || saved.evaluation.reasons.contains("invalid_overlay")
+        || saved
+            .evaluation
+            .reasons
+            .contains("public_shun_issuer_unavailable");
+    if saved.evaluation.available == has_blocking_reason {
+        return Err("available_reasons");
+    }
+    for reason in &saved.evaluation.reasons {
+        if !matches!(
+            reason.as_str(),
+            "resource_unavailable"
+                | "view_unavailable"
+                | "policy_ancestry_unavailable"
+                | "import_selection_unavailable"
+                | "selection_publications_pending"
+                | "conditional_on_suspension"
+                | "invalid_overlay"
+                | "public_shun_issuer_unavailable"
+        ) {
+            return Err("evaluation_reason");
+        }
+    }
+    if !resource_refused
+        && saved
+            .evaluation
+            .reasons
+            .contains("conditional_on_suspension")
+            != !saved.evaluation.lifecycle.suspended.is_empty()
+    {
+        return Err("conditional_on_suspension");
+    }
+    if saved.event_limit_exceeded
+        && (!saved.evaluation.reasons.contains("resource_unavailable")
+            || saved.consumed_work != 0
+            || saved.ancestry_bytes.is_some()
+            || !saved.evaluation.receipts.is_empty()
+            || !saved.evaluation.lifecycle.key_actor.is_empty()
+            || !saved.evaluation.publications.is_empty()
+            || !saved.evaluation.accounts.is_empty()
+            || saved.evaluation.policy.is_some()
+            || !saved.evaluation.policies.is_empty()
+            || !saved.evaluation.policy_history.is_empty()
+            || !saved.evaluation.selections.is_empty())
+    {
+        return Err("event_limit_state");
+    }
+    // Every refusal is the empty shape that `resource_unavailable`
+    // builds: the selected view, the overlay and one reason.
+    if resource_refused {
+        let e = &saved.evaluation;
+        if e.reasons.len() != 1
+            || !e.receipts.is_empty()
+            || !e.publications.is_empty()
+            || !e.accounts.is_empty()
+            || !e.registers.is_empty()
+            || !e.judgments.is_empty()
+            || !e.trust.is_empty()
+            || e.policy.is_some()
+            || !e.policies.is_empty()
+            || !e.policy_history.is_empty()
+            || !e.selections.is_empty()
+            || !e.lifecycle.key_actor.is_empty()
+            || !e.lifecycle.groups.is_empty()
+            || !e.lifecycle.successor.is_empty()
+            || !e.lifecycle.suspended.is_empty()
+            || !e.lifecycle.retired.is_empty()
+            || !e.lifecycle.compromised.is_empty()
+            || saved.unmatched_publication_scans != 0
+            || !saved.matched_publication_scans.is_empty()
+        {
+            return Err("resource_refused_state");
+        }
+    }
+    if nodes.is_empty()
+        && !saved.evaluation.available
+        && !resource_refused
+        && saved.evaluation.reasons.contains("view_unavailable")
+    {
+        return Ok(());
+    }
+
+    // Receipts must match nodes.
+    if !resource_refused && saved.evaluation.receipts.len() != nodes.len() {
+        return Err("receipts_len");
+    }
+    for (id, receipt) in &saved.evaluation.receipts {
+        let Some(node) = nodes.get(id) else {
+            return Err("receipt_missing");
+        };
+        if receipt.body != node.body_label {
+            return Err("receipt_body");
+        }
+        for reason in &receipt.reasons {
+            if !matches!(
+                reason.as_str(),
+                "resource_unavailable"
+                    | "invalid_action"
+                    | "own_history_pending"
+                    | "outside_retained_history"
+                    | "cutoff_pending"
+                    | "incomplete_group"
+                    | "body_unavailable"
+                    | "invalid_target"
+                    | "target_pending"
+                    | "unauthorized_import_status"
+                    | "account_binding_unavailable"
+                    | "view_unavailable"
+                    | "account_authority_disabled"
+                    | "lineage_pending"
+                    | "lineage_invalid"
+            ) {
+                return Err("receipt_reason");
+            }
+        }
+        if !resource_refused && receipt.reasons.contains("invalid_action") != !node.semantic {
+            return Err("receipt_invalid_action");
+        }
+        if !resource_refused
+            && node.semantic
+            && matches!(
+                node.kind.as_str(),
+                "judgment.set" | "status.set" | "import.status" | "bridge.set"
+            )
+        {
+            let target_view = node.action.view().index("target");
+            let target = target_view.as_str().unwrap_or_default();
+            if !target.starts_with("jvr1:")
+                && !nodes.contains_key(target)
+                && (!receipt.reasons.contains("target_pending")
+                    || receipt.interpretation != Interpretation::Pending)
+            {
+                return Err("receipt_direct_target_pending");
+            }
+        }
+    }
+
+    // Policy, policy_history, policies, and selections must match nodes and options.
+    let expected_policy = nodes
+        .get(&saved.options.selected_view)
+        .filter(|n| n.semantic && n.kind == "view.publish")
+        .and_then(|n| n.body.as_ref());
+    if !resource_refused {
+        if !optional_policy_matches(saved.evaluation.policy.as_ref(), expected_policy) {
+            return Err("expected_policy");
+        }
+        if expected_policy.is_some()
+            && saved
+                .evaluation
+                .policy_history
+                .get(&saved.options.selected_view)
+                != expected_policy
+        {
+            return Err("policy_history_selected");
+        }
+    } else if let Some(pol) = &saved.evaluation.policy
+        && !optional_policy_matches(Some(pol), expected_policy)
+    {
+        return Err("expected_policy");
+    }
+    if saved.evaluation.policies.len() != saved.evaluation.policy_history.len() {
+        return Err("policies_len");
+    }
+    let mut history_digests: BTreeMap<String, usize> = BTreeMap::new();
+    let mut missing_policy_parent = false;
+    for (vid, pol) in &saved.evaluation.policy_history {
+        let Some(view_node) = nodes
+            .get(vid)
+            .filter(|n| n.semantic && n.kind == "view.publish")
+        else {
+            return Err("policy_history_entry");
+        };
+        if view_node.body.as_ref() != Some(pol) {
+            return Err("policy_history_entry");
+        }
+        for parent_view in view_node
+            .action
+            .view()
+            .index("parents")
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let Some(parent_id) = parent_view.as_str() else {
+                missing_policy_parent = true;
+                continue;
+            };
+            if !saved.evaluation.policy_history.contains_key(parent_id) {
+                missing_policy_parent = true;
+            }
+        }
+        let digest = compact_value_digest(pol)?;
+        *history_digests.entry(digest).or_insert(0) += 1;
+    }
+    if !resource_refused
+        && saved.evaluation.policy.is_some()
+        && saved
+            .evaluation
+            .reasons
+            .contains("policy_ancestry_unavailable")
+            != missing_policy_parent
+    {
+        return Err("policy_parent_missing");
+    }
+    for pol in &saved.evaluation.policies {
+        let digest = compact_value_digest(pol)?;
+        let Some(count) = history_digests.get_mut(&digest) else {
+            return Err("policies_entry");
+        };
+        if *count == 0 {
+            return Err("policies_entry");
+        }
+        *count -= 1;
+    }
+    if history_digests.values().any(|&count| count != 0) {
+        return Err("policies_entry");
+    }
+    if !resource_refused {
+        if let Some(pol) = &saved.evaluation.policy {
+            let mut seen_valid = BTreeSet::new();
+            let mut invalid_selections = resolved.invalid.clone();
+            let mut missing_selection = false;
+            for entry in pol
+                .view()
+                .index("import_sets")
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let sel_view = entry.index("selection");
+                let Some(sel_id) = sel_view.as_str() else {
+                    missing_selection = true;
+                    continue;
+                };
+                if seen_valid.contains(sel_id) {
+                    continue;
+                }
+                if invalid_selections.contains(sel_id) {
+                    missing_selection = true;
+                    continue;
+                }
+                let valid_ids = resolved.valid.get(sel_id).copied().or_else(|| {
+                    policy::valid_selection_cached(
+                        &saved.options.import_selections,
+                        sel_id,
+                        validated_selections,
+                    )
+                });
+                match valid_ids {
+                    Some(ids) => {
+                        let Some(saved_set) = saved.evaluation.selections.get(sel_id) else {
+                            return Err("selections");
+                        };
+                        if saved_set.len() != ids.len() || !saved_set.iter().eq(ids.iter()) {
+                            return Err("selections");
+                        }
+                        seen_valid.insert(sel_id.to_owned());
+                    }
+                    None => {
+                        invalid_selections.insert(sel_id.to_owned());
+                        missing_selection = true;
+                    }
+                }
+            }
+            if saved.evaluation.selections.len() != seen_valid.len()
+                || saved
+                    .evaluation
+                    .reasons
+                    .contains("import_selection_unavailable")
+                    != missing_selection
+            {
+                return Err("selections");
+            }
+        } else if !saved.evaluation.selections.is_empty() {
+            return Err("selections_no_policy");
+        }
+    }
+
+    // Lifecycle cross-checks.
+    let mut transfer_issuers = BTreeSet::new();
+    let mut compromise_issuers = BTreeSet::new();
+    let mut transfer_edges: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    let mut accept_edges: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut register_node_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut observed_claims_by_account: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut all_nodes_root_no_accept = true;
+    for node in nodes.values() {
+        if !node.previous.is_empty() || (node.semantic && node.kind == "identity.accept") {
+            all_nodes_root_no_accept = false;
+        }
+        if node.semantic {
+            match node.kind.as_str() {
+                "identity.transfer" => {
+                    transfer_issuers.insert(node.issuer.as_str());
+                    let succ_view = node.action.view().index("successor");
+                    if let Some(succ) = succ_view.as_str() {
+                        transfer_edges
+                            .entry((node.issuer.clone(), succ.to_owned()))
+                            .or_default()
+                            .push(node.id.clone());
+                    }
+                }
+                "identity.compromise" => {
+                    compromise_issuers.insert(node.issuer.as_str());
+                }
+                "identity.accept" if node.previous.is_empty() => {
+                    let tid_view = node.action.view().index("transfer");
+                    if let Some(tid) = tid_view.as_str() {
+                        accept_edges.insert((node.issuer.clone(), tid.to_owned()));
+                    }
+                }
+                "account.observe" => {
+                    let a = node.action.view();
+                    if a.index("result") == "present"
+                        && let (Some(origin), Some(account), Some(claim)) = (
+                            a.index("origin").as_str(),
+                            a.index("account").as_u64(),
+                            a.index("claim").as_str(),
+                        )
+                    {
+                        observed_claims_by_account
+                            .entry(format!("{origin}#{account}"))
+                            .or_default()
+                            .insert(claim.to_owned());
+                    }
+                }
+                _ => {}
+            }
+            if let Some(rkey) = register_key_for_node(node, &saved.evaluation.lifecycle) {
+                *register_node_counts.entry(rkey).or_insert(0) += 1;
+            }
+        }
+    }
+    if !resource_refused || !saved.evaluation.lifecycle.key_actor.is_empty() {
+        for node in nodes.values() {
+            if !saved
+                .evaluation
+                .lifecycle
+                .key_actor
+                .contains_key(&node.issuer)
+            {
+                return Err("lifecycle_issuer_actor");
+            }
+            if node.previous.iter().any(|p| !nodes.contains_key(p)) {
+                let Some(actor) = saved.evaluation.lifecycle.key_actor.get(&node.issuer) else {
+                    return Err("lifecycle_suspended_actor");
+                };
+                if !saved
+                    .evaluation
+                    .lifecycle
+                    .suspended
+                    .get(actor)
+                    .is_some_and(|set| set.contains(&node.id))
+                {
+                    return Err("lifecycle_suspended_missing");
+                }
+            }
+        }
+    }
+    for key in &saved.evaluation.lifecycle.retired {
+        if !transfer_issuers.contains(key.as_str()) {
+            return Err("lifecycle_retired");
+        }
+    }
+    for key in &saved.evaluation.lifecycle.compromised {
+        if !compromise_issuers.contains(key.as_str()) {
+            return Err("lifecycle_compromised");
+        }
+    }
+    for (key, actor) in &saved.evaluation.lifecycle.key_actor {
+        if !saved
+            .evaluation
+            .lifecycle
+            .groups
+            .get(actor)
+            .is_some_and(|g| g.contains(key))
+        {
+            return Err("lifecycle_key_in_group");
+        }
+    }
+    let mut group_member_total = 0usize;
+    let mut expected_successor_edges = 0usize;
+    for (actor, group) in &saved.evaluation.lifecycle.groups {
+        if group.is_empty() || !group.contains(actor) {
+            return Err("lifecycle_group_contains_actor");
+        }
+        group_member_total += group.len();
+        expected_successor_edges += group.len().saturating_sub(1);
+        for member in group {
+            if saved.evaluation.lifecycle.key_actor.get(member) != Some(actor) {
+                return Err("lifecycle_group_member_actor");
+            }
+        }
+    }
+    if group_member_total != saved.evaluation.lifecycle.key_actor.len()
+        || saved.evaluation.lifecycle.successor.len() != expected_successor_edges
+    {
+        return Err("lifecycle_group_totals");
+    }
+    for (old_key, new_key) in &saved.evaluation.lifecycle.successor {
+        if saved.evaluation.lifecycle.key_actor.get(old_key)
+            != saved.evaluation.lifecycle.key_actor.get(new_key)
+            || !saved.evaluation.lifecycle.retired.contains(old_key)
+            || saved.evaluation.lifecycle.compromised.contains(old_key)
+            || !transfer_edges
+                .get(&(old_key.clone(), new_key.clone()))
+                .is_some_and(|tids| {
+                    tids.iter()
+                        .any(|tid| accept_edges.contains(&(new_key.clone(), tid.clone())))
+                })
+        {
+            return Err("lifecycle_successor_actor");
+        }
+    }
+    for (actor, missing) in &saved.evaluation.lifecycle.suspended {
+        if missing.is_empty() || !saved.evaluation.lifecycle.groups.contains_key(actor) {
+            return Err("lifecycle_suspended_entry");
+        }
+        for sid in missing {
+            let Some(snode) = nodes.get(sid) else {
+                return Err("lifecycle_suspended_node");
+            };
+            if saved.evaluation.lifecycle.key_actor.get(&snode.issuer) != Some(actor) {
+                return Err("lifecycle_suspended_actor_match");
+            }
+        }
+    }
+
+    // Publications cross-checks.
+    let expected_pub_count = nodes
+        .values()
+        .filter(|n| n.semantic && matches!(n.kind.as_str(), "definition.publish" | "rafsi.publish"))
+        .count();
+    if !resource_refused && saved.evaluation.publications.len() != expected_pub_count {
+        return Err("publications_len");
+    }
+    for (id, p) in &saved.evaluation.publications {
+        let Some(node) = nodes.get(id).filter(|n| {
+            n.semantic && matches!(n.kind.as_str(), "definition.publish" | "rafsi.publish")
+        }) else {
+            return Err("publication_node");
+        };
+        let a = node.action.view();
+        if p.id != *id
+            || p.issuer != node.issuer
+            || p.kind != node.kind
+            || p.word != a.index("word").as_str().unwrap_or_default()
+            || p.language.as_deref() != a.index("language").as_str()
+            || p.assignment.as_deref() != a.index("assignment").as_str()
+            || p.imported != (a.index("origin").as_str() == Some("import"))
+            || p.content_available != node.body.is_some()
+        {
+            return Err("publication_fields");
+        }
+        for reason in &p.reasons {
+            if !matches!(
+                reason.as_str(),
+                "resource_unavailable"
+                    | "view_unavailable"
+                    | "body_unavailable"
+                    | "own_history_pending"
+                    | "cutoff_pending"
+                    | "outside_retained_history"
+                    | "incomplete_group"
+                    | "source_attribution_pending"
+                    | "source_attribution_unavailable"
+                    | "import_selection_unavailable"
+                    | "source_selection_conflict"
+                    | "claim_pending"
+                    | "binding_unavailable"
+                    | "observation_pending"
+                    | "observation_body_invalid"
+                    | "historical_guard"
+                    | "policy_history_unavailable"
+                    | "witness_history_incomplete"
+                    | "policy_ancestry_unavailable"
+                    | "controller_dispute"
+                    | "current_authority_lost"
+                    | "carry_history_pending"
+                    | "carry_or_authority_pending"
+                    | "controller_authority_uncertain"
+                    | "contested_status_authority"
+            ) {
+                return Err("publication_reason");
+            }
+        }
+        for fid in &p.status_frontier {
+            let Some(fnode) = nodes.get(fid) else {
+                return Err("publication_frontier_node");
+            };
+            if !fnode.semantic || fnode.action.view().index("target").as_str() != Some(id.as_str())
+            {
+                return Err("publication_frontier_target");
+            }
+        }
+        if !resource_refused {
+            let expected_parents: BTreeSet<String> = a
+                .index("parents")
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect();
+            if p.lineage.keys().cloned().collect::<BTreeSet<_>>() != expected_parents {
+                return Err("publication_lineage");
+            }
+            for (parent_id, state) in &p.lineage {
+                let expected_state = match nodes.get(parent_id) {
+                    None => "pending",
+                    Some(parent)
+                        if !parent.semantic
+                            || parent.kind != "definition.publish"
+                            || parent.action.view().index("word") != a.index("word")
+                            || parent.action.view().index("language") != a.index("language") =>
+                    {
+                        "invalid"
+                    }
+                    Some(_) => "resolved",
+                };
+                if state != expected_state {
+                    return Err("publication_lineage_state");
+                }
+            }
+        }
+        if !p.imported {
+            if p.source.is_some()
+                || p.source_record.is_some()
+                || p.account.is_some()
+                || !p.witness_contributions.is_empty()
+            {
+                return Err("publication_native_import_fields");
+            }
+            let expected_native_controller = if p.authority == Authority::Native {
+                saved
+                    .evaluation
+                    .lifecycle
+                    .key_actor
+                    .get(&p.issuer)
+                    .map(String::as_str)
+            } else {
+                None
+            };
+            if p.controller.as_deref() != expected_native_controller {
+                return Err("publication_native_controller");
+            }
+        } else if let Some(body) = &node.body {
+            let legacy = body.view().index("legacy");
+            let expected_source = legacy.index("source").as_str().map(str::to_owned);
+            let expected_record = legacy.index("record").index("id").as_u64();
+            let acc_view = legacy.index("attribution").index("author_account");
+            let expected_acc = if acc_view.index("evidence").index("kind") == "source-id"
+                && let (Some(origin), Some(account)) = (
+                    acc_view.index("origin").as_str().map(str::to_owned),
+                    acc_view.index("account").as_u64(),
+                ) {
+                Some(AccountKey { origin, account })
+            } else {
+                None
+            };
+            if p.source != expected_source
+                || p.source_record != expected_record
+                || p.account != expected_acc
+            {
+                return Err("publication_import_legacy");
+            }
+            if !resource_refused
+                && let Some(acc) = &p.account
+                && let Some(pol) = &saved.evaluation.policy
+            {
+                let Some(state) = saved.evaluation.accounts.get(&acc.token()) else {
+                    return Err("publication_account_missing");
+                };
+                let status_authority =
+                    pol.view().index("account_authority").as_bool() == Some(true);
+                if status_authority && p.kind == "definition.publish" {
+                    if p.claim != state.controller
+                        || p.controller != state.controller_identity
+                        || p.controller_candidates != state.candidates
+                        || p.witness_contributions != state.contributions
+                        || p.observations != state.current_observations
+                    {
+                        return Err("publication_account_fields");
+                    }
+                    let expected_deciding = if p.controller_candidates.len() == 1 {
+                        p.status_frontier
+                            .iter()
+                            .next()
+                            .and_then(|fid| nodes.get(fid))
+                            .and_then(|n| {
+                                n.action.view().index("claim").as_str().map(str::to_owned)
+                            })
+                    } else {
+                        None
+                    };
+                    if p.deciding_claim != expected_deciding {
+                        return Err("publication_deciding_claim");
+                    }
+                }
+            }
+        }
+    }
+
+    // Accounts cross-checks.
+    let expected_witness_actors: BTreeSet<String> = saved
+        .evaluation
+        .policy
+        .as_ref()
+        .into_iter()
+        .flat_map(|pol| {
+            pol.view()
+                .index("account_witnesses")
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .map(|k| {
+                    saved
+                        .evaluation
+                        .lifecycle
+                        .key_actor
+                        .get(&k)
+                        .cloned()
+                        .unwrap_or(k)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (token, state) in &saved.evaluation.accounts {
+        if state.account.token() != *token
+            || state.contributions.keys().cloned().collect::<BTreeSet<_>>()
+                != expected_witness_actors
+            || state
+                .observation_evidence
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                != expected_witness_actors
+        {
+            return Err("account_witness_keys");
+        }
+        let mut union_candidates = BTreeSet::new();
+        for (actor, obs_ids) in &state.observation_evidence {
+            let expected_claims: BTreeSet<String> = obs_ids
+                .iter()
+                .filter_map(|oid| nodes.get(oid))
+                .filter_map(|n| n.action.view().index("claim").as_str().map(str::to_owned))
+                .collect();
+            if state.contributions.get(actor) != Some(&expected_claims) {
+                return Err("account_contributions_claims");
+            }
+            union_candidates.extend(expected_claims);
+        }
+        if state.candidates != union_candidates {
+            return Err("account_candidates");
+        }
+        if state.disputed != (state.candidates.len() > 1) {
+            return Err("account_disputed");
+        }
+        if state.unavailable && (state.controller.is_some() || state.reasons.is_empty()) {
+            return Err("account_unavailable");
+        }
+        let max_chains = state
+            .candidates
+            .len()
+            .saturating_add(state.certificates.len())
+            .max(1);
+        if state.chain.len() > saved.options.limits.claim_depth.saturating_mul(max_chains)
+            || ((!state.candidates.is_empty() || !state.certificates.is_empty())
+                && saved.options.limits.claim_depth == 0
+                && !state.reasons.contains("resource_unavailable"))
+        {
+            return Err("account_claim_depth");
+        }
+        for cid in &state.chain {
+            let Some(cnode) = nodes.get(cid) else {
+                return Err("account_chain_missing_node");
+            };
+            let ca = cnode.action.view();
+            if !cnode.semantic
+                || cnode.kind != "account.set"
+                || ca.index("value") != "claim"
+                || ca.index("origin").as_str() != Some(state.account.origin.as_str())
+                || ca.index("account").as_u64() != Some(state.account.account)
+            {
+                return Err("account_claim_node");
+            }
+        }
+        for cid in &state.closed {
+            if !state.chain.contains(cid) {
+                return Err("account_closed_in_chain");
+            }
+        }
+        for cid in &state.historical {
+            if !observed_claims_by_account
+                .get(token)
+                .is_some_and(|set| set.contains(cid))
+            {
+                return Err("account_historical_observed");
+            }
+        }
+        if let Some(ctrl) = &state.controller
+            && !state.chain.contains(ctrl)
+        {
+            return Err("account_controller_in_chain");
+        }
+        for cert in &state.certificates {
+            if !saved.evaluation.policy_history.contains_key(&cert.policy)
+                || !state.historical.contains(&cert.claim)
+                || cert.observations.is_empty()
+            {
+                return Err("account_certificate");
+            }
+            for oid in &cert.observations {
+                let Some(onode) = nodes.get(oid) else {
+                    return Err("account_certificate_obs");
+                };
+                let oa = onode.action.view();
+                if !onode.semantic
+                    || onode.kind != "account.observe"
+                    || oa.index("origin").as_str() != Some(state.account.origin.as_str())
+                    || oa.index("account").as_u64() != Some(state.account.account)
+                    || oa.index("claim").as_str() != Some(cert.claim.as_str())
+                {
+                    return Err("account_certificate_obs");
+                }
+            }
+        }
+        let expected_controller = if !state.unavailable
+            && state.candidates.len() == 1
+            && !state.contributions.is_empty()
+            && state.contributions.values().all(|c| c.len() == 1)
+        {
+            state.candidates.iter().next().cloned()
+        } else {
+            None
+        };
+        if state.controller != expected_controller {
+            return Err("account_controller");
+        }
+        if state.commands && state.controller.is_none() {
+            return Err("account_commands_without_controller");
+        }
+        let expected_identity = if state.commands {
+            state
+                .controller
+                .as_ref()
+                .and_then(|cid| nodes.get(cid))
+                .map(|n| n.issuer.clone())
+        } else {
+            None
+        };
+        if state.controller_identity != expected_identity {
+            return Err("account_controller_identity");
+        }
+    }
+
+    // Registers, judgments, trust, and register counter cross-checks.
+    let mut judgment_registers = 0usize;
+    let mut trust_registers = 0usize;
+    let mut total_maxima_charges = 0usize;
+    let mut total_maxima_work = 0usize;
+    for (((key, reg), &charge), (&work, &member_work)) in saved
+        .evaluation
+        .registers
+        .iter()
+        .zip(&saved.register_maxima_charges)
+        .zip(
+            saved
+                .register_maxima_work
+                .iter()
+                .zip(&saved.register_maxima_member_work),
+        )
+    {
+        if reg.key != *key
+            || reg.heads.is_empty()
+            || reg.values.is_empty()
+            || reg.conflicted != (reg.values.len() > 1)
+        {
+            return Err("register_fields");
+        }
+        let Some((prefix_actor, _)) = key.split_once('|') else {
+            return Err("register_key");
+        };
+        if prefix_actor != reg.actor {
+            return Err("register_actor");
+        }
+        let mut expected_values = BTreeSet::new();
+        for head_id in &reg.heads {
+            let Some(hn) = nodes.get(head_id) else {
+                return Err("register_head_missing");
+            };
+            if register_key_for_node(hn, &saved.evaluation.lifecycle).as_deref()
+                != Some(key.as_str())
+            {
+                return Err("register_head_key");
+            }
+            expected_values.insert(register_value_for_node(hn));
+        }
+        if reg.values != expected_values {
+            return Err("register_values");
+        }
+        if charge < 72 || charge % 8 != 0 || member_work > work {
+            return Err("register_counter_bounds");
+        }
+        if charge == 72 && reg.heads.len() == 1 && work != member_work {
+            return Err("register_single_union_work");
+        }
+        if register_node_counts.get(key).copied() == Some(1) {
+            let r = (charge - 64) / 8;
+            if member_work != r - 1 || work != (r - 1).saturating_mul(2) {
+                return Err("register_single_member_counters");
+            }
+        }
+        if all_nodes_root_no_accept && member_work != 0 {
+            return Err("register_root_member_work");
+        }
+        total_maxima_charges = total_maxima_charges
+            .checked_add(charge)
+            .ok_or("register_charge_overflow")?;
+        total_maxima_work = total_maxima_work
+            .checked_add(work)
+            .ok_or("register_work_overflow")?;
+
+        if let Some((_, target)) = key.split_once("|judgment|") {
+            judgment_registers += 1;
+            let expected_judgment = if reg.values.len() > 1 {
+                Judgment::Conflicted
+            } else {
+                match reg.values.iter().next().map(String::as_str) {
+                    Some("bless") => Judgment::Bless,
+                    Some("curse") => Judgment::Curse,
+                    _ => Judgment::Clear,
+                }
+            };
+            if saved
+                .evaluation
+                .judgments
+                .get(target)
+                .and_then(|m| m.get(&reg.actor))
+                != Some(&expected_judgment)
+            {
+                return Err("register_judgment_entry");
+            }
+        } else if key.contains("|trust|") {
+            trust_registers += 1;
+        }
+    }
+    if total_maxima_charges > super::ancestors::MAX_ANCESTOR_BYTES {
+        return Err("register_charge_cap");
+    }
+    if !resource_refused
+        && total_maxima_work
+            .checked_add(nodes.len().saturating_mul(2))
+            .is_none_or(|min_work| min_work > saved.consumed_work)
+    {
+        return Err("register_work_exceeds_consumed");
+    }
+    if let Some(bytes) = saved.ancestry_bytes {
+        if bytes > super::ancestors::MAX_ANCESTOR_BYTES || bytes % 8 != 0 {
+            return Err("ancestry_bytes_invalid");
+        }
+        if !resource_refused
+            && bytes
+                < nodes
+                    .len()
+                    .saturating_mul(72)
+                    .saturating_add(total_maxima_charges)
+        {
+            return Err("ancestry_bytes_too_small");
+        }
+    }
+    if saved.evaluation.judgments.values().any(BTreeMap::is_empty)
+        || saved
+            .evaluation
+            .judgments
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+            != judgment_registers
+        || saved.evaluation.trust.len() != trust_registers
+    {
+        return Err("registers_totals");
+    }
+    for rule in &saved.evaluation.trust {
+        let Ok(scope) = serde_json::to_value(&rule.scope) else {
+            return Err("trust_scope_json");
+        };
+        if rule.values.is_empty() || jvc_core::validate_scope(&scope).is_err() {
+            return Err("trust_rule");
+        }
+        let trust_key = format!(
+            "{}|trust|{}|{}",
+            rule.actor,
+            rule.subject,
+            rule.scope.view()
+        );
+        let Some(reg) = saved.evaluation.registers.get(&trust_key) else {
+            return Err("trust_register_missing");
+        };
+        if reg.values != rule.values {
+            return Err("trust_register_values");
+        }
+    }
+
+    // Publication scan count cross-checks.
+    for (pub_id, &count) in &saved.matched_publication_scans {
+        if count == 0 || !saved.evaluation.publications.contains_key(pub_id) {
+            return Err("matched_publication_scans_entry");
+        }
+    }
+    if !resource_refused {
+        let expected_scans = nodes
+            .values()
+            .filter(|node| {
+                if !node.semantic {
+                    return false;
+                }
+                let a = node.action.view();
+                match node.kind.as_str() {
+                    "judgment.set" => a
+                        .index("target")
+                        .as_str()
+                        .unwrap_or_default()
+                        .starts_with("jvr1:"),
+                    "bridge.set" => {
+                        let target_view = a.index("target");
+                        let target = target_view.as_str().unwrap_or_default();
+                        a.index("value") == "managed"
+                            && nodes.get(target).is_some_and(|n| {
+                                n.semantic
+                                    && n.kind == "definition.publish"
+                                    && n.action.view().index("origin") == "native"
+                                    && saved.evaluation.lifecycle.key_actor.get(&n.issuer)
+                                        == saved.evaluation.lifecycle.key_actor.get(&node.issuer)
+                            })
+                    }
+                    _ => false,
+                }
+            })
+            .count();
+        let recorded_scans = saved.unmatched_publication_scans
+            + saved.matched_publication_scans.values().sum::<usize>();
+        if recorded_scans != expected_scans {
+            return Err("publication_scans_total");
+        }
+    }
+    Ok(())
 }
 
 /// The complete set of keys a state patch may name, between the base
@@ -1204,32 +3004,247 @@ fn next_ready_id(added: &BTreeMap<String, Node>) -> Option<String> {
         .map(|(id, _)| id.clone())
 }
 
-fn references(value: ValueView, result: &mut BTreeSet<String>) {
+/// Counts copy units against a limit. A caller adds the counts it can
+/// read in constant time first, and walks nested collections only
+/// after their outer counts fit, so every walk is bounded by units
+/// already counted.
+struct CopyUnits {
+    total: usize,
+    limit: usize,
+}
+impl CopyUnits {
+    fn add(&mut self, units: usize) -> std::result::Result<(), &'static str> {
+        self.total = self.total.saturating_add(units);
+        if self.total > self.limit {
+            Err("work_budget")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Units to deep-copy evaluation results that another state shares:
+/// one per entry of every collection and one per member of every
+/// nested collection, at every depth.
+fn results_copy_units(
+    r: &EvaluationResults,
+    units: &mut CopyUnits,
+) -> std::result::Result<(), &'static str> {
+    lifecycle_copy_units(&r.lifecycle, units)?;
+    for len in [
+        r.receipts.len(),
+        r.publications.len(),
+        r.accounts.len(),
+        r.registers.len(),
+        r.judgments.len(),
+        r.policies.len(),
+        r.policy_history.len(),
+        r.selections.len(),
+        r.trust.len(),
+    ] {
+        units.add(len)?;
+    }
+    // Second level: walks bounded by the entry counts above.
+    for receipt in r.receipts.values() {
+        units.add(receipt.reasons.len())?;
+    }
+    for p in r.publications.values() {
+        units.add(
+            p.lineage.len()
+                + p.observations.len()
+                + p.status_frontier.len()
+                + p.controller_candidates.len()
+                + p.witness_contributions.len()
+                + p.missing.len()
+                + p.reasons.len(),
+        )?;
+    }
+    for a in r.accounts.values() {
+        units.add(
+            a.candidates.len()
+                + a.contributions.len()
+                + a.observation_evidence.len()
+                + a.certificates.len()
+                + a.chain.len()
+                + a.current_observations.len()
+                + a.historical.len()
+                + a.closed.len()
+                + a.reasons.len()
+                + a.missing.len(),
+        )?;
+    }
+    for register in r.registers.values() {
+        units.add(register.heads.len() + register.values.len())?;
+    }
+    for judgments in r.judgments.values() {
+        units.add(judgments.len())?;
+    }
+    for ids in r.selections.values() {
+        units.add(ids.len())?;
+    }
+    for rule in &r.trust {
+        units.add(rule.values.len())?;
+    }
+    // Third level: walks bounded by the nested counts above.
+    for p in r.publications.values() {
+        for members in p.witness_contributions.values() {
+            units.add(members.len())?;
+        }
+    }
+    for a in r.accounts.values() {
+        for members in a
+            .contributions
+            .values()
+            .chain(a.observation_evidence.values())
+        {
+            units.add(members.len())?;
+        }
+        for certificate in &a.certificates {
+            units.add(certificate.observations.len())?;
+        }
+    }
+    Ok(())
+}
+
+/// Units to deep-copy a lifecycle that another state shares.
+fn lifecycle_copy_units(
+    lifecycle: &Lifecycle,
+    units: &mut CopyUnits,
+) -> std::result::Result<(), &'static str> {
+    units.add(
+        lifecycle.key_actor.len()
+            + lifecycle.groups.len()
+            + lifecycle.successor.len()
+            + lifecycle.suspended.len()
+            + lifecycle.retired.len()
+            + lifecycle.compromised.len(),
+    )?;
+    for members in lifecycle
+        .groups
+        .values()
+        .chain(lifecycle.suspended.values())
+    {
+        units.add(members.len())?;
+    }
+    Ok(())
+}
+
+fn value_has_new_unresolved_references(
+    value: ValueView,
+    nodes: &BTreeMap<String, Node>,
+    existing: &BTreeSet<String>,
+) -> bool {
     if let Some(id) = value.as_str().filter(|id| jvc_core::valid_id(id, "jve1:")) {
-        result.insert(id.into());
+        !nodes.contains_key(id) && !existing.contains(id)
     } else {
-        value.for_each_child(|child| references(child, result));
+        let mut found = false;
+        value.for_each_child(|child| {
+            if !found {
+                found = value_has_new_unresolved_references(child, nodes, existing);
+            }
+        });
+        found
     }
 }
 
-fn add_node_references(node: &Node, result: &mut BTreeSet<String>) {
-    result.extend(node.previous.iter().cloned());
-    references(node.action.view(), result);
+fn node_has_new_unresolved_references(
+    node: &Node,
+    nodes: &BTreeMap<String, Node>,
+    existing: &BTreeSet<String>,
+) -> bool {
+    node.previous
+        .iter()
+        .any(|id| !nodes.contains_key(id) && !existing.contains(id))
+        || value_has_new_unresolved_references(node.action.view(), nodes, existing)
+        || node
+            .body
+            .as_ref()
+            .is_some_and(|body| value_has_new_unresolved_references(body.view(), nodes, existing))
+}
+
+fn unresolved_references(
+    value: ValueView,
+    nodes: &BTreeMap<String, Node>,
+    result: &mut BTreeSet<String>,
+) {
+    if let Some(id) = value.as_str().filter(|id| jvc_core::valid_id(id, "jve1:")) {
+        if !nodes.contains_key(id) {
+            result.insert(id.into());
+        }
+    } else {
+        value.for_each_child(|child| unresolved_references(child, nodes, result));
+    }
+}
+
+fn add_unresolved_node_references(
+    node: &Node,
+    nodes: &BTreeMap<String, Node>,
+    result: &mut BTreeSet<String>,
+) {
+    for id in &node.previous {
+        if !nodes.contains_key(id) {
+            result.insert(id.clone());
+        }
+    }
+    unresolved_references(node.action.view(), nodes, result);
     if let Some(body) = &node.body {
-        references(body.view(), result);
+        unresolved_references(body.view(), nodes, result);
     }
 }
 
-fn unresolved(prepared: &PreparedEvaluationInput) -> BTreeSet<String> {
-    let mut result = BTreeSet::from([prepared.options.selected_view.clone()]);
-    for ids in prepared.options.import_selections.values() {
-        result.extend(ids.iter().cloned());
+fn add_unresolved_node_references_cow(
+    node: &Node,
+    nodes: &BTreeMap<String, Node>,
+    result: &mut std::rc::Rc<BTreeSet<String>>,
+) {
+    if node_has_new_unresolved_references(node, nodes, result) {
+        add_unresolved_node_references(node, nodes, std::rc::Rc::make_mut(result));
+    }
+}
+
+fn unresolved(
+    prepared: &PreparedEvaluationInput,
+    evaluation: &Evaluation,
+) -> std::rc::Rc<BTreeSet<String>> {
+    if evaluation.reasons.contains("resource_unavailable") {
+        return Default::default();
+    }
+    let mut result = BTreeSet::new();
+    if !prepared.nodes.contains_key(&prepared.options.selected_view) {
+        result.insert(prepared.options.selected_view.clone());
+    }
+    if evaluation
+        .reasons
+        .contains("selection_publications_pending")
+    {
+        for ids in evaluation.selections.values() {
+            for id in ids {
+                if !prepared.nodes.contains_key(id) {
+                    result.insert(id.clone());
+                }
+            }
+        }
     }
     for node in prepared.nodes.values() {
-        add_node_references(node, &mut result);
+        add_unresolved_node_references(node, &prepared.nodes, &mut result);
     }
-    result.retain(|id| !prepared.nodes.contains_key(id));
-    result
+    std::rc::Rc::new(result)
+}
+
+fn rafsi_words(evaluation: &Evaluation) -> std::rc::Rc<BTreeSet<String>> {
+    if evaluation.reasons.contains("resource_unavailable") {
+        return Default::default();
+    }
+    let mut words = BTreeSet::new();
+    for p in evaluation.publications.values() {
+        if p.kind == "rafsi.publish" {
+            words.insert(p.word.clone());
+        }
+    }
+    if words.is_empty() {
+        return Default::default();
+    }
+    std::rc::Rc::new(words)
 }
 
 #[cfg(test)]
@@ -1394,9 +3409,9 @@ mod rebuild_tests {
         ] {
             let mut complete = base();
             if unavailable_reason == "invalid_overlay" {
-                complete.options.overlay = Some(json!({}));
+                complete.options.overlay = Some(json!({}).into());
             } else {
-                complete.options.limits.traversal = 1;
+                complete.options.limits.traversal = Some(1);
             }
             let evaluation = complete.clone().evaluate();
             assert!(!evaluation.available);
@@ -1425,8 +3440,8 @@ mod rebuild_tests {
             Some(json!({"name":"fixture","bio":[],"links":[]})),
         );
         let mut complete = base();
-        let used = complete.options.limits.traversal - complete.clone().into_state().remaining_work;
-        complete.options.limits.traversal = used;
+        let used = complete.clone().into_state().consumed_work();
+        complete.options.limits.traversal = Some(used);
         assert!(complete.clone().evaluate().available);
         let mut expected = complete.clone();
         for (record, body) in [&profile, &publication] {
@@ -1580,6 +3595,16 @@ mod rebuild_tests {
         HostVerifiedRecord::extract_with(&id, &header, jvc_core::BodyAvailability::Absent, |_| ()).0
     }
 
+    /// A copy of `prepared` with its own node map. A state built from a
+    /// plain clone shares the map with `prepared`, so its first append
+    /// copies and charges the map; a state built from this copy appends
+    /// in place, as a full evaluation of the same records would price it.
+    fn unshared(prepared: &PreparedEvaluationInput) -> PreparedEvaluationInput {
+        let mut copy = prepared.clone();
+        copy.nodes = std::rc::Rc::new(BTreeMap::clone(&prepared.nodes));
+        copy
+    }
+
     fn remaining_work(state: &EvaluatedState) -> usize {
         let bytes = state.checkpoint("property").unwrap();
         let value: Value = serde_json::from_slice(&bytes).unwrap();
@@ -1607,6 +3632,7 @@ mod rebuild_tests {
             state.checkpoint("property").unwrap(),
             full.checkpoint("property").unwrap()
         );
+        assert_state_roundtrips_and_appends(state, prepared, 999);
     }
 
     struct Rng(u64);
@@ -1637,6 +3663,8 @@ mod rebuild_tests {
             .map(|seed| identity_from_seed(&[*seed; 32]))
             .collect();
         let mut fast_appends = 0usize;
+        let mut fast_publication_appends = 0usize;
+        let mut fast_rafsi_judgments = 0usize;
         let mut comparisons = 0usize;
         for seed in 0..120u64 {
             let mut rng = Rng(seed ^ 0x9E37_79B9_7F4A_7C15);
@@ -1644,6 +3672,32 @@ mod rebuild_tests {
             let (publication, body) = publication();
             let publication_id = publication.id().to_string();
             prepared.add_record(&publication, body.as_deref());
+            let fixture_issuer = identity_from_seed(&[1u8; 32]);
+            let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+            let rafsi_assignment = format!("jvr1:{:064x}", 10usize);
+            let rafsi_pub_id = format!("jve1:{:064x}", 500_000usize);
+            prepared.add_host_verified_record(host_missing_body(
+                rafsi_pub_id,
+                &fixture_issuer,
+                vec![],
+                json!({"kind":"rafsi.publish","word":word,"assignment":rafsi_assignment,"origin":"native"}),
+            ));
+            if seed % 2 == 0 {
+                prepared.add_host_verified_record(host(
+                    format!("jve1:{:064x}", 500_001usize),
+                    &fixture_issuer,
+                    vec![],
+                    json!({"kind":"bridge.set","origin":"https://source.example","source_definition":1,"target":publication_id,"value":"managed"}),
+                ));
+            }
+            if seed % 3 == 1 {
+                prepared.add_host_verified_record(host(
+                    format!("jve1:{:064x}", 500_002usize),
+                    &fixture_issuer,
+                    vec![],
+                    json!({"kind":"judgment.set","target":format!("jvr1:{:064x}", 99usize),"value":"bless"}),
+                ));
+            }
             let mut counter = 1_000u64;
             let mut rev_counter = u64::MAX / 2;
             let fresh_id = |counter: &mut u64| {
@@ -1807,13 +3861,25 @@ mod rebuild_tests {
                     let fork = state.clone().advance(delta, &[]);
                     let mut fork_prepared = prepared.clone();
                     fork_prepared.add_host_verified_record(record);
-                    assert_matches_full(&fork, &fork_prepared);
+                    if fork.statistics().rebuilt {
+                        assert_matches_full(&fork, &fork_prepared);
+                    } else {
+                        let full = fork_prepared.into_state();
+                        assert_shared_projection(&fork);
+                        assert_eq!(fork.evaluation(), full.evaluation());
+                        assert_eq!(cap_bytes(&fork), cap_bytes(&full));
+                        assert!(fork.consumed_work() > full.consumed_work());
+                        let cp = fork.checkpoint("property").unwrap();
+                        let restored =
+                            EvaluatedState::restore_host_checkpoint(&cp, "property").unwrap();
+                        assert_eq!(restored.evaluation(), full.evaluation());
+                    }
                     comparisons += 1;
                     continue;
                 }
                 let issuer = &issuers[rng.below(issuers.len() as u64) as usize].clone();
                 let record = match kind {
-                    0..=3 => {
+                    0..=1 => {
                         let Some(tip) = tips.get(issuer) else {
                             continue;
                         };
@@ -1822,6 +3888,17 @@ mod rebuild_tests {
                             issuer,
                             vec![tip.clone()],
                             json!({"kind":"judgment.set","target":publication_id,"value":if step % 2 == 0 {"bless"} else {"curse"}}),
+                        )
+                    }
+                    2..=3 => {
+                        let Some(tip) = tips.get(issuer) else {
+                            continue;
+                        };
+                        host(
+                            fresh_id(&mut counter),
+                            issuer,
+                            vec![tip.clone()],
+                            json!({"kind":"judgment.set","target":rafsi_assignment,"value":if step % 2 == 0 {"bless"} else {"curse"}}),
                         )
                     }
                     4..=5 => {
@@ -1917,20 +3994,32 @@ mod rebuild_tests {
                             &json!({"language":"jbo","spelling":format!("sel{seed}x{step}")}),
                         )
                         .unwrap();
-                        host(
-                            fresh_id(&mut counter),
+                        let previous = tips.get(issuer).cloned().into_iter().collect();
+                        let id = if step % 2 == 0 {
+                            fresh_id(&mut counter)
+                        } else {
+                            rev_counter -= 1;
+                            format!("jve1:{rev_counter:064x}")
+                        };
+                        host_missing_body(
+                            id,
                             issuer,
-                            vec![],
+                            previous,
                             json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
                         )
                     }
                 };
-                if record.node.kind == "account.set" {
+                if record.node.kind == "account.set" || record.node.kind == "definition.publish" {
                     assert!(
                         record.node.semantic,
-                        "generated account record is not semantically valid"
+                        "generated {} record is not semantically valid",
+                        record.node.kind
                     );
                 }
+                let is_publication = record.node.kind == "definition.publish";
+                let is_rafsi_judgment = record.node.kind == "judgment.set"
+                    && record.node.action.view().index("target").as_str()
+                        == Some(rafsi_assignment.as_str());
                 let record_id = record.node.id.clone();
                 extras
                     .entry(issuer.clone())
@@ -1943,6 +4032,12 @@ mod rebuild_tests {
                 state = state.advance(delta, &[]);
                 if !state.statistics().rebuilt {
                     fast_appends += 1;
+                    if is_publication {
+                        fast_publication_appends += 1;
+                    }
+                    if is_rafsi_judgment {
+                        fast_rafsi_judgments += 1;
+                    }
                 }
                 assert_matches_full(&state, &prepared);
                 comparisons += 1;
@@ -1950,6 +4045,14 @@ mod rebuild_tests {
         }
         assert!(comparisons > 400, "only {comparisons} comparisons ran");
         assert!(fast_appends > 50, "only {fast_appends} fast appends ran");
+        assert!(
+            fast_publication_appends > 10,
+            "only {fast_publication_appends} fast publication appends ran"
+        );
+        assert!(
+            fast_rafsi_judgments > 10,
+            "only {fast_rafsi_judgments} fast rafsi judgments ran"
+        );
     }
 
     fn projection_fixture() -> (PreparedEvaluationInput, String, String) {
@@ -2028,7 +4131,14 @@ mod rebuild_tests {
         let mut delta = prepared.clone();
         let parent = prepared.into_state();
         let mut clean = PreparedEvaluationInput::new(parent.prepared.options.clone());
-        clean.options.limits.traversal += 1;
+        clean.options.limits.traversal = Some(
+            parent
+                .prepared
+                .options
+                .limits
+                .traversal_budget(parent.event_count())
+                + 1,
+        );
         let expected = parent.clone().advance(clean.clone(), &[]);
         assert!(expected.evaluation().available);
         let expected_checkpoint = expected.checkpoint("projection").unwrap();
@@ -2152,14 +4262,17 @@ mod rebuild_tests {
 
         let (mut full, _, _) = projection_fixture();
         full.add_host_verified_record(record);
-        assert_eq!(
-            child.checkpoint("projection").unwrap(),
-            full.into_state().checkpoint("projection").unwrap()
-        );
+        let full_state = full.into_state();
+        assert_eq!(child.evaluation(), full_state.evaluation());
+        assert!(child.consumed_work() > full_state.consumed_work());
+        let child_cp = child.checkpoint("projection").unwrap();
+        let restored_child =
+            EvaluatedState::restore_host_checkpoint(&child_cp, "projection").unwrap();
+        assert_eq!(restored_child.evaluation(), full_state.evaluation());
     }
 
     #[test]
-    fn overlay_resource_rebuild_matches_policy_early_return_with_suspension() {
+    fn overlay_change_on_a_refused_state_rebuilds_instead_of_applying_the_overlay() {
         let prepared = base();
         let mut graph = Graph::new(prepared.nodes.clone(), &Limits::default());
         let issuer = identity_from_seed(&[1; 32]);
@@ -2168,12 +4281,13 @@ mod rebuild_tests {
             .suspended
             .insert(issuer.clone(), BTreeSet::new());
         let mut state = prepared.into_state();
-        state.prepared.options.limits.traversal = 0;
+        state.prepared.options.limits.traversal = Some(0);
         state.evaluation = evaluate_graph(&state.prepared.options, &graph);
         state.graph = Some(graph);
         assert!(state.evaluation.reasons.contains("resource_unavailable"));
         assert!(state.evaluation.publications.is_empty());
-        assert!(state.evaluation.lifecycle.suspended.contains_key(&issuer));
+        // The refusal keeps nothing the evaluation computed.
+        assert!(state.evaluation.lifecycle.suspended.is_empty());
         let suspended = json!({
             "version":2,
             "base_view":state.prepared.options.selected_view,
@@ -2189,7 +4303,7 @@ mod rebuild_tests {
                     evaluate_graph(&next.prepared.options, next.graph.as_ref().unwrap());
             });
             let mut options = state.prepared.options.clone();
-            options.overlay = Some(overlay);
+            options.overlay = Some(overlay.into());
             let expected = evaluate_graph(&options, state.graph.as_ref().unwrap());
             assert_eq!(actual.evaluation(), &expected);
             assert!(!actual.evaluation.reasons.contains("invalid_overlay"));
@@ -2217,7 +4331,7 @@ mod rebuild_tests {
             "public_shun_issuer":null
         });
         let mut delta = PreparedEvaluationInput::new(options);
-        delta.options.overlay = Some(overlay.clone());
+        delta.options.overlay = Some(overlay.clone().into());
         let child = parent.clone().advance(delta, &[]);
         assert!(child.statistics().rebuilt);
         assert_eq!(
@@ -2234,7 +4348,7 @@ mod rebuild_tests {
         assert_eq!(parent.checkpoint("projection").unwrap(), parent_checkpoint);
 
         let (mut full, _, _) = projection_fixture();
-        full.options.overlay = Some(overlay);
+        full.options.overlay = Some(overlay.into());
         assert_matches_full(&child, &full);
     }
 
@@ -2426,7 +4540,7 @@ mod rebuild_tests {
             assert_matches_full(&state, &full);
             (full, state)
         };
-        let state = prepared.clone().into_state();
+        let state = unshared(&prepared).into_state();
         let (prepared, state) = append(&prepared, state, 2000, vec![tip.clone()]);
         assert!(!state.statistics().rebuilt);
         let (prepared, state) = append(&prepared, state, 1500, vec![tip.clone()]);
@@ -2477,7 +4591,14 @@ mod rebuild_tests {
             assert!(!fork.statistics().rebuilt);
             let mut full = prepared.clone();
             full.add_host_verified_record(record);
-            assert_matches_full(&fork, &full);
+            let full_state = full.into_state();
+            assert_shared_projection(&fork);
+            assert_eq!(fork.evaluation(), full_state.evaluation());
+            assert_eq!(cap_bytes(&fork), cap_bytes(&full_state));
+            assert!(fork.consumed_work() > full_state.consumed_work());
+            let cp = fork.checkpoint("property").unwrap();
+            let restored = EvaluatedState::restore_host_checkpoint(&cp, "property").unwrap();
+            assert_eq!(restored.evaluation(), full_state.evaluation());
         }
     }
 
@@ -2490,12 +4611,12 @@ mod rebuild_tests {
         record: &HostVerifiedRecord,
         full_prepared: &PreparedEvaluationInput,
     ) {
-        let consumed = 10_000_000 - remaining_work(&full_prepared.clone().into_state());
+        let consumed = full_prepared.clone().into_state().consumed_work();
         for budget in [consumed, consumed - 1] {
             let mut base_p = base_prepared.clone();
-            base_p.options.limits.traversal = budget;
+            base_p.options.limits.traversal = Some(budget);
             let mut full_p = full_prepared.clone();
-            full_p.options.limits.traversal = budget;
+            full_p.options.limits.traversal = Some(budget);
             assert!(base_p.clone().into_state().evaluation().available);
             let mut delta = PreparedEvaluationInput::new(base_p.options.clone());
             delta.add_host_verified_record(record.clone());
@@ -2834,7 +4955,7 @@ mod rebuild_tests {
             graph::reset_audit_work();
             let state = prepared.into_state();
             assert!(state.evaluation().available);
-            let used = 10_000_000 - remaining_work(&state);
+            let used = state.consumed_work();
             let work = graph::audit_work();
             assert!(
                 work <= 16 * used,
@@ -2913,7 +5034,7 @@ mod rebuild_tests {
                 "status {id} did not reach authorization"
             );
         }
-        let used = 10_000_000 - remaining_work(&state);
+        let used = state.consumed_work();
         let work = graph::audit_work();
         assert!(
             work <= 16 * used,
@@ -2954,7 +5075,7 @@ mod rebuild_tests {
             graph::reset_audit_work();
             let state = prepared.into_state();
             assert!(state.evaluation().available, "{name}");
-            let used = 10_000_000 - remaining_work(&state);
+            let used = state.consumed_work();
             let work = graph::audit_work();
             assert!(
                 work <= 16 * used,
@@ -2997,7 +5118,7 @@ mod rebuild_tests {
             prepared.add_host_verified_record(record.clone());
             let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
             delta.add_host_verified_record(record.clone());
-            let direct = state.clone().advance(delta.clone(), &[]);
+            let direct = state.advance(delta.clone(), &[]);
             let restored = restored.advance(delta, &[]);
             assert_matches_full(&direct, &prepared);
             assert_matches_full(&restored, &prepared);
@@ -3301,7 +5422,7 @@ mod rebuild_tests {
         }
         // Rebuild from the records and append: the result matches a
         // full evaluation.
-        let rebuilt = prepared.clone().into_state();
+        let rebuilt = unshared(&prepared).into_state();
         let next = host(
             format!("jve1:{:064x}", 975_002usize),
             &issuer,
@@ -3312,6 +5433,206 @@ mod rebuild_tests {
         let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
         delta.add_host_verified_record(next);
         let advanced = rebuilt.advance(delta, &[]);
+        assert_matches_full(&advanced, &prepared);
+    }
+
+    /// An empty advance with a new copy of a selection compares it once,
+    /// however many import sets of the view name it.
+    #[test]
+    fn empty_advance_compares_a_repeated_selection_once() {
+        let ids: Vec<String> = (0..2048).map(|i| format!("jve1:{i:064x}")).collect();
+        let digest = jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(ids)).unwrap());
+        let importer = identity_from_seed(&[3; 32]);
+        let import_sets: Vec<Value> = (0..64)
+            .map(|i| json!({"source": format!("source-{i:02}"), "importer": importer, "selection": digest}))
+            .collect();
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"repeated","description":[],"roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},
+                "excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,
+                "import_sets":import_sets,"account_witnesses":[],"account_authority":false,"notes":[]
+            })),
+        );
+        let options = EvaluationOptions {
+            selected_view: view.id().into(),
+            overlay: None,
+            import_selections: BTreeMap::from([(digest.clone(), ids.clone())]),
+            limits: Limits::default(),
+        };
+        let mut prepared = PreparedEvaluationInput::new(options.clone());
+        prepared.add_record(&view, view_body.as_deref());
+        let state = prepared.into_state();
+        assert!(state.evaluation().selections.contains_key(&digest));
+        let before = SELECTION_IDS_COMPARED.with(std::cell::Cell::get);
+        let next = state.advance(PreparedEvaluationInput::new(options), &[]);
+        let compared = SELECTION_IDS_COMPARED.with(std::cell::Cell::get) - before;
+        assert!(!next.statistics().rebuilt);
+        assert_eq!(compared, ids.len());
+    }
+
+    /// An invalid prefix of selections followed by a valid one gives the
+    /// same default budget and result fresh, under the equal explicit
+    /// limit, in a fork that inherits the selections (cached validity),
+    /// and after both restore formats.
+    #[test]
+    fn invalid_selection_prefix_then_valid_list_gives_one_budget_in_every_mode() {
+        // Ten invalid lists of 98 empty strings nearly use up a resolver base of
+        // 1,000 units with their entries; the valid list comes last.
+        let base = 1_000usize;
+        let valid: Vec<String> = (0..512).map(|i| format!("jve1:{i:064x}")).collect();
+        let valid_digest =
+            jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(valid)).unwrap());
+        let mut selections: BTreeMap<String, Vec<String>> = (0..10)
+            .map(|i| (format!("sha256:{:064x}", i + 1), vec![String::new(); 98]))
+            .collect();
+        selections.insert(valid_digest.clone(), valid);
+        let importer = identity_from_seed(&[3; 32]);
+        let mut import_sets: Vec<Value> = (0..10)
+            .map(|i| json!({"source": format!("{i:03}"), "importer": importer, "selection": format!("sha256:{:064x}", i + 1)}))
+            .collect();
+        import_sets.push(json!({"source": "010", "importer": importer, "selection": valid_digest}));
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"prefix","description":[],"roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},
+                "excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,
+                "import_sets":import_sets,"account_witnesses":[],"account_authority":false,"notes":[]
+            })),
+        );
+        let options = |traversal: Option<usize>| EvaluationOptions {
+            selected_view: view.id().into(),
+            overlay: None,
+            import_selections: selections.clone(),
+            limits: Limits {
+                traversal,
+                ..Limits::default()
+            },
+        };
+        let build = |options: EvaluationOptions| {
+            let mut prepared = PreparedEvaluationInput::new(options);
+            prepared.add_record(&view, view_body.as_deref());
+            prepared.into_state()
+        };
+        policy::RESOLVER_BASE_OVERRIDE.with(|o| o.set(Some(base)));
+        let fresh = build(options(None));
+        let expected_budget = Limits::default().traversal_budget_with_selections(1, 512);
+        let explicit = build(options(Some(expected_budget)));
+        let fork_delta = {
+            let mut delta = PreparedEvaluationInput::new(options(None));
+            delta.inherit_import_selections(&explicit);
+            delta
+        };
+        let fork = explicit.clone().advance(fork_delta, &[]);
+        let full = EvaluatedState::restore_host_checkpoint(&fork.checkpoint("r18").unwrap(), "r18");
+        let records: Vec<HostVerifiedRecord> = fork
+            .prepared
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let results = EvaluatedState::restore_host_result_checkpoint(
+            &fork.result_checkpoint("r18").unwrap(),
+            "r18",
+            records,
+        );
+        policy::RESOLVER_BASE_OVERRIDE.with(|o| o.set(None));
+        // Collect every mode's outcome before asserting, so a failure
+        // names all modes that disagree.
+        let mut wrong = Vec::new();
+        let admitted =
+            |state: &EvaluatedState| state.evaluation().selections.contains_key(&valid_digest);
+        for (mode, state) in [
+            ("fresh", Some(&fresh)),
+            ("explicit", Some(&explicit)),
+            ("fork", Some(&fork)),
+            ("full restore", full.as_ref().ok()),
+            ("results restore", results.as_ref().ok()),
+        ] {
+            match state {
+                None => wrong.push(format!("{mode}: checkpoint refused")),
+                Some(state) => {
+                    if state.traversal_budget() != expected_budget {
+                        wrong.push(format!("{mode}: budget {}", state.traversal_budget()));
+                    }
+                    if !admitted(state) {
+                        wrong.push(format!("{mode}: valid list not admitted"));
+                    }
+                    if state.evaluation() != explicit.evaluation() {
+                        wrong.push(format!("{mode}: evaluation differs from explicit"));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:?}");
+    }
+
+    /// When a register head lies outside the new judgment's closure, a
+    /// full evaluation finds the register members by walking every
+    /// record. The append does not price that walk, so it rebuilds
+    /// instead of walking. The fast path's own checks admit no such
+    /// head from signed input (its parents cover the issuer's whole
+    /// block, and a single-key actor has no other member), so the test
+    /// places one in the stored register.
+    #[test]
+    fn register_head_outside_new_closure_rebuilds_instead_of_walking_records() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let issuer = identity_from_seed(&[8u8; 32]);
+        let first = format!("jve1:{:064x}", 977_000usize);
+        prepared.add_host_verified_record(host(
+            first.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        ));
+        for i in 0..64usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 978_000 + i),
+                &identity_from_seed(&[9u8; 32]),
+                vec![],
+                json!({"kind":"identity.merge"}),
+            ));
+        }
+        let mut state = unshared(&prepared).into_state();
+        let key = format!("{issuer}|judgment|{publication_id}");
+        assert_eq!(
+            state.evaluation.registers[&key].heads,
+            BTreeSet::from([first.clone()])
+        );
+        // A stored head outside every closure of the issuer.
+        state
+            .evaluation
+            .registers
+            .get_mut(&key)
+            .unwrap()
+            .heads
+            .insert(publication_id.clone());
+        let next = host(
+            format!("jve1:{:064x}", 977_001usize),
+            &issuer,
+            vec![first],
+            json!({"kind":"judgment.set","target":publication_id,"value":"curse"}),
+        );
+        prepared.add_host_verified_record(next.clone());
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(next);
+        let advanced = state.advance(delta, &[]);
+        assert!(advanced.statistics().rebuilt);
+        assert_eq!(
+            advanced.statistics().reason.as_deref(),
+            Some("register_members")
+        );
         assert_matches_full(&advanced, &prepared);
     }
 
@@ -3424,9 +5745,28 @@ mod rebuild_tests {
         ));
         let base_state = prepared.clone().into_state();
         let saved = base_state.checkpoint("host-checked").unwrap();
+        let mut missing_key_value: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        missing_key_value
+            .as_object_mut()
+            .unwrap()
+            .remove("ancestry_bytes");
+        let missing_key_bytes = serde_json::to_vec(&missing_key_value).unwrap();
+        assert!(
+            EvaluatedState::restore_host_checkpoint(&missing_key_bytes, "host-checked").is_err()
+        );
+
         let mut value: serde_json::Value = serde_json::from_slice(&saved).unwrap();
-        value.as_object_mut().unwrap().remove("ancestry_bytes");
-        let stripped = serde_json::to_vec(&value).unwrap();
+        value["ancestry_bytes"] = serde_json::Value::Null;
+        let unsealed = serde_json::to_vec(&value).unwrap();
+        assert!(
+            EvaluatedState::restore_host_checkpoint(&unsealed, "host-checked").is_err(),
+            "mutated checkpoint without recomputed digest must be rejected"
+        );
+        value.as_object_mut().unwrap().remove("digest");
+        let mut stripped = serde_json::to_vec(&value).unwrap();
+        let digest = jvc_core::hash_id("sha256:", b"", &stripped);
+        stripped.pop();
+        stripped.extend_from_slice(format!(",\"digest\":\"{digest}\"}}").as_bytes());
         let restored = EvaluatedState::restore_host_checkpoint(&stripped, "host-checked").unwrap();
         let judgment = host(
             format!("jve1:{:064x}", 800_002usize),
@@ -3765,7 +6105,7 @@ mod rebuild_tests {
     #[test]
     fn malformed_overlay_bound_errors_and_invalid_overlay_counts_are_ignored() {
         let mut state = base().into_state();
-        state.evaluation.overlay = Some(json!({"trust":[{"issuer":1}]}));
+        state.evaluation.overlay = Some(json!({"trust":[{"issuer":1}]}).into());
         state.evaluation.reasons.remove("invalid_overlay");
         assert_eq!(
             state.ranking_index_bound().unwrap_err().code,
@@ -3786,6 +6126,5559 @@ mod rebuild_tests {
         assert_eq!(
             state.ranking_index_counts().unwrap_err().code,
             "invalid_overlay"
+        );
+    }
+
+    fn host_missing_body(
+        id: String,
+        issuer: &str,
+        previous: Vec<String>,
+        action: Value,
+    ) -> HostVerifiedRecord {
+        let header = Header {
+            version: 1,
+            issuer: issuer.into(),
+            previous,
+            nonce: "00".repeat(16),
+            action,
+            content: Some(jvc_core::ContentDescriptor {
+                hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                bytes: 1,
+            }),
+        };
+        HostVerifiedRecord::extract_with(&id, &header, jvc_core::BodyAvailability::Missing, |_| ())
+            .0
+    }
+
+    fn assert_whole_evaluation_refusal(evaluation: &Evaluation) {
+        assert!(!evaluation.available);
+        assert!(evaluation.reasons.contains("resource_unavailable"));
+        assert!(evaluation.registers.is_empty());
+        assert!(evaluation.judgments.is_empty());
+        assert!(evaluation.trust.is_empty());
+        assert!(evaluation.publications.values().all(|p| {
+            p.status == Status::Unavailable
+                && p.eligible == Eligibility::Unknown
+                && p.reasons.contains("resource_unavailable")
+        }));
+        assert!(evaluation.accounts.values().all(|a| {
+            a.unavailable
+                && !a.commands
+                && a.controller.is_none()
+                && a.controller_identity.is_none()
+                && a.reasons.contains("resource_unavailable")
+        }));
+        assert!(evaluation.receipts.values().all(|r| {
+            r.interpretation == Interpretation::Inert
+                || (r.interpretation == Interpretation::Unavailable
+                    && r.reasons.contains("resource_unavailable"))
+        }));
+    }
+
+    fn assert_probe_refuses_under_budget_and_passes_default(
+        mut prepared: PreparedEvaluationInput,
+        budget: usize,
+    ) {
+        let mut bounded = prepared.clone();
+        bounded.options.limits.traversal = Some(budget);
+        let bounded_eval = bounded.clone().evaluate();
+        assert_whole_evaluation_refusal(&bounded_eval);
+        let bounded_state = bounded.into_state();
+        assert_whole_evaluation_refusal(bounded_state.evaluation());
+        assert_eq!(bounded_state.evaluation(), &bounded_eval);
+
+        prepared.options.limits = Limits::default();
+        graph::reset_audit_work();
+        let state = prepared.into_state();
+        assert!(state.evaluation().available);
+        let used = state.consumed_work();
+        assert!(
+            used > budget,
+            "consumed {used} units must exceed refusal budget {budget}"
+        );
+        let work = graph::audit_work();
+        assert!(
+            work <= 16 * used,
+            "{work} audited work for {used} charged units"
+        );
+    }
+
+    fn seed_identity(tag: u64, step: usize) -> String {
+        let mut seed = [0u8; 32];
+        seed[0..8].copy_from_slice(&tag.to_le_bytes());
+        seed[8..16].copy_from_slice(&(step as u64).to_le_bytes());
+        identity_from_seed(&seed)
+    }
+
+    #[test]
+    fn downstream_successor_walks_across_publications_and_claims_stop_at_work_budget() {
+        let mut prepared = witnessed_view();
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let mut current = identity_from_seed(&[1u8; 32]);
+        let mut current_prev: Vec<String> = Vec::new();
+        for step in 0..300usize {
+            let next = seed_identity(10, step);
+            let transfer_id = format!("jve1:{:064x}", 1_100_000 + step);
+            let accept_id = format!("jve1:{:064x}", 1_200_000 + step);
+            prepared.add_host_verified_record(host(
+                transfer_id.clone(),
+                &current,
+                current_prev,
+                json!({"kind":"identity.transfer","successor":next}),
+            ));
+            prepared.add_host_verified_record(host(
+                accept_id.clone(),
+                &next,
+                vec![],
+                json!({"kind":"identity.accept","transfer":transfer_id}),
+            ));
+            current = next;
+            current_prev = vec![accept_id];
+        }
+        let origin_issuer = identity_from_seed(&[1u8; 32]);
+        for i in 0..800usize {
+            prepared.add_host_verified_record(host_missing_body(
+                format!("jve1:{:064x}", 1_300_000 + i),
+                &origin_issuer,
+                vec![],
+                json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            ));
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 1_400_000 + i),
+                &origin_issuer,
+                vec![],
+                json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 120_000);
+    }
+
+    #[test]
+    fn fragmented_closure_maxima_subset_and_signature_scans_stop_at_work_budget() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let judge = identity_from_seed(&[7u8; 32]);
+        for i in 0..600usize {
+            let id = format!("jve1:{:064x}", 2_100_000 + i);
+            let previous = (i >= 2)
+                .then(|| format!("jve1:{:064x}", 2_100_000 + i - 2))
+                .into_iter()
+                .collect();
+            prepared.add_host_verified_record(host(
+                id,
+                &judge,
+                previous,
+                json!({"kind":"identity.merge"}),
+            ));
+        }
+        let tip = format!("jve1:{:064x}", 2_100_000 + 598);
+        for i in 0..600usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 2_200_000 + i),
+                &judge,
+                vec![tip.clone()],
+                json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 900_000);
+    }
+
+    #[test]
+    fn import_status_candidate_claim_scans_stop_at_work_budget() {
+        let mut prepared = witnessed_view();
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let mut body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        body["legacy"] = json!({"source":"fixture","snapshot":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","extraction":"fixture-v1","record":{"kind":"definition","id":1},"locator":"fixture","original":{},"attribution":{"author":"author","editor":null,"author_account":{"origin":"https://source.example","account":41,"username":"author","evidence":{"kind":"source-id","source":{"label":"source author numeric field","url":null,"event":null,"locator":"author_id"}}},"dates":{}},"conversion":{"method":"literal","tool":"fixture","version":"1","model":null,"review":"unreviewed","mappings":[],"warnings":[]},"limitations":[]});
+        let (publication, publication_body) = event(
+            9,
+            3,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"import"}),
+            Some(body),
+        );
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, publication_body.as_deref());
+        let claim_issuer = identity_from_seed(&[1u8; 32]);
+        for i in 0..800usize {
+            let id = format!("jve1:{:064x}", 3_100_000 + i);
+            let previous = (i >= 2)
+                .then(|| format!("jve1:{:064x}", 3_100_000 + i - 2))
+                .into_iter()
+                .collect();
+            prepared.add_host_verified_record(host(
+                id,
+                &claim_issuer,
+                previous,
+                json!({"kind":"identity.merge"}),
+            ));
+        }
+        let tip = format!("jve1:{:064x}", 3_100_000 + 798);
+        let mut first_claim = String::new();
+        for i in 0..300usize {
+            let claim_id = format!("jve1:{:064x}", 3_200_000 + i);
+            if i == 0 {
+                first_claim = claim_id.clone();
+            }
+            prepared.add_host_verified_record(host(
+                claim_id,
+                &claim_issuer,
+                vec![],
+                json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+            ));
+        }
+        for i in 0..500usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 3_300_000 + i),
+                &claim_issuer,
+                vec![tip.clone(), first_claim.clone()],
+                json!({"kind":"import.status","target":publication_id,"claim":first_claim,"value":"active"}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 1_200_000);
+    }
+
+    #[test]
+    fn witness_group_rescans_in_account_certificates_stop_at_work_budget() {
+        let mut prepared = witnessed_view();
+        let mut current = identity_from_seed(&[10u8; 32]);
+        let mut current_prev: Vec<String> = Vec::new();
+        for step in 0..200usize {
+            let next = seed_identity(40, step);
+            let transfer_id = format!("jve1:{:064x}", 4_100_000 + step);
+            let accept_id = format!("jve1:{:064x}", 4_200_000 + step);
+            prepared.add_host_verified_record(host(
+                transfer_id.clone(),
+                &current,
+                current_prev,
+                json!({"kind":"identity.transfer","successor":next}),
+            ));
+            prepared.add_host_verified_record(host(
+                accept_id.clone(),
+                &next,
+                vec![],
+                json!({"kind":"identity.accept","transfer":transfer_id}),
+            ));
+            current = next;
+            current_prev = vec![accept_id];
+        }
+        let issuer = identity_from_seed(&[1u8; 32]);
+        for i in 0..500usize {
+            let claim_id = format!("jve1:{:064x}", 4_300_000 + i);
+            prepared.add_host_verified_record(host(
+                claim_id.clone(),
+                &issuer,
+                vec![],
+                json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+            ));
+            observe(&mut prepared, 10, (i % 256) as u8, &claim_id);
+            observe(&mut prepared, 11, (i % 256) as u8, &claim_id);
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 80_000);
+    }
+
+    #[test]
+    fn accounts_across_policy_history_views_stop_at_work_budget() {
+        let mut prepared = witnessed_view();
+        let mut parent = prepared.options.selected_view.clone();
+        for i in 0..200usize {
+            let (view, view_body) = event(
+                1,
+                i as u8,
+                json!({"kind":"view.publish","parents":[parent]}),
+                Some(
+                    json!({"name":"fixture","description":[],"roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],"rafsi_threshold":{"numerator":1,"denominator":1},"H":{"numerator":3,"denominator":1},"alpha":{"numerator":1,"denominator":2},"excluded":[],"calculation":"simple-routes-bounds-v1","work":1000,"import_sets":[],"account_witnesses":[identity_from_seed(&[10;32]),identity_from_seed(&[11;32])],"account_authority":true,"notes":[]}),
+                ),
+            );
+            parent = view.id().to_string();
+            prepared.add_record(&view, view_body.as_deref());
+        }
+        prepared.options.selected_view = parent;
+        let issuer = identity_from_seed(&[1u8; 32]);
+        for account in 1..=300u64 {
+            let claim_id = format!("jve1:{:064x}", 5_100_000 + account as usize);
+            prepared.add_host_verified_record(host(
+                claim_id,
+                &issuer,
+                vec![],
+                json!({"kind":"account.set","origin":"https://source.example","account":account,"value":"claim","previous":null,"carry":[]}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 30_000);
+    }
+
+    #[test]
+    fn competing_transfers_and_cutoffs_in_retention_stop_at_work_budget() {
+        let mut prepared = base();
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let issuer = identity_from_seed(&[5u8; 32]);
+        let absent_successor = identity_from_seed(&[250u8; 32]);
+        let mut prev: Vec<String> = Vec::new();
+        for i in 0..200usize {
+            let pub_id = format!("jve1:{:064x}", 6_300_000 + i);
+            prepared.add_host_verified_record(host_missing_body(
+                pub_id.clone(),
+                &issuer,
+                prev,
+                json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            ));
+            prev = vec![pub_id];
+        }
+        let safe_id = format!("jve1:{:064x}", 6_000_000usize);
+        prepared.add_host_verified_record(host(
+            safe_id.clone(),
+            &issuer,
+            prev,
+            json!({"kind":"identity.merge"}),
+        ));
+        for i in 0..500usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 6_100_000 + i),
+                &issuer,
+                vec![safe_id.clone()],
+                json!({"kind":"identity.transfer","successor":absent_successor}),
+            ));
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 6_200_000 + i),
+                &issuer,
+                vec![safe_id.clone()],
+                json!({"kind":"identity.compromise","safe":[safe_id]}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 300_000);
+    }
+
+    #[test]
+    fn rafsi_pair_judgment_and_managed_bridge_publication_scans_stop_at_work_budget() {
+        let mut prepared = base();
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        let issuer = identity_from_seed(&[5u8; 32]);
+        let mut first_pub = String::new();
+        for i in 0..400usize {
+            let pub_id = format!("jve1:{:064x}", 7_100_000 + i);
+            if i == 0 {
+                first_pub = pub_id.clone();
+            }
+            prepared.add_host_verified_record(host_missing_body(
+                pub_id,
+                &issuer,
+                vec![],
+                json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            ));
+        }
+        for i in 0..400usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 7_200_000 + i),
+                &issuer,
+                vec![],
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            ));
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 7_300_000 + i),
+                &issuer,
+                vec![],
+                json!({"kind":"bridge.set","origin":"https://source.example","source_definition":i + 1,"target":first_pub,"value":"managed"}),
+            ));
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 40_000);
+    }
+
+    #[test]
+    fn issuer_missing_and_command_authority_scans_stop_at_work_budget() {
+        let mut prepared = witnessed_view();
+        let issuer = identity_from_seed(&[1u8; 32]);
+        let missing_parents: Vec<String> = (0..200usize)
+            .map(|i| format!("jve1:{:064x}", 8_000_000 + i))
+            .collect();
+        let root_with_missing = format!("jve1:{:064x}", 8_050_000usize);
+        prepared.add_host_verified_record(host(
+            root_with_missing,
+            &issuer,
+            missing_parents,
+            json!({"kind":"identity.merge"}),
+        ));
+        let mut previous: Vec<String> = Vec::new();
+        let mut action_previous: Option<String> = None;
+        for i in 0..400usize {
+            let claim_id = format!("jve1:{:064x}", 8_100_000 + i);
+            prepared.add_host_verified_record(host(
+                claim_id.clone(),
+                &issuer,
+                previous,
+                json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":action_previous,"carry":[]}),
+            ));
+            observe(&mut prepared, 10, (i % 256) as u8, &claim_id);
+            observe(&mut prepared, 11, (i % 256) as u8, &claim_id);
+            previous = vec![claim_id.clone()];
+            action_previous = Some(claim_id);
+        }
+        assert_probe_refuses_under_budget_and_passes_default(prepared, 40_000);
+    }
+
+    #[test]
+    fn default_limits_grow_linearly_and_have_no_event_cap_until_configured() {
+        let defaults = Limits::default();
+        assert_eq!(defaults.events, None);
+        assert_eq!(defaults.traversal, None);
+        assert_eq!(
+            defaults.traversal_budget(250_000),
+            DEFAULT_TRAVERSAL_BASE + 250_000 * DEFAULT_TRAVERSAL_PER_RECORD
+        );
+        let mut prepared = base();
+        let issuer = identity_from_seed(&[9u8; 32]);
+        let mut previous = Vec::new();
+        for i in 0..200_005usize {
+            let id = format!("jve1:{:064x}", 9_000_000 + i);
+            prepared.add_host_verified_record(host(
+                id.clone(),
+                &issuer,
+                previous,
+                json!({"kind":"identity.merge"}),
+            ));
+            previous = vec![id];
+        }
+        assert!(prepared.nodes.len() > 200_000);
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+
+        let mut capped = prepared;
+        capped.options.limits.events = Some(200_000);
+        capped.event_limit_exceeded = true;
+        let capped_state = capped.into_state();
+        assert_whole_evaluation_refusal(capped_state.evaluation());
+    }
+
+    fn compare_fast_and_full(
+        prepared: &PreparedEvaluationInput,
+        record: &HostVerifiedRecord,
+    ) -> (EvaluatedState, EvaluatedState, PreparedEvaluationInput) {
+        let state = unshared(prepared).into_state();
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(record.clone());
+        let fast = state.advance(delta, &[]);
+        let mut full_prepared = prepared.clone();
+        full_prepared.add_host_verified_record(record.clone());
+        let full = full_prepared.clone().into_state();
+        assert_eq!(fast.consumed_work(), full.consumed_work());
+        assert_eq!(
+            serde_json::to_value(fast.evaluation()).unwrap(),
+            serde_json::to_value(full.evaluation()).unwrap()
+        );
+        assert_eq!(fast.evaluation().available, full.evaluation().available);
+        assert_eq!(
+            fast.evaluation().reasons.contains("resource_unavailable"),
+            full.evaluation().reasons.contains("resource_unavailable")
+        );
+        assert_matches_full(&fast, &full_prepared);
+        (fast, full, full_prepared)
+    }
+
+    #[test]
+    fn fast_append_native_publication_with_unresolved_rafsi_judgments_matches_full() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let new_issuer = identity_from_seed(&[9u8; 32]);
+
+        // Control: ordinary jve1: judgments do not scan `evaluation.publications`.
+        let mut control = base();
+        let (pub_ev, pub_body) = publication();
+        let pub_id = pub_ev.id().to_string();
+        control.add_record(&pub_ev, pub_body.as_deref());
+        let control_judge = identity_from_seed(&[8u8; 32]);
+        for i in 0..20usize {
+            control.add_host_verified_record(host(
+                format!("jve1:{:064x}", 10_000 + i),
+                &control_judge,
+                vec![],
+                json!({"kind":"judgment.set","target":pub_id,"value":"bless"}),
+            ));
+        }
+        let control_pub = host_missing_body(
+            format!("jve1:{:064x}", 20_000usize),
+            &new_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+        let (control_fast, _, control_full) = compare_fast_and_full(&control, &control_pub);
+        assert!(!control_fast.statistics().rebuilt);
+        assert_tight_budgets_match(&control, &control_pub, &control_full);
+
+        // Unresolved `jvr1:` judgments scan every publication in `evaluation.publications`,
+        // including a native `definition.publish` added on the fast path.
+        let mut prepared = base();
+        prepared.add_record(&pub_ev, pub_body.as_deref());
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        let judge = identity_from_seed(&[5u8; 32]);
+        for i in 0..10usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 30_000 + i),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            ));
+        }
+        let new_pub = host_missing_body(
+            format!("jve1:{:064x}", 40_000usize),
+            &new_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+        let (fast, _, full_prepared) = compare_fast_and_full(&prepared, &new_pub);
+        assert!(!fast.statistics().rebuilt);
+        assert_tight_budgets_match(&prepared, &new_pub, &full_prepared);
+    }
+
+    #[test]
+    fn fast_append_native_publication_with_unresolved_rafsi_judgments_refuses_at_tight_budget() {
+        let mut prepared = base();
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        let judge = identity_from_seed(&[5u8; 32]);
+        for i in 0..20usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 30_000 + i),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            ));
+        }
+        prepared.options.limits.traversal = Some(218);
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let new_issuer = identity_from_seed(&[9u8; 32]);
+        let new_pub = host_missing_body(
+            format!("jve1:{:064x}", 40_000usize),
+            &new_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+        let (fast, full, _) = compare_fast_and_full(&prepared, &new_pub);
+        assert!(!fast.evaluation().available);
+        assert!(!full.evaluation().available);
+        assert_whole_evaluation_refusal(fast.evaluation());
+        assert_whole_evaluation_refusal(full.evaluation());
+    }
+
+    #[test]
+    fn fast_append_native_publication_on_rafsi_judgment_chain_matches_full() {
+        let mut prepared = base();
+        let (pub_ev, pub_body) = publication();
+        prepared.add_record(&pub_ev, pub_body.as_deref());
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        let issuer = identity_from_seed(&[5u8; 32]);
+        let mut prev = Vec::new();
+        for i in 0..20usize {
+            let id = format!("jve1:{:064x}", 50_000 + i);
+            prepared.add_host_verified_record(host(
+                id.clone(),
+                &issuer,
+                prev,
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            ));
+            prev = vec![id];
+        }
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let new_pub = host_missing_body(
+            format!("jve1:{:064x}", 60_000usize),
+            &issuer,
+            prev,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+        let (fast, _, full_prepared) = compare_fast_and_full(&prepared, &new_pub);
+        assert!(!fast.statistics().rebuilt);
+        assert_tight_budgets_match(&prepared, &new_pub, &full_prepared);
+    }
+
+    #[test]
+    fn fast_append_native_publication_with_managed_bridges_matches_full() {
+        let mut prepared = base();
+        let (pub_ev, pub_body) = publication();
+        let pub_id = pub_ev.id().to_string();
+        prepared.add_record(&pub_ev, pub_body.as_deref());
+        let issuer = identity_from_seed(&[1u8; 32]);
+        for i in 0..20usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 70_000 + i),
+                &issuer,
+                vec![],
+                json!({"kind":"bridge.set","origin":"https://source.example","source_definition":i + 1,"target":pub_id,"value":"managed"}),
+            ));
+        }
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let new_issuer = identity_from_seed(&[9u8; 32]);
+        let new_pub = host_missing_body(
+            format!("jve1:{:064x}", 80_000usize),
+            &new_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+        let (fast, _, full_prepared) = compare_fast_and_full(&prepared, &new_pub);
+        assert!(!fast.statistics().rebuilt);
+        assert_tight_budgets_match(&prepared, &new_pub, &full_prepared);
+    }
+
+    #[test]
+    fn fast_append_native_publication_before_matched_rafsi_or_bridge_scan_charges_visit() {
+        let mut prepared = witnessed_view();
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let rafsi_word = jvc_core::word_id(&json!({"language":"jbo","spelling":"klama"})).unwrap();
+        let rafsi_target = format!("jvr1:{:064x}", 7usize);
+        let issuer = identity_from_seed(&[1u8; 32]);
+        let rafsi_pub_id = format!("jve1:{:064x}", 500_000usize);
+        prepared.add_host_verified_record(host_missing_body(
+            rafsi_pub_id,
+            &issuer,
+            vec![],
+            json!({"kind":"rafsi.publish","word":rafsi_word,"assignment":rafsi_target,"origin":"native"}),
+        ));
+        let native_target_id = format!("jve1:{:064x}", 100_000usize);
+        prepared.add_host_verified_record(host_missing_body(
+            native_target_id.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        ));
+        let claim_id = format!("jve1:{:064x}", 110_000usize);
+        prepared.add_host_verified_record(host(
+            claim_id.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+        ));
+        observe(&mut prepared, 10, 1, &claim_id);
+        observe(&mut prepared, 11, 1, &claim_id);
+        let mut import_body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        import_body["legacy"] = json!({"source":"fixture","snapshot":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","extraction":"fixture-v1","record":{"kind":"definition","id":1},"locator":"fixture","original":{},"attribution":{"author":"author","editor":null,"author_account":{"origin":"https://source.example","account":41,"username":"author","evidence":{"kind":"source-id","source":{"label":"source author numeric field","url":null,"event":null,"locator":"author_id"}}},"dates":{}},"conversion":{"method":"literal","tool":"fixture","version":"1","model":null,"review":"unreviewed","mappings":[],"warnings":[]},"limitations":[]});
+        let (imported_pub, imported_bytes) = event(
+            9,
+            9,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"import"}),
+            Some(import_body),
+        );
+        prepared.add_record(&imported_pub, imported_bytes.as_deref());
+        for i in 0..8usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 120_000 + i),
+                &issuer,
+                vec![],
+                json!({"kind":"bridge.set","origin":"https://source.example","source_definition":1,"target":native_target_id,"value":"managed"}),
+            ));
+        }
+        let judge = identity_from_seed(&[5u8; 32]);
+        let mut judge_prev = Vec::new();
+        for i in 0..8usize {
+            let id = format!("jve1:{:064x}", 130_000 + i);
+            prepared.add_host_verified_record(host(
+                id.clone(),
+                &judge,
+                judge_prev,
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            ));
+            judge_prev = vec![id];
+        }
+
+        // Append one more `jvr1:` judgment on the fast path, then append native
+        // publications with IDs sorting before and after the matched publications,
+        // both directly and after checkpoint restoration.
+        let appended_judgment = host(
+            format!("jve1:{:064x}", 130_100usize),
+            &judge,
+            judge_prev,
+            json!({"kind":"judgment.set","target":rafsi_target,"value":"curse"}),
+        );
+        let (mut after_judgment, _, mut after_judgment_prepared) =
+            compare_fast_and_full(&prepared, &appended_judgment);
+        assert!(!after_judgment.statistics().rebuilt);
+
+        for (pub_id, new_seed) in [
+            (format!("jve1:{:064x}", 1usize), 21u8),
+            (format!("jve1:{:064x}", 400_000usize), 22u8),
+            (format!("jve1:f{:063x}", 1usize), 23u8),
+        ] {
+            let new_issuer = identity_from_seed(&[new_seed; 32]);
+            let new_pub = host_missing_body(
+                pub_id,
+                &new_issuer,
+                vec![],
+                json!({"kind":"definition.publish","word":word,"language":"en","parents":[native_target_id.clone(), imported_pub.id()],"origin":"native"}),
+            );
+            let mut delta = PreparedEvaluationInput::new(after_judgment_prepared.options.clone());
+            delta.add_host_verified_record(new_pub.clone());
+            let saved = after_judgment.checkpoint("host-checked").unwrap();
+            let direct = after_judgment.advance(delta.clone(), &[]);
+            assert!(!direct.statistics().rebuilt);
+
+            let restored = EvaluatedState::restore_host_checkpoint(&saved, "host-checked").unwrap();
+            let from_restored = restored.advance(delta, &[]);
+            assert!(!from_restored.statistics().rebuilt);
+
+            let mut expected = after_judgment_prepared.clone();
+            expected.add_host_verified_record(new_pub.clone());
+            assert_matches_full(&direct, &expected);
+            assert_matches_full(&from_restored, &expected);
+            assert_tight_budgets_match(&after_judgment_prepared, &new_pub, &expected);
+            after_judgment = direct;
+            after_judgment_prepared = expected;
+        }
+    }
+
+    #[test]
+    fn checkpoint_without_publication_scan_fields_or_with_v4_version_refuses_at_tight_budget() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let new_issuer = identity_from_seed(&[9u8; 32]);
+        let new_pub = host_missing_body(
+            format!("jve1:{:064x}", 40_000usize),
+            &new_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+
+        // 1. Unmatched `jvr1:` scans at tight budget (218).
+        let mut prepared = base();
+        let mut records = Vec::new();
+        for node in prepared.nodes.values() {
+            records.push(HostVerifiedRecord { node: node.clone() });
+        }
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        let judge = identity_from_seed(&[5u8; 32]);
+        for i in 0..20usize {
+            let record = host(
+                format!("jve1:{:064x}", 30_000 + i),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            );
+            records.push(record.clone());
+            prepared.add_host_verified_record(record);
+        }
+        prepared.options.limits.traversal = Some(218);
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+        assert_eq!(state.consumed_work(), 190);
+
+        let mut full_prepared = prepared.clone();
+        full_prepared.add_host_verified_record(new_pub.clone());
+        let full = full_prepared.into_state();
+        assert!(!full.evaluation().available);
+        assert_eq!(full.consumed_work(), 218);
+        assert_whole_evaluation_refusal(full.evaluation());
+
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(new_pub.clone());
+
+        let saved_full = state.checkpoint("host-checked").unwrap();
+        let saved_results = state.result_checkpoint("host-checked").unwrap();
+        for case in [
+            "strip_unmatched",
+            "strip_matched",
+            "strip_both",
+            "v4_version",
+        ] {
+            for (is_results, raw) in [(false, &saved_full), (true, &saved_results)] {
+                let mut value: Value = serde_json::from_slice(raw).unwrap();
+                match case {
+                    "strip_unmatched" => {
+                        value
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("unmatched_publication_scans");
+                    }
+                    "strip_matched" => {
+                        value
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("matched_publication_scans");
+                    }
+                    "strip_both" => {
+                        let obj = value.as_object_mut().unwrap();
+                        obj.remove("unmatched_publication_scans");
+                        obj.remove("matched_publication_scans");
+                    }
+                    "v4_version" => {
+                        value["version"] = json!(if is_results {
+                            "jvc-evaluation-results-v4"
+                        } else {
+                            "jvc-evaluation-checkpoint-v4"
+                        });
+                    }
+                    _ => unreachable!(),
+                }
+                let mutated = serde_json::to_vec(&value).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &mutated,
+                        "host-checked",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&mutated, "host-checked")
+                };
+                let err_flag = restored.is_err();
+                let base_or_rebuilt = restored.unwrap_or_else(|_| prepared.clone().into_state());
+                let fast = base_or_rebuilt.advance(delta.clone(), &[]);
+                assert!(
+                    !fast.evaluation().available,
+                    "case={case} is_results={is_results}: expected refusal, got available=true with consumed_work={}",
+                    fast.consumed_work()
+                );
+                assert_eq!(fast.consumed_work(), full.consumed_work());
+                assert_whole_evaluation_refusal(fast.evaluation());
+                assert_eq!(
+                    serde_json::to_value(fast.evaluation()).unwrap(),
+                    serde_json::to_value(full.evaluation()).unwrap()
+                );
+                assert!(
+                    err_flag,
+                    "case={case} is_results={is_results} must be rejected"
+                );
+            }
+        }
+
+        // 2. Matched `jvr1:` scans at tight budget (`full_work - 1`).
+        let mut matched_prepared = base();
+        let mut matched_records = Vec::new();
+        for node in matched_prepared.nodes.values() {
+            matched_records.push(HostVerifiedRecord { node: node.clone() });
+        }
+        let rafsi_word = jvc_core::word_id(&json!({"language":"jbo","spelling":"klama"})).unwrap();
+        let rafsi_pub = host_missing_body(
+            format!("jve1:{:064x}", 0xf000usize),
+            &identity_from_seed(&[1u8; 32]),
+            vec![],
+            json!({"kind":"rafsi.publish","word":rafsi_word,"assignment":rafsi_target,"origin":"native"}),
+        );
+        matched_records.push(rafsi_pub.clone());
+        matched_prepared.add_host_verified_record(rafsi_pub);
+        for i in 0..20usize {
+            let record = host(
+                format!("jve1:{:064x}", 30_000 + i),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            );
+            matched_records.push(record.clone());
+            matched_prepared.add_host_verified_record(record);
+        }
+        let before_rafsi_pub = host_missing_body(
+            format!("jve1:{:064x}", 0xd001usize),
+            &new_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+        let base_work = matched_prepared.clone().into_state().consumed_work();
+        let mut matched_full_open = matched_prepared.clone();
+        matched_full_open.add_host_verified_record(before_rafsi_pub.clone());
+        let full_work = matched_full_open.into_state().consumed_work();
+        assert_eq!(full_work - base_work, 29);
+        let tight_limit = full_work - 1;
+
+        matched_prepared.options.limits.traversal = Some(tight_limit);
+        let matched_state = matched_prepared.clone().into_state();
+        assert!(matched_state.evaluation().available);
+        assert_eq!(matched_state.consumed_work(), base_work);
+
+        let mut matched_full_prepared = matched_prepared.clone();
+        matched_full_prepared.add_host_verified_record(before_rafsi_pub.clone());
+        let matched_full = matched_full_prepared.into_state();
+        assert!(!matched_full.evaluation().available);
+        assert_eq!(matched_full.consumed_work(), tight_limit);
+        assert_whole_evaluation_refusal(matched_full.evaluation());
+
+        let mut matched_delta = PreparedEvaluationInput::new(matched_prepared.options.clone());
+        matched_delta.add_host_verified_record(before_rafsi_pub);
+
+        let saved_matched = matched_state.checkpoint("host-checked").unwrap();
+        let saved_matched_results = matched_state.result_checkpoint("host-checked").unwrap();
+        for case in ["strip_matched", "v4_version"] {
+            for (is_results, raw) in [(false, &saved_matched), (true, &saved_matched_results)] {
+                let mut value: Value = serde_json::from_slice(raw).unwrap();
+                match case {
+                    "strip_matched" => {
+                        value
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("matched_publication_scans");
+                    }
+                    "v4_version" => {
+                        value["version"] = json!(if is_results {
+                            "jvc-evaluation-results-v4"
+                        } else {
+                            "jvc-evaluation-checkpoint-v4"
+                        });
+                    }
+                    _ => unreachable!(),
+                }
+                let mutated = serde_json::to_vec(&value).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &mutated,
+                        "host-checked",
+                        matched_records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&mutated, "host-checked")
+                };
+                let err_flag = restored.is_err();
+                let base_or_rebuilt =
+                    restored.unwrap_or_else(|_| matched_prepared.clone().into_state());
+                let fast = base_or_rebuilt.advance(matched_delta.clone(), &[]);
+                assert!(
+                    !fast.evaluation().available,
+                    "matched case={case} is_results={is_results}: expected refusal, got available=true with consumed_work={}",
+                    fast.consumed_work()
+                );
+                assert_eq!(fast.consumed_work(), matched_full.consumed_work());
+                assert_whole_evaluation_refusal(fast.evaluation());
+                assert!(
+                    err_flag,
+                    "matched case={case} is_results={is_results} must be rejected"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_always_serializes_publication_scan_fields_even_when_zero_or_empty() {
+        let prepared = base();
+        let mut records = Vec::new();
+        for node in prepared.nodes.values() {
+            records.push(HostVerifiedRecord { node: node.clone() });
+        }
+        let state = prepared.into_state();
+        let full_bytes = state.checkpoint("host-checked").unwrap();
+        let result_bytes = state.result_checkpoint("host-checked").unwrap();
+
+        let full_json: Value = serde_json::from_slice(&full_bytes).unwrap();
+        let result_json: Value = serde_json::from_slice(&result_bytes).unwrap();
+        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v8"));
+        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v8"));
+        assert!(result_json.get("nodes").is_none());
+        for json in [&full_json, &result_json] {
+            assert_eq!(json.get("unmatched_publication_scans"), Some(&json!(0)));
+            assert_eq!(json.get("matched_publication_scans"), Some(&json!({})));
+        }
+
+        for field in [
+            "unmatched_publication_scans",
+            "matched_publication_scans",
+            "options.selected_view",
+            "options.import_selections",
+            "options.overlay",
+            "options.limits",
+        ] {
+            let mut mutated = full_json.clone();
+            if let Some(sub) = field.strip_prefix("options.") {
+                mutated["options"].as_object_mut().unwrap().remove(sub);
+            } else {
+                mutated.as_object_mut().unwrap().remove(field);
+            }
+            let bytes = serde_json::to_vec(&mutated).unwrap();
+            assert!(
+                EvaluatedState::restore_host_checkpoint(&bytes, "host-checked").is_err(),
+                "missing {field} in full checkpoint must be rejected"
+            );
+
+            let mut mutated_res = result_json.clone();
+            if let Some(sub) = field.strip_prefix("options.") {
+                mutated_res["options"].as_object_mut().unwrap().remove(sub);
+            } else {
+                mutated_res.as_object_mut().unwrap().remove(field);
+            }
+            let res_bytes = serde_json::to_vec(&mutated_res).unwrap();
+            assert!(
+                EvaluatedState::restore_host_result_checkpoint(
+                    &res_bytes,
+                    "host-checked",
+                    records.clone()
+                )
+                .is_err(),
+                "missing {field} in result checkpoint must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn checkpoint_without_evaluation_policy_is_rejected_and_tight_budget_refuses() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let new_issuer = identity_from_seed(&[9u8; 32]);
+        let new_pub = host_missing_body(
+            format!("jve1:{:064x}", 40_000usize),
+            &new_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+
+        // Case A: 20 `jve1:` judgments at tight budget 266 (base consumes 247, full consumes 267 -> refuses at 266).
+        let mut jve_prepared = base();
+        let pub_id = format!("jve1:{:064x}", 10_000usize);
+        let pub_issuer = identity_from_seed(&[1u8; 32]);
+        jve_prepared.add_host_verified_record(host_missing_body(
+            pub_id.clone(),
+            &pub_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        ));
+        let judge = identity_from_seed(&[5u8; 32]);
+        for i in 0..20usize {
+            jve_prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 30_000 + i),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":pub_id,"value":"bless"}),
+            ));
+        }
+        jve_prepared.options.limits.traversal = Some(266);
+
+        // Case B: 20 unresolved `jvr1:` judgments at tight budget 218 (base consumes 190, full consumes 219 -> refuses at 218).
+        let mut jvr_prepared = base();
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        for i in 0..20usize {
+            jvr_prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 30_000 + i),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            ));
+        }
+        jvr_prepared.options.limits.traversal = Some(218);
+
+        let mut failures = Vec::new();
+        for (label, prepared, expected_base_work, expected_tight_work) in [
+            ("jve1_judgments_266", jve_prepared, 258usize, 266usize),
+            ("jvr1_judgments_218", jvr_prepared, 190usize, 218usize),
+        ] {
+            let records: Vec<HostVerifiedRecord> = prepared
+                .nodes
+                .values()
+                .map(|node| HostVerifiedRecord { node: node.clone() })
+                .collect();
+            let state = prepared.clone().into_state();
+            assert!(state.evaluation().available);
+            assert_eq!(state.consumed_work(), expected_base_work);
+
+            let mut full_prepared = prepared.clone();
+            full_prepared.add_host_verified_record(new_pub.clone());
+            let full = full_prepared.into_state();
+            assert!(!full.evaluation().available);
+            assert_eq!(full.consumed_work(), expected_tight_work);
+            assert_whole_evaluation_refusal(full.evaluation());
+
+            let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+            delta.add_host_verified_record(new_pub.clone());
+
+            let saved_full = state.checkpoint("host-checked").unwrap();
+            let saved_results = state.result_checkpoint("host-checked").unwrap();
+            for mutation in ["delete_policy", "null_policy"] {
+                for (is_results, raw) in [(false, &saved_full), (true, &saved_results)] {
+                    let mut value: Value = serde_json::from_slice(raw).unwrap();
+                    if mutation == "delete_policy" {
+                        value["evaluation"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("policy");
+                    } else {
+                        value["evaluation"]["policy"] = Value::Null;
+                    }
+                    let bytes = serde_json::to_vec(&value).unwrap();
+                    let restored = if is_results {
+                        EvaluatedState::restore_host_result_checkpoint(
+                            &bytes,
+                            "host-checked",
+                            records.clone(),
+                        )
+                    } else {
+                        EvaluatedState::restore_host_checkpoint(&bytes, "host-checked")
+                    };
+                    let err_flag = restored.is_err();
+                    let base_or_rebuilt =
+                        restored.unwrap_or_else(|_| prepared.clone().into_state());
+                    let fast = base_or_rebuilt.advance(delta.clone(), &[]);
+                    if !err_flag
+                        || fast.evaluation().available
+                        || fast.consumed_work() != full.consumed_work()
+                    {
+                        failures.push(format!(
+                            "{label} mutation={mutation} is_results={is_results}: restore_err={err_flag} fast_available={} fast_work={} full_work={}",
+                            fast.evaluation().available,
+                            fast.consumed_work(),
+                            full.consumed_work()
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "policy regression failures ({}):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn checkpoint_without_limits_traversal_is_rejected_on_restore_and_options_parse() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let new_issuer = identity_from_seed(&[9u8; 32]);
+        let new_pub = host_missing_body(
+            format!("jve1:{:064x}", 40_000usize),
+            &new_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+
+        let mut prepared = base();
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        let judge = identity_from_seed(&[5u8; 32]);
+        for i in 0..20usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 30_000 + i),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            ));
+        }
+        prepared.options.limits = Limits {
+            events: Some(500),
+            traversal: Some(218),
+            claim_depth: 64,
+        };
+        let records: Vec<HostVerifiedRecord> = prepared
+            .nodes
+            .values()
+            .map(|node| HostVerifiedRecord { node: node.clone() })
+            .collect();
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+        assert_eq!(state.consumed_work(), 190);
+
+        let mut full_prepared = prepared.clone();
+        full_prepared.add_host_verified_record(new_pub.clone());
+        let full = full_prepared.into_state();
+        assert!(!full.evaluation().available);
+        assert_eq!(full.consumed_work(), 218);
+
+        let saved_full = state.checkpoint("host-checked").unwrap();
+        let saved_results = state.result_checkpoint("host-checked").unwrap();
+        let mut failures = Vec::new();
+        for mutation in [
+            "delete_traversal",
+            "delete_events",
+            "delete_claim_depth",
+            "null_traversal",
+        ] {
+            for (is_results, raw) in [(false, &saved_full), (true, &saved_results)] {
+                let mut value: Value = serde_json::from_slice(raw).unwrap();
+                match mutation {
+                    "delete_traversal" => {
+                        value["options"]["limits"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("traversal");
+                    }
+                    "delete_events" => {
+                        value["options"]["limits"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("events");
+                    }
+                    "delete_claim_depth" => {
+                        value["options"]["limits"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("claim_depth");
+                    }
+                    "null_traversal" => {
+                        value["options"]["limits"]["traversal"] = Value::Null;
+                    }
+                    _ => unreachable!(),
+                }
+                if mutation.starts_with("delete_") {
+                    let parsed_opts =
+                        serde_json::from_value::<EvaluationOptions>(value["options"].clone());
+                    if parsed_opts.is_ok() {
+                        failures.push(format!(
+                            "EvaluationOptions::deserialize accepted {mutation} (is_results={is_results})"
+                        ));
+                    }
+                }
+                let bytes = serde_json::to_vec(&value).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes,
+                        "host-checked",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes, "host-checked")
+                };
+                match restored {
+                    Err(_) => {}
+                    Ok(restored_state) => {
+                        let mut delta =
+                            PreparedEvaluationInput::new(restored_state.prepared.options.clone());
+                        delta.add_host_verified_record(new_pub.clone());
+                        let advanced = restored_state.advance(delta, &[]);
+                        failures.push(format!(
+                            "restore accepted {mutation} (is_results={is_results}): advanced available={} consumed_work={} remaining_work={}",
+                            advanced.evaluation().available,
+                            advanced.consumed_work(),
+                            advanced.remaining_work
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "limits regression failures ({}):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[derive(Clone, Debug)]
+    enum JsonStep {
+        Key(String),
+        Index(usize),
+    }
+
+    fn format_json_path(path: &[JsonStep]) -> String {
+        let mut out = String::new();
+        for step in path {
+            match step {
+                JsonStep::Key(k) => {
+                    if !out.is_empty() {
+                        out.push('.');
+                    }
+                    out.push_str(k);
+                }
+                JsonStep::Index(i) => {
+                    out.push_str(&format!("[{i}]"));
+                }
+            }
+        }
+        out
+    }
+
+    fn collect_json_paths(
+        value: &Value,
+        prefix: &mut Vec<JsonStep>,
+        key_paths: &mut Vec<Vec<JsonStep>>,
+        non_null_paths: &mut Vec<Vec<JsonStep>>,
+    ) {
+        match value {
+            Value::Object(map) => {
+                for (k, v) in map {
+                    prefix.push(JsonStep::Key(k.clone()));
+                    key_paths.push(prefix.clone());
+                    if !v.is_null() {
+                        non_null_paths.push(prefix.clone());
+                    }
+                    collect_json_paths(v, prefix, key_paths, non_null_paths);
+                    prefix.pop();
+                }
+            }
+            Value::Array(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    prefix.push(JsonStep::Index(i));
+                    collect_json_paths(item, prefix, key_paths, non_null_paths);
+                    prefix.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn remove_at_json_path(root: &mut Value, path: &[JsonStep]) {
+        let (last, parents) = path.split_last().unwrap();
+        let mut cursor = root;
+        for step in parents {
+            cursor = match step {
+                JsonStep::Key(k) => cursor.get_mut(k).unwrap(),
+                JsonStep::Index(i) => cursor.get_mut(*i).unwrap(),
+            };
+        }
+        if let JsonStep::Key(k) = last {
+            cursor.as_object_mut().unwrap().remove(k);
+        }
+    }
+
+    fn null_at_json_path(root: &mut Value, path: &[JsonStep]) {
+        let mut cursor = root;
+        for step in path {
+            cursor = match step {
+                JsonStep::Key(k) => cursor.get_mut(k).unwrap(),
+                JsonStep::Index(i) => cursor.get_mut(*i).unwrap(),
+            };
+        }
+        *cursor = Value::Null;
+    }
+
+    fn rich_checkpoint_fixture() -> (PreparedEvaluationInput, HostVerifiedRecord) {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let mut import_body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        import_body["legacy"] = json!({
+            "source":"fixture",
+            "snapshot":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "extraction":"fixture-v1",
+            "record":{"kind":"definition","id":1},
+            "locator":"fixture",
+            "original":{},
+            "attribution":{
+                "author":"author",
+                "editor":null,
+                "author_account":{
+                    "origin":"https://source.example",
+                    "account":41,
+                    "username":"author",
+                    "evidence":{
+                        "kind":"source-id",
+                        "source":{"label":"source author numeric field","url":null,"event":null,"locator":"author_id"}
+                    }
+                },
+                "dates":{}
+            },
+            "conversion":{"method":"literal","tool":"fixture","version":"1","model":null,"review":"unreviewed","mappings":[],"warnings":[]},
+            "limitations":[]
+        });
+        let (imported_pub, imported_bytes) = event(
+            9,
+            9,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"import"}),
+            Some(import_body),
+        );
+        let sel_ids = vec![imported_pub.id().to_string()];
+        let sel_bytes = jvc_core::canonical_value(&json!(sel_ids)).unwrap();
+        let sel_hash = jvc_core::hash_id("sha256:", b"", &sel_bytes);
+
+        let (view, view_body) = event(
+            1,
+            77,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"fixture",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[{"identity":identity_from_seed(&[4;32]),"evidence":[imported_pub.id()]}],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[{"source":"fixture","importer":identity_from_seed(&[9;32]),"selection":sel_hash}],
+                "account_witnesses":[identity_from_seed(&[10;32]),identity_from_seed(&[11;32])],
+                "account_authority":true,
+                "notes":[]
+            })),
+        );
+        let overlay = json!({
+            "version":2,
+            "base_view":view.id(),
+            "public_shun_issuer":identity_from_seed(&[1;32]),
+            "root_changes":[{"identity":identity_from_seed(&[2;32]),"q":{"numerator":1,"denominator":2}}],
+            "trust":[{"issuer":identity_from_seed(&[1;32]),"subject":identity_from_seed(&[2;32]),"scope":{"kind":"*","word":"*","language":"*"},"value":"heed","weight":{"numerator":1,"denominator":1}}],
+            "blocked":[{"identity":identity_from_seed(&[3;32]),"scope":{"kind":"*","word":"*","language":"*"}}],
+            "work":500
+        });
+        let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::from([(sel_hash, sel_ids)]),
+            overlay: Some(overlay.into()),
+            limits: Limits {
+                events: Some(500),
+                traversal: Some(10_000),
+                claim_depth: 64,
+            },
+        });
+        prepared.add_record(&view, view_body.as_deref());
+
+        let native_def: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        let (native_pub, native_pub_body) = event(
+            1,
+            2,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            Some(jvc_core::omit_definition_defaults(&native_def)),
+        );
+        let native_pub_id = native_pub.id().to_string();
+        prepared.add_record(&native_pub, native_pub_body.as_deref());
+        prepared.add_record(&imported_pub, imported_bytes.as_deref());
+
+        let issuer = identity_from_seed(&[1u8; 32]);
+        let native_missing_id = format!("jve1:{:064x}", 10_001usize);
+        prepared.add_host_verified_record(host_missing_body(
+            native_missing_id,
+            &issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[native_pub_id.clone()],"origin":"native"}),
+        ));
+
+        let rafsi_word = jvc_core::word_id(&json!({"language":"jbo","spelling":"klama"})).unwrap();
+        let rafsi_target = format!("jvr1:{:064x}", 7usize);
+        let rafsi_pub_id = format!("jve1:{:064x}", 10_002usize);
+        prepared.add_host_verified_record(host_missing_body(
+            rafsi_pub_id,
+            &issuer,
+            vec![],
+            json!({"kind":"rafsi.publish","word":rafsi_word,"assignment":rafsi_target,"origin":"native"}),
+        ));
+
+        let claim_id = format!("jve1:{:064x}", 10_010usize);
+        prepared.add_host_verified_record(host(
+            claim_id.clone(),
+            &issuer,
+            vec![],
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+        ));
+        observe(&mut prepared, 10, 1, &claim_id);
+        observe(&mut prepared, 11, 1, &claim_id);
+
+        let import_status_id = format!("jve1:{:064x}", 10_011usize);
+        prepared.add_host_verified_record(host(
+            import_status_id,
+            &issuer,
+            vec![claim_id.clone()],
+            json!({"kind":"import.status","target":imported_pub.id(),"claim":claim_id,"value":"active"}),
+        ));
+
+        let judge = identity_from_seed(&[5u8; 32]);
+        prepared.add_host_verified_record(host(
+            format!("jve1:{:064x}", 10_020usize),
+            &judge,
+            vec![],
+            json!({"kind":"judgment.set","target":native_pub_id,"value":"bless"}),
+        ));
+        prepared.add_host_verified_record(host(
+            format!("jve1:{:064x}", 10_021usize),
+            &judge,
+            vec![],
+            json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+        ));
+        let unmatched_rafsi = format!("jvr1:{:064x}", 99usize);
+        prepared.add_host_verified_record(host(
+            format!("jve1:{:064x}", 10_022usize),
+            &judge,
+            vec![],
+            json!({"kind":"judgment.set","target":unmatched_rafsi,"value":"curse"}),
+        ));
+
+        let (trust_ev, trust_body) = event(
+            2,
+            20,
+            json!({"kind":"trust.set","subject":identity_from_seed(&[12;32]),"scope":{"kind":"*","word":"*","language":"*"},"value":"heed"}),
+            None,
+        );
+        prepared.add_record(&trust_ev, trust_body.as_deref());
+
+        let old_actor = identity_from_seed(&[14u8; 32]);
+        let new_actor = identity_from_seed(&[15u8; 32]);
+        let transfer_id = format!("jve1:{:064x}", 10_030usize);
+        let accept_id = format!("jve1:{:064x}", 10_031usize);
+        prepared.add_host_verified_record(host(
+            transfer_id.clone(),
+            &old_actor,
+            vec![],
+            json!({"kind":"identity.transfer","successor":new_actor}),
+        ));
+        prepared.add_host_verified_record(host(
+            accept_id,
+            &new_actor,
+            vec![],
+            json!({"kind":"identity.accept","transfer":transfer_id}),
+        ));
+
+        let suspended_actor = identity_from_seed(&[16u8; 32]);
+        prepared.add_host_verified_record(host(
+            format!("jve1:{:064x}", 10_040usize),
+            &suspended_actor,
+            vec![format!("jve1:{:064x}", 999_999usize)],
+            json!({"kind":"identity.merge"}),
+        ));
+
+        let appended_issuer = identity_from_seed(&[25u8; 32]);
+        let appended_pub = host_missing_body(
+            format!("jve1:{:064x}", 5usize),
+            &appended_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+        (prepared, appended_pub)
+    }
+
+    #[test]
+    fn checkpoint_key_deletion_and_null_mutation_reject_or_rebuild_matching_full() {
+        let (mut prepared_open, appended_pub) = rich_checkpoint_fixture();
+        let state_open = prepared_open.clone().into_state();
+        assert!(state_open.evaluation().available);
+        assert!(state_open.evaluation().policy.is_some());
+        assert!(state_open.evaluation().overlay.is_some());
+        assert!(!state_open.evaluation().registers.is_empty());
+        assert!(state_open.unmatched_publication_scans > 0);
+        assert!(!state_open.matched_publication_scans.is_empty());
+        assert!(!state_open.evaluation().accounts.is_empty());
+        assert!(!state_open.evaluation().publications.is_empty());
+        assert!(!state_open.evaluation().trust.is_empty());
+        assert!(!state_open.evaluation().selections.is_empty());
+
+        let mut full_open_prepared = prepared_open.clone();
+        full_open_prepared.add_host_verified_record(appended_pub.clone());
+        let full_open = full_open_prepared.into_state();
+        assert!(full_open.evaluation().available);
+        let exact_limit = full_open.consumed_work();
+        let tight_limit = exact_limit - 1;
+
+        let mut prepared_exact = prepared_open.clone();
+        prepared_exact.options.limits.traversal = Some(exact_limit);
+        let state_exact = prepared_exact.clone().into_state();
+        assert!(state_exact.evaluation().available);
+        let mut full_exact_prepared = prepared_exact.clone();
+        full_exact_prepared.add_host_verified_record(appended_pub.clone());
+        let full_exact = full_exact_prepared.into_state();
+        assert!(full_exact.evaluation().available);
+        let full_exact_json = serde_json::to_value(full_exact.evaluation()).unwrap();
+
+        prepared_open.options.limits.traversal = Some(tight_limit);
+        let prepared_tight = prepared_open;
+        let state_tight = prepared_tight.clone().into_state();
+        assert!(state_tight.evaluation().available);
+
+        let mut full_tight_prepared = prepared_tight.clone();
+        full_tight_prepared.add_host_verified_record(appended_pub.clone());
+        let full_tight = full_tight_prepared.into_state();
+        assert!(!full_tight.evaluation().available);
+        assert_whole_evaluation_refusal(full_tight.evaluation());
+        let full_tight_json = serde_json::to_value(full_tight.evaluation()).unwrap();
+
+        let records: Vec<HostVerifiedRecord> = prepared_tight
+            .nodes
+            .values()
+            .map(|node| HostVerifiedRecord { node: node.clone() })
+            .collect();
+
+        let saved_exact_full = state_exact.checkpoint("host-checked").unwrap();
+        let saved_exact_results = state_exact.result_checkpoint("host-checked").unwrap();
+        let saved_tight_full = state_tight.checkpoint("host-checked").unwrap();
+        let saved_tight_results = state_tight.result_checkpoint("host-checked").unwrap();
+
+        assert!(EvaluatedState::restore_host_checkpoint(&saved_exact_full, "host-checked").is_ok());
+        assert!(
+            EvaluatedState::restore_host_result_checkpoint(
+                &saved_exact_results,
+                "host-checked",
+                records.clone(),
+            )
+            .is_ok()
+        );
+        assert!(EvaluatedState::restore_host_checkpoint(&saved_tight_full, "host-checked").is_ok());
+        assert!(
+            EvaluatedState::restore_host_result_checkpoint(
+                &saved_tight_results,
+                "host-checked",
+                records.clone(),
+            )
+            .is_ok()
+        );
+
+        let mut deleted_paths_checked = 0usize;
+        let mut deleted_rejected = 0usize;
+        let mut deleted_rebuilt = 0usize;
+        let mut nulled_paths_checked = 0usize;
+        let mut nulled_rejected = 0usize;
+        let mut nulled_rebuilt = 0usize;
+        let mut failures = Vec::new();
+        reset_digest_rejections();
+
+        for (is_results, raw_exact, raw_tight) in [
+            (false, &saved_exact_full, &saved_tight_full),
+            (true, &saved_exact_results, &saved_tight_results),
+        ] {
+            let root_exact: Value = serde_json::from_slice(raw_exact).unwrap();
+            let root_tight: Value = serde_json::from_slice(raw_tight).unwrap();
+            let mut key_paths = Vec::new();
+            let mut non_null_paths = Vec::new();
+            collect_json_paths(
+                &root_tight,
+                &mut Vec::new(),
+                &mut key_paths,
+                &mut non_null_paths,
+            );
+
+            for path in &key_paths {
+                deleted_paths_checked += 1;
+                let mut mutated_exact = root_exact.clone();
+                remove_at_json_path(&mut mutated_exact, path);
+                let bytes_exact = serde_json::to_vec(&mutated_exact).unwrap();
+                let restored_exact = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes_exact,
+                        "host-checked",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes_exact, "host-checked")
+                };
+
+                let mut mutated_tight = root_tight.clone();
+                remove_at_json_path(&mut mutated_tight, path);
+                let bytes_tight = serde_json::to_vec(&mutated_tight).unwrap();
+                let restored_tight = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes_tight,
+                        "host-checked",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes_tight, "host-checked")
+                };
+
+                match (restored_exact, restored_tight) {
+                    (Err(_), Err(_)) => {
+                        deleted_rejected += 1;
+                    }
+                    (Ok(state_e), Ok(state_t)) => {
+                        let outcome =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let mut delta_e = PreparedEvaluationInput::new(
+                                    prepared_exact.options_with_selections(),
+                                );
+                                delta_e.add_host_verified_record(appended_pub.clone());
+                                let adv_e = state_e.advance(delta_e, &[]);
+
+                                let mut delta_t = PreparedEvaluationInput::new(
+                                    prepared_tight.options_with_selections(),
+                                );
+                                delta_t.add_host_verified_record(appended_pub.clone());
+                                let adv_t = state_t.advance(delta_t, &[]);
+
+                                (adv_e, adv_t)
+                            }));
+                        match outcome {
+                            Err(_) => {
+                                failures.push(format!(
+                                    "DELETE is_results={is_results} path={}: advance panicked",
+                                    format_json_path(path),
+                                ));
+                            }
+                            Ok((adv_e, adv_t)) => {
+                                let ok_exact = adv_e.statistics().rebuilt
+                                    && adv_e.evaluation().available
+                                    && adv_e.consumed_work() == full_exact.consumed_work()
+                                    && adv_e.remaining_work == full_exact.remaining_work
+                                    && serde_json::to_value(adv_e.evaluation()).unwrap()
+                                        == full_exact_json;
+                                let ok_tight = adv_t.statistics().rebuilt
+                                    && !adv_t.evaluation().available
+                                    && adv_t.consumed_work() == full_tight.consumed_work()
+                                    && adv_t.remaining_work == full_tight.remaining_work
+                                    && serde_json::to_value(adv_t.evaluation()).unwrap()
+                                        == full_tight_json;
+                                if ok_exact && ok_tight {
+                                    deleted_rebuilt += 1;
+                                } else {
+                                    failures.push(format!(
+                                        "DELETE is_results={is_results} path={}: exact_rebuilt={} exact_ok={ok_exact} tight_rebuilt={} tight_avail={} tight_work={} vs {}",
+                                        format_json_path(path),
+                                        adv_e.statistics().rebuilt,
+                                        adv_t.statistics().rebuilt,
+                                        adv_t.evaluation().available,
+                                        adv_t.consumed_work(),
+                                        full_tight.consumed_work(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    (r_e, r_t) => {
+                        failures.push(format!(
+                            "DELETE is_results={is_results} path={}: inconsistent restore exact_err={} tight_err={}",
+                            format_json_path(path),
+                            r_e.is_err(),
+                            r_t.is_err(),
+                        ));
+                    }
+                }
+            }
+
+            for path in &non_null_paths {
+                nulled_paths_checked += 1;
+                let mut mutated_exact = root_exact.clone();
+                null_at_json_path(&mut mutated_exact, path);
+                let bytes_exact = serde_json::to_vec(&mutated_exact).unwrap();
+                let restored_exact = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes_exact,
+                        "host-checked",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes_exact, "host-checked")
+                };
+
+                let mut mutated_tight = root_tight.clone();
+                null_at_json_path(&mut mutated_tight, path);
+                let bytes_tight = serde_json::to_vec(&mutated_tight).unwrap();
+                let restored_tight = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes_tight,
+                        "host-checked",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes_tight, "host-checked")
+                };
+
+                match (restored_exact, restored_tight) {
+                    (Err(_), Err(_)) => {
+                        nulled_rejected += 1;
+                    }
+                    (Ok(state_e), Ok(state_t)) => {
+                        let outcome =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let mut delta_e = PreparedEvaluationInput::new(
+                                    prepared_exact.options_with_selections(),
+                                );
+                                delta_e.add_host_verified_record(appended_pub.clone());
+                                let adv_e = state_e.advance(delta_e, &[]);
+
+                                let mut delta_t = PreparedEvaluationInput::new(
+                                    prepared_tight.options_with_selections(),
+                                );
+                                delta_t.add_host_verified_record(appended_pub.clone());
+                                let adv_t = state_t.advance(delta_t, &[]);
+
+                                (adv_e, adv_t)
+                            }));
+                        match outcome {
+                            Err(_) => {
+                                failures.push(format!(
+                                    "NULL is_results={is_results} path={}: advance panicked",
+                                    format_json_path(path),
+                                ));
+                            }
+                            Ok((adv_e, adv_t)) => {
+                                let ok_exact = adv_e.statistics().rebuilt
+                                    && adv_e.evaluation().available
+                                    && adv_e.consumed_work() == full_exact.consumed_work()
+                                    && adv_e.remaining_work == full_exact.remaining_work
+                                    && serde_json::to_value(adv_e.evaluation()).unwrap()
+                                        == full_exact_json;
+                                let ok_tight = adv_t.statistics().rebuilt
+                                    && !adv_t.evaluation().available
+                                    && adv_t.consumed_work() == full_tight.consumed_work()
+                                    && adv_t.remaining_work == full_tight.remaining_work
+                                    && serde_json::to_value(adv_t.evaluation()).unwrap()
+                                        == full_tight_json;
+                                if ok_exact && ok_tight {
+                                    nulled_rebuilt += 1;
+                                } else {
+                                    failures.push(format!(
+                                        "NULL is_results={is_results} path={}: exact_rebuilt={} exact_ok={ok_exact} tight_rebuilt={} tight_avail={} tight_work={} vs {}",
+                                        format_json_path(path),
+                                        adv_e.statistics().rebuilt,
+                                        adv_t.statistics().rebuilt,
+                                        adv_t.evaluation().available,
+                                        adv_t.consumed_work(),
+                                        full_tight.consumed_work(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    (r_e, r_t) => {
+                        failures.push(format!(
+                            "NULL is_results={is_results} path={}: inconsistent restore exact_err={} tight_err={}",
+                            format_json_path(path),
+                            r_e.is_err(),
+                            r_t.is_err(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        let digest_rejected = digest_rejections();
+        eprintln!(
+            "checkpoint_schema_audit: deleted_checked={deleted_paths_checked} (rejected={deleted_rejected}, rebuilt={deleted_rebuilt}), nulled_checked={nulled_paths_checked} (rejected={nulled_rejected}, rebuilt={nulled_rebuilt}), digest_rejected={digest_rejected}, failures={}",
+            failures.len()
+        );
+        assert!(
+            failures.is_empty()
+                && deleted_rejected == deleted_paths_checked
+                && nulled_rejected == nulled_paths_checked
+                && digest_rejected == (deleted_paths_checked + nulled_paths_checked) * 2,
+            "checkpoint schema audit must reject every key deletion and null mutation at digest check (deleted_rebuilt={deleted_rebuilt}, nulled_rebuilt={nulled_rebuilt}, digest_rejected={digest_rejected}, failures={}):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn overlay_switch_preserves_publication_scans_and_zero_view_restores() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        let judge = identity_from_seed(&[5u8; 32]);
+        let new_issuer = identity_from_seed(&[8u8; 32]);
+        let delta_pub = host_missing_body(
+            format!("jve1:{:064x}", 0xD001usize),
+            &new_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+
+        let build_with_overlay = |overlay: Option<Value>, traversal: Option<usize>| {
+            let mut prepared = base();
+            prepared.options.overlay = overlay.map(Into::into);
+            prepared.options.limits.traversal = traversal;
+            for i in 0..20usize {
+                prepared.add_host_verified_record(host(
+                    format!("jve1:{:064x}", 0xB100 + i),
+                    &judge,
+                    vec![],
+                    json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+                ));
+            }
+            prepared
+        };
+
+        // 1. Default budget: invalid overlay -> with_overlay(None) -> fast append.
+        let invalid_overlay = Some(json!({"version": 3}));
+        let first_open = build_with_overlay(invalid_overlay.clone(), None).into_state();
+        assert!(!first_open.evaluation().available);
+        assert!(first_open.evaluation().reasons.contains("invalid_overlay"));
+        let invalid_overlay_records: Vec<HostVerifiedRecord> = first_open
+            .prepared
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let invalid_full = first_open.checkpoint("bad-overlay").unwrap();
+        let invalid_results = first_open.result_checkpoint("bad-overlay").unwrap();
+
+        let switched_open = first_open.with_overlay(None);
+        drop(first_open);
+        assert!(switched_open.evaluation().available);
+        assert!(switched_open.evaluation().reasons.is_empty());
+
+        let mut delta_open = PreparedEvaluationInput::new(switched_open.prepared.options.clone());
+        delta_open.add_host_verified_record(delta_pub.clone());
+        let fast_open = switched_open.advance(delta_open, &[]);
+
+        let mut full_open_input = build_with_overlay(None, None);
+        full_open_input.add_host_verified_record(delta_pub.clone());
+        let full_open = full_open_input.into_state();
+        assert!(!fast_open.statistics().rebuilt);
+        assert_eq!(fast_open.consumed_work(), full_open.consumed_work());
+        assert_eq!(fast_open.evaluation(), full_open.evaluation());
+
+        // 2. Tight budget (full cost - 1): fast path after with_overlay(None) must refuse like full.
+        let tight_budget = full_open.consumed_work() - 1;
+        let first_tight =
+            build_with_overlay(invalid_overlay.clone(), Some(tight_budget)).into_state();
+        let switched_tight = first_tight.with_overlay(None);
+        drop(first_tight);
+        assert!(switched_tight.evaluation().available);
+
+        let mut delta_tight = PreparedEvaluationInput::new(switched_tight.prepared.options.clone());
+        delta_tight.add_host_verified_record(delta_pub.clone());
+        let fast_tight = switched_tight.advance(delta_tight, &[]);
+
+        let mut full_tight_input = build_with_overlay(None, Some(tight_budget));
+        full_tight_input.add_host_verified_record(delta_pub);
+        let full_tight = full_tight_input.into_state();
+        assert!(!full_tight.evaluation().available);
+        assert!(
+            full_tight
+                .evaluation()
+                .reasons
+                .contains("resource_unavailable")
+        );
+        assert!(!fast_tight.evaluation().available);
+        assert_eq!(fast_tight.consumed_work(), full_tight.consumed_work());
+        assert_eq!(fast_tight.evaluation(), full_tight.evaluation());
+
+        // 3. Zero view (service default) and invalid-overlay states with jvr1 judgment must restore both checkpoints.
+        let zero_view = format!("jve1:{}", "0".repeat(64));
+        let jvr_rec = host(
+            format!("jve1:{:064x}", 0xB100usize),
+            &judge,
+            vec![],
+            json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+        );
+        let mut zero_prepared = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: zero_view,
+            import_selections: BTreeMap::new(),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        zero_prepared.add_host_verified_record(jvr_rec.clone());
+        let zero_state = zero_prepared.into_state();
+        assert!(!zero_state.evaluation().available);
+        assert!(zero_state.evaluation().reasons.contains("view_unavailable"));
+
+        let zero_full = zero_state.checkpoint("zero-view").unwrap();
+        let zero_results = zero_state.result_checkpoint("zero-view").unwrap();
+        let restored_zero_full =
+            EvaluatedState::restore_host_checkpoint(&zero_full, "zero-view").unwrap();
+        let restored_zero_results = EvaluatedState::restore_host_result_checkpoint(
+            &zero_results,
+            "zero-view",
+            vec![jvr_rec],
+        )
+        .unwrap();
+        assert_eq!(restored_zero_full.evaluation(), zero_state.evaluation());
+        assert_eq!(restored_zero_results.evaluation(), zero_state.evaluation());
+
+        assert!(EvaluatedState::restore_host_checkpoint(&invalid_full, "bad-overlay").is_ok());
+        assert!(
+            EvaluatedState::restore_host_result_checkpoint(
+                &invalid_results,
+                "bad-overlay",
+                invalid_overlay_records,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn chained_distinct_views_restore_linearly() {
+        let measure_views = |count: usize| -> (std::time::Duration, std::time::Duration) {
+            let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+                selected_view: String::new(),
+                import_selections: BTreeMap::new(),
+                overlay: None,
+                limits: Limits::default(),
+            });
+            let mut records = Vec::with_capacity(count);
+            let mut parent_id: Option<String> = None;
+            let issuer = identity_from_seed(&[1u8; 32]);
+            for i in 0..count {
+                let parents = parent_id.into_iter().collect::<Vec<_>>();
+                let id = format!("jve1:{:064x}", i + 1);
+                let body = json!({
+                    "name":format!("view-{i:06}"),
+                    "description":[],
+                    "roots":[],
+                    "rafsi_threshold":{"numerator":1,"denominator":1},
+                    "H":{"numerator":3,"denominator":1},
+                    "alpha":{"numerator":1,"denominator":2},
+                    "excluded":[],
+                    "calculation":"simple-routes-bounds-v1",
+                    "work":1000,
+                    "import_sets":[],
+                    "account_witnesses":[],
+                    "account_authority":false,
+                    "notes":[]
+                });
+                let bytes = jvc_core::canonical_value(&body).unwrap();
+                let header = Header {
+                    version: 1,
+                    issuer: issuer.clone(),
+                    previous: vec![],
+                    nonce: format!("{:032x}", i + 1),
+                    action: json!({"kind":"view.publish","parents":parents}),
+                    content: Some(jvc_core::body_descriptor(&bytes).unwrap()),
+                };
+                let (record, _) = HostVerifiedRecord::extract_with(
+                    &id,
+                    &header,
+                    BodyAvailability::Valid { body },
+                    |_| (),
+                );
+                parent_id = Some(id);
+                prepared.add_host_verified_record(record);
+            }
+            prepared.options.selected_view = parent_id.unwrap();
+            for node in prepared.nodes.values() {
+                records.push(HostVerifiedRecord { node: node.clone() });
+            }
+            let state = prepared.into_state();
+            assert!(state.evaluation().available);
+            assert_eq!(state.evaluation().policies.len(), count);
+            assert_eq!(state.evaluation().policy_history.len(), count);
+            let full_bytes = state.checkpoint("chained-views").unwrap();
+            let result_bytes = state.result_checkpoint("chained-views").unwrap();
+
+            let start_full = std::time::Instant::now();
+            let restored_full =
+                EvaluatedState::restore_host_checkpoint(&full_bytes, "chained-views").unwrap();
+            let full_elapsed = start_full.elapsed();
+
+            let start_result = std::time::Instant::now();
+            let restored_result = EvaluatedState::restore_host_result_checkpoint(
+                &result_bytes,
+                "chained-views",
+                records,
+            )
+            .unwrap();
+            let result_elapsed = start_result.elapsed();
+
+            assert_eq!(restored_full.evaluation(), state.evaluation());
+            assert_eq!(restored_result.evaluation(), state.evaluation());
+            (full_elapsed, result_elapsed)
+        };
+
+        let (small_full, small_res) = measure_views(200);
+        let (large_full, large_res) = measure_views(1_000);
+        eprintln!(
+            "chained_distinct_views_restore_linearly: 200=({small_full:?}, {small_res:?}), 1000=({large_full:?}, {large_res:?})"
+        );
+        assert!(
+            large_full < small_full * 8
+                && large_res < small_res * 8
+                && large_full < std::time::Duration::from_secs(1)
+                && large_res < std::time::Duration::from_secs(1),
+            "1000 chained views restore grew super-linearly: 200=({small_full:?}, {small_res:?}), 1000=({large_full:?}, {large_res:?})"
+        );
+    }
+
+    #[test]
+    fn remainder_heuristic_removed_and_consumed_work_protects_budget() {
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        let judge = identity_from_seed(&[5u8; 32]);
+
+        // 1. wide_remainder (20 judgments, limit 6_000_190) and over_1024_nodes (1025 judgments, limit 9_735):
+        // Nulling options.limits.traversal must be rejected on restore.
+        for (label, count, limit) in [
+            ("wide_remainder", 20usize, 6_000_190usize),
+            ("over_1024_nodes", 1_025usize, 9_735usize),
+        ] {
+            let mut prepared = base();
+            prepared.options.limits.traversal = Some(limit);
+            for i in 0..count {
+                prepared.add_host_verified_record(host(
+                    format!("jve1:{:064x}", 0x10_000 + i),
+                    &judge,
+                    vec![],
+                    json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+                ));
+            }
+            let records: Vec<HostVerifiedRecord> = prepared
+                .nodes
+                .values()
+                .map(|n| HostVerifiedRecord { node: n.clone() })
+                .collect();
+            let state = prepared.into_state();
+            assert!(state.evaluation().available);
+            let full_cp = state.checkpoint(label).unwrap();
+            let res_cp = state.result_checkpoint(label).unwrap();
+            assert!(EvaluatedState::restore_host_checkpoint(&full_cp, label).is_ok());
+            assert!(
+                EvaluatedState::restore_host_result_checkpoint(&res_cp, label, records.clone())
+                    .is_ok()
+            );
+
+            for (is_results, raw) in [(false, &full_cp), (true, &res_cp)] {
+                let mut mutated: Value = serde_json::from_slice(raw).unwrap();
+                mutated["options"]["limits"]["traversal"] = Value::Null;
+                let bytes = serde_json::to_vec(&mutated).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(&bytes, label, records.clone())
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes, label)
+                };
+                assert!(
+                    restored.is_err(),
+                    "{label} (is_results={is_results}) accepted nulled traversal"
+                );
+            }
+        }
+
+        // 2. 60-entry and 64-entry x 100,000 IDs selection under default budget (traversal: None):
+        // Valid default-budget checkpoints with < 5,000,000 remaining units must restore cleanly.
+        let ids: Vec<String> = (0..100_000usize)
+            .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
+            .collect();
+        let sel_bytes = jvc_core::canonical_value(&json!(ids)).unwrap();
+        let sel_hash = jvc_core::hash_id("sha256:", b"", &sel_bytes);
+        let importer = identity_from_seed(&[7u8; 32]);
+
+        for entries in [60usize, 64usize] {
+            let import_sets: Vec<Value> = (0..entries)
+                .map(|i| {
+                    json!({
+                        "source": format!("source-{i:04}"),
+                        "importer": importer,
+                        "selection": sel_hash,
+                    })
+                })
+                .collect();
+            let (view, body) = event(
+                1,
+                entries as u8,
+                json!({"kind":"view.publish","parents":[]}),
+                Some(json!({
+                    "name":"selection-default",
+                    "description":[],
+                    "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                    "rafsi_threshold":{"numerator":1,"denominator":1},
+                    "H":{"numerator":3,"denominator":1},
+                    "alpha":{"numerator":1,"denominator":2},
+                    "excluded":[],
+                    "calculation":"simple-routes-bounds-v1",
+                    "work":1000,
+                    "import_sets":import_sets,
+                    "account_witnesses":[],
+                    "account_authority":false,
+                    "notes":[]
+                })),
+            );
+            let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+                selected_view: view.id().into(),
+                import_selections: BTreeMap::from([(sel_hash.clone(), ids.clone())]),
+                overlay: None,
+                limits: Limits::default(),
+            });
+            prepared.add_record(&view, body.as_deref());
+            let records: Vec<HostVerifiedRecord> = prepared
+                .nodes
+                .values()
+                .map(|n| HostVerifiedRecord { node: n.clone() })
+                .collect();
+            let state = prepared.into_state();
+            assert!(state.evaluation().available);
+            assert!(state.consumed_work() > 6_000_000);
+
+            let full_cp = state.checkpoint("selection-default").unwrap();
+            let res_cp = state.result_checkpoint("selection-default").unwrap();
+            let restored_full =
+                EvaluatedState::restore_host_checkpoint(&full_cp, "selection-default")
+                    .unwrap_or_else(|e| panic!("entries={entries} full restore failed: {e}"));
+            let restored_res = EvaluatedState::restore_host_result_checkpoint(
+                &res_cp,
+                "selection-default",
+                records,
+            )
+            .unwrap_or_else(|e| panic!("entries={entries} result restore failed: {e}"));
+            assert_eq!(restored_full.consumed_work(), state.consumed_work());
+            assert_eq!(restored_res.consumed_work(), state.consumed_work());
+            assert_eq!(restored_full.evaluation(), state.evaluation());
+            assert_eq!(restored_res.evaluation(), state.evaluation());
+        }
+    }
+
+    #[test]
+    fn source_selection_conflict_with_deciding_claim_restores_both_checkpoints() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let make_import_body = || {
+            let mut body: Value = serde_json::from_str(include_str!(
+                "../../jvc-core/tests/fixtures/definition.json"
+            ))
+            .unwrap();
+            body["legacy"] = json!({
+                "source":"fixture",
+                "snapshot":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "extraction":"fixture-v1",
+                "record":{"kind":"definition","id":1},
+                "locator":"fixture",
+                "original":{},
+                "attribution":{
+                    "author":"author",
+                    "editor":null,
+                    "author_account":{
+                        "origin":"https://source.example",
+                        "account":41,
+                        "username":"author",
+                        "evidence":{
+                            "kind":"source-id",
+                            "source":{"label":"source author numeric field","url":null,"event":null,"locator":"author_id"}
+                        }
+                    },
+                    "dates":{}
+                },
+                "conversion":{"method":"literal","tool":"fixture","version":"1","model":null,"review":"unreviewed","mappings":[],"warnings":[]},
+                "limitations":[]
+            });
+            body
+        };
+
+        let (pub1, pub1_bytes) = event(
+            9,
+            1,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"import"}),
+            Some(make_import_body()),
+        );
+        let (pub2, pub2_bytes) = event(
+            9,
+            2,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"import"}),
+            Some(make_import_body()),
+        );
+        let sel1_ids = vec![pub1.id().to_string()];
+        let sel1_hash = jvc_core::hash_id(
+            "sha256:",
+            b"",
+            &jvc_core::canonical_value(&json!(sel1_ids)).unwrap(),
+        );
+        let sel2_ids = vec![pub2.id().to_string()];
+        let sel2_hash = jvc_core::hash_id(
+            "sha256:",
+            b"",
+            &jvc_core::canonical_value(&json!(sel2_ids)).unwrap(),
+        );
+        let mut import_sets = vec![
+            json!({"source":"fixture","importer":identity_from_seed(&[9;32]),"selection":sel1_hash}),
+            json!({"source":"fixture","importer":identity_from_seed(&[9;32]),"selection":sel2_hash}),
+        ];
+        import_sets.sort_by(|a, b| {
+            jvc_core::canonical_value(a)
+                .unwrap()
+                .cmp(&jvc_core::canonical_value(b).unwrap())
+        });
+
+        let mut witnesses = vec![identity_from_seed(&[10; 32]), identity_from_seed(&[11; 32])];
+        witnesses.sort();
+        let (view, view_bytes) = event(
+            20,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"fixture",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":import_sets,
+                "account_witnesses":witnesses,
+                "account_authority":true,
+                "notes":[]
+            })),
+        );
+
+        let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::from([(sel1_hash, sel1_ids), (sel2_hash, sel2_ids)]),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        prepared.add_record(&view, view_bytes.as_deref());
+        prepared.add_record(&pub1, pub1_bytes.as_deref());
+        prepared.add_record(&pub2, pub2_bytes.as_deref());
+
+        let author = identity_from_seed(&[1u8; 32]);
+        let claim_id = format!("jve1:{:064x}", 10_010usize);
+        prepared.add_host_verified_record(host(
+            claim_id.clone(),
+            &author,
+            vec![],
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+        ));
+        observe(&mut prepared, 10, 1, &claim_id);
+        observe(&mut prepared, 11, 1, &claim_id);
+        prepared.add_host_verified_record(host(
+            format!("jve1:{:064x}", 10_011usize),
+            &author,
+            vec![claim_id.clone()],
+            json!({"kind":"import.status","target":pub1.id(),"claim":claim_id,"value":"deprecated"}),
+        ));
+
+        let records: Vec<HostVerifiedRecord> = prepared
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+        let p1 = &state.evaluation().publications[pub1.id()];
+        assert_eq!(p1.status, Status::Unavailable);
+        assert!(p1.reasons.contains("source_selection_conflict"));
+        assert_eq!(p1.deciding_claim.as_deref(), Some(claim_id.as_str()));
+
+        let full_cp = state.checkpoint("source-conflict").unwrap();
+        let res_cp = state.result_checkpoint("source-conflict").unwrap();
+        let restored_full =
+            EvaluatedState::restore_host_checkpoint(&full_cp, "source-conflict").unwrap();
+        let restored_res =
+            EvaluatedState::restore_host_result_checkpoint(&res_cp, "source-conflict", records)
+                .unwrap();
+        assert_eq!(restored_full.evaluation(), state.evaluation());
+        assert_eq!(restored_res.evaluation(), state.evaluation());
+
+        let appended = host_missing_body(
+            format!("jve1:{:064x}", 50_000usize),
+            &identity_from_seed(&[30u8; 32]),
+            vec![],
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+        );
+        let mut full_after_input = prepared.clone();
+        full_after_input.add_host_verified_record(appended.clone());
+        let full_after = full_after_input.into_state();
+
+        let mut delta = PreparedEvaluationInput::new(prepared.options_with_selections());
+        delta.add_host_verified_record(appended);
+        let adv_full = restored_full.advance(delta.clone(), &[]);
+        let adv_res = restored_res.advance(delta, &[]);
+        assert_eq!(adv_full.consumed_work(), full_after.consumed_work());
+        assert_eq!(adv_res.consumed_work(), full_after.consumed_work());
+        assert_eq!(adv_full.evaluation(), full_after.evaluation());
+        assert_eq!(adv_res.evaluation(), full_after.evaluation());
+    }
+
+    #[test]
+    fn resource_unavailable_reason_with_available_true_is_rejected() {
+        let rafsi_target = format!("jvr1:{:064x}", 1usize);
+        let judge = identity_from_seed(&[5u8; 32]);
+        let mut prepared = base();
+        prepared.options.limits.traversal = Some(218);
+        for i in 0..20usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 0xB100 + i),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
+            ));
+        }
+        let records: Vec<HostVerifiedRecord> = prepared
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let state = prepared.into_state();
+        assert!(state.evaluation().available);
+        assert_eq!(state.consumed_work(), 190);
+
+        let full_cp = state.checkpoint("reason-bypass").unwrap();
+        let res_cp = state.result_checkpoint("reason-bypass").unwrap();
+
+        for mutation in [
+            "reason_null_policy",
+            "reason_zero_scans",
+            "reason_only_available_true",
+            "reason_planted_available_false",
+        ] {
+            for (is_results, raw) in [(false, &full_cp), (true, &res_cp)] {
+                let mut value: Value = serde_json::from_slice(raw).unwrap();
+                value["evaluation"]["reasons"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!("resource_unavailable"));
+                match mutation {
+                    "reason_null_policy" => {
+                        value["evaluation"]["policy"] = Value::Null;
+                    }
+                    "reason_zero_scans" => {
+                        value["unmatched_publication_scans"] = json!(0);
+                    }
+                    "reason_only_available_true" => {}
+                    "reason_planted_available_false" => {
+                        value["evaluation"]["available"] = json!(false);
+                    }
+                    _ => unreachable!(),
+                }
+                let bytes = serde_json::to_vec(&value).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes,
+                        "reason-bypass",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes, "reason-bypass")
+                };
+                assert!(
+                    restored.is_err(),
+                    "mutation={mutation} is_results={is_results} should be rejected on restore"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selection_scan_default_budget_passes_distinct_selections_and_refuses_reused_selection() {
+        let importer = identity_from_seed(&[7u8; 32]);
+
+        // 1. Reusing one 100,000-ID selection across 160 entries is super-linear and refuses under default budget.
+        let shared_ids: Vec<String> = (0..100_000usize)
+            .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
+            .collect();
+        let shared_bytes = jvc_core::canonical_value(&json!(shared_ids)).unwrap();
+        let shared_hash = jvc_core::hash_id("sha256:", b"", &shared_bytes);
+        let reused_sets: Vec<Value> = (0..160usize)
+            .map(|i| {
+                json!({
+                    "source": format!("source-{i:04}"),
+                    "importer": importer,
+                    "selection": shared_hash,
+                })
+            })
+            .collect();
+        let (reused_view, reused_body) = event(
+            1,
+            200,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"reused-selection",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":reused_sets,
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let mut reused_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: reused_view.id().into(),
+            import_selections: BTreeMap::from([(shared_hash, shared_ids.clone())]),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        reused_input.add_record(&reused_view, reused_body.as_deref());
+        let reused_records: Vec<HostVerifiedRecord> = reused_input
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let reused_state = reused_input.into_state();
+        assert!(!reused_state.evaluation().available);
+        assert!(
+            reused_state
+                .evaluation()
+                .reasons
+                .contains("resource_unavailable")
+        );
+        let reused_full_cp = reused_state.checkpoint("reused-sel").unwrap();
+        let reused_res_cp = reused_state.result_checkpoint("reused-sel").unwrap();
+        assert!(EvaluatedState::restore_host_checkpoint(&reused_full_cp, "reused-sel").is_ok());
+        assert!(
+            EvaluatedState::restore_host_result_checkpoint(
+                &reused_res_cp,
+                "reused-sel",
+                reused_records,
+            )
+            .is_ok()
+        );
+
+        // 2. 105 entries each naming its own distinct 100,000-ID selection (10,500,000 IDs total)
+        // is linear in the input and passes under the default budget.
+        let mut distinct_selections = BTreeMap::new();
+        let mut distinct_sets = Vec::with_capacity(105);
+        let mut template_ids = shared_ids;
+        let mut template_bytes = shared_bytes;
+        for i in 0..105usize {
+            let first_id = format!("jve1:{:064x}", i + 1);
+            template_ids[0] = first_id.clone();
+            template_bytes[2..71].copy_from_slice(first_id.as_bytes());
+            let sel_hash = jvc_core::hash_id("sha256:", b"", &template_bytes);
+            distinct_selections.insert(sel_hash.clone(), template_ids.clone());
+            distinct_sets.push(json!({
+                "source": format!("source-{i:04}"),
+                "importer": importer,
+                "selection": sel_hash,
+            }));
+        }
+        let (distinct_view, distinct_body) = event(
+            1,
+            201,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"distinct-selections",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":distinct_sets,
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let two_selections: BTreeMap<String, Vec<String>> = distinct_sets[..2]
+            .iter()
+            .map(|entry| {
+                let h = entry["selection"].as_str().unwrap().to_owned();
+                let ids = distinct_selections[&h].clone();
+                (h, ids)
+            })
+            .collect();
+        let mut distinct_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: distinct_view.id().into(),
+            import_selections: distinct_selections,
+            overlay: None,
+            limits: Limits::default(),
+        });
+        distinct_input.add_record(&distinct_view, distinct_body.as_deref());
+        let distinct_state = distinct_input.into_state();
+        assert!(
+            distinct_state.evaluation().available,
+            "distinct selections must pass default budget; reasons={:?}",
+            distinct_state.evaluation().reasons
+        );
+        assert!(distinct_state.consumed_work() > 10_000_256);
+
+        let (two_view, two_body) = event(
+            1,
+            205,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"two-distinct-selections",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":&distinct_sets[..2],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let mut two_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: two_view.id().into(),
+            import_selections: two_selections,
+            overlay: None,
+            limits: Limits::default(),
+        });
+        two_input.add_record(&two_view, two_body.as_deref());
+        let two_records: Vec<HostVerifiedRecord> = two_input
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let two_state = two_input.into_state();
+        assert!(two_state.evaluation().available);
+        assert_eq!(two_state.traversal_budget(), 10_200_256);
+        let distinct_full_cp = two_state.checkpoint("distinct-sel").unwrap();
+        let distinct_res_cp = two_state.result_checkpoint("distinct-sel").unwrap();
+        let restored_distinct_full =
+            EvaluatedState::restore_host_checkpoint(&distinct_full_cp, "distinct-sel").unwrap();
+        let restored_distinct_res = EvaluatedState::restore_host_result_checkpoint(
+            &distinct_res_cp,
+            "distinct-sel",
+            two_records,
+        )
+        .unwrap();
+        assert_eq!(
+            restored_distinct_full.consumed_work(),
+            two_state.consumed_work()
+        );
+        assert_eq!(
+            restored_distinct_res.consumed_work(),
+            two_state.consumed_work()
+        );
+        assert_eq!(restored_distinct_full.traversal_budget(), 10_200_256);
+        assert_eq!(restored_distinct_res.traversal_budget(), 10_200_256);
+    }
+
+    #[test]
+    fn unused_invalid_selection_padding_refuses_like_unpadded_reused_selection() {
+        let importer = identity_from_seed(&[7u8; 32]);
+        let shared_ids: Vec<String> = (0..100_000usize)
+            .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
+            .collect();
+        let shared_bytes = jvc_core::canonical_value(&json!(shared_ids)).unwrap();
+        let shared_hash = jvc_core::hash_id("sha256:", b"", &shared_bytes);
+        let reused_sets: Vec<Value> = (0..160usize)
+            .map(|i| {
+                json!({
+                    "source": format!("source-{i:04}"),
+                    "importer": importer,
+                    "selection": shared_hash,
+                })
+            })
+            .collect();
+        let (reused_view, reused_body) = event(
+            1,
+            202,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"reused-selection-invalid-padded",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":reused_sets,
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let mut padded_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: reused_view.id().into(),
+            import_selections: BTreeMap::from([
+                (shared_hash, shared_ids),
+                ("sha256:unused".to_owned(), vec![String::new(); 6_000_000]),
+            ]),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        padded_input.add_record(&reused_view, reused_body.as_deref());
+        let padded_records: Vec<HostVerifiedRecord> = padded_input
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let padded_state = padded_input.into_state();
+        assert!(
+            !padded_state.evaluation().available,
+            "unused invalid selection padding must not expand default budget; consumed={}",
+            padded_state.consumed_work()
+        );
+        assert!(
+            padded_state
+                .evaluation()
+                .reasons
+                .contains("resource_unavailable")
+        );
+        assert_eq!(padded_state.consumed_work(), 10_100_256);
+        let full_cp = padded_state.checkpoint("invalid-pad").unwrap();
+        let res_cp = padded_state.result_checkpoint("invalid-pad").unwrap();
+        let restored_full =
+            EvaluatedState::restore_host_checkpoint(&full_cp, "invalid-pad").unwrap();
+        let restored_res =
+            EvaluatedState::restore_host_result_checkpoint(&res_cp, "invalid-pad", padded_records)
+                .unwrap();
+        assert_eq!(restored_full.evaluation(), padded_state.evaluation());
+        assert_eq!(restored_res.evaluation(), padded_state.evaluation());
+        assert_eq!(restored_full.consumed_work(), 10_100_256);
+        assert_eq!(restored_res.consumed_work(), 10_100_256);
+    }
+
+    #[test]
+    fn unused_valid_selection_padding_and_referenced_invalid_selection_refuse_at_default_budget() {
+        let importer = identity_from_seed(&[7u8; 32]);
+        let shared_ids: Vec<String> = (0..100_000usize)
+            .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
+            .collect();
+        let shared_bytes = jvc_core::canonical_value(&json!(shared_ids)).unwrap();
+        let shared_hash = jvc_core::hash_id("sha256:", b"", &shared_bytes);
+        let reused_sets: Vec<Value> = (0..160usize)
+            .map(|i| {
+                json!({
+                    "source": format!("source-{i:04}"),
+                    "importer": importer,
+                    "selection": shared_hash,
+                })
+            })
+            .collect();
+        let (reused_view, reused_body) = event(
+            1,
+            203,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"reused-selection-valid-padded",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":reused_sets,
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+
+        // 1. Add 60 unused valid 100,000-ID selections (6,000,000 valid IDs not referenced by the selected view).
+        let mut selections = BTreeMap::from([(shared_hash.clone(), shared_ids.clone())]);
+        let mut template_ids = shared_ids.clone();
+        let mut template_bytes = shared_bytes.clone();
+        for i in 0..60usize {
+            let first_id = format!("jve1:{:064x}", i + 1);
+            template_ids[0] = first_id.clone();
+            template_bytes[2..71].copy_from_slice(first_id.as_bytes());
+            let unused_valid_hash = jvc_core::hash_id("sha256:", b"", &template_bytes);
+            selections.insert(unused_valid_hash, template_ids.clone());
+        }
+        let mut valid_padded_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: reused_view.id().into(),
+            import_selections: selections,
+            overlay: None,
+            limits: Limits::default(),
+        });
+        valid_padded_input.add_record(&reused_view, reused_body.as_deref());
+        let valid_padded_records: Vec<HostVerifiedRecord> = valid_padded_input
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let valid_padded_state = valid_padded_input.into_state();
+        assert!(
+            !valid_padded_state.evaluation().available,
+            "unused valid selection padding must not expand default budget; consumed={}",
+            valid_padded_state.consumed_work()
+        );
+        assert!(
+            valid_padded_state
+                .evaluation()
+                .reasons
+                .contains("resource_unavailable")
+        );
+        assert_eq!(valid_padded_state.consumed_work(), 10_100_256);
+        let full_cp = valid_padded_state.checkpoint("valid-pad").unwrap();
+        let res_cp = valid_padded_state.result_checkpoint("valid-pad").unwrap();
+        let restored_full = EvaluatedState::restore_host_checkpoint(&full_cp, "valid-pad").unwrap();
+        let restored_res = EvaluatedState::restore_host_result_checkpoint(
+            &res_cp,
+            "valid-pad",
+            valid_padded_records,
+        )
+        .unwrap();
+        assert_eq!(restored_full.evaluation(), valid_padded_state.evaluation());
+        assert_eq!(restored_res.evaluation(), valid_padded_state.evaluation());
+        assert_eq!(restored_full.consumed_work(), 10_100_256);
+        assert_eq!(restored_res.consumed_work(), 10_100_256);
+
+        // 2. A referenced invalid selection (wrong hash for 100,000 sorted jve1 IDs) adds 0 allowance.
+        let bad_hash = format!("sha256:{}", "f".repeat(64));
+        let mut mixed_sets = Vec::with_capacity(160);
+        for i in 0..160usize {
+            let sel = if i < 100 { &shared_hash } else { &bad_hash };
+            mixed_sets.push(json!({
+                "source": format!("source-{i:04}"),
+                "importer": importer,
+                "selection": sel,
+            }));
+        }
+        let (mixed_view, mixed_body) = event(
+            1,
+            204,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"referenced-invalid-selection",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":mixed_sets,
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let mut mixed_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: mixed_view.id().into(),
+            import_selections: BTreeMap::from([
+                (shared_hash, shared_ids.clone()),
+                (bad_hash, shared_ids),
+            ]),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        mixed_input.add_record(&mixed_view, mixed_body.as_deref());
+        let mixed_records: Vec<HostVerifiedRecord> = mixed_input
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let mixed_state = mixed_input.into_state();
+        assert!(!mixed_state.evaluation().available);
+        assert!(
+            mixed_state
+                .evaluation()
+                .reasons
+                .contains("resource_unavailable")
+        );
+        assert_eq!(mixed_state.consumed_work(), 10_100_256);
+        let mixed_full_cp = mixed_state.checkpoint("mixed-invalid").unwrap();
+        let mixed_res_cp = mixed_state.result_checkpoint("mixed-invalid").unwrap();
+        assert!(EvaluatedState::restore_host_checkpoint(&mixed_full_cp, "mixed-invalid").is_ok());
+        assert!(
+            EvaluatedState::restore_host_result_checkpoint(
+                &mixed_res_cp,
+                "mixed-invalid",
+                mixed_records,
+            )
+            .is_ok()
+        );
+    }
+
+    fn assert_state_roundtrips_and_appends(
+        state: &EvaluatedState,
+        prepared: &PreparedEvaluationInput,
+        append_nonce: u64,
+    ) {
+        let full_cp = state
+            .checkpoint("roundtrip")
+            .expect("full checkpoint must serialize");
+        let res_cp = state
+            .result_checkpoint("roundtrip")
+            .expect("result checkpoint must serialize");
+        let records: Vec<HostVerifiedRecord> = prepared
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let restored_full = EvaluatedState::restore_host_checkpoint(&full_cp, "roundtrip")
+            .expect("valid evaluator full checkpoint must restore");
+        let restored_res =
+            EvaluatedState::restore_host_result_checkpoint(&res_cp, "roundtrip", records)
+                .expect("valid evaluator result checkpoint must restore");
+        assert_eq!(restored_full.evaluation(), state.evaluation());
+        assert_eq!(restored_res.evaluation(), state.evaluation());
+        assert_eq!(restored_full.consumed_work(), state.consumed_work());
+        assert_eq!(restored_res.consumed_work(), state.consumed_work());
+
+        let append_issuer = identity_from_seed(&[251u8; 32]);
+        let append_word =
+            jvc_core::word_id(&json!({"language":"jbo","spelling":"appendcheck"})).unwrap();
+        let append_record = host_missing_body(
+            format!("jve1:ff{:062x}", append_nonce),
+            &append_issuer,
+            vec![],
+            json!({"kind":"definition.publish","word":append_word,"language":"en","parents":[],"origin":"native"}),
+        );
+        let mut delta_full = PreparedEvaluationInput::new(prepared.options_with_selections());
+        delta_full.add_host_verified_record(append_record.clone());
+        let mut delta_res = PreparedEvaluationInput::new(prepared.options_with_selections());
+        delta_res.add_host_verified_record(append_record.clone());
+        let mut expected_prepared = prepared.clone();
+        expected_prepared.add_host_verified_record(append_record);
+
+        let after_full = restored_full.advance(delta_full, &[]);
+        let after_res = restored_res.advance(delta_res, &[]);
+        let expected_state = expected_prepared.into_state();
+        assert_eq!(after_full.evaluation(), expected_state.evaluation());
+        assert_eq!(after_res.evaluation(), expected_state.evaluation());
+        assert_eq!(after_full.consumed_work(), expected_state.consumed_work());
+        assert_eq!(after_res.consumed_work(), expected_state.consumed_work());
+    }
+
+    #[test]
+    fn incremental_fixtures_roundtrip_both_checkpoints_and_append() {
+        let mut count = 0usize;
+        let base_p = base();
+        let base_s = base_p.clone().into_state();
+        assert_state_roundtrips_and_appends(&base_s, &base_p, 1);
+        count += 1;
+
+        let (proj_p, _, _) = projection_fixture();
+        let proj_s = proj_p.clone().into_state();
+        assert_state_roundtrips_and_appends(&proj_s, &proj_p, 2);
+        count += 1;
+
+        let (chain_p, _, _) = cap_boundary_prepared();
+        let chain_s = chain_p.clone().into_state();
+        assert_state_roundtrips_and_appends(&chain_s, &chain_p, 3);
+        count += 1;
+
+        let (rich_p, _) = rich_checkpoint_fixture();
+        let rich_s = rich_p.clone().into_state();
+        assert_state_roundtrips_and_appends(&rich_s, &rich_p, 4);
+        count += 1;
+
+        // Zero-view unavailable state with publications and unresolved jvr1/bridge scans.
+        let mut zero_p = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: "jve1:0000000000000000000000000000000000000000000000000000000000000000"
+                .into(),
+            import_selections: BTreeMap::new(),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        let (pub_ev, pub_body) = publication();
+        zero_p.add_record(&pub_ev, pub_body.as_deref());
+        let (j_ev, _) = event(
+            2,
+            1,
+            json!({"kind":"judgment.set","target":format!("jvr1:{:064x}", 123usize),"value":"bless"}),
+            None,
+        );
+        zero_p.add_record(&j_ev, None);
+        let zero_s = zero_p.clone().into_state();
+        assert_state_roundtrips_and_appends(&zero_s, &zero_p, 5);
+        count += 1;
+
+        eprintln!("incremental_fixtures_roundtrip_both_checkpoints_and_append: {count} fixtures");
+        assert_eq!(count, 5);
+    }
+
+    fn collect_scalar_leaf_mutations(
+        value: &Value,
+        prefix: &mut Vec<JsonStep>,
+        out: &mut Vec<(Vec<JsonStep>, &'static str, Value)>,
+    ) {
+        match value {
+            Value::Object(map) => {
+                for (k, v) in map {
+                    prefix.push(JsonStep::Key(k.clone()));
+                    collect_scalar_leaf_mutations(v, prefix, out);
+                    prefix.pop();
+                }
+            }
+            Value::Array(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    prefix.push(JsonStep::Index(i));
+                    collect_scalar_leaf_mutations(item, prefix, out);
+                    prefix.pop();
+                }
+            }
+            Value::Number(n) => {
+                if let Some(u) = n.as_u64() {
+                    if u != 0 {
+                        out.push((prefix.clone(), "zero", json!(0u64)));
+                    }
+                    out.push((prefix.clone(), "plus_one", json!(u.saturating_add(1))));
+                    if u > 0 {
+                        out.push((prefix.clone(), "minus_one", json!(u - 1)));
+                    }
+                    let large = 100_000_000u64;
+                    if u != large {
+                        out.push((prefix.clone(), "large", json!(large)));
+                    }
+                }
+            }
+            Value::Bool(b) => {
+                out.push((prefix.clone(), "flip_bool", json!(!b)));
+            }
+            Value::String(s) => {
+                let mutated = if let Some(stripped) = s.strip_suffix('0') {
+                    format!("{stripped}1")
+                } else if !s.is_empty() {
+                    let mut chars: Vec<char> = s.chars().collect();
+                    *chars.last_mut().unwrap() = '0';
+                    chars.into_iter().collect()
+                } else {
+                    "0".to_owned()
+                };
+                out.push((prefix.clone(), "change_str", json!(mutated)));
+            }
+            Value::Null => {}
+        }
+    }
+
+    fn set_at_json_path(root: &mut Value, path: &[JsonStep], new_value: Value) {
+        let mut cursor = root;
+        for step in path {
+            cursor = match step {
+                JsonStep::Key(k) => cursor.get_mut(k).unwrap(),
+                JsonStep::Index(i) => cursor.get_mut(*i).unwrap(),
+            };
+        }
+        *cursor = new_value;
+    }
+
+    #[test]
+    fn refund_above_consumed_work_and_event_quota_below_node_count_are_rejected() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"mutation",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let def_body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        let (pubn, pubn_body) = event(
+            2,
+            2,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            Some(def_body),
+        );
+        let (judgment, _) = event(
+            1,
+            3,
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"bless"}),
+            None,
+        );
+        let options = EvaluationOptions {
+            selected_view: view.id().into(),
+            limits: Limits::default(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+        };
+        let mut prepared = PreparedEvaluationInput::new(options);
+        prepared.add_record(&view, view_body.as_deref());
+        prepared.add_record(&pubn, pubn_body.as_deref());
+        prepared.add_record(&judgment, None);
+        let records: Vec<HostVerifiedRecord> = prepared
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let state = prepared.into_state();
+        assert!(state.evaluation().available);
+        assert_eq!(state.consumed_work(), 28);
+
+        let full_cp = state.checkpoint("mutation").unwrap();
+        let res_cp = state.result_checkpoint("mutation").unwrap();
+        let mut failures = Vec::new();
+
+        for (is_results, raw) in [(false, &full_cp), (true, &res_cp)] {
+            for (name, field_value) in [
+                ("refund_over_consumed", json!(128u64)),
+                ("refund_plus_one", json!(1u64)),
+            ] {
+                let mut cp: Value = serde_json::from_slice(raw).unwrap();
+                cp["register_maxima_work"][0] = field_value;
+                let bytes = serde_json::to_vec(&cp).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes,
+                        "mutation",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes, "mutation")
+                };
+                if restored.is_ok() {
+                    failures.push(format!(
+                        "{name} (is_results={is_results}) was accepted on restore"
+                    ));
+                }
+            }
+
+            for (name, quota) in [("events_zero", 0u64), ("events_two", 2u64)] {
+                let mut cp: Value = serde_json::from_slice(raw).unwrap();
+                cp["options"]["limits"]["events"] = json!(quota);
+                let bytes = serde_json::to_vec(&cp).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes,
+                        "mutation",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes, "mutation")
+                };
+                if restored.is_ok() {
+                    failures.push(format!(
+                        "{name} (is_results={is_results}) was accepted on restore"
+                    ));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "refund/event-quota failures ({}):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn checkpoint_scalar_leaf_mutations_reject_or_are_harmless() {
+        let (prepared_open, appended_pub) = rich_checkpoint_fixture();
+        let judge = identity_from_seed(&[5u8; 32]);
+        let native_pub_id = prepared_open
+            .nodes
+            .values()
+            .find(|n| {
+                n.kind == "definition.publish"
+                    && n.action.view().index("origin") == "native"
+                    && n.body.is_some()
+            })
+            .unwrap()
+            .id
+            .clone();
+        let appended_judgment = host(
+            format!("jve1:{:064x}", 10_029usize),
+            &judge,
+            vec![
+                format!("jve1:{:064x}", 10_020usize),
+                format!("jve1:{:064x}", 10_021usize),
+                format!("jve1:{:064x}", 10_022usize),
+            ],
+            json!({"kind":"judgment.set","target":native_pub_id,"value":"curse"}),
+        );
+
+        let state_open = prepared_open.clone().into_state();
+        assert!(state_open.evaluation().available);
+        let records: Vec<HostVerifiedRecord> = prepared_open
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let mut after_records = records.clone();
+        after_records.push(appended_pub.clone());
+        after_records.push(appended_judgment.clone());
+        after_records.sort_by(|a, b| a.id().cmp(b.id()));
+
+        // Confirm the unmutated fast path works for both appended_pub and appended_judgment.
+        let mut control_delta =
+            PreparedEvaluationInput::new(prepared_open.options_with_selections());
+        control_delta.add_host_verified_record(appended_pub.clone());
+        control_delta.add_host_verified_record(appended_judgment.clone());
+        let control_after = state_open.clone().advance(control_delta, &[]);
+        assert!(!control_after.statistics().rebuilt);
+        assert_eq!(control_after.statistics().incremental_records, 2);
+
+        let saved_full = state_open.checkpoint("scalar-audit").unwrap();
+        let saved_results = state_open.result_checkpoint("scalar-audit").unwrap();
+
+        let mut total_checked = 0usize;
+        let mut rejected_count = 0usize;
+        let mut harmless_count = 0usize;
+        let mut harmless_fields = Vec::new();
+        let mut failures = Vec::new();
+        reset_digest_rejections();
+
+        for (is_results, raw) in [(false, &saved_full), (true, &saved_results)] {
+            let root: Value = serde_json::from_slice(raw).unwrap();
+            let mut mutations = Vec::new();
+            collect_scalar_leaf_mutations(&root, &mut Vec::new(), &mut mutations);
+
+            for (path, label, new_value) in mutations {
+                total_checked += 1;
+                let path_str = format_json_path(&path);
+                let mut mutated = root.clone();
+                set_at_json_path(&mut mutated, &path, new_value.clone());
+                let bytes = serde_json::to_vec(&mutated).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes,
+                        "scalar-audit",
+                        records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes, "scalar-audit")
+                };
+
+                match restored {
+                    Err(_) => {
+                        rejected_count += 1;
+                    }
+                    Ok(state) => {
+                        let Ok(restored_opts) =
+                            serde_json::from_value::<EvaluationOptions>(mutated["options"].clone())
+                        else {
+                            failures.push(format!(
+                                "is_results={is_results} path={path_str} ({label} -> {new_value}): restored with unparseable options"
+                            ));
+                            continue;
+                        };
+                        let mut full_before_prep = prepared_open.clone();
+                        let mut stripped_opts = restored_opts.clone();
+                        full_before_prep.import_selections =
+                            std::rc::Rc::new(std::mem::take(&mut stripped_opts.import_selections));
+                        full_before_prep.validated_selections =
+                            std::rc::Rc::new(std::cell::RefCell::new(BTreeMap::new()));
+                        full_before_prep.options = stripped_opts;
+                        full_before_prep.event_limit_exceeded = restored_opts
+                            .limits
+                            .events
+                            .is_some_and(|limit| full_before_prep.nodes.len() > limit);
+                        let full_before = full_before_prep.clone().into_state();
+
+                        let mut full_after_prep = full_before_prep;
+                        full_after_prep.add_host_verified_record(appended_pub.clone());
+                        full_after_prep.add_host_verified_record(appended_judgment.clone());
+                        let full_after = full_after_prep.into_state();
+
+                        let before_ok = state.evaluation().available
+                            == full_before.evaluation().available
+                            && state.consumed_work() == full_before.consumed_work()
+                            && state.remaining_work == full_before.remaining_work
+                            && state.evaluation() == full_before.evaluation();
+
+                        let outcome =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let mut delta = PreparedEvaluationInput::new(restored_opts);
+                                delta.add_host_verified_record(appended_pub.clone());
+                                delta.add_host_verified_record(appended_judgment.clone());
+                                state.advance(delta, &[])
+                            }));
+
+                        match outcome {
+                            Err(_) => {
+                                failures.push(format!(
+                                    "is_results={is_results} path={path_str} ({label} -> {new_value}): advance panicked"
+                                ));
+                            }
+                            Ok(after) => {
+                                let after_ok = after.evaluation().available
+                                    == full_after.evaluation().available
+                                    && after.consumed_work() == full_after.consumed_work()
+                                    && after.remaining_work == full_after.remaining_work
+                                    && serde_json::to_value(after.evaluation()).unwrap()
+                                        == serde_json::to_value(full_after.evaluation()).unwrap();
+                                let next_cp_ok =
+                                    after.checkpoint("after").ok().is_some_and(|cp| {
+                                        EvaluatedState::restore_host_checkpoint(&cp, "after")
+                                            .is_ok()
+                                    }) && after.result_checkpoint("after").ok().is_some_and(|cp| {
+                                        EvaluatedState::restore_host_result_checkpoint(
+                                            &cp,
+                                            "after",
+                                            after_records.clone(),
+                                        )
+                                        .is_ok()
+                                    });
+                                if before_ok && after_ok && next_cp_ok {
+                                    harmless_count += 1;
+                                    harmless_fields.push(format!(
+                                        "is_results={is_results} path={path_str} ({label} -> {new_value})"
+                                    ));
+                                } else {
+                                    failures.push(format!(
+                                        "is_results={is_results} path={path_str} ({label} -> {new_value}): before_ok={before_ok} after_ok={after_ok} (after_work={} vs full={}) next_cp_ok={next_cp_ok}",
+                                        after.consumed_work(),
+                                        full_after.consumed_work(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let digest_rejected = digest_rejections();
+        eprintln!(
+            "checkpoint_scalar_leaf_audit: total_checked={total_checked}, rejected={rejected_count}, digest_rejected={digest_rejected}, harmless={harmless_count}, failures={}",
+            failures.len()
+        );
+        for h in &harmless_fields {
+            eprintln!("  HARMLESS: {h}");
+        }
+        assert!(
+            failures.is_empty()
+                && rejected_count == total_checked
+                && digest_rejected == total_checked
+                && harmless_count == 0,
+            "checkpoint scalar leaf audit must reject every scalar mutation at digest check (rejected={rejected_count}/{total_checked}, digest_rejected={digest_rejected}, harmless={harmless_count}, failures={}):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn r8_conflicted_register_reference_and_command_mutations_are_rejected() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let def_body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+
+        // 1. Conflicted 2-sibling judgment register counter mutations.
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"fork-counters",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let (pubn, pubn_body) = event(
+            2,
+            2,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            Some(def_body.clone()),
+        );
+        let (j_bless, _) = event(
+            1,
+            3,
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"bless"}),
+            None,
+        );
+        let (j_curse, _) = event(
+            1,
+            5,
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"curse"}),
+            None,
+        );
+        let fork_opts = EvaluationOptions {
+            selected_view: view.id().into(),
+            limits: Limits::default(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+        };
+        let mut fork_prep = PreparedEvaluationInput::new(fork_opts);
+        fork_prep.add_record(&view, view_body.as_deref());
+        fork_prep.add_record(&pubn, pubn_body.as_deref());
+        fork_prep.add_record(&j_bless, None);
+        fork_prep.add_record(&j_curse, None);
+        let fork_records: Vec<HostVerifiedRecord> = fork_prep
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let fork_state = fork_prep.into_state();
+        assert_eq!(fork_state.consumed_work(), 42);
+        let fork_full = fork_state.checkpoint("fork").unwrap();
+        let fork_res = fork_state.result_checkpoint("fork").unwrap();
+
+        let reseal = |mut cp: Value| -> Vec<u8> {
+            cp.as_object_mut().unwrap().remove("digest");
+            let mut bytes = serde_json::to_vec(&cp).unwrap();
+            let digest = jvc_core::hash_id("sha256:", b"", &bytes);
+            bytes.pop();
+            bytes.extend_from_slice(format!(",\"digest\":\"{digest}\"}}").as_bytes());
+            bytes
+        };
+
+        let mut failures = Vec::new();
+        let mut expected_digest_rejections = 0usize;
+        reset_digest_rejections();
+        for (is_results, raw) in [(false, &fork_full), (true, &fork_res)] {
+            for mode in [
+                "work_plus_one",
+                "work_minus_one",
+                "member_plus_one",
+                "charge_plus_eight",
+                "ancestry_plus_eight",
+            ] {
+                let mut cp: Value = serde_json::from_slice(raw).unwrap();
+                match mode {
+                    "work_plus_one" => {
+                        cp["register_maxima_work"][0] =
+                            json!(cp["register_maxima_work"][0].as_u64().unwrap() + 1);
+                    }
+                    "work_minus_one" => {
+                        cp["register_maxima_work"][0] =
+                            json!(cp["register_maxima_work"][0].as_u64().unwrap() - 1);
+                    }
+                    "member_plus_one" => {
+                        cp["register_maxima_member_work"][0] =
+                            json!(cp["register_maxima_member_work"][0].as_u64().unwrap() + 1);
+                    }
+                    "charge_plus_eight" => {
+                        cp["register_maxima_charges"][0] =
+                            json!(cp["register_maxima_charges"][0].as_u64().unwrap() + 8);
+                    }
+                    "ancestry_plus_eight" => {
+                        cp["ancestry_bytes"] = json!(cp["ancestry_bytes"].as_u64().unwrap() + 8);
+                    }
+                    _ => unreachable!(),
+                }
+                expected_digest_rejections += 1;
+                let bytes = serde_json::to_vec(&cp).unwrap();
+                let restored = if is_results {
+                    EvaluatedState::restore_host_result_checkpoint(
+                        &bytes,
+                        "fork",
+                        fork_records.clone(),
+                    )
+                } else {
+                    EvaluatedState::restore_host_checkpoint(&bytes, "fork")
+                };
+                if restored.is_ok() {
+                    failures.push(format!(
+                        "fork counter mutation {mode} (is_results={is_results}) was accepted at digest check"
+                    ));
+                }
+                if mode == "member_plus_one" {
+                    let resealed = reseal(cp);
+                    let restored_resealed = if is_results {
+                        EvaluatedState::restore_host_result_checkpoint(
+                            &resealed,
+                            "fork",
+                            fork_records.clone(),
+                        )
+                    } else {
+                        EvaluatedState::restore_host_checkpoint(&resealed, "fork")
+                    };
+                    if restored_resealed.is_ok() {
+                        failures.push(format!(
+                            "fork counter mutation {mode} (is_results={is_results}) was accepted at cross-check"
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 2. Missing policy parent, missing judgment target (suspended issuer), missing status target (compromised cutoff), and commands without controller.
+        let (parent_view, parent_view_body) = event(
+            3,
+            10,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"parent-view",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[identity_from_seed(&[10;32]),identity_from_seed(&[11;32])],
+                "account_authority":true,
+                "notes":[]
+            })),
+        );
+        let (child_view, child_view_body) = event(
+            3,
+            11,
+            json!({"kind":"view.publish","parents":[parent_view.id()]}),
+            Some(json!({
+                "name":"child-view",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-shun-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[identity_from_seed(&[10;32]),identity_from_seed(&[11;32])],
+                "account_authority":true,
+                "notes":[]
+            })),
+        );
+        let mut ref_prep = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: child_view.id().into(),
+            limits: Limits::default(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+        });
+        ref_prep.add_record(&parent_view, parent_view_body.as_deref());
+        ref_prep.add_record(&child_view, child_view_body.as_deref());
+        ref_prep.add_record(&pubn, pubn_body.as_deref());
+
+        let (imported_pub, imported_bytes) = publication();
+        ref_prep.add_record(&imported_pub, imported_bytes.as_deref());
+
+        // Suspended issuer judgment on pubn.
+        let susp_issuer = identity_from_seed(&[16u8; 32]);
+        let susp_merge_id = format!("jve1:{:064x}", 20_001usize);
+        let susp_j_id = format!("jve1:{:064x}", 20_002usize);
+        ref_prep.add_host_verified_record(host(
+            susp_merge_id,
+            &susp_issuer,
+            vec![format!("jve1:{:064x}", 999_999usize)],
+            json!({"kind":"identity.merge"}),
+        ));
+        ref_prep.add_host_verified_record(host(
+            susp_j_id.clone(),
+            &susp_issuer,
+            vec![],
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"bless"}),
+        ));
+
+        // Compromised issuer status on pubn.
+        let pub_issuer = identity_from_seed(&[2u8; 32]);
+        let status_id = format!("jve1:{:064x}", 20_003usize);
+        let comp_id = format!("jve1:{:064x}", 20_004usize);
+        ref_prep.add_host_verified_record(host(
+            status_id.clone(),
+            &pub_issuer,
+            vec![pubn.id().to_owned()],
+            json!({"kind":"status.set","target":pubn.id(),"value":"deprecated"}),
+        ));
+        ref_prep.add_host_verified_record(host(
+            comp_id,
+            &pub_issuer,
+            vec![status_id.clone()],
+            json!({"kind":"identity.compromise","safe":[pubn.id()]}),
+        ));
+        ref_prep.add_host_verified_record(host(
+            format!("jve1:{:064x}", 20_005usize),
+            &pub_issuer,
+            vec![],
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+        ));
+
+        let ref_records: Vec<HostVerifiedRecord> = ref_prep
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        let ref_state = ref_prep.into_state();
+        assert!(ref_state.evaluation().available);
+        assert!(
+            ref_state.evaluation().accounts["https://source.example#41"]
+                .controller
+                .is_none()
+        );
+        assert!(!ref_state.evaluation().accounts["https://source.example#41"].commands);
+
+        let ref_full = ref_state.checkpoint("refs").unwrap();
+        let ref_res = ref_state.result_checkpoint("refs").unwrap();
+        let absent_id = "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0b0";
+
+        for (name, path_kind) in [
+            ("missing_policy_parent", 0u8),
+            ("missing_judgment_target", 1u8),
+            ("missing_status_target", 2u8),
+        ] {
+            let mut cp: Value = serde_json::from_slice(&ref_full).unwrap();
+            match path_kind {
+                0 => {
+                    cp["nodes"][child_view.id()]["action"]["parents"][0] = json!(absent_id);
+                }
+                1 => {
+                    cp["nodes"][&susp_j_id]["action"]["target"] = json!(absent_id);
+                }
+                _ => {
+                    cp["nodes"][&status_id]["action"]["target"] = json!(absent_id);
+                }
+            }
+            expected_digest_rejections += 1;
+            let bytes = serde_json::to_vec(&cp).unwrap();
+            if EvaluatedState::restore_host_checkpoint(&bytes, "refs").is_ok() {
+                failures.push(format!(
+                    "{name} (full checkpoint) was accepted at digest check"
+                ));
+            }
+            let resealed = reseal(cp);
+            if EvaluatedState::restore_host_checkpoint(&resealed, "refs").is_ok() {
+                failures.push(format!(
+                    "{name} (full checkpoint) was accepted at cross-check"
+                ));
+            }
+        }
+
+        for (is_results, raw) in [(false, &ref_full), (true, &ref_res)] {
+            let mut cp: Value = serde_json::from_slice(raw).unwrap();
+            cp["evaluation"]["accounts"]["https://source.example#41"]["commands"] = json!(true);
+            expected_digest_rejections += 1;
+            let bytes = serde_json::to_vec(&cp).unwrap();
+            let restored = if is_results {
+                EvaluatedState::restore_host_result_checkpoint(&bytes, "refs", ref_records.clone())
+            } else {
+                EvaluatedState::restore_host_checkpoint(&bytes, "refs")
+            };
+            if restored.is_ok() {
+                failures.push(format!(
+                    "commands_without_controller (is_results={is_results}) was accepted at digest check"
+                ));
+            }
+            let resealed = reseal(cp);
+            let restored_resealed = if is_results {
+                EvaluatedState::restore_host_result_checkpoint(
+                    &resealed,
+                    "refs",
+                    ref_records.clone(),
+                )
+            } else {
+                EvaluatedState::restore_host_checkpoint(&resealed, "refs")
+            };
+            if restored_resealed.is_ok() {
+                failures.push(format!(
+                    "commands_without_controller (is_results={is_results}) was accepted at cross-check"
+                ));
+            }
+        }
+
+        let actual_digest_rejections = digest_rejections();
+        assert_eq!(actual_digest_rejections, expected_digest_rejections);
+        assert!(
+            failures.is_empty(),
+            "r8 mutation failures ({}):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn quota_crossing_and_seeded_random_checkpoint_sequences_restore_and_match_full() {
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
+        let def_body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"quota-transition",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let (pubn, pubn_body) = event(
+            2,
+            2,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            Some(def_body.clone()),
+        );
+        let (other_pubn, other_pubn_body) = event(
+            5,
+            7,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+            Some(def_body),
+        );
+        let (judgment, _) = event(
+            1,
+            3,
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"bless"}),
+            None,
+        );
+        let judge_issuer = identity_from_seed(&[1u8; 32]);
+        let next_judgment = host(
+            format!("jve1:{:064x}", 30_004usize),
+            &judge_issuer,
+            vec![judgment.id().to_owned()],
+            json!({"kind":"judgment.set","target":pubn.id(),"value":"curse"}),
+        );
+
+        let base_opts = EvaluationOptions {
+            selected_view: view.id().into(),
+            limits: Limits::default(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+        };
+        let mut base_prep = PreparedEvaluationInput::new(base_opts.clone());
+        base_prep.add_record(&view, view_body.as_deref());
+        base_prep.add_record(&pubn, pubn_body.as_deref());
+        base_prep.add_record(&judgment, None);
+        let base_records: Vec<HostVerifiedRecord> = base_prep
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+
+        let build_quota_state = |opts: EvaluationOptions, append: bool| -> EvaluatedState {
+            let mut p = PreparedEvaluationInput::new(opts);
+            for r in &base_records {
+                p.add_host_verified_record(r.clone());
+            }
+            if append {
+                p.add_host_verified_record(next_judgment.clone());
+            }
+            p.into_state()
+        };
+
+        let mut failures = Vec::new();
+        let mut fixed_checks = 0usize;
+
+        // Part 1: Fixed quota-crossing cases (quota = 0, 2, 3 across direct, full restore, results restore, and recovery back to open quota).
+        for quota in [0usize, 2, 3] {
+            let mut opts = base_opts.clone();
+            if quota == 3 {
+                opts.limits.events = Some(3);
+            }
+            let base = build_quota_state(opts.clone(), false);
+            let fc = base.checkpoint("quota").unwrap();
+            let rc = base.result_checkpoint("quota").unwrap();
+            let restored_full = EvaluatedState::restore_host_checkpoint(&fc, "quota").unwrap();
+            let restored_res =
+                EvaluatedState::restore_host_result_checkpoint(&rc, "quota", base_records.clone())
+                    .unwrap();
+
+            for (label, state) in [
+                ("direct", base),
+                ("full", restored_full),
+                ("results", restored_res),
+            ] {
+                fixed_checks += 1;
+                let mut next_opts = opts.clone();
+                next_opts.limits.events = Some(quota);
+                let mut delta = PreparedEvaluationInput::new(next_opts.clone());
+                delta.add_host_verified_record(next_judgment.clone());
+                let after = state.advance(delta, &[]);
+                let full = build_quota_state(next_opts.clone(), true);
+
+                let mut after_records = base_records.clone();
+                after_records.push(next_judgment.clone());
+                after_records.sort_by(|a, b| a.id().cmp(b.id()));
+
+                let cp = after.checkpoint("after").unwrap();
+                let rp = after.result_checkpoint("after").unwrap();
+                let rf = EvaluatedState::restore_host_checkpoint(&cp, "after");
+                let rr = EvaluatedState::restore_host_result_checkpoint(
+                    &rp,
+                    "after",
+                    after_records.clone(),
+                );
+                if after.evaluation() != full.evaluation()
+                    || after.consumed_work() != full.consumed_work()
+                    || after.remaining_work != full.remaining_work
+                    || rf.is_err()
+                    || rr.is_err()
+                {
+                    failures.push(format!(
+                        "fixed quota={quota} path={label}: eval_eq={} work={}/{} full_restore={:?} res_restore={:?}",
+                        after.evaluation() == full.evaluation(),
+                        after.consumed_work(),
+                        full.consumed_work(),
+                        rf.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                        rr.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                    ));
+                } else if let (Ok(rf_state), Ok(rr_state)) = (rf, rr) {
+                    // Recover from over-quota back to open quota and verify restore again.
+                    for (rec_label, over_state) in [("rf", rf_state), ("rr", rr_state)] {
+                        fixed_checks += 1;
+                        let mut open_opts = next_opts.clone();
+                        open_opts.limits.events = Some(10);
+                        let recovered = over_state
+                            .advance(PreparedEvaluationInput::new(open_opts.clone()), &[]);
+                        let expected_rec = build_quota_state(open_opts, true);
+                        let rec_cp = recovered.checkpoint("rec").unwrap();
+                        let rec_rp = recovered.result_checkpoint("rec").unwrap();
+                        if recovered.evaluation() != expected_rec.evaluation()
+                            || recovered.consumed_work() != expected_rec.consumed_work()
+                            || EvaluatedState::restore_host_checkpoint(&rec_cp, "rec").is_err()
+                            || EvaluatedState::restore_host_result_checkpoint(
+                                &rec_rp,
+                                "rec",
+                                after_records.clone(),
+                            )
+                            .is_err()
+                        {
+                            failures.push(format!(
+                                "fixed recovery quota={quota} path={label}/{rec_label} failed"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Part 1b: Fixed all-root regression cases (pending/invalid/excluded register-keyed records and root compromises).
+        let absent_root_id =
+            "jve1:00000000000000000000000000000000000000000000000000000000000000aa";
+        let (b_valid, _) = event(
+            2,
+            10,
+            json!({"kind":"bridge.set","origin":"https://example.org","source_definition":1,"target":pubn.id(),"value":"clear"}),
+            None,
+        );
+        let (b_pending, _) = event(
+            2,
+            11,
+            json!({"kind":"bridge.set","origin":"https://example.org","source_definition":1,"target":absent_root_id,"value":"clear"}),
+            None,
+        );
+        let (b_invalid, _) = event(
+            2,
+            12,
+            json!({"kind":"bridge.set","origin":"https://example.org","source_definition":1,"target":other_pubn.id(),"value":"clear"}),
+            None,
+        );
+        let (b_managed_unlinked, _) = event(
+            2,
+            13,
+            json!({"kind":"bridge.set","origin":"https://example.org","source_definition":1,"target":pubn.id(),"value":"managed"}),
+            None,
+        );
+        let (c_absent, _) = event(
+            4,
+            21,
+            json!({"kind":"identity.compromise","safe":[absent_root_id]}),
+            None,
+        );
+
+        let build_root_prep = |recs: &[(&VerifiedEnvelope, Option<&[u8]>)]| {
+            let mut p = PreparedEvaluationInput::new(base_opts.clone());
+            for (env, body) in recs {
+                p.add_record(env, *body);
+            }
+            p
+        };
+        let root_a2_prep = build_root_prep(&[
+            (&view, view_body.as_deref()),
+            (&pubn, pubn_body.as_deref()),
+            (&b_valid, None),
+            (&b_pending, None),
+        ]);
+        let root_a4_prep = build_root_prep(&[
+            (&view, view_body.as_deref()),
+            (&pubn, pubn_body.as_deref()),
+            (&other_pubn, other_pubn_body.as_deref()),
+            (&b_valid, None),
+            (&b_invalid, None),
+        ]);
+        let root_b2_prep = build_root_prep(&[
+            (&view, view_body.as_deref()),
+            (&pubn, pubn_body.as_deref()),
+            (&c_absent, None),
+        ]);
+        let root_a5_prep = build_root_prep(&[
+            (&view, view_body.as_deref()),
+            (&pubn, pubn_body.as_deref()),
+            (&b_valid, None),
+            (&b_managed_unlinked, None),
+        ]);
+
+        for (case_name, prep) in [
+            ("A2_two_root_bridges_one_pending", &root_a2_prep),
+            ("A4_two_root_bridges_one_invalid", &root_a4_prep),
+            ("A5_two_root_bridges_one_binding_unavailable", &root_a5_prep),
+            ("B2_root_compromise_absent_safe", &root_b2_prep),
+        ] {
+            fixed_checks += 1;
+            let state = prep.clone().into_state();
+            let recs: Vec<HostVerifiedRecord> = prep
+                .nodes
+                .values()
+                .map(|n| HostVerifiedRecord { node: n.clone() })
+                .collect();
+            let fc = state.checkpoint(case_name).unwrap();
+            let rc = state.result_checkpoint(case_name).unwrap();
+            let rf = EvaluatedState::restore_host_checkpoint(&fc, case_name);
+            let rr = EvaluatedState::restore_host_result_checkpoint(&rc, case_name, recs);
+            if rf.is_err() || rr.is_err() {
+                failures.push(format!(
+                    "fixed {case_name}: full_restore={:?} res_restore={:?}",
+                    rf.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                    rr.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                ));
+            }
+        }
+
+        // Part 2: Seeded random sequences over handover and incremental fixtures (including all-root fixtures).
+        let (proj_prep, _, _) = projection_fixture();
+        let (rich_prep, _) = rich_checkpoint_fixture();
+        let all_root_start = build_root_prep(&[
+            (&view, view_body.as_deref()),
+            (&pubn, pubn_body.as_deref()),
+            (&other_pubn, other_pubn_body.as_deref()),
+        ]);
+        let fixtures: Vec<(&str, PreparedEvaluationInput)> = vec![
+            ("base", base()),
+            ("projection", proj_prep),
+            ("rich_handover", rich_prep),
+            ("quota_base", base_prep),
+            ("all_root", all_root_start),
+        ];
+
+        let mut rng_state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next_u64 = || -> u64 {
+            rng_state ^= rng_state << 13;
+            rng_state ^= rng_state >> 7;
+            rng_state ^= rng_state << 17;
+            rng_state
+        };
+
+        let mut sequences_run = 0usize;
+        let mut steps_run = 0usize;
+        let mut checkpoints_verified = 0usize;
+
+        for seq in 0..100usize {
+            let (fixture_name, start_prep) = &fixtures[seq % fixtures.len()];
+            let mut current_options = start_prep.options_with_selections();
+            let mut current_records: BTreeMap<String, HostVerifiedRecord> = start_prep
+                .nodes
+                .iter()
+                .map(|(id, n)| (id.clone(), HostVerifiedRecord { node: n.clone() }))
+                .collect();
+            let base_open = unshared(start_prep).into_state();
+            let base_cost = base_open.consumed_work().max(20);
+            let mut state = base_open;
+            let mut append_seq = 0usize;
+            sequences_run += 1;
+
+            for step in 0..12usize {
+                steps_run += 1;
+                let op = (next_u64() % 6) as usize;
+                let binding = format!("seq-{seq}-step-{step}");
+                match op {
+                    0 => {
+                        // Save and restore full checkpoint.
+                        let cp = state.checkpoint(&binding).unwrap();
+                        match EvaluatedState::restore_host_checkpoint(&cp, &binding) {
+                            Ok(restored) => {
+                                checkpoints_verified += 1;
+                                state = restored;
+                            }
+                            Err(e) => {
+                                failures.push(format!(
+                                    "seq={seq} ({fixture_name}) step={step} op=restore_full failed: {e}"
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    1 => {
+                        // Save and restore results checkpoint.
+                        let rp = state.result_checkpoint(&binding).unwrap();
+                        let recs: Vec<HostVerifiedRecord> =
+                            current_records.values().cloned().collect();
+                        match EvaluatedState::restore_host_result_checkpoint(&rp, &binding, recs) {
+                            Ok(restored) => {
+                                checkpoints_verified += 1;
+                                state = restored;
+                            }
+                            Err(e) => {
+                                failures.push(format!(
+                                    "seq={seq} ({fixture_name}) step={step} op=restore_results failed: {e}"
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    2 => {
+                        // Append a fast-path record or an all-root shape (pending/invalid/excluded keyed record or root compromise).
+                        append_seq += 1;
+                        let mut delta = PreparedEvaluationInput::new(current_options.clone());
+                        if *fixture_name == "all_root" || (append_seq % 4 == 0) {
+                            match append_seq % 4 {
+                                0 => {
+                                    // Two root bridges sharing a register key: one valid, one target_pending.
+                                    let issuer = identity_from_seed(&[2u8; 32]);
+                                    let src_def = (seq * 100 + step * 10 + append_seq) as u64;
+                                    let r1 = host(
+                                        format!(
+                                            "jve1:fa{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":pubn.id(),"value":"clear"}),
+                                    );
+                                    let r2 = host(
+                                        format!(
+                                            "jve1:fb{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":absent_root_id,"value":"clear"}),
+                                    );
+                                    for r in [r1, r2] {
+                                        current_records.insert(r.id().to_owned(), r.clone());
+                                        delta.add_host_verified_record(r);
+                                    }
+                                }
+                                1 => {
+                                    // Two root bridges sharing a register key: one valid, one invalid_target.
+                                    let issuer = identity_from_seed(&[2u8; 32]);
+                                    let src_def = (seq * 100 + step * 10 + append_seq) as u64;
+                                    let r1 = host(
+                                        format!(
+                                            "jve1:f8{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":pubn.id(),"value":"clear"}),
+                                    );
+                                    let r2 = host(
+                                        format!(
+                                            "jve1:f9{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":other_pubn.id(),"value":"clear"}),
+                                    );
+                                    for r in [r1, r2] {
+                                        current_records.insert(r.id().to_owned(), r.clone());
+                                        delta.add_host_verified_record(r);
+                                    }
+                                }
+                                2 => {
+                                    // Root compromise with an absent safe ID.
+                                    let comp_seed = (90 + (append_seq % 30)) as u8;
+                                    let issuer = identity_from_seed(&[comp_seed; 32]);
+                                    let r = host(
+                                        format!(
+                                            "jve1:f7{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"identity.compromise","safe":[absent_root_id]}),
+                                    );
+                                    current_records.insert(r.id().to_owned(), r.clone());
+                                    delta.add_host_verified_record(r);
+                                }
+                                _ => {
+                                    // Two root bridges sharing a register key: one valid (clear), one managed without account binding (account_binding_unavailable).
+                                    let issuer = identity_from_seed(&[2u8; 32]);
+                                    let src_def = (seq * 100 + step * 10 + append_seq) as u64;
+                                    let r1 = host(
+                                        format!(
+                                            "jve1:f4{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":pubn.id(),"value":"clear"}),
+                                    );
+                                    let r2 = host(
+                                        format!(
+                                            "jve1:f5{:030x}{:032x}",
+                                            seq,
+                                            step * 100 + append_seq
+                                        ),
+                                        &issuer,
+                                        vec![],
+                                        json!({"kind":"bridge.set","origin":"https://example.org","source_definition":src_def,"target":pubn.id(),"value":"managed"}),
+                                    );
+                                    for r in [r1, r2] {
+                                        current_records.insert(r.id().to_owned(), r.clone());
+                                        delta.add_host_verified_record(r);
+                                    }
+                                }
+                            }
+                        } else {
+                            let rec = if append_seq % 2 == 0 {
+                                let issuer_seed = (200 + (append_seq % 40)) as u8;
+                                let issuer = identity_from_seed(&[issuer_seed; 32]);
+                                let prev: Vec<String> = current_records
+                                    .values()
+                                    .filter(|r| r.node.issuer == issuer)
+                                    .map(|r| r.node.id.clone())
+                                    .collect();
+                                host_missing_body(
+                                    format!("jve1:fe{:030x}{:032x}", seq, step * 100 + append_seq),
+                                    &issuer,
+                                    prev,
+                                    json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"native"}),
+                                )
+                            } else {
+                                let issuer_seed = (150 + (append_seq % 40)) as u8;
+                                let issuer = identity_from_seed(&[issuer_seed; 32]);
+                                let prev: Vec<String> = current_records
+                                    .values()
+                                    .filter(|r| r.node.issuer == issuer)
+                                    .map(|r| r.node.id.clone())
+                                    .collect();
+                                let target = current_records
+                                    .values()
+                                    .find(|r| r.node.kind == "definition.publish")
+                                    .map(|r| r.node.id.clone())
+                                    .unwrap_or_else(|| pubn.id().to_owned());
+                                let val = if (next_u64() & 1) == 0 {
+                                    "bless"
+                                } else {
+                                    "curse"
+                                };
+                                host(
+                                    format!("jve1:fd{:030x}{:032x}", seq, step * 100 + append_seq),
+                                    &issuer,
+                                    prev,
+                                    json!({"kind":"judgment.set","target":target,"value":val}),
+                                )
+                            };
+                            current_records.insert(rec.id().to_owned(), rec.clone());
+                            delta.add_host_verified_record(rec);
+                        }
+                        state = state.advance(delta, &[]);
+                    }
+                    3 => {
+                        // Change the event quota.
+                        let n = current_records.len();
+                        current_options.limits.events = match next_u64() % 5 {
+                            0 => None,
+                            1 => Some(0),
+                            2 => Some(n.saturating_sub(1)),
+                            3 => Some(n),
+                            _ => Some(n + 2),
+                        };
+                        state = state
+                            .advance(PreparedEvaluationInput::new(current_options.clone()), &[]);
+                    }
+                    4 => {
+                        // Change the overlay.
+                        let new_overlay = match next_u64() % 4 {
+                            0 => None,
+                            1 => Some(json!({
+                                "version": 1,
+                                "base_view": current_options.selected_view,
+                                "root_changes": [],
+                                "trust": [],
+                                "blocked": [],
+                                "work": null
+                            })),
+                            2 => Some(json!({
+                                "version": 2,
+                                "root_changes": [],
+                                "trust": [],
+                                "blocked": [],
+                                "public_shun_issuer": null
+                            })),
+                            _ => Some(json!({"version": 3})),
+                        };
+                        current_options.overlay = new_overlay.clone().map(Into::into);
+                        if (next_u64() & 1) == 0 {
+                            state = state.with_overlay(new_overlay);
+                        } else {
+                            state = state.advance(
+                                PreparedEvaluationInput::new(current_options.clone()),
+                                &[],
+                            );
+                        }
+                    }
+                    _ => {
+                        // Change the traversal budget.
+                        current_options.limits.traversal = match next_u64() % 5 {
+                            0 => None,
+                            1 => Some(0),
+                            2 => Some(base_cost.saturating_sub(1)),
+                            3 => Some(base_cost),
+                            _ => Some(base_cost + 500),
+                        };
+                        state = state
+                            .advance(PreparedEvaluationInput::new(current_options.clone()), &[]);
+                    }
+                }
+
+                // Verify against a fresh full evaluation and verify that both checkpoints restore.
+                let mut full_prep = PreparedEvaluationInput::new(current_options.clone());
+                for r in current_records.values() {
+                    full_prep.add_host_verified_record(r.clone());
+                }
+                let full_state = full_prep.into_state();
+                if state.evaluation().available != full_state.evaluation().available
+                    || state.consumed_work() != full_state.consumed_work()
+                    || state.remaining_work != full_state.remaining_work
+                    || serde_json::to_value(state.evaluation()).unwrap()
+                        != serde_json::to_value(full_state.evaluation()).unwrap()
+                {
+                    failures.push(format!(
+                        "seq={seq} ({fixture_name}) step={step} op={op}: state mismatch work={}/{} avail={}/{}",
+                        state.consumed_work(),
+                        full_state.consumed_work(),
+                        state.evaluation().available,
+                        full_state.evaluation().available,
+                    ));
+                    break;
+                }
+
+                let cp_full = state.checkpoint(&binding).unwrap();
+                let cp_res = state.result_checkpoint(&binding).unwrap();
+                let recs: Vec<HostVerifiedRecord> = current_records.values().cloned().collect();
+                match (
+                    EvaluatedState::restore_host_checkpoint(&cp_full, &binding),
+                    EvaluatedState::restore_host_result_checkpoint(&cp_res, &binding, recs),
+                ) {
+                    (Ok(rf), Ok(rr)) => {
+                        checkpoints_verified += 2;
+                        if (step + seq) % 2 == 0 {
+                            state = rf;
+                        } else {
+                            state = rr;
+                        }
+                    }
+                    (rf, rr) => {
+                        failures.push(format!(
+                            "seq={seq} ({fixture_name}) step={step} op={op}: checkpoint restore failed full={:?} res={:?}",
+                            rf.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                            rr.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+
+        eprintln!(
+            "checkpoint_random_sequences: fixed_checks={fixed_checks}, sequences={sequences_run}, steps={steps_run}, checkpoints_verified={checkpoints_verified}, failures={}",
+            failures.len()
+        );
+        assert!(
+            failures.is_empty(),
+            "checkpoint sequence failures ({}):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn unused_or_refused_selections_are_not_indexed_in_session_unresolved() {
+        let (view, view_body) = event(
+            1,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"fixture",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let unused_ids: Vec<String> = (0..4_096usize)
+            .map(|i| format!("jve1:{:064x}", i + 1))
+            .collect();
+        let mut available_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::from([("unused".into(), unused_ids.clone())]),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        available_input.add_record(&view, view_body.as_deref());
+        let available_state = available_input.into_state();
+        assert!(available_state.evaluation().available);
+        assert!(
+            available_state.unresolved.is_empty(),
+            "unused selection IDs must not be copied into unresolved on an available session (got {} IDs)",
+            available_state.unresolved.len()
+        );
+
+        // Also test a zero-traversal refused session with both unused and referenced selections.
+        let referenced_digest = jvc_core::hash_id(
+            "sha256:",
+            b"",
+            &canonical_value(&json!(unused_ids)).unwrap(),
+        );
+        let (ref_view, ref_view_body) = event(
+            1,
+            2,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"fixture",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[{"source":"https://example.org","importer":identity_from_seed(&[1;32]),"selection":referenced_digest}],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let mut refused_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: ref_view.id().into(),
+            import_selections: BTreeMap::from([
+                ("unused".into(), unused_ids.clone()),
+                (referenced_digest, unused_ids),
+            ]),
+            overlay: None,
+            limits: Limits {
+                traversal: Some(0),
+                ..Limits::default()
+            },
+        });
+        refused_input.add_record(&ref_view, ref_view_body.as_deref());
+        let refused_state = refused_input.into_state();
+        assert!(!refused_state.evaluation().available);
+        assert_eq!(refused_state.consumed_work(), 0);
+        assert!(
+            refused_state.unresolved.is_empty(),
+            "refused session must not populate unresolved (got {} IDs)",
+            refused_state.unresolved.len()
+        );
+        let cp = refused_state.checkpoint("refused-unused").unwrap();
+        let restored = EvaluatedState::restore_host_checkpoint(&cp, "refused-unused").unwrap();
+        assert!(
+            restored.unresolved.is_empty(),
+            "restored refused session must not populate unresolved (got {} IDs)",
+            restored.unresolved.len()
+        );
+    }
+
+    #[test]
+    fn pending_historical_claim_at_zero_claim_depth_restores_both_checkpoints() {
+        let origin = "https://source.example";
+        let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"klama"})).unwrap();
+        let mut def_body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        def_body["word"] = json!({"language":"jbo","spelling":"klama"});
+        def_body["legacy"] = json!({
+            "source":"fixture",
+            "snapshot":format!("sha256:{}", "f".repeat(64)),
+            "extraction":"fixture-v1",
+            "record":{"kind":"definition","id":1},
+            "locator":"fixture",
+            "original":{},
+            "attribution":{
+                "author":"author",
+                "editor":null,
+                "author_account":{
+                    "origin":origin,
+                    "account":41,
+                    "username":"author",
+                    "evidence":{"kind":"source-id","source":{"label":"source author numeric field","url":null,"event":null,"locator":"author_id"}}
+                },
+                "dates":{}
+            },
+            "conversion":{"method":"literal","tool":"fixture","version":"1","model":null,"review":"unreviewed","mappings":[],"warnings":[]},
+            "limitations":[]
+        });
+        let (pubn, pubn_body) = event(
+            9,
+            1,
+            json!({"kind":"definition.publish","word":word,"language":"en","parents":[],"origin":"import"}),
+            Some(def_body),
+        );
+        let (claim, _) = event(
+            1,
+            2,
+            json!({"kind":"account.set","origin":origin,"account":41,"value":"claim","previous":null,"carry":[]}),
+            None,
+        );
+        let (status, _) = event(
+            1,
+            3,
+            json!({"kind":"import.status","target":pubn.id(),"claim":claim.id(),"value":"deprecated"}),
+            None,
+        );
+        let obs_body = json!({
+            "origin":origin,
+            "account":41,
+            "username":"author",
+            "field_hash":format!("sha256:{}", "f".repeat(64)),
+            "markers":[claim.id()],
+            "method":"lensisku-public-profile-v1",
+            "observed_at":"2026-10-11T00:00:00Z"
+        });
+        let (obs10, _) = event(
+            10,
+            4,
+            json!({"kind":"account.observe","origin":origin,"account":41,"claim":claim.id(),"result":"present"}),
+            Some(obs_body.clone()),
+        );
+        let (obs11, obs11_body) = event(
+            11,
+            5,
+            json!({"kind":"account.observe","origin":origin,"account":41,"claim":claim.id(),"result":"present"}),
+            Some(obs_body.clone()),
+        );
+        let absent_pred = format!("jve1:{}", "e".repeat(64));
+        let obs10_with_missing_pred = {
+            let bytes = canonical_value(&obs_body).unwrap();
+            let signed = sign_header(
+                &[10; 32],
+                Header {
+                    version: 1,
+                    issuer: identity_from_seed(&[10; 32]),
+                    previous: vec![absent_pred],
+                    nonce: format!("{:032x}", 6u8),
+                    action: json!({"kind":"account.observe","origin":origin,"account":41,"claim":claim.id(),"result":"present"}),
+                    content: Some(body_descriptor(&bytes).unwrap()),
+                },
+            )
+            .unwrap();
+            (
+                verify_envelope(&signed.canonical_envelope().unwrap()).unwrap(),
+                bytes,
+            )
+        };
+        let sel_ids = vec![pubn.id().to_owned()];
+        let sel_digest =
+            jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(sel_ids)).unwrap());
+        let mut w10_11 = vec![identity_from_seed(&[10; 32]), identity_from_seed(&[11; 32])];
+        w10_11.sort();
+        let (base_view, base_view_body) = event(
+            20,
+            7,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"fixture",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[{"source":"fixture","importer":identity_from_seed(&[9;32]),"selection":sel_digest}],
+                "account_witnesses":w10_11,
+                "account_authority":true,
+                "notes":[]
+            })),
+        );
+        let mut w12_13 = vec![identity_from_seed(&[12; 32]), identity_from_seed(&[13; 32])];
+        w12_13.sort();
+        let (next_view, next_view_body) = event(
+            20,
+            8,
+            json!({"kind":"view.publish","parents":[base_view.id()]}),
+            Some(json!({
+                "name":"fixture",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[{"source":"fixture","importer":identity_from_seed(&[9;32]),"selection":sel_digest}],
+                "account_witnesses":w12_13,
+                "account_authority":true,
+                "notes":[]
+            })),
+        );
+
+        for (case_name, missing_body_case) in [
+            ("missing_observation_body", true),
+            ("missing_witness_predecessor", false),
+        ] {
+            let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
+                selected_view: next_view.id().into(),
+                import_selections: BTreeMap::from([(sel_digest.clone(), sel_ids.clone())]),
+                overlay: None,
+                limits: Limits {
+                    claim_depth: 0,
+                    ..Limits::default()
+                },
+            });
+            prepared.add_record(&pubn, pubn_body.as_deref());
+            prepared.add_record(&claim, None);
+            prepared.add_record(&status, None);
+            if missing_body_case {
+                prepared.add_record(&obs10, None);
+            } else {
+                prepared.add_record(
+                    &obs10_with_missing_pred.0,
+                    Some(obs10_with_missing_pred.1.as_slice()),
+                );
+            }
+            prepared.add_record(&obs11, obs11_body.as_deref());
+            prepared.add_record(&base_view, base_view_body.as_deref());
+            prepared.add_record(&next_view, next_view_body.as_deref());
+
+            let state = prepared.clone().into_state();
+            assert!(state.evaluation().available);
+            let account = &state.evaluation().accounts["https://source.example#41"];
+            assert!(account.candidates.is_empty());
+            assert!(account.certificates.is_empty());
+            assert_eq!(account.historical, BTreeSet::from([claim.id().to_owned()]));
+            assert!(account.reasons.contains("observation_pending"));
+            assert!(!account.reasons.contains("resource_unavailable"));
+
+            let records: Vec<HostVerifiedRecord> = prepared
+                .nodes
+                .values()
+                .map(|node| HostVerifiedRecord { node: node.clone() })
+                .collect();
+            let full_cp = state.checkpoint(case_name).unwrap();
+            let res_cp = state.result_checkpoint(case_name).unwrap();
+            let restored_full = EvaluatedState::restore_host_checkpoint(&full_cp, case_name)
+                .unwrap_or_else(|e| panic!("{case_name} full checkpoint restore failed: {e}"));
+            let restored_res =
+                EvaluatedState::restore_host_result_checkpoint(&res_cp, case_name, records)
+                    .unwrap_or_else(|e| {
+                        panic!("{case_name} result checkpoint restore failed: {e}")
+                    });
+            assert_eq!(restored_full.evaluation(), state.evaluation());
+            assert_eq!(restored_res.evaluation(), state.evaluation());
+        }
+    }
+
+    #[test]
+    fn fast_append_updates_only_appended_issuer_lifecycle_entries() {
+        let mut prepared = base();
+        let (pubn, pubn_body) = publication();
+        let pub_id = pubn.id().to_owned();
+        prepared.add_record(&pubn, pubn_body.as_deref());
+        let mut background_issuers = Vec::new();
+        for i in 0..128usize {
+            let mut seed = [0u8; 32];
+            seed[0] = 3;
+            seed[1..9].copy_from_slice(&(i as u64).to_le_bytes());
+            let issuer = identity_from_seed(&seed);
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", i + 10),
+                &issuer,
+                vec![],
+                json!({"kind":"identity.merge"}),
+            ));
+            background_issuers.push(issuer);
+        }
+        let state = prepared.clone().into_state();
+        let before_actor_ptrs: Vec<*const u8> = background_issuers
+            .iter()
+            .map(|issuer| state.evaluation().lifecycle.key_actor[issuer].as_ptr())
+            .collect();
+        let before_group_ptrs: Vec<*const u8> = background_issuers
+            .iter()
+            .map(|issuer| {
+                state.evaluation().lifecycle.groups[issuer]
+                    .iter()
+                    .next()
+                    .unwrap()
+                    .as_ptr()
+            })
+            .collect();
+
+        let judge = identity_from_seed(&[250; 32]);
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(host(
+            format!("jve1:{:064x}", 1_000_000usize),
+            &judge,
+            vec![],
+            json!({"kind":"judgment.set","target":pub_id,"value":"bless"}),
+        ));
+        let advanced = state.advance(delta, &[]);
+        assert_eq!(advanced.statistics().incremental_records, 1);
+        assert!(!advanced.statistics().rebuilt);
+        assert_eq!(
+            advanced.evaluation().lifecycle.key_actor.get(&judge),
+            Some(&judge)
+        );
+        assert_eq!(
+            advanced.evaluation().lifecycle.groups.get(&judge),
+            Some(&BTreeSet::from([judge.clone()]))
+        );
+
+        let after_actor_ptrs: Vec<*const u8> = background_issuers
+            .iter()
+            .map(|issuer| advanced.evaluation().lifecycle.key_actor[issuer].as_ptr())
+            .collect();
+        let after_group_ptrs: Vec<*const u8> = background_issuers
+            .iter()
+            .map(|issuer| {
+                advanced.evaluation().lifecycle.groups[issuer]
+                    .iter()
+                    .next()
+                    .unwrap()
+                    .as_ptr()
+            })
+            .collect();
+        assert_eq!(
+            before_actor_ptrs, after_actor_ptrs,
+            "fast append must not clone unrelated issuers in lifecycle.key_actor"
+        );
+        assert_eq!(
+            before_group_ptrs, after_group_ptrs,
+            "fast append must not clone unrelated issuer sets in lifecycle.groups"
+        );
+    }
+
+    #[test]
+    fn event_quota_and_refused_rebuilds_reuse_selection_validity_until_selections_are_resupplied() {
+        let ids: Vec<String> = (0..4_096usize)
+            .map(|i| format!("jve1:{:064x}", i + 1))
+            .collect();
+        let digest = jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(ids)).unwrap());
+        let (view, view_body) = event(
+            1,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"fixture",
+                "description":[],
+                "roots":[{"identity":identity_from_seed(&[1;32]),"q":{"numerator":1,"denominator":1}}],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[{"source":"https://example.org","importer":identity_from_seed(&[1;32]),"selection":digest}],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+
+        // 1. Known event-quota refusal (events: Some(0)) must check the quota before hashing selections.
+        let mut quota_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::from([(digest.clone(), ids.clone())]),
+            overlay: None,
+            limits: Limits {
+                events: Some(0),
+                ..Limits::default()
+            },
+        });
+        quota_input.add_record(&view, view_body.as_deref());
+        policy::reset_selection_hash_validations();
+        let quota_state = quota_input.into_state();
+        assert!(!quota_state.evaluation().available);
+        assert_eq!(quota_state.consumed_work(), 0);
+        assert_eq!(
+            policy::selection_hash_validations(),
+            0,
+            "event-quota refusal must not hash referenced selections before checking the event limit"
+        );
+        let cp = quota_state.checkpoint("quota-sel").unwrap();
+        let restored_quota = EvaluatedState::restore_host_checkpoint(&cp, "quota-sel").unwrap();
+        assert!(!restored_quota.evaluation().available);
+        assert_eq!(
+            policy::selection_hash_validations(),
+            0,
+            "restoring an event-quota refused checkpoint must not hash referenced selections"
+        );
+
+        // 2. When event quota is not exceeded, the allowance rule holds and a refused evaluation does not re-hash the selection on rebuild.
+        let mut open_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::from([(digest.clone(), ids.clone())]),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        open_input.add_record(&view, view_body.as_deref());
+        policy::reset_selection_hash_validations();
+        let open_state = open_input.into_state();
+        assert!(open_state.evaluation().available);
+        assert_eq!(open_state.traversal_budget(), 10_000_256 + 4_096);
+        assert_eq!(policy::selection_hash_validations(), 1);
+
+        // Refused evaluation (tight explicit traversal budget that runs policy::select and then refuses):
+        // subsequent with_overlay / advance rebuilds must reuse the cached validity and count.
+        let mut tight_opts = EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::from([(digest, ids)]),
+            overlay: None,
+            limits: Limits {
+                traversal: Some(4_114),
+                ..Limits::default()
+            },
+        };
+        let (pubn, pubn_body) = publication();
+        let mut tight_input = PreparedEvaluationInput::new(tight_opts.clone());
+        tight_input.add_record(&view, view_body.as_deref());
+        tight_input.add_record(&pubn, pubn_body.as_deref());
+        policy::reset_selection_hash_validations();
+        let tight_state = tight_input.into_state();
+        assert!(!tight_state.evaluation().available);
+        assert!(
+            tight_state
+                .evaluation()
+                .reasons
+                .contains("resource_unavailable")
+        );
+        assert_eq!(policy::selection_hash_validations(), 1);
+
+        let overlaid = tight_state.with_overlay(None);
+        assert!(!overlaid.evaluation().available);
+        assert_eq!(
+            policy::selection_hash_validations(),
+            1,
+            "with_overlay on a refused state must not validate the prepared selection again"
+        );
+        tight_opts.limits.traversal = None;
+        let recovered = overlaid.advance(PreparedEvaluationInput::new(tight_opts), &[]);
+        assert!(recovered.evaluation().available);
+        assert_eq!(recovered.traversal_budget(), 10_000_512 + 4_096);
+        // The refused state has no work left to compare the newly supplied
+        // IDs, so it does not read them and copies no verdict into the new
+        // cache; the rebuild validates the resupplied selection once.
+        assert_eq!(policy::selection_hash_validations(), 2);
+    }
+
+    #[test]
+    fn overlay_recovery_restores_pending_selection_and_target_references() {
+        let (pubn, pubn_body) = publication();
+        let pub_id = pubn.id().to_owned();
+
+        // 1. Pending selection publication: view references a valid selection containing absent `pub_id`.
+        let sel_ids = vec![pub_id.clone()];
+        let sel_digest =
+            jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(sel_ids)).unwrap());
+        let issuer = identity_from_seed(&[3; 32]);
+        let (sel_view, sel_view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"selection-overlay",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[{"source":"fixture","importer":issuer,"selection":sel_digest}],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let sel_opts = EvaluationOptions {
+            selected_view: sel_view.id().into(),
+            overlay: Some(json!({}).into()),
+            import_selections: BTreeMap::from([(sel_digest, sel_ids)]),
+            limits: Limits::default(),
+        };
+        for mode in 0..3usize {
+            let mut input = PreparedEvaluationInput::new(sel_opts.clone());
+            input.add_record(&sel_view, sel_view_body.as_deref());
+            let mut base = input.into_state();
+            if mode == 1 {
+                base = EvaluatedState::restore_host_checkpoint(
+                    &base.checkpoint("sel").unwrap(),
+                    "sel",
+                )
+                .unwrap();
+            } else if mode == 2 {
+                let rec = HostVerifiedRecord::extract_with(
+                    sel_view.id(),
+                    sel_view.header(),
+                    jvc_core::inspect_body(&sel_view, sel_view_body.as_deref()),
+                    |_| (),
+                )
+                .0;
+                base = EvaluatedState::restore_host_result_checkpoint(
+                    &base.result_checkpoint("sel").unwrap(),
+                    "sel",
+                    vec![rec],
+                )
+                .unwrap();
+            }
+            assert!(!base.evaluation().available);
+            assert!(base.evaluation().reasons.contains("invalid_overlay"));
+
+            let repaired = base.with_overlay(None);
+            assert!(repaired.evaluation().available);
+            assert!(
+                repaired
+                    .evaluation()
+                    .reasons
+                    .contains("selection_publications_pending")
+            );
+
+            let mut open = sel_opts.clone();
+            open.overlay = None;
+            let mut delta = PreparedEvaluationInput::new(open.clone());
+            delta.add_record(&pubn, pubn_body.as_deref());
+            let next = repaired.advance(delta, &[]);
+
+            let mut full_input = PreparedEvaluationInput::new(open);
+            full_input.add_record(&sel_view, sel_view_body.as_deref());
+            full_input.add_record(&pubn, pubn_body.as_deref());
+            let full = full_input.into_state();
+
+            assert_eq!(
+                next.statistics().reason.as_deref(),
+                Some("reference_completed"),
+                "mode={mode}: expected reference_completed rebuild when pending selection publication arrives"
+            );
+            assert_eq!(next.statistics().incremental_records, 0);
+            assert!(
+                !next
+                    .evaluation()
+                    .reasons
+                    .contains("selection_publications_pending"),
+                "mode={mode}: selection_publications_pending must clear when publication arrives"
+            );
+            assert_eq!(next.consumed_work(), full.consumed_work());
+            assert_eq!(next.evaluation(), full.evaluation());
+        }
+
+        // 2. Pending judgment target and status target after removing an invalid overlay.
+        let (no_import_view, no_import_view_body) = event(
+            3,
+            2,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"no-imports",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        for mode in 0..3usize {
+            for kind in ["judgment", "status"] {
+                let (pending, _) = if kind == "judgment" {
+                    event(
+                        11,
+                        17,
+                        json!({"kind":"judgment.set","target":pub_id,"value":"bless"}),
+                        None,
+                    )
+                } else {
+                    event(
+                        1,
+                        17,
+                        json!({"kind":"status.set","target":pub_id,"value":"deprecated"}),
+                        None,
+                    )
+                };
+                let opts = EvaluationOptions {
+                    selected_view: no_import_view.id().into(),
+                    overlay: Some(json!({}).into()),
+                    import_selections: BTreeMap::new(),
+                    limits: Limits::default(),
+                };
+                let mut input = PreparedEvaluationInput::new(opts.clone());
+                input.add_record(&no_import_view, no_import_view_body.as_deref());
+                input.add_record(&pending, None);
+                let mut base = input.into_state();
+                if mode == 1 {
+                    base = EvaluatedState::restore_host_checkpoint(
+                        &base.checkpoint("host").unwrap(),
+                        "host",
+                    )
+                    .unwrap();
+                } else if mode == 2 {
+                    let recs = [
+                        (&no_import_view, no_import_view_body.as_deref()),
+                        (&pending, None),
+                    ]
+                    .into_iter()
+                    .map(|(e, b)| {
+                        HostVerifiedRecord::extract_with(
+                            e.id(),
+                            e.header(),
+                            jvc_core::inspect_body(e, b),
+                            |_| (),
+                        )
+                        .0
+                    })
+                    .collect();
+                    base = EvaluatedState::restore_host_result_checkpoint(
+                        &base.result_checkpoint("host").unwrap(),
+                        "host",
+                        recs,
+                    )
+                    .unwrap();
+                }
+                assert!(base.evaluation().reasons.contains("invalid_overlay"));
+                let repaired = base.with_overlay(None);
+                assert!(repaired.evaluation().available);
+
+                let mut open = opts;
+                open.overlay = None;
+                let mut full_input = PreparedEvaluationInput::new(open.clone());
+                full_input.add_record(&no_import_view, no_import_view_body.as_deref());
+                full_input.add_record(&pending, None);
+                full_input.add_record(&pubn, pubn_body.as_deref());
+                let full = full_input.into_state();
+
+                let mut delta = PreparedEvaluationInput::new(open);
+                delta.add_record(&pubn, pubn_body.as_deref());
+                let next = repaired.advance(delta, &[]);
+
+                assert_eq!(
+                    next.evaluation().receipts[pending.id()].interpretation,
+                    Interpretation::Effective,
+                    "mode={mode} kind={kind}: pending record must become Effective when target arrives"
+                );
+                assert_eq!(next.consumed_work(), full.consumed_work());
+                assert_eq!(next.evaluation(), full.evaluation());
+            }
+        }
+    }
+
+    #[test]
+    fn with_overlay_and_empty_advance_share_selections_without_copying_or_scanning_unused_ids() {
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"no-imports",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let ids: Vec<String> = (0..4_096usize).map(|n| format!("jve1:{n:064x}")).collect();
+        let digest = jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(ids)).unwrap());
+
+        for limit in [None, Some(0)] {
+            let options = EvaluationOptions {
+                selected_view: view.id().into(),
+                overlay: None,
+                limits: Limits {
+                    traversal: limit,
+                    ..Limits::default()
+                },
+                import_selections: BTreeMap::from([(digest.clone(), ids.clone())]),
+            };
+            let mut input = PreparedEvaluationInput::new(options.clone());
+            input.add_record(&view, view_body.as_deref());
+            let base = input.into_state();
+            let before_map_ptr = base.import_selections() as *const BTreeMap<String, Vec<String>>;
+            let before_first_str_ptr = base.import_selections()[&digest][0].as_ptr();
+
+            let overlaid = base.with_overlay(None);
+            let after_map_ptr =
+                overlaid.import_selections() as *const BTreeMap<String, Vec<String>>;
+            let after_first_str_ptr = overlaid.import_selections()[&digest][0].as_ptr();
+            assert_eq!(
+                before_map_ptr, after_map_ptr,
+                "with_overlay must share immutable import_selections storage (limit={limit:?})"
+            );
+            assert_eq!(
+                before_first_str_ptr, after_first_str_ptr,
+                "with_overlay must not clone selection strings (limit={limit:?})"
+            );
+
+            // Empty advance with modified last ID in an unreferenced selection must not scan or trigger configuration_changed.
+            let old_work = overlaid.consumed_work();
+            let mut modified_options = options;
+            *modified_options
+                .import_selections
+                .get_mut(&digest)
+                .unwrap()
+                .last_mut()
+                .unwrap() = format!("jve1:{:064x}", 4_096usize);
+            let delta = PreparedEvaluationInput::new(modified_options);
+            let advanced = overlaid.advance(delta, &[]);
+            assert_eq!(advanced.consumed_work(), old_work);
+            assert!(
+                advanced.statistics().reason.is_none(),
+                "changing an unused selection in an empty advance must not trigger configuration_changed (limit={limit:?}, got {:?})",
+                advanced.statistics().reason
+            );
+            assert!(!advanced.statistics().rebuilt);
+        }
+    }
+
+    #[test]
+    fn fast_append_preserves_shared_ancestry_closure_map_without_cloning_old_entries() {
+        let mut prepared = base();
+        let (pubn, pubn_body) = publication();
+        let pub_id = pubn.id().to_owned();
+        prepared.add_record(&pubn, pubn_body.as_deref());
+        let filler_issuer = identity_from_seed(&[9; 32]);
+        for i in 0..128usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", i + 10),
+                &filler_issuer,
+                vec![],
+                json!({"kind":"identity.merge"}),
+            ));
+        }
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+        let before_graph = state.graph.as_ref().unwrap();
+        assert!(std::rc::Rc::ptr_eq(
+            &before_graph.own,
+            &before_graph.structural
+        ));
+        assert!(std::rc::Rc::ptr_eq(
+            &before_graph.own,
+            &before_graph.accepted
+        ));
+        let before_own_ptr = std::rc::Rc::as_ptr(&before_graph.own);
+
+        let judge = identity_from_seed(&[11; 32]);
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_host_verified_record(host(
+            format!("jve1:{:064x}", 1_000_000usize),
+            &judge,
+            vec![],
+            json!({"kind":"judgment.set","target":pub_id,"value":"bless"}),
+        ));
+        let next = state.advance(delta, &[]);
+        assert!(next.evaluation().available);
+        assert!(!next.statistics().rebuilt);
+        assert_eq!(next.statistics().incremental_records, 1);
+
+        let after_graph = next.graph.as_ref().unwrap();
+        assert!(std::rc::Rc::ptr_eq(
+            &after_graph.own,
+            &after_graph.structural
+        ));
+        assert!(std::rc::Rc::ptr_eq(&after_graph.own, &after_graph.accepted));
+        let after_own_ptr = std::rc::Rc::as_ptr(&after_graph.own);
+        assert_eq!(
+            before_own_ptr, after_own_ptr,
+            "fast judgment append on a live session must mutate the shared closure map in place without cloning old entries"
+        );
+    }
+
+    #[test]
+    fn fast_append_native_definition_does_not_run_rafsi_gate_across_unrelated_words() {
+        let mut prepared = base();
+        let abc = b"bdfgjklmnprstvxz";
+        let word_value = |i: usize| {
+            json!({
+                "language": "jbo",
+                "spelling": format!("ba{}a{}a", abc[i / 16] as char, abc[i % 16] as char)
+            })
+        };
+        let def_template: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        let w0 = word_value(0);
+        let w0_id = jvc_core::word_id(&w0).unwrap();
+        let rafsi_pair = jvc_core::rafsi_pair_id(&w0_id, "bab").unwrap();
+        let (rafsi_claim, rafsi_body) = event(
+            13,
+            1,
+            json!({"kind":"rafsi.publish","word":w0_id,"assignment":rafsi_pair,"origin":"native"}),
+            Some(json!({
+                "word": w0,
+                "rafsi": "bab",
+                "rationale": [["fixture"]],
+                "sources": [],
+                "legacy": null
+            })),
+        );
+        prepared.add_record(&rafsi_claim, rafsi_body.as_deref());
+
+        for i in 0..128usize {
+            let w = word_value(i);
+            let wid = jvc_core::word_id(&w).unwrap();
+            let mut body = def_template.clone();
+            body["word"] = w;
+            let (def_ev, def_bytes) = event(
+                14,
+                (i % 250) as u8 + 2,
+                json!({"kind":"definition.publish","word":wid,"language":"en","parents":[],"origin":"native"}),
+                Some(body),
+            );
+            prepared.add_record(&def_ev, def_bytes.as_deref());
+        }
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+
+        // 1. Appending a native definition for an unrelated word (no rafsi claim on that word) must do 0 rafsi_gate publication visits.
+        let w_unrelated = json!({"language":"jbo","spelling":"banli"});
+        let wid_unrelated = jvc_core::word_id(&w_unrelated).unwrap();
+        let (unrelated_def, unrelated_bytes) = event(
+            15,
+            1,
+            json!({"kind":"definition.publish","word":wid_unrelated,"language":"en","parents":[],"origin":"native"}),
+            Some(def_template.clone()),
+        );
+        let mut delta_unrelated = PreparedEvaluationInput::new(prepared.options.clone());
+        delta_unrelated.add_record(&unrelated_def, unrelated_bytes.as_deref());
+        reset_rafsi_gate_publication_visits();
+        let next_unrelated = state.clone().advance(delta_unrelated, &[]);
+        assert!(next_unrelated.evaluation().available);
+        assert!(!next_unrelated.statistics().rebuilt);
+        assert_eq!(next_unrelated.statistics().incremental_records, 1);
+        assert_eq!(
+            rafsi_gate_publication_visits(),
+            0,
+            "fast definition append for a word without rafsi claims must not run rafsi_gate"
+        );
+
+        // 2. Appending a native definition for word(0) (which has a rafsi claim) routes to full evaluation.
+        let mut w0_body = def_template;
+        w0_body["word"] = w0;
+        let (same_word_def, same_word_bytes) = event(
+            16,
+            1,
+            json!({"kind":"definition.publish","word":w0_id,"language":"en","parents":[],"origin":"native"}),
+            Some(w0_body),
+        );
+        let mut delta_same = PreparedEvaluationInput::new(prepared.options.clone());
+        delta_same.add_record(&same_word_def, same_word_bytes.as_deref());
+        let next_same = state.advance(delta_same, &[]);
+        assert!(next_same.evaluation().available);
+        assert!(next_same.statistics().rebuilt);
+        assert_eq!(
+            next_same.statistics().reason.as_deref(),
+            Some("rafsi_eligibility")
+        );
+        assert_eq!(next_same.statistics().incremental_records, 0);
+        let mut full_same = prepared;
+        full_same.add_record(&same_word_def, same_word_bytes.as_deref());
+        assert_eq!(next_same.evaluation(), &full_same.evaluate());
+    }
+
+    #[test]
+    fn cross_word_rafsi_assignment_orders_rebuild_and_match_full_across_checkpoints() {
+        let abc = b"bdfgjklmnprstvxz";
+        let word_value = |i: usize| {
+            json!({
+                "language": "jbo",
+                "spelling": format!("ba{}a{}a", abc[i / 16] as char, abc[i % 16] as char)
+            })
+        };
+        let def_template: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"no imports",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+        let options = EvaluationOptions {
+            selected_view: view.id().into(),
+            overlay: None,
+            import_selections: BTreeMap::new(),
+            limits: Limits::default(),
+        };
+        let wa = word_value(0);
+        let wb = word_value(1);
+        let aid = jvc_core::word_id(&wa).unwrap();
+        let bid = jvc_core::word_id(&wb).unwrap();
+        let pair_a = jvc_core::rafsi_pair_id(&aid, "bab").unwrap();
+        let pair_b = jvc_core::rafsi_pair_id(&bid, "bab").unwrap();
+        let body_a =
+            json!({"word":wa,"rafsi":"bab","rationale":[["fixture"]],"sources":[],"legacy":null});
+        let body_b =
+            json!({"word":wb,"rafsi":"bab","rationale":[["fixture"]],"sources":[],"legacy":null});
+        let (a_ev, a_bytes) = event(
+            13,
+            1,
+            json!({"kind":"rafsi.publish","word":aid,"assignment":pair_a,"origin":"native"}),
+            Some(body_a),
+        );
+        let mut d_body = def_template;
+        d_body["word"] = wa;
+        let (d_ev, d_bytes) = event(
+            15,
+            100,
+            json!({"kind":"definition.publish","word":aid,"language":"en","parents":[],"origin":"native"}),
+            Some(d_body),
+        );
+
+        for a_before_b in [true, false] {
+            for same_assignment in [false, true] {
+                let target_pair = if same_assignment { &pair_a } else { &pair_b };
+                let (b_ev, _) = (1u8..=250)
+                    .map(|n| {
+                        event(
+                            14,
+                            n,
+                            json!({"kind":"rafsi.publish","word":bid,"assignment":target_pair,"origin":"native"}),
+                            Some(body_b.clone()),
+                        )
+                    })
+                    .find(|(b, _)| {
+                        if a_before_b {
+                            a_ev.id() < b.id()
+                        } else {
+                            a_ev.id() > b.id()
+                        }
+                    })
+                    .unwrap();
+
+                for mode in 0..3usize {
+                    let mut hist = PreparedEvaluationInput::new(options.clone());
+                    let rows_input = [
+                        (&view, view_body.as_deref()),
+                        (&a_ev, a_bytes.as_deref()),
+                        (&b_ev, None),
+                    ];
+                    for (ev, body) in rows_input {
+                        hist.add_record(ev, body);
+                    }
+                    let mut state = hist.clone().into_state();
+                    if mode == 1 {
+                        state = EvaluatedState::restore_host_checkpoint(
+                            &state.checkpoint("pairs").unwrap(),
+                            "pairs",
+                        )
+                        .unwrap();
+                    } else if mode == 2 {
+                        let rows = rows_input
+                            .iter()
+                            .map(|(ev, body)| {
+                                HostVerifiedRecord::extract_with(
+                                    ev.id(),
+                                    ev.header(),
+                                    jvc_core::inspect_body(ev, *body),
+                                    |_| (),
+                                )
+                                .0
+                            })
+                            .collect();
+                        state = EvaluatedState::restore_host_result_checkpoint(
+                            &state.result_checkpoint("pairs").unwrap(),
+                            "pairs",
+                            rows,
+                        )
+                        .unwrap();
+                    }
+                    let mut delta = PreparedEvaluationInput::new(options.clone());
+                    delta.add_record(&d_ev, d_bytes.as_deref());
+                    hist.add_record(&d_ev, d_bytes.as_deref());
+                    let full = hist.into_state();
+                    let next = state.advance(delta, &[]);
+                    assert_eq!(
+                        next.evaluation(),
+                        full.evaluation(),
+                        "a_before_b={a_before_b} same_assignment={same_assignment} mode={mode}: evaluation mismatch (next_a={:?} full_a={:?} next_b={:?} full_b={:?})",
+                        next.evaluation().publications[a_ev.id()].eligible,
+                        full.evaluation().publications[a_ev.id()].eligible,
+                        next.evaluation().publications[b_ev.id()].eligible,
+                        full.evaluation().publications[b_ev.id()].eligible,
+                    );
+                    assert_eq!(
+                        next.consumed_work(),
+                        full.consumed_work(),
+                        "a_before_b={a_before_b} same_assignment={same_assignment} mode={mode}: consumed_work mismatch"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fast_append_on_shared_fork_charges_copied_state_and_refuses_tight_budget() {
+        let build_fixture = |count: usize, traversal: Option<usize>| {
+            let mut prepared = base();
+            prepared.options.limits.traversal = traversal;
+            let (pubn, pubn_body) = publication();
+            let pub_id = pubn.id().to_owned();
+            prepared.add_record(&pubn, pubn_body.as_deref());
+            let filler_issuer = identity_from_seed(&[9; 32]);
+            for i in 0..count {
+                prepared.add_host_verified_record(host(
+                    format!("jve1:{:064x}", i + 10),
+                    &filler_issuer,
+                    vec![],
+                    json!({"kind":"identity.merge"}),
+                ));
+            }
+            (prepared, pub_id)
+        };
+
+        let judge = identity_from_seed(&[11; 32]);
+        for count in [128usize, 512usize] {
+            let (prepared, pub_id) = build_fixture(count, None);
+            let judgment = host(
+                format!("jve1:{:064x}", 1_000_000 + count),
+                &judge,
+                vec![],
+                json!({"kind":"judgment.set","target":pub_id,"value":"bless"}),
+            );
+
+            // 1. Single-owner fast append (no live fork) charges only the 9-unit incremental delta.
+            let unshared_state = unshared(&prepared).into_state();
+            let before = unshared_state.consumed_work();
+            let mut delta_unshared = PreparedEvaluationInput::new(prepared.options.clone());
+            delta_unshared.add_host_verified_record(judgment.clone());
+            let unshared_next = unshared_state.advance(delta_unshared, &[]);
+            assert!(!unshared_next.statistics().rebuilt);
+            assert_eq!(unshared_next.statistics().incremental_records, 1);
+            assert_eq!(unshared_next.consumed_work() - before, 9);
+
+            // 2. Forked fast append (base state held by `holder`) must charge the copy of nodes, closures, and evaluation results.
+            let forked_base = prepared.clone().into_state();
+            let cp = forked_base.checkpoint("branch").unwrap();
+            let rcp = forked_base.result_checkpoint("branch").unwrap();
+            let holder = forked_base.clone();
+            let mut delta_forked = PreparedEvaluationInput::new(prepared.options.clone());
+            delta_forked.add_host_verified_record(judgment.clone());
+            let forked_next = forked_base.advance(delta_forked, &[]);
+            assert!(!forked_next.statistics().rebuilt);
+            assert_eq!(forked_next.statistics().incremental_records, 1);
+            let forked_extra = forked_next.consumed_work() - before;
+            let total_nodes = count + 2;
+            assert!(
+                forked_extra >= 9 + 3 * total_nodes,
+                "count={count}: forked fast append must charge proportional to copied nodes, closures, and receipts (got extra_units={forked_extra}, expected >= {})",
+                9 + 3 * total_nodes
+            );
+            assert_eq!(forked_next.evaluation(), unshared_next.evaluation());
+            assert_eq!(holder.checkpoint("branch").unwrap(), cp);
+            assert_eq!(holder.result_checkpoint("branch").unwrap(), rcp);
+            assert!(
+                EvaluatedState::restore_host_checkpoint(
+                    &forked_next.checkpoint("branch").unwrap(),
+                    "branch"
+                )
+                .is_ok()
+            );
+
+            // 3. At a tight budget `before + 9` (enough for single-owner fast append, too small for forked copy + rebuild),
+            // a forked advance must not complete on the fast path without paying for the copy.
+            let (tight_prepared, _) = build_fixture(count, Some(before + 9));
+            let tight_base = tight_prepared.clone().into_state();
+            assert!(tight_base.evaluation().available);
+            let _tight_holder = tight_base.clone();
+            let mut delta_tight = PreparedEvaluationInput::new(tight_prepared.options.clone());
+            delta_tight.add_host_verified_record(judgment);
+            let tight_forked = tight_base.advance(delta_tight, &[]);
+            assert!(
+                tight_forked.statistics().rebuilt,
+                "count={count}: forked advance at tight budget (before + 9) must decline the fast copy and route to rebuild"
+            );
+        }
+    }
+
+    #[test]
+    fn definition_append_with_rafsi_claim_rebuilds_and_fast_path_never_walks_word_definitions() {
+        let mut prepared = base();
+        let abc = b"bdfgjklmnprstvxz";
+        let word = json!({
+            "language": "jbo",
+            "spelling": format!("ba{}a{}a", abc[0] as char, abc[0] as char)
+        });
+        let wid = jvc_core::word_id(&word).unwrap();
+        let rafsi_pair = jvc_core::rafsi_pair_id(&wid, "bab").unwrap();
+        let (rafsi_claim, rafsi_body) = event(
+            13,
+            1,
+            json!({"kind":"rafsi.publish","word":wid,"assignment":rafsi_pair,"origin":"native"}),
+            Some(json!({
+                "word": word,
+                "rafsi": "bab",
+                "rationale": [["fixture"]],
+                "sources": [],
+                "legacy": null
+            })),
+        );
+        prepared.add_record(&rafsi_claim, rafsi_body.as_deref());
+
+        let mut def_body: Value = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        def_body["word"] = word;
+        for i in 0..128usize {
+            let (def_ev, def_bytes) = event(
+                14,
+                (i % 250) as u8 + 2,
+                json!({"kind":"definition.publish","word":wid,"language":"en","parents":[],"origin":"native"}),
+                Some(def_body.clone()),
+            );
+            prepared.add_record(&def_ev, def_bytes.as_deref());
+        }
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+
+        let (appended_def, appended_bytes) = event(
+            15,
+            1,
+            json!({"kind":"definition.publish","word":wid,"language":"en","parents":[],"origin":"native"}),
+            Some(def_body),
+        );
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_record(&appended_def, appended_bytes.as_deref());
+        let next = state.advance(delta, &[]);
+        assert!(
+            next.statistics().rebuilt,
+            "appending a native definition for a word with a rafsi claim must route to full evaluation"
+        );
+        assert_eq!(
+            next.statistics().reason.as_deref(),
+            Some("rafsi_eligibility")
+        );
+        assert_eq!(next.statistics().incremental_records, 0);
+
+        prepared.add_record(&appended_def, appended_bytes.as_deref());
+        let full = prepared.into_state();
+        assert_eq!(next.evaluation(), full.evaluation());
+        assert_eq!(next.consumed_work(), full.consumed_work());
+    }
+
+    #[test]
+    fn empty_advance_on_budget_exhausted_state_rebuilds_on_a_changed_selection() {
+        let ids: Vec<String> = (0..4_096usize).map(|i| format!("jve1:{i:064x}")).collect();
+        let sel_bytes = jvc_core::canonical_value(&json!(ids)).unwrap();
+        let digest = jvc_core::hash_id("sha256:", b"", &sel_bytes);
+        let issuer = identity_from_seed(&[3; 32]);
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"quota",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[{"source":"fixture","importer":issuer,"selection":digest}],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+
+        for limit in [0usize, 1usize, 15usize] {
+            let options = EvaluationOptions {
+                selected_view: view.id().into(),
+                overlay: None,
+                import_selections: BTreeMap::from([(digest.clone(), ids.clone())]),
+                limits: Limits {
+                    traversal: Some(limit),
+                    ..Limits::default()
+                },
+            };
+            let mut prepared = PreparedEvaluationInput::new(options.clone());
+            prepared.add_record(&view, view_body.as_deref());
+            let state = prepared.into_state();
+            assert!(!state.evaluation().available);
+            assert!(state.evaluation().reasons.contains("resource_unavailable"));
+            assert_eq!(state.consumed_work(), limit);
+
+            let mut modified_options = options;
+            *modified_options
+                .import_selections
+                .get_mut(&digest)
+                .unwrap()
+                .last_mut()
+                .unwrap() = format!("jve1:{:064x}", 4_096usize);
+            let delta = PreparedEvaluationInput::new(modified_options);
+            let advanced = state.advance(delta, &[]);
+            // A zero budget refuses whatever the selection holds, so it
+            // skips the comparison. Otherwise the exhausted state has no
+            // work left to compare the 4,096 IDs, so it rebuilds, which
+            // is charged, instead of reading them.
+            let expected = (limit > 0).then_some("configuration_changed");
+            assert_eq!(
+                advanced.statistics().reason.as_deref(),
+                expected,
+                "limit={limit}"
+            );
+            assert_eq!(advanced.consumed_work(), limit);
+            assert!(!advanced.evaluation().available);
+        }
+    }
+
+    #[test]
+    fn overlay_change_and_recovery_share_unresolved_index_without_cloning_pending_ids() {
+        let ids: Vec<String> = (0..4_096usize).map(|i| format!("jve1:{i:064x}")).collect();
+        let sel_bytes = jvc_core::canonical_value(&json!(ids)).unwrap();
+        let digest = jvc_core::hash_id("sha256:", b"", &sel_bytes);
+        let issuer = identity_from_seed(&[3; 32]);
+        let (view, view_body) = event(
+            3,
+            1,
+            json!({"kind":"view.publish","parents":[]}),
+            Some(json!({
+                "name":"pending-overlay",
+                "description":[],
+                "roots":[],
+                "rafsi_threshold":{"numerator":1,"denominator":1},
+                "H":{"numerator":3,"denominator":1},
+                "alpha":{"numerator":1,"denominator":2},
+                "excluded":[],
+                "calculation":"simple-routes-bounds-v1",
+                "work":1000,
+                "import_sets":[{"source":"fixture","importer":issuer,"selection":digest}],
+                "account_witnesses":[],
+                "account_authority":false,
+                "notes":[]
+            })),
+        );
+
+        // 1. Valid base -> invalid overlay shares `unresolved` in O(1) without cloning the 4,096 pending IDs.
+        let mut valid_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::from([(digest.clone(), ids.clone())]),
+            overlay: None,
+            limits: Limits::default(),
+        });
+        valid_input.add_record(&view, view_body.as_deref());
+        let base_valid = valid_input.into_state();
+        assert!(base_valid.evaluation().available);
+        assert_eq!(base_valid.unresolved.len(), 4_096);
+        let valid_first_id_ptr = base_valid.unresolved.iter().next().unwrap().as_ptr();
+
+        let overlaid_invalid = base_valid.with_overlay(Some(json!({})));
+        assert!(!overlaid_invalid.evaluation().available);
+        assert_eq!(overlaid_invalid.unresolved.len(), 4_096);
+        let invalid_first_id_ptr = overlaid_invalid.unresolved.iter().next().unwrap().as_ptr();
+        assert_eq!(
+            valid_first_id_ptr, invalid_first_id_ptr,
+            "with_overlay(Some({{}})) must share unresolved index without cloning 4,096 pending selection IDs"
+        );
+
+        // 2. Invalid-overlay base -> with_overlay(None) recovery shares `unresolved` in O(1) without rebuilding the 4,096 pending IDs.
+        let mut invalid_input = PreparedEvaluationInput::new(EvaluationOptions {
+            selected_view: view.id().into(),
+            import_selections: BTreeMap::from([(digest, ids)]),
+            overlay: Some(json!({}).into()),
+            limits: Limits::default(),
+        });
+        invalid_input.add_record(&view, view_body.as_deref());
+        let base_invalid = invalid_input.into_state();
+        assert!(!base_invalid.evaluation().available);
+        assert_eq!(
+            base_invalid.unresolved.len(),
+            4_096,
+            "invalid-overlay base that evaluated selections must retain unresolved index so recovery shares it in O(1)"
+        );
+        let base_invalid_first_ptr = base_invalid.unresolved.iter().next().unwrap().as_ptr();
+
+        let recovered = base_invalid.with_overlay(None);
+        assert!(recovered.evaluation().available);
+        assert_eq!(recovered.unresolved.len(), 4_096);
+        let recovered_first_ptr = recovered.unresolved.iter().next().unwrap().as_ptr();
+        assert_eq!(
+            base_invalid_first_ptr, recovered_first_ptr,
+            "with_overlay(None) recovery must share unresolved index without rebuilding 4,096 pending selection IDs"
         );
     }
 }

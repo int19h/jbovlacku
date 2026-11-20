@@ -1261,10 +1261,12 @@ mod tests {
     }
     #[test]
     fn repeated_actor_bound_does_not_replace_actual_kernel_count_limits() {
-        let (mut session, word) = session();
-        // This trusted synthetic snapshot isolates the preparation count model.
-        let mut saved: Value =
-            serde_json::from_slice(&session.checkpoint("synthetic").unwrap()).unwrap();
+        let (session, word) = session();
+        let e = session.state.evaluation();
+        let options =
+            serde_json::to_vec(&json!({"selected_view":e.selected_view,"import_selections":{}}))
+                .unwrap();
+        let mut builder = session.fork(&options).unwrap();
         let actors: Vec<_> = (0u64..1000)
             .map(|n| {
                 let mut seed = [0; 32];
@@ -1272,18 +1274,29 @@ mod tests {
                 jvc_core::identity_from_seed(&seed)
             })
             .collect();
-        let mut trust = Vec::new();
+        let mut next_id = 1u64;
         for i in 0..1000 {
             for hop in 1..=6 {
-                trust.push(json!({"actor":actors[i],"subject":actors[(i+hop)%1000],"scope":{"kind":"definition","word":"*","language":"en"},"values":["heed"]}));
+                let id = format!("jve1:{next_id:064x}");
+                next_id += 1;
+                let header = jvc_core::Header {
+                    version: 1,
+                    issuer: actors[i].clone(),
+                    previous: vec![],
+                    nonce: format!("{next_id:032x}"),
+                    action: json!({"kind":"trust.set","subject":actors[(i+hop)%1000],"scope":{"kind":"definition","word":"*","language":"en"},"value":"heed"}),
+                    content: None,
+                };
+                let (record, ()) = jvc_state::HostVerifiedRecord::extract_with(
+                    &id,
+                    &header,
+                    jvc_core::BodyAvailability::Absent,
+                    |_| (),
+                );
+                builder.prepared.add_host_verified_record(record);
             }
         }
-        saved["evaluation"]["trust"] = json!(trust);
-        session.state = jvc_state::EvaluatedState::restore_host_checkpoint(
-            &serde_json::to_vec(&saved).unwrap(),
-            "synthetic",
-        )
-        .unwrap();
+        let session = builder.finish();
         let policy = RankingPreparationPolicy {
             core_binding: format!("sha256:{}", "a".repeat(64)),
             limits: Default::default(),
@@ -1406,11 +1419,15 @@ mod tests {
         let mut saved: Value =
             serde_json::from_slice(&session.checkpoint("synthetic").unwrap()).unwrap();
         edit(&mut saved);
-        session.state = jvc_state::EvaluatedState::restore_host_checkpoint(
-            &serde_json::to_vec(&saved).unwrap(),
-            "synthetic",
-        )
-        .unwrap();
+        let overlay = match saved["options"].get_mut("overlay").map(Value::take) {
+            Some(Value::Null) | None => None,
+            Some(v) => Some(v),
+        };
+        let evaluation: jvc_state::Evaluation =
+            serde_json::from_value(saved["evaluation"].take()).unwrap();
+        session
+            .state
+            .replace_evaluation_for_test(evaluation, overlay);
         session.word_results.borrow_mut().take();
         *session.preparation.borrow_mut() = None;
         session

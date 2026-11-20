@@ -494,6 +494,14 @@ test("checkpoint discovery reads only a guarded independent pin and preserves ex
     assert.equal(await f.store.latestBinding(), null);
     await f.store.save(binding, payload);
     assert.deepEqual(await f.store.latestBinding(), binding);
+    const partialLimits: CheckpointBinding = {
+      ...binding,
+      limits: { traversal: 1000000, claim_depth: 1024 },
+    };
+    assert.deepEqual(
+      parseCheckpointBinding(checkpointBindingKey(partialLimits)),
+      partialLimits,
+    );
     const pin = { ...f.pin() };
     await writeFile(
       join(f.directory, pin.file),

@@ -50,10 +50,20 @@ pub struct EvaluationInput {
 pub struct EvaluationOptions {
     pub selected_view: String,
     pub import_selections: BTreeMap<String, Vec<String>>,
-    #[serde(default)]
-    pub overlay: Option<Value>,
-    #[serde(default)]
+    /// Shared, so that cloning options or a state copies one pointer.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub overlay: Option<std::rc::Rc<Value>>,
     pub limits: Limits,
+}
+impl EvaluationOptions {
+    pub(crate) fn traversal_budget_for_nodes(
+        &self,
+        nodes: &BTreeMap<String, graph::Node>,
+    ) -> usize {
+        let resolved = policy::resolve_referenced_selections(self, nodes);
+        self.limits
+            .traversal_budget_with_selections(nodes.len(), resolved.allowance)
+    }
 }
 /// An opaque projection held only in the trusted host's private storage.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -82,20 +92,31 @@ impl HostVerifiedRecord {
 #[derive(Clone)]
 pub struct PreparedEvaluationInput {
     options: EvaluationOptions,
+    import_selections: std::rc::Rc<BTreeMap<String, Vec<String>>>,
     nodes: std::rc::Rc<BTreeMap<String, graph::Node>>,
     arena: arena::SharedArena,
     arena_error: Option<jvc_core::Error>,
     event_limit_exceeded: bool,
+    validated_selections: std::rc::Rc<std::cell::RefCell<BTreeMap<String, bool>>>,
 }
 impl PreparedEvaluationInput {
-    pub fn new(options: EvaluationOptions) -> Self {
+    pub fn new(mut options: EvaluationOptions) -> Self {
+        let import_selections = std::rc::Rc::new(std::mem::take(&mut options.import_selections));
         Self {
             options,
+            import_selections,
             nodes: std::rc::Rc::new(BTreeMap::new()),
             arena: std::rc::Rc::new(std::cell::RefCell::new(arena::RecordArena::default())),
             arena_error: None,
             event_limit_exceeded: false,
+            validated_selections: Default::default(),
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn options_with_selections(&self) -> EvaluationOptions {
+        let mut options = self.options.clone();
+        options.import_selections = (*self.import_selections).clone();
+        options
     }
     /// Inspect the original body before retaining its state fields.
     /// Duplicate event IDs keep their first record, as in ordinary evaluation.
@@ -118,7 +139,12 @@ impl PreparedEvaluationInput {
         if error.is_some() {
             self.arena_error = error;
         }
-        if self.nodes.len() >= self.options.limits.events {
+        if self
+            .options
+            .limits
+            .events
+            .is_some_and(|limit| self.nodes.len() >= limit)
+        {
             self.event_limit_exceeded = true;
         }
         std::rc::Rc::make_mut(&mut self.nodes).insert(event.id().into(), node);
@@ -131,7 +157,12 @@ impl PreparedEvaluationInput {
         if error.is_some() {
             self.arena_error = error;
         }
-        if self.nodes.len() >= self.options.limits.events {
+        if self
+            .options
+            .limits
+            .events
+            .is_some_and(|limit| self.nodes.len() >= limit)
+        {
             self.event_limit_exceeded = true;
         }
         std::rc::Rc::make_mut(&mut self.nodes).insert(id, node);
@@ -151,13 +182,18 @@ impl PreparedEvaluationInput {
         self.add_projection_node(row.node);
     }
     pub fn clear_import_selections(&mut self) {
-        self.options.import_selections.clear();
+        self.import_selections = Default::default();
+        self.validated_selections = Default::default();
     }
     pub fn insert_import_selection(&mut self, hash: String, ids: Vec<String>) {
-        self.options.import_selections.insert(hash, ids);
+        std::rc::Rc::make_mut(&mut self.validated_selections)
+            .get_mut()
+            .remove(&hash);
+        std::rc::Rc::make_mut(&mut self.import_selections).insert(hash, ids);
     }
     pub fn inherit_import_selections(&mut self, base: &EvaluatedState) {
-        self.options.import_selections = base.import_selections().clone();
+        self.import_selections = base.shared_import_selections().clone();
+        self.validated_selections = base.shared_validated_selections().clone();
     }
     pub(crate) fn arena_error(&self) -> Option<jvc_core::Error> {
         self.arena_error.clone()
@@ -201,20 +237,37 @@ impl PreparedEvaluationInput {
         EvaluatedState::new(self)
     }
 }
+pub const DEFAULT_TRAVERSAL_BASE: usize = 10_000_000;
+pub const DEFAULT_TRAVERSAL_PER_RECORD: usize = 256;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct Limits {
-    pub events: usize,
-    pub traversal: usize,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub events: Option<usize>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub traversal: Option<usize>,
     pub claim_depth: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            events: 200_000,
-            traversal: 10_000_000,
+            events: None,
+            traversal: None,
             claim_depth: 1024,
         }
+    }
+}
+impl Limits {
+    pub fn traversal_budget(&self, records: usize) -> usize {
+        self.traversal_budget_with_selections(records, 0)
+    }
+    pub fn traversal_budget_with_selections(&self, records: usize, selection_ids: usize) -> usize {
+        self.traversal.unwrap_or_else(|| {
+            DEFAULT_TRAVERSAL_BASE
+                .saturating_add(records.saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD))
+                .saturating_add(selection_ids)
+        })
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -227,6 +280,7 @@ pub enum Interpretation {
     Unavailable,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub interpretation: Interpretation,
     pub body: String,
@@ -250,33 +304,43 @@ pub enum Eligibility {
     NotSelected,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AccountKey {
     pub origin: String,
     pub account: u64,
 }
 impl AccountKey {
-    fn token(&self) -> String {
+    pub(crate) fn token(&self) -> String {
         format!("{}#{}", self.origin, self.account)
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Publication {
     pub id: String,
     pub issuer: String,
     pub kind: String,
     pub word: String,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub language: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub assignment: Option<String>,
     pub lineage: BTreeMap<String, String>,
     pub imported: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub source: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub source_record: Option<u64>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub account: Option<AccountKey>,
     pub authority: Authority,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub controller: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub claim: Option<String>,
     pub observations: BTreeSet<String>,
     pub status_frontier: BTreeSet<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub deciding_claim: Option<String>,
     pub controller_candidates: BTreeSet<String>,
     pub witness_contributions: BTreeMap<String, BTreeSet<String>>,
@@ -287,14 +351,17 @@ pub struct Publication {
     pub reasons: BTreeSet<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AccountState {
     pub account: AccountKey,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub controller: Option<String>,
     pub candidates: BTreeSet<String>,
     pub contributions: BTreeMap<String, BTreeSet<String>>,
     pub observation_evidence: BTreeMap<String, BTreeSet<String>>,
     pub certificates: Vec<Certificate>,
     pub chain: BTreeSet<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub controller_identity: Option<String>,
     pub current_observations: BTreeSet<String>,
     pub historical: BTreeSet<String>,
@@ -314,6 +381,7 @@ pub enum Judgment {
     Conflicted,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Register {
     pub actor: String,
     pub key: String,
@@ -327,8 +395,13 @@ pub struct Register {
     /// in register order.
     #[serde(skip)]
     pub(crate) maxima_charge: usize,
+    #[serde(skip)]
+    pub(crate) maxima_work: usize,
+    #[serde(skip)]
+    pub(crate) maxima_member_work: usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Lifecycle {
     pub key_actor: BTreeMap<String, String>,
     pub groups: BTreeMap<String, BTreeSet<String>>,
@@ -343,9 +416,12 @@ pub struct Evaluation {
     pub available: bool,
     pub reasons: BTreeSet<String>,
     results: std::rc::Rc<EvaluationResults>,
-    pub overlay: Option<Value>,
+    /// Shared with the options it came from, so that cloning a state
+    /// copies one pointer.
+    pub overlay: Option<std::rc::Rc<Value>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct EvaluationResults {
     pub receipts: BTreeMap<String, Receipt>,
     pub lifecycle: Lifecycle,
@@ -353,6 +429,7 @@ pub struct EvaluationResults {
     pub accounts: BTreeMap<String, AccountState>,
     pub registers: BTreeMap<String, Register>,
     pub judgments: BTreeMap<String, BTreeMap<String, Judgment>>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub policy: Option<CompactValue>,
     pub(crate) policies: Vec<CompactValue>,
     pub(crate) policy_history: BTreeMap<String, CompactValue>,
@@ -400,26 +477,61 @@ impl<'de> Deserialize<'de> for Evaluation {
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Wire {
             selected_view: String,
             available: bool,
             reasons: BTreeSet<String>,
-            #[serde(flatten)]
-            results: EvaluationResults,
-            overlay: Option<Value>,
+            receipts: BTreeMap<String, Receipt>,
+            lifecycle: Lifecycle,
+            publications: BTreeMap<String, Publication>,
+            accounts: BTreeMap<String, AccountState>,
+            registers: BTreeMap<String, Register>,
+            judgments: BTreeMap<String, BTreeMap<String, Judgment>>,
+            #[serde(deserialize_with = "Option::deserialize")]
+            policy: Option<CompactValue>,
+            #[serde(deserialize_with = "Option::deserialize")]
+            overlay: Option<std::rc::Rc<Value>>,
+            policies: Vec<CompactValue>,
+            policy_history: BTreeMap<String, CompactValue>,
+            selections: BTreeMap<String, BTreeSet<String>>,
+            trust: Vec<TrustRule>,
         }
         let wire = Wire::deserialize(deserializer)?;
         Ok(Self {
             selected_view: wire.selected_view,
             available: wire.available,
             reasons: wire.reasons,
-            results: std::rc::Rc::new(wire.results),
+            results: std::rc::Rc::new(EvaluationResults {
+                receipts: wire.receipts,
+                lifecycle: wire.lifecycle,
+                publications: wire.publications,
+                accounts: wire.accounts,
+                registers: wire.registers,
+                judgments: wire.judgments,
+                policy: wire.policy,
+                policies: wire.policies,
+                policy_history: wire.policy_history,
+                selections: wire.selections,
+                trust: wire.trust,
+            }),
             overlay: wire.overlay,
         })
     }
 }
 impl Evaluation {
-    pub fn with_overlay(&self, overlay: Option<Value>, suspended: impl Fn(&str) -> bool) -> Self {
+    pub fn with_overlay(
+        &self,
+        overlay: Option<std::rc::Rc<Value>>,
+        suspended: impl Fn(&str) -> bool,
+    ) -> Self {
+        // A resource refusal stays the clean refusal: only its overlay
+        // changes, as a rebuild with the new overlay would refuse again.
+        if self.reasons.contains("resource_unavailable") {
+            let mut result = self.clone();
+            result.overlay = overlay;
+            return result;
+        }
         let overlay_reason = self.reasons.contains("invalid_overlay")
             || self.reasons.contains("public_shun_issuer_unavailable");
         let mut result = Self {
@@ -439,6 +551,16 @@ impl Evaluation {
         apply_overlay(&mut result, &suspended);
         result
     }
+}
+/// Work units to validate or compare an overlay: one for the value and
+/// one per entry of its three lists. Each count is read without a walk.
+pub(crate) fn overlay_units(overlay: Option<&Value>) -> usize {
+    overlay.map_or(0, |overlay| {
+        ["root_changes", "trust", "blocked"]
+            .iter()
+            .map(|name| overlay[*name].as_array().map_or(0, Vec::len))
+            .fold(1usize, usize::saturating_add)
+    })
 }
 fn apply_overlay(result: &mut Evaluation, suspended: &impl Fn(&str) -> bool) {
     if result
@@ -461,6 +583,7 @@ fn apply_overlay(result: &mut Evaluation, suspended: &impl Fn(&str) -> bool) {
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct TrustRule {
     pub actor: String,
     pub subject: String,
@@ -472,7 +595,7 @@ pub fn evaluate(input: &EvaluationInput) -> Evaluation {
     let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {
         selected_view: input.selected_view.clone(),
         import_selections: input.import_selections.clone(),
-        overlay: input.overlay.clone(),
+        overlay: input.overlay.clone().map(std::rc::Rc::new),
         limits: input.limits.clone(),
     });
     for event in &input.events {
@@ -491,12 +614,31 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
     }
     let PreparedEvaluationInput {
         options: input,
+        import_selections,
         nodes,
         arena,
+        validated_selections,
         ..
     } = prepared;
-    let graph = graph::Graph::new(nodes, &input.limits);
-    let result = evaluate_graph(&input, &graph);
+    let mut cache = validated_selections.borrow_mut();
+    let resolved = policy::resolve_referenced_selections_cached(
+        &input,
+        &import_selections,
+        &nodes,
+        &mut cache,
+    );
+    let budget = input
+        .limits
+        .traversal_budget_with_selections(nodes.len(), resolved.allowance);
+    let graph = graph::Graph::new_with_budget(nodes, budget);
+    let result = evaluate_graph_with_selections_cached(
+        &input,
+        &import_selections,
+        &graph,
+        &resolved,
+        &mut cache,
+    );
+    drop(cache);
     arena.borrow_mut().finish_load();
     result
 }
@@ -530,17 +672,39 @@ fn empty_evaluation(input: &EvaluationOptions) -> Evaluation {
 }
 fn event_limit_evaluation(input: &EvaluationOptions) -> Evaluation {
     let mut result = empty_evaluation(input);
-    result.available = false;
-    result.reasons.insert("resource_unavailable".into());
+    resource_unavailable(&mut result);
     result
 }
+#[cfg(test)]
 fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation {
+    let mut cache = BTreeMap::new();
+    let resolved = policy::resolve_referenced_selections_cached(
+        input,
+        &input.import_selections,
+        &graph.nodes,
+        &mut cache,
+    );
+    evaluate_graph_with_selections_cached(
+        input,
+        &input.import_selections,
+        graph,
+        &resolved,
+        &mut cache,
+    )
+}
+fn evaluate_graph_with_selections_cached(
+    input: &EvaluationOptions,
+    import_selections: &BTreeMap<String, Vec<String>>,
+    graph: &graph::Graph,
+    resolved: &policy::ResolvedSelections<'_>,
+    cache: &mut BTreeMap<String, bool>,
+) -> Evaluation {
     let mut result = empty_evaluation(input);
     if graph.resource.get() {
         resource_unavailable(&mut result);
         return result;
     }
-    result.lifecycle = graph.lifecycle.clone();
+    result.lifecycle = Lifecycle::clone(&graph.lifecycle);
     if !result.lifecycle.suspended.is_empty() {
         result.reasons.insert("conditional_on_suspension".into());
     }
@@ -585,8 +749,20 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
             },
         );
     }
-    policy::select(graph, input, &mut result);
-    if result.reasons.contains("resource_unavailable") {
+    policy::select(
+        graph,
+        input,
+        import_selections,
+        resolved,
+        cache,
+        &mut result,
+    );
+    if graph.resource.get() || result.reasons.contains("resource_unavailable") {
+        resource_unavailable(&mut result);
+        return result;
+    }
+    // Overlay validation reads every entry: charge them first.
+    if !graph.charge(overlay_units(result.overlay.as_deref())) {
         resource_unavailable(&mut result);
         return result;
     }
@@ -594,10 +770,6 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
     publications(graph, &mut result);
     reconcile_selections(graph, &mut result);
     accounts::evaluate(graph, input, &mut result);
-    if graph.resource.get() {
-        resource_unavailable(&mut result);
-        return result;
-    }
     native_status(graph, &mut result);
     action_targets(graph, &mut result);
     registers(graph, &mut result);
@@ -608,34 +780,40 @@ fn evaluate_graph(input: &EvaluationOptions, graph: &graph::Graph) -> Evaluation
     rafsi_gate(&mut result);
     result
 }
+/// Replace `result` with the whole-evaluation refusal. Every charged
+/// helper (`Graph::retained`, `maxima`, `downstream`, `lineage` and the
+/// rest) returns an ordinary-looking value once the budget runs out, and
+/// the exhaustion flag is sticky. Because every refusal is built here
+/// from nothing the evaluation computed (only the selected view, the
+/// overlay and the refusal reason), a caller that does not read the flag
+/// cannot leak a value decided by a failed charge.
 fn resource_unavailable(result: &mut Evaluation) {
-    result.available = false;
-    result.reasons.insert("resource_unavailable".into());
-    result.registers.clear();
-    result.judgments.clear();
-    result.trust.clear();
-    for p in result.publications.values_mut() {
-        p.authority = Authority::None;
-        p.controller = None;
-        p.claim = None;
-        p.deciding_claim = None;
-        p.status = Status::Unavailable;
-        p.eligible = Eligibility::Unknown;
-        p.reasons.insert("resource_unavailable".into());
-    }
-    for a in result.accounts.values_mut() {
-        a.unavailable = true;
-        a.commands = false;
-        a.controller = None;
-        a.controller_identity = None;
-        a.reasons.insert("resource_unavailable".into());
-    }
-    for receipt in result.receipts.values_mut() {
-        if receipt.interpretation != Interpretation::Inert {
-            receipt.interpretation = Interpretation::Unavailable;
-            receipt.reasons.insert("resource_unavailable".into());
-        }
-    }
+    *result = Evaluation {
+        selected_view: std::mem::take(&mut result.selected_view),
+        available: false,
+        reasons: BTreeSet::from(["resource_unavailable".to_owned()]),
+        results: std::rc::Rc::new(EvaluationResults {
+            receipts: BTreeMap::new(),
+            lifecycle: Lifecycle {
+                key_actor: BTreeMap::new(),
+                groups: BTreeMap::new(),
+                successor: BTreeMap::new(),
+                suspended: BTreeMap::new(),
+                retired: BTreeSet::new(),
+                compromised: BTreeSet::new(),
+            },
+            publications: BTreeMap::new(),
+            accounts: BTreeMap::new(),
+            registers: BTreeMap::new(),
+            judgments: BTreeMap::new(),
+            policy: None,
+            policies: Vec::new(),
+            policy_history: BTreeMap::new(),
+            selections: BTreeMap::new(),
+            trust: Vec::new(),
+        }),
+        overlay: result.overlay.take(),
+    };
 }
 
 fn publications(graph: &graph::Graph, result: &mut Evaluation) {
@@ -696,6 +874,9 @@ fn publications_for(
                     .into_iter()
                     .flatten()
                 {
+                    if !graph.charge(1) {
+                        break;
+                    }
                     if entry.index("importer").as_str() != Some(&node.issuer)
                         || source
                             .as_deref()
@@ -733,6 +914,7 @@ fn publications_for(
                 };
             }
         }
+        let lineage = lineage(graph, node);
         result.publications.insert(
             id.clone(),
             Publication {
@@ -758,7 +940,7 @@ fn publications_for(
                     .index("assignment")
                     .as_str()
                     .map(str::to_owned),
-                lineage: lineage(graph, node),
+                lineage,
                 imported,
                 source,
                 source_record,
@@ -789,6 +971,41 @@ fn native_status(graph: &graph::Graph, result: &mut Evaluation) {
     native_status_for(graph, result, None);
 }
 fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option<&str>) {
+    if let Some(only_id) = only {
+        let Some(publication) = result.publications.get_mut(only_id).filter(|p| !p.imported) else {
+            return;
+        };
+        let actor = graph.actor(&publication.issuer);
+        let keys = graph.downstream(&publication.issuer);
+        if graph.resource.get() {
+            return;
+        }
+        if keys.len() > 1 && !graph.charge(keys.len() - 1) {
+            return;
+        }
+        if !graph.suspended(&publication.issuer)
+            && keys.iter().any(|k| {
+                !graph.lifecycle.retired.contains(k) && !graph.lifecycle.compromised.contains(k)
+            })
+        {
+            publication.authority = Authority::Native;
+            publication.controller = Some(actor);
+        }
+        if graph.suspended(&publication.issuer) {
+            publication.authority = Authority::Uncertain;
+            publication.controller = None;
+            publication.status = Status::Uncertain;
+            publication.reasons.insert("incomplete_group".into());
+            return;
+        }
+        let frontier = graph.maxima(BTreeSet::new(), true);
+        if graph.resource.get() {
+            return;
+        }
+        publication.status_frontier = frontier;
+        publication.status = Status::Active;
+        return;
+    }
     let mut status_records: BTreeMap<String, Vec<&graph::Node>> = BTreeMap::new();
     for node in graph
         .nodes
@@ -796,8 +1013,10 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
         .filter(|n| n.semantic && n.kind == "status.set")
     {
         let target = node.action.view().index("target");
-        if let Some(target) = target.as_str().map(str::to_owned) {
-            status_records.entry(target).or_default().push(node);
+        if let Some(target) = target.as_str() {
+            if only.is_none_or(|id| id == target) {
+                status_records.entry(target.into()).or_default().push(node);
+            }
         }
     }
     for publication in result
@@ -807,6 +1026,12 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
     {
         let actor = graph.actor(&publication.issuer);
         let keys = graph.downstream(&publication.issuer);
+        if graph.resource.get() {
+            return;
+        }
+        if keys.len() > 1 && !graph.charge(keys.len() - 1) {
+            return;
+        }
         if !graph.suspended(&publication.issuer)
             && keys.iter().any(|k| {
                 !graph.lifecycle.retired.contains(k) && !graph.lifecycle.compromised.contains(k)
@@ -822,21 +1047,34 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
             publication.reasons.insert("incomplete_group".into());
             continue;
         }
-        let records: Vec<_> = status_records
+        let candidates = status_records
             .get(publication.id.as_str())
-            .into_iter()
-            .flatten()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if !candidates.is_empty() && !graph.charge(candidates.len()) {
+            return;
+        }
+        let records: Vec<_> = candidates
+            .iter()
             .copied()
             .filter(|n| {
                 graph.structurally_connected(&publication.issuer, &n.issuer, &n.id)
                     && graph.transfers.get(&n.issuer).is_none_or(|ts| {
-                        ts.iter()
-                            .all(|t| t != &n.id && graph.own[t].ids.contains(&n.id))
+                        graph.charge(ts.len().max(1))
+                            && ts
+                                .iter()
+                                .all(|t| t != &n.id && graph.own[t].ids.contains(&n.id))
                     })
                     && (graph.retained(&n.id) || graph.actor(&n.issuer) != actor)
             })
             .collect();
+        if graph.resource.get() {
+            return;
+        }
         let frontier = graph.maxima(records.iter().map(|n| n.id.clone()).collect(), true);
+        if graph.resource.get() {
+            return;
+        }
         publication.status_frontier = frontier.clone();
         if frontier
             .iter()
@@ -874,8 +1112,12 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
 fn registers(graph: &graph::Graph, result: &mut Evaluation) {
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (id, n) in graph.nodes.as_ref() {
+        let retained = graph.retained(id);
+        if graph.resource.get() {
+            return;
+        }
         if !n.semantic
-            || !graph.retained(id)
+            || !retained
             || graph.suspended(&n.issuer)
             || !graph.own_complete(id)
             || result.receipts[id].reasons.contains("invalid_target")
@@ -933,9 +1175,19 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
     }
     let mut scope_arena = None;
     for (key, ids) in groups {
+        let maxima_member_work: usize = ids
+            .iter()
+            .filter_map(|id| graph.accepted.get(id))
+            .map(|c| c.ids.fresh_ranges.saturating_sub(1))
+            .sum();
         let charge_before = graph.ancestry.bytes();
+        let work_before = graph.budget.get();
         let heads = graph.maxima(ids.into_iter().collect(), false);
+        if graph.resource.get() || graph.ancestry.failed() {
+            return;
+        }
         let maxima_charge = graph.ancestry.bytes() - charge_before;
+        let maxima_work = work_before - graph.budget.get();
         let node = &graph.nodes[heads.iter().next().unwrap()];
         let actor = graph.actor(&node.issuer);
         let values: BTreeSet<String> = heads
@@ -1016,10 +1268,27 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
                 conflicted: values.len() > 1,
                 values,
                 maxima_charge,
+                maxima_work,
+                maxima_member_work,
             },
         );
     }
 }
+#[cfg(test)]
+thread_local! {
+    static RAFSI_GATE_PUBLICATION_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_rafsi_gate_publication_visits() {
+    RAFSI_GATE_PUBLICATION_VISITS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn rafsi_gate_publication_visits() -> usize {
+    RAFSI_GATE_PUBLICATION_VISITS.with(std::cell::Cell::get)
+}
+
 fn rafsi_gate(result: &mut Evaluation) {
     let receipts = &result.receipts;
     let effective = |id: &str| {
@@ -1046,6 +1315,8 @@ fn rafsi_gate(result: &mut Evaluation) {
     let mut uncertain_words = BTreeSet::new();
     let mut updates = Vec::new();
     for (id, p) in &result.publications {
+        #[cfg(test)]
+        RAFSI_GATE_PUBLICATION_VISITS.with(|count| count.set(count.get() + 1));
         if p.kind == "definition.publish" && p.eligible != Eligibility::NotSelected {
             if !effective(id) {
                 // Missing evidence blocks an all-deprecated result. Excluded history does not.
@@ -1109,13 +1380,29 @@ fn rafsi_gate(result: &mut Evaluation) {
 }
 
 fn lineage(graph: &graph::Graph, node: &graph::Node) -> BTreeMap<String, String> {
-    node.action
+    // Charge the parent count before the IDs are read. A semantic
+    // record's parents are all strings (schema), so the array length is
+    // the count that the charge has always used.
+    let count = node
+        .action
+        .view()
+        .index("parents")
+        .as_array()
+        .map_or(0, |parents| parents.len());
+    if count > 1 && !graph.charge(count - 1) {
+        return BTreeMap::new();
+    }
+    let parents: Vec<_> = node
+        .action
         .view()
         .index("parents")
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    parents
+        .into_iter()
         .map(|id| {
             let state = match graph.nodes.get(&id) {
                 None => "pending",
@@ -1187,10 +1474,33 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
         let mut pending = false;
         let mut invalid = false;
         if node.kind == "judgment.set" && target.starts_with("jvr1:") {
-            pending = !result
-                .publications
-                .values()
-                .any(|p| p.assignment.as_deref() == Some(target));
+            let mut matched = None;
+            for p in result.publications.values() {
+                if !graph.charge(1) {
+                    return;
+                }
+                if p.assignment.as_deref() == Some(target) {
+                    matched = Some(p.id.clone());
+                    break;
+                }
+            }
+            if only.is_none() {
+                match matched.as_ref() {
+                    Some(id) => {
+                        *graph
+                            .matched_publication_scans
+                            .borrow_mut()
+                            .entry(id.clone())
+                            .or_insert(0) += 1;
+                    }
+                    None => {
+                        graph
+                            .unmatched_publication_scans
+                            .set(graph.unmatched_publication_scans.get() + 1);
+                    }
+                }
+            }
+            pending = matched.is_none();
         } else {
             match graph.nodes.get(target) {
                 None => pending = true,
@@ -1200,6 +1510,9 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                     if node.kind == "status.set" {
                         invalid |= n.action.view().index("origin") != "native"
                             || !graph.structurally_connected(&n.issuer, &node.issuer, id);
+                        if graph.resource.get() {
+                            return;
+                        }
                     }
                     if node.kind == "import.status" {
                         invalid |= n.kind != "definition.publish"
@@ -1213,24 +1526,23 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                             let source_id = node.action.view().index("source_definition").as_u64();
                             let origin = node.action.view().index("origin");
                             let origin = origin.as_str().unwrap_or_default();
-                            let linked = result
-                                .publications
-                                .values()
-                                .filter(|p| {
-                                    p.imported
-                                        && p.kind == "definition.publish"
-                                        && p.source_record == source_id
-                                        && p.word
-                                            == n.action
-                                                .view()
-                                                .index("word")
-                                                .as_str()
-                                                .unwrap_or_default()
-                                        && p.language.as_deref()
-                                            == n.action.view().index("language").as_str()
-                                })
-                                .any(|p| {
-                                    p.account
+                            let mut linked = None;
+                            for p in result.publications.values() {
+                                if !graph.charge(1) {
+                                    return;
+                                }
+                                if p.imported
+                                    && p.kind == "definition.publish"
+                                    && p.source_record == source_id
+                                    && p.word
+                                        == n.action
+                                            .view()
+                                            .index("word")
+                                            .as_str()
+                                            .unwrap_or_default()
+                                    && p.language.as_deref()
+                                        == n.action.view().index("language").as_str()
+                                    && p.account
                                         .as_ref()
                                         .filter(|a| a.origin == origin)
                                         .and_then(|a| result.accounts.get(&a.token()))
@@ -1243,8 +1555,28 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                                                     },
                                                 )
                                         })
-                                });
-                            if !linked {
+                                {
+                                    linked = Some(p.id.clone());
+                                    break;
+                                }
+                            }
+                            if only.is_none() {
+                                match linked.as_ref() {
+                                    Some(id) => {
+                                        *graph
+                                            .matched_publication_scans
+                                            .borrow_mut()
+                                            .entry(id.clone())
+                                            .or_insert(0) += 1;
+                                    }
+                                    None => {
+                                        graph
+                                            .unmatched_publication_scans
+                                            .set(graph.unmatched_publication_scans.get() + 1);
+                                    }
+                                }
+                            }
+                            if linked.is_none() {
                                 let r = result.receipts.get_mut(id).unwrap();
                                 r.interpretation = Interpretation::Pending;
                                 r.reasons.insert("account_binding_unavailable".into());
@@ -1321,7 +1653,7 @@ mod event_limit_tests {
 
     fn prepared(records: &[VerifiedEnvelope], limit: usize) -> PreparedEvaluationInput {
         let limits = Limits {
-            events: limit,
+            events: Some(limit),
             ..Limits::default()
         };
         let mut prepared = PreparedEvaluationInput::new(EvaluationOptions {

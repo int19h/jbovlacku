@@ -22,7 +22,7 @@ fn chain(graph: &Graph, id: &str, a: &AccountKey, depth: usize) -> Chain {
     let mut seen = BTreeSet::new();
     let mut at = Some(id.to_owned());
     while let Some(id) = at {
-        if periods.len() >= depth {
+        if periods.len() >= depth || !graph.charge(1) {
             return Chain::Resource;
         }
         if !seen.insert(id.clone()) {
@@ -64,6 +64,9 @@ fn chain(graph: &Graph, id: &str, a: &AccountKey, depth: usize) -> Chain {
                     .filter_map(|v| v.as_str().map(str::to_owned))
                     .collect();
                 for head in &carry {
+                    if !graph.charge(1) {
+                        return Chain::Resource;
+                    }
                     let Some(c) = graph.structural.get(head) else {
                         continue;
                     };
@@ -81,7 +84,13 @@ fn chain(graph: &Graph, id: &str, a: &AccountKey, depth: usize) -> Chain {
                                 head,
                             ))
                     {
+                        if graph.resource.get() {
+                            return Chain::Resource;
+                        }
                         return Chain::Invalid;
+                    }
+                    if graph.resource.get() {
+                        return Chain::Resource;
                     }
                 }
             }
@@ -143,7 +152,12 @@ fn historical_ancestors(
             if !ancestors.insert(at.clone()) {
                 continue;
             }
-            todo.extend(parents.get(&at).into_iter().flatten().cloned());
+            if let Some(ps) = parents.get(&at) {
+                if !ps.is_empty() && !graph.charge(ps.len()) {
+                    break;
+                }
+                todo.extend(ps.iter().cloned());
+            }
         }
         result.insert(key, ancestors);
     }
@@ -156,19 +170,24 @@ fn groups(
 ) -> Vec<BTreeSet<String>> {
     let mut groups: Vec<BTreeSet<String>> = Vec::new();
     for key in keys {
-        if graph.resource.get() {
+        if !graph.charge(1) {
             return Vec::new();
         }
         let mut group = BTreeSet::from([key.clone()]);
         let mut index = 0;
         while index < groups.len() {
             let same = groups[index].iter().any(|other| {
-                graph.charge(1);
+                if !graph.charge(1) {
+                    return false;
+                }
                 historical.map_or_else(
                     || graph.actor(other) == graph.actor(key),
                     |ancestors| ancestors[key].contains(other) || ancestors[other].contains(key),
                 )
             });
+            if graph.resource.get() {
+                return Vec::new();
+            }
             if same {
                 group.extend(groups.remove(index));
             } else {
@@ -197,7 +216,10 @@ fn observations<'a>(
                 || n.body_label == "missing"
                 || !historical && n.body_label.starts_with("invalid:"))
                 && !graph.structural[&n.id].invalid
-                && group.iter().any(|key| {
+                && group.iter().enumerate().any(|(i, key)| {
+                    if i > 0 && !graph.charge(1) {
+                        return false;
+                    }
                     if historical {
                         graph.structurally_connected(key, &n.issuer, &n.id)
                     } else {
@@ -214,7 +236,11 @@ fn complete_observation(graph: &Graph, n: &Node, historical: bool) -> bool {
         && (historical || !graph.suspended(&n.issuer))
 }
 fn observation_missing(graph: &Graph, n: &Node, historical: bool) -> BTreeSet<String> {
-    let mut missing = graph.structural[&n.id].missing.clone();
+    let own_missing = &graph.structural[&n.id].missing;
+    if !graph.charge(1 + own_missing.len()) {
+        return BTreeSet::new();
+    }
+    let mut missing = BTreeSet::clone(own_missing);
     if n.body.is_none() {
         missing.insert(n.id.clone());
     }
@@ -226,7 +252,11 @@ fn observation_missing(graph: &Graph, n: &Node, historical: bool) -> BTreeSet<St
             .into_iter()
             .flatten()
         {
-            missing.extend(graph.own[id].missing.clone());
+            let item_missing = &graph.own[id].missing;
+            if !graph.charge(1 + item_missing.len()) {
+                return BTreeSet::new();
+            }
+            missing.extend(item_missing.iter().cloned());
         }
     }
     missing
@@ -241,14 +271,23 @@ fn certificates(graph: &Graph, observations: &[Vec<&Node>], historical: bool) ->
     let Some(first) = observations.first() else {
         return result;
     };
+    if !first.is_empty() && !graph.charge(first.len()) {
+        return result;
+    }
     let claims: BTreeSet<_> = first
         .iter()
         .filter_map(|n| n.action.view().index("claim").as_str().map(str::to_owned))
         .collect();
     for claim in claims {
+        if !graph.charge(1) {
+            return result;
+        }
         let mut missing = BTreeSet::new();
         let mut possible = true;
         for group in observations {
+            if !graph.charge(group.len().max(1)) {
+                return result;
+            }
             let evidence: Vec<_> = group
                 .iter()
                 .filter(|n| {
@@ -268,19 +307,29 @@ fn certificates(graph: &Graph, observations: &[Vec<&Node>], historical: bool) ->
             }
             for n in evidence {
                 missing.extend(observation_missing(graph, n, historical));
+                if graph.resource.get() {
+                    return result;
+                }
             }
         }
         if possible {
             if missing.is_empty()
                 && observations.iter().all(|group| {
-                    group.iter().any(|n| {
-                        n.action.view().index("claim").as_str() == Some(claim.as_str())
-                            && complete_observation(graph, n, historical)
-                    })
+                    graph.charge(group.len().max(1))
+                        && group.iter().any(|n| {
+                            n.action.view().index("claim").as_str() == Some(claim.as_str())
+                                && complete_observation(graph, n, historical)
+                        })
                 })
             {
+                if graph.resource.get() {
+                    return result;
+                }
                 result.complete.insert(claim);
             } else {
+                if graph.resource.get() {
+                    return result;
+                }
                 result.pending.insert(claim, missing);
             }
         }
@@ -368,7 +417,13 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
         }
     }
     for (token, a) in all_accounts {
-        if graph.resource.get() {
+        let group_work = 1
+            + current_groups.len()
+            + historical_groups
+                .iter()
+                .map(|p| p.groups.len().max(1))
+                .sum::<usize>();
+        if !graph.charge(group_work) {
             return;
         }
         let nodes = account_observations
@@ -411,6 +466,9 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             chains
                 .entry(id.clone())
                 .or_insert_with(|| chain(graph, id, &a, input.limits.claim_depth));
+            if graph.resource.get() {
+                return;
+            }
         }
         for value in chains.values() {
             if let Chain::Valid(ids) = value {
@@ -426,6 +484,9 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
                             .collect::<Vec<_>>();
                         graph.closure(&heads, 1)
                     });
+                    if graph.resource.get() {
+                        return;
+                    }
                 }
             }
         }
@@ -435,27 +496,46 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
         let mut local_missing = BTreeMap::new();
         let mut missing_by_issuer: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for id in chains.keys() {
+            if !graph.charge(1) {
+                return;
+            }
             if let Some(n) = graph.nodes.get(id) {
                 if !graph.local_complete(&n.issuer, id) {
+                    if graph.resource.get() {
+                        return;
+                    }
                     // The per-issuer retained missing unions are
                     // indexed at graph build; claims of one issuer
                     // share one answer instead of rescanning every
                     // record per claim.
                     #[cfg(test)]
                     crate::graph::count_work(1);
-                    let missing = missing_by_issuer
-                        .entry(n.issuer.clone())
-                        .or_insert_with(|| {
-                            graph
-                                .downstream(&n.issuer)
-                                .iter()
-                                .filter_map(|key| graph.issuer_missing.get(key))
-                                .flatten()
-                                .cloned()
-                                .collect()
-                        })
-                        .clone();
-                    local_missing.insert(id.clone(), missing);
+                    if !missing_by_issuer.contains_key(&n.issuer) {
+                        let keys = graph.downstream(&n.issuer);
+                        if graph.resource.get() {
+                            return;
+                        }
+                        let mut set = BTreeSet::new();
+                        for key in &keys {
+                            if !graph.charge(1) {
+                                return;
+                            }
+                            if let Some(m) = graph.issuer_missing.get(key) {
+                                if !m.is_empty() && !graph.charge(m.len()) {
+                                    return;
+                                }
+                                set.extend(m.iter().cloned());
+                            }
+                        }
+                        missing_by_issuer.insert(n.issuer.clone(), set);
+                    }
+                    let set = &missing_by_issuer[&n.issuer];
+                    if !graph.charge(set.len().max(1)) {
+                        return;
+                    }
+                    local_missing.insert(id.clone(), set.clone());
+                } else if graph.resource.get() {
+                    return;
                 }
             }
         }
@@ -464,11 +544,20 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
         let mut reasons = BTreeSet::new();
         let mut pending_closure = false;
         for id in historical_certificates.iter().flat_map(|c| &c.complete) {
+            if !graph.charge(1) {
+                return;
+            }
             match &chains[id] {
                 Chain::Valid(periods) => {
+                    if periods.len() > 1 && !graph.charge(periods.len() - 1) {
+                        return;
+                    }
                     closed.extend(periods.iter().skip(1).cloned());
                 }
                 Chain::Pending(ids) => {
+                    if !ids.is_empty() && !graph.charge(ids.len()) {
+                        return;
+                    }
                     missing.extend(ids.clone());
                     pending_closure = true;
                     reasons.insert("claim_pending".into());
@@ -485,7 +574,13 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             .flat_map(|c| &c.pending)
             .chain(current_certificates.pending.iter())
         {
+            if !graph.charge(1) {
+                return;
+            }
             if !closed.contains(claim) {
+                if !ids.is_empty() && !graph.charge(ids.len()) {
+                    return;
+                }
                 pending_closure = true;
                 missing.extend(ids.clone());
                 reasons.insert("observation_pending".into());
@@ -497,6 +592,9 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
         let mut candidates = BTreeSet::new();
         let mut unanimous = true;
         for (group, observations) in current_groups.iter().zip(&current_observations) {
+            if !graph.charge(observations.len().max(1)) {
+                return;
+            }
             let ids: BTreeSet<_> = observations
                 .iter()
                 .filter(|n| {
@@ -508,11 +606,17 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
                 .map(|n| n.id.clone())
                 .collect();
             let maxima = graph.maxima(ids, false);
+            if graph.resource.get() {
+                return;
+            }
             for id in &maxima {
                 let n = &graph.nodes[id];
                 if !complete_observation(graph, n, false) {
                     pending_closure = true;
                     missing.extend(observation_missing(graph, n, false));
+                    if graph.resource.get() {
+                        return;
+                    }
                     reasons.insert(
                         if n.body_label.starts_with("invalid:") {
                             "observation_body_invalid"
@@ -553,9 +657,15 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             reasons.insert("policy_ancestry_unavailable".into());
         }
         for id in &candidates {
+            if !graph.charge(1) {
+                return;
+            }
             match &chains[id] {
                 Chain::Valid(_) => {}
                 Chain::Pending(ids) => {
+                    if !ids.is_empty() && !graph.charge(ids.len()) {
+                        return;
+                    }
                     missing.extend(ids.clone());
                     unavailable = true;
                     reasons.insert("claim_pending".into());
@@ -587,6 +697,9 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
         let commands = controller
             .as_deref()
             .is_some_and(|id| command_authority(graph, id, &a));
+        if graph.resource.get() {
+            return;
+        }
         let mut certificates = Vec::new();
         let mut chain_ids = BTreeSet::new();
         for ((policy_groups, observations), evidence) in historical_groups
@@ -597,6 +710,9 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             for claim in &evidence.complete {
                 let mut evidence = BTreeSet::new();
                 for group in observations {
+                    if !graph.charge(group.len().max(1)) {
+                        return;
+                    }
                     let ids = group
                         .iter()
                         .filter(|n| {
@@ -605,7 +721,11 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
                         })
                         .map(|n| n.id.clone())
                         .collect();
-                    if let Some(id) = graph.maxima(ids, true).iter().next() {
+                    let maxima = graph.maxima(ids, true);
+                    if graph.resource.get() {
+                        return;
+                    }
+                    if let Some(id) = maxima.iter().next() {
                         evidence.insert(id.clone());
                     }
                 }
@@ -615,6 +735,9 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
                     observations: evidence,
                 });
                 if let Chain::Valid(ids) = &chains[claim] {
+                    if !graph.charge(ids.len().max(1)) {
+                        return;
+                    }
                     chain_ids.extend(ids.clone());
                 }
             }
@@ -622,6 +745,9 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
         let mut selected_observations = BTreeSet::new();
         if let Some(claim) = &controller {
             for group in &current_observations {
+                if !graph.charge(group.len().max(1)) {
+                    return;
+                }
                 let ids = group
                     .iter()
                     .filter(|n| {
@@ -630,13 +756,20 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
                     })
                     .map(|n| n.id.clone())
                     .collect();
-                if let Some(id) = graph.maxima(ids, false).iter().next() {
+                let maxima = graph.maxima(ids, false);
+                if graph.resource.get() {
+                    return;
+                }
+                if let Some(id) = maxima.iter().next() {
                     selected_observations.insert(id.clone());
                 }
             }
         }
         for claim in &candidates {
             if let Chain::Valid(ids) = &chains[claim] {
+                if !graph.charge(ids.len().max(1)) {
+                    return;
+                }
                 chain_ids.extend(ids.clone());
             }
         }
@@ -667,6 +800,18 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             missing,
         };
         for id in account_publications.get(&token).into_iter().flatten() {
+            let copy_work = 1
+                + state.candidates.len()
+                + state.contributions.len()
+                + state.current_observations.len()
+                + if unavailable {
+                    state.reasons.len() + state.missing.len()
+                } else {
+                    0
+                };
+            if !graph.charge(copy_work) {
+                return;
+            }
             let p = result.publications.get_mut(id).unwrap();
             p.controller_candidates = state.candidates.clone();
             p.witness_contributions = state.contributions.clone();
@@ -707,6 +852,11 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
                         .map(Vec::as_slice)
                         .unwrap_or_default(),
                 );
+                if graph.resource.get()
+                    || !graph.charge(1 + decision.missing.len() + decision.frontier.len())
+                {
+                    return;
+                }
                 p.missing.extend(decision.missing.clone());
                 state.missing.extend(decision.missing);
                 p.status_frontier.extend(decision.frontier);
@@ -744,6 +894,9 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
         if !status_authority || !n.semantic || n.kind != "import.status" {
             continue;
         }
+        if !graph.charge(1) {
+            return;
+        }
         let claim = n.action.view().index("claim");
         let claim = claim.as_str().unwrap_or_default();
         let allowed = graph.nodes.get(claim).and_then(account).is_some_and(|a| {
@@ -757,6 +910,9 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
                 p.imported && p.kind == "definition.publish" && p.account.as_ref() == Some(&a)
             }) && authorized_record(graph, n, claim, &a, None)
         });
+        if graph.resource.get() {
+            return;
+        }
         if !allowed {
             if let Some(receipt) = result.receipts.get_mut(id) {
                 receipt.interpretation = Interpretation::Inert;
@@ -771,20 +927,30 @@ fn command_authority(graph: &Graph, claim: &str, a: &AccountKey) -> bool {
         return false;
     }
     let keys = graph.downstream(&n.issuer);
+    if keys.len() > 1 && !graph.charge(keys.len() - 1) {
+        return false;
+    }
     if !keys.iter().any(|key| {
         !graph.lifecycle.retired.contains(key) && !graph.lifecycle.compromised.contains(key)
     }) {
         return false;
     }
     let candidates = graph.account_sets.get(&a.token());
+    let candidate_len = candidates.map_or(0, Vec::len);
+    if !graph.charge(candidate_len.max(1)) {
+        return false;
+    }
     #[cfg(test)]
-    crate::graph::count_work(candidates.map_or(0, Vec::len));
+    crate::graph::count_work(candidate_len);
     let ids = candidates
         .into_iter()
         .flatten()
         .filter(|id| keys.contains(&graph.nodes[*id].issuer) && graph.retained(id))
         .cloned()
         .collect();
+    if graph.resource.get() {
+        return false;
+    }
     let maxima = graph.maxima(ids, false);
     maxima.len() == 1 && maxima.contains(claim)
 }
@@ -804,17 +970,23 @@ fn authorized_record(
         return false;
     }
     let past = &graph.structural[&n.id];
+    if past.ids.fresh_ranges > 1 && !graph.charge(past.ids.fresh_ranges - 1) {
+        return false;
+    }
+    let past_count = past.ids.member_count();
     let candidates = graph.account_sets.get(&a.token());
+    let candidate_count = candidates.map_or(0, Vec::len);
     // Iterate whichever is smaller, the record's history or the
     // account's claims: on main this walked the history, so the
     // candidate walk must never make a small history more
     // expensive than main. Both sides apply the same filter.
+    let step_work = std::cmp::min(past_count, candidate_count);
+    if !graph.charge(step_work.max(1)) {
+        return false;
+    }
     #[cfg(test)]
-    crate::graph::count_work(std::cmp::min(
-        past.ids.member_count(),
-        candidates.map_or(0, Vec::len),
-    ));
-    let ids: BTreeSet<String> = if past.ids.member_count() <= candidates.map_or(0, Vec::len) {
+    crate::graph::count_work(step_work);
+    let ids: BTreeSet<String> = if past_count <= candidate_count {
         past.ids
             .iter_unordered()
             .filter(|id| id != &n.id)
@@ -866,6 +1038,9 @@ fn period_chain_status(
         _ => return Status::Unavailable.into(),
     };
     for (index, period) in periods.iter().enumerate() {
+        if !graph.charge(1) {
+            return Status::Unavailable.into();
+        }
         let node = &graph.nodes[period];
         let boundary = if index == 0 {
             None
@@ -874,16 +1049,22 @@ fn period_chain_status(
         };
         if let Some(boundary) = boundary {
             if !boundary.complete() {
+                if !boundary.missing.is_empty() && !graph.charge(boundary.missing.len()) {
+                    return Status::Unavailable.into();
+                }
                 return Decision {
                     status: Status::Unavailable,
                     frontier: BTreeSet::new(),
                     claim: None,
-                    missing: boundary.missing.clone(),
+                    missing: BTreeSet::clone(&boundary.missing),
                 };
             }
         }
         if index == 0 {
             if let Some(missing) = local_missing.get(claim) {
+                if !missing.is_empty() && !graph.charge(missing.len()) {
+                    return Status::Unavailable.into();
+                }
                 return Decision {
                     status: Status::Unavailable,
                     frontier: BTreeSet::new(),
@@ -891,6 +1072,9 @@ fn period_chain_status(
                     missing: missing.clone(),
                 };
             }
+        }
+        if !target_records.is_empty() && !graph.charge(target_records.len()) {
+            return Status::Unavailable.into();
         }
         let records: BTreeSet<_> = target_records
             .iter()
@@ -904,28 +1088,45 @@ fn period_chain_status(
                 // Terminal transfer excludes old-key commands before cutoff uncertainty is evaluated.
                 boundary.is_some()
                     || graph.transfers.get(&n.issuer).is_none_or(|ts| {
-                        ts.iter()
-                            .all(|t| t != &n.id && graph.own[t].ids.contains(&n.id))
+                        graph.charge(ts.len().max(1))
+                            && ts
+                                .iter()
+                                .all(|t| t != &n.id && graph.own[t].ids.contains(&n.id))
                     })
             })
             .map(|n| n.id.clone())
             .collect();
+        if graph.resource.get() {
+            return Status::Unavailable.into();
+        }
         if records.is_empty() {
             continue;
         }
         let maxima = graph.maxima(records, true);
+        if graph.resource.get() {
+            return Status::Unavailable.into();
+        }
         if index == 0 {
             let keys = graph.downstream(&node.issuer);
+            if graph.resource.get() {
+                return Status::Unavailable.into();
+            }
             if maxima
                 .iter()
                 .any(|id| !keys.contains(&graph.nodes[id].issuer) || !graph.retained(id))
             {
+                if graph.resource.get() {
+                    return Status::Unavailable.into();
+                }
                 return Decision {
                     status: Status::Uncertain,
                     frontier: maxima,
                     claim: Some(period.clone()),
                     missing: BTreeSet::new(),
                 };
+            }
+            if graph.resource.get() {
+                return Status::Unavailable.into();
             }
         }
         let values: BTreeSet<_> = maxima

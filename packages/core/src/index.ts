@@ -139,7 +139,7 @@ export const evaluate = (input: {
   selected_view: string;
   import_selections: Record<string, string[]>;
   overlay?: unknown;
-  limits?: { events: number; traversal: number; claim_depth: number };
+  limits?: { events?: number; traversal?: number; claim_depth?: number };
 }): Evaluation =>
   JSON.parse(wasm.evaluate_records(encodeEvaluationRequest(input)));
 export const signHeader = (seed: Uint8Array, header: Header) =>

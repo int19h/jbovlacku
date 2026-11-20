@@ -27,9 +27,9 @@ export function checkpointBindingKey(binding: CheckpointBinding): string {
     binding.core_version,
     binding.limits
       ? [
-          binding.limits.events,
-          binding.limits.traversal,
-          binding.limits.claim_depth,
+          binding.limits.events ?? null,
+          binding.limits.traversal ?? null,
+          binding.limits.claim_depth ?? null,
         ]
       : null,
   ]);
@@ -66,7 +66,10 @@ export function parseCheckpointBinding(text: string): CheckpointBinding | null {
       (rawLimits !== null &&
         (!Array.isArray(rawLimits) ||
           rawLimits.length !== 3 ||
-          rawLimits.some((value) => !Number.isSafeInteger(value) || value < 0)))
+          rawLimits.some(
+            (value) =>
+              value !== null && (!Number.isSafeInteger(value) || value < 0),
+          )))
     )
       return null;
     const binding: CheckpointBinding = {
@@ -80,9 +83,9 @@ export function parseCheckpointBinding(text: string): CheckpointBinding | null {
         rawLimits === null
           ? null
           : {
-              events: rawLimits[0],
-              traversal: rawLimits[1],
-              claim_depth: rawLimits[2],
+              ...(rawLimits[0] !== null ? { events: rawLimits[0] } : {}),
+              ...(rawLimits[1] !== null ? { traversal: rawLimits[1] } : {}),
+              ...(rawLimits[2] !== null ? { claim_depth: rawLimits[2] } : {}),
             },
     };
     return checkpointBindingKey(binding) === text ? binding : null;

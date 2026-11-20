@@ -544,6 +544,68 @@ test("an overlay delta rebuilds to the same state as full evaluation", async () 
   }
 });
 
+test("an overlay change that makes a refused load available sends its actors", async () => {
+  const { input } = await fixture();
+  // 64 root changes cost 65 units before validation. At the limit that
+  // the evaluation without them needs, the load with them refuses.
+  const overlay = {
+    version: 1 as const,
+    base_view: input.selected_view,
+    root_changes: Array.from({ length: 64 }, (_, i) => ({
+      identity: "ed25519:" + i.toString(16).padStart(64, "0"),
+      q: null,
+    })),
+    trust: [],
+    blocked: [],
+    work: null,
+  };
+  let limit = 0;
+  for (; ; limit++) {
+    const probe = evaluateSession({ ...input, limits: { traversal: limit } });
+    const available = probe.state.available;
+    probe.free();
+    if (available) break;
+  }
+  const expected = evaluateSession({ ...input, limits: { traversal: limit } });
+  const actual = await worker();
+  try {
+    const refused = await actual.load({
+      type: "load",
+      id: 1,
+      session: "refused",
+      input: { ...input, overlay, limits: { traversal: limit } },
+    });
+    assert.equal(refused.available, false);
+    assert.deepEqual(refused.actors, {});
+    const recovered = actual.overlay({
+      type: "overlay",
+      id: 2,
+      base: "refused",
+      session: "recovered",
+      overlay: null,
+    });
+    assert.equal(recovered.available, true);
+    const actors = (
+      expected.state.lifecycle as { key_actor: Record<string, string> }
+    ).key_actor;
+    assert.ok(Object.keys(actors).length > 0);
+    assert.deepEqual(recovered.actors, actors);
+    // From an available base, an overlay change keeps the actors and
+    // sends none.
+    const again = actual.overlay({
+      type: "overlay",
+      id: 3,
+      base: "recovered",
+      session: "again",
+      overlay: null,
+    });
+    assert.equal(again.actors, undefined);
+  } finally {
+    actual.currentSession?.free();
+    expected.free();
+  }
+});
+
 test("a failure after release leaves no session and a full load recovers", async () => {
   const { input, target } = await fixture();
   const added = createEvent(

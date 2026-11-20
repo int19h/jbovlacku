@@ -6,6 +6,35 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LimitsWire {
+    #[serde(default)]
+    events: Option<usize>,
+    #[serde(default)]
+    traversal: Option<usize>,
+    claim_depth: usize,
+}
+impl Default for LimitsWire {
+    fn default() -> Self {
+        let defaults = jvc_state::Limits::default();
+        Self {
+            events: defaults.events,
+            traversal: defaults.traversal,
+            claim_depth: defaults.claim_depth,
+        }
+    }
+}
+impl From<LimitsWire> for jvc_state::Limits {
+    fn from(wire: LimitsWire) -> Self {
+        Self {
+            events: wire.events,
+            traversal: wire.traversal,
+            claim_depth: wire.claim_depth,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct Input {
     events: Vec<String>,
@@ -13,7 +42,7 @@ struct Input {
     selected_view: String,
     import_selections: BTreeMap<String, Vec<String>>,
     #[serde(default)]
-    limits: jvc_state::Limits,
+    limits: LimitsWire,
 }
 #[derive(Serialize)]
 struct RequestRef<'a> {
@@ -25,13 +54,14 @@ struct RequestRef<'a> {
     limits: &'a jvc_state::Limits,
 }
 fn request(input: &Input, overlay: Option<&Value>) -> Vec<u8> {
+    let limits: jvc_state::Limits = input.limits.clone().into();
     serde_json::to_vec(&RequestRef {
         events: &input.events,
         bodies: &input.bodies,
         selected_view: &input.selected_view,
         import_selections: &input.import_selections,
         overlay,
-        limits: &input.limits,
+        limits: &limits,
     })
     .unwrap()
 }

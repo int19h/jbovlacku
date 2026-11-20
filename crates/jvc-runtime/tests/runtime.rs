@@ -962,14 +962,14 @@ fn assert_resource_overlays(f: &mut Fixture) {
 #[test]
 fn overlay_only_rebuilds_event_limit_results_before_applying_an_overlay() {
     let mut f = suspended_fixture();
-    f.limits.events = 0;
+    f.limits.events = Some(0);
     assert_resource_overlays(&mut f);
 }
 
 #[test]
 fn overlay_only_rebuilds_layout_resource_results_before_applying_an_overlay() {
     let mut f = suspended_fixture();
-    f.limits.traversal = 0;
+    f.limits.traversal = Some(0);
     assert_resource_overlays(&mut f);
 }
 
@@ -977,28 +977,36 @@ fn overlay_only_rebuilds_layout_resource_results_before_applying_an_overlay() {
 fn overlay_only_rebuilds_policy_resource_results_before_applying_an_overlay() {
     let mut f = Fixture::new();
     f.selected_view = format!("jve1:{}", "0".repeat(64));
-    f.limits.traversal = 0;
+    f.limits.traversal = Some(0);
     assert_resource_overlays(&mut f);
 }
 
 #[test]
 fn overlay_only_rebuilds_late_resource_results_and_keeps_full_overlay_reasons() {
+    // The latest refusal: the largest limit below the work that the
+    // fixture needs. A refused result carries only the refusal reason,
+    // however late the budget ran out.
     let mut f = suspended_fixture();
-    for traversal in 0..1000 {
-        f.limits.traversal = traversal;
-        f.overlay = None;
-        let state = jvc_runtime::evaluate_bytes(&f.bytes()).unwrap();
-        if state["reasons"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("resource_unavailable"))
-            && !state["publications"].as_object().unwrap().is_empty()
-        {
-            assert_resource_overlays(&mut f);
-            return;
-        }
-    }
-    panic!("no late resource return found");
+    f.overlay = None;
+    let late = (0..1000)
+        .rev()
+        .find(|&traversal| {
+            f.limits.traversal = Some(traversal);
+            let state = jvc_runtime::evaluate_bytes(&f.bytes()).unwrap();
+            let refused = state["reasons"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("resource_unavailable"));
+            if refused {
+                assert_eq!(state["reasons"], json!(["resource_unavailable"]));
+                assert!(state["publications"].as_object().unwrap().is_empty());
+                assert!(state["receipts"].as_object().unwrap().is_empty());
+            }
+            refused
+        })
+        .expect("a refusing limit below 1000");
+    f.limits.traversal = Some(late);
+    assert_resource_overlays(&mut f);
 }
 
 #[test]
@@ -1724,6 +1732,30 @@ fn signed_invalid_definition_action_keeps_an_inert_decodable_record() {
     .unwrap();
     let mut builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
     builder.add_host_verified_record(&compact).unwrap();
+}
+
+#[test]
+fn runtime_accepts_selection_above_200000_ids_and_multiple_selections() {
+    let mut large_ids: Vec<String> = (0..200_005usize)
+        .map(|i| format!("jve1:{i:064x}"))
+        .collect();
+    large_ids.sort();
+    let selection_a =
+        jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(large_ids)).unwrap());
+    let small_ids = vec![format!("jve1:{:064x}", 999_999usize)];
+    let selection_b =
+        jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(small_ids)).unwrap());
+    let options = canonical_value(&json!({
+        "selected_view": format!("jve1:{}", "0".repeat(64)),
+        "import_selections": {
+            selection_a: large_ids,
+            selection_b: small_ids,
+        }
+    }))
+    .unwrap();
+    let builder = jvc_runtime::EvaluationSessionBuilder::new(&options).unwrap();
+    let session = builder.finish();
+    assert!(session.state().is_ok());
 }
 
 #[path = "support/resolver_cases.rs"]

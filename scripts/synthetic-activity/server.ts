@@ -120,7 +120,7 @@ export async function startServer(directory: string, port: number, selectedView?
         index, evaluationRuntime, asyncMaterialization: true,
         checkpoints: new FileCheckpointStore(join(directory, "evaluation-cache"), coordinator),
         coreVersion: `${createHash("sha256").update(coreBytes).digest("hex")}:${coreCheckpointVersion()}:service-checkpoint-v1`,
-        stateLimits: traversal === undefined ? undefined : { events: 200_000, traversal, claim_depth: 1024 },
+        stateLimits: traversal === undefined ? undefined : { traversal, claim_depth: 1024 },
       } : {}),
     });
     if (rich) await service.initialize();

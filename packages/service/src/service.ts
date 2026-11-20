@@ -500,9 +500,15 @@ export class DictionaryService {
       core_version: this.options.coreVersion ?? "",
       limits: this.options.stateLimits
         ? {
-            events: this.options.stateLimits.events,
-            traversal: this.options.stateLimits.traversal,
-            claim_depth: this.options.stateLimits.claim_depth,
+            ...(this.options.stateLimits.events !== undefined
+              ? { events: this.options.stateLimits.events }
+              : {}),
+            ...(this.options.stateLimits.traversal !== undefined
+              ? { traversal: this.options.stateLimits.traversal }
+              : {}),
+            ...(this.options.stateLimits.claim_depth !== undefined
+              ? { claim_depth: this.options.stateLimits.claim_depth }
+              : {}),
           }
         : null,
     };
