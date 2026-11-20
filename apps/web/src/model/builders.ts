@@ -467,7 +467,7 @@ export function inventoryFromPackage(
   const incomplete = new Map<string, string>();
   let hasClaims = false;
   for (const row of cached.entries) {
-    const entry = savedRow(row);
+    const entry = savedRow(row, cached.version);
     const id = savedWordId({ language: "jbo", spelling: entry.word.spelling });
     const kind = (entry.classification as { kind?: string } | null)?.kind;
     if (kind === "gismu") gismu.set(id, entry.word.spelling);

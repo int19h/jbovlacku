@@ -578,3 +578,218 @@ test("the meaning page reports a lone-surrogate event in the typed-word check", 
   expect(await page.locator("body").innerText()).not.toMatch(RAW_ERROR);
   expect(errors).toEqual([]);
 });
+
+// Stage 3 review inputs: one fault per case, beside valid packages where the
+// review used them. Each case checks that the page reports the package and,
+// where the review saw it, that no bad value reaches the saved draft.
+const rowWith = (over: Record<string, unknown>) => ({ ...validRow, ...over });
+const zbasuRow = rowWith({
+  event: "jve1:" + "2".repeat(64),
+  word: { language: "jbo", spelling: "zbasu" },
+  glosses: [{ language: "en", text: "make", sense: null }],
+  plain_text: "make",
+  rafsi: ["zba"],
+});
+const frPackage = {
+  version: 2,
+  snapshot: "sha256:" + "f".repeat(64),
+  entries: [
+    rowWith({
+      language: "fr",
+      glosses: [{ language: "fr", text: "livre", sense: null }],
+      plain_text: "livre",
+    }),
+  ],
+};
+const lujvoDraft = {
+  meaning: "book maker",
+  kind: "lujvo",
+  spelling: "ckuzba",
+  typedSpelling: "ckuzba",
+  text: "It makes books.",
+  step: 3,
+};
+async function savedDraftText(page: Page) {
+  return page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return JSON.stringify(
+      (await new LocalStore().get("drafts", "current")) ?? null,
+    );
+  });
+}
+
+test("the rafsi and claim pages keep a valid package beside a stored null", async ({
+  page,
+}) => {
+  await seed(
+    page,
+    { ...validPackage, entries: [rowWith({ rafsi: ["cuk", "cku"] })] },
+    undefined,
+    { fr: null },
+  );
+  await blockDownloads(page);
+  await page.goto("/rafsi/cuk");
+  await expect(page.getByText(INVALID).first()).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "cuk for cukta" }),
+  ).toBeVisible();
+  await page.goto("/claim/broda");
+  await page.getByLabel("Rafsi spelling").fill("cuk");
+  await page.getByRole("button", { name: "Check claims and preview" }).click();
+  await expect(page.getByText(INVALID).first()).toBeVisible();
+  await expect(page.locator("main")).toContainText(
+    "Conflict: cuk is already claimed for cukta",
+  );
+  await expect(page.getByRole("heading", { name: "Preview" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Sign and publish the claim" }),
+  ).toBeVisible();
+  expect(await page.locator("body").innerText()).not.toMatch(RAW_ERROR);
+});
+
+for (const snapshot of ["bad-snapshot", "sha256:\ud800"])
+  test(`the gismu page reports a package whose snapshot is ${JSON.stringify(snapshot)}`, async ({
+    page,
+  }) => {
+    await seed(
+      page,
+      { ...validPackage, snapshot },
+      { meaning: "book", kind: "gismu", spelling: "cukte", step: 3 },
+    );
+    await page.goto("/new/gismu");
+    await expectInvalidOnly(page);
+    expect(await savedDraftText(page)).not.toContain(snapshot);
+  });
+
+test("the publish page uses a valid package beside one with an empty snapshot", async ({
+  page,
+}) => {
+  await seed(
+    page,
+    { ...validPackage, snapshot: "", entries: [validRow, zbasuRow] },
+    {
+      meaning: "book",
+      kind: "gismu",
+      spelling: "cukte",
+      text: "It is a book.",
+      step: 5,
+    },
+    { fr: frPackage },
+  );
+  await page.goto("/new/publish");
+  const conflicts = page.getByRole("region", { name: "Known conflicts" });
+  await expect(conflicts).toContainText(INVALID);
+  await expect(conflicts).toContainText("ffffffffffff");
+  await expect(conflicts).not.toContainText("Root conflicts were not checked");
+});
+
+test("the lujvo builder reports a row whose event is not an event ID", async ({
+  page,
+}) => {
+  await seed(
+    page,
+    { ...validPackage, entries: [rowWith({ event: "bad-event" }), zbasuRow] },
+    lujvoDraft,
+  );
+  await page.goto("/new/lujvo");
+  await expectInvalidOnly(page);
+  await expect(page.locator('option[value="bad-event"]')).toHaveCount(0);
+  expect(await savedDraftText(page)).not.toContain("bad-event");
+});
+
+test("the lujvo builder reports a row with more than 64 rafsi and uses the valid package", async ({
+  page,
+}) => {
+  await seed(
+    page,
+    {
+      ...validPackage,
+      entries: [
+        rowWith({
+          rafsi: ["cku", ...Array.from({ length: 64 }, (_, i) => `r${i}`)],
+        }),
+        zbasuRow,
+      ],
+    },
+    lujvoDraft,
+    { fr: frPackage },
+  );
+  await page.goto("/new/lujvo");
+  await expectInvalidOnly(page);
+  await expect(page.locator("main")).not.toContainText(
+    "component claims is 65",
+  );
+  expect(await savedDraftText(page)).not.toContain('"r63"');
+});
+
+const v1Row = {
+  event: "jve1:" + "1".repeat(64),
+  word: { language: "jbo", spelling: "cukta" },
+  language: "fr",
+  glosses: [{ language: "fr", text: "livre", sense: null }],
+  plain_text: "livre",
+  classification: { kind: "gismu", selmaho: [] },
+  body: null,
+};
+const v2WithV1Rows = {
+  version: 2,
+  snapshot: "sha256:" + "b".repeat(64),
+  entries: [v1Row, { ...v1Row, event: "jve1:" + "2".repeat(64) }],
+};
+
+test("the publish page reports a version 2 package of version 1 rows and keeps the valid one", async ({
+  page,
+}) => {
+  await seed(
+    page,
+    validPackage,
+    {
+      meaning: "book",
+      kind: "gismu",
+      spelling: "broda",
+      text: "It is a book.",
+      step: 5,
+      rafsiClaims: [{ rafsi: "cuk", rationale: "" }],
+    },
+    { fr: v2WithV1Rows },
+  );
+  await page.goto("/new/publish");
+  const conflicts = page.getByRole("region", { name: "Known conflicts" });
+  await expect(conflicts).toContainText(INVALID);
+  await expect(conflicts).toContainText("cuk is also claimed by cukta");
+});
+
+test("settings reports a version 2 package of version 1 rows", async ({
+  page,
+}) => {
+  await seed(page, validPackage, undefined, { fr: v2WithV1Rows });
+  await page.goto("/preferences");
+  await expect(page.getByText(INVALID)).toHaveCount(1);
+  await expect(
+    page.getByText(/1 definition · snapshot aaaaaaaaaaaa/),
+  ).toBeVisible();
+});
+
+for (const [label, row] of [
+  ["with rafsi but no issuer", { ...v1Row, language: "en", rafsi: ["cuk"] }],
+  [
+    "with a rejected word and no issuer",
+    { ...v1Row, language: "en", word: { language: "jbo", spelling: " cukta" } },
+  ],
+] as const)
+  test(`the rafsi pair page reports a version 2 row ${label}`, async ({
+    page,
+  }) => {
+    await seed(page, { ...validPackage, entries: [row] });
+    await blockDownloads(page);
+    const pair = await page.evaluate(async (corePath) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      return core.rafsiPairId(
+        core.wordId({ language: "jbo", spelling: "cukta" }),
+        "cuk",
+      );
+    }, corePath);
+    await page.goto(`/rafsi-pair/${pair}`);
+    await expectInvalidOnly(page);
+  });

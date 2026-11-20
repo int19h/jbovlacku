@@ -55,7 +55,7 @@ const pkg = (entries: unknown[], over: Record<string, unknown> = {}) => ({
 /** What a page that reads every row checks: the package, then each row. */
 const readAll = (value: unknown) => {
   const pkg = saved.savedPackage(value);
-  for (const entry of pkg?.entries ?? []) saved.savedRow(entry);
+  for (const entry of pkg?.entries ?? []) saved.savedRow(entry, pkg!.version);
   return pkg;
 };
 const rejects = (value: unknown) =>
@@ -120,10 +120,26 @@ test("every package that the search worker accepts is usable", () => {
   }
 });
 
-test("a package this rule rejects is also rejected by the search worker", () => {
+test("the rule and the worker agree on every field a page reads", () => {
   // Each case changes one field of a valid package. Whenever the shared
   // rule calls the result unusable, the worker must agree, so a package
-  // that the search page can use is never unusable on another page.
+  // that the search page can use is never unusable on another page. And
+  // whenever the worker rejects a case that the rule accepts, the changed
+  // field must be one of the listed differences: fields that no page reads
+  // before the worker's verdict, or checks that pages make when they read.
+  const workerOnly = new Set([
+    // The row language must equal the package language. The wizard pages
+    // list packages without their keys, so the rule cannot compare them.
+    "row.language",
+    // Only the search page reads attribution, after the worker's verdict.
+    "row.attribution",
+    // The core checks the spelling where a page derives the word ID.
+    "word.spelling",
+    // Exact field sets and the row order: no page reads them.
+    "package.extra",
+    "row.extra",
+    "row.order",
+  ]);
   const odd = [
     undefined,
     null,
@@ -131,6 +147,7 @@ test("a package this rule rejects is also rejected by the search worker", () => 
     1,
     "",
     "x",
+    "fr",
     true,
     [],
     {},
@@ -138,61 +155,114 @@ test("a package this rule rejects is also rejected by the search worker", () => 
     [1],
     ["x"],
   ];
-  const cases: unknown[] = [];
+  const cases: [string, unknown][] = [];
   for (const base of [pkg([v1Row()], { version: 1 }), pkg([v2Row()])]) {
     for (const field of Object.keys(base))
-      for (const value of odd) cases.push(strip({ ...base, [field]: value }));
+      for (const value of odd)
+        cases.push([`package.${field}`, strip({ ...base, [field]: value })]);
+    cases.push(["package.extra", { ...base, extra: 1 }]);
     const row = base.entries[0] as Record<string, unknown>;
     for (const field of [
       ...Object.keys(row),
       "issuer",
+      "notes",
       "rafsi",
       "rafsi_complete",
+      "attribution",
     ])
       for (const value of odd)
-        cases.push({ ...base, entries: [strip({ ...row, [field]: value })] });
+        cases.push([
+          `row.${field}`,
+          { ...base, entries: [strip({ ...row, [field]: value })] },
+        ]);
+    cases.push(["row.extra", { ...base, entries: [{ ...row, extra: 1 }] }]);
+    cases.push([
+      "row.order",
+      {
+        ...base,
+        entries: [{ ...row, event: "jve1:" + "2".repeat(64) }, row],
+      },
+    ]);
     for (const field of ["language", "spelling", "extra"])
       for (const value of odd)
-        cases.push({
-          ...base,
-          entries: [
-            {
-              ...row,
-              word: strip({ ...(row.word as object), [field]: value }),
-            },
-          ],
-        });
-    for (const field of ["kind", "selmaho"])
+        cases.push([
+          `word.${field}`,
+          {
+            ...base,
+            entries: [
+              {
+                ...row,
+                word: strip({ ...(row.word as object), [field]: value }),
+              },
+            ],
+          },
+        ]);
+    for (const field of ["kind", "selmaho", "extra"])
       for (const value of odd)
-        cases.push({
-          ...base,
-          entries: [
-            {
-              ...row,
-              classification: strip({
-                ...(row.classification as object),
-                [field]: value,
-              }),
-            },
-          ],
-        });
+        cases.push([
+          `classification.${field}`,
+          {
+            ...base,
+            entries: [
+              {
+                ...row,
+                classification: strip({
+                  ...(row.classification as object),
+                  [field]: value,
+                }),
+              },
+            ],
+          },
+        ]);
+    for (const field of ["language", "text", "sense", "extra"])
+      for (const value of odd)
+        cases.push([
+          `gloss.${field}`,
+          {
+            ...base,
+            entries: [
+              {
+                ...row,
+                glosses: [
+                  strip({
+                    ...(row.glosses as object[])[0],
+                    [field]: value,
+                  }),
+                ],
+              },
+            ],
+          },
+        ]);
     for (const value of odd)
-      cases.push({ ...base, entries: [{ ...row, glosses: [value] }] });
+      cases.push([
+        "row.glosses",
+        { ...base, entries: [{ ...row, glosses: [value] }] },
+      ]);
   }
+  const over = pkg([
+    v2Row({ rafsi: Array.from({ length: 65 }, (_, i) => `r${i}`) }),
+  ]);
+  cases.push(["row.rafsi", over]);
   let rejected = 0;
-  for (const value of cases) {
+  const differences = new Set<string>();
+  for (const [label, value] of cases) {
     let usable = true;
     try {
       readAll(value);
     } catch {
       usable = false;
     }
+    const accepted = workerAccepts(value);
     if (!usable) {
       rejected++;
-      assert.equal(workerAccepts(value), false, JSON.stringify(value));
+      assert.equal(accepted, false, `${label} ${JSON.stringify(value)}`);
+    } else if (!accepted) {
+      assert.ok(workerOnly.has(label), `${label} ${JSON.stringify(value)}`);
+      differences.add(label);
     }
   }
-  assert.ok(rejected > 100, `only ${rejected} cases were rejected`);
+  assert.ok(rejected > 300, `only ${rejected} cases were rejected`);
+  assert.deepEqual([...differences].sort(), [...workerOnly].sort());
 });
 
 test("a word that the core rejects is unusable", () => {

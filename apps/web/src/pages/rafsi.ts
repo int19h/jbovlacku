@@ -18,6 +18,7 @@ import {
 import type { App } from "../app/context.ts";
 import { downloadPackage, isV2, type CachedPackage } from "../data/search.ts";
 import {
+  INVALID_PACKAGE_MESSAGE,
   PackageValidationError,
   savedPackage,
   savedRow,
@@ -70,7 +71,12 @@ interface RafsiWord {
   language: string;
   rafsi: string;
 }
-type RafsiWords = RafsiWord[] & { unavailable: boolean; limited: boolean };
+type RafsiWords = RafsiWord[] & {
+  unavailable: boolean;
+  limited: boolean;
+  /** True when a saved package was unusable and was left out. */
+  invalid: boolean;
+};
 /** Words whose retained claims use this rafsi spelling, from version 2 package rows. */
 export async function wordsWithRafsi(
   app: App,
@@ -87,28 +93,42 @@ export async function wordsWithRafsi(
   const found = new Map<string, RafsiWord>();
   const identities = new Map<string, string>();
   let available = false,
-    limited = false;
+    limited = false,
+    invalid = false;
   for (const language of languages) {
-    const pkg = await packageFor(app, language, signal);
-    if (!pkg || pkg.version !== 2) {
+    // An unusable package of one language is left out, so the usable
+    // packages of other languages still give their words, as on main when
+    // a language has no package.
+    let result;
+    try {
+      const pkg = await packageFor(app, language, signal);
+      if (!pkg || pkg.version !== 2) {
+        limited = true;
+        continue;
+      }
+      // Every row goes through the row check, not only the rows up to the
+      // first incomplete one: the page derives pair IDs from the rafsi of
+      // any row that the search returns, and the worker accepts some rafsi
+      // that the core cannot read.
+      let incomplete = false;
+      for (const row of pkg.entries) {
+        const entry = savedRow(row, pkg.version);
+        if (isV2(entry) && entry.rafsi_complete === false) incomplete = true;
+      }
+      result = await searchPackage(pkg, language, [rafsi], {
+        rafsiOnly: true,
+        patterns: !options.literal,
+        limit: 1000,
+        signal,
+      });
+      limited ||= incomplete;
+    } catch (error) {
+      if (!(error instanceof PackageValidationError)) throw error;
+      invalid = true;
       limited = true;
       continue;
     }
     available = true;
-    // Every row goes through the row check, not only the rows up to the
-    // first incomplete one: the page derives pair IDs from the rafsi of
-    // any row that the search returns, and the worker accepts some rafsi
-    // that the core cannot read.
-    for (const row of pkg.entries) {
-      const entry = savedRow(row);
-      if (isV2(entry) && entry.rafsi_complete === false) limited = true;
-    }
-    const result = await searchPackage(pkg, language, [rafsi], {
-      rafsiOnly: true,
-      patterns: !options.literal,
-      limit: 1000,
-      signal,
-    });
     limited ||= result.totals[0] > 1000;
     for (const hit of result.hits[0])
       identities.set(hit.word.spelling, hit.word_id);
@@ -132,7 +152,7 @@ export async function wordsWithRafsi(
         comparePatternSpelling(a.rafsi, b.rafsi) ||
         (a.rafsi < b.rafsi ? -1 : a.rafsi > b.rafsi ? 1 : 0),
     ),
-    { unavailable: !available, limited },
+    { unavailable: !available, limited, invalid },
   );
 }
 /** One word's card for a rafsi: the pair status, the judgment control, and the retained claims. */
@@ -273,6 +293,7 @@ export async function rafsiPage(
     return;
   }
   if (!context.live()) return;
+  if (words.invalid) main.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
   if (words.unavailable) {
     main.append(
       p(
@@ -467,6 +488,8 @@ export async function claimPage(
       );
       if (!context.live()) return;
       competition.replaceChildren();
+      if (lookup.invalid)
+        competition.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
       if (others.length) {
         const note = el("div", { class: "notice" });
         note.append(text(`Conflict: ${value} is already claimed for `));
@@ -609,7 +632,7 @@ async function resolvePair(
       const pkg = await packageFor(app, language, signal);
       if (!pkg) continue;
       for (const row of pkg.entries) {
-        const entry = savedRow(row);
+        const entry = savedRow(row, pkg.version);
         if (!isV2(entry)) continue;
         const id = savedWordId(entry.word);
         for (const rafsi of (entry as PackageEntryV2).rafsi)

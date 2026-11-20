@@ -26,7 +26,12 @@ export {
   normalizeQuery,
   matchKind,
 } from "../../../../packages/search/src/index.ts";
-import { INVALID_PACKAGE_MESSAGE, savedRow } from "./saved-package.ts";
+import {
+  fields,
+  INVALID_PACKAGE_MESSAGE,
+  PACKAGE_RAFSI_LIMIT,
+  savedRow,
+} from "./saved-package.ts";
 import {
   getManifest,
   objectBytes,
@@ -62,7 +67,7 @@ export function createPackageWordIndex(identify: typeof wordId = wordId) {
       for (const entry of pkg.entries) {
         let id;
         try {
-          id = identify(savedRow(entry).word);
+          id = identify(savedRow(entry, pkg.version).word);
         } catch {
           index.invalidEntries++;
           continue;
@@ -97,8 +102,7 @@ export interface CachedPackage {
    */
   downgrade?: string | null;
 }
-/** Rafsi spellings per version 2 entry. The server applies the same bound. */
-export const PACKAGE_RAFSI_LIMIT = 64;
+export { PACKAGE_RAFSI_LIMIT };
 export function isV2(entry: PackageEntry): entry is PackageEntryV2 {
   return "issuer" in entry;
 }
@@ -111,15 +115,6 @@ export function isV2(entry: PackageEntry): entry is PackageEntryV2 {
 const MANIFEST_BYTE_LIMIT = 1048576;
 const PART_BYTE_LIMIT = 4194304;
 const PART_ENTRY_LIMIT = 2000;
-function fields(value: unknown, names: string[]): value is Record<string, any> {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    Object.keys(value).length === names.length &&
-    names.every((name) => Object.hasOwn(value, name))
-  );
-}
 const count = (value: unknown, maximum: number): value is number =>
   typeof value === "number" &&
   Number.isSafeInteger(value) &&

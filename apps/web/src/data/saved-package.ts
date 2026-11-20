@@ -15,9 +15,13 @@
  * package costs no extra pass and no worker round trip. Settings is the
  * exception: it reads no rows, so it checks them in a pass of its own.
  *
- * The search worker still validates every package that a page sends to it,
- * with its own stricter rules (exact field sets, row order, identities).
- * This rule accepts every package that the worker accepts, with one
+ * For each field that a page reads before the search worker's verdict, the
+ * rule uses the worker's own test (`validateCachedPackage` and
+ * `validateEntry`). The worker still validates every package that a page
+ * sends to it, and also checks what no page reads first: exact field sets,
+ * the row order, the attribution, and that each row's language is the
+ * package language. The core checks each spelling where a page derives the
+ * word ID. The rule accepts every package that the worker accepts, with one
  * exception: a rafsi with a lone surrogate. The worker accepts any rafsi
  * string, but the core cannot serialize such a rafsi into a pair ID.
  *
@@ -26,7 +30,14 @@
  */
 import { wordId } from "../../../../packages/core/src/browser.ts";
 import type { CachedPackage } from "./search.ts";
-import type { PackageEntry } from "../model/types.ts";
+import {
+  eventId,
+  hashId,
+  identityId,
+  languageTag,
+  lexicalKinds,
+  type PackageEntry,
+} from "../model/types.ts";
 
 export const INVALID_PACKAGE_MESSAGE =
   "The search package is invalid. Search this server or download another package.";
@@ -39,32 +50,49 @@ export class PackageValidationError extends Error {
 }
 
 /**
- * Matches an unpaired surrogate. Such a string fails in `encodeURIComponent`
- * and in the core's JSON reader, so a row field that reaches either one must
- * not contain it.
+ * Matches an unpaired surrogate. The core cannot serialize such a rafsi into
+ * a pair ID, although the worker accepts any rafsi string.
  */
 const LONE_SURROGATE = /\p{Cs}/u;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+/** Whether a value is an object with exactly these own fields. The worker uses the same test. */
+export function fields(
+  value: unknown,
+  names: string[],
+): value is Record<string, any> {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === names.length &&
+    names.every((name) => Object.hasOwn(value, name))
+  );
+}
+
+/** Rafsi spellings per version 2 entry. The server applies the same bound. */
+export const PACKAGE_RAFSI_LIMIT = 64;
+
 /**
  * A stored value as a saved package. `undefined` means that nothing is
- * saved, and gives `null`. Any other value without the package fields that
- * pages read, including a stored `null`, raises `PackageValidationError`.
- * The rows are not checked here: readers check each row with `savedRow`.
+ * saved, and gives `null`. Any other value whose package fields fail the
+ * worker's tests for them, including a stored `null`, raises
+ * `PackageValidationError`. The rows are not checked here: readers check
+ * each row with `savedRow`.
  */
 export function savedPackage(value: unknown): CachedPackage | null {
   if (value === undefined) return null;
   if (
     !isRecord(value) ||
-    typeof value.snapshot !== "string" ||
+    !hashId(value.snapshot) ||
     !Array.isArray(value.entries) ||
     !(
       value.version === undefined ||
       value.version === 1 ||
       value.version === 2
     ) ||
+    (Object.hasOwn(value, "search_view") &&
+      (value.version !== 2 || !eventId(value.search_view))) ||
     !(
       value.downgrade === undefined ||
       value.downgrade === null ||
@@ -75,45 +103,65 @@ export function savedPackage(value: unknown): CachedPackage | null {
   return value as unknown as CachedPackage;
 }
 
+/** The fields that only a version 2 row carries. */
+const V2_ONLY = ["issuer", "notes", "rafsi", "rafsi_complete", "attribution"];
+
 /**
- * One saved row, checked for the fields that main-thread readers use: the
- * word, classification, glosses, text, event and language, and the rafsi
- * list of a version 2 row. The event, the language and each rafsi must be
- * well-formed Unicode, because pages put them in links or send them to the
- * core; the word's spelling is checked by the core in `savedWordId`. A row
- * without them raises `PackageValidationError`.
+ * One saved row of a package of the given version, checked with the
+ * worker's tests (`validateEntry`) for each field that main-thread readers
+ * use: the event, language, word, plain text, body, glosses and
+ * classification, and for a version 2 row the issuer, notes and rafsi
+ * list. A version 1 row must carry no version 2 field, and a version 2 row
+ * must carry the issuer and the rafsi list. The rule is stricter than the
+ * worker in one case: a rafsi with a lone surrogate. A row that fails
+ * raises `PackageValidationError`.
  */
-export function savedRow(entry: unknown): PackageEntry {
+export function savedRow(
+  entry: unknown,
+  version: 1 | 2 | undefined,
+): PackageEntry {
   if (!isRecord(entry)) throw new PackageValidationError();
-  const { word, classification, glosses, rafsi } = entry;
+  const { word, classification, glosses } = entry;
   let usable =
-    isRecord(word) &&
-    Object.keys(word).length === 2 &&
+    eventId(entry.event) &&
+    languageTag(entry.language) &&
+    fields(word, ["language", "spelling"]) &&
     word.language === "jbo" &&
     typeof word.spelling === "string" &&
-    isRecord(classification) &&
-    typeof classification.kind === "string" &&
-    Array.isArray(glosses) &&
-    typeof entry.event === "string" &&
-    !LONE_SURROGATE.test(entry.event) &&
     typeof entry.plain_text === "string" &&
-    typeof entry.language === "string" &&
-    !LONE_SURROGATE.test(entry.language);
+    (entry.body === null || hashId(entry.body)) &&
+    Array.isArray(glosses) &&
+    glosses.length <= 8192 &&
+    fields(classification, ["kind", "selmaho"]) &&
+    lexicalKinds.includes(classification.kind) &&
+    Array.isArray(classification.selmaho);
+  if (usable)
+    for (const item of (classification as { selmaho: unknown[] }).selmaho)
+      if (typeof item !== "string") usable = false;
   if (usable)
     for (const gloss of glosses as unknown[])
-      if (!isRecord(gloss) || typeof gloss.text !== "string") usable = false;
-  // A row with an issuer is a version 2 row, and readers then iterate its
-  // rafsi list. A rafsi list must be a list of spellings wherever it is.
-  if (usable && ("issuer" in entry || "rafsi" in entry)) {
+      if (
+        !fields(gloss, ["language", "text", "sense"]) ||
+        !languageTag(gloss.language) ||
+        typeof gloss.text !== "string" ||
+        !(gloss.sense === null || typeof gloss.sense === "string")
+      )
+        usable = false;
+  if (usable && version === 2) {
+    const rafsi = entry.rafsi;
     usable =
+      identityId(entry.issuer) &&
+      typeof entry.notes === "boolean" &&
       Array.isArray(rafsi) &&
+      rafsi.length <= PACKAGE_RAFSI_LIMIT &&
       (entry.rafsi_complete === undefined ||
         typeof entry.rafsi_complete === "boolean");
     if (usable)
       for (const item of rafsi as unknown[])
         if (typeof item !== "string" || LONE_SURROGATE.test(item))
           usable = false;
-  }
+  } else if (usable)
+    for (const name of V2_ONLY) if (Object.hasOwn(entry, name)) usable = false;
   if (!usable) throw new PackageValidationError();
   return entry as unknown as PackageEntry;
 }

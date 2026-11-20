@@ -254,7 +254,7 @@ export async function preferencesPage(
       if (pkg)
         setTimeout(() => {
           try {
-            for (const entry of pkg.entries) savedRow(entry);
+            for (const entry of pkg.entries) savedRow(entry, pkg.version);
           } catch (error) {
             if (!(error instanceof PackageValidationError)) throw error;
             detail.textContent = INVALID_PACKAGE_MESSAGE;
