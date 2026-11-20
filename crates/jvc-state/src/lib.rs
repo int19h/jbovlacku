@@ -1422,6 +1422,66 @@ fn lineage(graph: &graph::Graph, node: &graph::Node) -> BTreeMap<String, String>
         })
         .collect()
 }
+/// The match key of a managed `bridge.set` and of the imported
+/// definition it links to. A bridge links to a publication exactly
+/// when both have the same key.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct BridgeKey {
+    source_record: Option<u64>,
+    word: String,
+    language: Option<String>,
+    origin: String,
+    actor: String,
+}
+
+/// Each rafsi-pair assignment, mapped to the first publication in ID
+/// order that has it.
+fn assignment_index(publications: &BTreeMap<String, Publication>) -> BTreeMap<String, String> {
+    let mut index = BTreeMap::new();
+    for p in publications.values() {
+        if let Some(assignment) = &p.assignment {
+            index
+                .entry(assignment.clone())
+                .or_insert_with(|| p.id.clone());
+        }
+    }
+    index
+}
+
+/// Each managed-bridge key that an imported definition satisfies,
+/// mapped to the first such publication in ID order. A publication
+/// has a key only when its source account is known and commands with
+/// a controller identity; the key's actor is that identity's actor.
+fn bridge_source_index(graph: &graph::Graph, result: &Evaluation) -> BTreeMap<BridgeKey, String> {
+    let mut index = BTreeMap::new();
+    for p in result.publications.values() {
+        if !p.imported || p.kind != "definition.publish" {
+            continue;
+        }
+        let Some(account) = &p.account else {
+            continue;
+        };
+        let Some(controller) = result
+            .accounts
+            .get(&account.token())
+            .filter(|a| a.commands)
+            .and_then(|a| a.controller_identity.as_deref())
+        else {
+            continue;
+        };
+        index
+            .entry(BridgeKey {
+                source_record: p.source_record,
+                word: p.word.clone(),
+                language: p.language.clone(),
+                origin: account.origin.clone(),
+                actor: graph.actor(controller),
+            })
+            .or_insert_with(|| p.id.clone());
+    }
+    index
+}
+
 fn action_targets(graph: &graph::Graph, result: &mut Evaluation) {
     action_targets_for(graph, result, None);
 }
@@ -1430,6 +1490,10 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
         Some(id) => graph.nodes.get_key_value(id).into_iter().collect(),
         None => graph.nodes.iter().collect(),
     };
+    // Lookup indexes for `jvr1:` judgments and managed bridges, each
+    // built on its first use from one pass over the publications.
+    let mut assignments: Option<BTreeMap<String, String>> = None;
+    let mut bridge_sources: Option<BTreeMap<BridgeKey, String>> = None;
     for (id, node) in restricted {
         if !node.semantic {
             continue;
@@ -1474,32 +1538,9 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
         let mut pending = false;
         let mut invalid = false;
         if node.kind == "judgment.set" && target.starts_with("jvr1:") {
-            let mut matched = None;
-            for p in result.publications.values() {
-                if !graph.charge(1) {
-                    return;
-                }
-                if p.assignment.as_deref() == Some(target) {
-                    matched = Some(p.id.clone());
-                    break;
-                }
-            }
-            if only.is_none() {
-                match matched.as_ref() {
-                    Some(id) => {
-                        *graph
-                            .matched_publication_scans
-                            .borrow_mut()
-                            .entry(id.clone())
-                            .or_insert(0) += 1;
-                    }
-                    None => {
-                        graph
-                            .unmatched_publication_scans
-                            .set(graph.unmatched_publication_scans.get() + 1);
-                    }
-                }
-            }
+            let matched = assignments
+                .get_or_insert_with(|| assignment_index(&result.publications))
+                .get(target);
             pending = matched.is_none();
         } else {
             match graph.nodes.get(target) {
@@ -1523,59 +1564,41 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                             || n.action.view().index("origin") != "native"
                             || graph.actor(&n.issuer) != graph.actor(&node.issuer);
                         if !invalid && node.action.view().index("value") == "managed" {
-                            let source_id = node.action.view().index("source_definition").as_u64();
-                            let origin = node.action.view().index("origin");
-                            let origin = origin.as_str().unwrap_or_default();
-                            let mut linked = None;
-                            for p in result.publications.values() {
-                                if !graph.charge(1) {
-                                    return;
-                                }
-                                if p.imported
-                                    && p.kind == "definition.publish"
-                                    && p.source_record == source_id
-                                    && p.word
-                                        == n.action
-                                            .view()
-                                            .index("word")
-                                            .as_str()
-                                            .unwrap_or_default()
-                                    && p.language.as_deref()
-                                        == n.action.view().index("language").as_str()
-                                    && p.account
-                                        .as_ref()
-                                        .filter(|a| a.origin == origin)
-                                        .and_then(|a| result.accounts.get(&a.token()))
-                                        .is_some_and(|a| {
-                                            a.commands
-                                                && a.controller_identity.as_deref().is_some_and(
-                                                    |key| {
-                                                        graph.actor(key)
-                                                            == graph.actor(&node.issuer)
-                                                    },
-                                                )
-                                        })
-                                {
-                                    linked = Some(p.id.clone());
-                                    break;
-                                }
-                            }
-                            if only.is_none() {
-                                match linked.as_ref() {
-                                    Some(id) => {
-                                        *graph
-                                            .matched_publication_scans
-                                            .borrow_mut()
-                                            .entry(id.clone())
-                                            .or_insert(0) += 1;
-                                    }
-                                    None => {
-                                        graph
-                                            .unmatched_publication_scans
-                                            .set(graph.unmatched_publication_scans.get() + 1);
-                                    }
-                                }
-                            }
+                            // The managed source this bridge names: the
+                            // imported definition with this source record,
+                            // the target's word and language, and an account
+                            // at this origin that commands for this actor.
+                            let key = BridgeKey {
+                                source_record: node
+                                    .action
+                                    .view()
+                                    .index("source_definition")
+                                    .as_u64(),
+                                word: n
+                                    .action
+                                    .view()
+                                    .index("word")
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .into(),
+                                language: n
+                                    .action
+                                    .view()
+                                    .index("language")
+                                    .as_str()
+                                    .map(str::to_owned),
+                                origin: node
+                                    .action
+                                    .view()
+                                    .index("origin")
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .into(),
+                                actor: graph.actor(&node.issuer),
+                            };
+                            let linked = bridge_sources
+                                .get_or_insert_with(|| bridge_source_index(graph, result))
+                                .get(&key);
                             if linked.is_none() {
                                 let r = result.receipts.get_mut(id).unwrap();
                                 r.interpretation = Interpretation::Pending;

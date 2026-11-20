@@ -7,11 +7,12 @@
 //! base stays alive, and an overlay change.
 
 use jvc_core::{
-    BodyAvailability, Header, VerifiedEnvelope, body_descriptor, canonical_value, hash_id,
-    identity_from_seed, inspect_body, sign_header, verify_envelope, word_id,
+    BodyAvailability, ContentDescriptor, Header, VerifiedEnvelope, body_descriptor,
+    canonical_value, hash_id, identity_from_seed, inspect_body, sign_header, verify_envelope,
+    word_id,
 };
 use jvc_state::{
-    EvaluatedState, Evaluation, EvaluationOptions, HostVerifiedRecord, Limits,
+    EvaluatedState, Evaluation, EvaluationOptions, HostVerifiedRecord, Interpretation, Limits,
     PreparedEvaluationInput,
 };
 use serde_json::{Value, json};
@@ -20,24 +21,17 @@ use std::collections::BTreeMap;
 fn signed(
     seed: u8,
     nonce: usize,
-    mut previous: Vec<String>,
+    previous: Vec<String>,
     action: Value,
     body: Option<&[u8]>,
 ) -> VerifiedEnvelope {
-    previous.sort();
-    let header = Header {
-        version: 1,
-        issuer: identity_from_seed(&[seed; 32]),
+    let event = signed_with_content(
+        seed,
+        nonce,
         previous,
-        nonce: format!("{nonce:032x}"),
         action,
-        content: body.map(|bytes| body_descriptor(bytes).unwrap()),
-    };
-    let raw = sign_header(&[seed; 32], header)
-        .unwrap()
-        .canonical_envelope()
-        .unwrap();
-    let event = verify_envelope(&raw).unwrap();
+        body.map(|bytes| body_descriptor(bytes).unwrap()),
+    );
     if let Some(bytes) = body {
         assert!(matches!(
             inspect_body(&event, Some(bytes)),
@@ -47,17 +41,50 @@ fn signed(
     event
 }
 
+fn signed_with_content(
+    seed: u8,
+    nonce: usize,
+    mut previous: Vec<String>,
+    action: Value,
+    content: Option<ContentDescriptor>,
+) -> VerifiedEnvelope {
+    previous.sort();
+    let header = Header {
+        version: 1,
+        issuer: identity_from_seed(&[seed; 32]),
+        previous,
+        nonce: format!("{nonce:032x}"),
+        action,
+        content,
+    };
+    let raw = sign_header(&[seed; 32], header)
+        .unwrap()
+        .canonical_envelope()
+        .unwrap();
+    verify_envelope(&raw).unwrap()
+}
+
 type Record = (VerifiedEnvelope, Option<Vec<u8>>);
 
 fn view(import_sets: Value) -> Record {
+    witnessed_view(import_sets, &[])
+}
+
+/// A view whose account witnesses are the identities of `witnesses`.
+/// With witnesses, the view also gives accounts authority.
+fn witnessed_view(import_sets: Value, witnesses: &[u8]) -> Record {
+    let account_witnesses: Vec<String> = witnesses
+        .iter()
+        .map(|seed| identity_from_seed(&[*seed; 32]))
+        .collect();
     let body = canonical_value(&json!({
         "name": "sweep", "description": [], "roots": [],
         "rafsi_threshold": {"numerator": 1, "denominator": 1},
         "H": {"numerator": 3, "denominator": 1},
         "alpha": {"numerator": 1, "denominator": 2},
         "excluded": [], "calculation": "simple-routes-bounds-v1", "work": 1000,
-        "import_sets": import_sets, "account_witnesses": [],
-        "account_authority": false, "notes": []
+        "import_sets": import_sets, "account_witnesses": account_witnesses,
+        "account_authority": !witnesses.is_empty(), "notes": []
     }))
     .unwrap();
     let event = signed(
@@ -150,6 +177,130 @@ fn selection_fixture() -> (Vec<Record>, BTreeMap<String, Vec<String>>) {
         vec![(view, view_body), (definition, definition_body)],
         selections,
     )
+}
+
+/// A witnessed view, an account that two witnesses observe for
+/// author A, A's native definition, an imported definition credited
+/// to that account, A's managed bridge from that import to the native
+/// definition, a rafsi-pair claim, and last a judgment on the pair:
+/// the records whose targets are found by publication lookup. The
+/// last record takes the fast path.
+fn lookup_fixture() -> (Vec<Record>, BTreeMap<String, Vec<String>>) {
+    const ORIGIN: &str = "https://source.example";
+    let (view, view_body) = witnessed_view(json!([]), &[10, 11]);
+    let (definition, definition_body) = definition(2);
+    let claim = signed(
+        2,
+        3,
+        vec![],
+        json!({
+            "kind": "account.set", "origin": ORIGIN, "account": 41, "value": "claim",
+            "previous": null, "carry": []
+        }),
+        None,
+    );
+    let claim_id = claim.id().to_owned();
+    let observation = |seed: u8| {
+        let body = canonical_value(&json!({
+            "origin": ORIGIN, "account": 41, "username": "author",
+            "field_hash": format!("sha256:{}", "f".repeat(64)),
+            "markers": [claim_id], "method": "lensisku-public-profile-v1",
+            "observed_at": "2026-10-11T00:00:00Z"
+        }))
+        .unwrap();
+        let event = signed(
+            seed,
+            1,
+            vec![],
+            json!({
+                "kind": "account.observe", "origin": ORIGIN, "account": 41,
+                "claim": claim_id, "result": "present"
+            }),
+            Some(&body),
+        );
+        (event, Some(body))
+    };
+    let mut import_body: Value = serde_json::from_str(include_str!(
+        "../../jvc-core/tests/fixtures/definition.json"
+    ))
+    .unwrap();
+    import_body["legacy"] = json!({
+        "source": "fixture", "snapshot": format!("sha256:{}", "f".repeat(64)),
+        "extraction": "fixture-v1", "record": {"kind": "definition", "id": 1},
+        "locator": "fixture", "original": {},
+        "attribution": {
+            "author": "author", "editor": null,
+            "author_account": {
+                "origin": ORIGIN, "account": 41, "username": "author",
+                "evidence": {"kind": "source-id", "source": {
+                    "label": "source author numeric field", "url": null, "event": null,
+                    "locator": "author_id"
+                }}
+            },
+            "dates": {}
+        },
+        "conversion": {
+            "method": "literal", "tool": "fixture", "version": "1", "model": null,
+            "review": "unreviewed", "mappings": [], "warnings": []
+        },
+        "limitations": []
+    });
+    let word = word_id(&import_body["word"]).unwrap();
+    let import_bytes = canonical_value(&import_body).unwrap();
+    let imported = signed(
+        9,
+        2,
+        vec![],
+        json!({
+            "kind": "definition.publish", "word": word, "parents": [],
+            "origin": "import", "language": "en"
+        }),
+        Some(&import_bytes),
+    );
+    let bridge = signed(
+        2,
+        4,
+        vec![],
+        json!({
+            "kind": "bridge.set", "origin": ORIGIN, "source_definition": 1,
+            "target": definition.id(), "value": "managed"
+        }),
+        None,
+    );
+    // The rafsi claim's body is not supplied: the pair is claimed, and
+    // the claim's content is unavailable.
+    let pair = format!("jvr1:{}", "7".repeat(64));
+    let rafsi = signed_with_content(
+        4,
+        1,
+        vec![],
+        json!({
+            "kind": "rafsi.publish", "word": word, "assignment": pair, "origin": "native"
+        }),
+        Some(ContentDescriptor {
+            hash: format!("sha256:{}", "a".repeat(64)),
+            bytes: 2,
+        }),
+    );
+    let judgment = signed(
+        5,
+        1,
+        vec![],
+        json!({"kind": "judgment.set", "target": pair, "value": "bless"}),
+        None,
+    );
+    let records = vec![
+        (view, view_body),
+        (definition, definition_body),
+        (claim, None),
+        observation(10),
+        observation(11),
+        (imported, Some(import_bytes)),
+        (bridge, None),
+        (rafsi, None),
+        (judgment, None),
+    ];
+    (records, BTreeMap::new())
 }
 
 fn options(
@@ -258,9 +409,10 @@ fn sweep(name: &str, records: &[Record], selections: &BTreeMap<String, Vec<Strin
             assert_eq!(fresh.evaluation(), covered.evaluation(), "{context}: fresh");
         }
         check_restores(&fresh, records, &format!("{context} fresh"));
-        // Advance: all but the last two records, then the rest (the
-        // transfer fixture rebuilds; both fixtures exercise the fast
-        // path with the last record alone).
+        // Advance in two batch cuts: all but the last two records,
+        // then the rest; and all but the last record, then that one.
+        // Each batch takes the fast path or rebuilds, as its records
+        // allow; both must equal the fresh evaluation.
         for cut in [split, records.len() - 1] {
             let base = prepared(&records[..cut], at(None)).into_state();
             let next = base.advance(prepared(&records[cut..], at(None)), &[]);
@@ -309,8 +461,22 @@ fn every_limit_below_the_covered_work_gives_the_covered_result_or_the_clean_refu
     let transfer_work = sweep("transfer", &records, &selections);
     let (records, selections) = selection_fixture();
     let selection_work = sweep("selection", &records, &selections);
+    let (records, selections) = lookup_fixture();
+    // The covered run finds both targets: the judgment's pair and the
+    // bridge's imported source.
+    let covered = prepared(&records, options(&records, &selections, None, None)).into_state();
+    for index in [6, 8] {
+        let receipt = &covered.evaluation().receipts[records[index].0.id()];
+        assert_eq!(
+            (&receipt.interpretation, receipt.reasons.is_empty()),
+            (&Interpretation::Effective, true),
+            "{:?}",
+            receipt.reasons
+        );
+    }
+    let lookup_work = sweep("lookup", &records, &selections);
     eprintln!(
-        "transfer fixture: limits 0..={transfer_work}; selection fixture: limits 0..={selection_work}; {:?}",
+        "transfer fixture: limits 0..={transfer_work}; selection fixture: limits 0..={selection_work}; lookup fixture: limits 0..={lookup_work}; {:?}",
         started.elapsed()
     );
 }

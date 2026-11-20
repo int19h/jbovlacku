@@ -333,13 +333,6 @@ pub(crate) struct Graph {
     /// only place the fast path appends), and its order among appended
     /// records inserted at that same position.
     pub appended_rank: BTreeMap<String, (u32, u32)>,
-    /// Count of `jvr1:` judgments and valid managed `bridge.set`
-    /// records whose publication scan found no match and walked the
-    /// whole publication map.
-    pub unmatched_publication_scans: Cell<usize>,
-    /// Count of `jvr1:` judgments and valid managed `bridge.set`
-    /// records whose publication scan stopped at each publication ID.
-    pub matched_publication_scans: std::cell::RefCell<BTreeMap<String, usize>>,
     pub budget: Cell<usize>,
     pub resource: Cell<bool>,
     pub appended: usize,
@@ -379,8 +372,6 @@ impl Graph {
             issuer_missing: Shared::default(),
             appended_ids: Vec::new(),
             appended_rank: BTreeMap::new(),
-            unmatched_publication_scans: Cell::new(0),
-            matched_publication_scans: std::cell::RefCell::new(BTreeMap::new()),
             own: empty_closures(),
             structural: empty_closures(),
             accepted: empty_closures(),
