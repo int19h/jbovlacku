@@ -204,6 +204,9 @@ pub(crate) fn select(
         todo.extend(parents);
         if id == input.selected_view {
             let mut invalid_selections = resolved.invalid.clone();
+            // A selection that several entries name is read, and
+            // charged, once.
+            let mut charged_selections: BTreeSet<&str> = BTreeSet::new();
             for entry in body
                 .view()
                 .index("import_sets")
@@ -226,8 +229,9 @@ pub(crate) fn select(
                     result.reasons.insert("import_selection_unavailable".into());
                     continue;
                 };
-                if let Some(ids) = import_selections.get(selection_id)
+                if let Some((selection_id, ids)) = import_selections.get_key_value(selection_id)
                     && !ids.is_empty()
+                    && charged_selections.insert(selection_id.as_str())
                     && !graph.charge(ids.len())
                 {
                     result.available = false;

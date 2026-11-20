@@ -63,6 +63,8 @@ pub struct EvaluatedState {
     /// the fast path's `jvr1:` judgment target lookup.
     rafsi_assignments: std::rc::Rc<BTreeSet<String>>,
     selection_allowance: usize,
+    /// `previous` IDs over the retained records, for the default budget.
+    predecessor_edges: usize,
     remaining_work: usize,
     /// Ancestry bytes counted for the closures the graph of this
     /// state keeps, saved across a checkpoint. A restored state has
@@ -103,6 +105,7 @@ impl Clone for EvaluatedState {
             rafsi_words: self.rafsi_words.clone(),
             rafsi_assignments: self.rafsi_assignments.clone(),
             selection_allowance: self.selection_allowance,
+            predecessor_edges: self.predecessor_edges,
             remaining_work: self.remaining_work,
             saved_ancestry_bytes: self.saved_ancestry_bytes,
             checkpoint_restored: self.checkpoint_restored,
@@ -135,6 +138,7 @@ impl EvaluatedState {
             rafsi_words: Default::default(),
             rafsi_assignments: Default::default(),
             selection_allowance: 0,
+            predecessor_edges: 0,
             remaining_work: 0,
             saved_ancestry_bytes: None,
             checkpoint_restored: false,
@@ -257,7 +261,11 @@ impl EvaluatedState {
         self.prepared
             .options
             .limits
-            .traversal_budget_with_selections(self.prepared.nodes.len(), self.selection_allowance)
+            .traversal_budget_with_selections(
+                self.prepared.nodes.len(),
+                self.predecessor_edges,
+                self.selection_allowance,
+            )
     }
 
     pub fn consumed_work(&self) -> usize {
@@ -482,6 +490,7 @@ impl EvaluatedState {
         self.saved_ancestry_bytes = None;
         self.checkpoint_restored = false;
         self.graph = None;
+        self.predecessor_edges = predecessor_edges(&self.prepared.nodes);
         if self.prepared.arena_error().is_some() {
             self.selection_allowance = 0;
             self.evaluation = empty_evaluation(&self.prepared.options);
@@ -509,11 +518,7 @@ impl EvaluatedState {
             &mut selection_cache,
         );
         self.selection_allowance = resolved.allowance;
-        let budget = self
-            .prepared
-            .options
-            .limits
-            .traversal_budget_with_selections(self.prepared.nodes.len(), self.selection_allowance);
+        let budget = self.traversal_budget();
         let graph = Graph::new_with_budget(self.prepared.nodes.clone(), budget);
         self.evaluation = evaluate_graph_with_selections_cached(
             &self.prepared.options,
@@ -830,7 +835,7 @@ impl EvaluatedState {
             return Err("history_changed");
         }
         let record_allowance = if self.prepared.options.limits.traversal.is_none() {
-            DEFAULT_TRAVERSAL_PER_RECORD
+            record_allowance(node)
         } else {
             0
         };
@@ -1070,10 +1075,9 @@ impl EvaluatedState {
         // code a full evaluation runs for this record, and their own
         // charges (closure unions for the new record) come out of the
         // same budget, so the total equals a full evaluation.
+        self.predecessor_edges += node.previous.len();
         if self.prepared.options.limits.traversal.is_none() {
-            self.remaining_work = self
-                .remaining_work
-                .saturating_add(DEFAULT_TRAVERSAL_PER_RECORD);
+            self.remaining_work = self.remaining_work.saturating_add(record_allowance(&node));
         }
         self.remaining_work -= work;
         graph.budget.set(self.remaining_work);
@@ -1388,10 +1392,11 @@ impl EvaluatedState {
             )
         };
         let selection_allowance = resolved.allowance;
-        let expected_budget = saved
-            .options
-            .limits
-            .traversal_budget_with_selections(nodes.len(), selection_allowance);
+        let expected_budget = saved.options.limits.traversal_budget_with_selections(
+            nodes.len(),
+            predecessor_edges(&nodes),
+            selection_allowance,
+        );
         if saved.version != expected_version
             || saved.binding != binding
             || saved.evaluation.selected_view != saved.options.selected_view
@@ -1446,8 +1451,10 @@ impl EvaluatedState {
             register.maxima_work = *work;
             register.maxima_member_work = *member_work;
         }
+        share_account_contributions(&mut evaluation);
         let rafsi_words = rafsi_words(&evaluation);
         let rafsi_assignments = rafsi_assignments(&evaluation);
+        let predecessor_edges = predecessor_edges(&prepared.nodes);
         Ok(Self {
             unresolved: unresolved(&prepared, &evaluation),
             rafsi_words,
@@ -1456,6 +1463,7 @@ impl EvaluatedState {
             evaluation,
             graph: None,
             selection_allowance,
+            predecessor_edges,
             remaining_work: saved.remaining_work,
             saved_ancestry_bytes: saved.ancestry_bytes,
             checkpoint_restored: true,
@@ -2795,6 +2803,38 @@ fn judgment_diff(before: &Evaluation, after: &Evaluation) -> Option<JudgmentChan
     Some(changes)
 }
 
+/// A restored evaluation holds one copy of an account's contributions
+/// per publication. Validation already checked that each copy equals
+/// the account's map, so point every publication at that one map.
+fn share_account_contributions(evaluation: &mut Evaluation) {
+    if evaluation.accounts.is_empty() {
+        return;
+    }
+    let results = std::rc::Rc::make_mut(&mut evaluation.results);
+    for p in results.publications.values_mut() {
+        if p.witness_contributions.is_empty() {
+            continue;
+        }
+        if let Some(state) = p
+            .account
+            .as_ref()
+            .and_then(|a| results.accounts.get(&a.token()))
+            && state.contributions == p.witness_contributions
+        {
+            p.witness_contributions = state.contributions.clone();
+        }
+    }
+}
+
+/// The default budget's growth for one more record.
+fn record_allowance(node: &Node) -> usize {
+    DEFAULT_TRAVERSAL_PER_RECORD.saturating_add(
+        node.previous
+            .len()
+            .saturating_mul(DEFAULT_TRAVERSAL_PER_PREDECESSOR),
+    )
+}
+
 fn supports_local_update(node: &Node) -> bool {
     node.semantic
         && (node.kind == "judgment.set"
@@ -3971,7 +4011,7 @@ mod rebuild_tests {
                 .prepared
                 .options
                 .limits
-                .traversal_budget(parent.event_count())
+                .traversal_budget(parent.event_count(), parent.predecessor_edges)
                 + 1,
         );
         let expected = parent.clone().advance(clean.clone(), &[]);
@@ -5353,7 +5393,7 @@ mod rebuild_tests {
         };
         policy::RESOLVER_BASE_OVERRIDE.with(|o| o.set(Some(base)));
         let fresh = build(options(None));
-        let expected_budget = Limits::default().traversal_budget_with_selections(1, 512);
+        let expected_budget = Limits::default().traversal_budget_with_selections(1, 0, 512);
         let explicit = build(options(Some(expected_budget)));
         let fork_delta = {
             let mut delta = PreparedEvaluationInput::new(options(None));
@@ -6371,7 +6411,7 @@ mod rebuild_tests {
         assert_eq!(defaults.events, None);
         assert_eq!(defaults.traversal, None);
         assert_eq!(
-            defaults.traversal_budget(250_000),
+            defaults.traversal_budget(250_000, 0),
             DEFAULT_TRAVERSAL_BASE + 250_000 * DEFAULT_TRAVERSAL_PER_RECORD
         );
         let mut prepared = base();

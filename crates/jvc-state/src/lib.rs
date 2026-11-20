@@ -10,7 +10,8 @@ mod policy;
 mod projection;
 pub use ancestors::{ANCESTRY_CAP_BASE, ANCESTRY_CAP_PER_RECORD, ancestry_cap};
 pub use api::{
-    AccountControl, Authority, Certificate, PublicationStatus, account_control, publication_status,
+    AccountControl, Authority, Certificate, PublicationStatus, PublicationStatusRef,
+    account_control, publication_status, publication_status_ref,
 };
 pub use arena::{
     ArrayValues, CompactValue, ValueView, lookup_work, packed_value_nodes,
@@ -56,14 +57,21 @@ pub struct EvaluationOptions {
     pub overlay: Option<std::rc::Rc<Value>>,
     pub limits: Limits,
 }
+/// The number of `previous` IDs over all records, for the default budget.
+pub(crate) fn predecessor_edges(nodes: &BTreeMap<String, graph::Node>) -> usize {
+    nodes.values().map(|node| node.previous.len()).sum()
+}
 impl EvaluationOptions {
     pub(crate) fn traversal_budget_for_nodes(
         &self,
         nodes: &BTreeMap<String, graph::Node>,
     ) -> usize {
         let resolved = policy::resolve_referenced_selections(self, nodes);
-        self.limits
-            .traversal_budget_with_selections(nodes.len(), resolved.allowance)
+        self.limits.traversal_budget_with_selections(
+            nodes.len(),
+            predecessor_edges(nodes),
+            resolved.allowance,
+        )
     }
 }
 /// An opaque projection held only in the trusted host's private storage.
@@ -240,6 +248,10 @@ impl PreparedEvaluationInput {
 }
 pub const DEFAULT_TRAVERSAL_BASE: usize = 10_000_000;
 pub const DEFAULT_TRAVERSAL_PER_RECORD: usize = 256;
+/// Default budget units per `previous` ID that a record names, present
+/// or absent. Each one is part of the input, and graph construction
+/// charges for it in the layout and in each of the three link modes.
+pub const DEFAULT_TRAVERSAL_PER_PREDECESSOR: usize = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -260,13 +272,20 @@ impl Default for Limits {
     }
 }
 impl Limits {
-    pub fn traversal_budget(&self, records: usize) -> usize {
-        self.traversal_budget_with_selections(records, 0)
+    /// `predecessors` counts every `previous` ID of every record.
+    pub fn traversal_budget(&self, records: usize, predecessors: usize) -> usize {
+        self.traversal_budget_with_selections(records, predecessors, 0)
     }
-    pub fn traversal_budget_with_selections(&self, records: usize, selection_ids: usize) -> usize {
+    pub fn traversal_budget_with_selections(
+        &self,
+        records: usize,
+        predecessors: usize,
+        selection_ids: usize,
+    ) -> usize {
         self.traversal.unwrap_or_else(|| {
             DEFAULT_TRAVERSAL_BASE
                 .saturating_add(records.saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD))
+                .saturating_add(predecessors.saturating_mul(DEFAULT_TRAVERSAL_PER_PREDECESSOR))
                 .saturating_add(selection_ids)
         })
     }
@@ -344,13 +363,18 @@ pub struct Publication {
     #[serde(deserialize_with = "Option::deserialize")]
     pub deciding_claim: Option<String>,
     pub controller_candidates: BTreeSet<String>,
-    pub witness_contributions: BTreeMap<String, BTreeSet<String>>,
+    /// The account's contributions, shared with `AccountState`.
+    pub witness_contributions: Contributions,
     pub missing: BTreeSet<String>,
     pub content_available: bool,
     pub eligible: Eligibility,
     pub status: Status,
     pub reasons: BTreeSet<String>,
 }
+/// Witness keys to the claims they observed. Every publication credited
+/// to an account shares the account's map, so a publication costs one
+/// reference, not a copy of the evidence. Serialized as the plain map.
+pub type Contributions = std::rc::Rc<BTreeMap<String, BTreeSet<String>>>;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AccountState {
@@ -358,7 +382,7 @@ pub struct AccountState {
     #[serde(deserialize_with = "Option::deserialize")]
     pub controller: Option<String>,
     pub candidates: BTreeSet<String>,
-    pub contributions: BTreeMap<String, BTreeSet<String>>,
+    pub contributions: Contributions,
     pub observation_evidence: BTreeMap<String, BTreeSet<String>>,
     pub certificates: Vec<Certificate>,
     pub chain: BTreeSet<String>,
@@ -628,9 +652,11 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
         &nodes,
         &mut cache,
     );
-    let budget = input
-        .limits
-        .traversal_budget_with_selections(nodes.len(), resolved.allowance);
+    let budget = input.limits.traversal_budget_with_selections(
+        nodes.len(),
+        predecessor_edges(&nodes),
+        resolved.allowance,
+    );
     let graph = graph::Graph::new_with_budget(nodes, budget);
     let result = evaluate_graph_with_selections_cached(
         &input,
@@ -834,6 +860,11 @@ fn publications_for(
             .collect(),
         None => graph.nodes.iter().collect(),
     };
+    // The publications are inserted after the loop, so that the loop
+    // and the import index can read the evaluation's policy and
+    // selections.
+    let mut built = Vec::new();
+    let mut imports: Option<ImportEntries<'_>> = None;
     for (id, node) in restricted {
         if !node.semantic || !matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish") {
             continue;
@@ -868,43 +899,58 @@ fn publications_for(
             let mut selected = false;
             let mut unknown = false;
             if let Some(policy) = &result.policy {
-                for entry in policy
-                    .view()
-                    .index("import_sets")
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                {
-                    if !graph.charge(1) {
-                        break;
-                    }
-                    if entry.index("importer").as_str() != Some(&node.issuer)
-                        || source
-                            .as_deref()
-                            .is_some_and(|s| Some(s) != entry.index("source").as_str())
-                    {
-                        continue;
-                    }
-                    match entry
-                        .index("selection")
-                        .as_str()
-                        .and_then(|s| result.selections.get(s))
-                    {
-                        Some(ids) => {
-                            if ids.contains(id) {
-                                if source.is_some() {
-                                    selected = true;
-                                } else {
-                                    unknown = true;
-                                    reasons.insert("source_attribution_pending".into());
-                                }
+                let index =
+                    imports.get_or_insert_with(|| ImportEntries::new(policy, &result.selections));
+                // A scan of every entry charged one unit per entry. The
+                // lookup charges one unit plus one per selection that
+                // holds this publication, and never more than the scan.
+                let containing = index.containing.get(id.as_str());
+                let work = index.entries.min(1 + containing.map_or(0, Vec::len));
+                if work == 0 || graph.charge(work) {
+                    let group = match &source {
+                        Some(source) => index
+                            .by_source
+                            .get(node.issuer.as_str())
+                            .and_then(|sources| sources.get(source.as_str())),
+                        None => index.by_importer.get(node.issuer.as_str()),
+                    };
+                    if let Some(group) = group {
+                        unknown |= group.missing;
+                        for selection in containing.into_iter().flatten() {
+                            if !group.selections.contains(selection) {
+                                continue;
+                            }
+                            if source.is_some() {
+                                selected = true;
+                            } else {
+                                unknown = true;
+                                reasons.insert("source_attribution_pending".into());
                             }
                         }
-                        None => unknown = true,
                     }
                 }
             } else {
                 unknown = true;
+            }
+            #[cfg(test)]
+            if let Some(policy) = &result.policy
+                && !graph.resource.get()
+            {
+                assert_eq!(
+                    (
+                        selected,
+                        unknown,
+                        reasons.contains("source_attribution_pending")
+                    ),
+                    import_scan(
+                        policy,
+                        &result.selections,
+                        &node.issuer,
+                        id,
+                        source.as_deref()
+                    ),
+                    "import index differs from the entry scan for {id}"
+                );
             }
             if !selected {
                 eligible = if unknown {
@@ -916,7 +962,7 @@ fn publications_for(
             }
         }
         let lineage = lineage(graph, node);
-        result.publications.insert(
+        built.push((
             id.clone(),
             Publication {
                 id: id.clone(),
@@ -953,7 +999,7 @@ fn publications_for(
                 status_frontier: BTreeSet::new(),
                 deciding_claim: None,
                 controller_candidates: BTreeSet::new(),
-                witness_contributions: BTreeMap::new(),
+                witness_contributions: Contributions::default(),
                 missing: BTreeSet::new(),
                 content_available: body.is_some(),
                 eligible,
@@ -965,7 +1011,127 @@ fn publications_for(
                 },
                 reasons,
             },
-        );
+        ));
+    }
+    drop(imports);
+    for (id, publication) in built {
+        result.publications.insert(id, publication);
+    }
+}
+
+/// The entry scan that `ImportEntries` replaces: every entry, in order.
+#[cfg(test)]
+fn import_scan(
+    policy: &CompactValue,
+    selections: &BTreeMap<String, BTreeSet<String>>,
+    issuer: &str,
+    id: &str,
+    source: Option<&str>,
+) -> (bool, bool, bool) {
+    let (mut selected, mut unknown, mut pending) = (false, false, false);
+    for entry in policy
+        .view()
+        .index("import_sets")
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if entry.index("importer").as_str() != Some(issuer)
+            || source.is_some_and(|s| Some(s) != entry.index("source").as_str())
+        {
+            continue;
+        }
+        match entry
+            .index("selection")
+            .as_str()
+            .and_then(|s| selections.get(s))
+        {
+            Some(ids) => {
+                if ids.contains(id) {
+                    if source.is_some() {
+                        selected = true;
+                    } else {
+                        unknown = true;
+                        pending = true;
+                    }
+                }
+            }
+            None => unknown = true,
+        }
+    }
+    (selected, unknown, pending)
+}
+
+/// The selected view's import entries, indexed for the publication
+/// pass. A publication with a source matches the entries of its
+/// importer for that source. A publication without a source matches
+/// every entry of its importer.
+struct ImportEntries<'a> {
+    entries: usize,
+    by_source: BTreeMap<String, BTreeMap<String, ImportGroup<'a>>>,
+    by_importer: BTreeMap<String, ImportGroup<'a>>,
+    /// For each ID in a resolved selection, the selections that hold it.
+    containing: BTreeMap<&'a str, Vec<&'a str>>,
+}
+#[derive(Default)]
+struct ImportGroup<'a> {
+    /// Some entry's selection is not a string or is not resolved.
+    missing: bool,
+    /// The resolved selections that the entries name.
+    selections: BTreeSet<&'a str>,
+}
+impl<'a> ImportEntries<'a> {
+    /// One pass over the entries and one over the resolved selections.
+    /// `policy::select` already charged both.
+    fn new(policy: &'a CompactValue, selections: &'a BTreeMap<String, BTreeSet<String>>) -> Self {
+        let mut index = ImportEntries {
+            entries: 0,
+            by_source: BTreeMap::new(),
+            by_importer: BTreeMap::new(),
+            containing: BTreeMap::new(),
+        };
+        for entry in policy
+            .view()
+            .index("import_sets")
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            index.entries += 1;
+            let Some(importer) = entry.index("importer").as_str().map(str::to_owned) else {
+                continue;
+            };
+            let selection = entry
+                .index("selection")
+                .as_str()
+                .and_then(|s| selections.get_key_value(s))
+                .map(|(s, _)| s.as_str());
+            let add = |group: &mut ImportGroup<'a>| match selection {
+                Some(selection) => {
+                    group.selections.insert(selection);
+                }
+                None => group.missing = true,
+            };
+            if let Some(source) = entry.index("source").as_str() {
+                add(index
+                    .by_source
+                    .entry(importer.clone())
+                    .or_default()
+                    .entry(source.to_owned())
+                    .or_default());
+            }
+            add(index.by_importer.entry(importer).or_default());
+        }
+        for (selection, ids) in selections {
+            for id in ids {
+                index
+                    .containing
+                    .entry(id.as_str())
+                    .or_default()
+                    .push(selection.as_str());
+            }
+        }
+        index
     }
 }
 fn native_status(graph: &graph::Graph, result: &mut Evaluation) {
