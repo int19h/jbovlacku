@@ -194,6 +194,9 @@ export async function preferencesPage(
     }),
     packages,
   );
+  // The latest package operation for a language. A remove supersedes a
+  // refresh for that language that is still running.
+  const packageOperations = new Map<string, symbol>();
   const renderPackages = async () => {
     packages.replaceChildren();
     if (!session.storageAvailable) {
@@ -227,6 +230,9 @@ export async function preferencesPage(
         button(
           "Remove",
           async () => {
+            // A refresh still running for this language must not save its
+            // package after the remove.
+            packageOperations.set(key, Symbol());
             await app.store.delete("packages", key);
             await renderPackages();
           },
@@ -284,24 +290,39 @@ export async function preferencesPage(
     } else if (!keys.length && packagesAvailable)
       packages.append(p("This server offers no search package yet.", "small"));
     for (const key of keys)
-      if (manifestLanguages.includes(key))
-        packages.append(
-          button(
-            `Refresh ${languageName(key)}`,
-            async () => {
-              try {
-                const pkg = await downloadPackage(key);
-                await app.store.put("packages", key, pkg);
-                app.announce(`The ${languageName(key)} package is refreshed.`);
+      if (manifestLanguages.includes(key)) {
+        const refresh = button(
+          `Refresh ${languageName(key)}`,
+          async () => {
+            const operation = Symbol();
+            packageOperations.set(key, operation);
+            refresh.disabled = true;
+            try {
+              const pkg = await downloadPackage(key);
+              // Remove wins: save only when this refresh is still the
+              // latest operation and the package is still there.
+              const current = await app.store.get<CachedPackage>(
+                "packages",
+                key,
+              );
+              if (!current || packageOperations.get(key) !== operation) {
                 await renderPackages();
-              } catch (error) {
-                // A full store reports its own message instead of a raw quota error.
-                app.announce(describe(reportPackageError(error)));
+                return;
               }
-            },
-            { class: "btn btn-quiet" },
-          ),
+              await app.store.put("packages", key, pkg);
+              app.announce(`The ${languageName(key)} package is refreshed.`);
+              await renderPackages();
+            } catch (error) {
+              // A full store reports its own message instead of a raw quota error.
+              app.announce(describe(reportPackageError(error)));
+            } finally {
+              refresh.disabled = false;
+            }
+          },
+          { class: "btn btn-quiet" },
         );
+        packages.append(refresh);
+      }
   };
   await renderPackages();
   if (!context.live()) return;

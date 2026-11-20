@@ -56,10 +56,26 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   main.className = "surface-word";
   const key: string = route.segments[1] ?? "";
   const isId: boolean = /^jvw1:[0-9a-f]{64}$/.test(key);
-  const id = isId
-    ? key
-    : wordId({ language: "jbo", spelling: key.normalize("NFC") });
   const spellingHint = isId ? null : key.normalize("NFC");
+  let id: string;
+  if (isId) id = key;
+  else {
+    try {
+      id = wordId({ language: "jbo", spelling: spellingHint! });
+    } catch {
+      // A spelling the core refuses names no word. Show the friendly page
+      // other bad links give instead of the raw core error.
+      context.title("Page unavailable");
+      main.append(
+        el("h1", { class: "page", text: "Page unavailable" }),
+        p(
+          "This link does not name a word. Use the search field or the links above to return to the dictionary.",
+          "notice",
+        ),
+      );
+      return;
+    }
+  }
   const requestedLanguage =
     route.params.get("lang") ?? app.session.preferences.definitionLanguage;
   context.title(spellingHint ?? "Word");
