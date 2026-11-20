@@ -8059,7 +8059,7 @@ mod rebuild_tests {
         }
 
         // 2. 60-entry and 64-entry x 100,000 IDs selection under default budget (traversal: None):
-        // Valid default-budget checkpoints with < 5,000,000 remaining units must restore cleanly.
+        // the selection is charged once, and both checkpoints restore cleanly.
         let ids: Vec<String> = (0..100_000usize)
             .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
             .collect();
@@ -8111,7 +8111,7 @@ mod rebuild_tests {
                 .collect();
             let state = prepared.into_state();
             assert!(state.evaluation().available);
-            assert!(state.consumed_work() > 6_000_000);
+            assert!(state.consumed_work() > 100_000 && state.consumed_work() < 101_000);
 
             let full_cp = state.checkpoint("selection-default").unwrap();
             let res_cp = state.result_checkpoint("selection-default").unwrap();
@@ -8358,10 +8358,10 @@ mod rebuild_tests {
     }
 
     #[test]
-    fn selection_scan_default_budget_passes_distinct_selections_and_refuses_reused_selection() {
+    fn selection_scan_default_budget_passes_distinct_selections_and_a_reused_selection() {
         let importer = identity_from_seed(&[7u8; 32]);
 
-        // 1. Reusing one 100,000-ID selection across 160 entries is super-linear and refuses under default budget.
+        // 1. One 100,000-ID selection named by 160 entries is charged once and passes under the default budget.
         let shared_ids: Vec<String> = (0..100_000usize)
             .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
             .collect();
@@ -8409,13 +8409,8 @@ mod rebuild_tests {
             .map(|n| HostVerifiedRecord { node: n.clone() })
             .collect();
         let reused_state = reused_input.into_state();
-        assert!(!reused_state.evaluation().available);
-        assert!(
-            reused_state
-                .evaluation()
-                .reasons
-                .contains("resource_unavailable")
-        );
+        assert!(reused_state.evaluation().available);
+        assert!(reused_state.consumed_work() < 101_000);
         let reused_full_cp = reused_state.checkpoint("reused-sel").unwrap();
         let reused_res_cp = reused_state.result_checkpoint("reused-sel").unwrap();
         assert!(EvaluatedState::restore_host_checkpoint(&reused_full_cp, "reused-sel").is_ok());
@@ -8547,7 +8542,7 @@ mod rebuild_tests {
     }
 
     #[test]
-    fn unused_invalid_selection_padding_refuses_like_unpadded_reused_selection() {
+    fn unused_invalid_selection_padding_does_not_expand_the_default_budget() {
         let importer = identity_from_seed(&[7u8; 32]);
         let shared_ids: Vec<String> = (0..100_000usize)
             .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
@@ -8599,18 +8594,14 @@ mod rebuild_tests {
             .map(|n| HostVerifiedRecord { node: n.clone() })
             .collect();
         let padded_state = padded_input.into_state();
-        assert!(
-            !padded_state.evaluation().available,
-            "unused invalid selection padding must not expand default budget; consumed={}",
-            padded_state.consumed_work()
+        assert!(padded_state.evaluation().available);
+        // The base, one record and the one referenced valid selection.
+        assert_eq!(
+            padded_state.traversal_budget(),
+            10_100_256,
+            "unused invalid selection padding must not expand default budget"
         );
-        assert!(
-            padded_state
-                .evaluation()
-                .reasons
-                .contains("resource_unavailable")
-        );
-        assert_eq!(padded_state.consumed_work(), 10_100_256);
+        let consumed = padded_state.consumed_work();
         let full_cp = padded_state.checkpoint("invalid-pad").unwrap();
         let res_cp = padded_state.result_checkpoint("invalid-pad").unwrap();
         let restored_full =
@@ -8620,12 +8611,13 @@ mod rebuild_tests {
                 .unwrap();
         assert_eq!(restored_full.evaluation(), padded_state.evaluation());
         assert_eq!(restored_res.evaluation(), padded_state.evaluation());
-        assert_eq!(restored_full.consumed_work(), 10_100_256);
-        assert_eq!(restored_res.consumed_work(), 10_100_256);
+        assert_eq!(restored_full.consumed_work(), consumed);
+        assert_eq!(restored_res.consumed_work(), consumed);
     }
 
     #[test]
-    fn unused_valid_selection_padding_and_referenced_invalid_selection_refuse_at_default_budget() {
+    fn unused_valid_selection_padding_and_referenced_invalid_selection_do_not_expand_the_default_budget()
+     {
         let importer = identity_from_seed(&[7u8; 32]);
         let shared_ids: Vec<String> = (0..100_000usize)
             .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
@@ -8686,18 +8678,13 @@ mod rebuild_tests {
             .map(|n| HostVerifiedRecord { node: n.clone() })
             .collect();
         let valid_padded_state = valid_padded_input.into_state();
-        assert!(
-            !valid_padded_state.evaluation().available,
-            "unused valid selection padding must not expand default budget; consumed={}",
-            valid_padded_state.consumed_work()
+        assert!(valid_padded_state.evaluation().available);
+        assert_eq!(
+            valid_padded_state.traversal_budget(),
+            10_100_256,
+            "unused valid selection padding must not expand default budget"
         );
-        assert!(
-            valid_padded_state
-                .evaluation()
-                .reasons
-                .contains("resource_unavailable")
-        );
-        assert_eq!(valid_padded_state.consumed_work(), 10_100_256);
+        let consumed = valid_padded_state.consumed_work();
         let full_cp = valid_padded_state.checkpoint("valid-pad").unwrap();
         let res_cp = valid_padded_state.result_checkpoint("valid-pad").unwrap();
         let restored_full = EvaluatedState::restore_host_checkpoint(&full_cp, "valid-pad").unwrap();
@@ -8709,8 +8696,8 @@ mod rebuild_tests {
         .unwrap();
         assert_eq!(restored_full.evaluation(), valid_padded_state.evaluation());
         assert_eq!(restored_res.evaluation(), valid_padded_state.evaluation());
-        assert_eq!(restored_full.consumed_work(), 10_100_256);
-        assert_eq!(restored_res.consumed_work(), 10_100_256);
+        assert_eq!(restored_full.consumed_work(), consumed);
+        assert_eq!(restored_res.consumed_work(), consumed);
 
         // 2. A referenced invalid selection (wrong hash for 100,000 sorted jve1 IDs) adds 0 allowance.
         let bad_hash = format!("sha256:{}", "f".repeat(64));
@@ -8759,14 +8746,8 @@ mod rebuild_tests {
             .map(|n| HostVerifiedRecord { node: n.clone() })
             .collect();
         let mixed_state = mixed_input.into_state();
-        assert!(!mixed_state.evaluation().available);
-        assert!(
-            mixed_state
-                .evaluation()
-                .reasons
-                .contains("resource_unavailable")
-        );
-        assert_eq!(mixed_state.consumed_work(), 10_100_256);
+        assert!(mixed_state.evaluation().available);
+        assert_eq!(mixed_state.traversal_budget(), 10_100_256);
         let mixed_full_cp = mixed_state.checkpoint("mixed-invalid").unwrap();
         let mixed_res_cp = mixed_state.result_checkpoint("mixed-invalid").unwrap();
         assert!(EvaluatedState::restore_host_checkpoint(&mixed_full_cp, "mixed-invalid").is_ok());
