@@ -1,8 +1,8 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v9";
-const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v9";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v10";
+const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v10";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
 
@@ -64,13 +64,13 @@ pub struct EvaluatedState {
     rafsi_assignments: std::rc::Rc<BTreeSet<String>>,
     selection_allowance: usize,
     remaining_work: usize,
-    /// Ancestry bytes spent by the evaluation this state carries,
-    /// saved across a checkpoint. A restored state has no graph, so
-    /// the first advance seeds the rebuilt graph's cap counter with
-    /// this total; without it the counter would miss the
-    /// evaluation-time unions and could pass the cap where a full
-    /// evaluation fails it. `None` on an old checkpoint forces a
-    /// rebuild on the first advance instead.
+    /// Ancestry bytes counted for the closures the graph of this
+    /// state keeps, saved across a checkpoint. A restored state has
+    /// no graph, so the first advance seeds the rebuilt graph's cap
+    /// counter with this total. Evaluation keeps no closures of its
+    /// own, so for a checkpoint that this build wrote the total
+    /// equals what the rebuilt graph counts. `None` forces a rebuild
+    /// on the first advance instead.
     saved_ancestry_bytes: Option<usize>,
     checkpoint_restored: bool,
     statistics: UpdateStatistics,
@@ -4625,11 +4625,9 @@ mod rebuild_tests {
     }
 
     /// A restored state counts ancestry bytes exactly as a full
-    /// evaluation does, including the evaluation-time account carry
-    /// unions: the checkpoint saves the byte total and the first
-    /// advance seeds the rebuilt graph with it. The fixture carries
-    /// a certified account claim, so account evaluation really runs
-    /// the carry unions this test covers.
+    /// evaluation does. The fixture carries a certified account
+    /// claim, so account evaluation really runs the carry unions;
+    /// they build temporary sets and add no ancestry bytes.
     #[test]
     fn restored_state_keeps_full_ancestry_bytes() {
         let (view, view_body) = event(
@@ -4957,7 +4955,7 @@ mod rebuild_tests {
 
     /// A non-semantic judgment in the register group must not enter
     /// the incremental member set: `registers` skips it, so the
-    /// append's charged unions and refund match a full evaluation
+    /// append's charged work and refund match a full evaluation
     /// even with fragmented (interleaved-chain) closures.
     #[test]
     fn nonsemantic_judgment_stays_out_of_the_register_member_set() {
@@ -6844,8 +6842,8 @@ mod rebuild_tests {
 
         let full_json: Value = serde_json::from_slice(&full_bytes).unwrap();
         let result_json: Value = serde_json::from_slice(&result_bytes).unwrap();
-        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v9"));
-        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v9"));
+        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v10"));
+        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v10"));
         assert!(result_json.get("nodes").is_none());
         // The v8 publication scan counts are gone. A checkpoint that
         // still carries them, or names the v8 version, is refused.
