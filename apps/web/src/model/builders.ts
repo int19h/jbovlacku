@@ -15,7 +15,10 @@ import {
   type MorphologyProfile,
   type RafsiInventoryClaim,
 } from "../../../../packages/core/src/browser.ts";
-import type { CachedPackage } from "../data/package-check.ts";
+import {
+  checkSavedPackage,
+  type CachedPackage,
+} from "../data/package-check.ts";
 import type {
   Compound,
   Formation,
@@ -384,6 +387,7 @@ export interface PackageListStore {
   list<T>(name: string): Promise<T[]>;
   keys?(name: string): Promise<string[]>;
   get?<T>(name: string, id: string): Promise<T | undefined>;
+  packageEntries?<T>(name?: string): Promise<{ key: string; value: T }[]>;
 }
 /** One saved package and the language key it is saved under. */
 export interface CachedCandidate {
@@ -401,22 +405,53 @@ const candidateRank = (pkg: CachedPackage) =>
     : -1;
 /**
  * Every saved package, best first (version 2 before version 1, then most
- * entries). Packages are read with `store.get` per key when the store
- * offers it, so the same object comes back while the package revision is
- * unchanged and later checks of that object can hit their cache. This
- * does not validate the rows: callers that read rows ask for a verdict
- * first, through `verifiedCachedPackage` or the search worker.
+ * entries). When the store offers `packageEntries`, packages come back
+ * fresh with their storage identity registered, so a replaced package
+ * is seen at once and the search worker still reuses its prepared
+ * package for an unchanged revision. Otherwise packages are read with
+ * `store.get` per key, which returns the same object while the revision
+ * is unchanged. This does not validate the rows: callers that read rows
+ * ask for a verdict first, through `verifiedCachedPackage` or the
+ * search worker.
  */
 export async function cachedPackages(
   store: PackageListStore,
+  options: { fresh?: boolean } = {},
 ): Promise<CachedCandidate[]> {
   let pairs: CachedCandidate[] = [];
   try {
-    if (store.keys && store.get) {
+    if (store.packageEntries) {
+      // Fresh objects with a registered storage identity: the worker
+      // reuses its prepared package for an unchanged revision, and a
+      // package another writer just replaced is seen at once. The
+      // fresh option is kept for callers that must not use a cached
+      // object; this path is always fresh.
+      void options;
+      pairs = (await store.packageEntries<CachedPackage>()).map(
+        ({ key, value }) => ({ key, pkg: value }),
+      );
+    } else if (store.keys && store.get) {
       for (const key of await store.keys("packages")) {
         const value = await store.get<CachedPackage>("packages", key);
         if (value !== undefined) pairs.push({ key, pkg: value });
       }
+    } else if (options.fresh) {
+      // A fresh read bypasses the store's revision cache, for a caller
+      // that must see a package another writer just replaced. Each
+      // package names its own language in its rows, so no key pairing
+      // is needed.
+      const keys = store.keys ? await store.keys("packages") : [];
+      const listed = await store.list<CachedPackage>("packages");
+      pairs = listed.map((value, index) => ({
+        key:
+          (Array.isArray((value as { entries?: unknown })?.entries)
+            ? ((value as { entries: { language?: unknown }[] }).entries[0]
+                ?.language as string | undefined)
+            : undefined) ??
+          keys[index] ??
+          "",
+        pkg: value,
+      }));
     } else {
       const listed = await store.list<CachedPackage>("packages");
       pairs = listed.map((value) => ({
@@ -451,17 +486,34 @@ export async function cachedPackages(
 export async function verifiedCachedPackage(
   store: PackageListStore,
   verify: (pkg: CachedPackage, language: string) => Promise<void>,
+  options: { fresh?: boolean } = {},
 ): Promise<CachedPackagePick> {
   let invalid: string | null = null;
-  for (const { key, pkg } of await cachedPackages(store)) {
+  for (const { key, pkg } of await cachedPackages(store, options)) {
     try {
       await verify(pkg, key);
       return { pkg, invalid };
     } catch (error) {
-      invalid ??=
+      const message =
         error instanceof Error
           ? error.message
           : "The search package is invalid. Search this server or download another package.";
+      // Only the worker's invalid-package verdict is a verdict on the
+      // package. A worker that could not start, or a request limit, says
+      // nothing about the rows, so the package stays usable as on main
+      // and the page's own lookup reports its failure.
+      if (!message.startsWith("The search package is invalid."))
+        return { pkg, invalid };
+      // The worker also rejects packages for package-level rules no
+      // main-thread reader uses, such as its row order. Those packages
+      // get the main-thread row check as a fallback: a package whose
+      // rows pass it is used as on main, with no message.
+      try {
+        checkSavedPackage(pkg, key || undefined);
+        return { pkg, invalid };
+      } catch {
+        invalid ??= message;
+      }
     }
   }
   return { pkg: null, invalid };

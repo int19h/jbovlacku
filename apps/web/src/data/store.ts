@@ -484,6 +484,74 @@ export class LocalStore {
     });
   }
 
+  /**
+   * Every saved package with its key, read fresh in one transaction.
+   * Each returned object is registered with its storage identity (the
+   * database, key, and current revision), so the search worker reuses
+   * its prepared package for an unchanged revision even though these
+   * objects are new. An aborted transaction rejects instead of leaving
+   * the caller waiting.
+   */
+  async packageEntries<T>(): Promise<{ key: string; value: T }[]> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(["packages", "packageRevisions"]);
+      const packages = tx.objectStore("packages");
+      const revisions = tx.objectStore("packageRevisions");
+      const keysRequest = packages.getAllKeys();
+      const valuesRequest = packages.getAll();
+      const revisionKeysRequest = revisions.getAllKeys();
+      const revisionValuesRequest = revisions.getAll();
+      let keys: IDBValidKey[] | undefined;
+      let values: T[] | undefined;
+      let revisionKeys: IDBValidKey[] | undefined;
+      let revisionValues: unknown[] | undefined;
+      const done = () => {
+        const ks = keys;
+        const vs = values;
+        const rks = revisionKeys;
+        const rvs = revisionValues;
+        if (!ks || !vs || !rks || !rvs) return;
+        const revisionByKey = new Map(
+          rks.map((key, index) => [String(key), rvs[index]]),
+        );
+        resolve(
+          ks.map((key, index) => {
+            const value = vs[index];
+            if (value && typeof value === "object")
+              packageKeys.set(
+                value,
+                JSON.stringify([
+                  db.name,
+                  String(key),
+                  revisionByKey.get(String(key)) ?? null,
+                ]),
+              );
+            return { key: String(key), value };
+          }),
+        );
+      };
+      keysRequest.onsuccess = () => {
+        keys = keysRequest.result;
+        done();
+      };
+      valuesRequest.onsuccess = () => {
+        values = valuesRequest.result;
+        done();
+      };
+      revisionKeysRequest.onsuccess = () => {
+        revisionKeys = revisionKeysRequest.result;
+        done();
+      };
+      revisionValuesRequest.onsuccess = () => {
+        revisionValues = revisionValuesRequest.result;
+        done();
+      };
+      tx.onabort = () =>
+        reject(tx.error ?? new Error("Local storage did not read packages."));
+      tx.onerror = () => {};
+    });
+  }
   async readRecords(ids: string[]): Promise<(StoredRecord | undefined)[]> {
     if (!ids.length) return [];
     const db = await this.database;
