@@ -118,6 +118,12 @@ export class Signer {
           "Publishing needs a connection the first time this key publishes in this browser. Nothing was signed.",
         );
       previous = await ownHeads(session.store, identity, true);
+      // Whatever the own-event sources say, an empty parent list would make
+      // this record a new first event. Refuse instead of signing it.
+      if (!previous.length)
+        throw new Error(
+          "Publishing needs a connection the first time this key publishes in this browser. Nothing was signed.",
+        );
     }
     const learnedRestriction = await session.signingDisabled(identity);
     if (learnedRestriction) throw new Error(learnedRestriction);

@@ -315,6 +315,83 @@ test("a key with no history in this browser does not sign while unreachable", as
   await page.context().setOffline(false);
 });
 
+test("Resume while offline resumes a stopped record and it delivers when the network returns", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  await page.route("**/api/v1/events", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ message: "Probe unavailable." }),
+        })
+      : route.continue(),
+  );
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  const itemOf = async () => (await outboxItems(page))[0];
+  await expect
+    .poll(async () => (await itemOf())?.peers.self.state, {
+      timeout: 30000,
+    })
+    .toBe("unknown");
+  await page.unroute("**/api/v1/events");
+  await page.getByRole("link", { name: "1 not delivered" }).click();
+  await expect(page).toHaveTitle("Not delivered · jbovlacku");
+  await page.getByRole("button", { name: "Stop retrying" }).click();
+  await expect
+    .poll(async () => (await itemOf())?.stopped, { timeout: 30000 })
+    .toBe(true);
+  await page.context().setOffline(true);
+  await page.getByRole("button", { name: "Resume", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "Delivery resumed with the same signed bytes and recipients.",
+  );
+  // The resume took effect while offline: the stop is cleared and an
+  // attempt is scheduled, even though nothing was sent yet.
+  await expect
+    .poll(async () => (await itemOf())?.stopped, { timeout: 30000 })
+    .toBe(false);
+  await page.context().setOffline(false);
+  await expect
+    .poll(async () => (await itemOf())?.peers.self.state, {
+      timeout: 30000,
+    })
+    .toBe("accepted");
+  await clearAfterReload(page, 1);
+});
+
+test("an empty offline parent list refuses to sign even with local records", async ({
+  page,
+}) => {
+  const identity = (await createIdentity(page)).identity as string;
+  await establishHistory(page);
+  // Remove only the remembered heads. The signed records stay in the
+  // outbox, so a source check passes, but no parent list can be computed.
+  await page.evaluate(async (id) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().delete("heads", id);
+  }, identity);
+  const before = (await outboxItems(page)).length;
+  await page.context().setOffline(true);
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await expect(page.getByRole("status")).toContainText(
+    "Publishing needs a connection the first time this key publishes in this browser.",
+  );
+  expect((await outboxItems(page)).length).toBe(before);
+  await page.context().setOffline(false);
+});
+
 test("a 503 history read signs from the history saved in this browser", async ({
   page,
 }) => {

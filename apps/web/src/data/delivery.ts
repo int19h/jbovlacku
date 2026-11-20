@@ -824,8 +824,6 @@ export class DeliveryEngine {
   }
   /** Resumes delivery with the same bytes and recipients, after a receipt lookup. */
   async resume(id: string) {
-    // Offline, no attempt will follow. Keep the stored outcome and schedule.
-    if (!navigator.onLine) return;
     await this.store.mergeOutbox(id, (item) => ({
       ...item,
       stopped: false,
