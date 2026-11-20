@@ -1249,7 +1249,7 @@ impl EvaluatedState {
             binding: &'a str,
             options: SavedOptions<'a>,
             nodes: &'a BTreeMap<String, Node>,
-            evaluation: &'a Evaluation,
+            evaluation: CheckpointEvaluation<'a>,
             event_limit_exceeded: bool,
             consumed_work: usize,
             remaining_work: usize,
@@ -1262,7 +1262,7 @@ impl EvaluatedState {
             version: &'static str,
             binding: &'a str,
             options: SavedOptions<'a>,
-            evaluation: &'a Evaluation,
+            evaluation: CheckpointEvaluation<'a>,
             event_limit_exceeded: bool,
             consumed_work: usize,
             remaining_work: usize,
@@ -1294,7 +1294,7 @@ impl EvaluatedState {
                 version: RESULTS_CHECKPOINT_VERSION,
                 binding,
                 options: saved_options,
-                evaluation: &self.evaluation,
+                evaluation: CheckpointEvaluation(&self.evaluation),
                 event_limit_exceeded: self.prepared.event_limit_exceeded,
                 consumed_work,
                 remaining_work: self.remaining_work,
@@ -1308,7 +1308,7 @@ impl EvaluatedState {
                 binding,
                 options: saved_options,
                 nodes: &self.prepared.nodes,
-                evaluation: &self.evaluation,
+                evaluation: CheckpointEvaluation(&self.evaluation),
                 event_limit_exceeded: self.prepared.event_limit_exceeded,
                 consumed_work,
                 remaining_work: self.remaining_work,
@@ -1451,7 +1451,7 @@ impl EvaluatedState {
             register.maxima_work = *work;
             register.maxima_member_work = *member_work;
         }
-        share_account_contributions(&mut evaluation);
+        restore_account_contributions(&mut evaluation);
         let rafsi_words = rafsi_words(&evaluation);
         let rafsi_assignments = rafsi_assignments(&evaluation);
         let predecessor_edges = predecessor_edges(&prepared.nodes);
@@ -2253,6 +2253,11 @@ fn check_saved_state(
         return Err("publications_len");
     }
     for (id, p) in &saved.evaluation.publications {
+        // Checkpoints leave the contributions out, and restore sets
+        // them from the account.
+        if !p.witness_contributions.is_empty() {
+            return Err("publication_checkpoint_contributions");
+        }
         let Some(node) = nodes.get(id).filter(|n| {
             n.semantic && matches!(n.kind.as_str(), "definition.publish" | "rafsi.publish")
         }) else {
@@ -2394,7 +2399,6 @@ fn check_saved_state(
                     if p.claim != state.controller
                         || p.controller != state.controller_identity
                         || p.controller_candidates != state.candidates
-                        || p.witness_contributions != state.contributions
                         || p.observations != state.current_observations
                     {
                         return Err("publication_account_fields");
@@ -2803,23 +2807,29 @@ fn judgment_diff(before: &Evaluation, after: &Evaluation) -> Option<JudgmentChan
     Some(changes)
 }
 
-/// A restored evaluation holds one copy of an account's contributions
-/// per publication. Validation already checked that each copy equals
-/// the account's map, so point every publication at that one map.
-fn share_account_contributions(evaluation: &mut Evaluation) {
-    if evaluation.accounts.is_empty() {
+/// Sets the contributions that a checkpoint leaves out. As in
+/// `accounts::evaluate`, each imported definition credited to an account
+/// shares the account's map when the view gives accounts status
+/// authority. Every other publication keeps an empty map.
+fn restore_account_contributions(evaluation: &mut Evaluation) {
+    if evaluation.accounts.is_empty()
+        || evaluation.reasons.contains("resource_unavailable")
+        || !evaluation
+            .policy
+            .as_ref()
+            .is_some_and(|policy| policy.view().index("account_authority").as_bool() == Some(true))
+    {
         return;
     }
     let results = std::rc::Rc::make_mut(&mut evaluation.results);
     for p in results.publications.values_mut() {
-        if p.witness_contributions.is_empty() {
+        if !p.imported || p.kind != "definition.publish" {
             continue;
         }
         if let Some(state) = p
             .account
             .as_ref()
             .and_then(|a| results.accounts.get(&a.token()))
-            && state.contributions == p.witness_contributions
         {
             p.witness_contributions = state.contributions.clone();
         }

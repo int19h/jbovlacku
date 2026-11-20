@@ -364,6 +364,10 @@ pub struct Publication {
     pub deciding_claim: Option<String>,
     pub controller_candidates: BTreeSet<String>,
     /// The account's contributions, shared with `AccountState`.
+    /// Checkpoints leave it out (`CheckpointEvaluation`), and restore
+    /// sets it from the account again, so a missing field reads as
+    /// empty.
+    #[serde(default)]
     pub witness_contributions: Contributions,
     pub missing: BTreeSet<String>,
     pub content_available: bool,
@@ -475,6 +479,126 @@ impl Serialize for Evaluation {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
+        self.serialize_as(serializer, false)
+    }
+}
+/// The evaluation as a checkpoint stores it: every publication without
+/// its `witness_contributions`. Each credited publication shares its
+/// account's map, and the account is stored once, so restore sets the
+/// publications' maps from it instead of reading one copy for each.
+pub(crate) struct CheckpointEvaluation<'a>(pub &'a Evaluation);
+impl Serialize for CheckpointEvaluation<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.0.serialize_as(serializer, true)
+    }
+}
+struct CheckpointPublications<'a>(&'a BTreeMap<String, Publication>);
+impl Serialize for CheckpointPublications<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_map(
+            self.0
+                .iter()
+                .map(|(id, p)| (id, CheckpointPublication::from(p))),
+        )
+    }
+}
+/// A publication's fields in their serialized order, without
+/// `witness_contributions`.
+#[derive(Serialize)]
+struct CheckpointPublication<'a> {
+    id: &'a String,
+    issuer: &'a String,
+    kind: &'a String,
+    word: &'a String,
+    language: &'a Option<String>,
+    assignment: &'a Option<String>,
+    lineage: &'a BTreeMap<String, String>,
+    imported: &'a bool,
+    source: &'a Option<String>,
+    source_record: &'a Option<u64>,
+    account: &'a Option<AccountKey>,
+    authority: &'a Authority,
+    controller: &'a Option<String>,
+    claim: &'a Option<String>,
+    observations: &'a BTreeSet<String>,
+    status_frontier: &'a BTreeSet<String>,
+    deciding_claim: &'a Option<String>,
+    controller_candidates: &'a BTreeSet<String>,
+    missing: &'a BTreeSet<String>,
+    content_available: &'a bool,
+    eligible: &'a Eligibility,
+    status: &'a Status,
+    reasons: &'a BTreeSet<String>,
+}
+impl<'a> From<&'a Publication> for CheckpointPublication<'a> {
+    fn from(p: &'a Publication) -> Self {
+        // Every field is named, so a new publication field does not
+        // compile until it is added here too.
+        let Publication {
+            id,
+            issuer,
+            kind,
+            word,
+            language,
+            assignment,
+            lineage,
+            imported,
+            source,
+            source_record,
+            account,
+            authority,
+            controller,
+            claim,
+            observations,
+            status_frontier,
+            deciding_claim,
+            controller_candidates,
+            witness_contributions: _,
+            missing,
+            content_available,
+            eligible,
+            status,
+            reasons,
+        } = p;
+        Self {
+            id,
+            issuer,
+            kind,
+            word,
+            language,
+            assignment,
+            lineage,
+            imported,
+            source,
+            source_record,
+            account,
+            authority,
+            controller,
+            claim,
+            observations,
+            status_frontier,
+            deciding_claim,
+            controller_candidates,
+            missing,
+            content_available,
+            eligible,
+            status,
+            reasons,
+        }
+    }
+}
+impl Evaluation {
+    fn serialize_as<S: serde::Serializer>(
+        &self,
+        serializer: S,
+        checkpoint: bool,
+    ) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(15))?;
         map.serialize_entry("selected_view", &self.selected_view)?;
@@ -482,7 +606,11 @@ impl Serialize for Evaluation {
         map.serialize_entry("reasons", &self.reasons)?;
         map.serialize_entry("receipts", &self.receipts)?;
         map.serialize_entry("lifecycle", &self.lifecycle)?;
-        map.serialize_entry("publications", &self.publications)?;
+        if checkpoint {
+            map.serialize_entry("publications", &CheckpointPublications(&self.publications))?;
+        } else {
+            map.serialize_entry("publications", &self.publications)?;
+        }
         map.serialize_entry("accounts", &self.accounts)?;
         map.serialize_entry("registers", &self.registers)?;
         map.serialize_entry("judgments", &self.judgments)?;

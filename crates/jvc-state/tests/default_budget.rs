@@ -369,6 +369,59 @@ fn account_contributions_are_shared_by_every_credited_publication() {
     assert_shared(&results, "results checkpoint");
 }
 
+/// Seals `value` with a fresh digest, as `checkpoint` does.
+fn sealed(mut value: Value) -> Vec<u8> {
+    value.as_object_mut().unwrap().remove("digest");
+    let mut bytes = serde_json::to_vec(&value).unwrap();
+    let digest = hash_id("sha256:", b"", &bytes);
+    bytes.pop();
+    bytes.extend_from_slice(format!(",\"digest\":\"{digest}\"}}").as_bytes());
+    bytes
+}
+
+#[test]
+fn checkpoints_store_each_account_map_once_and_refuse_a_publication_copy() {
+    let (records, selections) = account_fixture(8, 8, 40);
+    let state = evaluate(&records, &selections, None);
+    let account =
+        serde_json::to_value(state.evaluation().accounts.values().next().unwrap()).unwrap();
+    for (results_only, bytes) in [
+        (false, state.checkpoint("shared").unwrap()),
+        (true, state.result_checkpoint("shared").unwrap()),
+    ] {
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        let publications = value["evaluation"]["publications"].as_object().unwrap();
+        assert_eq!(publications.len(), 40);
+        assert!(
+            publications
+                .values()
+                .all(|p| p.get("witness_contributions").is_none())
+        );
+        let restore = |bytes: &[u8]| {
+            if results_only {
+                EvaluatedState::restore_host_result_checkpoint(bytes, "shared", records.clone())
+            } else {
+                EvaluatedState::restore_host_checkpoint(bytes, "shared")
+            }
+        };
+        assert!(restore(&sealed(value.clone())).is_ok());
+        // A publication that carries its own map is refused, even when
+        // the map equals the account's.
+        let mut copied = value.clone();
+        let first = copied["evaluation"]["publications"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+            .find(|p| !p["account"].is_null())
+            .unwrap();
+        first["witness_contributions"] = account["contributions"].clone();
+        assert!(
+            restore(&sealed(copied)).is_err(),
+            "results_only={results_only}"
+        );
+    }
+}
+
 #[test]
 fn the_borrowed_status_export_writes_the_same_json_as_the_owned_status() {
     // Many observations of one claim by one witness, and many claims
