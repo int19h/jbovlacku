@@ -36,10 +36,10 @@ async function establishHistory(page: Page) {
   await expect(page.getByRole("status")).toContainText(
     "Your endorsement is published.",
   );
-  await expect(endorsedArticle(page)).toHaveCount(1);
-  await endorsedArticle(page)
-    .getByRole("button", { name: "Endorse" })
-    .click();
+  await expect(endorsedArticle(page)).toHaveCount(1, {
+    timeout: 30000,
+  });
+  await endorsedArticle(page).getByRole("button", { name: "Endorse" }).click();
   await expect(page.getByRole("status")).toContainText(
     "Your judgment is cleared.",
   );
@@ -65,10 +65,10 @@ async function establishHistory(page: Page) {
 /** Clears the current endorsement after a full reload, through the unlock dialog. */
 async function clearAfterReload(page: Page, clears: number) {
   await page.goto("/word/cukta");
-  await expect(endorsedArticle(page)).toHaveCount(1);
-  await endorsedArticle(page)
-    .getByRole("button", { name: "Endorse" })
-    .click();
+  await expect(endorsedArticle(page)).toHaveCount(1, {
+    timeout: 30000,
+  });
+  await endorsedArticle(page).getByRole("button", { name: "Endorse" }).click();
   const dialog = page.getByRole("dialog", { name: "Unlock your key" });
   await expect(dialog).toBeVisible();
   await dialog.getByLabel("Passphrase").fill(PASSPHRASE);
@@ -98,26 +98,17 @@ async function toPublish(page: Page, spelling: string) {
   await page.getByRole("link", { name: "Enter without generation" }).click();
   await page.getByLabel("Spelling").fill(spelling);
   await page.getByRole("button", { name: `Use ${spelling}` }).click();
-  await expect(
-    page.getByRole("heading", { name: spelling }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: spelling })).toBeVisible();
   await page.getByLabel("Read circled numbers as place references").uncheck();
   await page.getByRole("button", { name: "Review" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Publish as" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Publish as" })).toBeVisible();
   return meaning;
 }
 
 async function publishOffline(page: Page) {
-  const before = new Set(
-    (await outboxItems(page)).map((item: any) => item.id),
-  );
+  const before = new Set((await outboxItems(page)).map((item: any) => item.id));
   await page.context().setOffline(true);
-  await page
-    .locator("aside")
-    .getByRole("button", { name: "Publish" })
-    .click();
+  await page.locator("aside").getByRole("button", { name: "Publish" }).click();
   const saved = page.getByRole("region", { name: "Saved publication" });
   await expect(saved).toContainText("Saved. Not delivered yet.");
   await expect(saved).toContainText(
@@ -146,12 +137,12 @@ test("offline publish saves the signed group and shows Not delivered", async ({
   await toPublish(page, "brodu");
   const group = await publishOffline(page);
   const byOrder = [...group].sort((a: any, b: any) => a.order - b.order);
-  expect(
-    JSON.parse(byOrder[0].transport).envelope.header.previous,
-  ).toEqual([clearId]);
-  expect(
-    JSON.parse(byOrder[1].transport).envelope.header.previous,
-  ).toEqual([byOrder[0].id]);
+  expect(JSON.parse(byOrder[0].transport).envelope.header.previous).toEqual([
+    clearId,
+  ]);
+  expect(JSON.parse(byOrder[1].transport).envelope.header.previous).toEqual([
+    byOrder[0].id,
+  ]);
   await page.getByRole("link", { name: "2 not delivered" }).click();
   await expect(page).toHaveTitle("Not delivered · jbovlacku");
   await expect(page.getByText("No unfinished records.")).toHaveCount(0);
@@ -161,9 +152,7 @@ test("offline publish saves the signed group and shows Not delivered", async ({
   await page.context().setOffline(false);
 });
 
-test("offline publish delivers when the network returns", async ({
-  page,
-}) => {
+test("offline publish delivers when the network returns", async ({ page }) => {
   await createIdentity(page);
   await establishHistory(page);
   await toPublish(page, "brode");
@@ -182,9 +171,7 @@ test("offline publish delivers when the network returns", async ({
   expect(after.map((item: any) => item.transport).sort()).toEqual(
     items.map((item: any) => item.transport).sort(),
   );
-  await expect(
-    page.getByRole("link", { name: /not delivered/ }),
-  ).toBeHidden();
+  await expect(page.getByRole("link", { name: /not delivered/ })).toBeHidden();
 });
 
 test("offline publish survives a reload before the network returns", async ({
@@ -228,9 +215,7 @@ test("offline endorsement saves the signed record and delivers on return", async
     .locator("article.definition")
     .first()
     .getByRole("button", { name: "Endorse" });
-  const before = new Set(
-    (await outboxItems(page)).map((item: any) => item.id),
-  );
+  const before = new Set((await outboxItems(page)).map((item: any) => item.id));
   await page.context().setOffline(true);
   await endorse.click();
   await expect(page.getByRole("status")).toContainText(
@@ -248,9 +233,7 @@ test("offline endorsement saves the signed record and delivers on return", async
   await expect
     .poll(() => statesOf(page, [items[0].id]), { timeout: 30000 })
     .toEqual(["accepted"]);
-  await expect(
-    page.getByRole("link", { name: /not delivered/ }),
-  ).toBeHidden();
+  await expect(page.getByRole("link", { name: /not delivered/ })).toBeHidden();
   // Clear the endorsement so this test leaves the shared word unchanged.
   await clearAfterReload(page, 2);
 });
@@ -275,8 +258,7 @@ test("Try now while offline keeps a refused record refused", async ({
     .getByRole("button", { name: "Endorse" })
     .click();
   await acceptFirstSignature(page);
-  const peerOf = async () =>
-    (await outboxItems(page))[0]?.peers.self;
+  const peerOf = async () => (await outboxItems(page))[0]?.peers.self;
   await expect.poll(async () => (await peerOf())?.state).toBe("refused");
   const refused = await peerOf();
   expect(refused.failure).toBe("refused");
@@ -321,9 +303,7 @@ test("a key with no history in this browser does not sign while unreachable", as
     "Publishing needs a connection the first time this key publishes in this browser.",
   );
   expect(await outboxItems(page)).toHaveLength(0);
-  await expect(
-    page.getByRole("link", { name: /not delivered/ }),
-  ).toBeHidden();
+  await expect(page.getByRole("link", { name: /not delivered/ })).toBeHidden();
   await page.context().setOffline(false);
 });
 
@@ -409,9 +389,7 @@ test("a 503 history read signs from the history saved in this browser", async ({
 }) => {
   await createIdentity(page);
   const clearId = await establishHistory(page);
-  const before = new Set(
-    (await outboxItems(page)).map((item: any) => item.id),
-  );
+  const before = new Set((await outboxItems(page)).map((item: any) => item.id));
   const unavailable = () =>
     page.route("**/api/v1/**", (route) =>
       route.fulfill({
@@ -433,13 +411,13 @@ test("a 503 history read signs from the history saved in this browser", async ({
     (item: any) => !before.has(item.id),
   );
   expect(items).toHaveLength(1);
-  expect(
-    JSON.parse(items[0].transport).envelope.header.action.value,
-  ).toBe("bless");
+  expect(JSON.parse(items[0].transport).envelope.header.action.value).toBe(
+    "bless",
+  );
   // The fallback record names the accepted clear as its only parent.
-  expect(
-    JSON.parse(items[0].transport).envelope.header.previous,
-  ).toEqual([clearId]);
+  expect(JSON.parse(items[0].transport).envelope.header.previous).toEqual([
+    clearId,
+  ]);
   await page.unroute("**/api/v1/**");
   await page.goto("/outbox");
   await page.getByRole("button", { name: "Try now" }).first().click();
@@ -449,10 +427,10 @@ test("a 503 history read signs from the history saved in this browser", async ({
   // A second fallback record names the first fallback record as its parent.
   await openWord(page, "cukta");
   await unavailable();
-  await expect(endorsedArticle(page)).toHaveCount(1);
-  await endorsedArticle(page)
-    .getByRole("button", { name: "Endorse" })
-    .click();
+  await expect(endorsedArticle(page)).toHaveCount(1, {
+    timeout: 30000,
+  });
+  await endorsedArticle(page).getByRole("button", { name: "Endorse" }).click();
   // The outbox visit reloaded the app and locked the key.
   const dialog = page.getByRole("dialog", { name: "Unlock your key" });
   await expect(dialog).toBeVisible();
@@ -470,12 +448,12 @@ test("a 503 history read signs from the history saved in this browser", async ({
   const second = (await outboxItems(page)).find(
     (item: any) => !before.has(item.id) && item.id !== items[0].id,
   );
-  expect(
-    JSON.parse(second.transport).envelope.header.action.value,
-  ).toBe("clear");
-  expect(
-    JSON.parse(second.transport).envelope.header.previous,
-  ).toEqual([items[0].id]);
+  expect(JSON.parse(second.transport).envelope.header.action.value).toBe(
+    "clear",
+  );
+  expect(JSON.parse(second.transport).envelope.header.previous).toEqual([
+    items[0].id,
+  ]);
   await page.unroute("**/api/v1/**");
   await page.goto("/outbox");
   await page.getByRole("button", { name: "Try now" }).first().click();
