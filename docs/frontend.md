@@ -1620,6 +1620,11 @@ It also retains known latest event references for each local signing identity.
 These references identify accepted history through predecessor links. They do not require a complete local copy of that history.
 Language search packages contain searchable dictionary data, not the complete event graph.
 The browser retrieves missing signing or handover evidence from configured peers and exposes unresolved dependencies before proceeding.
+When that history read fails at the network level, times out, or answers 502, 503 or 504, signing falls back to the history saved in this browser, provided this browser already holds at least one own event for the signing key and the parent list computed from it is not empty.
+A key with no own event in this browser does not sign in that case. The page says that publishing needs a connection the first time this key publishes in this browser, and nothing is signed.
+The browser's online report is only a hint. An explicit publish, “Try now” or Resume always attempts delivery, so a reachable server still receives the record when the browser reports offline.
+An attempt that fails at the network level while the browser reports offline did not leave the browser, so it leaves the stored outcome and retry schedule unchanged. A refused record stays refused until a server answers.
+Resume clears the stop and schedules the next attempt whether or not the browser reports a connection. The record is sent when a server answers.
 
 It never discards a remembered own branch merely because a peer omits it.
 Device synchronization exchanges known history references and uploads pending events. A handover includes every known relevant device branch.

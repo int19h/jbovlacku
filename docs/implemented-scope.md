@@ -192,6 +192,8 @@ The storage transaction checks these rules again and restores retained predecess
 If authenticated server history later includes a discarded record, the browser restores its history and permits later signatures to follow it.
 The app tells the author once that the record reached a server. The notice stays through navigation until dismissed.
 Delivery supports receipt lookup before retry, identical retries, Retry-After, and Stop retrying. A first online publication shows neutral progress until delivery returns an outcome.
+When the server history read fails at the network level, times out, or answers 502, 503 or 504, the prototype signs from the history saved in the browser, provided it already holds an own event for the key and computes a non-empty parent list from it. A key with no own event in the browser does not sign then; the page says that publishing needs a connection the first time this key publishes in this browser.
+The browser's online report is only a hint: Publish, Try now, and Resume always attempt delivery. A network failure while the browser reports offline leaves the stored outcome and retry schedule unchanged, so a refused record stays refused. Resume clears the stop and schedules the next attempt with or without a reported connection.
 Saved publication pages keep receiving delivery updates after a reload and stop listening when the author leaves the page.
 Updates keep focus on delivery controls and announce only short status changes. Try now stays disabled through the group retry and final refresh.
 If storage cannot be read, the saved page keeps known records and offers Retry reading. It reports missing records only after a successful read.
