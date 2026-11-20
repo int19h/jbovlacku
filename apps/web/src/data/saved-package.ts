@@ -38,7 +38,11 @@ export class PackageValidationError extends Error {
   }
 }
 
-/** Matches an unpaired surrogate, which the core cannot read in a rafsi. */
+/**
+ * Matches an unpaired surrogate. Such a string fails in `encodeURIComponent`
+ * and in the core's JSON reader, so a row field that reaches either one must
+ * not contain it.
+ */
 const LONE_SURROGATE = /\p{Cs}/u;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -74,8 +78,10 @@ export function savedPackage(value: unknown): CachedPackage | null {
 /**
  * One saved row, checked for the fields that main-thread readers use: the
  * word, classification, glosses, text, event and language, and the rafsi
- * list of a version 2 row, whose spellings must be well-formed Unicode. A
- * row without them raises `PackageValidationError`.
+ * list of a version 2 row. The event, the language and each rafsi must be
+ * well-formed Unicode, because pages put them in links or send them to the
+ * core; the word's spelling is checked by the core in `savedWordId`. A row
+ * without them raises `PackageValidationError`.
  */
 export function savedRow(entry: unknown): PackageEntry {
   if (!isRecord(entry)) throw new PackageValidationError();
@@ -89,8 +95,10 @@ export function savedRow(entry: unknown): PackageEntry {
     typeof classification.kind === "string" &&
     Array.isArray(glosses) &&
     typeof entry.event === "string" &&
+    !LONE_SURROGATE.test(entry.event) &&
     typeof entry.plain_text === "string" &&
-    typeof entry.language === "string";
+    typeof entry.language === "string" &&
+    !LONE_SURROGATE.test(entry.language);
   if (usable)
     for (const gloss of glosses as unknown[])
       if (!isRecord(gloss) || typeof gloss.text !== "string") usable = false;

@@ -290,3 +290,11 @@ test("a rafsi with a lone surrogate is unusable, though the worker accepts it", 
   const paired = pkg([v2Row({ rafsi: ["😀"] })]);
   assert.equal(readAll(paired), paired);
 });
+
+test("an event or row language with a lone surrogate is unusable", () => {
+  for (const over of [{ event: "\ud800" }, { language: "en\udc00" }]) {
+    const value = pkg([v2Row(over)]);
+    rejects(value);
+    assert.equal(workerAccepts(value), false);
+  }
+});

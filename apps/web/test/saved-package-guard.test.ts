@@ -552,3 +552,29 @@ test("the rafsi page reports a lone-surrogate rafsi after an incomplete row", as
   await page.goto("/rafsi/*");
   await expectInvalidOnly(page);
 });
+
+test("the meaning page reports a lone-surrogate event in the typed-word check", async ({
+  page,
+}) => {
+  // The typed-word check links each definition by its event, and a link
+  // cannot hold an unpaired surrogate.
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  await seed(
+    page,
+    {
+      version: 2,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: [{ ...validRow, event: "\ud800" }],
+    },
+    { meaning: "book", spelling: "cukta", step: 1 },
+  );
+  await page.goto("/new/meaning");
+  const typed = page.getByRole("region", { name: "Typed word" });
+  await expect(typed).toContainText(INVALID);
+  await expect(
+    typed.getByRole("button", { name: "Check this word on the server" }),
+  ).toBeVisible();
+  expect(await page.locator("body").innerText()).not.toMatch(RAW_ERROR);
+  expect(errors).toEqual([]);
+});
