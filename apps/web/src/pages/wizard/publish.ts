@@ -765,7 +765,6 @@ export async function publishPage(
                   signal: context.signal,
                 });
               },
-              { fresh: true },
             );
             if (latestPick.invalid && !latestPick.pkg) {
               outcome.replaceChildren(p(latestPick.invalid, "notice"));

@@ -38,7 +38,11 @@ import {
   SEARCH_QUERY_LENGTH_LIMIT,
   SearchQueryTooLongError,
 } from "../../../../packages/search/src/index.ts";
-import { searchPackage, takeRafsiRows } from "../data/package-search.ts";
+import {
+  PackageValidationError,
+  searchPackage,
+  takeRafsiRows,
+} from "../data/package-search.ts";
 
 /** Loads the version 2 package for a language, from cache or the server. */
 async function packageFor(
@@ -605,11 +609,21 @@ async function resolvePair(
   for (const language of languages) {
     const pkg = await packageFor(app, language, signal);
     if (!pkg) continue;
-    // This loop reads rows itself, so each row it is about to read is
-    // checked with the worker's row validation first.
     if (!Array.isArray(pkg.entries)) throw invalidPackage();
+    // The worker gives the verdict on the package first, as on the
+    // wizard pages, so no row is checked on the main thread. Only when
+    // the worker cannot start does each row this loop is about to read
+    // get the worker's row validation on the main thread.
+    let workerChecked = false;
+    try {
+      await searchPackage(pkg, language, [], { signal });
+      workerChecked = true;
+    } catch (error) {
+      if (error instanceof PackageValidationError) throw error;
+      if (error instanceof Error && error.name === "AbortError") throw error;
+    }
     for (const entry of pkg.entries) {
-      checkSavedRow(entry, language, pkg);
+      if (!workerChecked) checkSavedRow(entry, language, pkg);
       if (!isV2(entry)) continue;
       const id = deriveWordId(entry.word);
       for (const rafsi of (entry as PackageEntryV2).rafsi)

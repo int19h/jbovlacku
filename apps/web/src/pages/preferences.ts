@@ -20,7 +20,10 @@ import {
   reportPackageError,
   type CachedPackage,
 } from "../data/search.ts";
-import { searchPackage } from "../data/package-search.ts";
+import {
+  PackageValidationError,
+  searchPackage,
+} from "../data/package-search.ts";
 import { getCapabilities, getManifest, selfPeer } from "../data/api.ts";
 import type { Preferences } from "../data/store.ts";
 
@@ -234,8 +237,12 @@ export async function preferencesPage(
             signal: context.signal,
           });
         } catch (error) {
-          packageError = describe(error);
-          cached = null;
+          // Only the worker's invalid-package verdict is a verdict on
+          // this package. A worker that could not start says nothing
+          // about it, and this page reads only the package fields
+          // checked above, so its definition count still shows.
+          if (error instanceof PackageValidationError)
+            packageError = describe(error);
         }
       }
       const row = el("div", { class: "row" });

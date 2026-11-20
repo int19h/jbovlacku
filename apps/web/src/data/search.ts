@@ -52,7 +52,6 @@ export {
   checkSavedPackage,
   checkSavedRow,
   invalidPackage,
-  savedPackage,
   validateCachedPackage,
   validateEntry,
   PACKAGE_RAFSI_LIMIT,

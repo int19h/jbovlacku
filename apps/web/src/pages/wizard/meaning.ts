@@ -807,7 +807,14 @@ export async function meaningPage(
         .catch(() => undefined);
       if (!current()) return;
       let pkg: CachedPackage | null = raw ?? null;
-      if (raw === null) {
+      if (
+        raw === null ||
+        (raw !== undefined &&
+          (typeof raw !== "object" ||
+            !Array.isArray((raw as { entries?: unknown }).entries)))
+      ) {
+        // A stored null, or a saved value that is not a package at all,
+        // counts as a malformed package, not as a downloaded one.
         if (!invalidAnnounced) {
           invalidAnnounced = true;
           app.announce(invalidPackageMessage);

@@ -336,17 +336,4 @@ export function checkSavedRow(
   )
     throw invalidPackage();
 }
-/**
- * Reads one language package from the store through `checkSavedPackage`.
- * A missing package returns null. A saved package that fails the check
- * raises the invalid-package error, so callers show that message instead
- * of reading malformed rows. A stored null counts as a saved package.
- */
-export async function savedPackage(
-  store: { get<T>(name: string, id: string): Promise<T | undefined> },
-  language: string,
-): Promise<CachedPackage | null> {
-  const raw = await store.get<CachedPackage>("packages", language);
-  if (raw === undefined) return null;
-  return checkSavedPackage(raw, language);
-}
+

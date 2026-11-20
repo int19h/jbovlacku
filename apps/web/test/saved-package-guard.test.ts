@@ -260,6 +260,79 @@ for (const [label, saved] of savedPackages) {
   });
 }
 
+/** Blocks the search worker, the same failure the part-lookup test uses. */
+async function blockWorker(page: Page) {
+  await page.route("**/package-search-worker.ts*", (route) => route.abort());
+}
+
+for (const [name, route, draft, control] of [
+  ["gismu", "/new/gismu", { meaning: "book", kind: "gismu", step: 3 }, "Make a gismu"],
+  ["lujvo", "/new/lujvo", { meaning: "book", kind: "lujvo", step: 3 }, "Add a part"],
+  ["word type", "/new/type", { meaning: "book", kind: "gismu", spelling: "cukte", step: 2 }, "What kind of word?"],
+  ["publish", "/new/publish", { meaning: "book", kind: "gismu", spelling: "broda", text: "___ is a book.", step: 5 }, "Known conflicts"],
+] as const) {
+  test(`the ${name} page reports a malformed package when the worker cannot start`, async ({
+    page,
+  }) => {
+    await seed(
+      page,
+      { version: 2, snapshot: "sha256:" + "a".repeat(64), entries: [null] },
+      draft,
+    );
+    await blockWorker(page);
+    await page.goto(route);
+    await expectInvalidOnly(page);
+    if (name === "publish")
+      await expect(
+        page.getByRole("region", { name: "Known conflicts" }),
+      ).toBeVisible();
+    else await expect(page.getByText(control).first()).toBeVisible();
+  });
+}
+
+test("settings shows a valid package count when the worker cannot start", async ({
+  page,
+}) => {
+  await seed(page, {
+    version: 2,
+    snapshot: "sha256:" + "a".repeat(64),
+    entries: [
+      {
+        event: "jve1:" + "1".repeat(64),
+        word: { language: "jbo", spelling: "cukta" },
+        language: "en",
+        glosses: [{ language: "en", text: "book", sense: null }],
+        plain_text: "book",
+        classification: { kind: "gismu", selmaho: [] },
+        body: null,
+        issuer: "ed25519:" + "a".repeat(64),
+        notes: false,
+        rafsi: ["cuk"],
+        rafsi_complete: true,
+        attribution: null,
+      },
+    ],
+  });
+  await blockWorker(page);
+  await page.goto("/preferences");
+  await expect(page.getByText(/1 definition/)).toBeVisible();
+  await expect(page.getByText("Local search could not start.")).toHaveCount(0);
+});
+
+test("the rafsi pair page reports a malformed package when the worker cannot start", async ({
+  page,
+}) => {
+  await seed(page, {
+    version: 2,
+    snapshot: "sha256:" + "a".repeat(64),
+    entries: [null],
+  });
+  await blockDownloads(page);
+  await blockWorker(page);
+  await page.goto(`/rafsi-pair/${fixture().pair}`);
+  await expectInvalidOnly(page);
+});
+
 test("search reports a stored null and falls back to the server", async ({
   page,
 }) => {

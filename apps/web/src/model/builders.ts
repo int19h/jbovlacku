@@ -17,6 +17,7 @@ import {
 } from "../../../../packages/core/src/browser.ts";
 import {
   checkSavedPackage,
+  invalidPackage,
   type CachedPackage,
 } from "../data/package-check.ts";
 import type {
@@ -416,17 +417,13 @@ const candidateRank = (pkg: CachedPackage) =>
  */
 export async function cachedPackages(
   store: PackageListStore,
-  options: { fresh?: boolean } = {},
 ): Promise<CachedCandidate[]> {
   let pairs: CachedCandidate[] = [];
   try {
     if (store.packageEntries) {
       // Fresh objects with a registered storage identity: the worker
       // reuses its prepared package for an unchanged revision, and a
-      // package another writer just replaced is seen at once. The
-      // fresh option is kept for callers that must not use a cached
-      // object; this path is always fresh.
-      void options;
+      // package another writer just replaced is seen at once.
       pairs = (await store.packageEntries<CachedPackage>()).map(
         ({ key, value }) => ({ key, pkg: value }),
       );
@@ -435,23 +432,6 @@ export async function cachedPackages(
         const value = await store.get<CachedPackage>("packages", key);
         if (value !== undefined) pairs.push({ key, pkg: value });
       }
-    } else if (options.fresh) {
-      // A fresh read bypasses the store's revision cache, for a caller
-      // that must see a package another writer just replaced. Each
-      // package names its own language in its rows, so no key pairing
-      // is needed.
-      const keys = store.keys ? await store.keys("packages") : [];
-      const listed = await store.list<CachedPackage>("packages");
-      pairs = listed.map((value, index) => ({
-        key:
-          (Array.isArray((value as { entries?: unknown })?.entries)
-            ? ((value as { entries: { language?: unknown }[] }).entries[0]
-                ?.language as string | undefined)
-            : undefined) ??
-          keys[index] ??
-          "",
-        pkg: value,
-      }));
     } else {
       const listed = await store.list<CachedPackage>("packages");
       pairs = listed.map((value) => ({
@@ -486,33 +466,28 @@ export async function cachedPackages(
 export async function verifiedCachedPackage(
   store: PackageListStore,
   verify: (pkg: CachedPackage, language: string) => Promise<void>,
-  options: { fresh?: boolean } = {},
 ): Promise<CachedPackagePick> {
   let invalid: string | null = null;
-  for (const { key, pkg } of await cachedPackages(store, options)) {
+  for (const { key, pkg } of await cachedPackages(store)) {
     try {
       await verify(pkg, key);
       return { pkg, invalid };
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "The search package is invalid. Search this server or download another package.";
-      // Only the worker's invalid-package verdict is a verdict on the
-      // package. A worker that could not start, or a request limit, says
-      // nothing about the rows, so the package stays usable as on main
-      // and the page's own lookup reports its failure.
-      if (!message.startsWith("The search package is invalid."))
-        return { pkg, invalid };
-      // The worker also rejects packages for package-level rules no
-      // main-thread reader uses, such as its row order. Those packages
-      // get the main-thread row check as a fallback: a package whose
-      // rows pass it is used as on main, with no message.
+      if (error instanceof Error && error.name === "AbortError") throw error;
+      // Whatever kept the worker from giving its verdict - an
+      // invalid-package verdict, a worker that could not start, or a
+      // request limit - the main-thread row check decides before any
+      // row is read. It runs only when the worker could not settle the
+      // package, so a valid package stays usable as on main and a
+      // malformed one shows the message instead of a raw error. The
+      // worker also rejects packages for package-level rules no
+      // main-thread reader uses, such as its row order; a package whose
+      // rows pass this check is used as on main, with no message.
       try {
         checkSavedPackage(pkg, key || undefined);
         return { pkg, invalid };
       } catch {
-        invalid ??= message;
+        invalid ??= invalidPackage().message;
       }
     }
   }
