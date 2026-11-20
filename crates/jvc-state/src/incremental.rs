@@ -1392,9 +1392,12 @@ impl EvaluatedState {
             )
         };
         let selection_allowance = resolved.allowance;
+        // `repack` below keeps every record's `previous`, so this count
+        // also holds for the restored state.
+        let predecessor_edges = predecessor_edges(&nodes);
         let expected_budget = saved.options.limits.traversal_budget_with_selections(
             nodes.len(),
-            predecessor_edges(&nodes),
+            predecessor_edges,
             selection_allowance,
         );
         if saved.version != expected_version
@@ -1454,7 +1457,6 @@ impl EvaluatedState {
         restore_account_contributions(&mut evaluation);
         let rafsi_words = rafsi_words(&evaluation);
         let rafsi_assignments = rafsi_assignments(&evaluation);
-        let predecessor_edges = predecessor_edges(&prepared.nodes);
         Ok(Self {
             unresolved: unresolved(&prepared, &evaluation),
             rafsi_words,
@@ -5360,14 +5362,35 @@ mod rebuild_tests {
     /// and after both restore formats.
     #[test]
     fn invalid_selection_prefix_then_valid_list_gives_one_budget_in_every_mode() {
-        // Ten invalid lists of 98 empty strings nearly use up a resolver base of
-        // 1,000 units with their entries; the valid list comes last.
+        // Ten invalid lists of 98 empty strings and their entries nearly
+        // use up a resolver bound of 1,000 base units plus one record;
+        // the valid list comes last.
+        assert_invalid_selection_prefix_gives_one_budget(98, 0);
+    }
+
+    /// The same with records that name absent predecessors. The ten
+    /// invalid lists of 270 empty strings pass the base and record
+    /// terms (1,000 + 256 * 3) but not the predecessor term
+    /// (16 * 128), so the resolver must count predecessors to reach
+    /// the valid list, as the default budget does.
+    #[test]
+    fn invalid_selection_prefix_with_predecessors_gives_one_budget_in_every_mode() {
+        assert_invalid_selection_prefix_gives_one_budget(270, 2);
+    }
+
+    /// `merges` records each name 64 absent predecessors.
+    fn assert_invalid_selection_prefix_gives_one_budget(invalid_len: usize, merges: usize) {
         let base = 1_000usize;
         let valid: Vec<String> = (0..512).map(|i| format!("jve1:{i:064x}")).collect();
         let valid_digest =
             jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(valid)).unwrap());
         let mut selections: BTreeMap<String, Vec<String>> = (0..10)
-            .map(|i| (format!("sha256:{:064x}", i + 1), vec![String::new(); 98]))
+            .map(|i| {
+                (
+                    format!("sha256:{:064x}", i + 1),
+                    vec![String::new(); invalid_len],
+                )
+            })
             .collect();
         selections.insert(valid_digest.clone(), valid);
         let importer = identity_from_seed(&[3; 32]);
@@ -5396,14 +5419,27 @@ mod rebuild_tests {
                 ..Limits::default()
             },
         };
+        let merger = identity_from_seed(&[4; 32]);
+        let absent: Vec<String> = (0..64)
+            .map(|i| format!("jve1:{:064x}", 0xA000 + i))
+            .collect();
         let build = |options: EvaluationOptions| {
             let mut prepared = PreparedEvaluationInput::new(options);
             prepared.add_record(&view, view_body.as_deref());
+            for i in 0..merges {
+                prepared.add_host_verified_record(host(
+                    format!("jve1:{:064x}", 0xB000 + i),
+                    &merger,
+                    absent.clone(),
+                    json!({"kind":"identity.merge"}),
+                ));
+            }
             prepared.into_state()
         };
         policy::RESOLVER_BASE_OVERRIDE.with(|o| o.set(Some(base)));
         let fresh = build(options(None));
-        let expected_budget = Limits::default().traversal_budget_with_selections(1, 0, 512);
+        let expected_budget =
+            Limits::default().traversal_budget_with_selections(1 + merges, 64 * merges, 512);
         let explicit = build(options(Some(expected_budget)));
         let fork_delta = {
             let mut delta = PreparedEvaluationInput::new(options(None));

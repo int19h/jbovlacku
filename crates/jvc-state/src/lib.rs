@@ -57,6 +57,13 @@ pub struct EvaluationOptions {
     pub overlay: Option<std::rc::Rc<Value>>,
     pub limits: Limits,
 }
+/// The default budget before selections: `base` plus the record and
+/// predecessor terms. The selection resolver stops on the same value,
+/// so the two cannot disagree on it.
+pub(crate) fn default_input_budget(base: usize, records: usize, predecessors: usize) -> usize {
+    base.saturating_add(records.saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD))
+        .saturating_add(predecessors.saturating_mul(DEFAULT_TRAVERSAL_PER_PREDECESSOR))
+}
 /// The number of `previous` IDs over all records, for the default budget.
 pub(crate) fn predecessor_edges(nodes: &BTreeMap<String, graph::Node>) -> usize {
     nodes.values().map(|node| node.previous.len()).sum()
@@ -283,9 +290,7 @@ impl Limits {
         selection_ids: usize,
     ) -> usize {
         self.traversal.unwrap_or_else(|| {
-            DEFAULT_TRAVERSAL_BASE
-                .saturating_add(records.saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD))
-                .saturating_add(predecessors.saturating_mul(DEFAULT_TRAVERSAL_PER_PREDECESSOR))
+            default_input_budget(DEFAULT_TRAVERSAL_BASE, records, predecessors)
                 .saturating_add(selection_ids)
         })
     }
