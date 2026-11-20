@@ -425,12 +425,14 @@ test("a 503 history read signs from the history saved in this browser", async ({
     .poll(() => statesOf(page, [items[0].id]), { timeout: 30000 })
     .toEqual(["accepted"]);
   // A second fallback record names the first fallback record as its parent.
+  // Any judgment signed now has that parent, so the first article is enough.
   await openWord(page, "cukta");
   await unavailable();
-  await expect(endorsedArticle(page)).toHaveCount(1, {
-    timeout: 30000,
-  });
-  await endorsedArticle(page).getByRole("button", { name: "Endorse" }).click();
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
   // The outbox visit reloaded the app and locked the key.
   const dialog = page.getByRole("dialog", { name: "Unlock your key" });
   await expect(dialog).toBeVisible();
@@ -448,8 +450,8 @@ test("a 503 history read signs from the history saved in this browser", async ({
   const second = (await outboxItems(page)).find(
     (item: any) => !before.has(item.id) && item.id !== items[0].id,
   );
-  expect(JSON.parse(second.transport).envelope.header.action.value).toBe(
-    "clear",
+  expect(JSON.parse(second.transport).envelope.header.action.kind).toBe(
+    "judgment.set",
   );
   expect(JSON.parse(second.transport).envelope.header.previous).toEqual([
     items[0].id,
@@ -460,6 +462,9 @@ test("a 503 history read signs from the history saved in this browser", async ({
   await expect
     .poll(() => statesOf(page, [second.id]), { timeout: 30000 })
     .toEqual(["accepted"]);
+  // Leave the shared word without a live endorsement from this test.
+  if (JSON.parse(second.transport).envelope.header.action.value === "bless")
+    await clearAfterReload(page, 2);
 });
 
 test("a record is delivered while the browser reports offline but the server answers", async ({
