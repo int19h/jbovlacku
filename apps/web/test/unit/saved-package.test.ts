@@ -279,3 +279,14 @@ test("the word index counts rows that fail the row check", async () => {
   );
   assert.equal(index.invalidEntryCount(value), 2);
 });
+
+test("a rafsi with a lone surrogate is unusable, though the worker accepts it", () => {
+  const lone = pkg([v2Row({ rafsi: ["\ud800"] })]);
+  rejects(lone);
+  // The one known case where the rule is stricter than the worker: the
+  // core cannot serialize this rafsi when a page derives its pair ID.
+  assert.equal(workerAccepts(lone), true);
+  // A surrogate pair is well-formed and stays usable.
+  const paired = pkg([v2Row({ rafsi: ["😀"] })]);
+  assert.equal(readAll(paired), paired);
+});

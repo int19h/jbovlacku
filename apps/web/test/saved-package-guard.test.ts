@@ -263,6 +263,15 @@ rowShapes.push([
   },
 ]);
 
+// The search worker accepts this row, but the core cannot read the rafsi
+// when a page derives its pair ID.
+const loneSurrogatePackage = {
+  version: 2,
+  snapshot: "sha256:" + "a".repeat(64),
+  entries: [{ ...validRow, rafsi: ["\ud800"] }],
+};
+rowShapes.push(["a rafsi with a lone surrogate", loneSurrogatePackage]);
+
 for (const [label, saved] of rowShapes) {
   test(`the rafsi pair page reports ${label} instead of crashing`, async ({
     page,
@@ -486,3 +495,36 @@ test("settings marks only the malformed package of two", async ({ page }) => {
     page.getByRole("button", { name: "Remove", exact: true }),
   ).toHaveCount(2);
 });
+
+for (const [name, route, draft] of [
+  ["gismu", "/new/gismu", { meaning: "book", kind: "gismu", step: 3 }],
+  [
+    "word type",
+    "/new/type",
+    { meaning: "book", kind: "gismu", spelling: "cukte", step: 2 },
+  ],
+  [
+    "publish",
+    "/new/publish",
+    {
+      meaning: "book",
+      kind: "gismu",
+      spelling: "broda",
+      text: "___ is a book.",
+      step: 5,
+    },
+  ],
+  ["settings", "/preferences", undefined],
+] as const) {
+  test(`the ${name} page reports a rafsi with a lone surrogate`, async ({
+    page,
+  }) => {
+    await seed(page, loneSurrogatePackage, draft);
+    await page.goto(route);
+    await expectInvalidOnly(page);
+    if (name === "publish")
+      await expect(
+        page.getByRole("region", { name: "Known conflicts" }),
+      ).toContainText("no usable local package");
+  });
+}

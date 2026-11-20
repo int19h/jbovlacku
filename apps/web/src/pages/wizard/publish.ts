@@ -326,8 +326,9 @@ export async function publishPage(
   conflicts.append(rootLine);
   if (draft.kind === "gismu" && body) {
     if (!inventory.snapshot)
-      rootLine.textContent =
-        "Root conflicts were not checked again: no local package is downloaded. Coverage is unknown.";
+      rootLine.textContent = packageInvalid
+        ? "Root conflicts were not checked again: no usable local package is downloaded. Coverage is unknown."
+        : "Root conflicts were not checked again: no local package is downloaded. Coverage is unknown.";
     else
       try {
         foundRoots = currentRootConflicts(body.word.spelling, inventory);

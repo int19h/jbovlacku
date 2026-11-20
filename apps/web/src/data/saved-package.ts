@@ -12,11 +12,14 @@
  * raises `PackageValidationError` with the documented invalid-package
  * message, so every page shows the same message instead of a raw error.
  * The checks run inside the loops that already read each row, so a valid
- * package costs no extra pass and no worker round trip.
+ * package costs no extra pass and no worker round trip. Settings is the
+ * exception: it reads no rows, so it checks them in a pass of its own.
  *
  * The search worker still validates every package that a page sends to it,
  * with its own stricter rules (exact field sets, row order, identities).
- * This rule accepts every package that the worker accepts.
+ * This rule accepts every package that the worker accepts, with one
+ * exception: a rafsi with a lone surrogate. The worker accepts any rafsi
+ * string, but the core cannot serialize such a rafsi into a pair ID.
  *
  * This module has no server or browser-storage dependency, so models and
  * Node unit tests can load it.
@@ -34,6 +37,9 @@ export class PackageValidationError extends Error {
     super(message);
   }
 }
+
+/** Matches an unpaired surrogate, which the core cannot read in a rafsi. */
+const LONE_SURROGATE = /\p{Cs}/u;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -68,7 +74,8 @@ export function savedPackage(value: unknown): CachedPackage | null {
 /**
  * One saved row, checked for the fields that main-thread readers use: the
  * word, classification, glosses, text, event and language, and the rafsi
- * list of a version 2 row. A row without them raises `PackageValidationError`.
+ * list of a version 2 row, whose spellings must be well-formed Unicode. A
+ * row without them raises `PackageValidationError`.
  */
 export function savedRow(entry: unknown): PackageEntry {
   if (!isRecord(entry)) throw new PackageValidationError();
@@ -96,7 +103,8 @@ export function savedRow(entry: unknown): PackageEntry {
         typeof entry.rafsi_complete === "boolean");
     if (usable)
       for (const item of rafsi as unknown[])
-        if (typeof item !== "string") usable = false;
+        if (typeof item !== "string" || LONE_SURROGATE.test(item))
+          usable = false;
   }
   if (!usable) throw new PackageValidationError();
   return entry as unknown as PackageEntry;
