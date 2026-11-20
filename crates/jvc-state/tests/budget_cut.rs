@@ -409,9 +409,10 @@ fn sweep(name: &str, records: &[Record], selections: &BTreeMap<String, Vec<Strin
             assert_eq!(fresh.evaluation(), covered.evaluation(), "{context}: fresh");
         }
         check_restores(&fresh, records, &format!("{context} fresh"));
-        // Advance: all but the last two records, then the rest (the
-        // transfer fixture rebuilds; both fixtures exercise the fast
-        // path with the last record alone).
+        // Advance in two batch cuts: all but the last two records,
+        // then the rest; and all but the last record, then that one.
+        // Each batch takes the fast path or rebuilds, as its records
+        // allow; both must equal the fresh evaluation.
         for cut in [split, records.len() - 1] {
             let base = prepared(&records[..cut], at(None)).into_state();
             let next = base.advance(prepared(&records[cut..], at(None)), &[]);

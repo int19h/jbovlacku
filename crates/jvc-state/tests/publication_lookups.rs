@@ -91,7 +91,8 @@ fn assert_linear(half: &EvaluatedState, full: &EvaluatedState) {
 fn rafsi_pair_shape(size: usize) -> (Vec<HostVerifiedRecord>, Vec<String>) {
     let mut records = definitions(size);
     // Four claimed pairs whose publications sort after every
-    // definition, so a scan in ID order walks the whole map first.
+    // definition, so a scan in ID order visits every definition
+    // before it reaches a claim.
     let pairs: Vec<String> = (1..=4).map(|i| format!("jvr1:{i:064x}")).collect();
     for (i, pair) in pairs.iter().enumerate() {
         records.push(record(
@@ -127,8 +128,8 @@ fn rafsi_pair_judgments_on_a_large_dictionary_evaluate_under_the_default_budget(
     let (records, judgments) = rafsi_pair_shape(SIZE);
     let state = evaluate(&records);
     let evaluation = state.evaluation();
-    // No view is selected, so the view is unavailable; the records
-    // themselves are evaluated.
+    // The selected view is missing from the records, so the view is
+    // unavailable; the records themselves are evaluated.
     assert!(
         !evaluation.reasons.contains("resource_unavailable"),
         "refused: {:?}, {} of {} units",
@@ -176,8 +177,8 @@ fn managed_bridges_on_a_large_dictionary_evaluate_under_the_default_budget() {
     let (records, bridges) = managed_bridge_shape(SIZE);
     let state = evaluate(&records);
     let evaluation = state.evaluation();
-    // No view is selected, so the view is unavailable; the records
-    // themselves are evaluated.
+    // The selected view is missing from the records, so the view is
+    // unavailable; the records themselves are evaluated.
     assert!(
         !evaluation.reasons.contains("resource_unavailable"),
         "refused: {:?}, {} of {} units",

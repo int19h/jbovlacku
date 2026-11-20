@@ -6530,9 +6530,11 @@ mod rebuild_tests {
         assert_tight_budgets_match(&prepared, &new_pub, &full_prepared);
     }
 
-    /// A native publication appended after unresolved `jvr1:`
-    /// judgments costs what it costs without them: no judgment looks
-    /// at the publication map again.
+    /// On an unshared state (the helper builds the base from its own
+    /// copy of the records, so the append copies nothing), a native
+    /// publication appended after unresolved `jvr1:` judgments costs
+    /// what it costs without them: no judgment looks at the
+    /// publication map again.
     #[test]
     fn fast_append_native_publication_cost_does_not_grow_with_rafsi_judgments() {
         let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
