@@ -41,13 +41,13 @@ import type { App } from "../../app/context.ts";
 import type { Draft } from "../../model/draft.ts";
 import type { RichText } from "../../model/types.ts";
 import { richTextToText, textToRichText } from "../../model/richtext.ts";
-import { searchPackage } from "../../data/package-search.ts";
-import type { CachedPackage } from "../../data/package-check.ts";
+import type { CachedPackage } from "../../data/search.ts";
+import { INVALID_PACKAGE_MESSAGE } from "../../data/saved-package.ts";
 import {
-  verifiedCachedPackage,
+  savedInventory,
+  savedPackages,
   decimal,
   formationMetadata,
-  inventoryFromPackage,
   inventoryCoverage,
   rootConflictKey,
   newGismuState,
@@ -137,13 +137,9 @@ export async function gismuPage(
     state.rows = presetRows(presets[0], []);
     saver.touch();
   }
-  const pick = await verifiedCachedPackage(app.store, async (pkg, language) => {
-    await searchPackage(pkg, language, [], { signal: context.signal });
-  });
-  const cached = pick.pkg;
-  const packageError = pick.invalid;
+  const saved = await savedPackages(app.store);
   if (!context.live()) return;
-  const inventory: PackageInventory = inventoryFromPackage(cached);
+  const { inventory, invalid: packageInvalid } = savedInventory(saved);
   main.append(stepBar(draft, 3));
   const columns = el("div", { class: "two-col" });
   const section = el("section", {
@@ -152,7 +148,7 @@ export async function gismuPage(
     style: "flex-basis:520px",
   });
   section.append(el("h1", { id: "h1", class: "page", text: "Make a gismu" }));
-  if (packageError) section.append(p(packageError, "notice"));
+  if (packageInvalid) section.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
   section.append(
     el(
       "p",

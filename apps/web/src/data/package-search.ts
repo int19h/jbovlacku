@@ -1,4 +1,6 @@
 import { packageStorageKey } from "./store.ts";
+import { PackageValidationError } from "./saved-package.ts";
+export { PackageValidationError };
 import {
   invalidPackage,
   isV2,
@@ -72,7 +74,6 @@ export interface PackageHitReferences {
   preview: number;
   rafsi?: string[];
 }
-export class PackageValidationError extends Error {}
 class MissingPackageError extends Error {}
 /**
  * Maps a worker reply to its rejection. A worker that reports `package-too-large`

@@ -1,8 +1,9 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { initializeCore } from "../../../../packages/core/src/index.ts";
+import { initializeCore, wordId } from "../../../../packages/core/src/index.ts";
 
+let saved: typeof import("../../src/data/saved-package.ts");
 let search: typeof import("../../src/data/search.ts");
 let builders: typeof import("../../src/model/builders.ts");
 
@@ -19,132 +20,262 @@ before(async () => {
     location: new URL("http://local.invalid"),
     history: { state: null },
   });
+  saved = await import("../../src/data/saved-package.ts");
   search = await import("../../src/data/search.ts");
   builders = await import("../../src/model/builders.ts");
 });
 
 const INVALID =
   "The search package is invalid. Search this server or download another package.";
-const row = (over: Record<string, unknown> = {}, drop: string[] = []) => {
-  const base: Record<string, unknown> = {
-    event: "jve1:" + "1".repeat(64),
-    word: { language: "jbo", spelling: "cukta" },
-    language: "en",
-    glosses: [{ language: "en", text: "book", sense: null }],
-    plain_text: "book",
-    classification: { kind: "gismu", selmaho: [] },
-    body: null,
-    issuer: "ed25519:" + "a".repeat(64),
-    notes: false,
-    rafsi: ["cuk"],
-    rafsi_complete: true,
-    attribution: null,
-    ...over,
-  };
-  for (const name of drop) delete base[name];
-  return base;
+const v1Row = (over: Record<string, unknown> = {}) => ({
+  event: "jve1:" + "1".repeat(64),
+  word: { language: "jbo", spelling: "cukta" },
+  language: "en",
+  glosses: [{ language: "en", text: "book", sense: null }],
+  plain_text: "book",
+  classification: { kind: "gismu", selmaho: [] },
+  body: null,
+  ...over,
+});
+const v2Row = (over: Record<string, unknown> = {}) => ({
+  ...v1Row(),
+  issuer: "ed25519:" + "a".repeat(64),
+  notes: false,
+  rafsi: ["cuk"],
+  rafsi_complete: true,
+  attribution: null,
+  ...over,
+});
+const pkg = (entries: unknown[], over: Record<string, unknown> = {}) => ({
+  snapshot: "sha256:" + "a".repeat(64),
+  version: 2,
+  entries,
+  ...over,
+});
+/** What a page that reads every row checks: the package, then each row. */
+const readAll = (value: unknown) => {
+  const pkg = saved.savedPackage(value);
+  for (const entry of pkg?.entries ?? []) saved.savedRow(entry);
+  return pkg;
 };
-const pkg = (entries: unknown[]) =>
-  ({
-    version: 2,
-    snapshot: "sha256:" + "a".repeat(64),
-    entries,
-  }) as never;
-const malformed = pkg([null]);
-const valid = pkg([row()]);
+const rejects = (value: unknown) =>
+  assert.throws(
+    () => readAll(value),
+    (error: unknown) =>
+      error instanceof saved.PackageValidationError &&
+      error.message === INVALID,
+  );
+const workerAccepts = (value: unknown) => {
+  try {
+    search.validateCachedPackage(value, "en");
+    return true;
+  } catch {
+    return false;
+  }
+};
 
-test("the shared guard rejects a null row and a stored null", () => {
-  for (const value of [malformed, null, { entries: [] }, "package"]) {
-    assert.throws(
-      () => search.checkSavedPackage(value, "en"),
-      (error: unknown) => error instanceof Error && error.message === INVALID,
-    );
+test("nothing saved reads as no package", () => {
+  assert.equal(saved.savedPackage(undefined), null);
+});
+
+test("the reported malformed saved values are unusable", () => {
+  rejects(null);
+  rejects(pkg([null]));
+  rejects("package");
+  rejects([]);
+  rejects({ entries: [] });
+  rejects(pkg([v2Row({ rafsi: undefined })].map(strip)));
+  rejects(
+    pkg([v2Row({ word: { language: "jbo", spelling: "cukta", extra: 1 } })]),
+  );
+  rejects(pkg([v1Row({ classification: null })]));
+  rejects(pkg([v1Row({ glosses: [null] })]));
+  rejects(pkg([v2Row({ rafsi: [1] })]));
+  rejects(pkg([v2Row({ rafsi_complete: "no" })]));
+  rejects(pkg([], { version: 3 }));
+});
+
+/** Drops fields whose value is undefined, as a stored row has none. */
+function strip(row: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(row).filter(([, value]) => value !== undefined),
+  );
+}
+
+test("every package that the search worker accepts is usable", () => {
+  const view = "jve1:" + "9".repeat(64);
+  const accepted = [
+    pkg([], { version: undefined }),
+    { snapshot: "sha256:" + "a".repeat(64), entries: [v1Row()] },
+    pkg([v1Row()], { version: 1 }),
+    pkg([v2Row()]),
+    pkg([v2Row({ rafsi_complete: undefined })].map(strip)),
+    pkg([v2Row()], { downgrade: null }),
+    pkg([v2Row({ search_status: "active" })], { search_view: view }),
+    pkg([v2Row({ search_status: { view, status: "retired" } })]),
+  ];
+  for (const value of accepted) {
+    assert.ok(workerAccepts(value), JSON.stringify(value));
+    assert.equal(readAll(value), value);
   }
 });
 
-test("the shared guard runs the worker validation on every row field", () => {
-  // A version 2 row with an issuer but no rafsi, and a word object with an
-  // extra field, are both shapes the worker rejects.
-  for (const bad of [
-    pkg([row({}, ["rafsi", "rafsi_complete"])]),
-    pkg([row({ word: { language: "jbo", spelling: "cukta", extra: 1 } })]),
-    pkg([row({ glosses: [{ language: "en", text: "book" }] })]),
-    pkg([row({ rafsi: "cuk" })]),
-  ]) {
-    assert.throws(
-      () => search.checkSavedPackage(bad, "en"),
-      (error: unknown) => error instanceof Error && error.message === INVALID,
-    );
+test("a package this rule rejects is also rejected by the search worker", () => {
+  // Each case changes one field of a valid package. Whenever the shared
+  // rule calls the result unusable, the worker must agree, so a package
+  // that the search page can use is never unusable on another page.
+  const odd = [
+    undefined,
+    null,
+    0,
+    1,
+    "",
+    "x",
+    true,
+    [],
+    {},
+    [null],
+    [1],
+    ["x"],
+  ];
+  const cases: unknown[] = [];
+  for (const base of [pkg([v1Row()], { version: 1 }), pkg([v2Row()])]) {
+    for (const field of Object.keys(base))
+      for (const value of odd) cases.push(strip({ ...base, [field]: value }));
+    const row = base.entries[0] as Record<string, unknown>;
+    for (const field of [
+      ...Object.keys(row),
+      "issuer",
+      "rafsi",
+      "rafsi_complete",
+    ])
+      for (const value of odd)
+        cases.push({ ...base, entries: [strip({ ...row, [field]: value })] });
+    for (const field of ["language", "spelling", "extra"])
+      for (const value of odd)
+        cases.push({
+          ...base,
+          entries: [
+            {
+              ...row,
+              word: strip({ ...(row.word as object), [field]: value }),
+            },
+          ],
+        });
+    for (const field of ["kind", "selmaho"])
+      for (const value of odd)
+        cases.push({
+          ...base,
+          entries: [
+            {
+              ...row,
+              classification: strip({
+                ...(row.classification as object),
+                [field]: value,
+              }),
+            },
+          ],
+        });
+    for (const value of odd)
+      cases.push({ ...base, entries: [{ ...row, glosses: [value] }] });
   }
+  let rejected = 0;
+  for (const value of cases) {
+    let usable = true;
+    try {
+      readAll(value);
+    } catch {
+      usable = false;
+    }
+    if (!usable) {
+      rejected++;
+      assert.equal(workerAccepts(value), false, JSON.stringify(value));
+    }
+  }
+  assert.ok(rejected > 100, `only ${rejected} cases were rejected`);
 });
 
-test("the shared guard accepts a valid package unchanged", () => {
-  assert.equal(search.checkSavedPackage(valid, "en"), valid);
-  const inventory = builders.inventoryFromPackage(valid);
-  assert.equal(inventory.snapshot, "sha256:" + "a".repeat(64));
+test("a word that the core rejects is unusable", () => {
+  assert.equal(
+    saved.savedWordId({ language: "jbo", spelling: "cukta" }),
+    wordId({ language: "jbo", spelling: "cukta" }),
+  );
+  assert.throws(
+    () => saved.savedWordId({ language: "jbo", spelling: " cukta" }),
+    saved.PackageValidationError,
+  );
+  // The row check accepts this row, and the inventory finds the bad word.
+  const value = pkg([v2Row({ word: { language: "jbo", spelling: " cukta" } })]);
+  assert.equal(readAll(value), value);
+  assert.equal(workerAccepts(value), false);
+  assert.throws(
+    () => builders.inventoryFromPackage(value as never),
+    saved.PackageValidationError,
+  );
+});
+
+/** The pages call `list` on the real store, so this store has only `list`. */
+const listStore = (values: unknown[]) => ({
+  list: async <T>() => values as T[],
+});
+
+test("an unusable package does not hide a usable one on the wizard pages", async () => {
+  const good = pkg([v2Row()]);
+  const malformed = pkg([null, null]);
+  // A stored null fails at once. The malformed package ranks first (same
+  // version, more rows) and fails when its inventory reads the rows.
+  const read = await builders.savedPackages(listStore([null, malformed, good]));
+  assert.deepEqual(read, { packages: [malformed, good], invalid: true });
+  const inventory = builders.savedInventory(read);
+  assert.equal(inventory.pkg, good);
+  assert.equal(inventory.invalid, true);
   assert.deepEqual(
-    inventory.claims.map((claim) => claim.rafsi),
-    ["cuk"],
+    inventory.inventory.claims.map((claim) => claim.spelling),
+    ["cukta"],
   );
 });
 
-test("a checked package object is not checked again", () => {
-  const mutable = pkg([row()]);
-  assert.equal(search.checkSavedPackage(mutable, "en"), mutable);
-  // The store returns the same object until the package changes, so a
-  // later edit of that object does not pay for a second check. A changed
-  // package arrives as a different object and is checked then.
-  (mutable as { entries: unknown[] }).entries = [null];
-  assert.equal(search.checkSavedPackage(mutable, "en"), mutable);
+test("a package with a word that the core rejects gives way to the next one", async () => {
+  const bad = pkg([
+    v2Row({ word: { language: "jbo", spelling: " cukta" } }),
+    v2Row({ event: "jve1:" + "2".repeat(64) }),
+  ]);
+  const good = pkg([v2Row()]);
+  const read = await builders.savedPackages(listStore([bad, good]));
+  assert.deepEqual(read.packages, [bad, good]);
+  assert.equal(read.invalid, false);
+  const inventory = builders.savedInventory(read);
+  assert.equal(inventory.pkg, good);
+  assert.equal(inventory.invalid, true);
 });
 
-test("the verified pick skips a malformed package and keeps a valid one", async () => {
-  // The verdict in this test is the shared row check; pages use the
-  // search worker for the same verdict.
-  const verify = async (value: unknown, language: string) => {
-    search.checkSavedPackage(value, language);
-  };
-  const byKey: Record<string, unknown> = { fr: malformed, en: valid };
-  const store = {
-    keys: async () => Object.keys(byKey),
-    get: async (_name: string, key: string) => byKey[key],
-    list: async () => Object.values(byKey),
-  };
-  const pick = await builders.verifiedCachedPackage(store as never, verify);
-  assert.equal(pick.pkg, valid);
-  assert.equal(pick.invalid, INVALID);
-  const onlyBad = {
-    keys: async () => ["en"],
-    get: async () => malformed,
-    list: async () => [malformed],
-  };
-  const badPick = await builders.verifiedCachedPackage(
-    onlyBad as never,
-    verify,
-  );
-  assert.equal(badPick.pkg, null);
-  assert.equal(badPick.invalid, INVALID);
-  const empty = { keys: async () => [], get: async () => undefined, list: async () => [] };
+test("the best usable package is chosen as on main", async () => {
+  const v1 = pkg([v1Row(), v1Row()], { version: 1 });
+  const small = pkg([v2Row()]);
+  const large = pkg([v2Row(), v2Row()]);
+  const read = await builders.savedPackages(listStore([v1, small, large]));
+  assert.deepEqual(read, { packages: [large, small, v1], invalid: false });
   assert.deepEqual(
-    await builders.verifiedCachedPackage(empty as never, verify),
-    { pkg: null, invalid: null },
+    await builders.savedPackages({
+      list: async () => {
+        throw new Error("storage failed");
+      },
+    }),
+    { packages: [], invalid: false },
   );
+  assert.deepEqual(builders.savedInventory({ packages: [], invalid: false }), {
+    pkg: null,
+    inventory: builders.inventoryFromPackage(null),
+    invalid: false,
+  });
 });
 
-test("the store.get path returns the same package object every time", async () => {
-  // A store whose get returns its cached object, as the real store does
-  // while a package revision is unchanged: two reads of the candidate
-  // list hand back the identical object, so a per-object check hits its
-  // cache on the second read. A getAll-style list returns fresh objects
-  // and would miss it.
-  const stored = valid;
-  const store = {
-    keys: async () => ["en"],
-    get: async () => stored,
-    list: async () => [{ ...(stored as object) }],
-  };
-  const first = await builders.cachedPackages(store as never);
-  const second = await builders.cachedPackages(store as never);
-  assert.equal(first[0].pkg, stored);
-  assert.equal(second[0].pkg, first[0].pkg);
+test("the word index counts rows that fail the row check", async () => {
+  const index = search.createPackageWordIndex();
+  const value = pkg([v2Row(), null, v2Row({ glosses: null })]) as never;
+  assert.equal(
+    index(value, wordId({ language: "jbo", spelling: "cukta" })).length,
+    1,
+  );
+  assert.equal(index.invalidEntryCount(value), 2);
 });

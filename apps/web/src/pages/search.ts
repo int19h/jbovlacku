@@ -11,6 +11,7 @@ import {
   PackageValidationError,
   type PackageSearchResult,
 } from "../data/package-search.ts";
+import { savedPackage } from "../data/saved-package.ts";
 import { kindLabel } from "../model/types.ts";
 import {
   isPatternQuery,
@@ -47,7 +48,6 @@ import {
 import type { App } from "../app/context.ts";
 import {
   downloadPackage,
-  invalidPackage,
   isV2,
   type CachedPackage,
   type LocalHit,
@@ -248,14 +248,18 @@ export async function searchPage(
     app.session.preferences.searchMode === "local" &&
     app.session.storageAvailable
   ) {
-    const raw = await app.store
-      .get<CachedPackage>("packages", language)
-      .catch(() => undefined);
-    // A stored null is a saved package, not a missing one: it keeps the
-    // invalid-package message and the server fallback below. Other saved
-    // values keep the worker validation in searchPackage.
-    if (raw === null) app.announce(invalidPackage().message);
-    else cached = raw;
+    // An unusable saved package, a stored null included, is announced and
+    // then treated as no package, as the worker's verdict is below.
+    try {
+      cached =
+        savedPackage(
+          await app.store.get("packages", language).catch(() => undefined),
+        ) ?? undefined;
+    } catch (error) {
+      if (!(error instanceof PackageValidationError)) throw error;
+      if (!context.live()) return;
+      app.announce(describe(error));
+    }
   }
   if (cached) {
     try {

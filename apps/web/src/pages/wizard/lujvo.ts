@@ -49,6 +49,7 @@ import type { App } from "../../app/context.ts";
 import { getWord, RequestError } from "../../data/api.ts";
 import type { Draft } from "../../model/draft.ts";
 import type { CachedPackage, LocalHit } from "../../data/search.ts";
+import { INVALID_PACKAGE_MESSAGE } from "../../data/saved-package.ts";
 import {
   cappedHitEntries,
   distinctHitRafsi,
@@ -57,15 +58,14 @@ import {
 } from "../../data/package-search.ts";
 import { plural } from "../../lib/format.ts";
 import {
-  verifiedCachedPackage,
+  savedInventory,
+  savedPackages,
   componentId,
   compoundMetadata,
-  inventoryFromPackage,
   inventoryCoverage,
   lujvoConflictKey,
   isZeiLujvoState,
   type LujvoComponentState,
-  type PackageInventory,
 } from "../../model/builders.ts";
 import {
   actionBar,
@@ -108,25 +108,25 @@ export async function lujvoPage(
     return;
   }
   saver.touch();
-  // A malformed saved package shows its message and the builder continues
-  // without a local package, so parts can still be added as entered.
-  // The worker gives the verdict on the saved package before any row is
-  // read here, so no whole package is validated on the main thread.
-  const pick = await verifiedCachedPackage(app.store, async (pkg, language) => {
-    await searchPackage(pkg, language, [], { signal: context.signal });
-  });
-  const cached = pick.pkg;
-  const packageError = pick.invalid;
+  const saved = await savedPackages(app.store);
   if (!context.live()) return;
+  // An unusable saved package shows its message, and the builder goes on
+  // with the best usable package or none, so parts can be added as entered.
+  // The inventory walks every row of the chosen package through the core,
+  // so the source lookups below read only words that the core accepts.
+  const {
+    pkg: cached,
+    inventory,
+    invalid: packageInvalid,
+  } = savedInventory(saved);
   let state;
   try {
     state = prepareLujvoBuilder(draft, cached);
     saver.touch();
   } catch (error) {
-    main.append(p(describe(error), "notice"));
+    main.append(p(String(error), "notice"));
     return;
   }
-  const inventory: PackageInventory = inventoryFromPackage(cached);
   const zei = isZeiLujvoState(state);
   const fixedParts = !!state.typed || zei;
   const builderCurrent = () => {
@@ -166,7 +166,7 @@ export async function lujvoPage(
   section.append(
     el("h1", { id: "h1", class: "page", text: "Build the lujvo" }),
   );
-  if (packageError) section.append(p(packageError, "notice"));
+  if (packageInvalid) section.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
   section.append(
     el(
       "p",
@@ -511,7 +511,9 @@ export async function lujvoPage(
       addResults.append(
         el("li", {
           class: "meta",
-          text: "No local package is downloaded, so word search is unavailable here. Download one on the Settings page, or add a form as entered.",
+          text: packageInvalid
+            ? "The saved search package is invalid, so word search is unavailable here. Download another package on the Settings page, or add a form as entered."
+            : "No local package is downloaded, so word search is unavailable here. Download one on the Settings page, or add a form as entered.",
         }),
       );
   };

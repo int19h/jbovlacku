@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { fixture } from "./helpers.ts";
+import { corePath, fixture } from "./helpers.ts";
 
 const INVALID =
   "The search package is invalid. Search this server or download another package.";
@@ -17,25 +17,31 @@ const savedPackages: [string, unknown][] = [
   ["a stored null", null],
 ];
 
-/** Saves one package value and, when asked, one wizard draft in this browser. */
+/**
+ * Saves one package value for `en` and, when asked, one wizard draft in this
+ * browser. Further packages are saved under their language keys.
+ */
 async function seed(
   page: Page,
   saved: unknown,
   draft?: Record<string, unknown>,
+  others: Record<string, unknown> = {},
 ) {
   await page.goto("/");
   await page.evaluate(
-    async ({ saved, draft }) => {
+    async ({ saved, draft, others }) => {
       const { LocalStore } = await import(String("/src/data/store.ts"));
       const store = new LocalStore();
       await store.setPreferences({ searchMode: "local" });
       await store.put("packages", "en", saved);
+      for (const [language, value] of Object.entries(others))
+        await store.put("packages", language, value);
       if (draft) {
         const { newDraft } = await import(String("/src/model/draft.ts"));
         await store.put("drafts", "current", newDraft(draft as never));
       }
     },
-    { saved, draft },
+    { saved, draft, others },
   );
 }
 
@@ -174,6 +180,33 @@ for (const [label, saved] of savedPackages) {
   });
 }
 
+/** One valid version 2 row for cukta, which claims the rafsi cuk. */
+const validRow = {
+  event: "jve1:" + "1".repeat(64),
+  word: { language: "jbo", spelling: "cukta" },
+  language: "en",
+  glosses: [{ language: "en", text: "book", sense: null }],
+  plain_text: "book",
+  classification: { kind: "gismu", selmaho: [] },
+  body: null,
+  issuer: "ed25519:" + "a".repeat(64),
+  notes: false,
+  rafsi: ["cuk"],
+  rafsi_complete: true,
+  attribution: null,
+};
+const validPackage = {
+  version: 2,
+  snapshot: "sha256:" + "a".repeat(64),
+  entries: [validRow],
+};
+/** Ranks before the one-row valid package: same version, more rows. */
+const malformedPackage = {
+  version: 2,
+  snapshot: "sha256:" + "b".repeat(64),
+  entries: [null, null],
+};
+
 const rowShapes: [string, Record<string, unknown>][] = [
   [
     "a version 2 row with no rafsi",
@@ -221,6 +254,15 @@ const rowShapes: [string, Record<string, unknown>][] = [
   ],
 ];
 
+rowShapes.push([
+  "a word that the core does not accept",
+  {
+    version: 2,
+    snapshot: "sha256:" + "a".repeat(64),
+    entries: [{ ...validRow, word: { language: "jbo", spelling: " cukta" } }],
+  },
+]);
+
 for (const [label, saved] of rowShapes) {
   test(`the rafsi pair page reports ${label} instead of crashing`, async ({
     page,
@@ -251,9 +293,7 @@ for (const [label, saved] of savedPackages) {
     await seed(page, saved, { meaning: "book", step: 1 });
     page.on("dialog", (dialog) => void dialog.accept());
     await page.goto("/new/meaning");
-    await page
-      .getByRole("button", { name: "search this server" })
-      .click();
+    await page.getByRole("button", { name: "search this server" }).click();
     await expect(page.locator("ol.similar")).toContainText("cukta");
     const body = await page.locator("body").innerText();
     expect(body).not.toMatch(RAW_ERROR);
@@ -266,10 +306,36 @@ async function blockWorker(page: Page) {
 }
 
 for (const [name, route, draft, control] of [
-  ["gismu", "/new/gismu", { meaning: "book", kind: "gismu", step: 3 }, "Make a gismu"],
-  ["lujvo", "/new/lujvo", { meaning: "book", kind: "lujvo", step: 3 }, "Add a part"],
-  ["word type", "/new/type", { meaning: "book", kind: "gismu", spelling: "cukte", step: 2 }, "What kind of word?"],
-  ["publish", "/new/publish", { meaning: "book", kind: "gismu", spelling: "broda", text: "___ is a book.", step: 5 }, "Known conflicts"],
+  [
+    "gismu",
+    "/new/gismu",
+    { meaning: "book", kind: "gismu", step: 3 },
+    "Make a gismu",
+  ],
+  [
+    "lujvo",
+    "/new/lujvo",
+    { meaning: "book", kind: "lujvo", step: 3 },
+    "Add a part",
+  ],
+  [
+    "word type",
+    "/new/type",
+    { meaning: "book", kind: "gismu", spelling: "cukte", step: 2 },
+    "What kind of word?",
+  ],
+  [
+    "publish",
+    "/new/publish",
+    {
+      meaning: "book",
+      kind: "gismu",
+      spelling: "broda",
+      text: "___ is a book.",
+      step: 5,
+    },
+    "Known conflicts",
+  ],
 ] as const) {
   test(`the ${name} page reports a malformed package when the worker cannot start`, async ({
     page,
@@ -346,4 +412,77 @@ test("search reports a stored null and falls back to the server", async ({
   await expect(
     page.getByRole("link", { name: "cukta", exact: true }),
   ).toBeVisible();
+});
+
+test("the word type page keeps a valid package beside a malformed one that ranks first", async ({
+  page,
+}) => {
+  await seed(
+    page,
+    validPackage,
+    { meaning: "book", kind: "gismu", spelling: "cukte", step: 2 },
+    { fr: malformedPackage },
+  );
+  await page.goto("/new/type");
+  const closeness = page.getByRole("region", { name: "Gismu closeness" });
+  await expect(closeness).toContainText(INVALID);
+  await expect(closeness).toContainText("Last vowel differs from cukta");
+  await expect(
+    closeness.getByRole("link", { name: "Add source-language evidence" }),
+  ).toBeVisible();
+  expect(await page.locator("body").innerText()).not.toMatch(RAW_ERROR);
+});
+
+test("the publish page keeps a valid package beside a malformed one that ranks first", async ({
+  page,
+}) => {
+  await seed(
+    page,
+    validPackage,
+    {
+      meaning: "book",
+      kind: "gismu",
+      spelling: "broda",
+      text: "___ is a book.",
+      step: 5,
+      rafsiClaims: [{ rafsi: "cuk", rationale: "" }],
+    },
+    { fr: malformedPackage },
+  );
+  await page.goto("/new/publish");
+  const conflicts = page.getByRole("region", { name: "Known conflicts" });
+  await expect(conflicts).toContainText(INVALID);
+  await expect(conflicts).toContainText("cuk is also claimed by cukta");
+  expect(await page.locator("body").innerText()).not.toMatch(RAW_ERROR);
+});
+
+test("the rafsi pair page finds a pair in a valid package beside a malformed one", async ({
+  page,
+}) => {
+  await seed(page, malformedPackage, undefined, { fr: validPackage });
+  await blockDownloads(page);
+  const pair = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    return core.rafsiPairId(
+      core.wordId({ language: "jbo", spelling: "cukta" }),
+      "cuk",
+    );
+  }, corePath);
+  await page.goto(`/rafsi-pair/${pair}`);
+  await expect(page.getByRole("heading", { name: "cuk" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "cukta" }).first()).toBeVisible();
+  expect(await page.locator("body").innerText()).not.toMatch(RAW_ERROR);
+});
+
+test("settings marks only the malformed package of two", async ({ page }) => {
+  await seed(page, validPackage, undefined, { fr: malformedPackage });
+  await page.goto("/preferences");
+  await expect(page.getByText(INVALID)).toHaveCount(1);
+  await expect(
+    page.getByText(/1 definition · snapshot aaaaaaaaaaaa/),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Remove", exact: true }),
+  ).toHaveCount(2);
 });

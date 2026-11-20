@@ -15,11 +15,13 @@ import {
   type MorphologyProfile,
   type RafsiInventoryClaim,
 } from "../../../../packages/core/src/browser.ts";
+import type { CachedPackage } from "../data/search.ts";
 import {
-  checkSavedPackage,
-  invalidPackage,
-  type CachedPackage,
-} from "../data/package-check.ts";
+  PackageValidationError,
+  savedPackage,
+  savedRow,
+  savedWordId,
+} from "../data/saved-package.ts";
 import type {
   Compound,
   Formation,
@@ -383,128 +385,71 @@ export interface PackageInventory {
   /** False when any word's rafsi list was cut. A cut inventory is not a complete conflict check. */
   complete: boolean;
 }
-/** A store that can list saved packages, with their keys when it has them. */
-export interface PackageListStore {
+/** The saved packages that the wizard pages can read. */
+export interface SavedPackages {
+  /** Usable packages, best first: version 2 before version 1, then the most entries. */
+  packages: CachedPackage[];
+  /** True when a saved package is unusable. Such a package is left out of `packages`. */
+  invalid: boolean;
+}
+/**
+ * Every saved package, read as on main and checked by `savedPackage`. A
+ * package that fails is left out, so it does not hide a usable package of
+ * another language. A store that cannot be read counts as no package.
+ */
+export async function savedPackages(store: {
   list<T>(name: string): Promise<T[]>;
-  keys?(name: string): Promise<string[]>;
-  get?<T>(name: string, id: string): Promise<T | undefined>;
-  packageEntries?<T>(name?: string): Promise<{ key: string; value: T }[]>;
-}
-/** One saved package and the language key it is saved under. */
-export interface CachedCandidate {
-  key: string;
-  pkg: CachedPackage;
-}
-/** The best valid saved package, plus the first invalid-package message when a saved package failed its check. */
-export interface CachedPackagePick {
-  pkg: CachedPackage | null;
-  invalid: string | null;
-}
-const candidateRank = (pkg: CachedPackage) =>
-  Array.isArray((pkg as { entries?: unknown })?.entries)
-    ? ((pkg as { entries: unknown[] }).entries.length ?? 0)
-    : -1;
-/**
- * Every saved package, best first (version 2 before version 1, then most
- * entries). When the store offers `packageEntries`, packages come back
- * fresh with their storage identity registered, so a replaced package
- * is seen at once and the search worker still reuses its prepared
- * package for an unchanged revision. Otherwise packages are read with
- * `store.get` per key, which returns the same object while the revision
- * is unchanged. This does not validate the rows: callers that read rows
- * ask for a verdict first, through `verifiedCachedPackage` or the
- * search worker.
- */
-export async function cachedPackages(
-  store: PackageListStore,
-): Promise<CachedCandidate[]> {
-  let pairs: CachedCandidate[] = [];
+}): Promise<SavedPackages> {
+  let all: unknown[];
   try {
-    if (store.packageEntries) {
-      // Fresh objects with a registered storage identity: the worker
-      // reuses its prepared package for an unchanged revision, and a
-      // package another writer just replaced is seen at once.
-      pairs = (await store.packageEntries<CachedPackage>()).map(
-        ({ key, value }) => ({ key, pkg: value }),
-      );
-    } else if (store.keys && store.get) {
-      for (const key of await store.keys("packages")) {
-        const value = await store.get<CachedPackage>("packages", key);
-        if (value !== undefined) pairs.push({ key, pkg: value });
-      }
-    } else {
-      const listed = await store.list<CachedPackage>("packages");
-      pairs = listed.map((value) => ({
-        key:
-          (Array.isArray((value as { entries?: unknown })?.entries)
-            ? ((value as { entries: { language?: unknown }[] }).entries[0]
-                ?.language as string | undefined)
-            : undefined) ?? "",
-        pkg: value,
-      }));
-    }
+    all = await store.list<unknown>("packages");
   } catch {
-    return [];
+    return { packages: [], invalid: false };
   }
-  return pairs.sort(
-    (a, b) =>
-      ((b.pkg as { version?: number })?.version ?? 1) -
-        ((a.pkg as { version?: number })?.version ?? 1) ||
-      candidateRank(b.pkg) - candidateRank(a.pkg),
-  );
-}
-/**
- * The best saved package that passes the given verdict, plus the first
- * failure message when a saved package failed. The verdict is the
- * caller's worker check, so no page validates a whole package on the
- * main thread. A malformed package does not hide a valid package of
- * another language: it is skipped and its message is reported in
- * `invalid`. When every saved package fails, `pkg` is null and
- * `invalid` carries the message. A store that cannot be read at all
- * counts as no package.
- */
-export async function verifiedCachedPackage(
-  store: PackageListStore,
-  verify: (pkg: CachedPackage, language: string) => Promise<void>,
-): Promise<CachedPackagePick> {
-  let invalid: string | null = null;
-  for (const { key, pkg } of await cachedPackages(store)) {
+  const packages: CachedPackage[] = [];
+  let invalid = false;
+  for (const value of all)
     try {
-      await verify(pkg, key);
-      return { pkg, invalid };
+      const pkg = savedPackage(value);
+      if (pkg) packages.push(pkg);
     } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") throw error;
-      // Whatever kept the worker from giving its verdict - an
-      // invalid-package verdict, a worker that could not start, or a
-      // request limit - the main-thread row check decides before any
-      // row is read. It runs only when the worker could not settle the
-      // package, so a valid package stays usable as on main and a
-      // malformed one shows the message instead of a raw error. The
-      // worker also rejects packages for package-level rules no
-      // main-thread reader uses, such as its row order; a package whose
-      // rows pass this check is used as on main, with no message.
-      try {
-        checkSavedPackage(pkg, key || undefined);
-        return { pkg, invalid };
-      } catch {
-        invalid ??= invalidPackage().message;
-      }
+      if (!(error instanceof PackageValidationError)) throw error;
+      invalid = true;
     }
-  }
-  return { pkg: null, invalid };
+  packages.sort(
+    (a, b) =>
+      (b.version ?? 1) - (a.version ?? 1) ||
+      b.entries.length - a.entries.length,
+  );
+  return { packages, invalid };
+}
+/** The package that the wizard pages use, with its conflict inventory. */
+export interface SavedInventory {
+  pkg: CachedPackage | null;
+  inventory: PackageInventory;
+  /** True when a saved package is unusable. `pkg` is then the best usable one, or null. */
+  invalid: boolean;
 }
 /**
- * The best saved package, unchecked, or null. Kept for callers that hand
- * the package to the search worker, which gives the verdict. Wizard
- * pages use `verifiedCachedPackage` so a malformed package stays
- * visible before they read rows.
+ * The inventory of the best saved package. Building it checks every row,
+ * so a package with an unusable row is skipped for the next one.
  */
-export async function cachedPackage(
-  store: PackageListStore,
-): Promise<CachedPackage | null> {
-  return (await cachedPackages(store))[0]?.pkg ?? null;
+export function savedInventory(saved: SavedPackages): SavedInventory {
+  let invalid = saved.invalid;
+  for (const pkg of saved.packages)
+    try {
+      return { pkg, inventory: inventoryFromPackage(pkg), invalid };
+    } catch (error) {
+      if (!(error instanceof PackageValidationError)) throw error;
+      invalid = true;
+    }
+  return { pkg: null, inventory: inventoryFromPackage(null), invalid };
 }
-/** The conflict inventory from the local package. Callers pass a package checked by `cachedPackage`. */
+/**
+ * The conflict inventory from the local package, which must pass
+ * `savedPackage`. Each row is read through `savedRow` and `savedWordId`,
+ * so an unusable row raises `PackageValidationError`.
+ */
 export function inventoryFromPackage(
   cached: CachedPackage | null,
 ): PackageInventory {
@@ -521,8 +466,9 @@ export function inventoryFromPackage(
   const gismu = new Map<string, string>();
   const incomplete = new Map<string, string>();
   let hasClaims = false;
-  for (const entry of cached.entries) {
-    const id = wordId({ language: "jbo", spelling: entry.word.spelling });
+  for (const row of cached.entries) {
+    const entry = savedRow(row);
+    const id = savedWordId({ language: "jbo", spelling: entry.word.spelling });
     const kind = (entry.classification as { kind?: string } | null)?.kind;
     if (kind === "gismu") gismu.set(id, entry.word.spelling);
     if ("rafsi" in entry && Array.isArray(entry.rafsi)) {

@@ -1,8 +1,5 @@
 import { CIRCLED, circledPlace } from "../../model/place-glyphs.ts";
-import {
-  PackageValidationError,
-  searchPackage,
-} from "../../data/package-search.ts";
+import { searchPackage } from "../../data/package-search.ts";
 import { kindLabel } from "../../model/types.ts";
 import {
   nearbyQuery as meaningQueries,
@@ -34,15 +31,12 @@ import {
   type Route,
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
+import { packageWordEntries, type CachedPackage } from "../../data/search.ts";
 import {
-  packageWordEntries,
-  type CachedPackage,
-} from "../../data/search.ts";
-import {
-  checkSavedRow,
-  invalidPackage,
-} from "../../data/package-check.ts";
-const invalidPackageMessage = invalidPackage().message;
+  INVALID_PACKAGE_MESSAGE,
+  PackageValidationError,
+  savedPackage,
+} from "../../data/saved-package.ts";
 import { getWord, loadRecord, remoteDraftSearch } from "../../data/api.ts";
 import { placeholderCount, type Draft } from "../../model/draft.ts";
 import { countNodes, placeMarker } from "../../model/richtext.ts";
@@ -341,7 +335,7 @@ export async function meaningPage(
   let typedRequest = 0;
   const typedPackages = new Map<
     string,
-    Promise<CachedPackage | null | undefined>
+    Promise<CachedPackage | null | "invalid">
   >();
   const typedKey = () =>
     JSON.stringify([typedWord(draft.spelling), draft.language]);
@@ -364,30 +358,20 @@ export async function meaningPage(
       typedPackages.set(
         draft.language,
         app.store
-          .get<CachedPackage>("packages", draft.language)
-          .catch(() => undefined),
+          .get("packages", draft.language)
+          .catch(() => undefined)
+          .then(savedPackage)
+          .catch((error: unknown) => {
+            if (!(error instanceof PackageValidationError)) throw error;
+            return "invalid" as const;
+          }),
       );
-    const rawPackage = await typedPackages.get(draft.language);
+    const typedPackage = await typedPackages.get(draft.language);
     if (!valid()) return;
-    // Only the rows this check reads are validated on the main thread:
-    // the package shape, then each row the word index returns for this
-    // word. A stored null, a non-package value, or a bad returned row
-    // shows the invalid-package message and the check goes on without a
-    // local package, so the server check below stays available.
-    let packageData: CachedPackage | null | undefined;
-    let packageError: string | null = null;
-    if (rawPackage === null) packageError = invalidPackageMessage;
-    else if (rawPackage !== undefined) {
-      if (
-        !rawPackage ||
-        typeof rawPackage !== "object" ||
-        !Array.isArray(rawPackage.entries) ||
-        typeof rawPackage.snapshot !== "string"
-      )
-        packageError = invalidPackageMessage;
-      else packageData = rawPackage;
-    }
-    if (packageError) typedStatus.append(p(packageError, "notice"));
+    // An unusable package shows the message and counts as no package, so
+    // the server check below stays available.
+    let packageInvalid = typedPackage === "invalid";
+    let packageData = typedPackage === "invalid" ? null : typedPackage;
     let id: string;
     try {
       id = wordId({ language: "jbo", spelling });
@@ -502,37 +486,29 @@ export async function meaningPage(
       );
       return definitionsList;
     };
+    // The word index reads every row through the shared row check and the
+    // core. A row that fails either makes the package unusable, as on the
+    // other pages.
+    const entries = packageData ? packageWordEntries(packageData, id) : [];
+    if (packageData && packageWordEntries.invalidEntryCount(packageData) > 0) {
+      packageInvalid = true;
+      packageData = null;
+    }
+    if (packageInvalid) typedStatus.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
     if (packageData) {
-      let entries: ReturnType<typeof packageWordEntries> = [];
-      try {
-        if (
-          packageData.entries.some(
-            (entry) => !entry || typeof entry !== "object",
-          )
-        )
-          throw new Error(invalidPackageMessage);
-        entries = packageWordEntries(packageData, id);
-        for (const entry of entries)
-          checkSavedRow(entry, draft.language, packageData);
-      } catch {
-        packageError = invalidPackageMessage;
-        typedStatus.append(p(packageError, "notice"));
-        entries = [];
-        packageData = null;
-      }
-      if (packageData && entries.length)
+      if (entries.length)
         showExisting(
           entries,
           `Local package for ${draft.language}, snapshot ${packageData.snapshot}.`,
         );
-      else if (packageData)
+      else
         typedStatus.append(
           p(
             `No definition of this word is in the local package for ${draft.language}, snapshot ${packageData.snapshot}. Other languages and servers are unknown.`,
             "meta",
           ),
         );
-    } else if (!packageError)
+    } else if (!packageInvalid)
       typedStatus.append(
         p(
           "The word could not be checked. No local package is downloaded for this language.",
@@ -711,8 +687,6 @@ export async function meaningPage(
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let nearbyRequest = 0;
-  // The invalid-package message is announced once per page, however many
-  // nearby lookups the reader's edits start.
   let invalidAnnounced = false;
   const scheduleNearby = () => {
     nearbyRequest++;
@@ -795,32 +769,25 @@ export async function meaningPage(
       request === nearbyRequest &&
       value === meaning.input.value &&
       language === draft.language;
-    try {
-      // The worker gives the verdict on the saved package, as on the
-      // search page: no whole package is validated on the main thread.
-      // A malformed package is announced once and then treated as no
-      // local package, so the consent and server branch below still
-      // runs and server search is never blocked by a bad or missing
-      // local package.
-      const raw = await app.store
-        .get<CachedPackage>("packages", language)
-        .catch(() => undefined);
-      if (!current()) return;
-      let pkg: CachedPackage | null = raw ?? null;
-      if (
-        raw === null ||
-        (raw !== undefined &&
-          (typeof raw !== "object" ||
-            !Array.isArray((raw as { entries?: unknown }).entries)))
-      ) {
-        // A stored null, or a saved value that is not a package at all,
-        // counts as a malformed package, not as a downloaded one.
-        if (!invalidAnnounced) {
-          invalidAnnounced = true;
-          app.announce(invalidPackageMessage);
-        }
-        pkg = null;
+    // An unusable package, by this page's read or by the worker's verdict,
+    // is announced once per page and then treated as no local package, so
+    // the consent and server branch below still runs.
+    const unusable = (error: unknown) => {
+      if (!(error instanceof PackageValidationError)) throw error;
+      if (current() && !invalidAnnounced) {
+        invalidAnnounced = true;
+        app.announce(error.message);
       }
+      return null;
+    };
+    try {
+      let pkg: CachedPackage | null;
+      try {
+        pkg = savedPackage(await app.store.get("packages", language));
+      } catch (error) {
+        pkg = unusable(error);
+      }
+      if (!current()) return;
       cached = pkg;
       renderMode();
       if (!terms.length) {
@@ -841,22 +808,9 @@ export async function meaningPage(
           if (current()) renderHits(found.hits[0], "local");
           return;
         } catch (error) {
-          if (
-            !(
-              error instanceof PackageValidationError ||
-              (error instanceof Error &&
-                error.message.startsWith("The search package is invalid."))
-            )
-          )
-            throw error;
-          if (current() && !invalidAnnounced) {
-            invalidAnnounced = true;
-            app.announce(
-              error instanceof Error ? error.message : invalidPackageMessage,
-            );
-          }
-          cached = null;
-          if (current()) renderMode();
+          cached = unusable(error);
+          if (!current()) return;
+          renderMode();
         }
       }
       renderHits([], "local");

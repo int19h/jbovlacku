@@ -16,13 +16,13 @@ import {
   type Route,
 } from "../app/router.ts";
 import type { App } from "../app/context.ts";
+import { downloadPackage, isV2, type CachedPackage } from "../data/search.ts";
 import {
-  checkSavedRow,
-  downloadPackage,
-  invalidPackage,
-  isV2,
-  type CachedPackage,
-} from "../data/search.ts";
+  PackageValidationError,
+  savedPackage,
+  savedRow,
+  savedWordId,
+} from "../data/saved-package.ts";
 import { getWord, loadRecord } from "../data/api.ts";
 import type { PackageEntryV2, RafsiBody } from "../model/types.ts";
 import { identityLink } from "../components/attribution.ts";
@@ -38,11 +38,7 @@ import {
   SEARCH_QUERY_LENGTH_LIMIT,
   SearchQueryTooLongError,
 } from "../../../../packages/search/src/index.ts";
-import {
-  PackageValidationError,
-  searchPackage,
-  takeRafsiRows,
-} from "../data/package-search.ts";
+import { searchPackage, takeRafsiRows } from "../data/package-search.ts";
 
 /** Loads the version 2 package for a language, from cache or the server. */
 async function packageFor(
@@ -62,15 +58,11 @@ async function packageFor(
     }
   } catch {}
   if (!app.session.storageAvailable) return fallback;
-  // The saved package goes to the search worker, which gives the verdict,
-  // so no whole package is validated here. Storage failures keep the
-  // download fallback. A stored null is a saved package, not a missing
-  // one, so it raises the invalid-package error instead.
-  const raw = await app.store
-    .get<CachedPackage>("packages", language)
-    .catch(() => undefined);
-  if (raw === null) throw invalidPackage();
-  const cached = raw ?? null;
+  // A storage failure counts as no saved package. An unusable saved
+  // package raises PackageValidationError.
+  const cached = savedPackage(
+    await app.store.get("packages", language).catch(() => undefined),
+  );
   return cached?.version === 2 ? cached : fallback;
 }
 interface RafsiWord {
@@ -103,17 +95,16 @@ export async function wordsWithRafsi(
       continue;
     }
     available = true;
-    // The worker verdict comes first; only a package it accepts has its
-    // rows read on this page.
+    limited ||= pkg.entries.some((row) => {
+      const entry = savedRow(row);
+      return isV2(entry) && entry.rafsi_complete === false;
+    });
     const result = await searchPackage(pkg, language, [rafsi], {
       rafsiOnly: true,
       patterns: !options.literal,
       limit: 1000,
       signal,
     });
-    limited ||= pkg.entries.some(
-      (entry) => isV2(entry) && entry.rafsi_complete === false,
-    );
     limited ||= result.totals[0] > 1000;
     for (const hit of result.hits[0])
       identities.set(hit.word.spelling, hit.word_id);
@@ -606,31 +597,26 @@ async function resolvePair(
   if (app.session.storageAvailable)
     for (const key of await app.store.keys("packages").catch(() => []))
       languages.add(key);
-  for (const language of languages) {
-    const pkg = await packageFor(app, language, signal);
-    if (!pkg) continue;
-    if (!Array.isArray(pkg.entries)) throw invalidPackage();
-    // The worker gives the verdict on the package first, as on the
-    // wizard pages, so no row is checked on the main thread. Only when
-    // the worker cannot start does each row this loop is about to read
-    // get the worker's row validation on the main thread.
-    let workerChecked = false;
+  // An unusable package does not hide a usable package of another
+  // language. Its error is raised only when no package names the pair.
+  let invalid: PackageValidationError | null = null;
+  for (const language of languages)
     try {
-      await searchPackage(pkg, language, [], { signal });
-      workerChecked = true;
+      const pkg = await packageFor(app, language, signal);
+      if (!pkg) continue;
+      for (const row of pkg.entries) {
+        const entry = savedRow(row);
+        if (!isV2(entry)) continue;
+        const id = savedWordId(entry.word);
+        for (const rafsi of (entry as PackageEntryV2).rafsi)
+          if (rafsiPairId(id, rafsi) === pair)
+            return { spelling: entry.word.spelling, language, rafsi };
+      }
     } catch (error) {
-      if (error instanceof PackageValidationError) throw error;
-      if (error instanceof Error && error.name === "AbortError") throw error;
+      if (!(error instanceof PackageValidationError)) throw error;
+      invalid ??= error;
     }
-    for (const entry of pkg.entries) {
-      if (!workerChecked) checkSavedRow(entry, language, pkg);
-      if (!isV2(entry)) continue;
-      const id = deriveWordId(entry.word);
-      for (const rafsi of (entry as PackageEntryV2).rafsi)
-        if (rafsiPairId(id, rafsi) === pair)
-          return { spelling: entry.word.spelling, language, rafsi };
-    }
-  }
+  if (invalid) throw invalid;
   return null;
 }
 /** `/rafsi-pair/<pair ID>`: the word and rafsi of one pair, with its judgment control. */

@@ -30,9 +30,10 @@ import {
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import { draftToBody } from "../../model/draft.ts";
+import { INVALID_PACKAGE_MESSAGE } from "../../data/saved-package.ts";
 import {
-  verifiedCachedPackage,
-  inventoryFromPackage,
+  savedInventory,
+  savedPackages,
   inventoryCoverage,
   conflictReviewKey,
   currentRootConflicts,
@@ -44,7 +45,6 @@ import {
 import { definitionBlock } from "../../components/definition.ts";
 import { identityProfile, profileName } from "../../components/attribution.ts";
 import { getWord, selfPeer } from "../../data/api.ts";
-import { searchPackage } from "../../data/package-search.ts";
 import { describePeer, isNotDelivered } from "../../data/delivery.ts";
 import {
   PublicationConflictError,
@@ -276,13 +276,11 @@ export async function publishPage(
     "aria-label": "Known conflicts",
   });
   left.append(conflicts);
-  const pick = await verifiedCachedPackage(app.store, async (pkg, language) => {
-    await searchPackage(pkg, language, [], { signal: context.signal });
-  });
-  const inventory = inventoryFromPackage(pick.pkg);
-  const packageError = pick.invalid;
+  const { inventory, invalid: packageInvalid } = savedInventory(
+    await savedPackages(app.store),
+  );
   if (!context.live()) return;
-  if (packageError) conflicts.append(p(packageError, "notice"));
+  if (packageInvalid) conflicts.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
   for (const claim of claims)
     for (const known of inventory.claims)
       if (known.rafsi === claim.rafsi && known.word !== wordId)
@@ -758,19 +756,9 @@ export async function publishPage(
           `Publishing ${body.word.spelling}`,
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
-            const latestPick = await verifiedCachedPackage(
-              app.store,
-              async (pkg, language) => {
-                await searchPackage(pkg, language, [], {
-                  signal: context.signal,
-                });
-              },
-            );
-            if (latestPick.invalid && !latestPick.pkg) {
-              outcome.replaceChildren(p(latestPick.invalid, "notice"));
-              return;
-            }
-            const latestInventory = inventoryFromPackage(latestPick.pkg);
+            const latestInventory = savedInventory(
+              await savedPackages(app.store),
+            ).inventory;
             if (reviewedInventory !== inventoryVersion(latestInventory)) {
               outcome.replaceChildren(
                 p(

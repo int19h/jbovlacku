@@ -16,15 +16,16 @@ import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import {
   downloadPackage,
-  invalidPackage,
   reportPackageError,
   type CachedPackage,
 } from "../data/search.ts";
-import {
-  PackageValidationError,
-  searchPackage,
-} from "../data/package-search.ts";
 import { getCapabilities, getManifest, selfPeer } from "../data/api.ts";
+import {
+  INVALID_PACKAGE_MESSAGE,
+  PackageValidationError,
+  savedPackage,
+  savedRow,
+} from "../data/saved-package.ts";
 import type { Preferences } from "../data/store.ts";
 
 export async function preferencesPage(
@@ -212,57 +213,30 @@ export async function preferencesPage(
     }
     const keys = await app.store.keys("packages");
     for (const key of keys) {
-      // A malformed saved package keeps its row and Remove control, with
-      // the invalid-package message instead of its entry count. The
-      // search worker gives the verdict, so no whole package is
-      // validated on the main thread here either.
+      // An unusable package keeps its row and Remove control, with the
+      // invalid-package message in place of its definition count.
       let cached: CachedPackage | null = null;
-      let packageError: string | null = null;
-      const raw = await app.store
-        .get<CachedPackage>("packages", key)
-        .catch(() => undefined);
-      if (
-        raw === null ||
-        (raw !== undefined &&
-          (!raw ||
-            typeof raw !== "object" ||
-            !Array.isArray(raw.entries) ||
-            typeof raw.snapshot !== "string"))
-      )
-        packageError = invalidPackage().message;
-      else if (raw !== undefined) {
-        cached = raw;
-        try {
-          await searchPackage(cached, key, [], {
-            signal: context.signal,
-          });
-        } catch (error) {
-          // Only the worker's invalid-package verdict is a verdict on
-          // this package. A worker that could not start says nothing
-          // about it, and this page reads only the package fields
-          // checked above, so its definition count still shows.
-          if (error instanceof PackageValidationError)
-            packageError = describe(error);
-        }
+      let invalid = false;
+      try {
+        cached = savedPackage(await app.store.get("packages", key));
+      } catch (error) {
+        if (!(error instanceof PackageValidationError)) throw error;
+        invalid = true;
       }
+      const detail = el("small", {
+        text: invalid
+          ? INVALID_PACKAGE_MESSAGE
+          : cached
+            ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}… · version ${cached.version ?? 1}${
+                cached.downgrade
+                  ? `. Version 1 was saved instead of version 2: ${cached.downgrade}`
+                  : ""
+              }`
+            : "unreadable",
+      });
       const row = el("div", { class: "row" });
       row.append(
-        el(
-          "span",
-          { class: "t" },
-          text(languageName(key)),
-          el("small", {
-            text: packageError
-              ? packageError
-              : cached
-                ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}… · version ${cached.version ?? 1}${
-                    cached.downgrade
-                      ? `. Version 1 was saved instead of version 2: ${cached.downgrade}`
-                      : ""
-                  }`
-                : "unreadable",
-          }),
-        ),
+        el("span", { class: "t" }, text(languageName(key)), detail),
         button(
           "Remove",
           async () => {
@@ -273,6 +247,19 @@ export async function preferencesPage(
         ),
       );
       packages.append(row);
+      // This page reads no rows, so it checks them in a task of its own
+      // after the row is shown. A valid package keeps its count, and an
+      // unusable one shows the message in its place.
+      const pkg = cached;
+      if (pkg)
+        setTimeout(() => {
+          try {
+            for (const entry of pkg.entries) savedRow(entry);
+          } catch (error) {
+            if (!(error instanceof PackageValidationError)) throw error;
+            detail.textContent = INVALID_PACKAGE_MESSAGE;
+          }
+        });
     }
     if (!packagesAvailable)
       packages.append(
