@@ -2370,10 +2370,23 @@ fn check_saved_state(
             }
         } else if node.body.is_none() {
             // A fresh evaluation reads the source and the account from
-            // the body, so an import without one has neither. Restore
-            // attaches account evidence by this field, so it must not
-            // trust a saved one.
-            if p.source.is_some() || p.source_record.is_some() || p.account.is_some() {
+            // the body, so an import without one has neither. Only the
+            // account pass sets the account fields of an import, and
+            // only for one with an account, so they keep their initial
+            // values. Restore attaches account evidence by the account,
+            // so it must not trust a saved one.
+            if p.source.is_some()
+                || p.source_record.is_some()
+                || p.account.is_some()
+                || p.authority != Authority::None
+                || p.controller.is_some()
+                || p.claim.is_some()
+                || !p.observations.is_empty()
+                || !p.status_frontier.is_empty()
+                || p.deciding_claim.is_some()
+                || !p.controller_candidates.is_empty()
+                || !p.missing.is_empty()
+            {
                 return Err("publication_import_without_body");
             }
         } else if let Some(body) = &node.body {
@@ -2472,6 +2485,31 @@ fn check_saved_state(
         }
         let mut union_candidates = BTreeSet::new();
         for (actor, obs_ids) in &state.observation_evidence {
+            // Each piece of evidence is a present observation of this
+            // account by a key of this witness, as the account pass
+            // selects it. The publications' maps are rebuilt from these
+            // contributions, so a swapped observation must not pass.
+            for oid in obs_ids {
+                let Some(onode) = nodes.get(oid) else {
+                    return Err("account_evidence_record");
+                };
+                let oa = onode.action.view();
+                let issuer_actor = saved
+                    .evaluation
+                    .lifecycle
+                    .key_actor
+                    .get(&onode.issuer)
+                    .unwrap_or(&onode.issuer);
+                if !onode.semantic
+                    || onode.kind != "account.observe"
+                    || oa.index("result") != "present"
+                    || oa.index("origin").as_str() != Some(state.account.origin.as_str())
+                    || oa.index("account").as_u64() != Some(state.account.account)
+                    || issuer_actor != actor
+                {
+                    return Err("account_evidence_record");
+                }
+            }
             let expected_claims: BTreeSet<String> = obs_ids
                 .iter()
                 .filter_map(|oid| nodes.get(oid))

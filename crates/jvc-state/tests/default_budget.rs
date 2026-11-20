@@ -513,5 +513,91 @@ fn restore_refuses_an_attribution_on_an_import_without_a_body() {
                 "results_only={results_only}: a saved {field} was accepted"
             );
         }
+        // Each field that only the account pass sets, which a fresh
+        // evaluation leaves empty without an account.
+        let claim = id(2_000_000);
+        for (field, saved) in [
+            ("controller", json!(identity(100))),
+            ("claim", json!(claim)),
+            ("authority", json!("source-account")),
+            ("observations", json!([claim])),
+            ("status_frontier", json!([claim])),
+            ("deciding_claim", json!(claim)),
+            ("controller_candidates", json!([claim])),
+            ("missing", json!([claim])),
+        ] {
+            let mut copied = value.clone();
+            copied["evaluation"]["publications"][&missing][field] = saved;
+            assert!(
+                restore(&sealed(copied)).is_err(),
+                "results_only={results_only}: a saved {field} was accepted"
+            );
+        }
+    }
+}
+
+/// The ID of witness `w`'s observation of claim `c` in
+/// `account_fixture(claims, ..)`.
+fn observation_id(claims: usize, w: usize, c: usize) -> String {
+    id(2_000_000 + claims + w * claims + c)
+}
+
+#[test]
+fn restore_refuses_evidence_that_is_not_the_witness_observation() {
+    let token = format!("{ORIGIN}#41");
+    let w0 = identity(10);
+    // Two witnesses observe two claims. The first witness's evidence is
+    // replaced by the second witness's observation of the first claim,
+    // and its contribution by that one claim.
+    let (records, selections) = account_fixture(2, 2, 3);
+    let swapped = |value: &mut Value| {
+        let account = &mut value["evaluation"]["accounts"][&token];
+        account["observation_evidence"][&w0] = json!([observation_id(2, 1, 0)]);
+        account["contributions"][&w0] = json!([id(2_000_000)]);
+    };
+    assert_evidence_refused(&records, &selections, &swapped);
+    // One claim: only the observation ID changes, to the second
+    // witness's observation of the same claim.
+    let (records, selections) = account_fixture(1, 2, 3);
+    let renamed = |value: &mut Value| {
+        value["evaluation"]["accounts"][&token]["observation_evidence"][&w0] =
+            json!([observation_id(1, 1, 0)]);
+    };
+    assert_evidence_refused(&records, &selections, &renamed);
+}
+
+fn assert_evidence_refused(
+    records: &[HostVerifiedRecord],
+    selections: &BTreeMap<String, Vec<String>>,
+    mutate: &dyn Fn(&mut Value),
+) {
+    let state = evaluate(records, selections, None);
+    let w0 = identity(10);
+    let account = state.evaluation().accounts.values().next().unwrap();
+    // The fixture's IDs are the ones the mutation replaces.
+    assert!(account.observation_evidence[&w0].contains(&observation_id(
+        account.candidates.len(),
+        0,
+        0
+    )));
+    for (results_only, bytes) in [
+        (false, state.checkpoint("evidence").unwrap()),
+        (true, state.result_checkpoint("evidence").unwrap()),
+    ] {
+        let restore = |bytes: &[u8]| {
+            if results_only {
+                EvaluatedState::restore_host_result_checkpoint(bytes, "evidence", records.to_vec())
+            } else {
+                EvaluatedState::restore_host_checkpoint(bytes, "evidence")
+            }
+        };
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(restore(&sealed(value.clone())).is_ok());
+        let mut changed = value;
+        mutate(&mut changed);
+        assert!(
+            restore(&sealed(changed)).is_err(),
+            "results_only={results_only}: evidence from another witness was accepted"
+        );
     }
 }
