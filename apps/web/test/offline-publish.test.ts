@@ -162,4 +162,17 @@ test("offline endorsement saves the signed record and delivers on return", async
   await expect(
     page.getByRole("link", { name: /not delivered/ }),
   ).toBeHidden();
+  // Clear the endorsement so this test leaves the shared word unchanged.
+  await expect(endorse).toHaveAttribute("aria-pressed", "true");
+  await endorse.click();
+  await expect
+    .poll(
+      async () =>
+        (await outboxItems(page)).map(
+          (item: any) =>
+            `${JSON.parse(item.transport).envelope.header.action.value}:${item.peers.self.state}`,
+        ),
+      { timeout: 30000 },
+    )
+    .toEqual(["bless:accepted", "clear:accepted"]);
 });
