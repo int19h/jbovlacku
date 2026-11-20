@@ -15,6 +15,7 @@ import {
   disclosure,
 } from "../lib/dom.ts";
 import { listedLanguage, languageName, plural } from "../lib/format.ts";
+import { nullOnSpellingRefusal } from "../lib/core-error.ts";
 import {
   navigate,
   routes,
@@ -60,11 +61,13 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   let id: string;
   if (isId) id = key;
   else {
-    try {
-      id = wordId({ language: "jbo", spelling: spellingHint! });
-    } catch {
-      // A spelling the core refuses names no word. Show the friendly page
-      // other bad links give instead of the raw core error.
+    // Only the core's spelling refusal names no word. Any other failure
+    // from the core is rethrown and reported as itself.
+    const resolved = nullOnSpellingRefusal(() =>
+      wordId({ language: "jbo", spelling: spellingHint! }),
+    );
+    if (resolved === null) {
+      main.className = "";
       context.title("Page unavailable");
       main.append(
         el("h1", { class: "page", text: "Page unavailable" }),
@@ -75,6 +78,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       );
       return;
     }
+    id = resolved;
   }
   const requestedLanguage =
     route.params.get("lang") ?? app.session.preferences.definitionLanguage;

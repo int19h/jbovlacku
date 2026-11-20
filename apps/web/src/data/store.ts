@@ -575,6 +575,52 @@ export class LocalStore {
       tx.onerror = () => {};
     });
   }
+  /** The committed revision of one package, or undefined when no save or remove of it has committed. A remove still writes a revision, so a removed package keeps one. */
+  async packageRevisionOf(id: string): Promise<string | undefined> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const request = db
+        .transaction("packageRevisions")
+        .objectStore("packageRevisions")
+        .get(id);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+  /**
+   * Saves a package only when its committed revision is still `expected`,
+   * in the same transaction that checks it. A save or a remove of the same
+   * package that commits after `expected` was read makes this save a no-op.
+   * Returns true when the package was saved.
+   */
+  async putPackageIfRevision(
+    id: string,
+    value: unknown,
+    expected: string | undefined,
+  ): Promise<boolean> {
+    const db = await this.database;
+    const revision = packageRevision();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(["packages", "packageRevisions"], "readwrite");
+      const check = tx.objectStore("packageRevisions").get(id);
+      let saved = false;
+      check.onsuccess = () => {
+        if (check.result !== expected) return;
+        saved = true;
+        tx.objectStore("packages").put(value, id);
+        tx.objectStore("packageRevisions").put(revision, id);
+      };
+      tx.oncomplete = () => {
+        if (saved) this.packageCache.delete(id);
+        resolve(saved);
+      };
+      tx.onabort = () =>
+        reject(
+          tx.error ?? new Error("Local storage did not save this change."),
+        );
+      tx.onerror = () => {};
+    });
+  }
   async putProjectedRecord(
     record: { id: string; body?: string | null },
     row: Uint8Array,

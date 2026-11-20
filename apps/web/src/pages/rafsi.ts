@@ -41,13 +41,30 @@ async function packageFor(
   signal: AbortSignal,
 ): Promise<CachedPackage | null> {
   let fallback: CachedPackage | null = null;
+  // The package state when this visit started. A package that the user
+  // removed keeps a revision but no package, so a visit must not save it
+  // again. A save or remove that commits during the download also wins.
+  let expected: string | undefined;
+  let removed = false;
+  if (app.session.storageAvailable) {
+    expected = await app.store
+      .packageRevisionOf(language)
+      .catch(() => undefined);
+    removed =
+      expected !== undefined &&
+      !(await app.store.keys("packages").catch(() => [] as string[])).includes(
+        language,
+      );
+  }
   // Prefer the server's current package so new claims appear. Fall back to the cache.
   try {
     const fresh = await downloadPackage(language, { signal });
     fallback = fresh;
     if (fresh.version === 2) {
-      if (app.session.storageAvailable)
-        await app.store.put("packages", language, fresh).catch(() => {});
+      if (app.session.storageAvailable && !removed)
+        await app.store
+          .putPackageIfRevision(language, fresh, expected)
+          .catch(() => {});
       return fresh;
     }
   } catch {}

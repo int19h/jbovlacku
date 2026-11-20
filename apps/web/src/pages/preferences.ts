@@ -194,9 +194,9 @@ export async function preferencesPage(
     }),
     packages,
   );
-  // The latest package operation for a language. A remove supersedes a
-  // refresh for that language that is still running.
-  const packageOperations = new Map<string, symbol>();
+  // Languages with a package download or refresh running on this page.
+  // Buttons for them render disabled, across renders of the list.
+  const runningPackages = new Set<string>();
   const renderPackages = async () => {
     packages.replaceChildren();
     if (!session.storageAvailable) {
@@ -230,9 +230,8 @@ export async function preferencesPage(
         button(
           "Remove",
           async () => {
-            // A refresh still running for this language must not save its
-            // package after the remove.
-            packageOperations.set(key, Symbol());
+            // The delete writes a new package revision, so a download or
+            // refresh that is still running cannot save over this remove.
             await app.store.delete("packages", key);
             await renderPackages();
           },
@@ -260,25 +259,40 @@ export async function preferencesPage(
         "Download",
         async () => {
           const language = pick.input.value;
+          if (runningPackages.has(language)) return;
+          runningPackages.add(language);
           go.disabled = true;
           try {
+            const expected = await app.store.packageRevisionOf(language);
             const pkg = await downloadPackage(language);
-            await app.store.put("packages", language, pkg);
-            app.announce(
-              pkg.downgrade
-                ? `The ${languageName(language)} search package is saved in this browser as version 1. ${pkg.downgrade}`
-                : `The ${languageName(language)} search package is saved in this browser.`,
+            // A remove or another save of this package that committed
+            // while the download ran wins; this save then does nothing.
+            const saved = await app.store.putPackageIfRevision(
+              language,
+              pkg,
+              expected,
             );
-            await renderPackages();
+            app.announce(
+              !saved
+                ? `The ${languageName(language)} search package was not saved. It changed in this browser while the download ran.`
+                : pkg.downgrade
+                  ? `The ${languageName(language)} search package is saved in this browser as version 1. ${pkg.downgrade}`
+                  : `The ${languageName(language)} search package is saved in this browser.`,
+            );
           } catch (error) {
             // A full store reports its own message instead of a raw quota error.
             app.announce(describe(reportPackageError(error)));
           } finally {
-            go.disabled = false;
+            runningPackages.delete(language);
+            await renderPackages();
           }
         },
         { class: "btn" },
       );
+      go.disabled = runningPackages.has(pick.input.value);
+      pick.input.addEventListener("change", () => {
+        go.disabled = runningPackages.has(pick.input.value);
+      });
       packages.append(
         el(
           "div",
@@ -294,33 +308,35 @@ export async function preferencesPage(
         const refresh = button(
           `Refresh ${languageName(key)}`,
           async () => {
-            const operation = Symbol();
-            packageOperations.set(key, operation);
+            if (runningPackages.has(key)) return;
+            runningPackages.add(key);
             refresh.disabled = true;
             try {
+              const expected = await app.store.packageRevisionOf(key);
               const pkg = await downloadPackage(key);
-              // Remove wins: save only when this refresh is still the
-              // latest operation and the package is still there.
-              const current = await app.store.get<CachedPackage>(
-                "packages",
+              // A remove or another save of this package that committed
+              // while the refresh ran wins; this save then does nothing.
+              const saved = await app.store.putPackageIfRevision(
                 key,
+                pkg,
+                expected,
               );
-              if (!current || packageOperations.get(key) !== operation) {
-                await renderPackages();
-                return;
-              }
-              await app.store.put("packages", key, pkg);
-              app.announce(`The ${languageName(key)} package is refreshed.`);
-              await renderPackages();
+              app.announce(
+                saved
+                  ? `The ${languageName(key)} package is refreshed.`
+                  : `The ${languageName(key)} package was not saved. It changed in this browser while the refresh ran.`,
+              );
             } catch (error) {
               // A full store reports its own message instead of a raw quota error.
               app.announce(describe(reportPackageError(error)));
             } finally {
-              refresh.disabled = false;
+              runningPackages.delete(key);
+              await renderPackages();
             }
           },
           { class: "btn btn-quiet" },
         );
+        refresh.disabled = runningPackages.has(key);
         packages.append(refresh);
       }
   };
