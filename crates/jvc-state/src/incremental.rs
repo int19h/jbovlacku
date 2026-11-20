@@ -7011,7 +7011,7 @@ mod rebuild_tests {
         }
         jve_prepared.options.limits.traversal = Some(266);
 
-        // Case B: 20 unresolved `jvr1:` judgments at tight budget 218 (base consumes 190, full consumes 219 -> refuses at 218).
+        // Case B: 20 unresolved `jvr1:` judgments at tight budget 198 (base consumes 190, full consumes 199 -> refuses at 198).
         let mut jvr_prepared = base();
         let rafsi_target = format!("jvr1:{:064x}", 1usize);
         for i in 0..20usize {
@@ -7022,12 +7022,12 @@ mod rebuild_tests {
                 json!({"kind":"judgment.set","target":rafsi_target,"value":"bless"}),
             ));
         }
-        jvr_prepared.options.limits.traversal = Some(218);
+        jvr_prepared.options.limits.traversal = Some(198);
 
         let mut failures = Vec::new();
         for (label, prepared, expected_base_work, expected_tight_work) in [
             ("jve1_judgments_266", jve_prepared, 258usize, 266usize),
-            ("jvr1_judgments_218", jvr_prepared, 190usize, 218usize),
+            ("jvr1_judgments_198", jvr_prepared, 190usize, 198usize),
         ] {
             let records: Vec<HostVerifiedRecord> = prepared
                 .nodes
@@ -7121,7 +7121,7 @@ mod rebuild_tests {
         }
         prepared.options.limits = Limits {
             events: Some(500),
-            traversal: Some(218),
+            traversal: Some(198),
             claim_depth: 64,
         };
         let records: Vec<HostVerifiedRecord> = prepared
@@ -7137,7 +7137,7 @@ mod rebuild_tests {
         full_prepared.add_host_verified_record(new_pub.clone());
         let full = full_prepared.into_state();
         assert!(!full.evaluation().available);
-        assert_eq!(full.consumed_work(), 218);
+        assert_eq!(full.consumed_work(), 198);
 
         let saved_full = state.checkpoint("host-checked").unwrap();
         let saved_results = state.result_checkpoint("host-checked").unwrap();
