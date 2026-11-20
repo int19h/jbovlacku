@@ -8789,6 +8789,184 @@ mod rebuild_tests {
         assert_eq!(after_res.consumed_work(), expected_state.consumed_work());
     }
 
+    /// A history near the cap for `appended_near_the_cap_refuses_in_every_path_where_full_refuses`.
+    /// One key accepts transfers from `sources` other keys, so the
+    /// accepted closure of a record that covers its block keeps one
+    /// range per source block. Each source block starts with a record
+    /// that no closure contains, so source blocks never fuse into one
+    /// range and no closure crosses the end of the accepting key's
+    /// block, where an append inserts. Two interleaved chains of a filler key bring the kept
+    /// storage near the cap, and `tune` root records each raise the
+    /// cap by one allowance without kept storage.
+    fn near_cap_accepting_history(
+        sources: usize,
+        filler: usize,
+        weight: usize,
+        tune: usize,
+    ) -> (PreparedEvaluationInput, HostVerifiedRecord) {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let successor = identity_from_seed(&[60u8; 32]);
+        let merge = json!({"kind":"identity.merge"});
+        let mut accepts: Vec<String> = Vec::new();
+        for j in 0..sources {
+            let mut seed = [61u8; 32];
+            seed[..8].copy_from_slice(&(j as u64).to_le_bytes());
+            let source = identity_from_seed(&seed);
+            let transfer = format!("jve1:{:064x}", 610_000 + 4 * j + 1);
+            prepared.add_host_verified_record(host(
+                transfer.clone(),
+                &source,
+                vec![],
+                json!({"kind":"identity.transfer","successor":successor}),
+            ));
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 610_000 + 4 * j),
+                &source,
+                vec![],
+                merge.clone(),
+            ));
+            let accept = format!("jve1:{:064x}", 620_000 + j);
+            prepared.add_host_verified_record(host(
+                accept.clone(),
+                &successor,
+                vec![],
+                json!({"kind":"identity.accept","transfer":transfer}),
+            ));
+            accepts.push(accept);
+        }
+        // Merge the accepts, at most 64 predecessors per record.
+        let mut head: Option<String> = None;
+        for (i, group) in accepts.chunks(63).enumerate() {
+            let mut previous: Vec<String> = group.to_vec();
+            previous.extend(head.clone());
+            let id = format!("jve1:{:064x}", 630_000 + i);
+            prepared.add_host_verified_record(host(
+                id.clone(),
+                &successor,
+                previous,
+                merge.clone(),
+            ));
+            head = Some(id);
+        }
+        let filler_key = identity_from_seed(&[62u8; 32]);
+        for i in 0..filler {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 800_000 + i),
+                &filler_key,
+                (i >= 2)
+                    .then(|| format!("jve1:{:064x}", 800_000 + i - 2))
+                    .into_iter()
+                    .collect(),
+                merge.clone(),
+            ));
+        }
+        // One record that names filler record `weight` keeps a closure
+        // of about `weight / 2` ranges. It sorts last in the filler
+        // block, so it splits no other closure.
+        prepared.add_host_verified_record(host(
+            format!("jve1:{:064x}", 850_000usize),
+            &filler_key,
+            vec![format!("jve1:{:064x}", 800_000 + weight)],
+            merge.clone(),
+        ));
+        let tune_key = identity_from_seed(&[63u8; 32]);
+        for i in 0..tune {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 900_000 + i),
+                &tune_key,
+                vec![],
+                merge.clone(),
+            ));
+        }
+        let appended = host(
+            format!("jve1:{:064x}", 999_999usize),
+            &successor,
+            head.into_iter().collect(),
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        (prepared, appended)
+    }
+
+    /// An append whose kept closures cross the cap refuses in every
+    /// path exactly where full evaluation refuses: the live state, a
+    /// restored full checkpoint and a restored result checkpoint.
+    /// The appended record keeps a closure of 191 ranges in two link
+    /// modes (1,536 bytes). With one allowance fewer the history has
+    /// 1,280 bytes of room after the append, and every path refuses.
+    /// With one tuning record more it has 2,304 bytes, every path
+    /// accepts, the live append takes the fast path, and all paths
+    /// count the same bytes, also after a checkpoint of the live
+    /// state is restored.
+    #[test]
+    fn appended_near_the_cap_refuses_in_every_path_where_full_refuses() {
+        for (tune, room, available) in [(0usize, 1_280i64, false), (1, 2_304, true)] {
+            let (prepared, appended) = near_cap_accepting_history(190, 3_440, 262, tune);
+            let state = prepared.clone().into_state();
+            assert!(state.evaluation().available, "tune {tune}");
+            let records = prepared.nodes.len();
+            assert_eq!(
+                crate::ancestors::ancestry_cap(records + 1) as i64 - cap_bytes(&state) as i64,
+                room
+            );
+            let mut full = prepared.clone();
+            full.add_host_verified_record(appended.clone());
+            let full_state = full.clone().into_state();
+            assert_eq!(full_state.evaluation().available, available, "tune {tune}");
+            let delta = || {
+                let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+                delta.add_host_verified_record(appended.clone());
+                delta
+            };
+            let live = state.clone().advance(delta(), &[]);
+            let full_checkpoint = state.checkpoint("near-cap").unwrap();
+            let restored_full =
+                EvaluatedState::restore_host_checkpoint(&full_checkpoint, "near-cap")
+                    .unwrap()
+                    .advance(delta(), &[]);
+            let records_list: Vec<HostVerifiedRecord> = prepared
+                .nodes
+                .values()
+                .map(|n| HostVerifiedRecord { node: n.clone() })
+                .collect();
+            let result_checkpoint = state.result_checkpoint("near-cap").unwrap();
+            let restored_results = EvaluatedState::restore_host_result_checkpoint(
+                &result_checkpoint,
+                "near-cap",
+                records_list,
+            )
+            .unwrap()
+            .advance(delta(), &[]);
+            for (path, advanced) in [
+                ("live", &live),
+                ("restored full checkpoint", &restored_full),
+                ("restored result checkpoint", &restored_results),
+            ] {
+                assert_eq!(
+                    advanced.evaluation(),
+                    full_state.evaluation(),
+                    "tune {tune}, {path}"
+                );
+            }
+            if available {
+                assert!(!live.statistics().rebuilt, "the append takes the fast path");
+                assert_eq!(cap_bytes(&live), cap_bytes(&full_state));
+                assert_eq!(cap_bytes(&restored_full), cap_bytes(&full_state));
+                assert_eq!(cap_bytes(&restored_results), cap_bytes(&full_state));
+                // A checkpoint of the live state restores the same
+                // count that a full evaluation keeps.
+                let saved = live.checkpoint("near-cap").unwrap();
+                let restored = EvaluatedState::restore_host_checkpoint(&saved, "near-cap")
+                    .unwrap()
+                    .advance(PreparedEvaluationInput::new(prepared.options.clone()), &[]);
+                assert_eq!(restored.evaluation(), full_state.evaluation());
+                assert_eq!(cap_bytes(&restored), cap_bytes(&full_state));
+            }
+        }
+    }
+
     /// A history whose ancestry bytes pass the fixed base of the cap,
     /// but not the cap for its record count, evaluates. Both of its
     /// checkpoints restore, and an append after the restore matches a
