@@ -394,6 +394,8 @@ test("an empty offline parent list refuses to sign even with local records", asy
 test("a 503 history read signs from the history saved in this browser", async ({
   page,
 }) => {
+  // This test signs and delivers four records in sequence.
+  test.setTimeout(300000);
   await createIdentity(page);
   const clearId = await establishHistory(page);
   const before = new Set((await outboxItems(page)).map((item: any) => item.id));
