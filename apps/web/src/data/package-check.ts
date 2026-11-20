@@ -312,6 +312,31 @@ export function checkSavedPackage(
   return value as CachedPackage;
 }
 /**
+ * Checks one saved row with the same full row validation the worker uses.
+ * Pages that read a few rows themselves, after the worker has given its
+ * verdict on the package or where no worker call covers those rows, use
+ * this on the rows they are about to read.
+ */
+export function checkSavedRow(
+  entry: unknown,
+  language: string,
+  pkg: { version?: number; search_view?: string } = {},
+): void {
+  const v2 =
+    pkg.version === 2 ||
+    (!!entry &&
+      typeof entry === "object" &&
+      ("issuer" in entry || "search_status" in entry));
+  validateEntry(entry, language, v2 ? 2 : 1, pkg.search_view);
+  if (
+    pkg.search_view &&
+    (!entry ||
+      typeof entry !== "object" ||
+      typeof (entry as { search_status?: unknown }).search_status !== "string")
+  )
+    throw invalidPackage();
+}
+/**
  * Reads one language package from the store through `checkSavedPackage`.
  * A missing package returns null. A saved package that fails the check
  * raises the invalid-package error, so callers show that message instead

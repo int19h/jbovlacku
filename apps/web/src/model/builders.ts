@@ -15,10 +15,7 @@ import {
   type MorphologyProfile,
   type RafsiInventoryClaim,
 } from "../../../../packages/core/src/browser.ts";
-import {
-  checkSavedPackage,
-  type CachedPackage,
-} from "../data/package-check.ts";
+import type { CachedPackage } from "../data/package-check.ts";
 import type {
   Compound,
   Formation,
@@ -386,48 +383,80 @@ export interface PackageInventory {
 export interface PackageListStore {
   list<T>(name: string): Promise<T[]>;
   keys?(name: string): Promise<string[]>;
-  entries?<T>(name: string): Promise<{ key: string; value: T }[]>;
+  get?<T>(name: string, id: string): Promise<T | undefined>;
+}
+/** One saved package and the language key it is saved under. */
+export interface CachedCandidate {
+  key: string;
+  pkg: CachedPackage;
 }
 /** The best valid saved package, plus the first invalid-package message when a saved package failed its check. */
 export interface CachedPackagePick {
   pkg: CachedPackage | null;
   invalid: string | null;
 }
+const candidateRank = (pkg: CachedPackage) =>
+  Array.isArray((pkg as { entries?: unknown })?.entries)
+    ? ((pkg as { entries: unknown[] }).entries.length ?? 0)
+    : -1;
 /**
- * The cached package with the most entries, preferring version 2, for
- * inventories and search. Every saved package is checked before its rows
- * are read. A malformed package does not hide a valid package of another
- * language: it is skipped and its message is reported in `invalid`, so
- * the page can show the message and still use the valid package. When
- * every saved package is malformed, `pkg` is null and `invalid` carries
- * the message. A store that cannot be read at all counts as no package.
- * Keys and values come from one store transaction when the store offers
- * `entries`, so a writer in another tab cannot pair a key with the wrong
- * package between two reads.
+ * Every saved package, best first (version 2 before version 1, then most
+ * entries). Packages are read with `store.get` per key when the store
+ * offers it, so the same object comes back while the package revision is
+ * unchanged and later checks of that object can hit their cache. This
+ * does not validate the rows: callers that read rows ask for a verdict
+ * first, through `verifiedCachedPackage` or the search worker.
  */
-export async function cachedPackagePick(
+export async function cachedPackages(
   store: PackageListStore,
-): Promise<CachedPackagePick> {
-  let pairs: { key?: string; value: CachedPackage }[] = [];
+): Promise<CachedCandidate[]> {
+  let pairs: CachedCandidate[] = [];
   try {
-    if (store.entries) {
-      pairs = await store.entries<CachedPackage>("packages");
-    } else if (store.keys) {
-      const keys = await store.keys("packages");
-      const listed = await store.list<CachedPackage>("packages");
-      pairs = listed.map((value, index) => ({ key: keys[index], value }));
+    if (store.keys && store.get) {
+      for (const key of await store.keys("packages")) {
+        const value = await store.get<CachedPackage>("packages", key);
+        if (value !== undefined) pairs.push({ key, pkg: value });
+      }
     } else {
       const listed = await store.list<CachedPackage>("packages");
-      pairs = listed.map((value) => ({ value }));
+      pairs = listed.map((value) => ({
+        key:
+          (Array.isArray((value as { entries?: unknown })?.entries)
+            ? ((value as { entries: { language?: unknown }[] }).entries[0]
+                ?.language as string | undefined)
+            : undefined) ?? "",
+        pkg: value,
+      }));
     }
   } catch {
-    return { pkg: null, invalid: null };
+    return [];
   }
-  const valid: CachedPackage[] = [];
+  return pairs.sort(
+    (a, b) =>
+      ((b.pkg as { version?: number })?.version ?? 1) -
+        ((a.pkg as { version?: number })?.version ?? 1) ||
+      candidateRank(b.pkg) - candidateRank(a.pkg),
+  );
+}
+/**
+ * The best saved package that passes the given verdict, plus the first
+ * failure message when a saved package failed. The verdict is the
+ * caller's worker check, so no page validates a whole package on the
+ * main thread. A malformed package does not hide a valid package of
+ * another language: it is skipped and its message is reported in
+ * `invalid`. When every saved package fails, `pkg` is null and
+ * `invalid` carries the message. A store that cannot be read at all
+ * counts as no package.
+ */
+export async function verifiedCachedPackage(
+  store: PackageListStore,
+  verify: (pkg: CachedPackage, language: string) => Promise<void>,
+): Promise<CachedPackagePick> {
   let invalid: string | null = null;
-  for (const { key, value } of pairs) {
+  for (const { key, pkg } of await cachedPackages(store)) {
     try {
-      valid.push(checkSavedPackage(value, key));
+      await verify(pkg, key);
+      return { pkg, invalid };
     } catch (error) {
       invalid ??=
         error instanceof Error
@@ -435,25 +464,18 @@ export async function cachedPackagePick(
           : "The search package is invalid. Search this server or download another package.";
     }
   }
-  return {
-    pkg:
-      valid.sort(
-        (a, b) =>
-          (b.version ?? 1) - (a.version ?? 1) ||
-          b.entries.length - a.entries.length,
-      )[0] ?? null,
-    invalid,
-  };
+  return { pkg: null, invalid };
 }
 /**
- * The best valid cached package, or null. Kept for callers that do not
- * show the invalid-package message themselves; wizard pages use
- * `cachedPackagePick` so a malformed package stays visible.
+ * The best saved package, unchecked, or null. Kept for callers that hand
+ * the package to the search worker, which gives the verdict. Wizard
+ * pages use `verifiedCachedPackage` so a malformed package stays
+ * visible before they read rows.
  */
 export async function cachedPackage(
   store: PackageListStore,
 ): Promise<CachedPackage | null> {
-  return (await cachedPackagePick(store)).pkg;
+  return (await cachedPackages(store))[0]?.pkg ?? null;
 }
 /** The conflict inventory from the local package. Callers pass a package checked by `cachedPackage`. */
 export function inventoryFromPackage(

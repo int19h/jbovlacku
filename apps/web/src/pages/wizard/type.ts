@@ -1,8 +1,9 @@
 import { wordFormStatus } from "../../components/word-form-feedback.ts";
 import { kindLabel } from "../../model/types.ts";
 import { detectWord, typedWord } from "../../model/typed-headword.ts";
+import { searchPackage } from "../../data/package-search.ts";
 import {
-  cachedPackagePick,
+  verifiedCachedPackage,
   inventoryFromPackage,
   currentRootConflicts,
 } from "../../model/builders.ts";
@@ -169,7 +170,9 @@ export async function typePage(
     role: "region",
     "aria-label": "Gismu closeness",
   });
-  const pick = await cachedPackagePick(app.store);
+  const pick = await verifiedCachedPackage(app.store, async (pkg, language) => {
+    await searchPackage(pkg, language, [], { signal: context.signal });
+  });
   const packageData = pick.pkg;
   const packageError = pick.invalid;
   if (!context.live()) return;

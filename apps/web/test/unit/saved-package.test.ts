@@ -98,25 +98,53 @@ test("a checked package object is not checked again", () => {
   assert.equal(search.checkSavedPackage(mutable, "en"), mutable);
 });
 
-test("the package pick skips a malformed package and keeps a valid one", async () => {
-  const store = {
-    keys: async () => ["fr", "en"],
-    list: async () => [malformed, valid],
+test("the verified pick skips a malformed package and keeps a valid one", async () => {
+  // The verdict in this test is the shared row check; pages use the
+  // search worker for the same verdict.
+  const verify = async (value: unknown, language: string) => {
+    search.checkSavedPackage(value, language);
   };
-  const pick = await builders.cachedPackagePick(store as never);
+  const byKey: Record<string, unknown> = { fr: malformed, en: valid };
+  const store = {
+    keys: async () => Object.keys(byKey),
+    get: async (_name: string, key: string) => byKey[key],
+    list: async () => Object.values(byKey),
+  };
+  const pick = await builders.verifiedCachedPackage(store as never, verify);
   assert.equal(pick.pkg, valid);
   assert.equal(pick.invalid, INVALID);
-  assert.equal(await builders.cachedPackage(store as never), valid);
   const onlyBad = {
     keys: async () => ["en"],
+    get: async () => malformed,
     list: async () => [malformed],
   };
-  const badPick = await builders.cachedPackagePick(onlyBad as never);
+  const badPick = await builders.verifiedCachedPackage(
+    onlyBad as never,
+    verify,
+  );
   assert.equal(badPick.pkg, null);
   assert.equal(badPick.invalid, INVALID);
-  const empty = { keys: async () => [], list: async () => [] };
-  assert.deepEqual(await builders.cachedPackagePick(empty as never), {
-    pkg: null,
-    invalid: null,
-  });
+  const empty = { keys: async () => [], get: async () => undefined, list: async () => [] };
+  assert.deepEqual(
+    await builders.verifiedCachedPackage(empty as never, verify),
+    { pkg: null, invalid: null },
+  );
+});
+
+test("the store.get path returns the same package object every time", async () => {
+  // A store whose get returns its cached object, as the real store does
+  // while a package revision is unchanged: two reads of the candidate
+  // list hand back the identical object, so a per-object check hits its
+  // cache on the second read. A getAll-style list returns fresh objects
+  // and would miss it.
+  const stored = valid;
+  const store = {
+    keys: async () => ["en"],
+    get: async () => stored,
+    list: async () => [{ ...(stored as object) }],
+  };
+  const first = await builders.cachedPackages(store as never);
+  const second = await builders.cachedPackages(store as never);
+  assert.equal(first[0].pkg, stored);
+  assert.equal(second[0].pkg, first[0].pkg);
 });

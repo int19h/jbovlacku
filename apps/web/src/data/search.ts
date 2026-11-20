@@ -50,6 +50,7 @@ import {
 } from "./package-check.ts";
 export {
   checkSavedPackage,
+  checkSavedRow,
   invalidPackage,
   savedPackage,
   validateCachedPackage,

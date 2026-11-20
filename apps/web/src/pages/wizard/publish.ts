@@ -31,7 +31,7 @@ import {
 import type { App } from "../../app/context.ts";
 import { draftToBody } from "../../model/draft.ts";
 import {
-  cachedPackagePick,
+  verifiedCachedPackage,
   inventoryFromPackage,
   inventoryCoverage,
   conflictReviewKey,
@@ -44,6 +44,7 @@ import {
 import { definitionBlock } from "../../components/definition.ts";
 import { identityProfile, profileName } from "../../components/attribution.ts";
 import { getWord, selfPeer } from "../../data/api.ts";
+import { searchPackage } from "../../data/package-search.ts";
 import { describePeer, isNotDelivered } from "../../data/delivery.ts";
 import {
   PublicationConflictError,
@@ -275,7 +276,9 @@ export async function publishPage(
     "aria-label": "Known conflicts",
   });
   left.append(conflicts);
-  const pick = await cachedPackagePick(app.store);
+  const pick = await verifiedCachedPackage(app.store, async (pkg, language) => {
+    await searchPackage(pkg, language, [], { signal: context.signal });
+  });
   const inventory = inventoryFromPackage(pick.pkg);
   const packageError = pick.invalid;
   if (!context.live()) return;
@@ -755,7 +758,14 @@ export async function publishPage(
           `Publishing ${body.word.spelling}`,
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
-            const latestPick = await cachedPackagePick(app.store);
+            const latestPick = await verifiedCachedPackage(
+              app.store,
+              async (pkg, language) => {
+                await searchPackage(pkg, language, [], {
+                  signal: context.signal,
+                });
+              },
+            );
             if (latestPick.invalid && !latestPick.pkg) {
               outcome.replaceChildren(p(latestPick.invalid, "notice"));
               return;

@@ -17,9 +17,10 @@ import {
 } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import {
+  checkSavedRow,
   downloadPackage,
+  invalidPackage,
   isV2,
-  savedPackage,
   type CachedPackage,
 } from "../data/search.ts";
 import { getWord, loadRecord } from "../data/api.ts";
@@ -57,19 +58,15 @@ async function packageFor(
     }
   } catch {}
   if (!app.session.storageAvailable) return fallback;
-  // A malformed saved package raises the invalid-package error here, before
-  // any page reads its rows. Storage failures keep the download fallback.
-  let cached: CachedPackage | null = null;
-  try {
-    cached = await savedPackage(app.store, language);
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message.startsWith("The search package is invalid.")
-    )
-      throw error;
-    return fallback;
-  }
+  // The saved package goes to the search worker, which gives the verdict,
+  // so no whole package is validated here. Storage failures keep the
+  // download fallback. A stored null is a saved package, not a missing
+  // one, so it raises the invalid-package error instead.
+  const raw = await app.store
+    .get<CachedPackage>("packages", language)
+    .catch(() => undefined);
+  if (raw === null) throw invalidPackage();
+  const cached = raw ?? null;
   return cached?.version === 2 ? cached : fallback;
 }
 interface RafsiWord {
@@ -102,15 +99,17 @@ export async function wordsWithRafsi(
       continue;
     }
     available = true;
-    limited ||= pkg.entries.some(
-      (entry) => isV2(entry) && entry.rafsi_complete === false,
-    );
+    // The worker verdict comes first; only a package it accepts has its
+    // rows read on this page.
     const result = await searchPackage(pkg, language, [rafsi], {
       rafsiOnly: true,
       patterns: !options.literal,
       limit: 1000,
       signal,
     });
+    limited ||= pkg.entries.some(
+      (entry) => isV2(entry) && entry.rafsi_complete === false,
+    );
     limited ||= result.totals[0] > 1000;
     for (const hit of result.hits[0])
       identities.set(hit.word.spelling, hit.word_id);
@@ -606,7 +605,11 @@ async function resolvePair(
   for (const language of languages) {
     const pkg = await packageFor(app, language, signal);
     if (!pkg) continue;
+    // This loop reads rows itself, so each row it is about to read is
+    // checked with the worker's row validation first.
+    if (!Array.isArray(pkg.entries)) throw invalidPackage();
     for (const entry of pkg.entries) {
+      checkSavedRow(entry, language, pkg);
       if (!isV2(entry)) continue;
       const id = deriveWordId(entry.word);
       for (const rafsi of (entry as PackageEntryV2).rafsi)

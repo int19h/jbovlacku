@@ -1,5 +1,8 @@
 import { CIRCLED, circledPlace } from "../../model/place-glyphs.ts";
-import { searchPackage } from "../../data/package-search.ts";
+import {
+  PackageValidationError,
+  searchPackage,
+} from "../../data/package-search.ts";
 import { kindLabel } from "../../model/types.ts";
 import {
   nearbyQuery as meaningQueries,
@@ -33,9 +36,13 @@ import {
 import type { App } from "../../app/context.ts";
 import {
   packageWordEntries,
-  savedPackage,
   type CachedPackage,
 } from "../../data/search.ts";
+import {
+  checkSavedRow,
+  invalidPackage,
+} from "../../data/package-check.ts";
+const invalidPackageMessage = invalidPackage().message;
 import { getWord, loadRecord, remoteDraftSearch } from "../../data/api.ts";
 import { placeholderCount, type Draft } from "../../model/draft.ts";
 import { countNodes, placeMarker } from "../../model/richtext.ts";
@@ -356,29 +363,30 @@ export async function meaningPage(
     if (!typedPackages.has(draft.language))
       typedPackages.set(
         draft.language,
-        savedPackage(app.store, draft.language).catch((error) => {
-          // A storage failure keeps the old no-package wording. A malformed
-          // saved package keeps its own error for the status area below.
-          if (
-            error instanceof Error &&
-            error.message.startsWith("The search package is invalid.")
-          )
-            throw error;
-          return undefined;
-        }),
+        app.store
+          .get<CachedPackage>("packages", draft.language)
+          .catch(() => undefined),
       );
+    const rawPackage = await typedPackages.get(draft.language);
+    if (!valid()) return;
+    // Only the rows this check reads are validated on the main thread:
+    // the package shape, then each row the word index returns for this
+    // word. A stored null, a non-package value, or a bad returned row
+    // shows the invalid-package message and the check goes on without a
+    // local package, so the server check below stays available.
     let packageData: CachedPackage | null | undefined;
     let packageError: string | null = null;
-    try {
-      packageData = await typedPackages.get(draft.language);
-    } catch (error) {
-      if (!valid()) return;
-      // A malformed saved package shows its message and the check goes on
-      // without a local package, so the server check below stays available.
-      packageError = describe(error);
-      packageData = null;
+    if (rawPackage === null) packageError = invalidPackageMessage;
+    else if (rawPackage !== undefined) {
+      if (
+        !rawPackage ||
+        typeof rawPackage !== "object" ||
+        !Array.isArray(rawPackage.entries) ||
+        typeof rawPackage.snapshot !== "string"
+      )
+        packageError = invalidPackageMessage;
+      else packageData = rawPackage;
     }
-    if (!valid()) return;
     if (packageError) typedStatus.append(p(packageError, "notice"));
     let id: string;
     try {
@@ -495,13 +503,29 @@ export async function meaningPage(
       return definitionsList;
     };
     if (packageData) {
-      const entries = packageWordEntries(packageData, id);
-      if (entries.length)
+      let entries: ReturnType<typeof packageWordEntries> = [];
+      try {
+        if (
+          packageData.entries.some(
+            (entry) => !entry || typeof entry !== "object",
+          )
+        )
+          throw new Error(invalidPackageMessage);
+        entries = packageWordEntries(packageData, id);
+        for (const entry of entries)
+          checkSavedRow(entry, draft.language, packageData);
+      } catch {
+        packageError = invalidPackageMessage;
+        typedStatus.append(p(packageError, "notice"));
+        entries = [];
+        packageData = null;
+      }
+      if (packageData && entries.length)
         showExisting(
           entries,
           `Local package for ${draft.language}, snapshot ${packageData.snapshot}.`,
         );
-      else
+      else if (packageData)
         typedStatus.append(
           p(
             `No definition of this word is in the local package for ${draft.language}, snapshot ${packageData.snapshot}. Other languages and servers are unknown.`,
@@ -772,27 +796,25 @@ export async function meaningPage(
       value === meaning.input.value &&
       language === draft.language;
     try {
-      // A malformed saved package is announced once and then treated as
-      // no local package, like the search page's fallback: the consent
-      // and server branch below still runs, so server search is never
-      // blocked by a bad or missing local package.
-      let pkg: CachedPackage | null = null;
-      try {
-        pkg = await savedPackage(app.store, language);
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          error.message.startsWith("The search package is invalid.")
-        ) {
-          if (current() && !invalidAnnounced) {
-            invalidAnnounced = true;
-            app.announce(error.message);
-          }
+      // The worker gives the verdict on the saved package, as on the
+      // search page: no whole package is validated on the main thread.
+      // A malformed package is announced once and then treated as no
+      // local package, so the consent and server branch below still
+      // runs and server search is never blocked by a bad or missing
+      // local package.
+      const raw = await app.store
+        .get<CachedPackage>("packages", language)
+        .catch(() => undefined);
+      if (!current()) return;
+      let pkg: CachedPackage | null = raw ?? null;
+      if (raw === null) {
+        if (!invalidAnnounced) {
+          invalidAnnounced = true;
+          app.announce(invalidPackageMessage);
         }
         pkg = null;
       }
-      if (!current()) return;
-      cached = pkg ?? null;
+      cached = pkg;
       renderMode();
       if (!terms.length) {
         renderHits([], "local");
@@ -802,14 +824,33 @@ export async function meaningPage(
         // Rank all query lists in the worker before selecting six nearby rows.
         // Each word goes in its typed spelling, so the local length limit
         // reads what the reader typed; the worker lowercases it afterwards.
-        const found = await searchPackage(pkg, language, terms, {
-          patterns: false,
-          nearby: true,
-          limit: 6,
-          signal: context.signal,
-        });
-        if (current()) renderHits(found.hits[0], "local");
-        return;
+        try {
+          const found = await searchPackage(pkg, language, terms, {
+            patterns: false,
+            nearby: true,
+            limit: 6,
+            signal: context.signal,
+          });
+          if (current()) renderHits(found.hits[0], "local");
+          return;
+        } catch (error) {
+          if (
+            !(
+              error instanceof PackageValidationError ||
+              (error instanceof Error &&
+                error.message.startsWith("The search package is invalid."))
+            )
+          )
+            throw error;
+          if (current() && !invalidAnnounced) {
+            invalidAnnounced = true;
+            app.announce(
+              error instanceof Error ? error.message : invalidPackageMessage,
+            );
+          }
+          cached = null;
+          if (current()) renderMode();
+        }
       }
       renderHits([], "local");
       if (remoteConsent !== consentKey()) {

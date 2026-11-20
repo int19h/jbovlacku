@@ -16,10 +16,11 @@ import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import {
   downloadPackage,
+  invalidPackage,
   reportPackageError,
-  savedPackage,
   type CachedPackage,
 } from "../data/search.ts";
+import { searchPackage } from "../data/package-search.ts";
 import { getCapabilities, getManifest, selfPeer } from "../data/api.ts";
 import type { Preferences } from "../data/store.ts";
 
@@ -209,13 +210,33 @@ export async function preferencesPage(
     const keys = await app.store.keys("packages");
     for (const key of keys) {
       // A malformed saved package keeps its row and Remove control, with
-      // the invalid-package message instead of its entry count.
+      // the invalid-package message instead of its entry count. The
+      // search worker gives the verdict, so no whole package is
+      // validated on the main thread here either.
       let cached: CachedPackage | null = null;
       let packageError: string | null = null;
-      try {
-        cached = await savedPackage(app.store, key);
-      } catch (error) {
-        packageError = describe(error);
+      const raw = await app.store
+        .get<CachedPackage>("packages", key)
+        .catch(() => undefined);
+      if (
+        raw === null ||
+        (raw !== undefined &&
+          (!raw ||
+            typeof raw !== "object" ||
+            !Array.isArray(raw.entries) ||
+            typeof raw.snapshot !== "string"))
+      )
+        packageError = invalidPackage().message;
+      else if (raw !== undefined) {
+        cached = raw;
+        try {
+          await searchPackage(cached, key, [], {
+            signal: context.signal,
+          });
+        } catch (error) {
+          packageError = describe(error);
+          cached = null;
+        }
       }
       const row = el("div", { class: "row" });
       row.append(
