@@ -8,7 +8,11 @@ import {
   prepareSigning,
   utf8,
 } from "../../../../packages/core/src/browser.ts";
-import { forgetWord, TransportError } from "../data/api.ts";
+import {
+  forgetWord,
+  RequestError,
+  TransportError,
+} from "../data/api.ts";
 import { ownHeads } from "../data/history.ts";
 import { freshPeer, type DeliveryEngine } from "../data/delivery.ts";
 import { LIFECYCLE_KINDS } from "../data/lifecycle.ts";
@@ -40,6 +44,21 @@ export class Signer {
     private delivery: DeliveryEngine,
     private offlineSigning: () => boolean,
   ) {}
+  /** True when this browser already holds at least one own event for the key. */
+  private async hasLocalHistory(identity: string): Promise<boolean> {
+    const store = this.session.store;
+    const heads = await store.get<string[]>("heads", identity);
+    if (Array.isArray(heads) && heads.length) return true;
+    if (
+      (await store.list<OutboxItem>("outbox")).some(
+        (item) => item.identity === identity,
+      )
+    )
+      return true;
+    return (await store.list<{ header?: { issuer?: string } }>("ownhistory")).some(
+      (envelope) => envelope?.header?.issuer === identity,
+    );
+  }
   /** Signs and persists a group. Does not send. */
   async sign(
     items: GroupItem[],
@@ -87,10 +106,17 @@ export class Signer {
         this.offlineSigning(),
       );
     } catch (error) {
-      // No connection must not lose the signed group. Sign from the history
-      // saved in this browser and let delivery queue it for retry.
-      if (this.offlineSigning() || !(error instanceof TransportError))
-        throw error;
+      // A lost connection must not block signing. Sign from the history
+      // saved in this browser. Delivery keeps the group for retry.
+      const unreachable =
+        error instanceof TransportError ||
+        (error instanceof RequestError &&
+          [502, 503, 504].includes(error.status));
+      if (this.offlineSigning() || !unreachable) throw error;
+      if (!(await this.hasLocalHistory(identity)))
+        throw new Error(
+          "Publishing needs a connection the first time this key publishes in this browser. Nothing was signed.",
+        );
       previous = await ownHeads(session.store, identity, true);
     }
     const learnedRestriction = await session.signingDisabled(identity);

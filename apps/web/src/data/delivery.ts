@@ -824,6 +824,8 @@ export class DeliveryEngine {
   }
   /** Resumes delivery with the same bytes and recipients, after a receipt lookup. */
   async resume(id: string) {
+    // Offline, no attempt will follow. Keep the stored outcome and schedule.
+    if (!navigator.onLine) return;
     await this.store.mergeOutbox(id, (item) => ({
       ...item,
       stopped: false,
@@ -847,6 +849,8 @@ export class DeliveryEngine {
   }
   /** Immediate explicit attempt. Follows the receipt lookup and immutable retry rules. */
   async tryNow(id: string) {
+    // Offline, no attempt will follow. Keep the stored outcome and schedule.
+    if (!navigator.onLine) return this.fresh(id);
     await this.store.mergeOutbox(id, (item) => ({
       ...item,
       peers: Object.fromEntries(
