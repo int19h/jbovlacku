@@ -361,10 +361,12 @@ impl Graph {
         // before any layout allocation.
         // The record count is known without a walk: charge it before
         // reading the predecessor counts, then charge the edges.
+        // The ancestry cap grows with the same record count.
+        let records = nodes.len();
         let mut graph = Self {
             nodes,
             space: super::ancestors::Space::empty(),
-            ancestry: super::ancestors::AncestryBudget::new(),
+            ancestry: super::ancestors::AncestryBudget::for_records(records),
             boundary: Shared::default(),
             issuer_complete: Shared::default(),
             rank_index: std::cell::RefCell::new(None),
@@ -1035,6 +1037,10 @@ impl Graph {
     /// Appended IDs never enter the shared layout. They get a rank at
     /// the end of their issuer block in this state's own rank map.
     pub fn append_ordinary(&mut self, node: Node) {
+        // The cap covers the record count after the append, as a full
+        // build of the same records would, before any union is charged.
+        self.ancestry
+            .allow_records(self.nodes.len() + usize::from(!self.nodes.contains_key(&node.id)));
         // Unions first, then the record itself: the same combine order
         // a full build uses for this record, so cap charges match.
         let closure = |cache: &BTreeMap<String, Closure>| {
@@ -1726,14 +1732,14 @@ mod tests {
         let heads = graph.maxima(ids, false);
         assert_eq!(heads.len(), 3_000);
         assert!(graph.ancestry.bytes() > before);
-        assert!(graph.ancestry.bytes() <= super::ancestors::MAX_ANCESTOR_BYTES);
+        assert!(graph.ancestry.bytes() <= graph.ancestry.limit());
         // Ten thousand such members would merge past the cap.
         let graph = build(20_000);
         let ids: BTreeSet<String> = graph.nodes.keys().step_by(2).cloned().collect();
         graph.maxima(ids, false);
         assert!(graph.ancestry.failed());
         assert!(graph.resource.get());
-        assert!(graph.ancestry.bytes() <= super::ancestors::MAX_ANCESTOR_BYTES);
+        assert!(graph.ancestry.bytes() <= graph.ancestry.limit());
     }
 
     #[test]
@@ -2115,7 +2121,7 @@ mod tests {
         let graph = Graph::new(nodes, &limits);
         assert!(graph.resource.get());
         assert!(graph.ancestry.failed());
-        assert!(graph.ancestry.bytes() <= crate::ancestors::MAX_ANCESTOR_BYTES);
+        assert!(graph.ancestry.bytes() <= graph.ancestry.limit());
     }
 
     #[test]
@@ -2133,7 +2139,7 @@ mod tests {
         let graph = Graph::new(nodes, &limits);
         assert!(graph.resource.get());
         assert!(graph.ancestry.failed());
-        assert!(graph.ancestry.bytes() <= crate::ancestors::MAX_ANCESTOR_BYTES);
+        assert!(graph.ancestry.bytes() <= graph.ancestry.limit());
     }
 
     fn interleaved_with_acceptance(count: usize) -> BTreeMap<String, Node> {
@@ -2173,12 +2179,13 @@ mod tests {
             traversal: Some(1_000_000_000),
             ..Limits::default()
         };
-        let mut graph = Graph::new(interleaved_with_acceptance(2_348), &limits);
+        let mut graph = Graph::new(interleaved_with_acceptance(2_391), &limits);
         assert!(!graph.resource.get());
-        // The two chain tips carry about 1,174 ranges each. Appending a
-        // record on both crosses the remaining cap headroom.
-        let tip_a = format!("jve1:{:064x}", 2_346usize);
-        let tip_b = format!("jve1:{:064x}", 2_347usize);
+        // The two chain tips carry about 1,195 ranges each. Appending a
+        // record on both crosses the remaining cap headroom, which the
+        // appended record's own allowance does not cover.
+        let tip_a = format!("jve1:{:064x}", 2_389usize);
+        let tip_b = format!("jve1:{:064x}", 2_390usize);
         graph.append_ordinary(node(
             "jve1:appended",
             "issuer",
@@ -2190,18 +2197,64 @@ mod tests {
         assert!(!graph.own["jve1:appended"].complete());
     }
 
+    /// The cap covers the record count, and an append raises it by
+    /// one record's allowance before its unions are charged. Near
+    /// the cap, an append refuses exactly when a full build of the
+    /// same records refuses.
+    #[test]
+    fn the_cap_grows_with_appends_as_with_a_full_build() {
+        use crate::ancestors::{ANCESTRY_CAP_PER_RECORD, ancestry_cap};
+        let limits = Limits {
+            traversal: Some(1_000_000_000),
+            ..Limits::default()
+        };
+        for count in 2_389..2_393 {
+            let nodes = interleaved_with_acceptance(count);
+            let records = nodes.len();
+            let graph = Graph::new(nodes.clone(), &limits);
+            assert_eq!(graph.ancestry.limit(), ancestry_cap(records));
+            let appended = node(
+                "jve1:appended",
+                "issuer",
+                &[
+                    &format!("jve1:{:064x}", count - 2),
+                    &format!("jve1:{:064x}", count - 1),
+                ],
+                "judgment.set",
+            );
+            let mut fork = graph.clone();
+            fork.append_ordinary(appended.clone());
+            assert_eq!(
+                fork.ancestry.limit(),
+                ancestry_cap(records) + ANCESTRY_CAP_PER_RECORD
+            );
+            let mut full_nodes = nodes;
+            full_nodes.insert(appended.id.clone(), appended);
+            let full = Graph::new(full_nodes, &limits);
+            assert_eq!(full.ancestry.limit(), fork.ancestry.limit());
+            assert_eq!(
+                fork.ancestry.failed(),
+                full.ancestry.failed(),
+                "count {count}"
+            );
+            if !full.ancestry.failed() {
+                assert_eq!(fork.ancestry.bytes(), full.ancestry.bytes());
+            }
+        }
+    }
+
     #[test]
     fn sibling_clones_have_independent_cap_accounting() {
         let limits = Limits {
             traversal: Some(1_000_000_000),
             ..Limits::default()
         };
-        let graph = Graph::new(interleaved_with_acceptance(2_348), &limits);
+        let graph = Graph::new(interleaved_with_acceptance(2_391), &limits);
         assert!(!graph.resource.get());
         let mut fork_a = graph.clone();
         let fork_b = graph.clone();
-        let tip_a = format!("jve1:{:064x}", 2_346usize);
-        let tip_b = format!("jve1:{:064x}", 2_347usize);
+        let tip_a = format!("jve1:{:064x}", 2_389usize);
+        let tip_b = format!("jve1:{:064x}", 2_390usize);
         fork_a.append_ordinary(node(
             "jve1:appended",
             "issuer",
@@ -2214,8 +2267,8 @@ mod tests {
         assert!(!fork_b.resource.get());
         assert!(!fork_b.ancestry.failed());
         assert!(!graph.ancestry.failed());
-        let last = format!("jve1:{:064x}", 2_347usize);
-        let first = format!("jve1:{:064x}", 1usize);
+        let last = format!("jve1:{:064x}", 2_390usize);
+        let first = format!("jve1:{:064x}", 0usize);
         assert!(fork_b.own[&last].ids.contains(&first));
         assert!(fork_b.own[&last].complete());
     }

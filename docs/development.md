@@ -391,7 +391,7 @@ Storage damage is outside this trust model. Restore private records and original
 The persistent checkpoint stores evaluated results separately from these private records.
 Checkpoint restoration loads record inputs from the compact store. A core or view change discards results and keeps those records.
 A transient worker fork still transfers its complete private runtime state between threads. This transfer is not the persistent checkpoint.
-Sessions retain evaluated state instead of all source bodies. Ancestor sets use interval storage over a topological layout, under a 64 MiB ancestry metadata cap.
+Sessions retain evaluated state instead of all source bodies. Ancestor sets use interval storage over a topological layout, under an ancestry metadata cap of 64 MiB plus 1,024 bytes per record.
 Identical history caches share storage when the snapshot contains no acceptance events. Work charges stay unchanged.
 
 When the event limit is exceeded, the core returns `resource_unavailable` before it builds ancestry caches.
@@ -493,7 +493,7 @@ Admission, package construction, enclosing checkpoint serialization, and state p
 The checkpoint interval limits capture frequency, not the duration of these operations.
 
 These runs differ in inventory, filesystem state, and concurrent work. They do not isolate the effect of one fix.
-Ancestry uses interval storage, so a complete history chain costs one range per record and range metadata is capped at 64 MiB.
+Ancestry uses interval storage, so a complete history chain costs one range per record and range metadata is capped at 64 MiB plus 1,024 bytes per record.
 Overlapping evaluation runtimes still require several GiB, and individual requests can reach their deadlines.
 The measurements do not establish performance on another host.
 An explicit traversal limit or a larger Node heap does not remove the WebAssembly memory limit.
@@ -1217,8 +1217,8 @@ Resource errors must expose unavailable results instead of fabricated zero score
 The state evaluator also has a work budget for history traversal, ancestor sets, and evaluator inner loops.
 The budget counts logical units across layout, dependency setup, closure construction, lifecycle, registers, retention, accounts, certificates, and downstream passes. The charge counts the exact interval layout and evaluator loop iterations - its records, edges, ranges, and loop steps - and no bitset words or pointer sizes, so the same input charges the same total in native and Wasm builds.
 The default budget grows linearly with the input (`10,000,000 + 256 * records + selection_ids`, counting each distinct valid import selection referenced by the selected view once). An explicit `Limits.traversal` value, `loaded-view.json` `state_traversal_limit`, `JVC_STATE_TRAVERSAL_LIMIT`, or the Node loader flag overrides that default.
-Ancestry range metadata also has a hard cap of 64 MiB, counted over every range vector a union copies or allocates. A history whose ranges pass the cap fails with `resource_unavailable` at any budget.
-Super-linear history shapes reach the work budget sooner, while ordinary histories grow linearly and fit the default work budget. The 64 MiB ancestry range cap also fills as the record count grows, whatever the budget: a plain chain uses about 152 bytes of it per record, so an ordinary history refuses with `resource_unavailable` near 440,000 records (a chain of 397,356 records evaluates and one of 463,582 refuses).
+Ancestry range metadata also has a hard cap, counted over every range vector a union copies or allocates. A history whose ranges pass the cap fails with `resource_unavailable` at any budget. The ancestry range cap is 64 MiB plus 1,024 bytes per record (`67,108,864 + 1,024 * records`). A record that a session appends raises the cap by its own 1,024 bytes, as a full evaluation of the same records would. No limit or host setting changes the cap.
+Super-linear history shapes reach the work budget sooner, while ordinary histories grow linearly and fit the default work budget. The ancestry range cap grows with the record count, so an ordinary history stays under it at any size. A plain chain uses about 152 bytes of the cap per record. A history with an accepted transfer uses about 456 bytes per record, because its three link modes keep separate caches. Chains of 600,000 and 1,000,000 records evaluate under the default limits. A history whose ranges grow faster than its record count still refuses. For example, a chain of 3,000 records in which each record has one child that is never merged has 6,000 records, and it fills the cap.
 `Limits.events` is absent by default and serves as an optional event-count quota when configured.
 [Issue 11](https://github.com/int19h/jbovlacku/issues/11) tracks state evaluation beyond the local corpus.
 Use the [state validation guide](../crates/jvc-state/VALIDATION.md) for its tested corpus and limits.

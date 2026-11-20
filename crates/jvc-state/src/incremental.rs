@@ -2681,7 +2681,8 @@ fn check_saved_state(
             trust_registers += 1;
         }
     }
-    if total_maxima_charges > super::ancestors::MAX_ANCESTOR_BYTES {
+    let ancestry_cap = super::ancestors::ancestry_cap(nodes.len());
+    if total_maxima_charges > ancestry_cap {
         return Err("register_charge_cap");
     }
     if !resource_refused
@@ -2692,7 +2693,7 @@ fn check_saved_state(
         return Err("register_work_exceeds_consumed");
     }
     if let Some(bytes) = saved.ancestry_bytes {
-        if bytes > super::ancestors::MAX_ANCESTOR_BYTES || bytes % 8 != 0 {
+        if bytes > ancestry_cap || bytes % 8 != 0 {
             return Err("ancestry_bytes_invalid");
         }
         if !resource_refused
@@ -3432,7 +3433,7 @@ mod rebuild_tests {
             input.add_host_verified_record(record);
         };
         let mut ids: Vec<String> = Vec::new();
-        for i in 0..2_348usize {
+        for i in 0..2_391usize {
             let id = format!("jve1:{i:064x}");
             let previous = (i >= 2)
                 .then(|| format!("jve1:{:064x}", i - 2))
@@ -5853,7 +5854,7 @@ mod rebuild_tests {
         let (judgment_a, _) = signed(
             7,
             9500,
-            vec![ids[2_346].clone(), ids[2_347].clone()],
+            vec![ids[2_389].clone(), ids[2_390].clone()],
             json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
         );
         let mut delta = PreparedEvaluationInput::new(options.clone());
@@ -8842,6 +8843,37 @@ mod rebuild_tests {
         assert_eq!(after_res.evaluation(), expected_state.evaluation());
         assert_eq!(after_full.consumed_work(), expected_state.consumed_work());
         assert_eq!(after_res.consumed_work(), expected_state.consumed_work());
+    }
+
+    /// A history whose ancestry bytes pass the fixed base of the cap,
+    /// but not the cap for its record count, evaluates. Both of its
+    /// checkpoints restore, and an append after the restore matches a
+    /// full evaluation.
+    #[test]
+    fn a_history_past_the_cap_base_evaluates_and_restores() {
+        use crate::ancestors::{ANCESTRY_CAP_BASE, ancestry_cap};
+        let mut prepared = base();
+        prepared.options.limits.traversal = Some(1_000_000_000);
+        let issuer = identity_from_seed(&[8u8; 32]);
+        // Two interleaved chains of one issuer: each closure holds
+        // many ranges, so the bytes pass the base with few records.
+        for i in 0..4_100usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 800_000 + i),
+                &issuer,
+                (i >= 2)
+                    .then(|| format!("jve1:{:064x}", 800_000 + i - 2))
+                    .into_iter()
+                    .collect(),
+                json!({"kind":"identity.merge"}),
+            ));
+        }
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+        let bytes = cap_bytes(&state);
+        assert!(bytes > ANCESTRY_CAP_BASE, "{bytes} bytes");
+        assert!(bytes <= ancestry_cap(prepared.nodes.len()));
+        assert_state_roundtrips_and_appends(&state, &prepared, 7);
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod graph;
 mod incremental;
 mod policy;
 mod projection;
+pub use ancestors::{ANCESTRY_CAP_BASE, ANCESTRY_CAP_PER_RECORD, ancestry_cap};
 pub use api::{
     AccountControl, Authority, Certificate, PublicationStatus, account_control, publication_status,
 };
@@ -525,8 +526,10 @@ impl Evaluation {
         overlay: Option<std::rc::Rc<Value>>,
         suspended: impl Fn(&str) -> bool,
     ) -> Self {
-        // A resource refusal stays the clean refusal: only its overlay
-        // changes, as a rebuild with the new overlay would refuse again.
+        // A resource refusal stays the clean refusal, and only its
+        // overlay changes. Without the records this method cannot
+        // rebuild. `EvaluatedState::with_overlay` rebuilds a refused
+        // state instead, and that rebuild can succeed.
         if self.reasons.contains("resource_unavailable") {
             let mut result = self.clone();
             result.overlay = overlay;

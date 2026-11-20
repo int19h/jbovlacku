@@ -34,30 +34,69 @@ struct Range {
     last: u32,
 }
 
-/// Hard cap on ancestry range metadata, counted cumulatively over every
-/// range vector a union copies or allocates, including discarded
-/// temporaries. The same value applies in native and Wasm builds. The
-/// real dictionary plus synthetic data uses an estimated 10 to 20 MB by
-/// this count; adversarial layouts reach the cap and refuse instead of
-/// exhausting memory.
-pub(crate) const MAX_ANCESTOR_BYTES: usize = 64 * 1024 * 1024;
+/// Fixed part of the ancestry byte cap.
+pub const ANCESTRY_CAP_BASE: usize = 64 * 1024 * 1024;
+
+/// Part of the ancestry byte cap that each record adds.
+pub const ANCESTRY_CAP_PER_RECORD: usize = 1024;
+
+/// Hard cap on ancestry range metadata for a history of `records`
+/// records: `ANCESTRY_CAP_BASE + ANCESTRY_CAP_PER_RECORD * records`.
+/// The cap counts bytes cumulatively over every range vector a union
+/// copies or allocates, including discarded temporaries. The same
+/// value applies in native and Wasm builds. An ordinary history
+/// charges a fixed amount per record, so it stays under the cap at
+/// any size. A history whose ranges grow faster than its record
+/// count reaches the cap and refuses instead of exhausting memory.
+pub fn ancestry_cap(records: usize) -> usize {
+    ANCESTRY_CAP_BASE.saturating_add(records.saturating_mul(ANCESTRY_CAP_PER_RECORD))
+}
 
 /// Per-state cap accounting. Each evaluated state owns one budget.
 /// Cloning a state copies the counters by value, so work in one fork
 /// or sibling never consumes another state's cap or sets its failure.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct AncestryBudget {
     bytes: Cell<usize>,
+    limit: Cell<usize>,
     failed: Cell<bool>,
 }
 
+impl Default for AncestryBudget {
+    fn default() -> Self {
+        Self::for_records(0)
+    }
+}
+
 impl AncestryBudget {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// A budget whose cap is `ancestry_cap(records)`.
+    pub fn for_records(records: usize) -> Self {
+        Self {
+            bytes: Cell::new(0),
+            limit: Cell::new(ancestry_cap(records)),
+            failed: Cell::new(false),
+        }
+    }
+
+    /// Raise the cap to `ancestry_cap(records)`, when a record is
+    /// appended to the history this budget covers. The cap never
+    /// falls, and a failure stays a failure.
+    pub fn allow_records(&self, records: usize) {
+        self.limit.set(self.limit.get().max(ancestry_cap(records)));
+    }
+
+    #[cfg(test)]
+    pub fn limit(&self) -> usize {
+        self.limit.get()
+    }
+
     pub fn charge(&self, bytes: usize) -> bool {
-        if self.failed.get() || bytes > MAX_ANCESTOR_BYTES.saturating_sub(self.bytes.get()) {
+        if self.failed.get() || bytes > self.limit.get().saturating_sub(self.bytes.get()) {
             self.failed.set(true);
             false
         } else {
@@ -86,7 +125,7 @@ impl AncestryBudget {
     /// past the cap is a failure, exactly as if the charges had run.
     pub fn restore_bytes(&self, bytes: usize) {
         self.bytes.set(bytes);
-        if bytes > MAX_ANCESTOR_BYTES {
+        if bytes > self.limit.get() {
             self.failed.set(true);
         }
     }
@@ -618,10 +657,11 @@ mod tests {
     #[test]
     fn ancestry_budget_boundary_is_exact() {
         let budget = AncestryBudget::new();
-        assert!(budget.charge(MAX_ANCESTOR_BYTES - 1));
+        assert_eq!(budget.limit(), ANCESTRY_CAP_BASE);
+        assert!(budget.charge(ANCESTRY_CAP_BASE - 1));
         assert!(!budget.failed());
         assert!(budget.charge(1));
-        assert_eq!(budget.bytes(), MAX_ANCESTOR_BYTES);
+        assert_eq!(budget.bytes(), ANCESTRY_CAP_BASE);
         assert!(!budget.failed());
         assert!(!budget.charge(1));
         assert!(budget.failed());
@@ -631,6 +671,39 @@ mod tests {
         set.insert(&budget, "jve1:a");
         assert_eq!(set.range_count(), 0);
         assert!(!set.contains("jve1:a"));
+    }
+
+    #[test]
+    fn the_cap_grows_with_the_record_count() {
+        assert_eq!(ancestry_cap(0), ANCESTRY_CAP_BASE);
+        assert_eq!(
+            ancestry_cap(600_000),
+            ANCESTRY_CAP_BASE + 600_000 * ANCESTRY_CAP_PER_RECORD
+        );
+        assert_eq!(ancestry_cap(usize::MAX), usize::MAX);
+        let budget = AncestryBudget::for_records(10);
+        assert_eq!(budget.limit(), ancestry_cap(10));
+        assert!(budget.charge(ancestry_cap(10)));
+        assert!(!budget.charge(1));
+        assert!(budget.failed());
+        // A raised cap does not clear a failure.
+        budget.allow_records(11);
+        assert_eq!(budget.limit(), ancestry_cap(11));
+        assert!(budget.failed());
+        // Each appended record adds its allowance, and the cap never falls.
+        let budget = AncestryBudget::for_records(10);
+        assert!(budget.charge(ancestry_cap(10)));
+        budget.allow_records(11);
+        assert!(budget.charge(ANCESTRY_CAP_PER_RECORD));
+        assert!(!budget.failed());
+        budget.allow_records(5);
+        assert_eq!(budget.limit(), ancestry_cap(11));
+        // A restored total is checked against the cap for the records.
+        let budget = AncestryBudget::for_records(10);
+        budget.restore_bytes(ancestry_cap(10));
+        assert!(!budget.failed());
+        budget.restore_bytes(ancestry_cap(10) + 8);
+        assert!(budget.failed());
     }
 
     #[test]
