@@ -62,28 +62,35 @@ async function establishHistory(page: Page) {
   return clear.id as string;
 }
 
-/** Clears the current endorsement after a full reload, through the unlock dialog. */
+/** Clears every current endorsement after a full reload, through the unlock dialog. */
 async function clearAfterReload(page: Page, clears: number) {
+  const acceptedClears = async () =>
+    (await outboxItems(page)).filter(
+      (item: any) =>
+        JSON.parse(item.transport).envelope.header.action.value ===
+          "clear" && item.peers.self.state === "accepted",
+    ).length;
   await page.goto("/word/cukta");
-  await expect(endorsedArticle(page)).toHaveCount(1, {
-    timeout: 30000,
-  });
-  await endorsedArticle(page).getByRole("button", { name: "Endorse" }).click();
-  const dialog = page.getByRole("dialog", { name: "Unlock your key" });
-  await expect(dialog).toBeVisible();
-  await dialog.getByLabel("Passphrase").fill(PASSPHRASE);
-  await dialog.getByRole("button", { name: "Unlock" }).click();
   await expect
-    .poll(
-      async () =>
-        (await outboxItems(page)).filter(
-          (item: any) =>
-            JSON.parse(item.transport).envelope.header.action.value ===
-              "clear" && item.peers.self.state === "accepted",
-        ).length,
-      { timeout: 30000 },
-    )
-    .toBe(clears);
+    .poll(async () => endorsedArticle(page).count(), { timeout: 30000 })
+    .toBeGreaterThan(0);
+  // A test can leave more than one definition of the word endorsed. Clear
+  // each pressed article until the expected clear records are accepted.
+  while ((await acceptedClears()) < clears) {
+    const before = await acceptedClears();
+    await endorsedArticle(page)
+      .first()
+      .getByRole("button", { name: "Endorse" })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "Unlock your key" });
+    if (await dialog.isVisible().catch(() => false)) {
+      await dialog.getByLabel("Passphrase").fill(PASSPHRASE);
+      await dialog.getByRole("button", { name: "Unlock" }).click();
+    }
+    await expect
+      .poll(acceptedClears, { timeout: 30000 })
+      .toBeGreaterThan(before);
+  }
 }
 
 /** Drives the wizard to a reviewed publish page for a new gismu. */
@@ -463,8 +470,12 @@ test("a 503 history read signs from the history saved in this browser", async ({
     .poll(() => statesOf(page, [second.id]), { timeout: 30000 })
     .toEqual(["accepted"]);
   // Leave the shared word without a live endorsement from this test.
-  if (JSON.parse(second.transport).envelope.header.action.value === "bless")
-    await clearAfterReload(page, 2);
+  if (JSON.parse(second.transport).envelope.header.action.value === "bless") {
+    const sameTarget =
+      JSON.parse(second.transport).envelope.header.action.target ===
+      JSON.parse(items[0].transport).envelope.header.action.target;
+    await clearAfterReload(page, sameTarget ? 2 : 3);
+  }
 });
 
 test("a record is delivered while the browser reports offline but the server answers", async ({
