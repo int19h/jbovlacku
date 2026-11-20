@@ -40,12 +40,13 @@ pub const ANCESTRY_CAP_BASE: usize = 64 * 1024 * 1024;
 /// Part of the ancestry byte cap that each record adds.
 pub const ANCESTRY_CAP_PER_RECORD: usize = 1024;
 
-/// Hard cap on the range storage that the ancestry caches keep, for a
-/// history of `records` records:
+/// Hard cap on the range storage that the graph keeps (the closures in
+/// the ancestry caches and the compromise cutoffs), for a history of
+/// `records` records:
 /// `ANCESTRY_CAP_BASE + ANCESTRY_CAP_PER_RECORD * records`.
 ///
-/// The cap counts what `stored_bytes` gives for each closure that a
-/// cache keeps. A closure with one range is stored inline and counts
+/// The cap counts what `stored_bytes` gives for each closure that the
+/// graph keeps. A closure with one range is stored inline and counts
 /// nothing, so union steps, predecessor counts, `maxima` calls and
 /// other temporary sets do not consume the cap. A history consumes it
 /// only through closures with more than one range: about 8 bytes for

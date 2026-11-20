@@ -8791,13 +8791,18 @@ mod rebuild_tests {
 
     /// A history near the cap for `appended_near_the_cap_refuses_in_every_path_where_full_refuses`.
     /// One key accepts transfers from `sources` other keys, so the
-    /// accepted closure of a record that covers its block keeps one
-    /// range per source block. Each source block starts with a record
-    /// that no closure contains, so source blocks never fuse into one
-    /// range and no closure crosses the end of the accepting key's
-    /// block, where an append inserts. Two interleaved chains of a filler key bring the kept
-    /// storage near the cap, and `tune` root records each raise the
-    /// cap by one allowance without kept storage.
+    /// structural closure of a record that covers its block keeps one
+    /// range per source block. The key has one root per acceptance,
+    /// so no transfer becomes a lifecycle succession, and the own and
+    /// accepted closures of such a record keep one range each. Each
+    /// source block starts with a record that no closure contains, so
+    /// source blocks never fuse with each other, and no closure
+    /// crosses the end of the accepting key's block, where an append
+    /// inserts. A source block just before the accepting key's block
+    /// fuses with it, so 190 sources give 190 ranges. Two interleaved
+    /// chains of a filler key bring the kept storage near the cap, and
+    /// `tune` root records each raise the cap by one allowance without
+    /// kept storage.
     fn near_cap_accepting_history(
         sources: usize,
         filler: usize,
@@ -8893,9 +8898,10 @@ mod rebuild_tests {
     /// An append whose kept closures cross the cap refuses in every
     /// path exactly where full evaluation refuses: the live state, a
     /// restored full checkpoint and a restored result checkpoint.
-    /// The appended record keeps a closure of 191 ranges in two link
-    /// modes (1,536 bytes). With one allowance fewer the history has
-    /// 1,280 bytes of room after the append, and every path refuses.
+    /// The appended record keeps a structural closure of 190 ranges
+    /// (16 + 8 * 190 = 1,536 bytes), and its own and accepted closures
+    /// of one range count nothing. With no tuning record the history
+    /// has 1,280 bytes of room after the append, and every path refuses.
     /// With one tuning record more it has 2,304 bytes, every path
     /// accepts, the live append takes the fast path, and all paths
     /// count the same bytes, also after a checkpoint of the live
