@@ -89,7 +89,9 @@ export function workerReplyError(
   phase?: unknown,
 ): Error {
   const text = typeof message === "string" ? message : String(message);
-  if (code === "invalid-package") return new PackageValidationError(text);
+  // An invalid package always shows the documented message, never the text
+  // of the exception that the worker caught while it checked the package.
+  if (code === "invalid-package") return new PackageValidationError();
   if (code === "package-missing") return new MissingPackageError(text);
   if (code === "package-too-large") return new PackageStorageError(text);
   if (code === "resource-limit")

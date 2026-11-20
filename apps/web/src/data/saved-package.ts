@@ -70,6 +70,15 @@ export function fields(
   );
 }
 
+/**
+ * Whether any element of a list fails, visited as the worker's `.some`
+ * visits it: empty slots, which IndexedDB keeps, are skipped. The method is
+ * taken from `Array.prototype`, so an own `some` property on a stored array
+ * cannot replace it.
+ */
+const anyItem = (list: unknown[], test: (item: unknown) => boolean) =>
+  Array.prototype.some.call(list, test);
+
 /** Rafsi spellings per version 2 entry. The server applies the same bound. */
 export const PACKAGE_RAFSI_LIMIT = 64;
 
@@ -136,17 +145,19 @@ export function savedRow(
     lexicalKinds.includes(classification.kind) &&
     Array.isArray(classification.selmaho);
   if (usable)
-    for (const item of (classification as { selmaho: unknown[] }).selmaho)
-      if (typeof item !== "string") usable = false;
+    usable = !anyItem(
+      (classification as { selmaho: unknown[] }).selmaho,
+      (item) => typeof item !== "string",
+    );
   if (usable)
-    for (const gloss of glosses as unknown[])
-      if (
+    usable = !anyItem(
+      glosses as unknown[],
+      (gloss) =>
         !fields(gloss, ["language", "text", "sense"]) ||
         !languageTag(gloss.language) ||
         typeof gloss.text !== "string" ||
-        !(gloss.sense === null || typeof gloss.sense === "string")
-      )
-        usable = false;
+        !(gloss.sense === null || typeof gloss.sense === "string"),
+    );
   if (usable && version === 2) {
     const rafsi = entry.rafsi;
     usable =
@@ -157,9 +168,10 @@ export function savedRow(
       (entry.rafsi_complete === undefined ||
         typeof entry.rafsi_complete === "boolean");
     if (usable)
-      for (const item of rafsi as unknown[])
-        if (typeof item !== "string" || LONE_SURROGATE.test(item))
-          usable = false;
+      usable = !anyItem(
+        rafsi as unknown[],
+        (item) => typeof item !== "string" || LONE_SURROGATE.test(item),
+      );
   } else if (usable)
     for (const name of V2_ONLY) if (Object.hasOwn(entry, name)) usable = false;
   if (!usable) throw new PackageValidationError();

@@ -135,6 +135,10 @@ test("the rule and the worker agree on every field a page reads", () => {
     "row.attribution",
     // The core checks the spelling where a page derives the word ID.
     "word.spelling",
+    // A row's ordering status: only the worker reads it. A package with a
+    // bad status still reaches the lujvo builder, whose part lookup then
+    // reports that the local lookup is unavailable, as on main.
+    "row.search_status",
     // Exact field sets and the row order: no page reads them.
     "package.extra",
     "row.extra",
@@ -239,6 +243,14 @@ test("the rule and the worker agree on every field a page reads", () => {
         { ...base, entries: [{ ...row, glosses: [value] }] },
       ]);
   }
+  const view = "jve1:" + "9".repeat(64);
+  for (const status of ["unknown", 1, null, ""])
+    cases.push([
+      "row.search_status",
+      pkg([v2Row({ search_status: status })], { search_view: view }),
+    ]);
+  for (const status of [{ view, status: "unknown" }, { view }, "active"])
+    cases.push(["row.search_status", pkg([v2Row({ search_status: status })])]);
   const over = pkg([
     v2Row({ rafsi: Array.from({ length: 65 }, (_, i) => `r${i}`) }),
   ]);
@@ -367,4 +379,33 @@ test("an event or row language with a lone surrogate is unusable", () => {
     rejects(value);
     assert.equal(workerAccepts(value), false);
   }
+});
+
+test("empty array slots are read as the worker reads them", () => {
+  // IndexedDB keeps empty slots. The worker's `.some` skips them, so the
+  // rule must skip them too.
+  const selmaho = new Array(1);
+  const glosses = [v1Row().glosses[0]];
+  glosses.length = 2;
+  const rafsi = ["cuk"];
+  rafsi.length = 2;
+  for (const row of [
+    v2Row({ classification: { kind: "gismu", selmaho } }),
+    v2Row({ glosses }),
+    v2Row({ rafsi }),
+  ]) {
+    const value = pkg([row]);
+    assert.ok(workerAccepts(value));
+    assert.equal(readAll(value), value);
+  }
+});
+
+test("an own some property on a stored array does not replace the rule's test", () => {
+  // The worker calls the array's own `some` and rejects the package when it
+  // is not a function. The rule uses `Array.prototype.some`, so it accepts
+  // this one listed difference without throwing a raw error.
+  const glosses = Object.assign([v1Row().glosses[0]], { some: false });
+  const value = pkg([v2Row({ glosses })]);
+  assert.equal(workerAccepts(value), false);
+  assert.equal(readAll(value), value);
 });

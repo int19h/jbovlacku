@@ -808,8 +808,10 @@ export async function meaningPage(
           if (current()) renderHits(found.hits[0], "local");
           return;
         } catch (error) {
-          cached = unusable(error);
+          // An obsolete request changes nothing: it returns before it
+          // touches the page's state.
           if (!current()) return;
+          cached = unusable(error);
           renderMode();
         }
       }

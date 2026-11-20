@@ -468,7 +468,7 @@ test("the publish page keeps a valid package beside a malformed one that ranks f
 test("the rafsi pair page finds a pair in a valid package beside a malformed one", async ({
   page,
 }) => {
-  await seed(page, malformedPackage, undefined, { fr: validPackage });
+  await seed(page, malformedPackage, undefined, { fr: frPackage });
   await blockDownloads(page);
   const pair = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
@@ -480,7 +480,10 @@ test("the rafsi pair page finds a pair in a valid package beside a malformed one
   }, corePath);
   await page.goto(`/rafsi-pair/${pair}`);
   await expect(page.getByRole("heading", { name: "cuk" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "cukta" }).first()).toBeVisible();
+  // The word link names the language of the package that held the pair.
+  await expect(
+    page.locator('main a[href="/word/cukta?lang=fr"]').first(),
+  ).toBeVisible();
   expect(await page.locator("body").innerText()).not.toMatch(RAW_ERROR);
 });
 
@@ -812,3 +815,149 @@ for (const [label, row] of [
     await page.goto(`/rafsi-pair/${pair}`);
     await expectInvalidOnly(page);
   });
+
+/**
+ * Saves one package built in the page, so that shapes that do not survive
+ * the test's argument passing (empty array slots, own properties on
+ * arrays) go through a real IndexedDB write and read.
+ */
+async function seedBuilt(
+  page: Page,
+  shape: "selmaho-hole" | "gloss-hole" | "rafsi-hole" | "gloss-some",
+  draft?: Record<string, unknown>,
+) {
+  await page.goto("/");
+  await page.evaluate(
+    async ({ shape, row, draft }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const entry = structuredClone(row) as Record<string, any>;
+      if (shape === "selmaho-hole") entry.classification.selmaho = new Array(1);
+      if (shape === "gloss-hole") entry.glosses.length = 2;
+      if (shape === "rafsi-hole") entry.rafsi.length = 2;
+      if (shape === "gloss-some") Object.assign(entry.glosses, { some: false });
+      const store = new LocalStore();
+      await store.setPreferences({ searchMode: "local" });
+      await store.put("packages", "en", {
+        version: 2,
+        snapshot: "sha256:" + "a".repeat(64),
+        entries: [entry],
+      });
+      if (draft) {
+        const { newDraft } = await import(String("/src/model/draft.ts"));
+        await store.put("drafts", "current", newDraft(draft as never));
+      }
+    },
+    { shape, row: validRow, draft },
+  );
+}
+
+for (const shape of ["selmaho-hole", "gloss-hole", "rafsi-hole"] as const)
+  test(`a package with an empty array slot (${shape}) stays usable, as the worker reads it`, async ({
+    page,
+  }) => {
+    await seedBuilt(page, shape, {
+      meaning: "book",
+      kind: "gismu",
+      spelling: "cukte",
+      step: 2,
+    });
+    await page.goto("/new/type");
+    const closeness = page.getByRole("region", { name: "Gismu closeness" });
+    await expect(closeness).toContainText("Last vowel differs from cukta");
+    await expect(closeness).not.toContainText(INVALID);
+    await page.goto("/preferences");
+    await expect(
+      page.getByText(/1 definition · snapshot aaaaaaaaaaaa/),
+    ).toBeVisible();
+    // Settings checks the rows in a later task; give it time to run.
+    await page.waitForTimeout(500);
+    await expect(page.getByText(INVALID)).toHaveCount(0);
+  });
+
+test("search and meaning show the documented message for a gloss list with an own some property", async ({
+  page,
+}) => {
+  await seedBuilt(page, "gloss-some", { meaning: "book", step: 1 });
+  await page.goto("/search?q=book&lang=en");
+  await expect(page.locator("div.status[role=status]")).toContainText(INVALID);
+  expect(await page.locator("body").innerText()).not.toMatch(/not a function/);
+  await page.goto("/new/meaning");
+  await expect(page.locator("div.status[role=status]")).toContainText(INVALID);
+  expect(await page.locator("body").innerText()).not.toMatch(/not a function/);
+});
+
+test("an obsolete nearby lookup does not clear the current language's package", async ({
+  page,
+}) => {
+  // Holds the worker's invalid-package reply for the English lookup until
+  // the page has read the French package, then releases it.
+  await page.addInitScript(() => {
+    const w = window as unknown as {
+      held?: () => void;
+      frenchRead?: boolean;
+    };
+    const Native = window.Worker;
+    window.Worker = class extends Native {
+      set onmessage(handler: ((event: MessageEvent) => void) | null) {
+        super.onmessage = (event: MessageEvent) => {
+          if (event.data?.code === "invalid-package" && !w.held)
+            w.held = () => handler?.call(this, event);
+          else handler?.call(this, event);
+        };
+      }
+    } as typeof Worker;
+    const get = IDBObjectStore.prototype.get;
+    IDBObjectStore.prototype.get = function (key: IDBValidKey) {
+      const request = get.call(this, key);
+      if (this.name === "packages" && key === "fr")
+        request.addEventListener("success", () =>
+          setTimeout(() => (w.frenchRead = true), 0),
+        );
+      return request;
+    };
+  });
+  const empty = {
+    version: 2,
+    snapshot: "sha256:" + "a".repeat(64),
+    entries: [],
+  };
+  await seed(
+    page,
+    { ...empty, entries: [null] },
+    { meaning: "book", language: "en", step: 1 },
+    { fr: empty },
+  );
+  await page.goto("/new/meaning");
+  await page.waitForFunction(
+    () => typeof (window as unknown as { held?: unknown }).held === "function",
+  );
+  await page.getByLabel("Meaning", { exact: true }).fill("");
+  await page.getByLabel("Language", { exact: true }).selectOption("fr");
+  await page.waitForFunction(
+    () => (window as unknown as { frenchRead?: boolean }).frenchRead === true,
+  );
+  const mode = () =>
+    page.evaluate(
+      () =>
+        document
+          .querySelector("#similar-h")
+          ?.parentElement?.querySelector("span.meta")?.textContent ?? "",
+    );
+  expect(await mode()).toContain("from the downloaded package");
+  await page.evaluate(() => (window as unknown as { held: () => void }).held());
+  // Let the released reply settle, then type: the input handler shows the
+  // source from the page's state at once, before the next lookup runs.
+  await page.waitForTimeout(100);
+  const afterInput = await page.evaluate(() => {
+    const input = document.querySelector("textarea")!;
+    input.value = "livre";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return (
+      document
+        .querySelector("#similar-h")
+        ?.parentElement?.querySelector("span.meta")?.textContent ?? ""
+    );
+  });
+  expect(afterInput).toContain("from the downloaded package");
+  expect(afterInput).not.toContain("no local package");
+});
