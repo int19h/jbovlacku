@@ -9,6 +9,7 @@ import {
   wordId as deriveWordId,
 } from "../../../../packages/core/src/browser.ts";
 import { el, p, text, link, button, field, describe } from "../lib/dom.ts";
+import { nullOnSpellingRefusal } from "../lib/core-error.ts";
 import {
   navigate,
   routes,
@@ -400,11 +401,17 @@ export async function claimPage(
       }),
     ),
   );
-  if (!spelling) {
+  // Only the core's spelling refusal names no word. Any other failure
+  // from the core is rethrown and reported as itself.
+  const id = spelling
+    ? nullOnSpellingRefusal(() =>
+        deriveWordId({ language: "jbo", spelling }),
+      )
+    : null;
+  if (id === null) {
     main.append(p("This link names no word.", "notice"));
     return;
   }
-  const id = deriveWordId({ language: "jbo", spelling });
   const form = el("form", { class: "card", style: "margin-top:16px" });
   const rafsi = field("Rafsi spelling", {
     lang: "jbo",

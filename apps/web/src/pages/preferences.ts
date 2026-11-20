@@ -197,6 +197,17 @@ export async function preferencesPage(
   // Languages with a package download or refresh running on this page.
   // Buttons for them render disabled, across renders of the list.
   const runningPackages = new Set<string>();
+  // The language last picked for a download. Renders of the list keep it.
+  let pickedPackage = "";
+  /** Focuses the current list button with one of these labels, for a button that had focus before a render replaced it. */
+  const refocusPackageButton = (hadFocus: boolean, labels: string[]) => {
+    if (!hadFocus || !context.live()) return;
+    for (const candidate of packages.querySelectorAll("button"))
+      if (labels.includes(candidate.textContent ?? "")) {
+        candidate.focus();
+        return;
+      }
+  };
   const renderPackages = async () => {
     packages.replaceChildren();
     if (!session.storageAvailable) {
@@ -254,6 +265,7 @@ export async function preferencesPage(
           value: tag,
           label: languageName(tag),
         })),
+        value: available.includes(pickedPackage) ? pickedPackage : undefined,
       });
       const go = button(
         "Download",
@@ -261,7 +273,9 @@ export async function preferencesPage(
           const language = pick.input.value;
           if (runningPackages.has(language)) return;
           runningPackages.add(language);
+          const hadFocus = document.activeElement === go;
           go.disabled = true;
+          let rendered = false;
           try {
             const expected = await app.store.packageRevisionOf(language);
             const pkg = await downloadPackage(language);
@@ -280,18 +294,33 @@ export async function preferencesPage(
                   ? `The ${languageName(language)} search package is saved in this browser as version 1. ${pkg.downgrade}`
                   : `The ${languageName(language)} search package is saved in this browser.`,
             );
+            // Clear the running mark before the render, so the new
+            // buttons for this language render enabled.
+            runningPackages.delete(language);
+            await renderPackages();
+            rendered = true;
+            refocusPackageButton(hadFocus, [
+              "Download",
+              `Refresh ${languageName(language)}`,
+            ]);
           } catch (error) {
             // A full store reports its own message instead of a raw quota error.
             app.announce(describe(reportPackageError(error)));
           } finally {
             runningPackages.delete(language);
-            await renderPackages();
+            // A failure does not render again, so the picker keeps its
+            // language and this button keeps its focus. Re-enable it here.
+            if (!rendered) {
+              go.disabled = runningPackages.has(language);
+              if (hadFocus && go.isConnected) go.focus();
+            }
           }
         },
         { class: "btn" },
       );
       go.disabled = runningPackages.has(pick.input.value);
       pick.input.addEventListener("change", () => {
+        pickedPackage = pick.input.value;
         go.disabled = runningPackages.has(pick.input.value);
       });
       packages.append(
@@ -311,9 +340,25 @@ export async function preferencesPage(
           async () => {
             if (runningPackages.has(key)) return;
             runningPackages.add(key);
+            const hadFocus = document.activeElement === refresh;
             refresh.disabled = true;
+            let rendered = false;
             try {
               const expected = await app.store.packageRevisionOf(key);
+              const stored = await app.store.keys("packages");
+              if (!stored.includes(key)) {
+                // This row is stale: the package was removed, in this
+                // tab or another one. Refresh updates a saved package,
+                // so it does not bring one back. Download adds it again.
+                app.announce(
+                  `The ${languageName(key)} package is no longer saved in this browser.`,
+                );
+                runningPackages.delete(key);
+                await renderPackages();
+                rendered = true;
+                refocusPackageButton(hadFocus, ["Download"]);
+                return;
+              }
               const pkg = await downloadPackage(key);
               // A remove or another save of this package that committed
               // while the refresh ran wins; this save then does nothing.
@@ -328,12 +373,24 @@ export async function preferencesPage(
                   ? `The ${languageName(key)} package is refreshed.`
                   : `The ${languageName(key)} package was not saved. It changed in this browser while the refresh ran.`,
               );
+              runningPackages.delete(key);
+              await renderPackages();
+              rendered = true;
+              refocusPackageButton(hadFocus, [
+                `Refresh ${languageName(key)}`,
+                "Download",
+              ]);
             } catch (error) {
               // A full store reports its own message instead of a raw quota error.
               app.announce(describe(reportPackageError(error)));
             } finally {
               runningPackages.delete(key);
-              await renderPackages();
+              // A failure does not render again, so this button keeps
+              // its focus. Re-enable it here.
+              if (!rendered) {
+                refresh.disabled = runningPackages.has(key);
+                if (hadFocus && refresh.isConnected) refresh.focus();
+              }
             }
           },
           { class: "btn btn-quiet" },

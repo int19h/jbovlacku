@@ -10,24 +10,8 @@ async function storedPackageKeys(page: Page): Promise<string[]> {
   });
 }
 
-/** Counts renders of the Settings package list on this page. */
-async function watchPackageList(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const box = document.querySelector("main .stack")!;
-    const view = window as unknown as { packageListRenders: number };
-    view.packageListRenders = 0;
-    new MutationObserver(() => {
-      view.packageListRenders++;
-    }).observe(box, { childList: true });
-  });
-}
-
-async function packageListRenders(page: Page): Promise<number> {
-  return page.evaluate(
-    () =>
-      (window as unknown as { packageListRenders: number }).packageListRenders,
-  );
-}
+/** The Settings status line of a page. */
+const statusText = (page: Page) => page.locator("div.status[role=status]");
 
 /** Holds every package request on this page until `release` is called. */
 function holdPackageRequests(page: Page) {
@@ -116,7 +100,6 @@ test("removing a package during its refresh keeps it removed", async ({
   await expect(
     page.getByRole("button", { name: "Refresh English" }),
   ).toBeVisible();
-  await watchPackageList(page);
   // Hold the refresh download open so Remove lands while it runs.
   const held = holdPackageRequests(page);
   const responseDone = page.waitForResponse(
@@ -130,13 +113,12 @@ test("removing a package during its refresh keeps it removed", async ({
   ).toHaveCount(0);
   expect(await storedPackageKeys(page)).toEqual([]);
   // Wait for the held refresh itself to end: its response completes and
-  // the refresh renders the list again. No fixed sleep is involved.
-  const rendersBeforeEnd = await packageListRenders(page);
+  // its status reports the outcome of the save attempt.
   held.release();
   await responseDone;
-  await expect
-    .poll(async () => packageListRenders(page))
-    .toBeGreaterThan(rendersBeforeEnd);
+  await expect(statusText(page)).toContainText(
+    /package is refreshed|package was not saved/,
+  );
   expect(await storedPackageKeys(page)).toEqual([]);
   await page.reload();
   await expect(page.getByRole("button", { name: "Remove" })).toHaveCount(0);
@@ -152,7 +134,6 @@ test("a download that finishes after a remove in another tab does not save", asy
   await expect(
     tabA.getByRole("button", { name: "Download", exact: true }),
   ).toBeVisible();
-  await watchPackageList(tabA);
   // Tab A's download is held open while tab B downloads and removes.
   const held = holdPackageRequests(tabA);
   await tabA.getByRole("button", { name: "Download", exact: true }).click();
@@ -164,17 +145,163 @@ test("a download that finishes after a remove in another tab does not save", asy
   );
   await tabB.getByRole("button", { name: "Remove" }).click();
   await expect.poll(async () => storedPackageKeys(tabB)).toEqual([]);
-  // Let tab A's download finish and wait until it renders the list again,
-  // which is the end of its save attempt.
-  const rendersBeforeEnd = await packageListRenders(tabA);
+  // Let tab A's download finish and wait for its status, which reports
+  // the outcome of its save attempt.
   held.release();
-  await expect
-    .poll(async () => packageListRenders(tabA))
-    .toBeGreaterThan(rendersBeforeEnd);
+  await expect(statusText(tabA)).toContainText(
+    /is saved in this browser|package was not saved/,
+  );
   expect(await storedPackageKeys(tabA)).toEqual([]);
   await tabB.reload();
   await expect(tabB.getByRole("button", { name: "Remove" })).toHaveCount(0);
   expect(await storedPackageKeys(tabB)).toEqual([]);
+});
+
+test("a blank claim link shows the claim page's unavailable message", async ({
+  page,
+}) => {
+  await page.goto("/claim/%20");
+  await expect(
+    page.getByRole("heading", { name: "Assign a rafsi" }),
+  ).toBeVisible();
+  await expect(page.locator("main")).toContainText(
+    "This link names no word.",
+  );
+  await expect(page.locator("main")).not.toContainText('{"code"');
+});
+
+test("a blank rafsi link does not show a raw core error", async ({
+  page,
+}) => {
+  await page.goto("/rafsi/%20");
+  await expect(page.locator("main")).toContainText(
+    "No retained claim assigns",
+  );
+  await expect(page.locator("main")).not.toContainText('{"code"');
+});
+
+test("a failed download keeps the picked language", async ({ page }) => {
+  // Offer French and German beside English, then cut every package request.
+  await page.route("**/api/v1/manifest*", async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    const en =
+      json.packages.find(
+        (pkg: { language: string }) => pkg.language === "en",
+      ) ?? json.packages[0];
+    json.packages = [
+      ...json.packages,
+      { ...en, language: "fr" },
+      { ...en, language: "de" },
+    ];
+    await route.fulfill({ response, json });
+  });
+  await page.route("**/api/v1/packages/**", (route) => route.abort());
+  await page.goto("/preferences");
+  const pick = page.getByLabel("Download a package");
+  await pick.selectOption("de");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(statusText(page)).toContainText("No connection to the server.");
+  await expect(pick).toHaveValue("de");
+  await expect(
+    page.getByRole("button", { name: "Download", exact: true }),
+  ).toBeEnabled();
+});
+
+test("a failed refresh keeps focus on the Refresh button", async ({
+  page,
+}) => {
+  await page.goto("/preferences");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(statusText(page)).toContainText(
+    "The English search package is saved in this browser.",
+  );
+  await page.route("**/api/v1/packages/**", (route) => route.abort());
+  const refresh = page.getByRole("button", { name: "Refresh English" });
+  await refresh.click();
+  await expect(statusText(page)).toContainText("No connection to the server.");
+  await expect(refresh).toBeEnabled();
+  await expect(refresh).toBeFocused();
+});
+
+test("refresh in a stale tab does not bring back a removed package", async ({
+  context,
+}) => {
+  const tabA = await context.newPage();
+  const tabB = await context.newPage();
+  await tabA.goto("/preferences");
+  await tabA.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(statusText(tabA)).toContainText(
+    "The English search package is saved in this browser.",
+  );
+  await tabB.goto("/preferences");
+  await tabB.getByRole("button", { name: "Remove" }).click();
+  await expect.poll(async () => storedPackageKeys(tabB)).toEqual([]);
+  // Tab A still shows its stale English row. Refresh must not download.
+  await tabA.getByRole("button", { name: "Refresh English" }).click();
+  await expect(statusText(tabA)).toContainText(
+    "The English package is no longer saved in this browser.",
+  );
+  expect(await storedPackageKeys(tabA)).toEqual([]);
+  await expect(
+    tabA.getByRole("button", { name: "Refresh English" }),
+  ).toHaveCount(0);
+  await tabB.reload();
+  await expect(tabB.getByRole("button", { name: "Remove" })).toHaveCount(0);
+});
+
+test("a running refresh stays disabled across a render of the list", async ({
+  page,
+}) => {
+  // Offer French beside English so a second package can be stored.
+  await page.route("**/api/v1/manifest*", async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    const en =
+      json.packages.find(
+        (pkg: { language: string }) => pkg.language === "en",
+      ) ?? json.packages[0];
+    json.packages = [...json.packages, { ...en, language: "fr" }];
+    await route.fulfill({ response, json });
+  });
+  await page.goto("/preferences");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(statusText(page)).toContainText(
+    "The English search package is saved in this browser.",
+  );
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "fr", {
+      snapshot: "sha256:" + "a".repeat(64),
+      version: 2,
+      entries: [],
+    });
+  });
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Refresh French" }),
+  ).toBeVisible();
+  // Hold the refresh, then remove French so the list renders again.
+  const held = holdPackageRequests(page);
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await expect.poll(() => held.started()).toBeGreaterThan(0);
+  await page
+    .locator(".row", { hasText: "French" })
+    .getByRole("button", { name: "Remove" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Refresh French" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Refresh English" }),
+  ).toBeDisabled();
+  held.release();
+  await expect(statusText(page)).toContainText(
+    /package is refreshed|package was not saved/,
+  );
+  await expect(
+    page.getByRole("button", { name: "Refresh English" }),
+  ).toBeEnabled();
 });
 
 test("opening a rafsi page does not save back a removed package", async ({
