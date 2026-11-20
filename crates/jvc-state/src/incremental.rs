@@ -8789,6 +8789,133 @@ mod rebuild_tests {
         assert_eq!(after_res.consumed_work(), expected_state.consumed_work());
     }
 
+    /// Fast-path appends by keys whose blocks sit between existing
+    /// blocks, mixed with appends that merge across the insertion
+    /// points of those keys. Key `A` transfers to key `C`, and `C`
+    /// has two roots (so no succession forms), one of them accepting
+    /// the transfer: the structural closure of a record that covers
+    /// `C`'s block holds `A`'s transfer, and over the shared layout
+    /// that range fuses with `C`'s block. A key that sorts between `A`
+    /// and `C` and appends first splits that range in a fresh layout.
+    /// After every step the live state, a restored full checkpoint
+    /// and a restored result checkpoint, each advanced by the step's
+    /// record, must equal a full evaluation: evaluation, kept bytes
+    /// and work.
+    #[test]
+    fn appends_across_inserted_blocks_match_full_evaluation_in_every_path() {
+        let mut keys: Vec<String> = (0..8u8)
+            .map(|i| identity_from_seed(&[90 + i; 32]))
+            .collect();
+        keys.sort();
+        let (a, c) = (keys[1].clone(), keys[4].clone());
+        let inserted = [&keys[0], &keys[2], &keys[3], &keys[5], &keys[6], &keys[7]];
+        let mut base_input = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        base_input.add_record(&publication, body.as_deref());
+        let transfer = format!("jve1:{:064x}", 0xa1usize);
+        base_input.add_host_verified_record(host(
+            transfer.clone(),
+            &a,
+            vec![],
+            json!({"kind":"identity.transfer","successor":c}),
+        ));
+        let c_merge = format!("jve1:{:064x}", 0xc1usize);
+        let c_accept = format!("jve1:{:064x}", 0xc2usize);
+        base_input.add_host_verified_record(host(
+            c_merge.clone(),
+            &c,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        base_input.add_host_verified_record(host(
+            c_accept.clone(),
+            &c,
+            vec![],
+            json!({"kind":"identity.accept","transfer":transfer}),
+        ));
+        // The first sequence is the minimal case: a key between `A`
+        // and `C` appends a root, then `C` merges its two roots.
+        let mut sequences: Vec<Vec<usize>> = vec![vec![1, 6, 6, 2, 6]];
+        let mut rng = Rng(0x5EED_1234);
+        for _ in 0..12 {
+            sequences.push((0..8).map(|_| rng.below(7) as usize).collect());
+        }
+        let mut compared = 0usize;
+        let mut fast = 0usize;
+        for (sequence_index, sequence) in sequences.iter().enumerate() {
+            let mut prepared = base_input.clone();
+            let mut heads: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            heads.insert(c.clone(), vec![c_merge.clone(), c_accept.clone()]);
+            let mut live = unshared(&prepared).into_state();
+            assert!(live.evaluation().available);
+            for (step, &pick) in sequence.iter().enumerate() {
+                // Picks 0 to 5 are the inserted keys, 6 is `C`.
+                let issuer = if pick < 6 {
+                    inserted[pick].clone()
+                } else {
+                    c.clone()
+                };
+                let id = format!("jve1:{:064x}", 0x1_0000 + 0x100 * sequence_index + step);
+                let previous = heads.get(&issuer).cloned().unwrap_or_default();
+                let value = if step % 2 == 0 { "bless" } else { "curse" };
+                let record = host(
+                    id.clone(),
+                    &issuer,
+                    previous,
+                    json!({"kind":"judgment.set","target":publication_id,"value":value}),
+                );
+                heads.insert(issuer.clone(), vec![id]);
+                let options = prepared.options.clone();
+                let delta = || {
+                    let mut delta = PreparedEvaluationInput::new(options.clone());
+                    delta.add_host_verified_record(record.clone());
+                    delta
+                };
+                let full_checkpoint = live.checkpoint("inserted").unwrap();
+                let result_checkpoint = live.result_checkpoint("inserted").unwrap();
+                let records: Vec<HostVerifiedRecord> = prepared
+                    .nodes
+                    .values()
+                    .map(|n| HostVerifiedRecord { node: n.clone() })
+                    .collect();
+                prepared.add_host_verified_record(record.clone());
+                live = live.advance(delta(), &[]);
+                if !live.statistics().rebuilt {
+                    fast += 1;
+                }
+                let restored_full =
+                    EvaluatedState::restore_host_checkpoint(&full_checkpoint, "inserted")
+                        .unwrap()
+                        .advance(delta(), &[]);
+                let restored_results = EvaluatedState::restore_host_result_checkpoint(
+                    &result_checkpoint,
+                    "inserted",
+                    records,
+                )
+                .unwrap()
+                .advance(delta(), &[]);
+                let full = prepared.clone().into_state();
+                for (path, state) in [
+                    ("live", &live),
+                    ("restored full checkpoint", &restored_full),
+                    ("restored result checkpoint", &restored_results),
+                ] {
+                    let at = format!("sequence {sequence_index}, step {step}, {path}");
+                    assert_eq!(state.evaluation(), full.evaluation(), "{at}");
+                    assert_eq!(cap_bytes(state), cap_bytes(&full), "{at}");
+                    assert_eq!(state.consumed_work(), full.consumed_work(), "{at}");
+                }
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 5 + 12 * 8);
+        assert!(
+            fast > compared / 2,
+            "{fast} of {compared} appends took the fast path"
+        );
+    }
+
     /// A history near the cap for `appended_near_the_cap_refuses_in_every_path_where_full_refuses`.
     /// One key accepts transfers from `sources` other keys, so the
     /// structural closure of a record that covers its block keeps one

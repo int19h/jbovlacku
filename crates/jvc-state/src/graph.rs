@@ -930,7 +930,10 @@ impl Graph {
     /// appended member of the set, plus one for each appended member
     /// whose fresh predecessor is not itself a member.
     pub fn fresh_range_count(&self, set: &IdSet) -> usize {
-        if set.extra.is_empty() {
+        // Without appended records the fresh layout is the shared one.
+        // With them, a set without appended members can still have a
+        // stored range that a fresh layout splits.
+        if self.appended_rank.is_empty() {
             return set.range_count();
         }
         // Index appended records by rank once per state: by full
@@ -982,16 +985,24 @@ impl Graph {
         set: &IdSet,
     ) -> usize {
         let mut count = set.range_count();
-        // A stored range does not start a fresh run when the appended
-        // record inserted right before its first member is a member.
-        for start in set.range_starts() {
-            if start == 0 {
+        // Each insertion position `p` holds appended records right
+        // before layout position `p`, and `last_at[p]` is the last of
+        // them, so it is the fresh predecessor of position `p`. A
+        // stored range that starts at `p` does not start a fresh run
+        // when that record is a member. A stored range that holds
+        // both `p - 1` and `p` splits in a fresh layout when that
+        // record is not a member. Members appended at `p` are counted
+        // below.
+        for (&p, id) in last_at {
+            let Some((first, last)) = set.range_at_or_before(p) else {
                 continue;
-            }
-            if let Some(id) = last_at.get(&start) {
+            };
+            if first == p {
                 if set.contains(id) {
                     count -= 1;
                 }
+            } else if p <= last && !set.contains(id) {
+                count += 1;
             }
         }
         for id in &set.extra {

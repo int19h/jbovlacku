@@ -46,7 +46,7 @@ pub const ANCESTRY_CAP_PER_RECORD: usize = 1024;
 /// `ANCESTRY_CAP_BASE + ANCESTRY_CAP_PER_RECORD * records`.
 ///
 /// The cap counts what `stored_bytes` gives for each closure that the
-/// graph keeps. A closure with one range is stored inline and counts
+/// graph keeps. A closure with at most one range is stored inline and counts
 /// nothing, so union steps, predecessor counts, `maxima` calls and
 /// other temporary sets do not consume the cap. A history consumes it
 /// only through closures with more than one range: about 8 bytes for
@@ -499,8 +499,12 @@ impl IdSet {
             .map(|range| (range.first, range.last))
     }
 
-    pub fn range_starts(&self) -> impl Iterator<Item = u32> + '_ {
-        self.ranges.as_slice().iter().map(|range| range.first)
+    /// The stored range with the largest first position at or before
+    /// `position`, found by binary search.
+    pub fn range_at_or_before(&self, position: u32) -> Option<(u32, u32)> {
+        let ranges = self.ranges.as_slice();
+        let index = ranges.partition_point(|range| range.first <= position);
+        (index > 0).then(|| (ranges[index - 1].first, ranges[index - 1].last))
     }
 
     /// Members in lexical order.
