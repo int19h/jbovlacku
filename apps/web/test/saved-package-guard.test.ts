@@ -580,8 +580,9 @@ test("the meaning page reports a lone-surrogate event in the typed-word check", 
 });
 
 // Stage 3 review inputs: one fault per case, beside valid packages where the
-// review used them. Each case checks that the page reports the package and,
-// where the review saw it, that no bad value reaches the saved draft.
+// review used them. Each case checks that the page reports the package. The
+// lujvo builder saves its builder state on load, so its cases also wait for
+// that save and check that no bad value reaches the saved draft.
 const rowWith = (over: Record<string, unknown>) => ({ ...validRow, ...over });
 const zbasuRow = rowWith({
   event: "jve1:" + "2".repeat(64),
@@ -609,6 +610,11 @@ const lujvoDraft = {
   text: "It makes books.",
   step: 3,
 };
+/** Waits until the lujvo builder's load-time save has written its components. */
+async function expectSavedBuilderDraft(page: Page) {
+  await expect(page.getByText("Saved in this browser")).toBeVisible();
+  await expect.poll(() => savedDraftText(page)).toContain('"components":[{');
+}
 async function savedDraftText(page: Page) {
   return page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
@@ -658,7 +664,6 @@ for (const snapshot of ["bad-snapshot", "sha256:\ud800"])
     );
     await page.goto("/new/gismu");
     await expectInvalidOnly(page);
-    expect(await savedDraftText(page)).not.toContain(snapshot);
   });
 
 test("the publish page uses a valid package beside one with an empty snapshot", async ({
@@ -688,13 +693,22 @@ test("the lujvo builder reports a row whose event is not an event ID", async ({
 }) => {
   await seed(
     page,
-    { ...validPackage, entries: [rowWith({ event: "bad-event" }), zbasuRow] },
+    {
+      ...validPackage,
+      // With cku listed, cukta is a source for the typed part, so the
+      // builder offers and saves its definitions.
+      entries: [
+        rowWith({ event: "bad-event", rafsi: ["cuk", "cku"] }),
+        zbasuRow,
+      ],
+    },
     lujvoDraft,
   );
   await page.goto("/new/lujvo");
   await expectInvalidOnly(page);
-  await expect(page.locator('option[value="bad-event"]')).toHaveCount(0);
+  await expectSavedBuilderDraft(page);
   expect(await savedDraftText(page)).not.toContain("bad-event");
+  await expect(page.locator('option[value="bad-event"]')).toHaveCount(0);
 });
 
 test("the lujvo builder reports a row with more than 64 rafsi and uses the valid package", async ({
@@ -716,10 +730,15 @@ test("the lujvo builder reports a row with more than 64 rafsi and uses the valid
   );
   await page.goto("/new/lujvo");
   await expectInvalidOnly(page);
+  await expectSavedBuilderDraft(page);
+  expect(await savedDraftText(page)).not.toContain('"r63"');
+  // Only the valid fr package has this snapshot.
+  await expect(page.getByRole("region", { name: "Result" })).toContainText(
+    "ffffffffffff",
+  );
   await expect(page.locator("main")).not.toContainText(
     "component claims is 65",
   );
-  expect(await savedDraftText(page)).not.toContain('"r63"');
 });
 
 const v1Row = {
