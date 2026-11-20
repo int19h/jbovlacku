@@ -1125,20 +1125,15 @@ impl EvaluatedState {
             // Price the register from its stored charge: the base
             // evaluation already paid for the previous member set,
             // so refund exactly that and keep the new charge. No
-            // unions are replayed to recover the old charge.
-            let (previous_charge, previous_work, previous_member_work) = self
+            // merges are replayed to recover the old charge. The
+            // maxima merges build only temporary sets, so they charge
+            // work and no ancestry bytes.
+            let (previous_work, previous_member_work) = self
                 .evaluation
                 .registers
                 .get(&key)
-                .map(|register| {
-                    (
-                        register.maxima_charge,
-                        register.maxima_work,
-                        register.maxima_member_work,
-                    )
-                })
-                .unwrap_or((0, 0, 0));
-            graph.ancestry.refund(previous_charge);
+                .map(|register| (register.maxima_work, register.maxima_member_work))
+                .unwrap_or((0, 0));
             graph.budget.set(graph.budget.get() + previous_work);
             // Closed form, when it applies: the fast path's parents
             // cover the issuer's whole block, so every same-issuer
@@ -1147,9 +1142,8 @@ impl EvaluatedState {
             // no other member can be a head (a non-head member sits
             // inside some head's closure, which sits inside the new
             // record's), the new record is the only head, and a full
-            // evaluation's maxima charge for the register is one
-            // merge of its closure into an empty accumulator:
-            // fresh ranges times 8, plus 64. A register with a head
+            // evaluation's maxima work for the register is one merge
+            // of its closure into an empty accumulator. A register with a head
             // outside the new closure (for example a member from
             // another issuer whose actor is this issuer) keeps the
             // general member-set path below.
@@ -1167,15 +1161,11 @@ impl EvaluatedState {
                         .all(|head| new_closure.ids.contains(head))
                 })
                 .unwrap_or(true);
-            let (heads, new_charge, new_work) = if sole_head && new_closure.ids.fresh_ranges == 1 {
-                let amount = new_closure.ids.fresh_ranges * 8 + 64;
-                if !graph.ancestry.charge(amount) {
-                    graph.resource.set(true);
-                }
+            let (heads, new_work) = if sole_head && new_closure.ids.fresh_ranges == 1 {
                 if new_member_work > 0 {
                     let _ = graph.charge(new_member_work);
                 }
-                (BTreeSet::from([node.id.clone()]), amount, new_member_work)
+                (BTreeSet::from([node.id.clone()]), new_member_work)
             } else {
                 // Otherwise a full evaluation's maxima runs over every
                 // member of the register, and finding the members walks
@@ -1217,7 +1207,6 @@ impl EvaluatedState {
                     heads,
                     conflicted: values.len() > 1,
                     values,
-                    maxima_charge: new_charge,
                     maxima_work: new_work,
                     maxima_member_work: new_member_work,
                 },
@@ -1259,7 +1248,6 @@ impl EvaluatedState {
             consumed_work: usize,
             remaining_work: usize,
             ancestry_bytes: Option<usize>,
-            register_maxima_charges: Vec<usize>,
             register_maxima_work: Vec<usize>,
             register_maxima_member_work: Vec<usize>,
         }
@@ -1273,7 +1261,6 @@ impl EvaluatedState {
             consumed_work: usize,
             remaining_work: usize,
             ancestry_bytes: Option<usize>,
-            register_maxima_charges: Vec<usize>,
             register_maxima_work: Vec<usize>,
             register_maxima_member_work: Vec<usize>,
         }
@@ -1283,12 +1270,6 @@ impl EvaluatedState {
             .as_ref()
             .map(|graph| graph.ancestry.bytes())
             .or(self.saved_ancestry_bytes);
-        let register_maxima_charges: Vec<usize> = self
-            .evaluation
-            .registers
-            .values()
-            .map(|register| register.maxima_charge)
-            .collect();
         let register_maxima_work: Vec<usize> = self
             .evaluation
             .registers
@@ -1312,7 +1293,6 @@ impl EvaluatedState {
                 consumed_work,
                 remaining_work: self.remaining_work,
                 ancestry_bytes,
-                register_maxima_charges,
                 register_maxima_work,
                 register_maxima_member_work,
             })
@@ -1327,7 +1307,6 @@ impl EvaluatedState {
                 consumed_work,
                 remaining_work: self.remaining_work,
                 ancestry_bytes,
-                register_maxima_charges,
                 register_maxima_work,
                 register_maxima_member_work,
             })
@@ -1387,7 +1366,6 @@ impl EvaluatedState {
                     consumed_work: full.consumed_work,
                     remaining_work: full.remaining_work,
                     ancestry_bytes: full.ancestry_bytes,
-                    register_maxima_charges: full.register_maxima_charges,
                     register_maxima_work: full.register_maxima_work,
                     register_maxima_member_work: full.register_maxima_member_work,
                     digest: full.digest,
@@ -1449,8 +1427,7 @@ impl EvaluatedState {
         // them; the checkpoint's array restores them in register
         // order.
         let mut evaluation = saved.evaluation;
-        if evaluation.registers.len() != saved.register_maxima_charges.len()
-            || evaluation.registers.len() != saved.register_maxima_work.len()
+        if evaluation.registers.len() != saved.register_maxima_work.len()
             || evaluation.registers.len() != saved.register_maxima_member_work.len()
         {
             return Err(jvc_core::Error::new(
@@ -1458,14 +1435,12 @@ impl EvaluatedState {
                 "checkpoint version or binding does not match",
             ));
         }
-        for (((register, charge), work), member_work) in evaluation
+        for ((register, work), member_work) in evaluation
             .registers
             .values_mut()
-            .zip(saved.register_maxima_charges.iter())
             .zip(saved.register_maxima_work.iter())
             .zip(saved.register_maxima_member_work.iter())
         {
-            register.maxima_charge = *charge;
             register.maxima_work = *work;
             register.maxima_member_work = *member_work;
         }
@@ -1502,7 +1477,6 @@ struct SavedFullCheckpoint {
     remaining_work: usize,
     #[serde(deserialize_with = "Option::deserialize")]
     ancestry_bytes: Option<usize>,
-    register_maxima_charges: Vec<usize>,
     register_maxima_work: Vec<usize>,
     register_maxima_member_work: Vec<usize>,
     #[allow(dead_code)]
@@ -1521,7 +1495,6 @@ struct SavedResultsCheckpoint {
     remaining_work: usize,
     #[serde(deserialize_with = "Option::deserialize")]
     ancestry_bytes: Option<usize>,
-    register_maxima_charges: Vec<usize>,
     register_maxima_work: Vec<usize>,
     register_maxima_member_work: Vec<usize>,
     #[allow(dead_code)]
@@ -1810,8 +1783,7 @@ fn check_saved_state(
     resolved: &policy::ResolvedSelections<'_>,
     validated_selections: &mut BTreeMap<String, bool>,
 ) -> Result<(), &'static str> {
-    if saved.evaluation.registers.len() != saved.register_maxima_charges.len()
-        || saved.evaluation.registers.len() != saved.register_maxima_work.len()
+    if saved.evaluation.registers.len() != saved.register_maxima_work.len()
         || saved.evaluation.registers.len() != saved.register_maxima_member_work.len()
     {
         return Err("register_counter_lens");
@@ -2593,20 +2565,13 @@ fn check_saved_state(
     // Registers, judgments, trust, and register counter cross-checks.
     let mut judgment_registers = 0usize;
     let mut trust_registers = 0usize;
-    let mut total_maxima_charges = 0usize;
     let mut total_maxima_work = 0usize;
-    for (((key, reg), &charge), (&work, &member_work)) in saved
-        .evaluation
-        .registers
-        .iter()
-        .zip(&saved.register_maxima_charges)
-        .zip(
-            saved
-                .register_maxima_work
-                .iter()
-                .zip(&saved.register_maxima_member_work),
-        )
-    {
+    for ((key, reg), (&work, &member_work)) in saved.evaluation.registers.iter().zip(
+        saved
+            .register_maxima_work
+            .iter()
+            .zip(&saved.register_maxima_member_work),
+    ) {
         if reg.key != *key
             || reg.heads.is_empty()
             || reg.values.is_empty()
@@ -2635,24 +2600,20 @@ fn check_saved_state(
         if reg.values != expected_values {
             return Err("register_values");
         }
-        if charge < 72 || charge % 8 != 0 || member_work > work {
+        if member_work > work {
             return Err("register_counter_bounds");
         }
-        if charge == 72 && reg.heads.len() == 1 && work != member_work {
-            return Err("register_single_union_work");
-        }
-        if register_node_counts.get(key).copied() == Some(1) {
-            let r = (charge - 64) / 8;
-            if member_work != r - 1 || work != (r - 1).saturating_mul(2) {
-                return Err("register_single_member_counters");
-            }
+        // One member: its closure is merged into an empty
+        // accumulator once, so the maxima work is twice the member
+        // work.
+        if register_node_counts.get(key).copied() == Some(1)
+            && Some(work) != member_work.checked_mul(2)
+        {
+            return Err("register_single_member_counters");
         }
         if all_nodes_root_no_accept && member_work != 0 {
             return Err("register_root_member_work");
         }
-        total_maxima_charges = total_maxima_charges
-            .checked_add(charge)
-            .ok_or("register_charge_overflow")?;
         total_maxima_work = total_maxima_work
             .checked_add(work)
             .ok_or("register_work_overflow")?;
@@ -2682,9 +2643,6 @@ fn check_saved_state(
         }
     }
     let ancestry_cap = super::ancestors::ancestry_cap(nodes.len());
-    if total_maxima_charges > ancestry_cap {
-        return Err("register_charge_cap");
-    }
     if !resource_refused
         && total_maxima_work
             .checked_add(nodes.len().saturating_mul(2))
@@ -2695,15 +2653,6 @@ fn check_saved_state(
     if let Some(bytes) = saved.ancestry_bytes {
         if bytes > ancestry_cap || bytes % 8 != 0 {
             return Err("ancestry_bytes_invalid");
-        }
-        if !resource_refused
-            && bytes
-                < nodes
-                    .len()
-                    .saturating_mul(72)
-                    .saturating_add(total_maxima_charges)
-        {
-            return Err("ancestry_bytes_too_small");
         }
     }
     if saved.evaluation.judgments.values().any(BTreeMap::is_empty)
@@ -3433,7 +3382,7 @@ mod rebuild_tests {
             input.add_host_verified_record(record);
         };
         let mut ids: Vec<String> = Vec::new();
-        for i in 0..2_391usize {
+        for i in 0..3_425usize {
             let id = format!("jve1:{i:064x}");
             let previous = (i >= 2)
                 .then(|| format!("jve1:{:064x}", i - 2))
@@ -4743,19 +4692,15 @@ mod rebuild_tests {
         );
         let base_state = prepared.clone().into_state();
         assert!(base_state.evaluation().available);
-        // The carry unions run during evaluation, so the evaluated
-        // byte total exceeds the graph-construction total. Without
-        // this gap the checkpoint assertions below could not catch a
-        // missing restoration seed.
+        // The carry unions run during evaluation and build only
+        // temporary sets, so the evaluated byte total equals the
+        // graph-construction total: the graph that a restored state
+        // builds measures the same total again.
         let construction_bytes =
             graph::Graph::new(prepared.nodes.clone(), &prepared.options.limits)
                 .ancestry
                 .bytes();
-        assert!(
-            cap_bytes(&base_state) > construction_bytes,
-            "evaluated {} bytes, construction {construction_bytes}",
-            cap_bytes(&base_state)
-        );
+        assert_eq!(cap_bytes(&base_state), construction_bytes);
         let saved = base_state.checkpoint("host-checked").unwrap();
         let saved_value: Value = serde_json::from_slice(&saved).unwrap();
         assert_eq!(
@@ -5285,14 +5230,14 @@ mod rebuild_tests {
                     value
                         .as_object_mut()
                         .unwrap()
-                        .remove("register_maxima_charges");
+                        .remove("register_maxima_work");
                 }
                 "short" => {
-                    let array = value["register_maxima_charges"].as_array_mut().unwrap();
+                    let array = value["register_maxima_work"].as_array_mut().unwrap();
                     array.pop();
                 }
                 _ => {
-                    value["register_maxima_charges"]
+                    value["register_maxima_work"]
                         .as_array_mut()
                         .unwrap()
                         .push(0.into());
@@ -5821,9 +5766,10 @@ mod rebuild_tests {
             graph::Graph::new(prepared.nodes.clone(), &prepared.options.limits)
                 .ancestry
                 .bytes();
-        assert!(
-            cap_bytes(&prepared.clone().into_state()) > construction_bytes,
-            "carry evaluation must add ancestry bytes beyond construction"
+        assert_eq!(
+            cap_bytes(&prepared.clone().into_state()),
+            construction_bytes,
+            "carries are temporary sets and add no ancestry bytes"
         );
         // The ID sorts between the two claims, so a fresh layout
         // splits the carried closure.
@@ -5849,12 +5795,12 @@ mod rebuild_tests {
             overlay: None,
             limits: Limits::default(),
         };
-        // Fork A appends on both heavy chain tips and crosses the cap.
+        // Fork A appends on a heavy chain tip and crosses the cap.
         // It must rebuild and return the full (unavailable) result.
         let (judgment_a, _) = signed(
             7,
             9500,
-            vec![ids[2_389].clone(), ids[2_390].clone()],
+            vec![ids[3_423].clone()],
             json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
         );
         let mut delta = PreparedEvaluationInput::new(options.clone());
@@ -8857,7 +8803,7 @@ mod rebuild_tests {
         let issuer = identity_from_seed(&[8u8; 32]);
         // Two interleaved chains of one issuer: each closure holds
         // many ranges, so the bytes pass the base with few records.
-        for i in 0..4_100usize {
+        for i in 0..5_900usize {
             prepared.add_host_verified_record(host(
                 format!("jve1:{:064x}", 800_000 + i),
                 &issuer,
@@ -9374,7 +9320,6 @@ mod rebuild_tests {
                 "work_plus_one",
                 "work_minus_one",
                 "member_plus_one",
-                "charge_plus_eight",
                 "ancestry_plus_eight",
             ] {
                 let mut cp: Value = serde_json::from_slice(raw).unwrap();
@@ -9390,10 +9335,6 @@ mod rebuild_tests {
                     "member_plus_one" => {
                         cp["register_maxima_member_work"][0] =
                             json!(cp["register_maxima_member_work"][0].as_u64().unwrap() + 1);
-                    }
-                    "charge_plus_eight" => {
-                        cp["register_maxima_charges"][0] =
-                            json!(cp["register_maxima_charges"][0].as_u64().unwrap() + 8);
                     }
                     "ancestry_plus_eight" => {
                         cp["ancestry_bytes"] = json!(cp["ancestry_bytes"].as_u64().unwrap() + 8);

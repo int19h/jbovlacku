@@ -389,13 +389,11 @@ pub struct Register {
     pub heads: BTreeSet<String>,
     pub values: BTreeSet<String>,
     pub conflicted: bool,
-    /// Ancestry bytes the register's maxima merges charged in this
-    /// evaluation. The incremental update prices its register from
-    /// this stored charge instead of replaying the unions. Skipped
-    /// in serialization; checkpoints carry the charges as one array
-    /// in register order.
-    #[serde(skip)]
-    pub(crate) maxima_charge: usize,
+    /// Work the register's maxima merges charged in this evaluation.
+    /// The incremental update prices its register from this stored
+    /// charge instead of replaying the merges. Skipped in
+    /// serialization; checkpoints carry the counters as arrays in
+    /// register order.
     #[serde(skip)]
     pub(crate) maxima_work: usize,
     #[serde(skip)]
@@ -1183,13 +1181,11 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
             .filter_map(|id| graph.accepted.get(id))
             .map(|c| c.ids.fresh_ranges.saturating_sub(1))
             .sum();
-        let charge_before = graph.ancestry.bytes();
         let work_before = graph.budget.get();
         let heads = graph.maxima(ids.into_iter().collect(), false);
         if graph.resource.get() || graph.ancestry.failed() {
             return;
         }
-        let maxima_charge = graph.ancestry.bytes() - charge_before;
         let maxima_work = work_before - graph.budget.get();
         let node = &graph.nodes[heads.iter().next().unwrap()];
         let actor = graph.actor(&node.issuer);
@@ -1270,7 +1266,6 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
                 heads,
                 conflicted: values.len() > 1,
                 values,
-                maxima_charge,
                 maxima_work,
                 maxima_member_work,
             },
