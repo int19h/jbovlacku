@@ -267,10 +267,11 @@ export async function preferencesPage(
             const pkg = await downloadPackage(language);
             // A remove or another save of this package that committed
             // while the download ran wins; this save then does nothing.
-            const saved = await app.store.putPackageIfRevision(
+            const saved = await app.store.put(
+              "packages",
               language,
               pkg,
-              expected,
+              expected ?? null,
             );
             app.announce(
               !saved
@@ -316,10 +317,11 @@ export async function preferencesPage(
               const pkg = await downloadPackage(key);
               // A remove or another save of this package that committed
               // while the refresh ran wins; this save then does nothing.
-              const saved = await app.store.putPackageIfRevision(
+              const saved = await app.store.put(
+                "packages",
                 key,
                 pkg,
-                expected,
+                expected ?? null,
               );
               app.announce(
                 saved

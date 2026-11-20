@@ -670,7 +670,7 @@ test("rafsi package rows group accent displays by word ID in the real worker", a
         keys: async () => ["en"],
         get: async () => cached,
         packageRevisionOf: async () => undefined,
-        putPackageIfRevision: async () => true,
+        put: async () => true,
       },
     };
     const found = await wordsWithRafsi(

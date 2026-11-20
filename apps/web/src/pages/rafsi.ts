@@ -63,7 +63,7 @@ async function packageFor(
     if (fresh.version === 2) {
       if (app.session.storageAvailable && !removed)
         await app.store
-          .putPackageIfRevision(language, fresh, expected)
+          .put("packages", language, fresh, expected ?? null)
           .catch(() => {});
       return fresh;
     }
