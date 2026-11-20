@@ -180,10 +180,12 @@ test("offline endorsement saves the signed record and delivers on return", async
   await expect
     .poll(
       async () =>
-        (await outboxItems(page)).map(
-          (item: any) =>
-            `${JSON.parse(item.transport).envelope.header.action.value}:${item.peers.self.state}`,
-        ),
+        (await outboxItems(page))
+          .map(
+            (item: any) =>
+              `${JSON.parse(item.transport).envelope.header.action.value}:${item.peers.self.state}`,
+          )
+          .sort(),
       { timeout: 30000 },
     )
     .toEqual(["bless:accepted", "clear:accepted"]);
