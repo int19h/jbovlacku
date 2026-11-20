@@ -684,6 +684,9 @@ export class DeliveryEngine {
   ): Promise<OutboxItem | undefined> {
     let item = await this.fresh(id);
     if (!item) return undefined;
+    // Offline, keep the record queued. An attempt would only mark a record
+    // that was never sent as an unknown outcome.
+    if (!navigator.onLine) return item;
     // Earlier records of the same group go first so dependencies arrive in order.
     const earlier = (await this.items()).filter(
       (other) =>

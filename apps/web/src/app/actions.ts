@@ -8,7 +8,7 @@ import {
   prepareSigning,
   utf8,
 } from "../../../../packages/core/src/browser.ts";
-import { forgetWord } from "../data/api.ts";
+import { forgetWord, TransportError } from "../data/api.ts";
 import { ownHeads } from "../data/history.ts";
 import { freshPeer, type DeliveryEngine } from "../data/delivery.ts";
 import { LIFECYCLE_KINDS } from "../data/lifecycle.ts";
@@ -79,11 +79,20 @@ export class Signer {
         label: configured.label === "this server" ? url.host : configured.label,
       };
     }
-    let previous = await ownHeads(
-      session.store,
-      identity,
-      this.offlineSigning(),
-    );
+    let previous: string[];
+    try {
+      previous = await ownHeads(
+        session.store,
+        identity,
+        this.offlineSigning(),
+      );
+    } catch (error) {
+      // No connection must not lose the signed group. Sign from the history
+      // saved in this browser and let delivery queue it for retry.
+      if (this.offlineSigning() || !(error instanceof TransportError))
+        throw error;
+      previous = await ownHeads(session.store, identity, true);
+    }
     const learnedRestriction = await session.signingDisabled(identity);
     if (learnedRestriction) throw new Error(learnedRestriction);
     if (
