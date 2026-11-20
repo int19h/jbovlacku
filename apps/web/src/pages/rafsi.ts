@@ -95,10 +95,14 @@ export async function wordsWithRafsi(
       continue;
     }
     available = true;
-    limited ||= pkg.entries.some((row) => {
+    // Every row goes through the row check, not only the rows up to the
+    // first incomplete one: the page derives pair IDs from the rafsi of
+    // any row that the search returns, and the worker accepts some rafsi
+    // that the core cannot read.
+    for (const row of pkg.entries) {
       const entry = savedRow(row);
-      return isV2(entry) && entry.rafsi_complete === false;
-    });
+      if (isV2(entry) && entry.rafsi_complete === false) limited = true;
+    }
     const result = await searchPackage(pkg, language, [rafsi], {
       rafsiOnly: true,
       patterns: !options.literal,

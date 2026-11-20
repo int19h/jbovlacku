@@ -528,3 +528,27 @@ for (const [name, route, draft] of [
       ).toContainText("no usable local package");
   });
 }
+
+test("the rafsi page reports a lone-surrogate rafsi after an incomplete row", async ({
+  page,
+}) => {
+  // The completeness scan must check every row, not stop at the first
+  // incomplete one: the worker accepts the later row, and the page derives
+  // a pair ID from each rafsi that the pattern matches.
+  await seed(page, {
+    version: 2,
+    snapshot: "sha256:" + "a".repeat(64),
+    entries: [
+      { ...validRow, rafsi_complete: false },
+      {
+        ...validRow,
+        event: "jve1:" + "2".repeat(64),
+        word: { language: "jbo", spelling: "cukte" },
+        rafsi: ["\ud800"],
+      },
+    ],
+  });
+  await blockDownloads(page);
+  await page.goto("/rafsi/*");
+  await expectInvalidOnly(page);
+});
