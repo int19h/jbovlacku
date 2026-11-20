@@ -40,14 +40,20 @@ pub const ANCESTRY_CAP_BASE: usize = 64 * 1024 * 1024;
 /// Part of the ancestry byte cap that each record adds.
 pub const ANCESTRY_CAP_PER_RECORD: usize = 1024;
 
-/// Hard cap on the range storage that the graph keeps (the closures in
-/// the ancestry caches and the compromise cutoffs), for a history of
-/// `records` records:
+/// Hard cap on the range storage of the closures that the graph keeps
+/// (the closures in the ancestry caches and the compromise cutoffs),
+/// counted as in a fresh full build, for a history of `records`
+/// records:
 /// `ANCESTRY_CAP_BASE + ANCESTRY_CAP_PER_RECORD * records`.
 ///
 /// The cap counts what `stored_bytes` gives for each closure that the
-/// graph keeps. A closure with at most one range is stored inline and counts
-/// nothing, so union steps, predecessor counts, `maxima` calls and
+/// graph keeps, at the closure's range count in a fresh full build of
+/// the same records. A live state keeps its original layout and holds
+/// appended records separately, so a live closure can hold a different
+/// number of ranges. A live append still charges each new closure at
+/// its fresh-layout count, so a live state and a restored state count
+/// the same total. A closure with at most one range is stored inline
+/// and counts nothing, so union steps, predecessor counts, `maxima` calls and
 /// other temporary sets do not consume the cap. A history consumes it
 /// only through closures with more than one range: about 8 bytes for
 /// each range that a kept closure holds.
