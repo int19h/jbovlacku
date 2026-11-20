@@ -2,7 +2,9 @@
 //! evidence that the evaluation and the status export must share
 //! instead of copying per publication.
 
-use jvc_core::{BodyAvailability, Header, body_descriptor, canonical_value, hash_id};
+use jvc_core::{
+    BodyAvailability, ContentDescriptor, Header, body_descriptor, canonical_value, hash_id,
+};
 use jvc_state::{
     EvaluatedState, EvaluationOptions, HostVerifiedRecord, Limits, PreparedEvaluationInput,
     publication_status, publication_status_ref,
@@ -447,5 +449,69 @@ fn the_borrowed_status_export_writes_the_same_json_as_the_owned_status() {
         }
         assert!(observations > 0, "{claims} claims: no exported observation");
         assert!(publication_status_ref(e, &id(7)).is_none());
+    }
+}
+
+/// An imported definition whose body is missing: a fresh evaluation
+/// gives it no source, record or account.
+fn import_without_body(n: usize) -> HostVerifiedRecord {
+    let word = jvc_core::word_id(&json!({"language": "jbo", "spelling": "klama"})).unwrap();
+    let header = Header {
+        version: 1,
+        issuer: identity(IMPORTER),
+        previous: vec![],
+        nonce: "00".repeat(16),
+        action: json!({
+            "kind": "definition.publish", "word": word, "language": "en",
+            "parents": [], "origin": "import"
+        }),
+        content: Some(ContentDescriptor {
+            hash: format!("sha256:{}", "a".repeat(64)),
+            bytes: 2,
+        }),
+    };
+    HostVerifiedRecord::extract_with(&id(n), &header, BodyAvailability::Missing, |_| ()).0
+}
+
+#[test]
+fn restore_refuses_an_attribution_on_an_import_without_a_body() {
+    let (mut records, selections) = account_fixture(2, 2, 3);
+    let missing = id(3_000_000);
+    records.push(import_without_body(3_000_000));
+    let state = evaluate(&records, &selections, None);
+    let e = state.evaluation();
+    let bare = &e.publications[&missing];
+    assert!(!bare.content_available && bare.account.is_none() && bare.source.is_none());
+    assert!(bare.witness_contributions.is_empty());
+    for (results_only, bytes) in [
+        (false, state.checkpoint("bare").unwrap()),
+        (true, state.result_checkpoint("bare").unwrap()),
+    ] {
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        let restore = |bytes: &[u8]| {
+            if results_only {
+                EvaluatedState::restore_host_result_checkpoint(bytes, "bare", records.clone())
+            } else {
+                EvaluatedState::restore_host_checkpoint(bytes, "bare")
+            }
+        };
+        assert!(restore(&sealed(value.clone())).is_ok());
+        let credited = value["evaluation"]["publications"]
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|p| !p["account"].is_null())
+            .unwrap()
+            .clone();
+        // Each field that a body would supply, copied from a credited
+        // import onto the import without a body.
+        for field in ["account", "source", "source_record"] {
+            let mut copied = value.clone();
+            copied["evaluation"]["publications"][&missing][field] = credited[field].clone();
+            assert!(
+                restore(&sealed(copied)).is_err(),
+                "results_only={results_only}: a saved {field} was accepted"
+            );
+        }
     }
 }

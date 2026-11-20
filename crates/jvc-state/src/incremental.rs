@@ -2368,6 +2368,14 @@ fn check_saved_state(
             if p.controller.as_deref() != expected_native_controller {
                 return Err("publication_native_controller");
             }
+        } else if node.body.is_none() {
+            // A fresh evaluation reads the source and the account from
+            // the body, so an import without one has neither. Restore
+            // attaches account evidence by this field, so it must not
+            // trust a saved one.
+            if p.source.is_some() || p.source_record.is_some() || p.account.is_some() {
+                return Err("publication_import_without_body");
+            }
         } else if let Some(body) = &node.body {
             let legacy = body.view().index("legacy");
             let expected_source = legacy.index("source").as_str().map(str::to_owned);
