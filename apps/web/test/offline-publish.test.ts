@@ -4,6 +4,7 @@ import {
   acceptFirstSignature,
   createIdentity,
   openWord,
+  PASSPHRASE,
 } from "./helpers.ts";
 
 async function outboxItems(page: Page) {
@@ -163,8 +164,19 @@ test("offline endorsement saves the signed record and delivers on return", async
     page.getByRole("link", { name: /not delivered/ }),
   ).toBeHidden();
   // Clear the endorsement so this test leaves the shared word unchanged.
-  await expect(endorse).toHaveAttribute("aria-pressed", "true");
-  await endorse.click();
+  // A reload locks the key, so the clear goes through the unlock dialog.
+  await page.reload();
+  const endorsedArticle = page.locator(
+    'article.definition:has(button[aria-pressed="true"])',
+  );
+  await expect(endorsedArticle).toHaveCount(1);
+  await endorsedArticle
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Unlock your key" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("Passphrase").fill(PASSPHRASE);
+  await dialog.getByRole("button", { name: "Unlock" }).click();
   await expect
     .poll(
       async () =>
