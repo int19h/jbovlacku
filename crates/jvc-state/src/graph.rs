@@ -925,10 +925,13 @@ impl Graph {
     /// Range count of a set in a fresh layout. Positioned records keep
     /// their relative order, and appended records sit at their
     /// block-end ranks in append order, which is a fresh build's order
-    /// for the appends the fast path admits. The count is the stored range count, minus one for each
-    /// stored range whose first member's fresh predecessor is an
-    /// appended member of the set, plus one for each appended member
-    /// whose fresh predecessor is not itself a member.
+    /// for the appends the fast path admits. The count is the stored
+    /// range count, minus one for each stored range whose first
+    /// member's fresh predecessor is an appended member of the set,
+    /// plus one for each stored range that holds both sides of an
+    /// insertion point whose last appended record is not a member,
+    /// plus one for each appended member whose fresh predecessor is
+    /// not itself a member.
     pub fn fresh_range_count(&self, set: &IdSet) -> usize {
         // Without appended records the fresh layout is the shared one.
         // With them, a set without appended members can still have a

@@ -718,12 +718,14 @@ impl EvaluatedState {
                     appended_any = true;
                     let appended = self.append(node, work);
                     self.statistics.incremental_records += 1;
-                    if !appended {
-                        rebuild_reason = Some("register_members".into());
-                        break;
-                    }
+                    // A resource failure inside the append also stops
+                    // the register update, so it is reported first.
                     if self.graph.as_ref().is_some_and(|g| g.resource.get()) {
                         rebuild_reason = Some("history_resource_unavailable".into());
+                        break;
+                    }
+                    if !appended {
+                        rebuild_reason = Some("register_members".into());
                         break;
                     }
                 }
