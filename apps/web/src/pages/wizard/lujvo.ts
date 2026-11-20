@@ -414,7 +414,12 @@ export async function lujvoPage(
         el("span", { class: "hw", lang: "jbo", text: hit.word.spelling }),
         text(` ${kindLabel(kind)}`, "meta"),
         text(
-          ` · ${entry.glosses.map((g) => g.text).join(", ") || entry.plain_text.slice(0, 60)}`,
+          ` · ${
+            entry.glosses
+              .filter(() => true)
+              .map((g) => g.text)
+              .join(", ") || entry.plain_text.slice(0, 60)
+          }`,
           "meta",
         ),
         displayRafsi.length

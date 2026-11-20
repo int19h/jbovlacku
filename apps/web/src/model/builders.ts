@@ -476,6 +476,8 @@ export function inventoryFromPackage(
       if ((entry as { rafsi_complete?: boolean }).rafsi_complete === false)
         incomplete.set(id, entry.word.spelling);
       for (const rafsi of entry.rafsi) {
+        // An empty array slot is no rafsi, as in the worker's checks.
+        if (rafsi === undefined) continue;
         const pair = rafsiPairId(id, rafsi);
         claims.set(pair, {
           rafsi,

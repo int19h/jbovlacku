@@ -636,7 +636,8 @@ async function resolvePair(
         if (!isV2(entry)) continue;
         const id = savedWordId(entry.word);
         for (const rafsi of (entry as PackageEntryV2).rafsi)
-          if (rafsiPairId(id, rafsi) === pair)
+          // An empty array slot is no rafsi, as in the worker's checks.
+          if (rafsi !== undefined && rafsiPairId(id, rafsi) === pair)
             return { spelling: entry.word.spelling, language, rafsi };
       }
     } catch (error) {

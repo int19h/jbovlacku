@@ -961,3 +961,145 @@ test("an obsolete nearby lookup does not clear the current language's package", 
   expect(afterInput).toContain("from the downloaded package");
   expect(afterInput).not.toContain("no local package");
 });
+
+/**
+ * Saves an English package whose cukta row has the rafsi `cku` and an empty
+ * array slot, beside a valid zbasu row, and a valid French package with
+ * both words. The slot is made in the page, so it goes through IndexedDB.
+ */
+async function seedRafsiHole(page: Page, draft?: Record<string, unknown>) {
+  await page.goto("/");
+  await page.evaluate(
+    async ({ cukta, zbasu, draft }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      await store.setPreferences({ searchMode: "local" });
+      const holed = structuredClone(cukta) as Record<string, any>;
+      holed.rafsi = ["cku"];
+      holed.rafsi.length = 2;
+      await store.put("packages", "en", {
+        version: 2,
+        snapshot: "sha256:" + "a".repeat(64),
+        entries: [holed, zbasu],
+      });
+      const french = (row: Record<string, any>, text: string) => ({
+        ...row,
+        language: "fr",
+        glosses: [{ language: "fr", text, sense: null }],
+        plain_text: text,
+      });
+      await store.put("packages", "fr", {
+        version: 2,
+        snapshot: "sha256:" + "f".repeat(64),
+        entries: [
+          french({ ...cukta, rafsi: ["cku"] }, "livre"),
+          french(zbasu, "faire"),
+        ],
+      });
+      if (draft) {
+        const { newDraft } = await import(String("/src/model/draft.ts"));
+        await store.put("drafts", "current", newDraft(draft as never));
+      }
+    },
+    { cukta: validRow, zbasu: zbasuRow, draft },
+  );
+}
+
+test("an empty rafsi slot is no rafsi on the lujvo builder, and its draft holds only real claims", async ({
+  page,
+}) => {
+  await seedRafsiHole(page, lujvoDraft);
+  await page.goto("/new/lujvo");
+  await expect(page.getByRole("button", { name: "Use ckuzba" })).toBeVisible();
+  const main = page.locator("main");
+  await expect(main).not.toContainText("The builder stopped");
+  await expect(main).not.toContainText(INVALID);
+  // The English package stays in use: the worker accepts it.
+  await expect(page.getByRole("region", { name: "Result" })).toContainText(
+    "aaaaaaaaaaaa",
+  );
+  await expectSavedBuilderDraft(page);
+  const claims = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const draft = (await new LocalStore().get("drafts", "current")) as {
+      lujvo: { components: { claims: { rafsi: unknown }[] }[] };
+    };
+    return draft.lujvo.components.flatMap((c) =>
+      c.claims.map((claim) => typeof claim.rafsi),
+    );
+  });
+  expect(claims.length).toBeGreaterThan(0);
+  expect(claims.every((type) => type === "string")).toBe(true);
+});
+
+test("an empty rafsi slot is no rafsi on the gismu page", async ({ page }) => {
+  await seedRafsiHole(page, {
+    meaning: "book",
+    kind: "gismu",
+    spelling: "cukte",
+    text: "It is a book.",
+    step: 3,
+    gismu: {
+      preset: null,
+      rows: [
+        {
+          id: "r1",
+          language: "en",
+          name: "English",
+          weight: { numerator: "1", denominator: "1" },
+          word: "book",
+          input: "cukte",
+          sense: "",
+          note: "",
+        },
+      ],
+      candidates: "source-letters",
+      window: 12,
+      manual: "cukte",
+      selected: "cukte",
+      acknowledged: [],
+      reason: "",
+    },
+  });
+  await page.goto("/new/gismu");
+  await expect(
+    page.getByRole("heading", { name: "Make a gismu" }),
+  ).toBeVisible();
+  await expect(page.locator("main")).toContainText("aaaaaaaaaaaa");
+  const main = page.locator("main");
+  await expect(main).not.toContainText("The generator stopped");
+  await expect(main).not.toContainText(INVALID);
+});
+
+test("an empty rafsi slot is no rafsi in a pattern search", async ({
+  page,
+}) => {
+  await seedRafsiHole(page);
+  await page.goto("/search?q=zba*&lang=en");
+  await expect(
+    page
+      .getByRole("region", { name: "Search results" })
+      .getByRole("link", { name: "zbasu", exact: true }),
+  ).toBeVisible();
+  expect(await page.locator("body").innerText()).not.toMatch(RAW_ERROR);
+});
+
+test("an empty rafsi slot is no rafsi on the rafsi pair page", async ({
+  page,
+}) => {
+  await seedRafsiHole(page);
+  await blockDownloads(page);
+  const [real, empty] = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const id = core.wordId({ language: "jbo", spelling: "cukta" });
+    return [core.rafsiPairId(id, "cku"), core.rafsiPairId(id, undefined)];
+  }, corePath);
+  await page.goto(`/rafsi-pair/${real}`);
+  await expect(page.getByRole("heading", { name: "cku" })).toBeVisible();
+  await page.goto(`/rafsi-pair/${empty}`);
+  await expect(
+    page.getByRole("heading", { name: "Rafsi pair unavailable" }),
+  ).toBeVisible();
+  expect(await page.locator("main").innerText()).not.toContain("undefined");
+});

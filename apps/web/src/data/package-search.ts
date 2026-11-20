@@ -554,7 +554,11 @@ export function summarizeHitEntries(
   return entries.map((entry) => ({
     event: entry.event,
     summary:
-      entry.glosses.map((gloss) => gloss.text).join(", ") ||
+      // filter drops empty array slots, which the worker's checks skip.
+      entry.glosses
+        .filter(() => true)
+        .map((gloss) => gloss.text)
+        .join(", ") ||
       // The first 60 code points occupy at most 120 UTF-16 units, so reading
       // that prefix first is exact and keeps a long entry from stalling the
       // page.
