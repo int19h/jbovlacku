@@ -189,16 +189,26 @@ const readingLanguageNames: Record<string, string> = {
   jbo: "Lojban",
   tlh: "Klingon",
   tpi: "Tok Pisin",
+  tok: "Toki Pona",
   "art-guaspi": "Guaspi",
   "art-x-guaspi": "Guaspi",
 };
 export const listedLanguage = (tag: string) => tag.toLowerCase() !== "test";
 export function languageName(tag: string): string {
-  const known = readingLanguageNames[tag.toLowerCase()];
+  const lower = tag.toLowerCase();
+  const known = readingLanguageNames[lower];
   if (known) return known;
+  // Artificial-language tags name the language after the prefix. The
+  // platform name for the bare tag is raw ("art (LOGLAN)"), so use the
+  // suffix instead: "art-loglan" reads as "Loglan".
+  const artificial = /^art-(?:x-)?(.+)$/.exec(lower);
+  if (artificial) {
+    const name = artificial[1];
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  }
   try {
     const name = languageNames.of(tag);
-    return name && name !== tag ? name : tag;
+    return name && name !== tag && !/^art\s*\(/i.test(name) ? name : tag;
   } catch {
     return tag;
   }

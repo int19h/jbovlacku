@@ -63,7 +63,8 @@ export function renderInline(
 ): Node | null {
   if (typeof node === "string") {
     const span = el("bdi");
-    for (const part of highlighted(node, options.highlight)) span.append(part);
+    for (const part of highlighted(readableProse(node), options.highlight))
+      span.append(part);
     if (DIRECTION_CONTROLS.test(node)) {
       span.className = "direction-warning";
       span.title = "This text contains invisible direction controls.";
@@ -145,6 +146,41 @@ export function renderRichText(
     container.append(row);
   }
   return container;
+}
+const SUBSCRIPT_DIGITS = "₀₁₂₃₄₅₆₇₈₉";
+const SUPERSCRIPT_DIGITS = "⁰¹²³⁴⁵⁶⁷⁸⁹";
+const toDigits = (digits: string, table: string) =>
+  [...digits].map((digit) => table[Number(digit)]).join("");
+/**
+ * Readable prose from signed text that still carries TeX or wiki markup.
+ * Delimiters are dropped and numeric subscripts and superscripts use the
+ * matching Unicode digits, so `$x_{1}$`, `$z_2$`, and `''kla''` read as
+ * `x₁`, `z₂`, and `kla`. The stored text is unchanged.
+ */
+export function readableProse(value: string): string {
+  return value
+    .replace(/\$\$([\s\S]*?)\$\$/g, "$1")
+    .replace(/\$([^$]*)\$/g, "$1")
+    .replace(/\\\(([\s\S]*?)\\\)/g, "$1")
+    .replace(/\\\[([\s\S]*?)\\\]/g, "$1")
+    .replace(/'''([^']*)'''/g, "$1")
+    .replace(/''([^']*)''/g, "$1")
+    .replace(
+      /([A-Za-z])_\{([0-9]+)\}/g,
+      (_m, letter, digits) => letter + toDigits(digits, SUBSCRIPT_DIGITS),
+    )
+    .replace(
+      /([A-Za-z])_([0-9]+)/g,
+      (_m, letter, digits) => letter + toDigits(digits, SUBSCRIPT_DIGITS),
+    )
+    .replace(
+      /([A-Za-z])\^\{([0-9]+)\}/g,
+      (_m, letter, digits) => letter + toDigits(digits, SUPERSCRIPT_DIGITS),
+    )
+    .replace(
+      /([A-Za-z])\^([0-9]+)/g,
+      (_m, letter, digits) => letter + toDigits(digits, SUPERSCRIPT_DIGITS),
+    );
 }
 /** Plain text of rich text for titles and summaries. Places become circled numerals. */
 export function plainText(value: unknown): string {
