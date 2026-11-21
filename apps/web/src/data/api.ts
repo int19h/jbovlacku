@@ -61,6 +61,12 @@ export const selfPeer: Peer = {
   label: location.host || "this server",
 };
 
+/** A response body that is larger than the reader allows. */
+export class ByteLimitError extends Error {
+  constructor() {
+    super("The response exceeds the browser byte limit.");
+  }
+}
 export async function readBounded(
   response: Response,
   limit: number,
@@ -68,7 +74,7 @@ export async function readBounded(
 ): Promise<Uint8Array> {
   if (Number(response.headers.get("content-length")) > limit) {
     void response.body?.cancel().catch(() => {});
-    throw new Error("The response exceeds the browser byte limit.");
+    throw new ByteLimitError();
   }
   const reader = response.body?.getReader();
   if (!reader) return new Uint8Array();
@@ -85,8 +91,7 @@ export async function readBounded(
       const { done, value } = await Promise.race([reader.read(), aborted]);
       if (done) break;
       length += value.length;
-      if (length > limit)
-        throw new Error("The response exceeds the browser byte limit.");
+      if (length > limit) throw new ByteLimitError();
       chunks.push(value);
     }
   } catch (error) {
@@ -152,7 +157,10 @@ export async function objectBytes(
     if (options.signal?.aborted) throw error;
     if (error instanceof TypeError)
       throw new TransportError("No connection to the server.", "offline");
-    throw error;
+    // An error answer keeps its status when its body is too large. The body
+    // is discarded, and the error uses the plain status message.
+    if (!(error instanceof ByteLimitError) || response.ok) throw error;
+    bytes = new Uint8Array();
   }
   if (!response.ok) {
     let message = `Request failed (${response.status}).`;

@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import {
   corePath,
   createIdentity,
-  acceptFirstSignature,
+  establishOwnHistory,
   openWord,
   fixture,
 } from "./helpers.ts";
@@ -75,6 +75,8 @@ test("downloaded local search sends nothing and offline signing uses saved histo
   await privacy.dispose();
   // Offline signing uses the remembered local history only.
   await createIdentity(page);
+  // Signing from saved history needs an own event in this browser.
+  await establishOwnHistory(page);
   await page.getByText("Offline signing").click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   await openWord(page, "cukta");
@@ -85,7 +87,6 @@ test("downloaded local search sends nothing and offline signing uses saved histo
     .first()
     .getByRole("button", { name: "Endorse" })
     .click();
-  await acceptFirstSignature(page);
   await expect(page.getByRole("status")).toHaveText(
     "Your endorsement is published.",
   );

@@ -8,7 +8,7 @@ import {
   prepareSigning,
   utf8,
 } from "../../../../packages/core/src/browser.ts";
-import { forgetWord } from "../data/api.ts";
+import { forgetWord, RequestError, TransportError } from "../data/api.ts";
 import { ownHeads } from "../data/history.ts";
 import { freshPeer, type DeliveryEngine } from "../data/delivery.ts";
 import { LIFECYCLE_KINDS } from "../data/lifecycle.ts";
@@ -40,6 +40,21 @@ export class Signer {
     private delivery: DeliveryEngine,
     private offlineSigning: () => boolean,
   ) {}
+  /** True when this browser already holds at least one own event for the key. */
+  private async hasLocalHistory(identity: string): Promise<boolean> {
+    const store = this.session.store;
+    const heads = await store.get<string[]>("heads", identity);
+    if (Array.isArray(heads) && heads.length) return true;
+    if (
+      (await store.list<OutboxItem>("outbox")).some(
+        (item) => item.identity === identity,
+      )
+    )
+      return true;
+    return (
+      await store.list<{ header?: { issuer?: string } }>("ownhistory")
+    ).some((envelope) => envelope?.header?.issuer === identity);
+  }
   /** Signs and persists a group. Does not send. */
   async sign(
     items: GroupItem[],
@@ -79,11 +94,34 @@ export class Signer {
         label: configured.label === "this server" ? url.host : configured.label,
       };
     }
-    let previous = await ownHeads(
-      session.store,
-      identity,
-      this.offlineSigning(),
-    );
+    const firstTime = this.offlineSigning()
+      ? "Publishing needs a connection the first time this key publishes in this browser. Clear “Sign from history saved in this browser only” and publish with a connection. Nothing was signed."
+      : "Publishing needs a connection the first time this key publishes in this browser. Nothing was signed.";
+    // Signing from the history saved in this browser needs an own event for
+    // the key there and a parent list that is not empty. Otherwise the
+    // record would be a new first event for a key that may already have
+    // history on a server. Both offline paths use this rule.
+    const localParents = async () => {
+      if (!(await this.hasLocalHistory(identity))) throw new Error(firstTime);
+      const parents = await ownHeads(session.store, identity, true);
+      if (!parents.length) throw new Error(firstTime);
+      return parents;
+    };
+    let previous: string[];
+    if (this.offlineSigning()) previous = await localParents();
+    else
+      try {
+        previous = await ownHeads(session.store, identity, false);
+      } catch (error) {
+        // A lost connection must not block signing. Sign from the history
+        // saved in this browser. Delivery keeps the group for retry.
+        const unreachable =
+          error instanceof TransportError ||
+          (error instanceof RequestError &&
+            [502, 503, 504].includes(error.status));
+        if (!unreachable) throw error;
+        previous = await localParents();
+      }
     const learnedRestriction = await session.signingDisabled(identity);
     if (learnedRestriction) throw new Error(learnedRestriction);
     if (
