@@ -96,3 +96,58 @@ export async function expectKindSpelling(page: Page) {
     /\b(?:fuhivla|fuivla)\b/,
   );
 }
+/**
+ * Publishes one endorsement and its clear online, so this browser holds own
+ * history for the key. Signing from the history saved in the browser needs
+ * that history. The two accepted records then move from the outbox into the
+ * saved own history, so a test that counts outbox records does not see them.
+ * This accepts the first-signature notice and ends on the identity page,
+ * with the key still unlocked.
+ */
+export async function establishOwnHistory(page: Page) {
+  await openWord(page, "cukta");
+  const first = page.locator("article.definition").first();
+  await first.getByRole("button", { name: "Endorse" }).click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toContainText(
+    "Your endorsement is published.",
+  );
+  const pressed = page.locator(
+    'article.definition:has(button[aria-pressed="true"])',
+  );
+  await expect(pressed).toHaveCount(1, { timeout: 30000 });
+  await pressed.getByRole("button", { name: "Endorse" }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "Your judgment is cleared.",
+  );
+  await expect
+    .poll(
+      () =>
+        page.evaluate(async () => {
+          const { LocalStore } = await import(String("/src/data/store.ts"));
+          const items = await new LocalStore().list("outbox");
+          return items.map((item: any) => item.peers.self.state).join(",");
+        }),
+      { timeout: 30000 },
+    )
+    .toBe("accepted,accepted");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const items = await store.list("outbox");
+    await store.recordBranch(
+      items[0].identity,
+      items.map((item: any) => JSON.parse(item.transport).envelope),
+    );
+    for (const item of items) await store.delete("outbox", item.id);
+  });
+  // Navigate inside the app, so the key stays unlocked.
+  await page.evaluate(() => {
+    const anchor = document.createElement("a");
+    anchor.href = "/identity";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  });
+  await expect(page).toHaveTitle(/·/);
+}

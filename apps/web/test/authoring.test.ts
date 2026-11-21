@@ -3,6 +3,7 @@ import { setRichNodes, typeRichText, expectRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
+  establishOwnHistory,
   corePath,
   createIdentity,
   fixture,
@@ -713,6 +714,8 @@ test("a requested rafsi claim is signed even when every lookup fails, and a know
   page,
 }) => {
   await createIdentity(page);
+  // Signing from the history saved in this browser needs an own event there.
+  await establishOwnHistory(page);
   await page.getByText("Offline signing", { exact: true }).click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   // Every API request fails. The reviewed draft still decides the group.
@@ -747,7 +750,6 @@ test("a requested rafsi claim is signed even when every lookup fails, and a know
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })
     .click();
-  await acceptFirstSignature(page);
   const saved = page.getByRole("region", { name: "Saved publication" });
   await expect(saved).toContainText("Saved. Not delivered yet.");
   const records = await outboxRecords(page);
@@ -939,6 +941,8 @@ test("a fully disconnected author signs a complete definition into storage and l
   page,
 }) => {
   await createIdentity(page);
+  // Signing from the history saved in this browser needs an own event there.
+  await establishOwnHistory(page);
   await page.getByText("Offline signing", { exact: true }).click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   await page.evaluate(
@@ -971,7 +975,6 @@ test("a fully disconnected author signs a complete definition into storage and l
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })
     .click();
-  await acceptFirstSignature(page);
   const saved = page.getByRole("region", { name: "Saved publication" });
   await expect(saved).toContainText("Saved. Not delivered yet.");
   // Keep the whole first attempt disconnected before restoring manual delivery.
@@ -1101,6 +1104,8 @@ test("a failure right after the group commits still recovers the same group afte
   page,
 }) => {
   await createIdentity(page);
+  // Signing from the history saved in this browser needs an own event there.
+  await establishOwnHistory(page);
   await page.getByText("Offline signing", { exact: true }).click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   await page.route("**/api/v1/**", (route) => route.abort("connectionreset"));
@@ -1121,7 +1126,6 @@ test("a failure right after the group commits still recovers the same group afte
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })
     .click();
-  await acceptFirstSignature(page);
   await expect(page.locator("#app > [role=status]")).toContainText(
     "Injected commit failure",
   );
@@ -1230,6 +1234,8 @@ test("two tabs that publish the same reviewed revision keep one group, and a new
   context,
 }) => {
   await createIdentity(page);
+  // Signing from the history saved in this browser needs an own event there.
+  await establishOwnHistory(page);
   await page.getByText("Offline signing", { exact: true }).click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   const revision = await writeReviewedDraft(page, "brode");
@@ -1253,7 +1259,6 @@ test("two tabs that publish the same reviewed revision keep one group, and a new
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })
     .click();
-  await acceptFirstSignature(page);
   await expect(
     page.getByRole("region", { name: "Saved publication" }),
   ).toContainText("Saved. Not delivered yet.");
@@ -1367,6 +1372,8 @@ test("a second tab that navigates after the first tab publishes does not bring t
   context,
 }) => {
   await createIdentity(page);
+  // Signing from the history saved in this browser needs an own event there.
+  await establishOwnHistory(page);
   await page.getByText("Offline signing", { exact: true }).click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   const revision = await writeReviewedDraft(page, "brode");
@@ -1382,7 +1389,6 @@ test("a second tab that navigates after the first tab publishes does not bring t
     .locator("aside")
     .getByRole("button", { name: "Publish", exact: true })
     .click();
-  await acceptFirstSignature(page);
   await expect(
     page.getByRole("region", { name: "Saved publication" }),
   ).toContainText("Saved. Not delivered yet.");
