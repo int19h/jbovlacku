@@ -716,7 +716,6 @@ test("a requested rafsi claim is signed even when every lookup fails, and a know
   await createIdentity(page);
   // Signing from the history saved in this browser needs an own event there.
   await establishOwnHistory(page);
-  await spaGoto(page, "/identity");
   await page.getByText("Offline signing", { exact: true }).click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   // Every API request fails. The reviewed draft still decides the group.
@@ -944,7 +943,6 @@ test("a fully disconnected author signs a complete definition into storage and l
   await createIdentity(page);
   // Signing from the history saved in this browser needs an own event there.
   await establishOwnHistory(page);
-  await spaGoto(page, "/identity");
   await page.getByText("Offline signing", { exact: true }).click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   await page.evaluate(
@@ -1108,7 +1106,6 @@ test("a failure right after the group commits still recovers the same group afte
   await createIdentity(page);
   // Signing from the history saved in this browser needs an own event there.
   await establishOwnHistory(page);
-  await spaGoto(page, "/identity");
   await page.getByText("Offline signing", { exact: true }).click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   await page.route("**/api/v1/**", (route) => route.abort("connectionreset"));
@@ -1239,7 +1236,6 @@ test("two tabs that publish the same reviewed revision keep one group, and a new
   await createIdentity(page);
   // Signing from the history saved in this browser needs an own event there.
   await establishOwnHistory(page);
-  await spaGoto(page, "/identity");
   await page.getByText("Offline signing", { exact: true }).click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   const revision = await writeReviewedDraft(page, "brode");
@@ -1378,7 +1374,6 @@ test("a second tab that navigates after the first tab publishes does not bring t
   await createIdentity(page);
   // Signing from the history saved in this browser needs an own event there.
   await establishOwnHistory(page);
-  await spaGoto(page, "/identity");
   await page.getByText("Offline signing", { exact: true }).click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   const revision = await writeReviewedDraft(page, "brode");

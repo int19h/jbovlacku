@@ -101,7 +101,8 @@ export async function expectKindSpelling(page: Page) {
  * history for the key. Signing from the history saved in the browser needs
  * that history. The two accepted records then move from the outbox into the
  * saved own history, so a test that counts outbox records does not see them.
- * This accepts the first-signature notice.
+ * This accepts the first-signature notice and ends on the identity page,
+ * with the key still unlocked.
  */
 export async function establishOwnHistory(page: Page) {
   await openWord(page, "cukta");
@@ -140,4 +141,13 @@ export async function establishOwnHistory(page: Page) {
     );
     for (const item of items) await store.delete("outbox", item.id);
   });
+  // Navigate inside the app, so the key stays unlocked.
+  await page.evaluate(() => {
+    const anchor = document.createElement("a");
+    anchor.href = "/identity";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  });
+  await expect(page).toHaveTitle(/·/);
 }
