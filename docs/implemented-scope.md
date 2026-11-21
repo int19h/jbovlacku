@@ -125,7 +125,7 @@ Exact and contiguous compounds keep cards for uncovered query words. With `ije` 
 Without a joined compound, `ijebo` shows `i`, `je`, and `bo`. Subsequence matches keep individual cards, and repeated words share one card.
 
 Punctuation, digits, and `h` aliases also find a single recognized word. One-word prefix families precede containing compounds.
-Long lists offer "show all". Case and acute headword stress marks do not change match classes.
+Long lists offer "Show all". Case and acute headword stress marks do not change match classes.
 
 Queries permit 512 recognized words and 300,000 parser steps, with 128 phonemes per run. The index covers dictionary headwords through 256 bytes.
 A limit notice preserves ordinary text search and states incomplete sequence coverage.
@@ -144,7 +144,7 @@ Local and server search also share bounded pattern matching in WebAssembly.
 Globs match the whole spelling. `*` and `?` consume any character, including spaces and punctuation.
 Literal `h` reads as an apostrophe. Matching ignores capitals and acute stress marks.
 Meaning retrieval and rafsi claim previews use literal search. Natural-language questions keep ordinary text search with a short punctuation note.
-Patterns return headword matches before retained rafsi matches, with normalized spelling order and a final word-ID tie break and the usual "show all" behavior.
+Patterns return headword matches before retained rafsi matches, with normalized spelling order and a final word-ID tie break and the usual "Show all" behavior.
 
 The rafsi page accepts the same patterns and keeps each matched assignment separate.
 Version 1 packages expose headword patterns only. Version 2 packages supply bounded rafsi metadata.
@@ -163,7 +163,7 @@ A download keeps its requested language even when the language selector changes 
 
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
-After an HTTP 503 read failure, word pages offer Retry reading and search pages offer one Retry search, with the same URL and selected view.
+After an HTTP 503 read failure, word and search pages offer Retry reading with the same URL and selected view.
 A failed retry shows its retry number and announces the current error reason, including HTTP 500 and connection failures.
 Revision comparisons group changes by readable fields and numbered places, with rich text and complete place and source details.
 They align inserted and removed list items and keep exact structured values in closed disclosures.

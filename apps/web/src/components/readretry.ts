@@ -25,7 +25,6 @@ export function appendReadRetry(
   error: unknown,
   context: RenderContext,
   announce: (message: string) => void,
-  label = "Retry reading",
 ): boolean {
   const attempt = context.readRetryAttempt ?? 0;
   if (attempt > 0) {
@@ -36,7 +35,7 @@ export function appendReadRetry(
   if (!(error instanceof RequestError) || error.status !== 503) return false;
   const target = currentTarget();
   container.append(
-    button(label, () => {
+    button("Retry reading", () => {
       if (context.live() && !context.signal.aborted)
         navigate(target, {
           replace: true,

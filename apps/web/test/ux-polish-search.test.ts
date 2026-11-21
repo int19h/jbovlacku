@@ -73,36 +73,67 @@ test("a slow Settings load shows Loading instead of only the heading", async ({
   await expect(page.getByText("Loading…", { exact: true })).toHaveCount(0);
 });
 
-test("a 503 for both groups offers one Retry search button", async ({
-  page,
-}) => {
-  await page.route("**/api/v1/search?**", (route) =>
+test("remote rows keep a server status of unavailable", async ({ page }) => {
+  // Only local rows hide the status, because a local package always says
+  // "unavailable". The server can report that state for a real
+  // publication, and "Include retired results" then lists it.
+  const snapshot = "sha256:" + "a".repeat(64);
+  const view = "jve1:" + "b".repeat(64);
+  const hit = (index: number, status: string) => {
+    const event = "jve1:" + index.toString(16).padStart(64, "0");
+    return {
+      word: { language: "jbo", spelling: `fixture-${status}` },
+      word_id: "jvw1:" + index.toString(16).padStart(64, "0"),
+      definitions: [event],
+      match: "token",
+      preview: {
+        event,
+        word_kind: "gismu",
+        plain_text: `Preview ${status}`,
+        status,
+      },
+    };
+  };
+  await page.route("**/api/v1/search?**", (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("group") === "lojban")
+      return route.fulfill({ json: { snapshot, view, hits: [], next: null } });
+    return route.fulfill({
+      json: {
+        snapshot,
+        view,
+        hits: [hit(1, "unavailable"), hit(2, "deprecated"), hit(3, "active")],
+        next: null,
+      },
+    });
+  });
+  await page.route("**/api/v1/words/**", (route) =>
     route.fulfill({
       status: 503,
-      headers: { "Retry-After": "1" },
       json: {
-        code: "search_busy",
-        message: "Pattern search is busy. Try again shortly.",
+        code: "resource_unavailable",
+        message: "unavailable",
         event: null,
         field: null,
       },
     }),
   );
-  await page.goto("/search?q=klama&lang=en");
-  const main = page.locator("main");
-  await expect(
-    main.getByRole("button", { name: "Retry search", exact: true }),
-  ).toHaveCount(1);
-  await expect(main.locator(".read-error")).toHaveCount(2);
-  // Both groups fail, so Definitions comes first in reading order even
-  // though the Lojban group fails first. The reader meets the button with
-  // the first error.
+  await page.route("**/api/v1/events/**", (route) =>
+    route.fulfill({
+      status: 404,
+      json: { code: "missing", message: "missing", event: null, field: null },
+    }),
+  );
+  await page.goto("/search?q=fixture&lang=en&retired=1");
   const results = page.getByRole("region", { name: "Search results" });
-  const firstFailed = results.locator("section:has(.read-error)").first();
-  await expect(firstFailed.locator("h2")).toHaveText(/^Definitions/);
+  await expect(results.locator("article")).toHaveCount(3);
   await expect(
-    firstFailed.getByRole("button", { name: "Retry search", exact: true }),
-  ).toHaveCount(1);
+    results.locator("article").filter({ hasText: "fixture-unavailable" }),
+  ).toContainText("status: unavailable");
+  await expect(
+    results.locator("article").filter({ hasText: "fixture-deprecated" }),
+  ).toContainText("status: deprecated");
+  await expect(results.getByText(/^status: /)).toHaveCount(2);
 });
 
 test("a failed Settings storage read ends the Loading note", async ({
@@ -200,6 +231,7 @@ test("pagination labels use the same case", async ({ page }) => {
 
 test("language options use readable names, not raw tags", async ({ page }) => {
   const tags = [
+    "art-ca",
     "en",
     "jbo",
     "tlh",
@@ -224,6 +256,7 @@ test("language options use readable names, not raw tags", async ({ page }) => {
     exact: true,
   });
   await expect(languages.locator("option")).toHaveText([
+    /^art[ -]/i,
     "Guaspi",
     "Loglan",
     "Picture language",
@@ -239,6 +272,7 @@ test("language options use readable names, not raw tags", async ({ page }) => {
   await expect(
     page.getByLabel("Definition language", { exact: true }).locator("option"),
   ).toHaveText([
+    /^art[ -]/i,
     "Guaspi",
     "Loglan",
     "Picture language",

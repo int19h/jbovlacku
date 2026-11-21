@@ -190,28 +190,21 @@ const readingLanguageNames: Record<string, string> = {
   tlh: "Klingon",
   tpi: "Tok Pisin",
   tok: "Toki Pona",
-  // The platform names these tags "English (SIMPLE)", "French (FACILE)",
-  // and "art (PICTURE)". These names are the English names in the Lensisku
-  // language table.
+  // The platform has no readable name for these dictionary tags. These are
+  // the English names in the Lensisku language table. Every other tag keeps
+  // the platform name, because a subtag after "art-" can be a region or a
+  // script, not a language name.
   "en-simple": "Simple English",
   "fr-facile": "Easy French",
   "art-guaspi": "Guaspi",
   "art-x-guaspi": "Guaspi",
+  "art-loglan": "Loglan",
   "art-picture": "Picture language",
 };
 export const listedLanguage = (tag: string) => tag.toLowerCase() !== "test";
 export function languageName(tag: string): string {
-  const lower = tag.toLowerCase();
-  const known = readingLanguageNames[lower];
+  const known = readingLanguageNames[tag.toLowerCase()];
   if (known) return known;
-  // Artificial-language tags name the language after the prefix. The
-  // platform name for the bare tag is raw ("art (LOGLAN)"), so use the
-  // suffix instead: "art-loglan" reads as "Loglan".
-  const artificial = /^art-(?:x-)?(.+)$/.exec(lower);
-  if (artificial) {
-    const name = artificial[1];
-    return name.charAt(0).toUpperCase() + name.slice(1);
-  }
   try {
     const name = languageNames.of(tag);
     return name && name !== tag ? name : tag;
