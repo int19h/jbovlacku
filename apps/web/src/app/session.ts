@@ -328,13 +328,8 @@ export class Session {
     const canceled = () =>
       attempt.signal.aborted || signal?.aborted || this.backup !== backup;
     try {
-      let key: CryptoKey;
-      try {
-        key = await unlockKey(backup, passphrase);
-      } catch {
-        // Unlock uses the key stored in this browser. No file is involved.
-        throw new Error("That passphrase did not unlock the key.");
-      }
+      // Unlock uses the key stored in this browser. No file is involved.
+      const key = await unlockKey(backup, passphrase, true);
       if (canceled())
         throw new DOMException("The unlock was canceled.", "AbortError");
       this.workingKey = key;

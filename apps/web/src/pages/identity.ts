@@ -29,6 +29,16 @@ import {
   forgetProfile,
 } from "../components/attribution.ts";
 
+/**
+ * Whether focus stayed with a form while its key work ran: still inside the
+ * form, or on the body only because the submitted control was disabled or
+ * replaced. A reader who chose another control keeps that choice.
+ */
+function focusStayed(container: HTMLElement): boolean {
+  const active = document.activeElement;
+  return !active || active === document.body || container.contains(active);
+}
+
 export async function identityPage(
   route: Route,
   context: RenderContext,
@@ -326,13 +336,14 @@ export async function identityPage(
               app.announce(describe(error));
             }
           }
-          lockRow.querySelector("button")?.focus();
+          if (focusStayed(lockRow))
+            lockRow.querySelector("button")?.focus();
         } catch (error) {
           unlockError.textContent = describe(error);
           unlockError.hidden = false;
           app.announce(unlockError.textContent);
           submit.disabled = false;
-          pass.input.focus();
+          if (focusStayed(form)) pass.input.focus();
         }
       });
       lockRow.append(form);
@@ -620,7 +631,7 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
       app.announce(createError.textContent);
       submit.disabled = false;
       if (session.identity !== identityBefore) rerender();
-      else pass.input.focus();
+      else if (focusStayed(form)) pass.input.focus();
     }
   });
   main.append(form);
@@ -668,6 +679,8 @@ function importBackupForm(
     "Reveal passphrase",
     () => {
       pass.input.type = pass.input.type === "password" ? "text" : "password";
+      reveal.textContent =
+        pass.input.type === "password" ? "Reveal passphrase" : "Hide passphrase";
     },
     { class: "btn btn-quiet" },
   );
@@ -716,7 +729,7 @@ function importBackupForm(
       // A rerender is only for a changed selected identity. Otherwise the
       // form, its alert and focus stay where the user left them.
       if (app.session.identity !== identityBefore) rerender();
-      else pass.input.focus();
+      else if (focusStayed(form)) pass.input.focus();
     }
   });
   void mode;
@@ -787,13 +800,13 @@ function backupTestForm(
       await app.session.testBackup(selected, pass.input.value);
       pass.input.value = "";
       app.announce("The backup unlocked and matches this identity.");
-      rerender(true);
+      rerender(focusStayed(form));
     } catch (error) {
       testError.textContent = describe(error);
       testError.hidden = false;
       app.announce(testError.textContent);
       submit.disabled = false;
-      pass.input.focus();
+      if (focusStayed(form)) pass.input.focus();
     }
   });
   return form;

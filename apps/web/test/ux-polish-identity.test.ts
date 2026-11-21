@@ -154,7 +154,7 @@ test("handover banner keeps the delivery link out of the sentence and offers Che
   let posts = 0;
   await page.route("**/api/v1/events", async (route) => {
     posts++;
-    if (posts === 2) {
+    if (posts >= 2) {
       await route.fulfill({
         status: 503,
         json: { code: "busy", message: "Later.", event: null, field: null },
@@ -185,7 +185,6 @@ test("handover banner keeps the delivery link out of the sentence and offers Che
   await expect(sentence.getByRole("link")).toHaveCount(0);
   await banner.getByRole("button", { name: "Check again" }).click();
   await expect(banner).toContainText("Old key retired, acceptance waiting.");
-  await page.unrouteAll({ behavior: "ignoreErrors" });
   // Activating Check again keeps focus on the replacement control.
   await banner.getByRole("button", { name: "Check again" }).focus();
   await page.keyboard.press("Enter");
@@ -193,13 +192,9 @@ test("handover banner keeps the delivery link out of the sentence and offers Che
   await expect(
     banner.getByRole("button", { name: "Check again" }),
   ).toBeFocused();
-  // Deliver the acceptance from a second page of the same browser, then a
-  // focused Check again moves focus to the status text, not the body.
-  const other = await page.context().newPage();
-  await other.goto("/outbox");
-  await other.getByRole("button", { name: "Try now" }).click();
-  await expect(other.locator("#app > [role=status]")).toHaveText("Delivered.");
-  await other.close();
+  // With the server healthy again, a focused Check again retries delivery
+  // in this tab, completes the handover, and focus moves to the status text.
+  await page.unrouteAll({ behavior: "ignoreErrors" });
   await banner.getByRole("button", { name: "Check again" }).focus();
   await page.keyboard.press("Enter");
   await expect(banner).toContainText("Handover complete");
@@ -255,6 +250,141 @@ test("a delayed banner refresh does not steal focus moved elsewhere", async ({
   await page.waitForTimeout(700);
   await expect(search).toBeFocused();
   await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
+test("banner notifications restore focus to the same control, and Check again retries delivery", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  let posts = 0;
+  await page.route("**/api/v1/events", async (route) => {
+    posts++;
+    if (posts === 2) {
+      await route.fulfill({
+        status: 503,
+        json: { code: "busy", message: "Later.", event: null, field: null },
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole("link", { name: "Start" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Move to a new key" }),
+  ).toBeVisible();
+  await createSuccessor(page);
+  const sign = page.getByRole("button", { name: "Sign the handover" });
+  for (const box of await page.getByRole("checkbox").all()) await box.check();
+  await expect(sign).toBeEnabled();
+  await sign.click();
+  const banner = page.getByRole("region", { name: "Handover status" });
+  await expect(banner).toContainText("Old key retired, acceptance waiting.");
+  const notDelivered = banner.getByRole("link", { name: "Not delivered" });
+  await notDelivered.focus();
+  await expect(notDelivered).toBeFocused();
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  await page.waitForTimeout(300);
+  await expect(notDelivered).toBeFocused();
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await banner.getByRole("button", { name: "Check again" }).click();
+  await expect(banner).toContainText("Handover complete");
+});
+
+test("stored-key unlock keeps concurrency and container errors truthful", async ({
+  page,
+}) => {
+  const backup = await createIdentity(page);
+  const messages = await page.evaluate(async () => {
+    const { createKey, unlockKey } = await import(
+      String("/src/data/keys.ts")
+    );
+    const created = await createKey("test passphrase with spaces");
+    const first = unlockKey(
+      created.backup,
+      "test passphrase with spaces",
+      true,
+    );
+    let concurrent = "";
+    try {
+      await unlockKey(created.backup, "test passphrase with spaces", true);
+    } catch (error) {
+      concurrent = String(error);
+    }
+    await first;
+    let wrong = "";
+    try {
+      await unlockKey(created.backup, "wrong passphrase", true);
+    } catch (error) {
+      wrong = String(error);
+    }
+    let unsupported = "";
+    try {
+      await unlockKey({ ...created.backup, version: 2 }, "x", true);
+    } catch (error) {
+      unsupported = String(error);
+    }
+    return { concurrent, wrong, unsupported };
+  });
+  expect(messages.concurrent).toContain("Another backup is still opening.");
+  expect(messages.wrong).toContain("That passphrase did not unlock the key.");
+  expect(messages.unsupported).toContain(
+    "This backup format is not supported.",
+  );
+  await page.evaluate(async (value) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("keys", "selected", { ...value, version: 2 });
+  }, backup);
+  await page.goto("/identity");
+  await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "This backup format is not supported.",
+  );
+});
+
+test("compromise unlock of a stored key uses the stored-key sentence", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await expect(page.getByText("Locked", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Report", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Report a stolen key" }),
+  ).toBeVisible();
+  await page.getByLabel(/cannot prove/).check();
+  await page.getByLabel(/disabling all authority/).check();
+  await page.getByRole("button", { name: "Sign the notice" }).click();
+  const dialog = page.locator("dialog[open]");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('input[type="file"]')).toHaveCount(0);
+  await dialog.locator('input[type="password"]').fill("wrong");
+  await dialog.getByRole("button", { name: "Unlock" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "That passphrase did not unlock the key.",
+  );
+});
+
+test("key work does not steal focus moved to the search field", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await expect(page.getByText("Locked", { exact: true })).toBeVisible();
+  const search = page.getByLabel("Search words and meanings");
+  await page.getByLabel("Passphrase", { exact: true }).fill("wrong passphrase");
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await search.focus();
+  await expect(page.getByRole("alert")).toHaveText(
+    "That passphrase did not unlock the key.",
+  );
+  await expect(search).toBeFocused();
+  await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await search.focus();
+  await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
+  await expect(search).toBeFocused();
 });
 
 test("identity intro paragraphs and empty editor links have visible separation", async ({

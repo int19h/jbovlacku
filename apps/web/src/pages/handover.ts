@@ -956,8 +956,11 @@ export function renderExisting(
     const state = await handoverState(app, record);
     if (mine !== updateGeneration || !box.isConnected) return;
     // Focus is decided here, not before the read. A reader who moved focus
-    // elsewhere during the read keeps that choice.
-    const restoreFocus = box.contains(document.activeElement);
+    // elsewhere during the read keeps that choice. The kind of element that
+    // had focus decides which replacement gets it back.
+    const active = document.activeElement;
+    const focusKind =
+      active && box.contains(active) ? active.tagName : null;
     box.replaceChildren();
     const line =
       state.transferDone && state.acceptDone
@@ -1006,7 +1009,29 @@ export function renderExisting(
           { class: "small" },
           link("Not delivered", "/outbox", { class: "touch-link" }),
           text("  "),
-          button("Check again", () => void update(), { class: "btn" }),
+          button(
+            "Check again",
+            async () => {
+              try {
+                const current = await handoverState(app, record);
+                if (
+                  current.transfer &&
+                  !current.transferDone &&
+                  !current.transfer.stopped
+                )
+                  await app.delivery.tryNow(current.transfer.id);
+                if (
+                  current.accept &&
+                  !current.acceptDone &&
+                  !current.accept.stopped
+                )
+                  await app.delivery.tryNow(current.accept.id);
+              } finally {
+                await update();
+              }
+            },
+            { class: "btn" },
+          ),
         ),
       );
     else
@@ -1016,10 +1041,14 @@ export function renderExisting(
           "small",
         ),
       );
-    if (restoreFocus) {
+    if (focusKind) {
       if (state.transferDone && state.acceptDone)
         statusLine.focus({ preventScroll: true });
-      else box.querySelector("button")?.focus({ preventScroll: true });
+      else if (focusKind === "A")
+        box.querySelector("a")?.focus({ preventScroll: true });
+      else if (focusKind === "BUTTON")
+        box.querySelector("button")?.focus({ preventScroll: true });
+      else statusLine.focus({ preventScroll: true });
     }
   };
   void update();
