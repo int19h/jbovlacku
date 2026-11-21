@@ -67,8 +67,8 @@ async function clearAfterReload(page: Page, clears: number) {
   const acceptedClears = async () =>
     (await outboxItems(page)).filter(
       (item: any) =>
-        JSON.parse(item.transport).envelope.header.action.value ===
-          "clear" && item.peers.self.state === "accepted",
+        JSON.parse(item.transport).envelope.header.action.value === "clear" &&
+        item.peers.self.state === "accepted",
     ).length;
   await page.goto("/word/cukta");
   await expect
@@ -505,5 +505,129 @@ test("a record is delivered while the browser reports offline but the server ans
   expect(items).toHaveLength(1);
   expect(items[0].peers.self.state).toBe("accepted");
   expect(items[0].peers.self.attempts).toBe(1);
+  await clearAfterReload(page, 1);
+});
+
+/** Records the order of event POSTs and receipt lookups that the page sends. */
+function deliveryRequests(page: Page) {
+  const log: string[] = [];
+  page.on("request", (request) => {
+    const url = request.url();
+    if (request.method() === "POST" && /\/api\/v1\/events$/.test(url))
+      log.push("POST");
+    if (request.method() === "GET" && url.includes("/api/v1/receipts/"))
+      log.push("receipt");
+  });
+  return log;
+}
+
+test("a POST that reached the server and timed out while the browser reports offline is unknown", async ({
+  page,
+}) => {
+  // The client waits 20 seconds for an answer before it gives up.
+  test.setTimeout(180000);
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "onLine", {
+      configurable: true,
+      get: () => false,
+    });
+  });
+  const log = deliveryRequests(page);
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  let answered = 0;
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    // The server stores the record and answers. The answer arrives only
+    // after the client stopped waiting.
+    const response = await route.fetch();
+    answered = response.status();
+    await new Promise((resolve) => setTimeout(resolve, 25000));
+    await route.fulfill({ response }).catch(() => {});
+  });
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  const peerOf = async () => (await outboxItems(page))[0]?.peers.self;
+  await expect
+    .poll(async () => (await peerOf())?.state, { timeout: 40000 })
+    .toBe("unknown");
+  expect(answered).toBe(201);
+  const timedOut = await peerOf();
+  expect(timedOut.failure).toBe("timeout");
+  expect(timedOut.attempts).toBe(1);
+  expect(timedOut.lastAttempt).not.toBeNull();
+  expect(log.filter((entry) => entry === "POST")).toHaveLength(1);
+  await page.unroute("**/api/v1/events");
+  await page.getByRole("link", { name: "1 not delivered" }).click();
+  await expect(page).toHaveTitle("Not delivered · jbovlacku");
+  await expect(page.locator("main")).toContainText(
+    "The server did not answer.",
+  );
+  await expect(page.locator("main")).not.toContainText(
+    "Waiting for a connection.",
+  );
+  log.length = 0;
+  await page.getByRole("button", { name: "Try now" }).first().click();
+  await expect
+    .poll(async () => (await peerOf())?.state, { timeout: 30000 })
+    .toBe("accepted");
+  // The receipt shows that the server holds the record, so no second POST.
+  expect(log[0]).toBe("receipt");
+  expect(log).not.toContain("POST");
+  await clearAfterReload(page, 1);
+});
+
+test("a connection that drops after the server took the POST makes delivery unknown", async ({
+  page,
+}) => {
+  test.setTimeout(120000);
+  const log = deliveryRequests(page);
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  let answered = 0;
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    // The server stores the record and answers. Then the connection drops
+    // before the answer reaches the page.
+    const response = await route.fetch();
+    answered = response.status();
+    await page.context().setOffline(true);
+    await route.abort("internetdisconnected");
+  });
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  const peerOf = async () => (await outboxItems(page))[0]?.peers.self;
+  await expect
+    .poll(async () => (await peerOf())?.state, { timeout: 30000 })
+    .toBe("unknown");
+  expect(answered).toBe(201);
+  const dropped = await peerOf();
+  expect(dropped.failure).toBe("offline");
+  expect(dropped.attempts).toBe(1);
+  expect(dropped.lastAttempt).not.toBeNull();
+  expect(log.filter((entry) => entry === "POST")).toHaveLength(1);
+  await page.unroute("**/api/v1/events");
+  await page.getByRole("link", { name: "1 not delivered" }).click();
+  await expect(page).toHaveTitle("Not delivered · jbovlacku");
+  await expect(page.locator("main")).toContainText(
+    "Some delivery outcomes are unknown.",
+  );
+  await page.context().setOffline(false);
+  log.length = 0;
+  await page.getByRole("button", { name: "Try now" }).first().click();
+  await expect
+    .poll(async () => (await peerOf())?.state, { timeout: 30000 })
+    .toBe("accepted");
+  // The receipt shows that the server holds the record, so no second POST.
+  expect(log[0]).toBe("receipt");
+  expect(log).not.toContain("POST");
   await clearAfterReload(page, 1);
 });

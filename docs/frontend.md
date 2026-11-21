@@ -1622,8 +1622,9 @@ Language search packages contain searchable dictionary data, not the complete ev
 The browser retrieves missing signing or handover evidence from configured peers and exposes unresolved dependencies before proceeding.
 When that history read fails at the network level, times out, or answers 502, 503 or 504, signing falls back to the history saved in this browser, provided this browser already holds at least one own event for the signing key and the parent list computed from it is not empty.
 A key with no own event in this browser does not sign in that case. The page says that publishing needs a connection the first time this key publishes in this browser, and nothing is signed.
-The browser's online report is only a hint. An explicit publish, “Try now” or Resume always attempts delivery, so a reachable server still receives the record when the browser reports offline.
-An attempt that fails at the network level while the browser reports offline did not leave the browser, so it leaves the stored outcome and retry schedule unchanged. A refused record stays refused until a server answers.
+The browser's online report is only a hint for explicit actions. An explicit publish, “Try now” or Resume always attempts delivery, so a reachable server still receives the record when the browser reports offline. Automatic retries wait until the browser reports a connection.
+While the browser reports offline, every attempt asks for the receipt before it sends. If that lookup fails at the network level and the browser still reports offline, the record was not sent, so the stored outcome and retry schedule stay unchanged. A refused record then stays refused.
+A timeout or a dropped connection during the send itself means delivery unknown, whatever the browser reports. A network failure while the browser reports online also means delivery unknown, and a refused record then becomes unknown with a new retry time.
 Resume clears the stop and schedules the next attempt whether or not the browser reports a connection. The record is sent when a server answers.
 
 It never discards a remembered own branch merely because a peer omits it.
