@@ -92,11 +92,16 @@ export interface PeerDelivery {
   /** The failure class of the last attempt. */
   failure: "offline" | "timeout" | "server" | "refused" | "unresolved" | null;
   receipt: import("../model/types.ts").Receipt | null;
+  /** The random ID of the attempt that stored this outcome. */
+  attempt?: string;
   /**
-   * Set when a POST starts and removed by its outcome. A value left after a
-   * closed page means that the POST may have reached the server, so the
-   * next attempt asks for the receipt first.
+   * The random ID of the attempt whose POST started, stored before the POST.
+   * Only that attempt's outcome, or a valid receipt that shows acceptance,
+   * removes it. A value left after a closed page means that the POST may
+   * have reached the server, so the next attempt asks for the receipt first.
    */
+  sendAttempt?: string;
+  /** When the POST of `sendAttempt` started. */
   sendStarted?: number;
 }
 /** The exact draft revision that a group publishes. */

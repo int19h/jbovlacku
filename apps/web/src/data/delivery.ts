@@ -231,6 +231,8 @@ export function describePeer(peer: PeerDelivery): string {
     case "accepted":
       return "Delivered.";
     case "queued":
+      if (peer.sendStarted !== undefined)
+        return "A send started. Waiting for the server to confirm it.";
       return peer.attempts === 0
         ? "Waiting to send."
         : "Waiting to send again.";
@@ -264,30 +266,35 @@ export function recipientLabel(item: OutboxItem, peerId: string): string {
     `recipient "${peerId}" without a saved address`
   );
 }
+/** True when no attempt stored an outcome or a send mark since `seen` was read. */
+export function unchangedSince(
+  stored: PeerDelivery,
+  seen: PeerDelivery,
+): boolean {
+  return (
+    stored.attempt === seen.attempt && stored.sendAttempt === seen.sendAttempt
+  );
+}
 /**
- * Merges the outcome of one attempt with the peer state stored meanwhile. An
- * accepted state always stays. Any other stored state, a refusal included,
- * stays only when its attempt started after this attempt. Attempt counters
- * never go down.
+ * Merges the outcome of one attempt with the peer state stored meanwhile.
+ * `seen` is the state the attempt read and `attempt` is its random ID. An
+ * accepted state always stays. An acceptance from a valid receipt always
+ * applies. Any other outcome applies only while this attempt's own send
+ * mark is stored, or when no other attempt stored an outcome or a mark
+ * since `seen` was read. Attempt counters never go down.
  */
 export function mergePeer(
   stored: PeerDelivery,
   next: PeerDelivery,
-  started: number,
+  seen: PeerDelivery,
+  attempt: string,
 ): PeerDelivery {
   const attempts = Math.max(stored.attempts, next.attempts);
   if (stored.state === "accepted" && next.state !== "accepted") return stored;
-  // A final state recorded after this attempt started stays, through the
-  // lastAttempt guard below. An older final state does not block the
-  // outcome of a later explicit attempt, such as a retryable answer to a
-  // record that a server refused before.
-  if (
-    stored.lastAttempt !== null &&
-    stored.lastAttempt > started &&
-    next.state !== "accepted"
-  )
-    return { ...stored, attempts };
-  return { ...next, attempts };
+  if (next.state === "accepted") return { ...next, attempts };
+  if (stored.sendAttempt === attempt || unchangedSince(stored, seen))
+    return { ...next, attempts };
+  return { ...stored, attempts };
 }
 
 export class DeliveryEngine {
@@ -708,10 +715,19 @@ export class DeliveryEngine {
       if (!explicit && (current.stopped || !this.automaticallyDue(peer, now)))
         continue;
       const started = Date.now();
-      const next = await this.attempt(current, peerId, peer, started);
-      // Null means that the record was certainly not sent. Nothing is
-      // written, so a state that another tab or a Resume stored meanwhile
-      // stays as it is.
+      // Random, so two attempts that start in the same millisecond differ.
+      const attemptId = crypto.randomUUID();
+      const next = await this.attempt(
+        current,
+        peerId,
+        peer,
+        started,
+        attemptId,
+      );
+      // Null means that this attempt sent nothing and has no outcome to
+      // store: the record was certainly not sent, or another attempt owns
+      // the send. Nothing is written, so a state that another tab or a
+      // Resume stored meanwhile stays as it is.
       if (next === null) {
         await this.notify();
         continue;
@@ -723,7 +739,7 @@ export class DeliveryEngine {
         peers: {
           ...stored.peers,
           [peerId]: stored.peers[peerId]
-            ? mergePeer(stored.peers[peerId], next, started)
+            ? mergePeer(stored.peers[peerId], next, peer, attemptId)
             : next,
         },
       }));
@@ -736,6 +752,7 @@ export class DeliveryEngine {
     peerId: string,
     peer: PeerDelivery,
     started: number,
+    attemptId: string,
   ): Promise<PeerDelivery | null> {
     const target = savedPeer(item, peerId);
     if (!target)
@@ -744,6 +761,7 @@ export class DeliveryEngine {
         nextAttempt: null,
         error: `Recipient "${peerId}" is not configured in this record. The record saved no address for it, and current preferences never replace a missing address. Nothing was sent.`,
         failure: "unresolved",
+        attempt: attemptId,
       };
     const attempts = peer.attempts + 1;
     const fetchVariant = (id: string) =>
@@ -773,6 +791,7 @@ export class DeliveryEngine {
               ? "server"
               : null,
         receipt,
+        attempt: attemptId,
       };
     };
     // Set just before the POST starts. Before that point only receipt and
@@ -799,11 +818,15 @@ export class DeliveryEngine {
           const notFound =
             error instanceof RequestError && error.status === 404;
           // A queued record was never sent, so its lookup only checks the
-          // connection. Any server answer lets the POST go ahead.
+          // connection. An error answer, or an answer without a usable
+          // receipt, lets the POST go ahead. Only a valid receipt can show
+          // that the record was delivered.
+          const neverSent =
+            peer.state === "queued" && peer.sendStarted === undefined;
           const answered =
-            error instanceof RequestError &&
-            peer.state === "queued" &&
-            peer.sendStarted === undefined;
+            neverSent &&
+            !(error instanceof TransportError) &&
+            !(error instanceof DOMException && error.name === "AbortError");
           if (!notFound && !answered) throw error;
         }
       }
@@ -814,30 +837,45 @@ export class DeliveryEngine {
       // unknown with an attempt due, so a refusal does not stay on view
       // for a record that may have arrived. The merge keeps an accepted
       // state and any state from a later attempt.
-      const sending: PeerDelivery = {
-        ...peer,
-        state: "unknown",
-        attempts,
-        lastAttempt: started,
-        nextAttempt: started,
-        error: "The record is being sent.",
-        failure: null,
-        sendStarted: started,
-      };
+      //
+      // The same transaction decides whether this attempt may send. It may
+      // not when the record is accepted, or when another attempt stored an
+      // outcome or its own send mark since this attempt read the record.
+      // That other attempt then owns the outcome, and this one sends
+      // nothing and stores nothing.
+      let maySend = false;
       await this.store.mergeOutbox(item.id, (stored) => {
+        maySend = false;
         const current = stored.peers[peerId];
-        if (!current) return stored;
+        if (
+          !current ||
+          current.state === "accepted" ||
+          !unchangedSince(current, peer)
+        )
+          return stored;
+        maySend = true;
+        const mark = { sendAttempt: attemptId, sendStarted: started };
         return {
           ...stored,
           peers: {
             ...stored.peers,
             [peerId]:
               current.state === "queued"
-                ? { ...current, sendStarted: started }
-                : mergePeer(current, sending, started),
+                ? { ...current, ...mark }
+                : {
+                    ...current,
+                    state: "unknown",
+                    attempts: Math.max(current.attempts, attempts),
+                    lastAttempt: started,
+                    nextAttempt: started,
+                    error: "A send started. Its outcome is unknown.",
+                    failure: null,
+                    ...mark,
+                  },
           },
         };
       });
+      if (!maySend) return null;
       posted = true;
       const receipt = await postEvent(item.transport, { peer: target });
       return settle(receipt);
@@ -858,6 +896,7 @@ export class DeliveryEngine {
           error: `${error.message}${error.code ? ` (${error.code})` : ""}`,
           failure: "server",
           receipt: peer.receipt,
+          attempt: attemptId,
         };
       if (error instanceof RequestError) {
         const refused = REFUSAL_STATUSES.includes(error.status);
@@ -871,6 +910,7 @@ export class DeliveryEngine {
           error: `${error.message}${error.code ? ` (${error.code})` : ""}`,
           failure: refused ? "refused" : "server",
           receipt: peer.receipt,
+          attempt: attemptId,
         };
       }
       // Fetch gives the same network error for a connection that was never
@@ -894,6 +934,7 @@ export class DeliveryEngine {
         error: error instanceof Error ? error.message : "Delivery is unknown.",
         failure: transport ?? "server",
         receipt: peer.receipt,
+        attempt: attemptId,
       };
     }
   }

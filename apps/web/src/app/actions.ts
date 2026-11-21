@@ -94,8 +94,9 @@ export class Signer {
         label: configured.label === "this server" ? url.host : configured.label,
       };
     }
-    const firstTime =
-      "Publishing needs a connection the first time this key publishes in this browser. Nothing was signed.";
+    const firstTime = this.offlineSigning()
+      ? "Publishing needs a connection the first time this key publishes in this browser. Clear “Sign from history saved in this browser only” and publish with a connection. Nothing was signed."
+      : "Publishing needs a connection the first time this key publishes in this browser. Nothing was signed.";
     // Signing from the history saved in this browser needs an own event for
     // the key there and a parent list that is not empty. Otherwise the
     // record would be a new first event for a key that may already have

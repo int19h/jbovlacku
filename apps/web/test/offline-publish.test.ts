@@ -952,3 +952,262 @@ test("a 503 history read with a large error body still signs from the history sa
     .toBe("accepted");
   await clearAfterReload(page, 2);
 });
+
+const endorseFirst = async (page: Page) => {
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+};
+const selfPeer = async (page: Page) => (await outboxItems(page))[0]?.peers.self;
+/** Counts the event POSTs that one page sends. */
+function postCounter(page: Page) {
+  const counter = { posts: 0 };
+  page.on("request", (request) => {
+    if (request.method() === "POST" && /\/api\/v1\/events$/.test(request.url()))
+      counter.posts++;
+  });
+  return counter;
+}
+/** Holds a route until `release` runs. `arrived` resolves when it is called. */
+function holdable() {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let arrive!: () => void;
+  const arrived = new Promise<void>((resolve) => (arrive = resolve));
+  return { release, released, arrive, arrived };
+}
+
+test("a stopped record keeps true text after its tab closed during a send", async ({
+  page,
+  context,
+}) => {
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  await page.route("**/api/v1/events", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({
+          status: 422,
+          contentType: "application/json",
+          body: JSON.stringify({ message: "Probe refusal." }),
+        })
+      : route.continue(),
+  );
+  await endorseFirst(page);
+  await expect.poll(async () => (await selfPeer(page))?.state).toBe("refused");
+  await page.unroute("**/api/v1/events");
+  await page.getByRole("link", { name: "1 not delivered" }).click();
+  await expect(page).toHaveTitle("Not delivered · jbovlacku");
+  // The POST never answers and never reaches the server.
+  const held = holdable();
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    held.arrive();
+    await held.released;
+    await route.abort("failed").catch(() => {});
+  });
+  await page.getByRole("button", { name: "Try now" }).first().click();
+  await held.arrived;
+  await page.getByRole("button", { name: "Stop retrying" }).click();
+  await expect
+    .poll(async () => (await outboxItems(page))[0]?.stopped)
+    .toBe(true);
+  await page.close();
+  held.release();
+  const next = await context.newPage();
+  await next.goto("/outbox");
+  await expect(next.locator("main")).toContainText(
+    "A send started. Its outcome is unknown.",
+  );
+  await expect(next.locator("main")).not.toContainText(
+    "The record is being sent.",
+  );
+});
+
+test("an older tab's refusal does not erase the send mark of a newer tab's accepted POST", async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(150000);
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  // Tab A's first POST waits, and then gets a refusal that never reached the server.
+  const first = holdable();
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    first.arrive();
+    await first.released;
+    await route
+      .fulfill({
+        status: 422,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "Older refusal." }),
+      })
+      .catch(() => {});
+  });
+  await endorseFirst(page);
+  await first.arrived;
+  // Tab B sees A's mark, finds no receipt, and sends. The server accepts,
+  // and B's answer never arrives.
+  const other = await context.newPage();
+  const accepted = holdable();
+  await other.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(201);
+    accepted.arrive();
+    await accepted.released;
+    await route.fulfill({ response }).catch(() => {});
+  });
+  await other.goto("/outbox");
+  await accepted.arrived;
+  first.release();
+  // A stores nothing over B's mark.
+  await page.waitForTimeout(2000);
+  expect((await selfPeer(other))?.state).not.toBe("refused");
+  await page.close();
+  await other.close();
+  accepted.release();
+  const reopened = await context.newPage();
+  await reopened.goto("/outbox");
+  await expect
+    .poll(async () => (await selfPeer(reopened))?.state, { timeout: 30000 })
+    .toBe("accepted");
+  await clearAfterReload(reopened, 1);
+});
+
+for (const [outcome, sameClock] of [
+  ["accepted", false],
+  ["refused", false],
+  ["refused", true],
+] as const)
+  test(`a tab does not send after another tab stored ${outcome}${sameClock ? " in the same millisecond" : ""}`, async ({
+    page,
+    context,
+  }) => {
+    test.setTimeout(150000);
+    await createIdentity(page);
+    await openWord(page, "cukta");
+    // The first send fails at the network level, so the outcome is unknown.
+    await page.route("**/api/v1/events", (route) =>
+      route.request().method() === "POST"
+        ? route.abort("failed")
+        : route.continue(),
+    );
+    await endorseFirst(page);
+    await expect
+      .poll(async () => (await selfPeer(page))?.state)
+      .toBe("unknown");
+    await page.unroute("**/api/v1/events");
+    await page.getByRole("link", { name: "1 not delivered" }).click();
+    await expect(page).toHaveTitle("Not delivered · jbovlacku");
+    const other = await context.newPage();
+    await other.goto("/outbox");
+    await expect(other.getByRole("button", { name: "Try now" })).toBeVisible();
+    if (sameClock)
+      for (const tab of [page, other])
+        await tab.evaluate(() => {
+          Date.now = () => 1795000000000;
+        });
+    // Tab A's lookup answers "not found" only after tab B finished.
+    const lookup = holdable();
+    await page.route("**/api/v1/receipts/*", async (route) => {
+      lookup.arrive();
+      await lookup.released;
+      await route
+        .fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ message: "Not found." }),
+        })
+        .catch(() => {});
+    });
+    const postsA = postCounter(page);
+    await page.getByRole("button", { name: "Try now" }).first().click();
+    await lookup.arrived;
+    if (outcome === "refused")
+      await other.route("**/api/v1/events", (route) =>
+        route.request().method() === "POST"
+          ? route.fulfill({
+              status: 422,
+              contentType: "application/json",
+              body: JSON.stringify({ message: "Newer refusal." }),
+            })
+          : route.continue(),
+      );
+    await other.getByRole("button", { name: "Try now" }).first().click();
+    await expect
+      .poll(async () => (await selfPeer(other))?.state, { timeout: 30000 })
+      .toBe(outcome);
+    lookup.release();
+    await page.waitForTimeout(3000);
+    // A sends nothing, and B's outcome stays.
+    expect(postsA.posts).toBe(0);
+    expect((await selfPeer(page))?.state).toBe(outcome);
+    await other.close();
+    if (outcome === "accepted") {
+      await page.unroute("**/api/v1/receipts/*");
+      await clearAfterReload(page, 1);
+    }
+  });
+
+test("an unreadable receipt answer while the browser reports offline lets a first send go ahead", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "onLine", {
+      configurable: true,
+      get: () => false,
+    });
+  });
+  const posts = postCounter(page);
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  await page.route("**/api/v1/receipts/*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<!doctype html><title>Portal</title>",
+    }),
+  );
+  await endorseFirst(page);
+  await expect(page.getByRole("status")).toContainText(
+    "Your endorsement is published.",
+  );
+  expect(posts.posts).toBe(1);
+  expect((await selfPeer(page))?.state).toBe("accepted");
+  await page.unroute("**/api/v1/receipts/*");
+  await clearAfterReload(page, 1);
+});
+
+test("a first send whose POST started says that it waits for confirmation", async ({
+  page,
+}) => {
+  await page.goto("/outbox");
+  const text = await page.evaluate(async () => {
+    const { describePeer, freshPeer } = await import(
+      String("/src/data/delivery.ts")
+    );
+    return describePeer({ ...freshPeer(), sendStarted: Date.now() });
+  });
+  expect(text).toBe("A send started. Waiting for the server to confirm it.");
+});
+
+test("the local-only setting names its condition and how to publish without it", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByText("Offline signing", { exact: true }).click();
+  await expect(page.locator("main")).toContainText(
+    "after this key has published at least one record in this browser",
+  );
+  await page.getByLabel("Sign from history saved in this browser only").check();
+  await openWord(page, "cukta");
+  await endorseFirst(page);
+  await expect(page.getByRole("status")).toContainText(
+    "Clear “Sign from history saved in this browser only” and publish with a connection.",
+  );
+  expect(await outboxItems(page)).toHaveLength(0);
+});
