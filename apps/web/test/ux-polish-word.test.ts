@@ -532,7 +532,8 @@ test("scores that arrive later keep focus, scroll position and the status line",
     return {
       scrollY: window.scrollY,
       top: active.getBoundingClientRect().top,
-      key: active.closest<HTMLElement>("[data-key]")?.dataset.key ?? null,
+      // The definition block that holds focus, named by its heading.
+      key: active.closest("article")?.getAttribute("aria-labelledby") ?? null,
       label: active.getAttribute("aria-label"),
     };
   });
@@ -550,7 +551,8 @@ test("scores that arrive later keep focus, scroll position and the status line",
       url: location.pathname + location.search,
       scrollY: window.scrollY,
       top: active.getBoundingClientRect().top,
-      key: active.closest<HTMLElement>("[data-key]")?.dataset.key ?? null,
+      // The definition block that holds focus, named by its heading.
+      key: active.closest("article")?.getAttribute("aria-labelledby") ?? null,
       label: active.getAttribute("aria-label"),
       blanks: (window as unknown as { blanks: number }).blanks,
     };
