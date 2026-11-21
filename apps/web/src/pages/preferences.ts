@@ -194,23 +194,40 @@ export async function preferencesPage(
     }),
     packages,
   );
-  // Languages with a package download or refresh running on this page.
-  // Their Refresh buttons render disabled, across renders of the list, and
-  // Download is disabled while the picked language is one of them.
-  const runningPackages = new Set<string>();
-  // The language picked for a download. Each render reads it from the
-  // current picker before it replaces the list, so the new picker shows it.
+  // Languages with a package download or refresh running on this page,
+  // each with the token of the run that set the mark. A run clears the
+  // mark only while it still holds its own token, so an older run cannot
+  // clear the mark of a newer run of the same language. Refresh buttons
+  // of a marked language render disabled, and Download is disabled while
+  // the picked language is marked.
+  const runningPackages = new Map<string, symbol>();
+  const startRun = (language: string) => {
+    const token = Symbol(language);
+    runningPackages.set(language, token);
+    return token;
+  };
+  const endRun = (language: string, token: symbol) => {
+    if (runningPackages.get(language) === token)
+      runningPackages.delete(language);
+  };
+  // The language picked for a download. A render that publishes its list
+  // reads it from the live picker first, so the new picker shows it.
   let pickedPackage = "";
   // Each list control carries its kind ("picker", "download", "refresh" or
-  // "remove") and, for a row control, its language. A render uses them to
-  // find the new copy of the control that had focus.
+  // "remove") and, for a row control, its language. Only one list is ever
+  // shown, so a kind and a language name at most one live control. A
+  // render uses them to find the new copy of the control that had focus.
   const controlKey = (node: Element | null) => {
     const control = node?.closest<HTMLElement>("[data-package-control]");
     if (!control || !packages.contains(control)) return null;
     return `${control.dataset.packageControl}:${control.dataset.packageLanguage ?? ""}`;
   };
-  const findControl = <T extends HTMLElement>(kind: string, language = "") =>
-    [...packages.querySelectorAll<T>("[data-package-control]")].find(
+  const findControl = <T extends HTMLElement>(
+    kind: string,
+    language = "",
+    root: ParentNode = packages,
+  ) =>
+    [...root.querySelectorAll<T>("[data-package-control]")].find(
       (node) =>
         node.dataset.packageControl === kind &&
         (node.dataset.packageLanguage ?? "") === language,
@@ -240,7 +257,8 @@ export async function preferencesPage(
   /**
    * Focuses the first enabled list button of these kinds, in order, when
    * the handler's button had focus and focus is still free. Kinds are
-   * [kind, language] pairs. The focus does not scroll the page.
+   * [kind, language] pairs, so focus can fall back to a later kind when
+   * the first is missing or disabled. The focus does not scroll the page.
    */
   const refocusPackageButton = (
     hadFocus: boolean,
@@ -272,46 +290,51 @@ export async function preferencesPage(
     syncDownloadButton();
     refocusPackageButton(mayFocus, kinds);
   };
-  // Counts renders, so that only the latest of overlapping renders
-  // restores focus. An earlier render's controls are replaced anyway.
+  // Counts the renders that started. Only the newest render publishes its
+  // list, and a handler moves focus after its render only while that
+  // render is still the newest.
   let renderCount = 0;
-  // The list control that had focus when a render started, as a key.
-  let focusBeforeRender: string | null = null;
   /**
-   * Builds the package list again. Before it replaces the list, it records
-   * the list control that has focus and the picked language. After it
-   * builds the list, it moves focus to the new copy of that control, if
-   * the copy exists and is enabled and focus is still free. The focus does
-   * not scroll the page. The new picker shows the picked language while
-   * that language is still offered.
+   * Builds the package list into a detached fragment. When the build ends,
+   * it replaces the live list only if no newer render has started; an
+   * older render's list is dropped. So the page shows one list, never
+   * rows from two renders. At the replacement, the new picker takes the
+   * live picker's language while that language is still offered, and
+   * focus moves to the new copy of the list control that had focus, if
+   * that copy exists and is enabled. The focus does not scroll the page.
+   * Returns the number of this render.
    */
   const renderPackages = async () => {
     const render = ++renderCount;
+    const list = document.createDocumentFragment();
+    await buildPackages(list);
+    if (render !== renderCount || !context.live()) return render;
     const focused = controlKey(document.activeElement);
-    if (focused) focusBeforeRender = focused;
-    const picker = findControl<HTMLSelectElement>("picker");
-    if (picker) pickedPackage = picker.value;
-    try {
-      await buildPackages();
-    } finally {
-      if (render === renderCount) {
-        const key = focusBeforeRender;
-        focusBeforeRender = null;
-        if (key && context.live() && focusIsFree()) {
-          const [kind, language] = key.split(":");
-          const copy = findControl<HTMLButtonElement | HTMLSelectElement>(
-            kind,
-            language,
-          );
-          if (copy && !copy.disabled) copy.focus({ preventScroll: true });
-        }
-      }
+    const livePicker = findControl<HTMLSelectElement>("picker");
+    if (livePicker) pickedPackage = livePicker.value;
+    const newPicker = findControl<HTMLSelectElement>("picker", "", list);
+    if (
+      newPicker &&
+      [...newPicker.options].some((option) => option.value === pickedPackage)
+    )
+      newPicker.value = pickedPackage;
+    packages.replaceChildren(list);
+    syncDownloadButton();
+    if (focused) {
+      const [kind, language] = focused.split(":");
+      const copy = findControl<HTMLButtonElement | HTMLSelectElement>(
+        kind,
+        language,
+      );
+      if (copy && !copy.disabled) copy.focus({ preventScroll: true });
     }
+    return render;
   };
-  const buildPackages = async () => {
-    packages.replaceChildren();
+  /** True while the render with this number is the newest one that started. */
+  const isNewestRender = (render: number) => render === renderCount;
+  const buildPackages = async (list: DocumentFragment) => {
     if (!session.storageAvailable) {
-      packages.append(
+      list.append(
         p(
           "Browser storage is unavailable. Packages cannot be saved.",
           "notice",
@@ -353,10 +376,10 @@ export async function preferencesPage(
           },
         ),
       );
-      packages.append(row);
+      list.append(row);
     }
     if (!packagesAvailable)
-      packages.append(
+      list.append(
         p(
           "Search packages are temporarily unavailable. The service cannot evaluate publication receipts.",
           "notice",
@@ -378,7 +401,7 @@ export async function preferencesPage(
           const language = pick.input.value;
           if (runningPackages.has(language)) return;
           pickedPackage = language;
-          runningPackages.add(language);
+          const token = startRun(language);
           const hadFocus = document.activeElement === go;
           syncDownloadButton();
           let rendered = false;
@@ -402,11 +425,11 @@ export async function preferencesPage(
             );
             // Clear the running mark before the render, so the new
             // buttons for this language render enabled.
-            runningPackages.delete(language);
+            endRun(language, token);
             const mayFocus = hadFocus && focusIsFree(go);
-            await renderPackages();
+            const render = await renderPackages();
             rendered = true;
-            refocusPackageButton(mayFocus, [
+            refocusPackageButton(mayFocus && isNewestRender(render), [
               ["download"],
               ["refresh", language],
             ]);
@@ -414,7 +437,7 @@ export async function preferencesPage(
             // A full store reports its own message instead of a raw quota error.
             app.announce(describe(reportPackageError(error)));
           } finally {
-            runningPackages.delete(language);
+            endRun(language, token);
             // A failure changed no storage, so the list stays as it is,
             // with its picker value and focus. Only the current buttons
             // are updated.
@@ -434,7 +457,7 @@ export async function preferencesPage(
         pickedPackage = pick.input.value;
         syncDownloadButton();
       });
-      packages.append(
+      list.append(
         el(
           "div",
           { style: "display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap" },
@@ -443,14 +466,14 @@ export async function preferencesPage(
         ),
       );
     } else if (!keys.length && packagesAvailable)
-      packages.append(p("This server offers no search package yet.", "small"));
+      list.append(p("This server offers no search package yet.", "small"));
     for (const key of keys)
       if (manifestLanguages.includes(key)) {
         const refresh = button(
           `Refresh ${languageName(key)}`,
           async () => {
             if (runningPackages.has(key)) return;
-            runningPackages.add(key);
+            const token = startRun(key);
             const hadFocus = document.activeElement === refresh;
             refresh.disabled = true;
             let rendered = false;
@@ -464,11 +487,13 @@ export async function preferencesPage(
                 app.announce(
                   `The ${languageName(key)} package is no longer saved in this browser.`,
                 );
-                runningPackages.delete(key);
+                endRun(key, token);
                 const mayFocus = hadFocus && focusIsFree(refresh);
-                await renderPackages();
+                const render = await renderPackages();
                 rendered = true;
-                refocusPackageButton(mayFocus, [["download"]]);
+                refocusPackageButton(mayFocus && isNewestRender(render), [
+                  ["download"],
+                ]);
                 return;
               }
               const pkg = await downloadPackage(key);
@@ -485,16 +510,19 @@ export async function preferencesPage(
                   ? `The ${languageName(key)} package is refreshed.`
                   : `The ${languageName(key)} package was not saved. It changed in this browser while the refresh ran.`,
               );
-              runningPackages.delete(key);
+              endRun(key, token);
               const mayFocus = hadFocus && focusIsFree(refresh);
-              await renderPackages();
+              const render = await renderPackages();
               rendered = true;
-              refocusPackageButton(mayFocus, [["refresh", key], ["download"]]);
+              refocusPackageButton(mayFocus && isNewestRender(render), [
+                ["refresh", key],
+                ["download"],
+              ]);
             } catch (error) {
               // A full store reports its own message instead of a raw quota error.
               app.announce(describe(reportPackageError(error)));
             } finally {
-              runningPackages.delete(key);
+              endRun(key, token);
               // A failure changed no storage, so the list stays as it is.
               // Only the current buttons are updated.
               if (!rendered)
@@ -513,7 +541,7 @@ export async function preferencesPage(
           },
         );
         refresh.disabled = runningPackages.has(key);
-        packages.append(refresh);
+        list.append(refresh);
       }
   };
   await renderPackages();

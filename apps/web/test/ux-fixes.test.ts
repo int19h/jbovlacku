@@ -734,3 +734,236 @@ test("a failed download keeps Download disabled while the picked language still 
   await expect(download).toBeEnabled();
   heldFr.release();
 });
+
+/**
+ * Offers these languages, stores small packages for `saved`, and loads
+ * Settings. Then it installs gates on the page's store: `arm(name)` makes
+ * the next `get` or `delete` of that package, named like "get-fr", wait
+ * after it completes until `resume(name)`.
+ */
+async function setupGatedStore(
+  page: Page,
+  offered: string[],
+  saved: string[],
+): Promise<void> {
+  await offerLanguages(page, offered);
+  await page.goto("/preferences");
+  await page.evaluate(async (languages) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    for (const language of languages)
+      await store.put("packages", language, {
+        snapshot: "sha256:" + "a".repeat(64),
+        version: 2,
+        entries: [],
+      });
+  }, saved);
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Download", exact: true }),
+  ).toBeVisible();
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    type Gate = { promise: Promise<void>; resume: () => void; hit: boolean };
+    const gates = new Map<string, Gate>();
+    const scope = window as unknown as Record<string, unknown>;
+    scope.armGate = (name: string) => {
+      let resume!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      gates.set(name, { promise, resume, hit: false });
+    };
+    scope.gateHit = (name: string) => gates.get(name)?.hit ?? false;
+    scope.resumeGate = (name: string) => gates.get(name)?.resume();
+    for (const method of ["get", "delete"] as const) {
+      const original = LocalStore.prototype[method];
+      LocalStore.prototype[method] = async function (
+        this: unknown,
+        storeName: string,
+        id: string,
+        ...rest: unknown[]
+      ) {
+        const value = await (original as (...args: unknown[]) => unknown).call(
+          this,
+          storeName,
+          id,
+          ...rest,
+        );
+        const gate = storeName === "packages" && gates.get(`${method}-${id}`);
+        if (gate && !gate.hit) {
+          gate.hit = true;
+          await gate.promise;
+        }
+        return value;
+      } as never;
+    }
+  });
+}
+const armGate = (page: Page, name: string) =>
+  page.evaluate(
+    (key) =>
+      (window as never as Record<string, (k: string) => void>).armGate(key),
+    name,
+  );
+const resumeGate = (page: Page, name: string) =>
+  page.evaluate(
+    (key) =>
+      (window as never as Record<string, (k: string) => void>).resumeGate(key),
+    name,
+  );
+const gateHit = (page: Page, name: string) =>
+  expect
+    .poll(() =>
+      page.evaluate(
+        (key) =>
+          (window as never as Record<string, (k: string) => boolean>).gateHit(
+            key,
+          ),
+        name,
+      ),
+    )
+    .toBe(true);
+
+const languageNames: Record<string, string> = {
+  en: "English",
+  fr: "French",
+  de: "German",
+};
+const removeButton = (page: Page, language: string) =>
+  page
+    .locator(".row", { hasText: languageNames[language] })
+    .getByRole("button", { name: "Remove", exact: true });
+
+test("overlapping renders show one list, with one row per saved package", async ({
+  page,
+}) => {
+  await setupGatedStore(page, ["en", "fr", "de"], ["en", "fr", "de"]);
+  // The refresh's render waits after reading French.
+  await armGate(page, "get-fr");
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await gateHit(page, "get-fr");
+  // Remove German. Its render passes the used gate and finishes first.
+  await removeButton(page, "de").click();
+  await expect(removeButton(page, "de")).toHaveCount(0);
+  await resumeGate(page, "get-fr");
+  await expect(statusText(page)).toContainText(
+    "The English package is refreshed.",
+  );
+  // Let any older render finish appending.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));
+  const main = page.locator("main");
+  await expect(
+    main.getByRole("button", { name: "Remove", exact: true }),
+  ).toHaveCount(2);
+  await expect(
+    main.getByRole("button", { name: "Refresh English" }),
+  ).toHaveCount(1);
+  await expect(
+    main.getByRole("button", { name: "Refresh French" }),
+  ).toHaveCount(1);
+  await expect(
+    main.getByRole("button", { name: "Refresh German" }),
+  ).toHaveCount(0);
+  await expect(main.getByLabel("Download a package")).toHaveCount(1);
+  await expect(
+    main.getByRole("button", { name: "Download", exact: true }),
+  ).toHaveCount(1);
+});
+
+test("an older refresh does not clear the running mark of a newer download", async ({
+  page,
+}) => {
+  await setupGatedStore(page, ["en", "fr"], ["en", "fr"]);
+  // The refresh's render waits after reading French.
+  await armGate(page, "get-fr");
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await gateHit(page, "get-fr");
+  // Remove English and download it again while the older render waits.
+  await removeButton(page, "en").click();
+  const pick = page.getByLabel("Download a package");
+  await expect(pick).toHaveValue("en");
+  const held = holdLanguage(page, "en");
+  const download = page.getByRole("button", { name: "Download", exact: true });
+  await download.click();
+  await expect.poll(() => held.started()).toBe(1);
+  await expect(download).toBeDisabled();
+  // The older refresh now ends.
+  await resumeGate(page, "get-fr");
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));
+  // A later clean render, then the picker moves away and back.
+  await removeButton(page, "fr").first().click();
+  await expect(
+    page.getByRole("button", { name: "Remove", exact: true }),
+  ).toHaveCount(0);
+  await pick.selectOption("fr");
+  await pick.selectOption("en");
+  await expect(pick).toHaveValue("en");
+  await expect(download).toHaveCount(1);
+  await expect(download).toBeDisabled();
+  expect(held.started()).toBe(1);
+  held.release();
+});
+
+test("an older refresh does not take focus from a Remove button that the newest render keeps", async ({
+  page,
+}) => {
+  await setupGatedStore(page, ["en", "fr", "de"], ["en", "fr", "de"]);
+  // The refresh's render waits after reading French.
+  await armGate(page, "get-fr");
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await gateHit(page, "get-fr");
+  // Remove German, and focus English's Remove while the delete waits.
+  await armGate(page, "delete-de");
+  await removeButton(page, "de").click();
+  await gateHit(page, "delete-de");
+  await removeButton(page, "en").focus();
+  await expect(removeButton(page, "en")).toBeFocused();
+  // The newer render waits after reading English.
+  await armGate(page, "get-en");
+  await resumeGate(page, "delete-de");
+  await gateHit(page, "get-en");
+  // The older render ends first, then the newer one.
+  await resumeGate(page, "get-fr");
+  await expect(statusText(page)).toContainText(
+    "The English package is refreshed.",
+  );
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  await resumeGate(page, "get-en");
+  await expect(removeButton(page, "de")).toHaveCount(0);
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  await expect(removeButton(page, "en")).toHaveCount(1);
+  await expect(removeButton(page, "en")).toBeFocused();
+});
+
+test("after overlapping renders, Download is disabled while the picked language downloads", async ({
+  page,
+}) => {
+  await setupGatedStore(
+    page,
+    ["en", "fr", "de", "it", "es"],
+    ["en", "fr", "de"],
+  );
+  await armGate(page, "get-fr");
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await gateHit(page, "get-fr");
+  await removeButton(page, "de").click();
+  await expect(removeButton(page, "de")).toHaveCount(0);
+  await resumeGate(page, "get-fr");
+  await expect(statusText(page)).toContainText(
+    "The English package is refreshed.",
+  );
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));
+  const pick = page.locator("main").getByLabel("Download a package");
+  const download = page
+    .locator("main")
+    .getByRole("button", { name: "Download", exact: true });
+  await expect(pick).toHaveCount(1);
+  await pick.selectOption("es");
+  const held = holdLanguage(page, "es");
+  await download.click();
+  await expect.poll(() => held.started()).toBe(1);
+  await expect(download).toHaveCount(1);
+  await expect(download).toBeDisabled();
+  held.release();
+});
