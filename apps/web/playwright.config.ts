@@ -48,6 +48,11 @@ export default defineConfig({
       grep: /a first-time contributor writes a short literal definition|the full editor preserves every structured field/,
       use: { browserName: "firefox" },
     },
+    {
+      name: "firefox-identity",
+      testMatch: /ux-polish-identity\.test\.ts/,
+      use: { browserName: "firefox" },
+    },
   ],
   outputDir: resolve(testRoot, "results"),
   use: {
