@@ -1,8 +1,8 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v10";
-const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v10";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v11";
+const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v11";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
 
@@ -7014,8 +7014,8 @@ mod rebuild_tests {
 
         let full_json: Value = serde_json::from_slice(&full_bytes).unwrap();
         let result_json: Value = serde_json::from_slice(&result_bytes).unwrap();
-        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v10"));
-        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v10"));
+        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v11"));
+        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v11"));
         assert!(result_json.get("nodes").is_none());
         // The v8 publication scan counts are gone. A checkpoint that
         // still carries them, or names the v8 version, is refused.
