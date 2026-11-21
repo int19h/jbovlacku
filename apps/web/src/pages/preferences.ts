@@ -319,6 +319,14 @@ export async function preferencesPage(
     )
       newPicker.value = pickedPackage;
     packages.replaceChildren(list);
+    // A run may have started or ended while the list was built, so every
+    // button takes the running marks as they are now.
+    for (const refresh of packages.querySelectorAll<HTMLButtonElement>(
+      '[data-package-control="refresh"]',
+    ))
+      refresh.disabled = runningPackages.has(
+        refresh.dataset.packageLanguage ?? "",
+      );
     syncDownloadButton();
     if (focused) {
       const [kind, language] = focused.split(":");
