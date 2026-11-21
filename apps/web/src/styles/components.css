@@ -544,17 +544,13 @@ details.disclosure > .body {
   margin-top: 22px;
   border-bottom: 1px solid var(--line);
   display: flex;
-  flex-wrap: nowrap;
-  overflow-x: auto;
+  flex-wrap: wrap;
 }
 .tab {
   display: inline-flex;
-  flex: 0 0 auto;
   align-items: center;
   gap: 6px;
-  min-height: 44px;
   padding: 0 14px;
-  white-space: nowrap;
   color: var(--ink2);
   text-decoration: none;
   border-bottom: 2px solid transparent;
@@ -564,6 +560,34 @@ details.disclosure > .body {
   color: var(--ink);
   border-bottom-color: var(--accent);
   font-weight: 600;
+}
+/* On a phone the tabs form one row that scrolls sideways, so many languages
+   do not push the first definition down. A scroll box clips what leaves it,
+   so the base line is drawn inside the box, the tabs need no negative
+   margin, and the focus ring is drawn inside each tab. */
+@media (max-width: 640px) {
+  .tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-bottom: 0;
+    box-shadow: inset 0 -1px 0 var(--line);
+    scrollbar-width: thin;
+  }
+  .tab {
+    flex: 0 0 auto;
+    min-height: 44px;
+    white-space: nowrap;
+    margin-bottom: 0;
+  }
+  .tab:focus-visible {
+    outline-offset: -3px;
+  }
+}
+.word-scored {
+  /* A wrapper for the part of the word page that a settled calculation
+     replaces. It adds no box of its own. */
+  display: contents;
 }
 .definition {
   padding: 24px 0 20px;

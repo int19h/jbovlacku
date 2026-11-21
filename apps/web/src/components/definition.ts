@@ -12,11 +12,7 @@ import {
   append,
   button,
 } from "../lib/dom.ts";
-import {
-  plural,
-  fingerprintText,
-  readableSourceLocator,
-} from "../lib/format.ts";
+import { plural, fingerprintText } from "../lib/format.ts";
 import { renderRichText, plainText, visibleJson } from "../model/richtext.ts";
 import type {
   DefinitionBody,
@@ -116,7 +112,7 @@ export function sourceDisclosureBody(
     const account = attributionLine.author_account;
     nodes.push(
       p(
-        `Imported from ${legacy.source}${account && Number.isSafeInteger(account.account) ? `, account ${account.account}` : ""}. Source record ${legacy.record?.kind ?? ""} ${legacy.record?.id ?? ""}. Position ${legacy.locator ? readableSourceLocator(String(legacy.locator)) : "unknown"}.`,
+        `Imported from ${legacy.source}${account && Number.isSafeInteger(account.account) ? `, account ${account.account}` : ""}. Source record ${legacy.record?.kind ?? ""} ${legacy.record?.id ?? ""}. Position ${legacy.locator ?? "unknown"}.`,
         "small",
       ),
     );
@@ -210,8 +206,7 @@ export function sourceDisclosureBody(
               class: "touch-link",
             }),
           );
-        if (source.locator)
-          item.append(text(` · ${readableSourceLocator(source.locator)}`));
+        if (source.locator) item.append(text(` · ${source.locator}`));
         list.append(item);
       }
       nodes.push(el("p", { class: "small", text: "Sources" }), list);

@@ -204,31 +204,3 @@ export function languageName(tag: string): string {
   }
 }
 export { placeDisplay as placeGlyph } from "../model/place-glyphs.ts";
-/**
- * A source locator in reader words. The exact locator stays in the signed
- * record and the import-evidence disclosure; this form is for prose lines.
- * Example: "definitions/definitionid=583/cached_username" reads as
- * "definitions · definition 583 · cached username".
- */
-export function readableSourceLocator(locator: string): string {
-  const words = (value: string) =>
-    value
-      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-      .replaceAll("_", " ")
-      .toLowerCase();
-  return locator
-    .split("/")
-    .map((segment) => {
-      const eq = segment.indexOf("=");
-      if (eq > 0) {
-        const key = segment.slice(0, eq);
-        let label = words(key);
-        if (label.endsWith(" id")) label = label.slice(0, -3);
-        else if (/^[a-z]+id$/.test(key) && key.length >= 8)
-          label = label.slice(0, -2);
-        return `${label} ${segment.slice(eq + 1)}`;
-      }
-      return segment.split(".").map(words).join(" · ");
-    })
-    .join(" · ");
-}

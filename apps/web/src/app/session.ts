@@ -22,7 +22,7 @@ import {
   type LocalStore,
   type Preferences,
 } from "../data/store.ts";
-import { navigate } from "./router.ts";
+import { navigate, navigationCount, returnPath } from "./router.ts";
 import { applyTheme } from "./theme.ts";
 
 export const IDLE_LOCK_MS = 15 * 60 * 1000;
@@ -49,8 +49,12 @@ export class Session {
   pending: {
     description: string;
     run: () => Promise<void>;
-    /** The page the reader came from, so a resumed action returns there. */
-    returnTo: string;
+    /**
+     * The same-origin page the reader came from, so a resumed action that
+     * chooses no page of its own returns there. Null keeps the reader where
+     * the action leaves them.
+     */
+    returnTo: string | null;
   } | null = null;
   constructor(public store: LocalStore) {
     if (typeof BroadcastChannel !== "undefined") {
@@ -366,7 +370,9 @@ export class Session {
       this.pending = {
         description,
         run,
-        returnTo: location.pathname + location.search + location.hash,
+        returnTo: returnPath(
+          location.pathname + location.search + location.hash,
+        ),
       };
       navigate("/identity");
       return;
@@ -379,17 +385,22 @@ export class Session {
     const pending = this.pending;
     if (!pending || !this.unlocked) return false;
     this.pending = null;
+    const requests = navigationCount();
+    const before = location.href;
     await pending.run();
-    // Bring the reader back to the page the action came from. The action's
-    // own announcement is in the shell, so it stays visible there.
+    // An action that chose its own page, such as a rafsi claim that opens
+    // the word, keeps that page. Otherwise the reader goes back to the page
+    // the action came from.
+    if (navigationCount() !== requests || location.href !== before) return true;
+    const target = pending.returnTo ? returnPath(pending.returnTo) : null;
     if (
-      pending.returnTo &&
-      pending.returnTo !== location.pathname + location.search + location.hash
+      target &&
+      target !== location.pathname + location.search + location.hash
     ) {
       // The action's announcement (for example "published") must survive
       // this navigation, so the render it causes keeps the status line.
       this.preserveStatusOnce = true;
-      navigate(pending.returnTo);
+      navigate(target);
     }
     return true;
   }
