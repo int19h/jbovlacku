@@ -1214,12 +1214,12 @@ test("remote search pages pin snapshot and view, survive browser back, and rejec
   await expect(
     results.getByRole("img", { name: "Score unavailable" }),
   ).toHaveCount(20);
-  await page.getByRole("button", { name: "show all" }).click();
+  await page.getByRole("button", { name: "Show all" }).click();
   await expect(results.locator("article")).toHaveCount(23);
   expect(await results.locator("article .hw").allTextContents()).toEqual(
     Array.from({ length: 23 }, (_, index) => `fixture-${index + 1}`),
   );
-  await expect(page.getByRole("button", { name: "show all" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Show all" })).toHaveCount(0);
   await page.getByRole("link", { name: "Settings" }).click();
   await page.goBack();
   await expect(page.getByLabel("Search words and meanings")).toHaveValue(
@@ -1247,7 +1247,7 @@ test("remote search pages pin snapshot and view, survive browser back, and rejec
   for (const query of ["loop", "duplicate"]) {
     await page.goto(`/search?q=${query}&lang=en`);
     await expect(results.locator("article")).toHaveCount(1);
-    await page.getByRole("button", { name: "show all" }).click();
+    await page.getByRole("button", { name: "Show all" }).click();
     await expect(results.locator(".notice")).toContainText(
       "Search pagination repeated a cursor or result.",
     );
@@ -1315,7 +1315,7 @@ test("local search pages through many results in stable order, keeps equal-class
   await expect(
     results.getByRole("link", { name: "also: 2 other matching definitions" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "show all" }).click();
+  await page.getByRole("button", { name: "Show all" }).click();
   await expect(results.locator("article")).toHaveCount(121);
   // Browser Back restores every result revealed by show all.
   await page.getByRole("link", { name: "Add a word" }).click();
@@ -1324,7 +1324,7 @@ test("local search pages through many results in stable order, keeps equal-class
   expect(await results.locator("article .hw").allTextContents()).toEqual(
     expected,
   );
-  await expect(page.getByRole("button", { name: "show all" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Show all" })).toHaveCount(0);
   await expect(
     page.getByText("Local results include every retained publication."),
   ).toHaveCount(0);

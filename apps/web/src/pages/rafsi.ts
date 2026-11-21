@@ -388,7 +388,7 @@ export async function rafsiPage(
     moreLine.replaceChildren();
     if (shown < words.length) {
       const more = button(
-        "show all",
+        "Show all",
         async () => {
           more.disabled = true;
           try {
