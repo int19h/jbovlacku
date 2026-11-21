@@ -69,11 +69,16 @@ function shortSnapshot(snapshot: string): string {
 }
 /**
  * Focus the first candidate that is connected, enabled, and actually takes
- * focus, without scrolling. Used after consent acceptance re-renders.
+ * focus, without scrolling. Used after consent acceptance re-renders. It
+ * moves focus only when the reader has not chosen a target since
+ * acceptance: focus is still on the body, because the re-render removed
+ * the element that held it, or on no connected element.
  */
 function focusConsentTarget(
   candidates: readonly (HTMLElement | null | undefined)[],
 ): void {
+  const active = document.activeElement;
+  if (active && active !== document.body && active.isConnected) return;
   for (const target of candidates) {
     if (!target?.isConnected) continue;
     if (

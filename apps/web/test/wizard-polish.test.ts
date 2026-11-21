@@ -177,6 +177,44 @@ test("typed-word consent focus: a disabled word field falls back without landing
   expect(tag).not.toBe("BODY");
 });
 
+test("typed-word consent focus: a delayed check does not override a later focus choice", async ({
+  page,
+}) => {
+  let release!: () => void;
+  let markStarted!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  await page.route("**/api/v1/words/**", async (route) => {
+    markStarted();
+    await gate;
+    await route.continue();
+  });
+  await page.goto("/new/meaning");
+  await page.getByLabel("Lojban word", { exact: true }).fill("cukta");
+  const panel = page.getByRole("region", { name: "Typed word", exact: true });
+  await panel
+    .getByRole("button", { name: "Check this word on the server" })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
+    .click();
+  await started;
+  const meaning = page.getByLabel("Meaning", { exact: true });
+  await meaning.click();
+  await expect(meaning).toBeFocused();
+  release();
+  await expect(panel).toContainText("Already exists:");
+  // The check finishes loading its definitions after the heading appears.
+  // Wait for that completion, when the old code moved focus, before judging.
+  await page.waitForTimeout(1000);
+  await expect(meaning).toBeFocused();
+});
+
 test("lujvo builder: Enter adds a part as entered without a package", async ({
   page,
 }) => {
