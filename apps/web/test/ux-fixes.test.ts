@@ -589,3 +589,146 @@ for (const fail of [false, true])
     ).toBeFocused();
     expect(await page.evaluate(() => window.scrollY)).toBe(scrolled);
   });
+
+/** Offers exactly these languages in the manifest, in this order, all with the English package's metadata. */
+async function offerLanguages(page: Page, languages: string[]): Promise<void> {
+  await page.route("**/api/v1/manifest*", async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    const en =
+      json.packages.find(
+        (pkg: { language: string }) => pkg.language === "en",
+      ) ?? json.packages[0];
+    json.packages = languages.map((language) => ({ ...en, language }));
+    await route.fulfill({ response, json });
+  });
+}
+
+/** Holds the package requests of one language until `release`, which aborts them. */
+function holdLanguage(page: Page, language: string) {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started = 0;
+  void page.route(`**/api/v1/packages/${language}**`, async (route) => {
+    started++;
+    await gate;
+    await route.abort();
+  });
+  return { release: () => release(), started: () => started };
+}
+
+/** Downloads English through the page and waits for the saved status. */
+async function downloadEnglish(page: Page): Promise<void> {
+  await page.getByLabel("Download a package").selectOption("en");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(statusText(page)).toContainText(
+    "The English search package is saved in this browser.",
+  );
+}
+
+for (const order of [
+  ["en", "fr"],
+  ["fr", "en"],
+])
+  test(`a failed download keeps the picked language after a render, with ${order.join(" then ")} offered`, async ({
+    page,
+  }) => {
+    await offerLanguages(page, order);
+    await page.goto("/preferences");
+    await downloadEnglish(page);
+    // French is now the only offered language, so no change event names it.
+    const pick = page.getByLabel("Download a package");
+    await expect(pick).toHaveValue("fr");
+    const held = holdLanguage(page, "fr");
+    await page.getByRole("button", { name: "Download", exact: true }).click();
+    await expect.poll(() => held.started()).toBeGreaterThan(0);
+    // Removing English renders the list, which offers English again.
+    await page
+      .locator(".row", { hasText: "English" })
+      .getByRole("button", { name: "Remove" })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Refresh English" }),
+    ).toHaveCount(0);
+    held.release();
+    await expect(statusText(page)).toContainText(
+      "No connection to the server.",
+    );
+    await expect(pick).toHaveValue("fr");
+    await expect(
+      page.getByRole("button", { name: "Download", exact: true }),
+    ).toBeEnabled();
+  });
+
+for (const fail of [false, true])
+  test(`a ${fail ? "failed" : "successful"} refresh leaves focus on the picker after a render`, async ({
+    page,
+  }) => {
+    await offerFrench(page);
+    await page.goto("/preferences");
+    await downloadEnglish(page);
+    await storeFrench(page);
+    await page.reload();
+    await expect(
+      page.getByRole("button", { name: "Refresh French" }),
+    ).toBeVisible();
+    const held = holdPackageRequests(page, fail);
+    await page.getByRole("button", { name: "Refresh English" }).click();
+    await expect.poll(() => held.started()).toBeGreaterThan(0);
+    // Remove French: the list renders and offers French for download.
+    await page
+      .locator(".row", { hasText: "French" })
+      .getByRole("button", { name: "Remove" })
+      .click();
+    const pick = page.getByLabel("Download a package");
+    await expect(pick).toHaveValue("fr");
+    await pick.focus();
+    await expect(pick).toBeFocused();
+    held.release();
+    if (fail) {
+      await expect(statusText(page)).toContainText(
+        "No connection to the server.",
+      );
+      await expect(
+        page.getByRole("button", { name: "Refresh English" }),
+      ).toBeEnabled();
+    } else {
+      await expect(statusText(page)).toContainText(
+        "The English package is refreshed.",
+      );
+      await waitForRenderAfterRun(page, "Refresh English");
+    }
+    await expect(page.getByLabel("Download a package")).toBeFocused();
+    await expect(page.getByLabel("Download a package")).toHaveValue("fr");
+  });
+
+test("a failed download keeps Download disabled while the picked language still downloads", async ({
+  page,
+}) => {
+  await offerLanguages(page, ["en", "fr"]);
+  const heldEn = holdLanguage(page, "en");
+  const heldFr = holdLanguage(page, "fr");
+  await page.goto("/preferences");
+  const pick = page.getByLabel("Download a package");
+  const download = page.getByRole("button", { name: "Download", exact: true });
+  await expect(pick).toHaveValue("en");
+  await download.click();
+  await expect.poll(() => heldEn.started()).toBe(1);
+  await expect(download).toBeDisabled();
+  await pick.selectOption("fr");
+  await expect(download).toBeEnabled();
+  await download.click();
+  await expect.poll(() => heldFr.started()).toBe(1);
+  await expect(download).toBeDisabled();
+  // Only English fails. French still downloads.
+  heldEn.release();
+  await expect(statusText(page)).toContainText("No connection to the server.");
+  await expect(pick).toHaveValue("fr");
+  await expect(download).toBeDisabled();
+  // Picking the idle language enables Download again.
+  await pick.selectOption("en");
+  await expect(download).toBeEnabled();
+  heldFr.release();
+});

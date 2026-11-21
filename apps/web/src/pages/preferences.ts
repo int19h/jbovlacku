@@ -195,60 +195,120 @@ export async function preferencesPage(
     packages,
   );
   // Languages with a package download or refresh running on this page.
-  // Buttons for them render disabled, across renders of the list.
+  // Their Refresh buttons render disabled, across renders of the list, and
+  // Download is disabled while the picked language is one of them.
   const runningPackages = new Set<string>();
-  // The language last picked for a download. Renders of the list keep it.
+  // The language picked for a download. Each render reads it from the
+  // current picker before it replaces the list, so the new picker shows it.
   let pickedPackage = "";
+  // Each list control carries its kind ("picker", "download", "refresh" or
+  // "remove") and, for a row control, its language. A render uses them to
+  // find the new copy of the control that had focus.
+  const controlKey = (node: Element | null) => {
+    const control = node?.closest<HTMLElement>("[data-package-control]");
+    if (!control || !packages.contains(control)) return null;
+    return `${control.dataset.packageControl}:${control.dataset.packageLanguage ?? ""}`;
+  };
+  const findControl = <T extends HTMLElement>(kind: string, language = "") =>
+    [...packages.querySelectorAll<T>("[data-package-control]")].find(
+      (node) =>
+        node.dataset.packageControl === kind &&
+        (node.dataset.packageLanguage ?? "") === language,
+    ) ?? null;
+  /** Sets the Download button from the running state of the picked language. */
+  const syncDownloadButton = () => {
+    const picker = findControl<HTMLSelectElement>("picker");
+    const download = findControl<HTMLButtonElement>("download");
+    if (picker && download)
+      download.disabled = runningPackages.has(picker.value);
+  };
+  /** Sets the Refresh button of a language, if it is listed, from its running state. */
+  const syncRefreshButton = (language: string) => {
+    const refresh = findControl<HTMLButtonElement>("refresh", language);
+    if (refresh) refresh.disabled = runningPackages.has(language);
+  };
   /**
    * Tells whether the end of a run may move focus. It may only when focus
    * is still on the handler's own button, or on no control: the page body
-   * or nothing, as after a render removed the focused button. Focus that
-   * the user moved to another control stays there.
+   * or nothing, as after a render removed the focused control and found no
+   * new copy of it. Focus on any other control stays there.
    */
   const focusIsFree = (own?: HTMLButtonElement) => {
     const active = document.activeElement;
     return active === null || active === document.body || active === own;
   };
-  /** Focuses the current list button with one of these labels, in label order, for a button that had focus before a render replaced it. */
-  const refocusPackageButton = (hadFocus: boolean, labels: string[]) => {
-    // The render removed the handler's button, so focus that is still free
-    // is on the body. Any other active element is the user's choice.
+  /**
+   * Focuses the first enabled list button of these kinds, in order, when
+   * the handler's button had focus and focus is still free. Kinds are
+   * [kind, language] pairs. The focus does not scroll the page.
+   */
+  const refocusPackageButton = (
+    hadFocus: boolean,
+    kinds: [string, string?][],
+  ) => {
     if (!hadFocus || !context.live() || !focusIsFree()) return;
-    const buttons = [...packages.querySelectorAll("button")];
-    for (const label of labels) {
-      const candidate = buttons.find(
-        (button) => button.textContent === label && !button.disabled,
-      );
-      if (candidate) {
+    for (const [kind, language] of kinds) {
+      const candidate = findControl<HTMLButtonElement>(kind, language);
+      if (candidate && !candidate.disabled) {
         candidate.focus({ preventScroll: true });
         return;
       }
     }
   };
   /**
-   * Ends a failed operation on the button the list shows now. If the
-   * handler's own button is still listed, it is enabled in place. If a
-   * render during the run replaced it, the list renders again with the
-   * running mark cleared, so the current button renders enabled.
+   * Ends a failed run. Storage did not change, so the list does not render
+   * again. The current controls are updated in place: the Refresh button
+   * of the language, and Download for the picked language. Focus moves
+   * only under the rule of `focusIsFree`, and never to a disabled button.
    */
-  const enableCurrentPackageButton = async (
+  const endFailedRun = (
     own: HTMLButtonElement,
     language: string,
-    labels: string[],
+    kinds: [string, string?][],
     hadFocus: boolean,
   ) => {
     const mayFocus = hadFocus && focusIsFree(own);
-    if (own.isConnected) {
-      own.disabled = runningPackages.has(language);
-      if (mayFocus) own.focus({ preventScroll: true });
-      return;
-    }
-    try {
-      await renderPackages();
-      refocusPackageButton(mayFocus, labels);
-    } catch {}
+    syncRefreshButton(language);
+    syncDownloadButton();
+    refocusPackageButton(mayFocus, kinds);
   };
+  // Counts renders, so that only the latest of overlapping renders
+  // restores focus. An earlier render's controls are replaced anyway.
+  let renderCount = 0;
+  // The list control that had focus when a render started, as a key.
+  let focusBeforeRender: string | null = null;
+  /**
+   * Builds the package list again. Before it replaces the list, it records
+   * the list control that has focus and the picked language. After it
+   * builds the list, it moves focus to the new copy of that control, if
+   * the copy exists and is enabled and focus is still free. The focus does
+   * not scroll the page. The new picker shows the picked language while
+   * that language is still offered.
+   */
   const renderPackages = async () => {
+    const render = ++renderCount;
+    const focused = controlKey(document.activeElement);
+    if (focused) focusBeforeRender = focused;
+    const picker = findControl<HTMLSelectElement>("picker");
+    if (picker) pickedPackage = picker.value;
+    try {
+      await buildPackages();
+    } finally {
+      if (render === renderCount) {
+        const key = focusBeforeRender;
+        focusBeforeRender = null;
+        if (key && context.live() && focusIsFree()) {
+          const [kind, language] = key.split(":");
+          const copy = findControl<HTMLButtonElement | HTMLSelectElement>(
+            kind,
+            language,
+          );
+          if (copy && !copy.disabled) copy.focus({ preventScroll: true });
+        }
+      }
+    }
+  };
+  const buildPackages = async () => {
     packages.replaceChildren();
     if (!session.storageAvailable) {
       packages.append(
@@ -286,7 +346,11 @@ export async function preferencesPage(
             await app.store.delete("packages", key);
             await renderPackages();
           },
-          { class: "btn btn-quiet" },
+          {
+            class: "btn btn-quiet",
+            "data-package-control": "remove",
+            "data-package-language": key,
+          },
         ),
       );
       packages.append(row);
@@ -307,14 +371,16 @@ export async function preferencesPage(
         })),
         value: available.includes(pickedPackage) ? pickedPackage : undefined,
       });
+      pick.input.dataset.packageControl = "picker";
       const go = button(
         "Download",
         async () => {
           const language = pick.input.value;
           if (runningPackages.has(language)) return;
+          pickedPackage = language;
           runningPackages.add(language);
           const hadFocus = document.activeElement === go;
-          go.disabled = true;
+          syncDownloadButton();
           let rendered = false;
           try {
             const expected = await app.store.packageRevisionOf(language);
@@ -341,32 +407,32 @@ export async function preferencesPage(
             await renderPackages();
             rendered = true;
             refocusPackageButton(mayFocus, [
-              "Download",
-              `Refresh ${languageName(language)}`,
+              ["download"],
+              ["refresh", language],
             ]);
           } catch (error) {
             // A full store reports its own message instead of a raw quota error.
             app.announce(describe(reportPackageError(error)));
           } finally {
             runningPackages.delete(language);
-            // A failure enables the button the list shows now: its own
-            // button when no render replaced it, so the picker keeps its
-            // language, or the current button after a fresh render.
+            // A failure changed no storage, so the list stays as it is,
+            // with its picker value and focus. Only the current buttons
+            // are updated.
             if (!rendered)
-              await enableCurrentPackageButton(
+              endFailedRun(
                 go,
                 language,
-                ["Download", `Refresh ${languageName(language)}`],
+                [["download"], ["refresh", language]],
                 hadFocus,
               );
           }
         },
-        { class: "btn" },
+        { class: "btn", "data-package-control": "download" },
       );
       go.disabled = runningPackages.has(pick.input.value);
       pick.input.addEventListener("change", () => {
         pickedPackage = pick.input.value;
-        go.disabled = runningPackages.has(pick.input.value);
+        syncDownloadButton();
       });
       packages.append(
         el(
@@ -402,7 +468,7 @@ export async function preferencesPage(
                 const mayFocus = hadFocus && focusIsFree(refresh);
                 await renderPackages();
                 rendered = true;
-                refocusPackageButton(mayFocus, ["Download"]);
+                refocusPackageButton(mayFocus, [["download"]]);
                 return;
               }
               const pkg = await downloadPackage(key);
@@ -423,28 +489,28 @@ export async function preferencesPage(
               const mayFocus = hadFocus && focusIsFree(refresh);
               await renderPackages();
               rendered = true;
-              refocusPackageButton(mayFocus, [
-                `Refresh ${languageName(key)}`,
-                "Download",
-              ]);
+              refocusPackageButton(mayFocus, [["refresh", key], ["download"]]);
             } catch (error) {
               // A full store reports its own message instead of a raw quota error.
               app.announce(describe(reportPackageError(error)));
             } finally {
               runningPackages.delete(key);
-              // A failure enables the button the list shows now: its
-              // own button when no render replaced it, or the current
-              // button after a fresh render.
+              // A failure changed no storage, so the list stays as it is.
+              // Only the current buttons are updated.
               if (!rendered)
-                await enableCurrentPackageButton(
+                endFailedRun(
                   refresh,
                   key,
-                  [`Refresh ${languageName(key)}`, "Download"],
+                  [["refresh", key], ["download"]],
                   hadFocus,
                 );
             }
           },
-          { class: "btn btn-quiet" },
+          {
+            class: "btn btn-quiet",
+            "data-package-control": "refresh",
+            "data-package-language": key,
+          },
         );
         refresh.disabled = runningPackages.has(key);
         packages.append(refresh);
