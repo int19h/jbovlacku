@@ -666,7 +666,12 @@ test("rafsi package rows group accent displays by word ID in the real worker", a
         preferences: { definitionLanguage: "en" },
         storageAvailable: true,
       },
-      store: { keys: async () => ["en"], get: async () => cached },
+      store: {
+        keys: async () => ["en"],
+        get: async () => cached,
+        packageRevisionOf: async () => undefined,
+        put: async () => true,
+      },
     };
     const found = await wordsWithRafsi(
       app as any,
