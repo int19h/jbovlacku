@@ -371,14 +371,33 @@ pub struct Publication {
     /// The account's contributions, shared with `AccountState`.
     /// Checkpoints leave it out (`CheckpointEvaluation`), and restore
     /// sets it from the account again, so a missing field reads as
-    /// empty.
-    #[serde(default)]
+    /// empty. A checkpoint reader refuses the field when it is present
+    /// (`take_explicit_contributions`), even as an empty map.
+    #[serde(default, deserialize_with = "deserialize_witness_contributions")]
     pub witness_contributions: Contributions,
     pub missing: BTreeSet<String>,
     pub content_available: bool,
     pub eligible: Eligibility,
     pub status: Status,
     pub reasons: BTreeSet<String>,
+}
+thread_local! {
+    /// Set when a publication's input names `witness_contributions`.
+    static EXPLICIT_CONTRIBUTIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Serde calls this only when the field is present, so it records the
+/// presence that `#[serde(default)]` alone would hide.
+fn deserialize_witness_contributions<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Contributions, D::Error> {
+    EXPLICIT_CONTRIBUTIONS.with(|seen| seen.set(true));
+    Contributions::deserialize(deserializer)
+}
+/// Whether a publication decoded on this thread since the last call
+/// named `witness_contributions`. Checkpoint readers call it before
+/// and after decoding.
+pub(crate) fn take_explicit_contributions() -> bool {
+    EXPLICIT_CONTRIBUTIONS.with(|seen| seen.replace(false))
 }
 /// Witness keys to the claims they observed. Every publication credited
 /// to an account shares the account's map, so a publication costs one

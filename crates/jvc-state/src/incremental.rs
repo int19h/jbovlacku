@@ -1359,7 +1359,10 @@ impl EvaluatedState {
                 "checkpoint version or binding does not match",
             ));
         }
-        let (saved, expected_version, nodes) = match records {
+        // Checkpoints never write a publication's contributions, so a
+        // reader refuses the field when it is present, even as `{}`.
+        take_explicit_contributions();
+        let decoded = match records {
             Some(records) => {
                 let saved: SavedResultsCheckpoint = serde_json::from_slice(bytes)
                     .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
@@ -1390,6 +1393,13 @@ impl EvaluatedState {
                 (saved, CHECKPOINT_VERSION, nodes)
             }
         };
+        if take_explicit_contributions() {
+            return Err(jvc_core::Error::new(
+                "checkpoint",
+                "checkpoint version or binding does not match",
+            ));
+        }
+        let (saved, expected_version, nodes) = decoded;
         let mut saved = saved;
         let mut validated_selections = BTreeMap::new();
         let resolved = if saved.event_limit_exceeded {

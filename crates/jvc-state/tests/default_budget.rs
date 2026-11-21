@@ -421,6 +421,19 @@ fn checkpoints_store_each_account_map_once_and_refuse_a_publication_copy() {
             restore(&sealed(copied)).is_err(),
             "results_only={results_only}"
         );
+        // An explicit empty map is refused too: checkpoints never
+        // write the field, and this publication's account has claims.
+        let mut empty = value.clone();
+        empty["evaluation"]["publications"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+            .find(|p| !p["account"].is_null())
+            .unwrap()["witness_contributions"] = json!({});
+        assert!(
+            restore(&sealed(empty)).is_err(),
+            "results_only={results_only}: an explicit empty map was accepted"
+        );
     }
 }
 
