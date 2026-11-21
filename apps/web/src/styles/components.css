@@ -584,11 +584,6 @@ details.disclosure > .body {
     outline-offset: -3px;
   }
 }
-.word-scored {
-  /* A wrapper for the part of the word page that a settled calculation
-     replaces. It adds no box of its own. */
-  display: contents;
-}
 .definition {
   padding: 24px 0 20px;
   border-bottom: 1px solid var(--line);

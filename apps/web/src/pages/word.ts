@@ -377,7 +377,10 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   const myJudgmentsFirst = Boolean(own);
   const statusOf = (definition: string) =>
     word.statuses.find((s) => s?.event === definition)?.state;
-  /** The scored part of the page under one view. */
+  /**
+   * The scored part of the page under one view. Its wrapper is a plain
+   * block with no margin, padding or border, so it does not change layout.
+   */
   const scoredPart = (view: ViewScores, provisional: boolean): HTMLElement => {
     const main = el("div", { class: "word-scored" });
     if (view.personal && view.reason) {
