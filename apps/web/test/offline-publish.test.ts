@@ -737,3 +737,214 @@ test("Resume while offline keeps a header-only outcome and retries a refused rec
     stopped: [false, false],
   });
 });
+
+test("a denied receipt lookup while the browser reports offline does not refuse an unsent record", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "onLine", {
+      configurable: true,
+      get: () => false,
+    });
+  });
+  const log = deliveryRequests(page);
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  await page.route("**/api/v1/receipts/*", (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({ message: "Receipt lookup denied." }),
+    }),
+  );
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  // The lookup only checks the connection for a record that was never sent.
+  // The server answered, so the POST goes ahead.
+  await expect(page.getByRole("status")).toContainText(
+    "Your endorsement is published.",
+  );
+  const items = await outboxItems(page);
+  expect(items).toHaveLength(1);
+  expect(items[0].peers.self.state).toBe("accepted");
+  expect(log.indexOf("receipt")).toBeGreaterThanOrEqual(0);
+  expect(log.indexOf("receipt")).toBeLessThan(log.indexOf("POST"));
+  expect(log.filter((entry) => entry === "POST")).toHaveLength(1);
+  await page.unroute("**/api/v1/receipts/*");
+  await clearAfterReload(page, 1);
+});
+
+test("a denied receipt lookup for a refused record is retried and is not a refusal", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  await page.route("**/api/v1/events", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({
+          status: 422,
+          contentType: "application/json",
+          body: JSON.stringify({ message: "Probe refusal.", code: "probe" }),
+        })
+      : route.continue(),
+  );
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  const peerOf = async () => (await outboxItems(page))[0]?.peers.self;
+  await expect.poll(async () => (await peerOf())?.state).toBe("refused");
+  await page.unroute("**/api/v1/events");
+  const log = deliveryRequests(page);
+  await page.route("**/api/v1/receipts/*", (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({ message: "Receipt lookup denied." }),
+    }),
+  );
+  await page.getByRole("link", { name: "1 not delivered" }).click();
+  await expect(page).toHaveTitle("Not delivered · jbovlacku");
+  await page.getByRole("button", { name: "Try now" }).first().click();
+  await expect.poll(async () => (await peerOf())?.attempts).toBe(2);
+  const retried = await peerOf();
+  expect(retried.state).toBe("unknown");
+  expect(retried.failure).toBe("server");
+  expect(retried.nextAttempt).not.toBeNull();
+  expect(log).toContain("receipt");
+  expect(log).not.toContain("POST");
+  await page.unroute("**/api/v1/receipts/*");
+  await page.getByRole("button", { name: "Try now" }).first().click();
+  await expect
+    .poll(async () => (await peerOf())?.state, { timeout: 30000 })
+    .toBe("accepted");
+  await clearAfterReload(page, 1);
+});
+
+for (const initial of ["queued", "refused"] as const)
+  test(`a tab that closes after the server took the POST of a ${initial} record leaves a receipt lookup`, async ({
+    page,
+    context,
+  }) => {
+    await createIdentity(page);
+    await openWord(page, "cukta");
+    const endorse = async () => {
+      await page
+        .locator("article.definition")
+        .first()
+        .getByRole("button", { name: "Endorse" })
+        .click();
+      await acceptFirstSignature(page);
+    };
+    if (initial === "refused") {
+      await page.route("**/api/v1/events", (route) =>
+        route.request().method() === "POST"
+          ? route.fulfill({
+              status: 422,
+              contentType: "application/json",
+              body: JSON.stringify({ message: "Probe refusal." }),
+            })
+          : route.continue(),
+      );
+      await endorse();
+      await expect
+        .poll(async () => (await outboxItems(page))[0]?.peers.self.state)
+        .toBe("refused");
+      await page.unroute("**/api/v1/events");
+      await page.getByRole("link", { name: "1 not delivered" }).click();
+      await expect(page).toHaveTitle("Not delivered · jbovlacku");
+    }
+    // The server stores the POST and answers. The answer never reaches the
+    // page, because the tab closes first.
+    let reached!: (status: number) => void;
+    const stored = new Promise<number>((resolve) => (reached = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/api/v1/events", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      const response = await route.fetch();
+      reached(response.status());
+      await gate;
+      await route.fulfill({ response }).catch(() => {});
+    });
+    if (initial === "refused")
+      await page.getByRole("button", { name: "Try now" }).first().click();
+    else await endorse();
+    expect(await stored).toBe(201);
+    await page.close();
+    release();
+    const next = await context.newPage();
+    const log = deliveryRequests(next);
+    await next.goto("/outbox");
+    await expect
+      .poll(async () => (await outboxItems(next))[0]?.peers.self.state, {
+        timeout: 30000,
+      })
+      .toBe("accepted");
+    // The reopened tab asked for the receipt and did not send the bytes again.
+    expect(log).toContain("receipt");
+    expect(log).not.toContain("POST");
+    await clearAfterReload(next, 1);
+  });
+
+test("explicit local-only signing does not sign a first event for a key without history here", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.getByText("Offline signing", { exact: true }).click();
+  await page.getByLabel("Sign from history saved in this browser only").check();
+  await openWord(page, "cukta");
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toContainText(
+    "Publishing needs a connection the first time this key publishes in this browser.",
+  );
+  expect(await outboxItems(page)).toHaveLength(0);
+});
+
+test("a 503 history read with a large error body still signs from the history saved here", async ({
+  page,
+}) => {
+  test.setTimeout(180000);
+  await createIdentity(page);
+  const clearId = await establishHistory(page);
+  const before = new Set((await outboxItems(page)).map((item: any) => item.id));
+  await page.route("**/api/v1/identity-heads/**", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "text/html",
+      body: "x".repeat(65537),
+    }),
+  );
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await expect
+    .poll(async () => (await outboxItems(page)).length, { timeout: 30000 })
+    .toBe(before.size + 1);
+  const signed = (await outboxItems(page)).find(
+    (item: any) => !before.has(item.id),
+  );
+  expect(JSON.parse(signed.transport).envelope.header.previous).toEqual([
+    clearId,
+  ]);
+  await page.unroute("**/api/v1/identity-heads/**");
+  await expect
+    .poll(async () => (await statesOf(page, [signed.id]))[0], {
+      timeout: 30000,
+    })
+    .toBe("accepted");
+  await clearAfterReload(page, 2);
+});

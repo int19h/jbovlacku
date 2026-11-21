@@ -8,11 +8,7 @@ import {
   prepareSigning,
   utf8,
 } from "../../../../packages/core/src/browser.ts";
-import {
-  forgetWord,
-  RequestError,
-  TransportError,
-} from "../data/api.ts";
+import { forgetWord, RequestError, TransportError } from "../data/api.ts";
 import { ownHeads } from "../data/history.ts";
 import { freshPeer, type DeliveryEngine } from "../data/delivery.ts";
 import { LIFECYCLE_KINDS } from "../data/lifecycle.ts";
@@ -55,9 +51,9 @@ export class Signer {
       )
     )
       return true;
-    return (await store.list<{ header?: { issuer?: string } }>("ownhistory")).some(
-      (envelope) => envelope?.header?.issuer === identity,
-    );
+    return (
+      await store.list<{ header?: { issuer?: string } }>("ownhistory")
+    ).some((envelope) => envelope?.header?.issuer === identity);
   }
   /** Signs and persists a group. Does not send. */
   async sign(
@@ -98,33 +94,33 @@ export class Signer {
         label: configured.label === "this server" ? url.host : configured.label,
       };
     }
+    const firstTime =
+      "Publishing needs a connection the first time this key publishes in this browser. Nothing was signed.";
+    // Signing from the history saved in this browser needs an own event for
+    // the key there and a parent list that is not empty. Otherwise the
+    // record would be a new first event for a key that may already have
+    // history on a server. Both offline paths use this rule.
+    const localParents = async () => {
+      if (!(await this.hasLocalHistory(identity))) throw new Error(firstTime);
+      const parents = await ownHeads(session.store, identity, true);
+      if (!parents.length) throw new Error(firstTime);
+      return parents;
+    };
     let previous: string[];
-    try {
-      previous = await ownHeads(
-        session.store,
-        identity,
-        this.offlineSigning(),
-      );
-    } catch (error) {
-      // A lost connection must not block signing. Sign from the history
-      // saved in this browser. Delivery keeps the group for retry.
-      const unreachable =
-        error instanceof TransportError ||
-        (error instanceof RequestError &&
-          [502, 503, 504].includes(error.status));
-      if (this.offlineSigning() || !unreachable) throw error;
-      if (!(await this.hasLocalHistory(identity)))
-        throw new Error(
-          "Publishing needs a connection the first time this key publishes in this browser. Nothing was signed.",
-        );
-      previous = await ownHeads(session.store, identity, true);
-      // Whatever the own-event sources say, an empty parent list would make
-      // this record a new first event. Refuse instead of signing it.
-      if (!previous.length)
-        throw new Error(
-          "Publishing needs a connection the first time this key publishes in this browser. Nothing was signed.",
-        );
-    }
+    if (this.offlineSigning()) previous = await localParents();
+    else
+      try {
+        previous = await ownHeads(session.store, identity, false);
+      } catch (error) {
+        // A lost connection must not block signing. Sign from the history
+        // saved in this browser. Delivery keeps the group for retry.
+        const unreachable =
+          error instanceof TransportError ||
+          (error instanceof RequestError &&
+            [502, 503, 504].includes(error.status));
+        if (!unreachable) throw error;
+        previous = await localParents();
+      }
     const learnedRestriction = await session.signingDisabled(identity);
     if (learnedRestriction) throw new Error(learnedRestriction);
     if (
