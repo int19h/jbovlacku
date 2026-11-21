@@ -23,9 +23,8 @@ await initializeCore(
     ),
   ),
 );
-const searchModule: typeof import("../../src/data/search.ts") = await import(
-  "../../src/data/search.ts"
-);
+const searchModule: typeof import("../../src/data/search.ts") =
+  await import("../../src/data/search.ts");
 const { localSearch, validateCachedPackage } = searchModule;
 const {
   workerReplyError,
@@ -46,9 +45,15 @@ const packageEntry = (index: number): PackageEntry => ({
 });
 
 test("worker reply codes map to their documented errors", () => {
-  const invalid = workerReplyError("invalid-package", "bad shape");
+  const invalid = workerReplyError(
+    "invalid-package",
+    "value.glosses.some is not a function",
+  );
   assert.equal(invalid.constructor.name, "PackageValidationError");
-  assert.equal(invalid.message, "bad shape");
+  assert.equal(
+    invalid.message,
+    "The search package is invalid. Search this server or download another package.",
+  );
   const missing = workerReplyError("package-missing", "gone");
   assert.ok(!(missing instanceof Error) || missing.message === "gone");
   assert.equal(missing.constructor.name, "MissingPackageError");
@@ -72,17 +77,11 @@ test("a worker crash is classified by cause, not history", () => {
   // An ordinary code bug keeps the startup message, before or after any
   // earlier reply: a prior memory failure must not launder it.
   assert.match(workerCrashReason({ errorName: "Error" }).message, generic);
-  assert.match(
-    workerCrashReason({ errorName: undefined }).message,
-    generic,
-  );
+  assert.match(workerCrashReason({ errorName: undefined }).message, generic);
   // An allocation failure reports does-not-fit on its own evidence, in
   // either engine's wording. A bare RangeError no longer suffices: only the
   // message proves the cause.
-  assert.match(
-    workerCrashReason({ errorName: "RangeError" }).message,
-    generic,
-  );
+  assert.match(workerCrashReason({ errorName: "RangeError" }).message, generic);
   assert.match(
     workerCrashReason({
       errorName: "RangeError",
@@ -177,12 +176,17 @@ test("worker error names cover both engines' event shapes", () => {
   assert.equal(workerErrorName(new RangeError("x")), "RangeError");
   // Chromium prefixes the name with "Uncaught".
   assert.equal(
-    workerErrorName({ message: "Uncaught RangeError: Array buffer allocation failed" }),
+    workerErrorName({
+      message: "Uncaught RangeError: Array buffer allocation failed",
+    }),
     "RangeError",
   );
   // Firefox reports the bare name with a null error object.
   assert.equal(
-    workerErrorName({ message: "RangeError: review allocation failure", error: null }),
+    workerErrorName({
+      message: "RangeError: review allocation failure",
+      error: null,
+    }),
     "RangeError",
   );
   assert.equal(
@@ -194,9 +198,8 @@ test("worker error names cover both engines' event shapes", () => {
 });
 
 test("entry content counts items and bytes, never malformed shapes", async () => {
-  const { entryContentUnits } = await import(
-    "../../../../packages/search/src/index.ts"
-  );
+  const { entryContentUnits } =
+    await import("../../../../packages/search/src/index.ts");
   assert.equal(entryContentUnits(null), 0);
   assert.equal(entryContentUnits("broda"), 0);
   // One gloss and a short headword stay small.
@@ -279,9 +282,8 @@ test("a worker budget refusal keeps its resource type", () => {
 });
 
 test("only allocation wording marks a RangeError as out of room", async () => {
-  const { isAllocationFailure } = await import(
-    "../../src/data/package-search.ts"
-  );
+  const { isAllocationFailure } =
+    await import("../../src/data/package-search.ts");
   assert.equal(
     isAllocationFailure(new RangeError("Array buffer allocation failed")),
     true,
@@ -311,7 +313,10 @@ test("only allocation wording marks a RangeError as out of room", async () => {
 });
 
 test("worker crash messages keep both engines' wording", () => {
-  assert.equal(workerErrorMessage(new RangeError("Array buffer allocation failed")), "Array buffer allocation failed");
+  assert.equal(
+    workerErrorMessage(new RangeError("Array buffer allocation failed")),
+    "Array buffer allocation failed",
+  );
   assert.equal(
     workerErrorMessage({
       message: "Uncaught RangeError: Array buffer allocation failed",
@@ -411,7 +416,13 @@ test("grouping and sorting share the request budget", () => {
     packageEntry(index),
   );
   // A prepared query isolates the scan: parsing is already paid for.
-  const prepared = { text: "book", headword: "book", components: null as null, positions: new Map(), segmentation: "complete" as const };
+  const prepared = {
+    text: "book",
+    headword: "book",
+    components: null as null,
+    positions: new Map(),
+    segmentation: "complete" as const,
+  };
   assert.throws(
     () =>
       localSearch(entries, prepared, searchMetrics(), false, {
@@ -427,7 +438,13 @@ test("the request deadline covers grouping and sorting", () => {
   const entries = Array.from({ length: 100_000 }, (_, index) =>
     packageEntry(index),
   );
-  const prepared = { text: "book", headword: "book", components: null as null, positions: new Map(), segmentation: "complete" as const };
+  const prepared = {
+    text: "book",
+    headword: "book",
+    components: null as null,
+    positions: new Map(),
+    segmentation: "complete" as const,
+  };
   // One millisecond is far below any full run over 100,000 rows, so the
   // deadline must stop the operation instead of returning after it.
   assert.throws(
@@ -472,9 +489,7 @@ test("rafsi merging charges its linear cost with identical results", () => {
 });
 
 test("page-side reference rebuild charges the continued budget", () => {
-  const entries = Array.from({ length: 10 }, (_, index) =>
-    packageEntry(index),
-  );
+  const entries = Array.from({ length: 10 }, (_, index) => packageEntry(index));
   const pkg = {
     snapshot: "sha256:" + "a".repeat(64),
     entries,
@@ -557,8 +572,14 @@ test("a prepared rafsi query completes after lowercasing expands it", () => {
     enforceQueryLengthCap: true,
   });
   assert.ok(prepared.text.length > 4096);
-  const selected = localSearch([packageEntry(0)], prepared, searchMetrics(), true, {
-    enforceQueryLengthCap: true,
-  });
+  const selected = localSearch(
+    [packageEntry(0)],
+    prepared,
+    searchMetrics(),
+    true,
+    {
+      enforceQueryLengthCap: true,
+    },
+  );
   assert.equal(selected.segmentation, "complete");
 });

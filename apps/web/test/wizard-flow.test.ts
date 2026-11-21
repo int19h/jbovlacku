@@ -1058,8 +1058,12 @@ for (const spelling of ["cukte", "broda"]) {
       const cached = await store.get("packages", "en");
       cached.version = 1;
       for (const entry of cached.entries) {
+        // A real version 1 row carries none of the version 2 fields.
         delete entry.rafsi;
         delete entry.rafsi_complete;
+        delete entry.issuer;
+        delete entry.notes;
+        delete entry.attribution;
       }
       await store.put("packages", "en", cached);
       const draft = await store.get("drafts", "current");

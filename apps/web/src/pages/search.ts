@@ -11,6 +11,7 @@ import {
   PackageValidationError,
   type PackageSearchResult,
 } from "../data/package-search.ts";
+import { savedPackage } from "../data/saved-package.ts";
 import { kindLabel } from "../model/types.ts";
 import {
   isPatternQuery,
@@ -247,9 +248,18 @@ export async function searchPage(
     app.session.preferences.searchMode === "local" &&
     app.session.storageAvailable
   ) {
-    cached = await app.store
-      .get<CachedPackage>("packages", language)
-      .catch(() => undefined);
+    // An unusable saved package, a stored null included, is announced and
+    // then treated as no package, as the worker's verdict is below.
+    try {
+      cached =
+        savedPackage(
+          await app.store.get("packages", language).catch(() => undefined),
+        ) ?? undefined;
+    } catch (error) {
+      if (!(error instanceof PackageValidationError)) throw error;
+      if (!context.live()) return;
+      app.announce(describe(error));
+    }
   }
   if (cached) {
     try {
@@ -1048,12 +1058,15 @@ function hitRow(
           link("notes", `${routes.definition(previewId)}#notes`),
         );
       if (entry.rafsi.length) {
-        rafsiSpan.textContent = entry.rafsi.join(", ");
+        // filter drops empty array slots, which the worker's checks skip.
+        rafsiSpan.textContent = entry.rafsi.filter(() => true).join(", ");
         rafsiSpan.hidden = false;
       }
     } else meta.append(text("Author unavailable in this package"));
     if (entry?.classification.selmaho.length) {
-      selmaho.textContent = entry.classification.selmaho.join(", ");
+      selmaho.textContent = entry.classification.selmaho
+        .filter(() => true)
+        .join(", ");
       selmaho.hidden = false;
     }
   }

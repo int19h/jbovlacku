@@ -2,10 +2,12 @@ import { wordFormStatus } from "../../components/word-form-feedback.ts";
 import { kindLabel } from "../../model/types.ts";
 import { detectWord, typedWord } from "../../model/typed-headword.ts";
 import {
-  cachedPackage,
-  inventoryFromPackage,
+  savedInventory,
+  savedPackages,
   currentRootConflicts,
+  type SavedInventory,
 } from "../../model/builders.ts";
+import { INVALID_PACKAGE_MESSAGE } from "../../data/saved-package.ts";
 import {
   assistanceAction,
   assistanceVisibility,
@@ -169,24 +171,31 @@ export async function typePage(
     role: "region",
     "aria-label": "Gismu closeness",
   });
-  const packageData = await cachedPackage(app.store);
+  const saved = await savedPackages(app.store);
   if (!context.live()) return;
+  // The inventory is built when the closeness check first needs it, as on
+  // main, where a word type other than gismu builds none.
+  let found: SavedInventory | undefined;
   const renderRoots = () => {
     rootWarnings.replaceChildren();
     if (!spelling || draft.kind !== "gismu") return;
-    if (!packageData)
-      rootWarnings.append(
-        p(
-          "Gismu closeness could not be checked. No local package is downloaded.",
-          "small",
-        ),
-      );
-    else {
-      try {
-        const conflicts = currentRootConflicts(
-          spelling,
-          inventoryFromPackage(packageData),
+    found ??= savedInventory(saved);
+    const packageData = found.pkg;
+    // An unusable package shows its message, and the check goes on with
+    // the best usable package.
+    if (found.invalid)
+      rootWarnings.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
+    if (!packageData) {
+      if (!found.invalid)
+        rootWarnings.append(
+          p(
+            "Gismu closeness could not be checked. No local package is downloaded.",
+            "small",
+          ),
         );
+    } else {
+      try {
+        const conflicts = currentRootConflicts(spelling, found.inventory);
         rootWarnings.append(
           p(
             `Gismu closeness in local snapshot ${packageData.snapshot}. Other inventories are unknown.`,

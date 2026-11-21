@@ -20,6 +20,12 @@ import {
   type CachedPackage,
 } from "../data/search.ts";
 import { getCapabilities, getManifest, selfPeer } from "../data/api.ts";
+import {
+  INVALID_PACKAGE_MESSAGE,
+  PackageValidationError,
+  savedPackage,
+  savedRow,
+} from "../data/saved-package.ts";
 import type { Preferences } from "../data/store.ts";
 
 export async function preferencesPage(
@@ -207,23 +213,30 @@ export async function preferencesPage(
     }
     const keys = await app.store.keys("packages");
     for (const key of keys) {
-      const cached = await app.store.get<CachedPackage>("packages", key);
+      // An unusable package keeps its row and Remove control, with the
+      // invalid-package message in place of its definition count.
+      let cached: CachedPackage | null = null;
+      let invalid = false;
+      try {
+        cached = savedPackage(await app.store.get("packages", key));
+      } catch (error) {
+        if (!(error instanceof PackageValidationError)) throw error;
+        invalid = true;
+      }
+      const detail = el("small", {
+        text: invalid
+          ? INVALID_PACKAGE_MESSAGE
+          : cached
+            ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}… · version ${cached.version ?? 1}${
+                cached.downgrade
+                  ? `. Version 1 was saved instead of version 2: ${cached.downgrade}`
+                  : ""
+              }`
+            : "unreadable",
+      });
       const row = el("div", { class: "row" });
       row.append(
-        el(
-          "span",
-          { class: "t" },
-          text(languageName(key)),
-          el("small", {
-            text: cached
-              ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}… · version ${cached.version ?? 1}${
-                  cached.downgrade
-                    ? `. Version 1 was saved instead of version 2: ${cached.downgrade}`
-                    : ""
-                }`
-              : "unreadable",
-          }),
-        ),
+        el("span", { class: "t" }, text(languageName(key)), detail),
         button(
           "Remove",
           async () => {
@@ -234,6 +247,19 @@ export async function preferencesPage(
         ),
       );
       packages.append(row);
+      // This page reads no rows, so it checks them in a task of its own
+      // after the row is shown. A valid package keeps its count, and an
+      // unusable one shows the message in its place.
+      const pkg = cached;
+      if (pkg)
+        setTimeout(() => {
+          try {
+            for (const entry of pkg.entries) savedRow(entry, pkg.version);
+          } catch (error) {
+            if (!(error instanceof PackageValidationError)) throw error;
+            detail.textContent = INVALID_PACKAGE_MESSAGE;
+          }
+        });
     }
     if (!packagesAvailable)
       packages.append(

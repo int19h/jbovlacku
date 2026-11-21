@@ -16,6 +16,12 @@ import {
   type RafsiInventoryClaim,
 } from "../../../../packages/core/src/browser.ts";
 import type { CachedPackage } from "../data/search.ts";
+import {
+  PackageValidationError,
+  savedPackage,
+  savedRow,
+  savedWordId,
+} from "../data/saved-package.ts";
 import type {
   Compound,
   Formation,
@@ -379,24 +385,71 @@ export interface PackageInventory {
   /** False when any word's rafsi list was cut. A cut inventory is not a complete conflict check. */
   complete: boolean;
 }
-/** The cached package with the most entries, preferring version 2, for inventories and search. */
-export async function cachedPackage(store: {
-  list<T>(name: string): Promise<T[]>;
-}): Promise<CachedPackage | null> {
-  try {
-    const all = await store.list<CachedPackage>("packages");
-    return (
-      all.sort(
-        (a, b) =>
-          (b.version ?? 1) - (a.version ?? 1) ||
-          b.entries.length - a.entries.length,
-      )[0] ?? null
-    );
-  } catch {
-    return null;
-  }
+/** The saved packages that the wizard pages can read. */
+export interface SavedPackages {
+  /** Usable packages, best first: version 2 before version 1, then the most entries. */
+  packages: CachedPackage[];
+  /** True when a saved package is unusable. Such a package is left out of `packages`. */
+  invalid: boolean;
 }
-/** The conflict inventory from the local package. */
+/**
+ * Every saved package, read as on main and checked by `savedPackage`. A
+ * package that fails is left out, so it does not hide a usable package of
+ * another language. A store that cannot be read counts as no package.
+ */
+export async function savedPackages(store: {
+  list<T>(name: string): Promise<T[]>;
+}): Promise<SavedPackages> {
+  let all: unknown[];
+  try {
+    all = await store.list<unknown>("packages");
+  } catch {
+    return { packages: [], invalid: false };
+  }
+  const packages: CachedPackage[] = [];
+  let invalid = false;
+  for (const value of all)
+    try {
+      const pkg = savedPackage(value);
+      if (pkg) packages.push(pkg);
+    } catch (error) {
+      if (!(error instanceof PackageValidationError)) throw error;
+      invalid = true;
+    }
+  packages.sort(
+    (a, b) =>
+      (b.version ?? 1) - (a.version ?? 1) ||
+      b.entries.length - a.entries.length,
+  );
+  return { packages, invalid };
+}
+/** The package that the wizard pages use, with its conflict inventory. */
+export interface SavedInventory {
+  pkg: CachedPackage | null;
+  inventory: PackageInventory;
+  /** True when a saved package is unusable. `pkg` is then the best usable one, or null. */
+  invalid: boolean;
+}
+/**
+ * The inventory of the best saved package. Building it checks every row,
+ * so a package with an unusable row is skipped for the next one.
+ */
+export function savedInventory(saved: SavedPackages): SavedInventory {
+  let invalid = saved.invalid;
+  for (const pkg of saved.packages)
+    try {
+      return { pkg, inventory: inventoryFromPackage(pkg), invalid };
+    } catch (error) {
+      if (!(error instanceof PackageValidationError)) throw error;
+      invalid = true;
+    }
+  return { pkg: null, inventory: inventoryFromPackage(null), invalid };
+}
+/**
+ * The conflict inventory from the local package, which must pass
+ * `savedPackage`. Each row is read through `savedRow` and `savedWordId`,
+ * so an unusable row raises `PackageValidationError`.
+ */
 export function inventoryFromPackage(
   cached: CachedPackage | null,
 ): PackageInventory {
@@ -413,8 +466,9 @@ export function inventoryFromPackage(
   const gismu = new Map<string, string>();
   const incomplete = new Map<string, string>();
   let hasClaims = false;
-  for (const entry of cached.entries) {
-    const id = wordId({ language: "jbo", spelling: entry.word.spelling });
+  for (const row of cached.entries) {
+    const entry = savedRow(row, cached.version);
+    const id = savedWordId({ language: "jbo", spelling: entry.word.spelling });
     const kind = (entry.classification as { kind?: string } | null)?.kind;
     if (kind === "gismu") gismu.set(id, entry.word.spelling);
     if ("rafsi" in entry && Array.isArray(entry.rafsi)) {
@@ -422,6 +476,8 @@ export function inventoryFromPackage(
       if ((entry as { rafsi_complete?: boolean }).rafsi_complete === false)
         incomplete.set(id, entry.word.spelling);
       for (const rafsi of entry.rafsi) {
+        // An empty array slot is no rafsi, as in the worker's checks.
+        if (rafsi === undefined) continue;
         const pair = rafsiPairId(id, rafsi);
         claims.set(pair, {
           rafsi,

@@ -913,7 +913,8 @@ export function selectMatches<T extends LexicalEntry>(
         // Scan every retained rafsi, even after a match, under the same budget.
         let rafsi = false;
         for (const spelling of options.rafsiFor?.(entry) ?? entry.rafsi ?? [])
-          rafsi = pattern.test(spelling) || rafsi;
+          // An empty array slot is no rafsi, as in the package checks.
+          if (spelling !== undefined) rafsi = pattern.test(spelling) || rafsi;
         if (headword || rafsi)
           rows.push({
             entry,

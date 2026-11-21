@@ -48,12 +48,10 @@ test("the lujvo builder offers long forms beside listed rafsi, recovers parts, h
   await downloadPackage(page);
   const competingWords = await page.evaluate(async (ownWord) => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
-    const { cachedPackage, inventoryFromPackage } = await import(
+    const { savedInventory, savedPackages } = await import(
       String("/src/model/builders.ts")
     );
-    const inventory = inventoryFromPackage(
-      await cachedPackage(new LocalStore()),
-    );
+    const { inventory } = savedInventory(await savedPackages(new LocalStore()));
     return inventory.claims
       .filter(
         (claim: RafsiInventoryClaim) =>
