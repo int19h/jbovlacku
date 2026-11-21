@@ -55,6 +55,74 @@ test("a slow remote search shows its groups and Searching status", async ({
   await expect(results.locator("article").first()).toBeVisible();
 });
 
+test("a reorder after a slow search keeps focus on the clicked group status", async ({
+  page,
+}) => {
+  // The groups are on the page while the first request waits. A known word
+  // then moves Lojban words to the top. The reorder must not take focus
+  // away from a status that the reader clicked during the wait.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const snapshot = "sha256:" + "a".repeat(64);
+  const view = "jve1:" + "b".repeat(64);
+  const event = "jve1:" + "c".repeat(64);
+  await page.route("**/api/v1/search?**", async (route) => {
+    await held;
+    const url = new URL(route.request().url());
+    const lojban = url.searchParams.get("group") === "lojban";
+    await route.fulfill({
+      json: {
+        snapshot,
+        view,
+        all_lojban: true,
+        next: null,
+        hits: lojban
+          ? [
+              {
+                word: { language: "jbo", spelling: "klama" },
+                word_id: "jvw1:" + "d".repeat(64),
+                definitions: [event],
+                match: "headword",
+                preview: {
+                  event,
+                  word_kind: "gismu",
+                  plain_text: "goes",
+                  status: "active",
+                },
+              },
+            ]
+          : [],
+      },
+    });
+  });
+  await page.route("**/api/v1/words/**", (route) =>
+    route.fulfill({
+      status: 404,
+      json: { code: "missing", message: "missing", event: null, field: null },
+    }),
+  );
+  await page.route("**/api/v1/events/**", (route) =>
+    route.fulfill({
+      status: 404,
+      json: { code: "missing", message: "missing", event: null, field: null },
+    }),
+  );
+  await page.goto("/search?q=klama&lang=en");
+  const results = page.getByRole("region", { name: "Search results" });
+  const headings = results.locator("section.result-group h2");
+  await expect(headings.first()).toHaveText("Definitions");
+  const status = results
+    .locator("section.result-group")
+    .filter({ has: page.getByRole("heading", { name: "Definitions" }) })
+    .locator(".count");
+  await status.click();
+  await expect(status).toBeFocused();
+  release();
+  await expect(headings.first()).toHaveText("Lojban words");
+  await expect(results).toHaveAttribute("aria-busy", "false");
+  await expect(status).toBeFocused();
+});
+
 test("a slow Settings load shows Loading instead of only the heading", async ({
   page,
 }) => {

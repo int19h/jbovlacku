@@ -189,15 +189,16 @@ const readingLanguageNames: Record<string, string> = {
   jbo: "Lojban",
   tlh: "Klingon",
   tpi: "Tok Pisin",
-  tok: "Toki Pona",
-  // The platform has no readable name for these dictionary tags. These are
-  // the English names in the Lensisku language table. Every other tag keeps
-  // the platform name, because a subtag after "art-" can be a region or a
-  // script, not a language name.
-  "en-simple": "Simple English",
-  "fr-facile": "Easy French",
   "art-guaspi": "Guaspi",
   "art-x-guaspi": "Guaspi",
+  // The platform has no readable name for these dictionary tags. These are
+  // the English names in the Lensisku language table. Every other tag uses
+  // an override above, such as Guaspi, or else the platform name. No rule
+  // guesses a name from a subtag, because a subtag after "art-" can be a
+  // region or a script.
+  tok: "Toki Pona",
+  "en-simple": "Simple English",
+  "fr-facile": "Easy French",
   "art-loglan": "Loglan",
   "art-picture": "Picture language",
 };

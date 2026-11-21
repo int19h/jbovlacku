@@ -571,8 +571,24 @@ export async function searchPage(
     const ordered = orderedGroups();
     // Keep the DOM order equal to the reading and keyboard order.
     const before = results.firstElementChild;
-    if (before !== ordered[0].node)
-      results.prepend(...ordered.map((group) => group.node));
+    if (before !== ordered[0].node) {
+      const [first, second] = ordered.map((group) => group.node);
+      // Moving an element drops its focus, and the groups are on the page
+      // before the first response. When both groups are already here, move
+      // only the one that does not hold the reader's focus.
+      const present =
+        first.parentElement === results && second.parentElement === results;
+      if (!present) results.prepend(first, second);
+      else if (
+        !(
+          first.compareDocumentPosition(second) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+        )
+      ) {
+        if (second.contains(document.activeElement)) second.before(first);
+        else first.after(second);
+      }
+    }
     for (const [key, group] of Object.entries(groups) as [
       SearchGroup,
       typeof groups.lojban,
@@ -937,9 +953,11 @@ function hitRow(
   rafsiSpan.hidden = true;
   line1.append(rafsiSpan);
   if (kind && kind !== "unknown") line1.append(text(kindLabel(kind), "meta"));
-  // A local row's status is always "unavailable", because the package
-  // carries no status evidence, so local rows do not show it. A server row
-  // shows every state other than active, including "unavailable".
+  // A local preview always says "unavailable". A package can carry
+  // search_status ordering evidence, but that evidence does not supply a
+  // complete current publication status, so local rows do not show it. A
+  // server row shows every state other than active, including
+  // "unavailable".
   if (
     hit.preview &&
     hit.preview.status !== "active" &&
