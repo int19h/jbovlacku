@@ -760,7 +760,7 @@ async function setupGatedStore(
   }, saved);
   await page.reload();
   await expect(
-    page.getByRole("button", { name: "Download", exact: true }),
+    page.getByRole("button", { name: "Refresh English" }),
   ).toBeVisible();
   await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
