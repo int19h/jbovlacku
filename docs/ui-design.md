@@ -189,7 +189,7 @@ Lojban words includes headword, segmented, pattern, and rafsi matches. Definitio
 When every space-separated query word has an exact normalized headword, Lojban words comes first. Otherwise, Definitions comes first.
 The eligible language index must hold each complete spelling. Pause periods, commas, and the `h` apostrophe alias use that same spelling.
 Cmavo segments alone cannot establish a known word.
-Pattern queries show only Lojban words. Each group keeps its own pagination and “show all” action.
+Pattern queries show only Lojban words. Each group keeps its own pagination and “Show all” action.
 Meaning search needs one inline consent under the frontend's provider and scope rules.
 The prompt reads “Find similar meanings too? Your search text goes to [server] and [provider].”
 Allow and Not now appear below that sentence.
@@ -210,7 +210,7 @@ Subsequence matches keep those cards. A one-word query shows its exact word and 
 Case and acute headword stress marks do not change the order.
 If segmentation reaches a resource limit, a visible notice states that some sequence matches or word cards can be missing.
 The notice stays through pagination and browser Back.
-Each group ends with its remaining count and “show all.” The page then shows “Missing a word for this? Add it” and the retired-results filter.
+Each group ends with its remaining count and “Show all.” The page then shows “Missing a word for this? Add it” and the retired-results filter.
 Lexical counts and these controls appear before meaning search finishes. Lexical expansion remains available while meaning work waits.
 A rafsi query shows its word relation, for example “cku ← cukta,” and retains assignment conflicts.
 No official badge appears. No identity, key prompt, or general activity feed precedes reading.

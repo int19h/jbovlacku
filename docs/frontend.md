@@ -209,7 +209,7 @@ Pattern mode returns `headword-pattern` results before `rafsi-pattern` results. 
 Spelling comparison uses stable ordinal order across hosts. It does not depend on the host locale.
 It uses no gloss, definition-text, segmentation, or component fallback. One card groups every matching definition of a word.
 Headword matches take precedence when a word also has a matching rafsi.
-Both classes use the ordinary pages and “show all” limit. Pattern mode leaves the ordinary segmented-search classes unchanged.
+Both classes use the ordinary pages and “Show all” limit. Pattern mode leaves the ordinary segmented-search classes unchanged.
 The rafsi page accepts the same patterns. It shows each matched spelling with its word and retains conflicting assignments separately.
 The rafsi page retains at most 1,000 matched pairs across its languages. A visible notice reports any cut.
 Conflict notices group by normalized rafsi spelling and list different stored spellings. Pair identifiers still use each raw stored spelling.
@@ -433,7 +433,7 @@ The meaning group's Search source disclosure shows that separate snapshot and vi
 A fresh reload checks current capabilities, profile, and consent instead of restoring the saved meaning group.
 Similarity never becomes an editorial score.
 
-Each group offers pagination and “show all” with its remaining count. The page offers “Missing a word for this? Add it,” and a retired-results filter.
+Each group offers pagination and “Show all” with its remaining count. The page offers “Missing a word for this? Add it,” and a retired-results filter.
 One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits per lexical group. Meaning search retains at most 100 definitions and pages them locally.
 Only one expansion runs at once. Navigation cancels it, and repeated cursors or results stop it.
 Each lexical group shows its own loading or failure state. A failed group does not prevent the other group from loading.

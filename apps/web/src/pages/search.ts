@@ -189,6 +189,10 @@ export async function searchPage(
   );
   const results = el("section", { "aria-label": "Search results" });
   const missing = el("div", { class: "missing-line" });
+  // A pending note for the wait before the result groups exist. The groups
+  // replace it with their own "Searching…" status once they render.
+  const searching = p("Searching…", "meta");
+  if (query) results.append(searching);
   main.append(countLine);
   // In the personal view the rows score from the local calculation. Its
   // state and its refresh action stay visible beside the results.
@@ -287,6 +291,7 @@ export async function searchPage(
         cached = undefined;
         app.announce(describe(error));
       } else {
+        searching.remove();
         results.append(p(describe(error), "notice"));
         return;
       }
@@ -349,6 +354,7 @@ export async function searchPage(
   );
   if (query || cached) results.before(provenance);
   if (!query) {
+    searching.remove();
     count.textContent = "Type a word or a meaning to search.";
     if (app.session.preferences.searchMode === "local" && !cached) {
       const note = p(
@@ -594,7 +600,7 @@ export async function searchPage(
         );
         for (const [label, all] of [
           ["Show more", false],
-          ["show all", true],
+          ["Show all", true],
         ] as const) {
           const more = button(
             label,
@@ -753,6 +759,12 @@ export async function searchPage(
     remember();
     refresh();
   };
+  // Show the groups with their "Searching…" status before the first
+  // lexical request waits, so a slow server search never leaves an empty
+  // body. A local search first waits for the package worker above, with
+  // the single "Searching…" note, and shows the groups after that.
+  searching.remove();
+  results.append(...orderedGroups().map((group) => group.node));
   const saved = history.state?.dictionarySearch as SearchState | undefined;
   const restorable =
     !context.readRetryAttempt &&
@@ -925,7 +937,14 @@ function hitRow(
   rafsiSpan.hidden = true;
   line1.append(rafsiSpan);
   if (kind && kind !== "unknown") line1.append(text(kindLabel(kind), "meta"));
-  if (hit.preview && hit.preview.status !== "active")
+  // A local row's status is always "unavailable", because the package
+  // carries no status evidence, so local rows do not show it. A server row
+  // shows every state other than active, including "unavailable".
+  if (
+    hit.preview &&
+    hit.preview.status !== "active" &&
+    (remote || hit.preview.status !== "unavailable")
+  )
     line1.append(
       el("span", {
         class: "meta",

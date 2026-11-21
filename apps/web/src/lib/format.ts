@@ -189,8 +189,17 @@ const readingLanguageNames: Record<string, string> = {
   jbo: "Lojban",
   tlh: "Klingon",
   tpi: "Tok Pisin",
+  tok: "Toki Pona",
+  // The platform has no readable name for these dictionary tags. These are
+  // the English names in the Lensisku language table. Every other tag keeps
+  // the platform name, because a subtag after "art-" can be a region or a
+  // script, not a language name.
+  "en-simple": "Simple English",
+  "fr-facile": "Easy French",
   "art-guaspi": "Guaspi",
   "art-x-guaspi": "Guaspi",
+  "art-loglan": "Loglan",
+  "art-picture": "Picture language",
 };
 export const listedLanguage = (tag: string) => tag.toLowerCase() !== "test";
 export function languageName(tag: string): string {
