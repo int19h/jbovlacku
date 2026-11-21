@@ -32,6 +32,10 @@ test("server search rows show rafsi, attribution, date, and notes from the searc
     cukta.locator(".attribution-line a[href^='/identity/']"),
   ).toBeVisible();
   await expect(cukta.getByRole("link", { name: "notes" })).toBeVisible();
+  // The imported definition is the only "library" gloss. A shared test
+  // server can hold other definitions of the same word from other suites,
+  // so this query keeps the imported row the preview.
+  await page.goto("/search?q=library&lang=en");
   const imported = results.locator("article").filter({
     has: page.getByRole("link", { name: "ckusro", exact: true }),
   });
