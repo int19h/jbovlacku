@@ -130,6 +130,53 @@ test("typed-word consent focus: cancel keeps the invoker, accept lands on the Lo
   await expect(page.getByLabel("Lojban word", { exact: true })).toBeFocused();
 });
 
+test("remote consent focus: a removed Meaning field falls back without landing on the body", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  const meaning = page.getByLabel("Meaning", { exact: true });
+  await meaning.fill("book private committee");
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await meaning.evaluate((element) => element.remove());
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
+    .click();
+  await expect(page.locator("ol.similar")).toContainText("cukta");
+  await expect(
+    page.getByRole("heading", { name: "What does the word mean?" }),
+  ).toBeFocused();
+  const tag = await page.evaluate(() => document.activeElement?.tagName);
+  expect(tag).not.toBe("BODY");
+});
+
+test("typed-word consent focus: a disabled word field falls back without landing on the body", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  const word = page.getByLabel("Lojban word", { exact: true });
+  await word.fill("cukta");
+  const panel = page.getByRole("region", { name: "Typed word", exact: true });
+  await panel
+    .getByRole("button", { name: "Check this word on the server" })
+    .click();
+  await word.evaluate((element: HTMLInputElement) => {
+    element.disabled = true;
+  });
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
+    .click();
+  await expect(panel).toContainText("Already exists:");
+  await expect(
+    page.getByRole("heading", { name: "What does the word mean?" }),
+  ).toBeFocused();
+  const tag = await page.evaluate(() => document.activeElement?.tagName);
+  expect(tag).not.toBe("BODY");
+});
+
 test("lujvo builder: Enter adds a part as entered without a package", async ({
   page,
 }) => {

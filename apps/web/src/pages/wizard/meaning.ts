@@ -68,15 +68,37 @@ function shortSnapshot(snapshot: string): string {
   return `${snapshot.slice(7, 19)}…`;
 }
 /**
+ * Focus the first candidate that is connected, enabled, and actually takes
+ * focus, without scrolling. Used after consent acceptance re-renders.
+ */
+function focusConsentTarget(
+  candidates: readonly (HTMLElement | null | undefined)[],
+): void {
+  for (const target of candidates) {
+    if (!target?.isConnected) continue;
+    if (
+      (target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        target instanceof HTMLButtonElement) &&
+      target.disabled
+    )
+      continue;
+    target.focus({ preventScroll: true });
+    if (document.activeElement === target) return;
+  }
+}
+/** The wizard step heading on the meaning page: the stable consent fallback. */
+function consentFallback(): HTMLElement | null {
+  return document.querySelector<HTMLElement>("main h1");
+}
+/**
  * In-app consent for sending draft text to this server. Replaces the native
  * confirm. Cancel restores focus to the invoker. Acceptance removes the
- * invoker when the search re-renders, so it focuses `acceptFocus` instead,
- * without scrolling.
+ * invoker when the search re-renders, so the caller focuses a surviving
+ * target afterwards with `focusConsentTarget`.
  */
-function askRemoteConsent(
-  message: string,
-  acceptFocus?: HTMLElement,
-): Promise<boolean> {
+function askRemoteConsent(message: string): Promise<boolean> {
   return new Promise((resolve) => {
     const opener = document.activeElement as HTMLElement | null;
     const dialog = el("dialog", {
@@ -101,9 +123,7 @@ function askRemoteConsent(
       const accepted = dialog.returnValue === "ok";
       resolve(accepted);
       dialog.remove();
-      if (accepted && acceptFocus?.isConnected)
-        acceptFocus.focus({ preventScroll: true });
-      else if (opener?.isConnected) opener.focus();
+      if (!accepted && opener?.isConnected) opener.focus();
     });
     document.body.append(dialog);
     dialog.showModal();
@@ -270,7 +290,12 @@ export async function meaningPage(
     style: "flex:1 1 360px",
   });
   left.append(
-    el("h1", { id: "h1", class: "page", text: "What does the word mean?" }),
+    el("h1", {
+      id: "h1",
+      class: "page",
+      tabindex: "-1",
+      text: "What does the word mean?",
+    }),
     el(
       "p",
       { class: "muted", style: "margin:8px 0 20px" },
@@ -580,13 +605,13 @@ export async function meaningPage(
             if (
               !(await askRemoteConsent(
                 `Check ${location.host} for ${JSON.stringify(spelling)} in definition language ${JSON.stringify(draft.language)}? The request sends this word and language.`,
-                word.input,
               ))
             )
               return;
             if (key !== typedKey()) return;
             typedConsent = key;
             await checkTypedWord();
+            focusConsentTarget([word.input, consentFallback()]);
           },
           { class: "btn btn-quiet" },
         ),
@@ -715,12 +740,12 @@ export async function meaningPage(
               if (
                 !(await askRemoteConsent(
                   `Search ${location.host} for ${JSON.stringify(query)} in definition language ${JSON.stringify(draft.language)}? The request sends this query and language.`,
-                  meaning.input,
                 ))
               )
                 return;
               remoteConsent = consentKey();
               renderMode();
+              focusConsentTarget([meaning.input, consentFallback()]);
               await nearby();
             },
             {
