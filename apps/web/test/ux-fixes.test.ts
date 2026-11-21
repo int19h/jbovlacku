@@ -666,7 +666,9 @@ for (const fail of [false, true])
   test(`a ${fail ? "failed" : "successful"} refresh leaves focus on the picker after a render`, async ({
     page,
   }) => {
-    await offerFrench(page);
+    // Exactly English and French, so French is the only language that the
+    // picker can offer after its row is removed.
+    await offerLanguages(page, ["en", "fr"]);
     await page.goto("/preferences");
     await downloadEnglish(page);
     await storeFrench(page);
