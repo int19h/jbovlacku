@@ -205,7 +205,12 @@ async function start() {
     controller = new AbortController();
     const signal = controller.signal;
     // Keep save outcomes visible when a waiting navigation replaces the page.
-    if (shell.status.textContent !== preferenceMessage) shell.announce("");
+    // A resumed action that returns the reader to its page also keeps its
+    // announcement for that one render.
+    const preserveStatus = session.preserveStatusOnce;
+    session.preserveStatusOnce = false;
+    if (!preserveStatus && shell.status.textContent !== preferenceMessage)
+      shell.announce("");
     syncSearchField(shell, route);
     if (session.storageAvailable) void delivery.invalidate();
     const main = shell.main;

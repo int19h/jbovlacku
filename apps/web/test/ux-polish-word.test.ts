@@ -113,6 +113,9 @@ test("endorse without a key returns to the word after the key is created", async
   await page.getByRole("button", { name: "Create a key" }).click();
   await acceptFirstSignature(page);
   await expect(page).toHaveURL(/\/word\/cukta/, { timeout: 15000 });
+  await expect(page.getByRole("status")).toContainText(
+    "Your endorsement is published.",
+  );
   await expect(
     page
       .locator("article.definition")

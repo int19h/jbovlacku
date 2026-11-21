@@ -333,7 +333,8 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   // with the scores when that calculation is ready for this snapshot.
   const viewPromise = viewScores(app, id, word);
   let view: Awaited<typeof viewPromise>;
-  if (personal && app.personal.status.state !== "ready") {
+  const provisional = personal && app.personal.status.state !== "ready";
+  if (provisional) {
     const status = app.personal.status;
     view = {
       personal: true,
@@ -529,6 +530,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         revisions: allRecords,
         word,
         onChange: refresh,
+        // The scored re-render replaces this block, so its score details
+        // (which load reviewers when opened) wait for that render.
+        deferScoreDetails: provisional,
       }),
     );
     if (layer === null && !(view.personal && view.reason) && !unknownProfile)

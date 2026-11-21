@@ -43,6 +43,8 @@ export class Session {
   private preferenceWait: Promise<void> | undefined;
   private preferenceWaitExpired = false;
   private preferenceStatusListeners = new Set<(message: string) => void>();
+  /** Set by a resumed action that navigates: the next render keeps the status line. */
+  preserveStatusOnce = false;
   /** A pending action to resume after the key is created or unlocked. */
   pending: {
     description: string;
@@ -383,8 +385,12 @@ export class Session {
     if (
       pending.returnTo &&
       pending.returnTo !== location.pathname + location.search + location.hash
-    )
+    ) {
+      // The action's announcement (for example "published") must survive
+      // this navigation, so the render it causes keeps the status line.
+      this.preserveStatusOnce = true;
       navigate(pending.returnTo);
+    }
     return true;
   }
   private unlockDialog(description: string): Promise<boolean> {
