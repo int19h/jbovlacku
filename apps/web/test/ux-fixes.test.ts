@@ -13,8 +13,8 @@ async function storedPackageKeys(page: Page): Promise<string[]> {
 /** The Settings status line of a page. */
 const statusText = (page: Page) => page.locator("div.status[role=status]");
 
-/** Holds every package request on this page until `release` is called. */
-function holdPackageRequests(page: Page) {
+/** Holds every package request on this page until `release` is called. With `fail`, the release aborts the request instead of letting it through. */
+function holdPackageRequests(page: Page, fail = false) {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -23,9 +23,36 @@ function holdPackageRequests(page: Page) {
   void page.route("**/api/v1/packages/**", async (route) => {
     started++;
     await gate;
-    await route.continue();
+    if (fail) await route.abort();
+    else await route.continue();
   });
   return { release: () => release(), started: () => started };
+}
+
+/** Offers French beside English in the manifest, as the server offers only English. */
+async function offerFrench(page: Page): Promise<void> {
+  await page.route("**/api/v1/manifest*", async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    const en =
+      json.packages.find(
+        (pkg: { language: string }) => pkg.language === "en",
+      ) ?? json.packages[0];
+    json.packages = [...json.packages, { ...en, language: "fr" }];
+    await route.fulfill({ response, json });
+  });
+}
+
+/** Stores a small French package directly, as another download could. */
+async function storeFrench(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "fr", {
+      snapshot: "sha256:" + "a".repeat(64),
+      version: 2,
+      entries: [],
+    });
+  });
 }
 
 for (const path of ["/word/", "/word/%20"]) {
@@ -302,6 +329,94 @@ test("a running refresh stays disabled across a render of the list", async ({
   await expect(
     page.getByRole("button", { name: "Refresh English" }),
   ).toBeEnabled();
+});
+
+test("a failed refresh after a render of the list keeps its button enabled", async ({
+  page,
+}) => {
+  await offerFrench(page);
+  await page.goto("/preferences");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(statusText(page)).toContainText(
+    "The English search package is saved in this browser.",
+  );
+  await storeFrench(page);
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Refresh French" }),
+  ).toBeVisible();
+  // Hold the refresh, remove French so the list renders again, then fail it.
+  const held = holdPackageRequests(page, true);
+  const refresh = page.getByRole("button", { name: "Refresh English" });
+  await refresh.click();
+  await expect.poll(() => held.started()).toBeGreaterThan(0);
+  await page
+    .locator(".row", { hasText: "French" })
+    .getByRole("button", { name: "Remove" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Refresh French" }),
+  ).toHaveCount(0);
+  held.release();
+  await expect(statusText(page)).toContainText("No connection to the server.");
+  await expect(refresh).toBeEnabled();
+  await expect(refresh).toBeFocused();
+});
+
+test("a failed download after a render of the list keeps its button enabled", async ({
+  page,
+}) => {
+  await offerFrench(page);
+  await storeFrenchAfterLoad(page);
+  await expect(
+    page.getByRole("button", { name: "Refresh French" }),
+  ).toBeVisible();
+  // Hold the English download, remove French so the list renders again,
+  // then fail the download.
+  const held = holdPackageRequests(page, true);
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect.poll(() => held.started()).toBeGreaterThan(0);
+  await page
+    .locator(".row", { hasText: "French" })
+    .getByRole("button", { name: "Remove" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Refresh French" }),
+  ).toHaveCount(0);
+  held.release();
+  await expect(statusText(page)).toContainText("No connection to the server.");
+  await expect(
+    page.getByRole("button", { name: "Download", exact: true }),
+  ).toBeEnabled();
+});
+
+/** Loads Settings and stores the French package, so its row is listed. */
+async function storeFrenchAfterLoad(page: Page): Promise<void> {
+  await page.goto("/preferences");
+  await storeFrench(page);
+  await page.reload();
+}
+
+test("a successful refresh returns focus to the Refresh button", async ({
+  page,
+}) => {
+  await offerFrench(page);
+  await page.goto("/preferences");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(statusText(page)).toContainText(
+    "The English search package is saved in this browser.",
+  );
+  // French stays offered, so a Download button stays on the page.
+  await expect(
+    page.getByRole("button", { name: "Download", exact: true }),
+  ).toBeVisible();
+  const refresh = page.getByRole("button", { name: "Refresh English" });
+  await refresh.focus();
+  await page.keyboard.press("Enter");
+  await expect(statusText(page)).toContainText(
+    "The English package is refreshed.",
+  );
+  await expect(refresh).toBeFocused();
 });
 
 test("opening a rafsi page does not save back a removed package", async ({

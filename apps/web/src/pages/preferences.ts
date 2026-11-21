@@ -199,14 +199,41 @@ export async function preferencesPage(
   const runningPackages = new Set<string>();
   // The language last picked for a download. Renders of the list keep it.
   let pickedPackage = "";
-  /** Focuses the current list button with one of these labels, for a button that had focus before a render replaced it. */
+  /** Focuses the current list button with one of these labels, in label order, for a button that had focus before a render replaced it. */
   const refocusPackageButton = (hadFocus: boolean, labels: string[]) => {
     if (!hadFocus || !context.live()) return;
-    for (const candidate of packages.querySelectorAll("button"))
-      if (labels.includes(candidate.textContent ?? "")) {
+    const buttons = [...packages.querySelectorAll("button")];
+    for (const label of labels) {
+      const candidate = buttons.find(
+        (button) => button.textContent === label && !button.disabled,
+      );
+      if (candidate) {
         candidate.focus();
         return;
       }
+    }
+  };
+  /**
+   * Ends a failed operation on the button the list shows now. If the
+   * handler's own button is still listed, it is enabled in place. If a
+   * render during the run replaced it, the list renders again with the
+   * running mark cleared, so the current button renders enabled.
+   */
+  const enableCurrentPackageButton = async (
+    own: HTMLButtonElement,
+    language: string,
+    labels: string[],
+    hadFocus: boolean,
+  ) => {
+    if (own.isConnected) {
+      own.disabled = runningPackages.has(language);
+      if (hadFocus) own.focus();
+      return;
+    }
+    try {
+      await renderPackages();
+      refocusPackageButton(hadFocus, labels);
+    } catch {}
   };
   const renderPackages = async () => {
     packages.replaceChildren();
@@ -308,12 +335,14 @@ export async function preferencesPage(
             app.announce(describe(reportPackageError(error)));
           } finally {
             runningPackages.delete(language);
-            // A failure does not render again, so the picker keeps its
-            // language and this button keeps its focus. Re-enable it here.
-            if (!rendered) {
-              go.disabled = runningPackages.has(language);
-              if (hadFocus && go.isConnected) go.focus();
-            }
+            // A failure enables the button the list shows now: its own
+            // button when no render replaced it, so the picker keeps its
+            // language, or the current button after a fresh render.
+            if (!rendered)
+              await enableCurrentPackageButton(go, language, [
+                "Download",
+                `Refresh ${languageName(language)}`,
+              ], hadFocus);
           }
         },
         { class: "btn" },
@@ -385,12 +414,14 @@ export async function preferencesPage(
               app.announce(describe(reportPackageError(error)));
             } finally {
               runningPackages.delete(key);
-              // A failure does not render again, so this button keeps
-              // its focus. Re-enable it here.
-              if (!rendered) {
-                refresh.disabled = runningPackages.has(key);
-                if (hadFocus && refresh.isConnected) refresh.focus();
-              }
+              // A failure enables the button the list shows now: its
+              // own button when no render replaced it, or the current
+              // button after a fresh render.
+              if (!rendered)
+                await enableCurrentPackageButton(refresh, key, [
+                  `Refresh ${languageName(key)}`,
+                  "Download",
+                ], hadFocus);
             }
           },
           { class: "btn btn-quiet" },
