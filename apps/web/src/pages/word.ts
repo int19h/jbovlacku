@@ -38,7 +38,11 @@ import {
   type WordResponse,
 } from "../model/types.ts";
 import { definitionBlock } from "../components/definition.ts";
-import { judgmentControl, scoreDetails } from "../components/judgment.ts";
+import {
+  judgmentControl,
+  personalReasonText,
+  scoreDetails,
+} from "../components/judgment.ts";
 import { identityLink } from "../components/attribution.ts";
 import { renderRichText } from "../model/richtext.ts";
 import { zbalermorna } from "../lib/zbalermorna.ts";
@@ -400,6 +404,12 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         ))
           if (score.title.startsWith(unavailableTitle))
             score.title = `${unavailableTitle} ${reason}`;
+        // An open "Score details" disclosure keeps its place, its controls,
+        // and focus. Only its reason text changes.
+        for (const text of main.querySelectorAll<HTMLElement>(
+          "details.judgment-details [data-personal-reason]",
+        ))
+          text.textContent = personalReasonText(reason);
       }),
     );
   }

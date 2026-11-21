@@ -1,9 +1,12 @@
 /**
  * Length and count bounds for the row fields of a server search preview.
  * The server applies them before it sends a page, and the browser applies
- * the same rule to what it receives. The format allows any string length in
- * these fields, so one long value must never cost a whole page: a value over
- * its bound is dropped or shortened, and the hit stays.
+ * the same rule to what it receives. The signed format limits a rafsi
+ * spelling to 64 UTF-8 bytes and a signing identity to 72 ASCII characters,
+ * and it sets no length for selma'o names, the attribution source, author
+ * and account origin, or date labels and values. One long value must never
+ * cost a whole page: a value over its preview bound is dropped or shortened,
+ * and the hit stays.
  *
  * Lengths count UTF-16 code units.
  */

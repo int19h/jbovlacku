@@ -549,3 +549,45 @@ test("a previous site calculation is not named as personal", async ({
     /^Site view calculated in this browser from \d+ verified records for another snapshot\./,
   );
 });
+
+test("open score details follow a retry that fails differently", async ({
+  page,
+}) => {
+  await page.goto("/preferences");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().setPreferences({ viewMode: "personal" });
+  });
+  let offline = false;
+  await page.route("**/api/v1/inventory?*", (route) =>
+    offline ? route.abort() : route.fulfill({ status: 500, body: "broken" }),
+  );
+  await page.goto("/word/cukta?lang=en");
+  const panel = page.getByRole("region", { name: "Personal view" });
+  const note = page.getByText(/^Personal scores are unavailable:/);
+  // One definition and one rafsi, each with its disclosure open.
+  const blocks = [
+    page.locator("article.definition").first(),
+    page.locator('[aria-labelledby="rafsi-h"] .definition').first(),
+  ].map((row) => row.locator("details.judgment-details").first());
+  for (const block of blocks) {
+    await block.locator("summary").click();
+    await expect(block.locator(".body")).toContainText("Request failed (500).");
+  }
+  offline = true;
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("No connection to the server.");
+  await expect(note).toContainText("No connection to the server.");
+  for (const block of blocks) {
+    // The disclosure stays open, and its text gives the current reason.
+    await expect(block).toHaveAttribute("open", "");
+    const reason = block
+      .locator(".body p.small")
+      .filter({ hasText: "Your personal view" });
+    await expect(reason).toContainText("No connection to the server.");
+    await expect(reason).not.toContainText("Request failed (500).");
+    await expect(
+      block.getByRole("link", { name: "Open the Trust page" }),
+    ).toBeVisible();
+  }
+});
