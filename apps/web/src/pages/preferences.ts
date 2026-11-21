@@ -44,10 +44,24 @@ export async function preferencesPage(
   app: App,
 ) {
   const { main } = context;
-  const { session } = app;
   context.title("Settings");
   main.className = "";
   main.append(el("h1", { class: "page", text: "Settings" }));
+  // A pending note while the first requests wait. It is removed when the
+  // page finishes or fails, so a slow load never shows only the heading and
+  // a failed load never keeps an untrue loading state.
+  const loading = p("Loading…", "meta");
+  main.append(loading);
+  try {
+    await preferencesBody(context, app);
+  } finally {
+    loading.remove();
+  }
+}
+
+async function preferencesBody(context: RenderContext, app: App) {
+  const { main } = context;
+  const { session } = app;
   const prefs = session.preferences;
   // Only the latest failed choice restores a control. Success keeps newer input.
   const saves = new Map<keyof Preferences, symbol>();

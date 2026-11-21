@@ -95,9 +95,9 @@ test("local sequences share rank across spellings, fall back to query words, and
   expect(await results.locator("article .hw").allTextContents()).toEqual(
     expected.slice(0, 20),
   );
-  await page.getByRole("button", { name: "show all" }).click();
+  await page.getByRole("button", { name: "Show all" }).click();
   await expect(results.locator("article .hw")).toHaveText(expected);
-  await expect(page.getByRole("button", { name: "show all" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Show all" })).toHaveCount(0);
   await page.getByRole("link", { name: "Add a word" }).click();
   await page.goBack();
   await expect(results.locator("article .hw")).toHaveText(expected);
@@ -170,10 +170,10 @@ test("remote sequence classes and a limited-segmentation notice survive paginati
     .filter({ hasText: "Word segmentation reached a limit." });
   await expect(results.locator("article .hw")).toHaveText(["ibo", "iboku"]);
   await expect(notice).toContainText("Word segmentation reached a limit.");
-  await page.getByRole("button", { name: "show all" }).click();
-  await expect(page.getByRole("button", { name: "show all" })).toBeDisabled();
+  await page.getByRole("button", { name: "Show all" }).click();
+  await expect(page.getByRole("button", { name: "Show all" })).toBeDisabled();
   // Even a synthetic duplicate click cannot start another expansion loop.
-  await page.getByRole("button", { name: "show all" }).dispatchEvent("click");
+  await page.getByRole("button", { name: "Show all" }).dispatchEvent("click");
   await expect.poll(() => requests).toBe(2);
   releaseSecond();
   await expect(results.locator("article .hw")).toHaveText([
@@ -226,7 +226,7 @@ test("an oversized remote page keeps prior hits and reports a pagination error",
   const results = page.getByRole("region", { name: "Search results" });
   await expect(results.locator("article")).toHaveCount(2);
   const original = await results.locator("article .hw").allTextContents();
-  await page.getByRole("button", { name: "show all" }).click();
+  await page.getByRole("button", { name: "Show all" }).click();
   await expect(results.locator(".notice")).toContainText(
     "Search pagination returned too many results.",
   );
