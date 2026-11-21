@@ -74,7 +74,7 @@ import {
   sourceDate,
 } from "../components/attribution.ts";
 import { zbalermorna } from "../lib/zbalermorna.ts";
-import { placeMarker } from "../model/richtext.ts";
+import { placeMarker, readableProse } from "../model/richtext.ts";
 import { appendReadRetry } from "../components/readretry.ts";
 
 const PAGE_SIZE = 20;
@@ -107,7 +107,7 @@ interface SearchState {
  */
 function appendHighlighted(node: HTMLElement, value: string, query: string) {
   const q = query.toLocaleLowerCase("en");
-  for (const part of [value]) {
+  for (const part of [readableProse(value)]) {
     if (!part) continue;
     const lower = part.toLocaleLowerCase("en");
     let index = 0;
@@ -189,6 +189,10 @@ export async function searchPage(
   );
   const results = el("section", { "aria-label": "Search results" });
   const missing = el("div", { class: "missing-line" });
+  // A pending note for the wait before the result groups exist. The groups
+  // replace it with their own "Searching…" status once they render.
+  const searching = p("Searching…", "meta");
+  if (query) results.append(searching);
   main.append(countLine);
   // In the personal view the rows score from the local calculation. Its
   // state and its refresh action stay visible beside the results.
@@ -287,6 +291,7 @@ export async function searchPage(
         cached = undefined;
         app.announce(describe(error));
       } else {
+        searching.remove();
         results.append(p(describe(error), "notice"));
         return;
       }
@@ -349,6 +354,7 @@ export async function searchPage(
   );
   if (query || cached) results.before(provenance);
   if (!query) {
+    searching.remove();
     count.textContent = "Type a word or a meaning to search.";
     if (app.session.preferences.searchMode === "local" && !cached) {
       const note = p(
@@ -594,7 +600,7 @@ export async function searchPage(
         );
         for (const [label, all] of [
           ["Show more", false],
-          ["show all", true],
+          ["Show all", true],
         ] as const) {
           const more = button(
             label,
@@ -655,6 +661,9 @@ export async function searchPage(
         expanding ||
         control.closest("section")?.getAttribute("aria-busy") === "true";
   };
+  // One retry for the whole search, on the first group that fails. The
+  // other group keeps its error text without a second identical button.
+  let retryOffered = false;
   const showError = (key: SearchGroup, error: unknown) => {
     const group = groups[key];
     group.failed = true;
@@ -667,7 +676,14 @@ export async function searchPage(
         "notice",
       ),
     );
-    appendReadRetry(notice, error, context, app.announce);
+    if (!retryOffered)
+      retryOffered = appendReadRetry(
+        notice,
+        error,
+        context,
+        app.announce,
+        "Retry search",
+      );
     group.rows.append(notice);
   };
   const loadNext = async (key: SearchGroup, all = false) => {
@@ -753,6 +769,10 @@ export async function searchPage(
     remember();
     refresh();
   };
+  // Show the groups with their "Searching…" status before the first
+  // request waits, so a slow search never leaves an empty body.
+  searching.remove();
+  results.append(...orderedGroups().map((group) => group.node));
   const saved = history.state?.dictionarySearch as SearchState | undefined;
   const restorable =
     !context.readRetryAttempt &&
@@ -925,7 +945,13 @@ function hitRow(
   rafsiSpan.hidden = true;
   line1.append(rafsiSpan);
   if (kind && kind !== "unknown") line1.append(text(kindLabel(kind), "meta"));
-  if (hit.preview && hit.preview.status !== "active")
+  // An unavailable status is the local package's lack of evidence, not a
+  // reader-facing state. Known states other than active stay visible.
+  if (
+    hit.preview &&
+    hit.preview.status !== "active" &&
+    hit.preview.status !== "unavailable"
+  )
     line1.append(
       el("span", {
         class: "meta",

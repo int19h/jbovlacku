@@ -62,7 +62,7 @@ for (const surface of ["word", "search"] as const)
     const main = page.locator("main");
     await expect(main).toContainText("This view is temporarily unavailable");
     const retry = main.getByRole("button", {
-      name: "Retry reading",
+      name: surface === "search" ? "Retry search" : "Retry reading",
       exact: true,
     });
     await expect(retry).toBeVisible();
@@ -217,7 +217,7 @@ for (const surface of ["word", "search"] as const)
           writes.push(request.url());
       });
       const retry = main.getByRole("button", {
-        name: "Retry reading",
+        name: surface === "search" ? "Retry search" : "Retry reading",
         exact: true,
       });
       await retry.focus();

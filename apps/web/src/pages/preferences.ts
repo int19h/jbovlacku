@@ -38,6 +38,10 @@ export async function preferencesPage(
   context.title("Settings");
   main.className = "";
   main.append(el("h1", { class: "page", text: "Settings" }));
+  // A pending note while the first requests wait. It is removed when the
+  // page finishes, so a slow load never shows only the heading.
+  const loading = p("Loading…", "meta");
+  main.append(loading);
   const prefs = session.preferences;
   // Only the latest failed choice restores a control. Success keeps newer input.
   const saves = new Map<keyof Preferences, symbol>();
@@ -503,4 +507,5 @@ export async function preferencesPage(
     if (context.live())
       main.append(p("Server capabilities are unavailable right now.", "small"));
   }
+  loading.remove();
 }

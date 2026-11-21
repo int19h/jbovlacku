@@ -199,7 +199,7 @@ test("measure real package routes and browser main-thread CPU", async ({
   expect(firstCpu).toBeLessThan(400);
   const showAllStart = await cpu();
   await definitions
-    .getByRole("button", { name: "show all", exact: true })
+    .getByRole("button", { name: "Show all", exact: true })
     .click();
   await expect(definitions.locator("article.hit")).toHaveCount(1000);
   const showAllTransfers = await page.evaluate(

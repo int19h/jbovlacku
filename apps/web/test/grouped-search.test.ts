@@ -119,10 +119,10 @@ test("one local box orders known Lojban and English queries and keeps group page
   await expect(words.locator("article")).toHaveCount(40);
   await expect(words.locator("article .hw").nth(20)).toBeFocused();
   await expect(definitions.locator("article")).toHaveCount(20);
-  await words.getByRole("button", { name: "show all", exact: true }).click();
+  await words.getByRole("button", { name: "Show all", exact: true }).click();
   await expect(words.locator("article")).toHaveCount(46);
   await definitions
-    .getByRole("button", { name: "show all", exact: true })
+    .getByRole("button", { name: "Show all", exact: true })
     .click();
   await expect(definitions.locator("article")).toHaveCount(47);
   await page.getByRole("link", { name: "Add a word", exact: true }).click();
@@ -483,7 +483,7 @@ test("meaning results have separate pagination and recover after a 503 without c
   await expect(meaning.locator(".count")).toHaveText("· 25");
   await page.goto("/search?q=travel&lang=en");
   await expect(meaning.locator("article")).toHaveCount(20);
-  await meaning.getByRole("button", { name: "show all", exact: true }).click();
+  await meaning.getByRole("button", { name: "Show all", exact: true }).click();
   await expect(meaning.locator("article")).toHaveCount(25);
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await page.goBack();
@@ -651,7 +651,7 @@ for (const local of [false, true])
     await meaning.getByRole("button", { name: "Allow meaning search" }).click();
     await expect(meaning.locator("article")).toHaveCount(20);
     await meaning
-      .getByRole("button", { name: "show all", exact: true })
+      .getByRole("button", { name: "Show all", exact: true })
       .click();
     await expect(meaning.locator("article")).toHaveCount(25);
     const original = await page.evaluate(() => history.state.dictionaryMeaning);
@@ -1182,7 +1182,7 @@ test("Back retains the meaning context when incomplete lexical history reads a n
   const meaning = group(page, "Similar in meaning");
   await meaning.getByRole("button", { name: "Allow meaning search" }).click();
   await expect(meaning.locator("article")).toHaveCount(20);
-  await meaning.getByRole("button", { name: "show all", exact: true }).click();
+  await meaning.getByRole("button", { name: "Show all", exact: true }).click();
   await expect(meaning.locator("article")).toHaveCount(25);
   const original = state.calls[0];
   await page.evaluate(() =>
@@ -1279,7 +1279,7 @@ test("Back after a reload keeps the saved meaning results without another infere
         ).type,
     ),
   ).toBe("reload");
-  await meaning.getByRole("button", { name: "show all", exact: true }).click();
+  await meaning.getByRole("button", { name: "Show all", exact: true }).click();
   await expect(meaning.locator("article")).toHaveCount(25);
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   state.fail = true;
@@ -1296,7 +1296,7 @@ test("cross-document Back restores meaning results without inference", async ({
   const meaning = group(page, "Similar in meaning");
   await meaning.getByRole("button", { name: "Allow meaning search" }).click();
   await expect(meaning.locator("article")).toHaveCount(20);
-  await meaning.getByRole("button", { name: "show all", exact: true }).click();
+  await meaning.getByRole("button", { name: "Show all", exact: true }).click();
   await expect(meaning.locator("article")).toHaveCount(25);
   await page.goto("/preferences");
   state.fail = true;
