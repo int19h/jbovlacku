@@ -88,20 +88,26 @@ export async function definitionPage(
   }
   const definition = record as LoadedRecord<DefinitionBody>;
   const spelling = definition.body?.word.spelling;
-  context.title(spelling ? `Definition: ${spelling}` : "Definition");
+  const comparing =
+    route.params.has("compare") && eventId(route.params.get("compare") ?? "");
+  context.title(
+    spelling
+      ? `${comparing ? "Compare" : "Definition"}: ${spelling}`
+      : "Definition",
+  );
   const head = el("div", { class: "word-head" });
   head.append(el("h1", { lang: "jbo", text: spelling ?? "Definition" }));
   if (spelling)
     head.append(
       link("All definitions", routes.word(spelling), { class: "small" }),
     );
-  main.append(
-    head,
-    p(
-      "One immutable revision. Its exact event ID identifies this publication.",
-      "meta",
-    ),
+  // The lead line names the comparison only once it is on the page and
+  // compares with a real parent of this revision.
+  const lead = p(
+    "One immutable revision. Its exact event ID identifies this publication.",
+    "meta",
   );
+  main.append(head, lead);
   let word: WordResponse | null = null;
   const wordKey = definition.envelope.header.action.word as string;
   try {
@@ -148,6 +154,12 @@ export async function definitionPage(
       const parent = await loadDefinition(compareTo);
       if (!context.live()) return;
       main.append(comparison(parent, definition));
+      const parents =
+        (definition.envelope.header.action.parents as string[] | undefined) ??
+        [];
+      if (parents.includes(compareTo))
+        lead.textContent +=
+          " The comparison with the parent revision is below.";
     } catch (error) {
       if (context.live())
         main.append(p(`Comparison unavailable: ${describe(error)}`, "notice"));

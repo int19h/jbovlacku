@@ -22,7 +22,7 @@ import {
   type LocalStore,
   type Preferences,
 } from "../data/store.ts";
-import { navigate } from "./router.ts";
+import { navigate, navigationCount, returnPath } from "./router.ts";
 import { applyTheme } from "./theme.ts";
 
 export const IDLE_LOCK_MS = 15 * 60 * 1000;
@@ -43,8 +43,19 @@ export class Session {
   private preferenceWait: Promise<void> | undefined;
   private preferenceWaitExpired = false;
   private preferenceStatusListeners = new Set<(message: string) => void>();
+  /** Set by a resumed action that navigates: the next render keeps the status line. */
+  preserveStatusOnce = false;
   /** A pending action to resume after the key is created or unlocked. */
-  pending: { description: string; run: () => Promise<void> } | null = null;
+  pending: {
+    description: string;
+    run: () => Promise<void>;
+    /**
+     * The same-origin page the reader came from, so a resumed action that
+     * chooses no page of its own returns there. Null keeps the reader where
+     * the action leaves them.
+     */
+    returnTo: string | null;
+  } | null = null;
   constructor(public store: LocalStore) {
     if (typeof BroadcastChannel !== "undefined") {
       this.preferenceChannel = new BroadcastChannel("jbovlacku-preferences");
@@ -356,7 +367,13 @@ export class Session {
         "Browser storage is unavailable. Restore storage access and reload before signing.",
       );
     if (!this.backup) {
-      this.pending = { description, run };
+      this.pending = {
+        description,
+        run,
+        returnTo: returnPath(
+          location.pathname + location.search + location.hash,
+        ),
+      };
       navigate("/identity");
       return;
     }
@@ -368,7 +385,23 @@ export class Session {
     const pending = this.pending;
     if (!pending || !this.unlocked) return false;
     this.pending = null;
+    const requests = navigationCount();
+    const before = location.href;
     await pending.run();
+    // An action that chose its own page, such as a rafsi claim that opens
+    // the word, keeps that page. Otherwise the reader goes back to the page
+    // the action came from.
+    if (navigationCount() !== requests || location.href !== before) return true;
+    const target = pending.returnTo ? returnPath(pending.returnTo) : null;
+    if (
+      target &&
+      target !== location.pathname + location.search + location.hash
+    ) {
+      // The action's announcement (for example "published") must survive
+      // this navigation, so the render it causes keeps the status line.
+      this.preserveStatusOnce = true;
+      navigate(target);
+    }
     return true;
   }
   private unlockDialog(description: string): Promise<boolean> {

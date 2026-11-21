@@ -14,7 +14,12 @@ import {
   icon,
   disclosure,
 } from "../lib/dom.ts";
-import { listedLanguage, languageName, plural } from "../lib/format.ts";
+import {
+  listedLanguage,
+  languageName,
+  plural,
+  rationalSign,
+} from "../lib/format.ts";
 import {
   navigate,
   routes,
@@ -46,6 +51,7 @@ import {
   calculationPanel,
   provenanceLine,
   viewScores,
+  type ViewScores,
 } from "../components/localview.ts";
 import { recomputePanel } from "../components/recompute.ts";
 import { describeProfile } from "../model/profiles.ts";
@@ -225,7 +231,13 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       ...words,
       text(` · ${compound.components.map((c) => c.rafsi).join(" + ")}`),
     );
-  } else composition.hidden = true;
+  } else if ([...kinds].includes("lujvo"))
+    // A lujvo without compound evidence has no known composition. Say so
+    // instead of leaving the reader to guess from the missing line.
+    composition.append(
+      text("Composition is not recorded for this lujvo.", "meta"),
+    );
+  else composition.hidden = true;
   // Rafsi line from claims.
   const claims: {
     assignment: string;
@@ -299,6 +311,19 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   allTab.append(text("All"), text(String(word.definitions.length), "meta"));
   tabs.append(allTab);
   main.append(tabs);
+  // On a phone the tab strip scrolls sideways. Bring the selected tab into
+  // the strip without moving the window or focus.
+  const showCurrentTab = () => {
+    const current = tabs.querySelector<HTMLElement>('[aria-current="true"]');
+    if (!current || tabs.scrollWidth <= tabs.clientWidth) return;
+    const strip = tabs.getBoundingClientRect();
+    const tab = current.getBoundingClientRect();
+    if (tab.left < strip.left) tabs.scrollLeft -= strip.left - tab.left;
+    else if (tab.right > strip.right)
+      tabs.scrollLeft += tab.right - strip.right;
+  };
+  showCurrentTab();
+  requestAnimationFrame(showCurrentTab);
   const personal = app.session.preferences.viewMode === "personal";
   // A refreshed calculation names the latest snapshot. The page then
   // fetches the word again, so content and scores come from one snapshot.
@@ -317,153 +342,207 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         onRefresh: rerender,
       }),
     );
-  // Scores under the selected view. The personal view waits for the local calculation.
-  const view = await viewScores(app, id, word);
+  // Scores under the selected view. In the personal view the definitions
+  // render at once while the local calculation runs. When it settles, the
+  // scored part of the page is replaced in place: no navigation, so focus,
+  // scroll position and the status line stay.
+  const viewPromise = viewScores(app, id, word);
+  const status = app.personal.status;
+  const provisional = personal && status.state !== "ready";
+  let view: ViewScores;
+  if (provisional) {
+    // Only a cancel is settled: no automatic call restarts it. After any
+    // other failure, viewScores has already started a new calculation, so
+    // the old failure is not the current state.
+    const cancelled = status.state === "failed" && status.kind === "cancelled";
+    view = {
+      personal: true,
+      reason: cancelled
+        ? status.message
+        : "The local calculation is not ready yet.",
+      stale: false,
+      snapshot: word.snapshot,
+      view: word.view,
+      calculation: null,
+      scores: [],
+      layers: [],
+      unavailable_scores: [],
+    };
+  } else view = await viewPromise;
   if (!context.live()) return;
   const own = app.session.preferences.myJudgmentsFirst
     ? await app.own.registers()
     : null;
   if (!context.live()) return;
   const myJudgmentsFirst = Boolean(own);
-  if (view.personal && view.reason) {
-    const reason = view.stale
-      ? "The local calculation uses another snapshot or view. Recompute from records for these definitions."
-      : view.reason;
-    const note = p(
-      `Personal scores are unavailable: ${reason} ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`,
-      "small",
-    );
-    if (view.stale)
-      note.append(
-        text(" "),
-        button(
-          "Recompute for this snapshot",
-          () => {
-            void app.personal
-              .ensure({ mode: "personal", refresh: true })
-              .then((status) => {
-                if (status.state === "ready") rerender();
-              });
-          },
-          { class: "btn btn-quiet" },
-        ),
-      );
-    main.append(note);
-  }
-  if (!view.personal && view.calculation === null)
-    main.append(
-      p("Ranking is unavailable for this word. No score is assumed.", "small"),
-    );
-  const sourceDetails = el(
-    "details",
-    { class: "disclosure word-source" },
-    el("summary", {}, icon("chevron", "chev"), "Source and scores"),
-    el(
-      "div",
-      { class: "body" },
-      provenanceLine(view, false),
-      view.stale && view.reason ? p(view.reason, "small") : null,
-      personal ? null : recomputePanel(app, id, word),
-    ),
-  );
-  // Definition order follows layers. Unranked definitions follow.
-  const visible = new Set(
-    active === "all" ? records.keys() : (byLanguage.get(active) ?? []),
-  );
-  const shown = new Set<string>();
-  const ordered: { id: string; layer: number | null }[] = [];
-  // Without a calculation the server makes no ranking claim. A calculation
-  // from a profile this client does not know makes none that this client can
-  // show. In both cases definitions follow event order.
-  const unknownProfile =
-    view.calculation !== null &&
-    !describeProfile(view.calculation.algorithm).known;
-  const rankedLayers =
-    view.calculation === null || unknownProfile ? [] : view.layers;
-  if (unknownProfile)
-    main.append(
-      p(
-        `Scores and order from the calculation profile ${view.calculation!.algorithm} are not shown. This client does not know its route rule. ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."}`,
-        "small",
-      ),
-    );
-  for (const [index, layer] of rankedLayers.entries())
-    for (const definition of layer)
-      if (visible.has(definition) && !shown.has(definition)) {
-        shown.add(definition);
-        ordered.push({ id: definition, layer: index });
-      }
-  for (const definition of word.definitions)
-    if (visible.has(definition) && !shown.has(definition))
-      ordered.push({ id: definition, layer: null });
-  if (app.session.preferences.myJudgmentsFirst) {
-    if (own) {
-      const hasJudgment = (definition: string): boolean => {
-        const state = own?.judgments.get(definition);
-        return Boolean(
-          state?.known &&
-          (state.conflicted || (state.value && state.value !== "clear")),
-        );
-      };
-      ordered.sort(
-        (a, b) =>
-          (a.layer ?? rankedLayers.length) - (b.layer ?? rankedLayers.length) ||
-          Number(hasJudgment(b.id)) - Number(hasJudgment(a.id)),
-      );
-      main.append(
-        p(
-          "Definitions with your judgments appear first within each ranking layer and within the unranked group. Scores and ranking layers stay the same.",
-          "meta",
-        ),
-      );
-    } else {
-      main.append(
-        p(
-          "Your judgments could not be loaded. Definitions follow ranking layers, then event order.",
-          "meta",
-        ),
-      );
-    }
-  }
-  const allRecords = [...records.values()];
   const statusOf = (definition: string) =>
     word.statuses.find((s) => s?.event === definition)?.state;
-  if (
-    word.definitions.length &&
-    word.definitions.every((d) => statusOf(d) === "deprecated")
-  )
-    main.append(p("No active definitions in this snapshot.", "small"));
-  const refresh = () => {
-    void (async () => {
-      try {
-        await getWord(id, { fresh: true });
-      } catch {}
-    })();
-  };
-  let lastLayer: number | null = -1;
-  for (const { id: definition, layer } of ordered) {
-    const record = records.get(definition)!;
-    const score = view.scores.find((s) => s.target === definition) ?? null;
-    const unavailable =
-      view.calculation === null ||
-      view.unavailable_scores.includes(definition) ||
-      !score;
-    if (
-      layer !== null &&
-      layer !== lastLayer &&
-      rankedLayers[layer].filter((d) => visible.has(d)).length > 1
-    ) {
-      const size = rankedLayers[layer].filter((d) => visible.has(d)).length;
+  /**
+   * The scored part of the page under one view. Its wrapper is a plain
+   * block with no margin, padding or border, so it does not change layout.
+   */
+  const scoredPart = (view: ViewScores, provisional: boolean): HTMLElement => {
+    const main = el("div", { class: "word-scored" });
+    if (view.personal && view.reason) {
+      const reason = view.stale
+        ? "The local calculation uses another snapshot or view. Recompute from records for these definitions."
+        : view.reason;
+      const note = p(
+        `Personal scores are unavailable: ${reason} ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`,
+        "small",
+      );
+      if (view.stale)
+        note.append(
+          text(" "),
+          button(
+            "Recompute for this snapshot",
+            () => {
+              void app.personal
+                .ensure({ mode: "personal", refresh: true })
+                .then((status) => {
+                  if (status.state === "ready") rerender();
+                });
+            },
+            { class: "btn btn-quiet" },
+          ),
+        );
+      main.append(note);
+    }
+    if (!view.personal && view.calculation === null)
       main.append(
         p(
-          `${plural(size, "alternative")} with unresolved order. ${myJudgmentsFirst ? "Your judgments appear first within this layer." : "Presentation order follows event IDs."}`,
-          "meta",
+          "Ranking is unavailable for this word. No score is assumed.",
+          "small",
         ),
       );
+    const sourceDetails = el(
+      "details",
+      { class: "disclosure word-source", "data-key": "word-source" },
+      el("summary", {}, icon("chevron", "chev"), "Source and scores"),
+      el(
+        "div",
+        { class: "body" },
+        provenanceLine(view, false),
+        view.stale && view.reason ? p(view.reason, "small") : null,
+        personal ? null : recomputePanel(app, id, word),
+      ),
+    );
+    // Definition order follows layers. Unranked definitions follow.
+    const visible = new Set(
+      active === "all" ? records.keys() : (byLanguage.get(active) ?? []),
+    );
+    const shown = new Set<string>();
+    const ordered: { id: string; layer: number | null }[] = [];
+    // Without a calculation the server makes no ranking claim. A calculation
+    // from a profile this client does not know makes none that this client can
+    // show. In both cases definitions follow event order.
+    const unknownProfile =
+      view.calculation !== null &&
+      !describeProfile(view.calculation.algorithm).known;
+    const rankedLayers =
+      view.calculation === null || unknownProfile ? [] : view.layers;
+    if (unknownProfile)
+      main.append(
+        p(
+          `Scores and order from the calculation profile ${view.calculation!.algorithm} are not shown. This client does not know its route rule. ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."}`,
+          "small",
+        ),
+      );
+    for (const [index, layer] of rankedLayers.entries())
+      for (const definition of layer)
+        if (visible.has(definition) && !shown.has(definition)) {
+          shown.add(definition);
+          ordered.push({ id: definition, layer: index });
+        }
+    for (const definition of word.definitions)
+      if (visible.has(definition) && !shown.has(definition))
+        ordered.push({ id: definition, layer: null });
+    if (app.session.preferences.myJudgmentsFirst) {
+      if (own) {
+        const hasJudgment = (definition: string): boolean => {
+          const state = own?.judgments.get(definition);
+          return Boolean(
+            state?.known &&
+            (state.conflicted || (state.value && state.value !== "clear")),
+          );
+        };
+        ordered.sort(
+          (a, b) =>
+            (a.layer ?? rankedLayers.length) -
+              (b.layer ?? rankedLayers.length) ||
+            Number(hasJudgment(b.id)) - Number(hasJudgment(a.id)),
+        );
+        main.append(
+          p(
+            "Definitions with your judgments appear first within each ranking layer and within the unranked group. Scores and ranking layers stay the same.",
+            "meta",
+          ),
+        );
+      } else {
+        main.append(
+          p(
+            "Your judgments could not be loaded. Definitions follow ranking layers, then event order.",
+            "meta",
+          ),
+        );
+      }
     }
-    lastLayer = layer;
-    main.append(
-      definitionBlock(app, record, {
+    const allRecords = [...records.values()];
+    if (
+      word.definitions.length &&
+      word.definitions.every((d) => statusOf(d) === "deprecated")
+    )
+      main.append(p("No active definitions in this snapshot.", "small"));
+    const refresh = () => {
+      void (async () => {
+        try {
+          await getWord(id, { fresh: true });
+        } catch {}
+      })();
+    };
+    let lastLayer: number | null = -1;
+    for (const { id: definition, layer } of ordered) {
+      const record = records.get(definition)!;
+      const score = view.scores.find((s) => s.target === definition) ?? null;
+      const unavailable =
+        view.calculation === null ||
+        view.unavailable_scores.includes(definition) ||
+        !score;
+      if (
+        layer !== null &&
+        layer !== lastLayer &&
+        rankedLayers[layer].filter((d) => visible.has(d)).length > 1
+      ) {
+        const members = rankedLayers[layer].filter((d) => visible.has(d));
+        const size = members.length;
+        // The ranking puts every deprecated definition into one last layer
+        // without comparing them. Other layers come from pairwise
+        // comparisons: either no member is certified ahead of another, or
+        // the comparisons form a cycle. This client cannot tell those two
+        // apart, so it states only what holds for both.
+        const deprecated = rankedLayers[layer].every(
+          (d) => statusOf(d) === "deprecated",
+        );
+        const layerScores = members
+          .map((d) => view.scores.find((s) => s.target === d))
+          .filter((s) => s !== undefined);
+        const allZero =
+          layerScores.length === size &&
+          layerScores.every(
+            (s) => rationalSign(s.net[0]) === 0 && rationalSign(s.net[1]) === 0,
+          );
+        const why = deprecated
+          ? "Deprecated definitions are not ranked against each other."
+          : `The pairwise comparisons do not put the definitions in this group in one order.${allZero ? " Every score in this group is zero." : ""}`;
+        main.append(
+          p(
+            `${plural(size, "alternative")} with unresolved order. ${why} ${myJudgmentsFirst ? "Your judgments appear first within this layer." : "Presentation order follows event IDs."}`,
+            "meta",
+          ),
+        );
+      }
+      lastLayer = layer;
+      const block = definitionBlock(app, record, {
         score,
         unavailable,
         personal: view.personal,
@@ -474,156 +553,254 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         revisions: allRecords,
         word,
         onChange: refresh,
-      }),
-    );
-    if (layer === null && !(view.personal && view.reason) && !unknownProfile)
-      main.lastElementChild!.append(
-        p(
-          `No ranking position is available for this definition in the ${view.personal ? "personal view layers" : "server layers"}.`,
-          "meta",
+        // The scored part replaces this block, so its score details
+        // (which load reviewers when opened) wait for that part.
+        deferScoreDetails: provisional,
+      });
+      block.dataset.key = definition;
+      main.append(block);
+      if (layer === null && !(view.personal && view.reason) && !unknownProfile)
+        main.lastElementChild!.append(
+          p(
+            `No ranking position is available for this definition in the ${view.personal ? "personal view layers" : "server layers"}.`,
+            "meta",
+          ),
+        );
+    }
+    for (const [definition, failure] of failures)
+      main.append(
+        el(
+          "div",
+          { class: "definition" },
+          p(
+            `Definition ${definition.slice(0, 20)}… is unavailable: ${failure}`,
+            "notice",
+          ),
         ),
       );
-  }
-  for (const [definition, failure] of failures)
-    main.append(
-      el(
-        "div",
-        { class: "definition" },
-        p(
-          `Definition ${definition.slice(0, 20)}… is unavailable: ${failure}`,
-          "notice",
-        ),
+    const after = el("div", { class: "after-definitions" });
+    after.append(
+      text("Know this word better?"),
+      link(
+        "Add a definition",
+        `${routes.add}?word=${encodeURIComponent(spelling)}&lang=${encodeURIComponent(active === "all" ? app.session.preferences.definitionLanguage : active)}`,
+        { class: "btn" },
+      ),
+      link(
+        "Add a translation",
+        `${routes.add}?word=${encodeURIComponent(spelling)}&translate=1`,
+        { class: "btn btn-quiet" },
       ),
     );
-  const after = el("div", { class: "after-definitions" });
-  after.append(
-    text("Know this word better?"),
-    link(
-      "Add a definition",
-      `${routes.add}?word=${encodeURIComponent(spelling)}&lang=${encodeURIComponent(active === "all" ? app.session.preferences.definitionLanguage : active)}`,
-      { class: "btn" },
-    ),
-    link(
-      "Add a translation",
-      `${routes.add}?word=${encodeURIComponent(spelling)}&translate=1`,
-      { class: "btn btn-quiet" },
-    ),
-  );
-  main.append(after);
-  // Rafsi claims section.
-  if (claims.length) {
-    const section = el("section", { "aria-labelledby": "rafsi-h" });
-    section.append(
-      el("h2", { id: "rafsi-h", class: "section", text: "Rafsi claims" }),
-    );
-    for (const entry of claims) {
-      const card = el("div", { class: "definition" });
-      const rafsiSpelling =
-        entry.claims.map((c) => c.body?.rafsi).find(Boolean) ?? "unidentified";
-      card.append(
-        el(
-          "p",
-          { class: "prose" },
-          el("span", { lang: "jbo", class: "rafsi", text: rafsiSpelling }),
-          text(` for ${spelling}`, "meta"),
-        ),
+    main.append(after);
+    // Rafsi claims section.
+    if (claims.length) {
+      const section = el("section", { "aria-labelledby": "rafsi-h" });
+      section.append(
+        el("h2", { id: "rafsi-h", class: "section", text: "Rafsi claims" }),
       );
-      const score =
-        view.scores.find((s) => s.target === entry.assignment) ?? null;
-      const unavailable =
-        entry.status !== "eligible" ||
-        view.unavailable_scores.includes(entry.assignment) ||
-        !score;
-      const byline = el("div", { class: "byline" });
-      byline.append(
-        text(
-          `${entry.status === "eligible" ? "Eligible pair" : entry.status === "inactive" ? "Inactive pair" : "Pair status unknown"} · ${plural(entry.claims.length, "claim")}`,
-          "meta",
-        ),
-        el("span", { class: "spacer" }),
-      );
-      const target = {
-        id: entry.assignment,
-        word: id,
-        describe: (value: string) =>
-          `${value === "bless" ? "Endorsing" : value === "curse" ? "Opposing" : "Clearing your judgment on"} rafsi ${rafsiSpelling} for ${spelling}`,
-      };
-      const judgmentOptions = {
-        score,
-        unavailable,
-        personal: view.personal,
-        reason: view.reason ?? undefined,
-        calculation: view.calculation,
-        large: true,
-        onChange: refresh,
-      };
-      byline.append(
-        judgmentControl(app, target, judgmentOptions),
-        scoreDetails(app, target, judgmentOptions),
-      );
-      card.append(byline);
-      card.append(
-        p(
-          "One judgment applies to this word and rafsi pair across all its publishers.",
-          "meta",
-        ),
-      );
-      for (const claim of entry.claims) {
-        const row = el("div", {
-          class: "small claim-source",
-          style: "margin-top:8px",
-        });
-        row.append(
-          text("Claimed by "),
-          identityLink(claim.envelope.header.issuer),
-          text(" · "),
-          link("record", routes.definition(claim.envelope.id), {
-            class: "touch-link",
-          }),
+      for (const entry of claims) {
+        const card = el("div", { class: "definition" });
+        card.dataset.key = entry.assignment;
+        const rafsiSpelling =
+          entry.claims.map((c) => c.body?.rafsi).find(Boolean) ??
+          "unidentified";
+        card.append(
+          el(
+            "p",
+            { class: "prose" },
+            el("span", { lang: "jbo", class: "rafsi", text: rafsiSpelling }),
+            text(` for ${spelling}`, "meta"),
+          ),
         );
-        if (claim.body?.rationale.length)
-          row.append(renderRichText(claim.body.rationale, { placeHref: null }));
-        card.append(row);
+        const score =
+          view.scores.find((s) => s.target === entry.assignment) ?? null;
+        const unavailable =
+          entry.status !== "eligible" ||
+          view.unavailable_scores.includes(entry.assignment) ||
+          !score;
+        const byline = el("div", { class: "byline" });
+        byline.append(
+          text(
+            `${entry.status === "eligible" ? "Eligible pair" : entry.status === "inactive" ? "Inactive pair" : "Pair status unknown"} · ${plural(entry.claims.length, "claim")}`,
+            "meta",
+          ),
+          el("span", { class: "spacer" }),
+        );
+        const target = {
+          id: entry.assignment,
+          word: id,
+          describe: (value: string) =>
+            `${value === "bless" ? "Endorsing" : value === "curse" ? "Opposing" : "Clearing your judgment on"} rafsi ${rafsiSpelling} for ${spelling}`,
+        };
+        const judgmentOptions = {
+          score,
+          unavailable,
+          personal: view.personal,
+          reason: view.reason ?? undefined,
+          calculation: view.calculation,
+          large: true,
+          onChange: refresh,
+        };
+        byline.append(judgmentControl(app, target, judgmentOptions));
+        // As for definitions, score details wait for the scored part.
+        if (!provisional)
+          byline.append(scoreDetails(app, target, judgmentOptions));
+        card.append(byline);
+        card.append(
+          p(
+            "One judgment applies to this word and rafsi pair across all its publishers.",
+            "meta",
+          ),
+        );
+        for (const claim of entry.claims) {
+          const row = el("div", {
+            class: "small claim-source",
+            style: "margin-top:8px",
+          });
+          row.append(
+            text("Claimed by "),
+            identityLink(claim.envelope.header.issuer),
+            text(" · "),
+            link("record", routes.definition(claim.envelope.id), {
+              class: "touch-link",
+            }),
+          );
+          if (claim.body?.rationale.length)
+            row.append(
+              renderRichText(claim.body.rationale, { placeHref: null }),
+            );
+          card.append(row);
+        }
+        section.append(card);
       }
-      section.append(card);
+      main.append(section);
     }
-    main.append(section);
-  }
-  // See also: component words and derivation sources.
-  const related = new Set<string>();
-  for (const record of allRecords) {
-    for (const component of record.body?.etymology.compound?.components ?? [])
-      related.add(component.word.spelling);
-    for (const place of record.body?.frame?.places ?? [])
-      for (const d of place.derivation) related.add(d.word.spelling);
-    for (const paragraph of record.body?.text ?? [])
-      for (const node of paragraph)
-        if (typeof node === "object" && node && "word" in node)
-          related.add(node.word.spelling);
-  }
-  related.delete(spelling);
-  if (related.size) {
-    const section = el("section", {
-      "aria-labelledby": "rel-h",
-      style: "padding-top:20px",
+    // See also: component words and derivation sources.
+    const related = new Set<string>();
+    for (const record of allRecords) {
+      for (const component of record.body?.etymology.compound?.components ?? [])
+        related.add(component.word.spelling);
+      for (const place of record.body?.frame?.places ?? [])
+        for (const d of place.derivation) related.add(d.word.spelling);
+      for (const paragraph of record.body?.text ?? [])
+        for (const node of paragraph)
+          if (typeof node === "object" && node && "word" in node)
+            related.add(node.word.spelling);
+    }
+    related.delete(spelling);
+    if (related.size) {
+      const section = el("section", {
+        "aria-labelledby": "rel-h",
+        style: "padding-top:20px",
+      });
+      section.append(
+        el("h2", {
+          id: "rel-h",
+          class: "section",
+          style: "margin-top:0",
+          text: "See also",
+        }),
+      );
+      const line = el("p", { class: "muted related-words" });
+      [...related].sort().forEach((s, i) => {
+        if (i) line.append(text(" · "));
+        line.append(link(s, routes.word(s), { lang: "jbo" }));
+      });
+      section.append(line);
+      main.append(section);
+    }
+    main.append(sourceDetails);
+    return main;
+  };
+  let part = scoredPart(view, provisional);
+  main.append(part);
+  if (provisional)
+    void viewPromise.then((settled) => {
+      if (!context.live() || !part.isConnected) return;
+      // A cancel settles with the same reason. Nothing changes then.
+      if (!settled.calculation && settled.reason === view.reason) return;
+      const next = scoredPart(settled, false);
+      replaceKeepingPlace(part, next);
+      part = next;
     });
-    section.append(
-      el("h2", {
-        id: "rel-h",
-        class: "section",
-        style: "margin-top:0",
-        text: "See also",
-      }),
-    );
-    const line = el("p", { class: "muted related-words" });
-    [...related].sort().forEach((s, i) => {
-      if (i) line.append(text(" · "));
-      line.append(link(s, routes.word(s), { lang: "jbo" }));
-    });
-    section.append(line);
-    main.append(section);
-  }
-  main.append(sourceDetails);
   void disclosure;
   void RequestError;
+}
+/** Where a node sits: its keyed block, and its place among like nodes there. */
+interface Place {
+  key: string | null;
+  tag: string;
+  label: string;
+  index: number;
+}
+function nodeLabel(node: Element): string {
+  const own = node.getAttribute("aria-label");
+  if (own) return own;
+  const summary =
+    node.tagName === "DETAILS" ? node.querySelector(":scope > summary") : node;
+  return (summary?.textContent ?? "").trim();
+}
+/** Nodes with this tag and label in the scope, the scope itself included. */
+function alike(scope: HTMLElement, tag: string, label: string): HTMLElement[] {
+  return [scope, ...scope.querySelectorAll<HTMLElement>(tag)].filter(
+    (n) => n.tagName === tag && nodeLabel(n) === label,
+  );
+}
+function placeOf(root: HTMLElement, node: Element): Place {
+  const block = node.closest<HTMLElement>("[data-key]");
+  const key =
+    block && root.contains(block) ? (block.dataset.key ?? null) : null;
+  const scope = key && block ? block : root;
+  const tag = node.tagName;
+  const label = nodeLabel(node);
+  const like = alike(scope, tag, label);
+  return { key, tag, label, index: like.indexOf(node as HTMLElement) };
+}
+function keyed(root: HTMLElement, key: string): HTMLElement | null {
+  return (
+    [...root.querySelectorAll<HTMLElement>("[data-key]")].find(
+      (n) => n.dataset.key === key,
+    ) ?? (root.dataset.key === key ? root : null)
+  );
+}
+function find(root: HTMLElement, place: Place): HTMLElement | null {
+  const scope = place.key ? keyed(root, place.key) : root;
+  if (!scope) return null;
+  return alike(scope, place.tag, place.label)[place.index] ?? null;
+}
+/**
+ * Replaces one part of the page with a new version of it, without a
+ * navigation. The reader keeps their place: the block that holds focus (or
+ * the first block on screen) stays where it was on screen, open disclosures
+ * stay open, and focus returns to the same control. The status line is not
+ * touched.
+ */
+function replaceKeepingPlace(old: HTMLElement, next: HTMLElement) {
+  const focused =
+    document.activeElement instanceof HTMLElement &&
+    old.contains(document.activeElement)
+      ? document.activeElement
+      : null;
+  const blocks = [...old.querySelectorAll<HTMLElement>("[data-key]")];
+  const anchor =
+    focused?.closest<HTMLElement>("[data-key]") ??
+    blocks.find((n) => n.getBoundingClientRect().bottom > 0) ??
+    null;
+  const anchorKey = anchor?.dataset.key ?? null;
+  const anchorTop = anchor?.getBoundingClientRect().top ?? 0;
+  const scrollY = window.scrollY;
+  const open = [...old.querySelectorAll("details[open]")].map((d) =>
+    placeOf(old, d),
+  );
+  const focus = focused ? placeOf(old, focused) : null;
+  old.replaceWith(next);
+  for (const place of open) {
+    const details = find(next, place);
+    if (details instanceof HTMLDetailsElement) details.open = true;
+  }
+  const moved = anchorKey ? keyed(next, anchorKey) : null;
+  if (moved) window.scrollBy(0, moved.getBoundingClientRect().top - anchorTop);
+  else window.scrollTo(0, scrollY);
+  if (focus) find(next, focus)?.focus({ preventScroll: true });
 }

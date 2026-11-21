@@ -45,6 +45,8 @@ export interface DefinitionBlockOptions {
   onChange?: () => void;
   /** Preview mode hides judgment and tools. */
   preview?: boolean;
+  /** Omits the score-details disclosure, for a render that a scored re-render will replace. */
+  deferScoreDetails?: boolean;
   placeAnchorPrefix?: string;
 }
 export function placeGloss(place: Place, language: string): string | null {
@@ -351,10 +353,9 @@ export function definitionBlock(
       large: true,
       onChange: options.onChange,
     };
-    byline.append(
-      judgmentControl(app, target, judgmentOptions),
-      scoreDetails(app, target, judgmentOptions),
-    );
+    byline.append(judgmentControl(app, target, judgmentOptions));
+    if (!options.deferScoreDetails)
+      byline.append(scoreDetails(app, target, judgmentOptions));
   }
   article.append(byline);
   if (body) {
