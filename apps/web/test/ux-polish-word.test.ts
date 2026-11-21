@@ -418,6 +418,12 @@ test("a compare link names the comparison only when it shows one with the parent
 test("a rafsi claim without a key ends on the word page that the claim opens", async ({
   page,
 }) => {
+  // The claim stays in this browser. A claim on the shared test server
+  // would change the rafsi that later suites expect for cukta. The claim
+  // page opens the word page whatever the delivery outcome.
+  await page.route("**/api/v1/**", (route) =>
+    route.request().method() === "POST" ? route.abort() : route.continue(),
+  );
   await page.goto("/claim/cukta");
   await page.getByLabel("Rafsi spelling").fill("cuk");
   await page.getByRole("button", { name: "Check claims and preview" }).click();
@@ -430,7 +436,7 @@ test("a rafsi claim without a key ends on the word page that the claim opens", a
   await page.getByRole("button", { name: "Create a key" }).click();
   await acceptFirstSignature(page);
   await expect(page.getByRole("status")).toContainText(
-    "Published the claim cuk for cukta",
+    "The claim is signed and saved here.",
     { timeout: 15000 },
   );
   await expect(page).toHaveURL(/\/word\/cukta\?fresh=1$/);
