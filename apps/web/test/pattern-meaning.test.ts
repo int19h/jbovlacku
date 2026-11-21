@@ -70,17 +70,19 @@ test("consented remote nearby meanings preserve literal punctuation", async ({
   for (const meaning of ["x1 is a C*-algebra", "name@example.org"]) {
     const input = page.getByLabel("Meaning", { exact: true });
     if ((await input.inputValue()) !== meaning) await input.fill(meaning);
-    page.once("dialog", (dialog) => dialog.accept());
-    const [response] = await Promise.all([
-      page.waitForResponse(
-        (response) =>
-          new URL(response.url()).pathname === "/api/v1/search" &&
-          response.request().method() === "POST",
-      ),
-      page
-        .getByRole("button", { name: "search this server", exact: true })
-        .click(),
-    ]);
+    const responsePromise = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/v1/search" &&
+        response.request().method() === "POST",
+    );
+    await page
+      .getByRole("button", { name: "search this server", exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: "Search this server" })
+      .getByRole("button", { name: "Search this server", exact: true })
+      .click();
+    const response = await responsePromise;
     expect(response.status()).toBe(200);
     await expect(
       page.getByRole("link", { name: spelling, exact: true }),

@@ -514,18 +514,41 @@ export async function lujvoPage(
     }
     if (!cached)
       addResults.append(
-        el("li", {
-          class: "meta",
-          text: packageInvalid
-            ? "The saved search package is invalid, so word search is unavailable here. Download another package on the Settings page, or add a form as entered."
-            : "No local package is downloaded, so word search is unavailable here. Download one on the Settings page, or add a form as entered.",
-        }),
+        el(
+          "li",
+          { class: "meta" },
+          text(
+            packageInvalid
+              ? "The saved search package is invalid, so word search is unavailable here. Download another package on the "
+              : "No local package is downloaded, so word search is unavailable here. Download one on the ",
+          ),
+          link("Settings", "/preferences"),
+          text(" page, or add a form as entered."),
+        ),
       );
   };
   addField.input.addEventListener("input", () => {
     partSearch++;
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => void renderSearch(), 200);
+  });
+  addField.input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void (async () => {
+      clearTimeout(searchTimer);
+      await renderSearch();
+      const query = addField.input.value.trim().toLowerCase();
+      if (!query) return;
+      const buttons = [...addResults.querySelectorAll("button")];
+      const exact = buttons.find(
+        (b) => b.getAttribute("aria-label")?.toLowerCase() === `add ${query}`,
+      );
+      const entered = buttons.find((b) =>
+        b.getAttribute("aria-label")?.toLowerCase().endsWith("as entered"),
+      );
+      (exact ?? entered)?.click();
+    })();
   });
   let result: LujvoResult | null = null;
   let failure: string | null = null;
@@ -835,7 +858,9 @@ export async function lujvoPage(
           "aria-label": `Remove ${component.spelling}`,
         },
       );
-      item.append(moves, name, chips, known.wrapper, remove);
+      remove.style.marginLeft = "auto";
+      remove.style.alignSelf = "flex-start";
+      item.append(moves, name, remove, chips, known.wrapper);
       if (row?.diagnostics.length)
         item.append(
           el("p", {
@@ -976,13 +1001,15 @@ export async function lujvoPage(
         }),
       );
     resultCard.append(headline);
+    const scoreLine = p(
+      zei
+        ? "Zei links these whole words. No rafsi or construction score applies."
+        : `Construction score ${candidate.score} under ${state.profile === "cll" ? "CLL 4.12" : "the extended scorer"}. A lower score reads more easily. It says nothing about who endorses a rafsi.`,
+      "meta",
+    );
+    scoreLine.style.marginTop = "10px";
     resultCard.append(
-      p(
-        zei
-          ? "Zei links these whole words. No rafsi or construction score applies."
-          : `Construction score ${candidate.score} under ${state.profile === "cll" ? "CLL 4.12" : "the extended scorer"}. A lower score reads more easily. It says nothing about who endorses a rafsi.`,
-        "meta",
-      ),
+      scoreLine,
       p(
         zei
           ? `Component words: ${candidate.recovered.map((part) => part.text).join(" · ")}.`

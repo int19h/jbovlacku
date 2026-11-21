@@ -465,13 +465,13 @@ export function rowChoicesWithParser(
       diagnostics.push(`Claimed rafsi "${claim.rafsi}" is not Lojban letters.`);
       continue;
     }
+    if (choices.some((choice) => choice.form === form)) continue;
     if (!isShortRafsiForm(form)) {
       diagnostics.push(
         `Claimed rafsi "${form}" is not a short rafsi shape and is not offered.`,
       );
       continue;
     }
-    if (choices.some((choice) => choice.form === form)) continue;
     const shape = rafsiShape(form);
     choices.push({
       form,
