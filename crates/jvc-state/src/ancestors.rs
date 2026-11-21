@@ -34,30 +34,98 @@ struct Range {
     last: u32,
 }
 
-/// Hard cap on ancestry range metadata, counted cumulatively over every
-/// range vector a union copies or allocates, including discarded
-/// temporaries. The same value applies in native and Wasm builds. The
-/// real dictionary plus synthetic data uses an estimated 10 to 20 MB by
-/// this count; adversarial layouts reach the cap and refuse instead of
-/// exhausting memory.
-pub(crate) const MAX_ANCESTOR_BYTES: usize = 64 * 1024 * 1024;
+/// Fixed part of the ancestry byte cap.
+pub const ANCESTRY_CAP_BASE: usize = 64 * 1024 * 1024;
+
+/// Part of the ancestry byte cap that each record adds.
+pub const ANCESTRY_CAP_PER_RECORD: usize = 1024;
+
+/// Hard cap on the range storage of the closures that the graph keeps
+/// (the closures in the ancestry caches and the compromise cutoffs),
+/// counted as in a fresh full build, for a history of `records`
+/// records:
+/// `ANCESTRY_CAP_BASE + ANCESTRY_CAP_PER_RECORD * records`.
+///
+/// The cap counts what `stored_bytes` gives for each closure that the
+/// graph keeps, at the closure's range count in a fresh full build of
+/// the same records. A live state keeps its original layout and holds
+/// appended records separately, so a live closure can hold a different
+/// number of ranges. A live append still charges each new closure at
+/// its fresh-layout count, so a live state and a restored state count
+/// the same total. A closure with at most one range is stored inline
+/// and counts nothing, so union steps, predecessor counts, `maxima` calls and
+/// other temporary sets do not consume the cap. A history consumes it
+/// only through closures with more than one range: about 8 bytes for
+/// each range that a kept closure holds.
+///
+/// The value is computed in 64-bit arithmetic, so it is the same in
+/// native and Wasm builds up to the largest `usize`. On a 32-bit
+/// target it stops at `usize::MAX` (4 GiB minus 1 byte) from 4,128,768
+/// records. The counted bytes are range storage that the state keeps,
+/// so a 32-bit build runs out of memory before its count can reach
+/// that value. The clamp never changes a result.
+pub fn ancestry_cap(records: usize) -> usize {
+    let cap = (ANCESTRY_CAP_BASE as u64)
+        .saturating_add((records as u64).saturating_mul(ANCESTRY_CAP_PER_RECORD as u64));
+    usize::try_from(cap).unwrap_or(usize::MAX)
+}
+
+/// Bytes that the cap counts for a kept closure with `ranges` ranges
+/// in a fresh layout: nothing for an inline closure (zero or one
+/// range), and a shared header plus 8 bytes per range otherwise.
+pub(crate) fn stored_bytes(ranges: usize) -> usize {
+    if ranges < 2 {
+        0
+    } else {
+        ranges.saturating_mul(std::mem::size_of::<Range>()) + 16
+    }
+}
 
 /// Per-state cap accounting. Each evaluated state owns one budget.
 /// Cloning a state copies the counters by value, so work in one fork
 /// or sibling never consumes another state's cap or sets its failure.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct AncestryBudget {
     bytes: Cell<usize>,
+    limit: Cell<usize>,
     failed: Cell<bool>,
 }
 
+impl Default for AncestryBudget {
+    fn default() -> Self {
+        Self::for_records(0)
+    }
+}
+
 impl AncestryBudget {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// A budget whose cap is `ancestry_cap(records)`.
+    pub fn for_records(records: usize) -> Self {
+        Self {
+            bytes: Cell::new(0),
+            limit: Cell::new(ancestry_cap(records)),
+            failed: Cell::new(false),
+        }
+    }
+
+    /// Raise the cap to `ancestry_cap(records)`, when a record is
+    /// appended to the history this budget covers. The cap never
+    /// falls, and a failure stays a failure.
+    pub fn allow_records(&self, records: usize) {
+        self.limit.set(self.limit.get().max(ancestry_cap(records)));
+    }
+
+    #[cfg(test)]
+    pub fn limit(&self) -> usize {
+        self.limit.get()
+    }
+
     pub fn charge(&self, bytes: usize) -> bool {
-        if self.failed.get() || bytes > MAX_ANCESTOR_BYTES.saturating_sub(self.bytes.get()) {
+        if self.failed.get() || bytes > self.limit.get().saturating_sub(self.bytes.get()) {
             self.failed.set(true);
             false
         } else {
@@ -74,30 +142,24 @@ impl AncestryBudget {
         self.bytes.get()
     }
 
-    /// Subtract bytes charged earlier for the same work, when a
-    /// caller recomputes a result a previous evaluation already
-    /// charged for (the incremental register update). Never clears
-    /// a failure.
-    pub fn refund(&self, bytes: usize) {
-        self.bytes.set(self.bytes.get().saturating_sub(bytes));
-    }
-
     /// Restore a saved byte total, as after a checkpoint. A total
     /// past the cap is a failure, exactly as if the charges had run.
     pub fn restore_bytes(&self, bytes: usize) {
         self.bytes.set(bytes);
-        if bytes > MAX_ANCESTOR_BYTES {
+        if bytes > self.limit.get() {
             self.failed.set(true);
         }
     }
 }
 
-/// Sorted disjoint ranges. One range is stored inline; more share an `Rc`.
+/// Sorted disjoint ranges. One range is stored inline; more share an
+/// exact-size `Rc` slice, so the storage of a kept closure is its
+/// range count times 8 bytes plus the `Rc` header.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Ranges {
     Empty,
     One(Range),
-    Many(Rc<Vec<Range>>),
+    Many(Rc<[Range]>),
 }
 
 impl Ranges {
@@ -113,12 +175,11 @@ impl Ranges {
         match sorted.len() {
             0 => Ranges::Empty,
             1 => Ranges::One(sorted[0]),
-            _ => Ranges::Many(Rc::new(sorted)),
+            _ => Ranges::Many(Rc::from(sorted)),
         }
     }
 
     /// Merge two sorted range lists and one optional extra position.
-    /// Callers charge the ancestry byte cap before calling this.
     fn combine(left: &Ranges, right: &Ranges, extra: Option<u32>) -> Ranges {
         let (a, b) = (left.as_slice(), right.as_slice());
         if a.is_empty() && b.is_empty() {
@@ -323,20 +384,16 @@ impl IdSet {
         }
     }
 
-    /// Union of the given sets plus one optional record, in one merge.
-    /// A record with no layout position joins the `extra` set instead.
-    pub fn combined(
-        space: Rc<Space>,
-        budget: &AncestryBudget,
-        sets: &[&IdSet],
-        own: Option<&str>,
-    ) -> Self {
+    /// Union of the given sets plus one optional record. A record
+    /// with no layout position joins the `extra` set instead. The
+    /// result is not charged: a caller that keeps it calls `keep`.
+    pub fn combined(space: Rc<Space>, sets: &[&IdSet], own: Option<&str>) -> Self {
         let mut result = Self::empty(space);
         for set in sets {
-            result.union(budget, set);
+            result.union(set);
         }
         if let Some(id) = own {
-            result.insert(budget, id);
+            result.insert(id);
         }
         result
     }
@@ -349,18 +406,19 @@ impl IdSet {
                 .is_some_and(|position| self.ranges.contains(position))
     }
 
-    /// Charge for one combine over these inputs, at fresh-layout
-    /// range counts, plus one allocation overhead.
-    fn combine_charge(fresh_left: usize, fresh_right: usize, own: bool) -> usize {
-        (fresh_left + fresh_right + usize::from(own)) * std::mem::size_of::<Range>() + 64
-    }
-
-    pub fn insert(&mut self, budget: &AncestryBudget, id: &str) {
-        if budget.failed() || !budget.charge(Self::combine_charge(self.fresh_ranges, 0, true)) {
+    /// Charge the cap for keeping this set, at its fresh-layout range
+    /// count. Past the cap the set keeps no ranges and the budget
+    /// reports the failure.
+    pub fn keep(&mut self, budget: &AncestryBudget) -> bool {
+        if budget.failed() || !budget.charge(stored_bytes(self.fresh_ranges)) {
             self.ranges = Ranges::Empty;
             self.fresh_ranges = 0;
-            return;
+            return false;
         }
+        true
+    }
+
+    pub fn insert(&mut self, id: &str) {
         match self.space.position(id) {
             Some(position) => {
                 self.ranges = Ranges::combine(&self.ranges, &Ranges::Empty, Some(position));
@@ -372,26 +430,14 @@ impl IdSet {
         self.fresh_ranges = self.range_count();
     }
 
-    pub fn union(&mut self, budget: &AncestryBudget, other: &IdSet) {
-        if budget.failed()
-            || !budget.charge(Self::combine_charge(
-                self.fresh_ranges,
-                other.fresh_ranges,
-                false,
-            ))
-        {
-            self.ranges = Ranges::Empty;
-            self.fresh_ranges = 0;
-            self.extra.extend(other.extra.iter().cloned());
-            return;
-        }
+    pub fn union(&mut self, other: &IdSet) {
         self.ranges = Ranges::combine(&self.ranges, &other.ranges, None);
         self.extra.extend(other.extra.iter().cloned());
         self.fresh_ranges = self.range_count();
     }
 
-    pub fn extend(&mut self, budget: &AncestryBudget, other: IdSet) {
-        self.union(budget, &other);
+    pub fn extend(&mut self, other: IdSet) {
+        self.union(&other);
     }
 
     /// True when every member of this set is also a member of
@@ -459,8 +505,12 @@ impl IdSet {
             .map(|range| (range.first, range.last))
     }
 
-    pub fn range_starts(&self) -> impl Iterator<Item = u32> + '_ {
-        self.ranges.as_slice().iter().map(|range| range.first)
+    /// The stored range with the largest first position at or before
+    /// `position`, found by binary search.
+    pub fn range_at_or_before(&self, position: u32) -> Option<(u32, u32)> {
+        let ranges = self.ranges.as_slice();
+        let index = ranges.partition_point(|range| range.first <= position);
+        (index > 0).then(|| (ranges[index - 1].first, ranges[index - 1].last))
     }
 
     /// Members in lexical order.
@@ -540,10 +590,9 @@ mod tests {
     }
 
     fn set(space: &Rc<Space>, ids: &[&str]) -> IdSet {
-        let budget = AncestryBudget::new();
         let mut result = IdSet::empty(space.clone());
         for id in ids {
-            result.insert(&budget, id);
+            result.insert(id);
         }
         result
     }
@@ -599,9 +648,8 @@ mod tests {
         ];
         for left in &cases {
             for right in &cases {
-                let budget = AncestryBudget::new();
                 let mut combined = set(&space, left);
-                combined.union(&budget, &set(&space, right));
+                combined.union(&set(&space, right));
                 let expected: BTreeSet<&str> = left.iter().chain(right).copied().collect();
                 assert_eq!(
                     combined.iter(),
@@ -618,19 +666,84 @@ mod tests {
     #[test]
     fn ancestry_budget_boundary_is_exact() {
         let budget = AncestryBudget::new();
-        assert!(budget.charge(MAX_ANCESTOR_BYTES - 1));
+        assert_eq!(budget.limit(), ANCESTRY_CAP_BASE);
+        assert!(budget.charge(ANCESTRY_CAP_BASE - 1));
         assert!(!budget.failed());
         assert!(budget.charge(1));
-        assert_eq!(budget.bytes(), MAX_ANCESTOR_BYTES);
+        assert_eq!(budget.bytes(), ANCESTRY_CAP_BASE);
         assert!(!budget.failed());
         assert!(!budget.charge(1));
         assert!(budget.failed());
-        // A combine past the cap allocates nothing and yields no ranges.
-        let space = Space::empty();
-        let mut set = IdSet::empty(space.clone());
-        set.insert(&budget, "jve1:a");
-        assert_eq!(set.range_count(), 0);
-        assert!(!set.contains("jve1:a"));
+        // A set that the cap cannot keep keeps no ranges.
+        let names: Vec<String> = (0..4).map(|i| format!("id{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let space = space_for(&refs);
+        let mut kept = set(&space, &["id0", "id2"]);
+        assert_eq!(kept.range_count(), 2);
+        assert!(!kept.keep(&budget));
+        assert_eq!(kept.range_count(), 0);
+        assert!(!kept.contains("id0"));
+    }
+
+    /// Only a set with more than one range has storage outside the
+    /// set itself, so only such a set consumes the cap.
+    #[test]
+    fn only_sets_with_several_ranges_consume_the_cap() {
+        assert_eq!(stored_bytes(0), 0);
+        assert_eq!(stored_bytes(1), 0);
+        assert_eq!(stored_bytes(2), 32);
+        assert_eq!(stored_bytes(65), 536);
+        let names: Vec<String> = (0..8).map(|i| format!("id{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let space = space_for(&refs);
+        let budget = AncestryBudget::for_records(0);
+        let mut chain = set(&space, &refs);
+        assert_eq!(chain.range_count(), 1);
+        assert!(chain.keep(&budget));
+        assert_eq!(budget.bytes(), 0);
+        let mut split = set(&space, &["id0", "id2", "id4"]);
+        assert!(split.keep(&budget));
+        assert_eq!(budget.bytes(), 40);
+        assert_eq!(split.range_count(), 3);
+    }
+
+    #[test]
+    fn the_cap_grows_with_the_record_count() {
+        assert_eq!(ancestry_cap(0), ANCESTRY_CAP_BASE);
+        assert_eq!(
+            ancestry_cap(600_000),
+            ANCESTRY_CAP_BASE + 600_000 * ANCESTRY_CAP_PER_RECORD
+        );
+        assert_eq!(ancestry_cap(usize::MAX), usize::MAX);
+        // The value comes from 64-bit arithmetic: a 64-bit build gives
+        // the exact value at 4,128,768 records, where a 32-bit build
+        // stops at `usize::MAX`.
+        let at_4g = ANCESTRY_CAP_BASE as u64 + 4_128_768 * ANCESTRY_CAP_PER_RECORD as u64;
+        assert_eq!(at_4g, 1u64 << 32);
+        assert_eq!(ancestry_cap(4_128_768) as u64, at_4g.min(usize::MAX as u64));
+        let budget = AncestryBudget::for_records(10);
+        assert_eq!(budget.limit(), ancestry_cap(10));
+        assert!(budget.charge(ancestry_cap(10)));
+        assert!(!budget.charge(1));
+        assert!(budget.failed());
+        // A raised cap does not clear a failure.
+        budget.allow_records(11);
+        assert_eq!(budget.limit(), ancestry_cap(11));
+        assert!(budget.failed());
+        // Each appended record adds its allowance, and the cap never falls.
+        let budget = AncestryBudget::for_records(10);
+        assert!(budget.charge(ancestry_cap(10)));
+        budget.allow_records(11);
+        assert!(budget.charge(ANCESTRY_CAP_PER_RECORD));
+        assert!(!budget.failed());
+        budget.allow_records(5);
+        assert_eq!(budget.limit(), ancestry_cap(11));
+        // A restored total is checked against the cap for the records.
+        let budget = AncestryBudget::for_records(10);
+        budget.restore_bytes(ancestry_cap(10));
+        assert!(!budget.failed());
+        budget.restore_bytes(ancestry_cap(10) + 8);
+        assert!(budget.failed());
     }
 
     #[test]

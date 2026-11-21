@@ -361,10 +361,12 @@ impl Graph {
         // before any layout allocation.
         // The record count is known without a walk: charge it before
         // reading the predecessor counts, then charge the edges.
+        // The ancestry cap grows with the same record count.
+        let records = nodes.len();
         let mut graph = Self {
             nodes,
             space: super::ancestors::Space::empty(),
-            ancestry: super::ancestors::AncestryBudget::new(),
+            ancestry: super::ancestors::AncestryBudget::for_records(records),
             boundary: Shared::default(),
             issuer_complete: Shared::default(),
             rank_index: std::cell::RefCell::new(None),
@@ -568,11 +570,16 @@ impl Graph {
             }
             let sets: Vec<&IdSet> = deps.iter().map(|dep| &cache[dep].ids).collect();
             let mut c = Closure {
-                ids: IdSet::combined(self.space.clone(), &self.ancestry, &sets, Some(&id)),
+                ids: IdSet::combined(self.space.clone(), &sets, Some(&id)),
                 missing: Rc::new(missing.clone()),
                 invalid: *invalid,
                 resource: false,
             };
+            // The cache keeps this closure: charge its storage. Past
+            // the cap the build stops, as it does past the work budget.
+            if !c.ids.keep(&self.ancestry) {
+                return cache;
+            }
             for dep in deps {
                 let p = &cache[dep];
                 if !p.missing.is_empty() {
@@ -605,10 +612,10 @@ impl Graph {
             if !self.charge(1) {
                 return cache;
             }
-            c.ids.insert(&self.ancestry, &id);
+            c.ids.insert(&id);
             c.invalid = true;
-            if self.ancestry.failed() {
-                c.resource = true;
+            if !c.ids.keep(&self.ancestry) {
+                return cache;
             }
             cache.insert(id, c);
         }
@@ -639,13 +646,10 @@ impl Graph {
                 result.resource = true;
                 break;
             }
-            result.ids.union(&self.ancestry, &c.ids);
+            // The result is a temporary set, so the ancestry cap does
+            // not count it. A caller that keeps it charges it.
+            result.ids.union(&c.ids);
             result.ids.fresh_ranges = self.fresh_range_count(&result.ids);
-            if self.ancestry.failed() {
-                result.resource = true;
-                self.resource.set(true);
-                break;
-            }
             if !c.missing.is_empty() {
                 Rc::make_mut(&mut result.missing).extend(c.missing.iter().cloned());
             }
@@ -715,11 +719,8 @@ impl Graph {
                     {
                         return;
                     }
-                    cutoff.ids.extend(&self.ancestry, c.ids);
+                    cutoff.ids.extend(c.ids);
                     cutoff.ids.fresh_ranges = self.fresh_range_count(&cutoff.ids);
-                    if self.ancestry.failed() {
-                        cutoff.resource = true;
-                    }
                     if !c.missing.is_empty() {
                         Rc::make_mut(&mut cutoff.missing).extend(c.missing.iter().cloned());
                     }
@@ -733,6 +734,11 @@ impl Graph {
                     Rc::make_mut(&mut cutoff.missing)
                         .extend(self.own[&node.id].missing.iter().cloned());
                     cutoff.invalid |= self.own[&node.id].invalid;
+                }
+                // The graph keeps the cutoff: charge its storage.
+                if !cutoff.ids.keep(&self.ancestry) {
+                    self.resource.set(true);
+                    return;
                 }
                 self.lifecycle.compromised.insert(node.issuer.clone());
                 if !cutoff.complete() {
@@ -919,12 +925,18 @@ impl Graph {
     /// Range count of a set in a fresh layout. Positioned records keep
     /// their relative order, and appended records sit at their
     /// block-end ranks in append order, which is a fresh build's order
-    /// for the appends the fast path admits. The count is the stored range count, minus one for each
-    /// stored range whose first member's fresh predecessor is an
-    /// appended member of the set, plus one for each appended member
-    /// whose fresh predecessor is not itself a member.
+    /// for the appends the fast path admits. The count is the stored
+    /// range count, minus one for each stored range whose first
+    /// member's fresh predecessor is an appended member of the set,
+    /// plus one for each stored range that holds both sides of an
+    /// insertion point whose last appended record is not a member,
+    /// plus one for each appended member whose fresh predecessor is
+    /// not itself a member.
     pub fn fresh_range_count(&self, set: &IdSet) -> usize {
-        if set.extra.is_empty() {
+        // Without appended records the fresh layout is the shared one.
+        // With them, a set without appended members can still have a
+        // stored range that a fresh layout splits.
+        if self.appended_rank.is_empty() {
             return set.range_count();
         }
         // Index appended records by rank once per state: by full
@@ -976,16 +988,24 @@ impl Graph {
         set: &IdSet,
     ) -> usize {
         let mut count = set.range_count();
-        // A stored range does not start a fresh run when the appended
-        // record inserted right before its first member is a member.
-        for start in set.range_starts() {
-            if start == 0 {
+        // Each insertion position `p` holds appended records right
+        // before layout position `p`, and `last_at[p]` is the last of
+        // them, so it is the fresh predecessor of position `p`. A
+        // stored range that starts at `p` does not start a fresh run
+        // when that record is a member. A stored range that holds
+        // both `p - 1` and `p` splits in a fresh layout when that
+        // record is not a member. Members appended at `p` are counted
+        // below.
+        for (&p, id) in last_at {
+            let Some((first, last)) = set.range_at_or_before(p) else {
                 continue;
-            }
-            if let Some(id) = last_at.get(&start) {
+            };
+            if first == p {
                 if set.contains(id) {
                     count -= 1;
                 }
+            } else if p <= last && !set.contains(id) {
+                count += 1;
             }
         }
         for id in &set.extra {
@@ -1035,13 +1055,17 @@ impl Graph {
     /// Appended IDs never enter the shared layout. They get a rank at
     /// the end of their issuer block in this state's own rank map.
     pub fn append_ordinary(&mut self, node: Node) {
+        // The cap covers the record count after the append, as a full
+        // build of the same records would, before any closure is charged.
+        self.ancestry
+            .allow_records(self.nodes.len() + usize::from(!self.nodes.contains_key(&node.id)));
         // Unions first, then the record itself: the same combine order
-        // a full build uses for this record, so cap charges match.
+        // a full build uses for this record.
         let closure = |cache: &BTreeMap<String, Closure>| {
             let mut result = self.empty_closure();
             for previous in &node.previous {
                 let prior = &cache[previous];
-                result.ids.union(&self.ancestry, &prior.ids);
+                result.ids.union(&prior.ids);
                 result.ids.fresh_ranges = self.fresh_range_count(&result.ids);
                 if !prior.missing.is_empty() {
                     Rc::make_mut(&mut result.missing).extend(prior.missing.iter().cloned());
@@ -1049,10 +1073,7 @@ impl Graph {
                 result.invalid |= prior.invalid;
                 result.resource |= prior.resource;
             }
-            result.ids.insert(&self.ancestry, &node.id);
-            if self.ancestry.failed() {
-                result.resource = true;
-            }
+            result.ids.insert(&node.id);
             result
         };
         let own = closure(&self.own);
@@ -1085,14 +1106,6 @@ impl Graph {
                 .or_default()
                 .insert(node.issuer.clone());
         }
-        if self.ancestry.failed() {
-            self.resource.set(true);
-            // No closure stored for this record may read as complete.
-            own.resource = true;
-            for closure in &mut others {
-                closure.resource = true;
-            }
-        }
         // Register the record before counting fresh-layout ranges.
         // Appends only happen at the end of the issuer block (the
         // fast path requires the parents to cover the whole block),
@@ -1115,6 +1128,21 @@ impl Graph {
         own.ids.fresh_ranges = self.fresh_range_count(&own.ids);
         for closure in &mut others {
             closure.ids.fresh_ranges = self.fresh_range_count(&closure.ids);
+        }
+        // The caches keep the new closures: charge their storage at
+        // fresh-layout range counts, as a full build of the same
+        // records charges them.
+        let mut kept = own.ids.keep(&self.ancestry);
+        for closure in &mut others {
+            kept &= closure.ids.keep(&self.ancestry);
+        }
+        if !kept {
+            self.resource.set(true);
+            // No closure stored for this record may read as complete.
+            own.resource = true;
+            for closure in &mut others {
+                closure.resource = true;
+            }
         }
         // Insert without splitting a shared cache afterwards: mutating
         // a cache that its siblings still point at would copy it and
@@ -1260,19 +1288,10 @@ impl Graph {
     /// against. The work is linear in the stored ranges examined,
     /// not in the square of the member count.
     pub fn maxima(&self, ids: BTreeSet<String>, structural: bool) -> BTreeSet<String> {
-        let result = self.maxima_with(&ids, structural, &self.ancestry);
-        if self.ancestry.failed() {
-            self.resource.set(true);
-        }
-        result
+        self.maxima_with(&ids, structural)
     }
 
-    fn maxima_with(
-        &self,
-        ids: &BTreeSet<String>,
-        structural: bool,
-        budget: &super::ancestors::AncestryBudget,
-    ) -> BTreeSet<String> {
+    fn maxima_with(&self, ids: &BTreeSet<String>, structural: bool) -> BTreeSet<String> {
         let cache = if structural {
             &self.structural
         } else {
@@ -1357,7 +1376,9 @@ impl Graph {
                 if union_work > 0 && !self.charge(union_work) {
                     return BTreeSet::new();
                 }
-                larger.union(budget, &closure.ids);
+                // The accumulator is a temporary set: the ancestry cap
+                // does not count it.
+                larger.union(&closure.ids);
                 // The accumulator's charge for the next merge must
                 // use fresh-layout range counts, as in
                 // `append_ordinary` and `closure`: appended members
@@ -1690,12 +1711,12 @@ mod tests {
         assert_eq!(expected, (links + 1) * (links + 2) / 2 - 1);
     }
 
-    /// The unions `maxima` merges are charged to the same ancestry
-    /// cap as every other range allocation: the counted bytes never
-    /// pass the cap, and a shape whose merges would pass it fails
-    /// as a resource failure instead.
+    /// The unions that `maxima` merges build one temporary set, so
+    /// they consume no ancestry bytes. Their range copies are charged
+    /// as work: a shape whose merges fragment refuses at the work
+    /// budget.
     #[test]
-    fn maxima_unions_charge_the_ancestry_cap() {
+    fn maxima_merges_charge_work_and_no_ancestry_bytes() {
         let build = |count: usize| {
             let nodes: BTreeMap<String, Node> = (0..count)
                 .map(|i| {
@@ -1719,21 +1740,21 @@ mod tests {
             Graph::new(nodes, &Limits::default())
         };
         // Every second record: the accumulated union fragments into
-        // thousands of ranges, and each merge is charged.
+        // thousands of ranges.
         let graph = build(6_000);
-        let before = graph.ancestry.bytes();
+        let bytes = graph.ancestry.bytes();
+        let work = graph.budget.get();
         let ids: BTreeSet<String> = graph.nodes.keys().step_by(2).cloned().collect();
         let heads = graph.maxima(ids, false);
         assert_eq!(heads.len(), 3_000);
-        assert!(graph.ancestry.bytes() > before);
-        assert!(graph.ancestry.bytes() <= super::ancestors::MAX_ANCESTOR_BYTES);
-        // Ten thousand such members would merge past the cap.
+        assert_eq!(graph.ancestry.bytes(), bytes);
+        assert!(graph.budget.get() < work);
+        // Ten thousand such members exhaust the default work budget.
         let graph = build(20_000);
         let ids: BTreeSet<String> = graph.nodes.keys().step_by(2).cloned().collect();
         graph.maxima(ids, false);
-        assert!(graph.ancestry.failed());
         assert!(graph.resource.get());
-        assert!(graph.ancestry.bytes() <= super::ancestors::MAX_ANCESTOR_BYTES);
+        assert!(!graph.ancestry.failed());
     }
 
     #[test]
@@ -2115,7 +2136,7 @@ mod tests {
         let graph = Graph::new(nodes, &limits);
         assert!(graph.resource.get());
         assert!(graph.ancestry.failed());
-        assert!(graph.ancestry.bytes() <= crate::ancestors::MAX_ANCESTOR_BYTES);
+        assert!(graph.ancestry.bytes() <= graph.ancestry.limit());
     }
 
     #[test]
@@ -2133,7 +2154,7 @@ mod tests {
         let graph = Graph::new(nodes, &limits);
         assert!(graph.resource.get());
         assert!(graph.ancestry.failed());
-        assert!(graph.ancestry.bytes() <= crate::ancestors::MAX_ANCESTOR_BYTES);
+        assert!(graph.ancestry.bytes() <= graph.ancestry.limit());
     }
 
     fn interleaved_with_acceptance(count: usize) -> BTreeMap<String, Node> {
@@ -2151,18 +2172,19 @@ mod tests {
 
     #[test]
     fn cap_failure_in_the_accepted_cache_is_a_resource_failure() {
-        // Three real caches (an acceptance exists) multiply range
-        // copies. At this size the accepted cache crosses the byte cap;
+        // Three real caches (an acceptance exists) keep three copies of
+        // each fragmented closure. At this size the accepted cache
+        // crosses the byte cap;
         // the graph must report resource exhaustion, and no accepted
         // closure built after the failed charge may be complete.
         let limits = Limits {
             traversal: Some(1_000_000_000),
             ..Limits::default()
         };
-        let graph = Graph::new(interleaved_with_acceptance(2_880), &limits);
+        let graph = Graph::new(interleaved_with_acceptance(3_600), &limits);
         assert!(graph.ancestry.failed());
         assert!(graph.resource.get());
-        let graph = Graph::new(interleaved_with_acceptance(1_500), &limits);
+        let graph = Graph::new(interleaved_with_acceptance(2_000), &limits);
         assert!(!graph.ancestry.failed());
         assert!(!graph.resource.get());
     }
@@ -2173,21 +2195,60 @@ mod tests {
             traversal: Some(1_000_000_000),
             ..Limits::default()
         };
-        let mut graph = Graph::new(interleaved_with_acceptance(2_348), &limits);
+        let mut graph = Graph::new(interleaved_with_acceptance(3_425), &limits);
         assert!(!graph.resource.get());
-        // The two chain tips carry about 1,174 ranges each. Appending a
-        // record on both crosses the remaining cap headroom.
-        let tip_a = format!("jve1:{:064x}", 2_346usize);
-        let tip_b = format!("jve1:{:064x}", 2_347usize);
-        graph.append_ordinary(node(
-            "jve1:appended",
-            "issuer",
-            &[&tip_a, &tip_b],
-            "judgment.set",
-        ));
+        // A chain tip carries about 1,712 ranges. A record appended
+        // on it keeps a closure of as many ranges in each of the three
+        // caches, which crosses the remaining cap headroom plus the
+        // appended record's own allowance.
+        let tip_a = format!("jve1:{:064x}", 3_423usize);
+        graph.append_ordinary(node("jve1:appended", "issuer", &[&tip_a], "judgment.set"));
         assert!(graph.ancestry.failed());
         assert!(graph.resource.get());
         assert!(!graph.own["jve1:appended"].complete());
+    }
+
+    /// The cap covers the record count, and an append raises it by
+    /// one record's allowance before its closures are charged. Near
+    /// the cap, an append refuses exactly when a full build of the
+    /// same records refuses.
+    #[test]
+    fn the_cap_grows_with_appends_as_with_a_full_build() {
+        use crate::ancestors::{ANCESTRY_CAP_PER_RECORD, ancestry_cap};
+        let limits = Limits {
+            traversal: Some(1_000_000_000),
+            ..Limits::default()
+        };
+        for count in 3_423..3_427 {
+            let nodes = interleaved_with_acceptance(count);
+            let records = nodes.len();
+            let graph = Graph::new(nodes.clone(), &limits);
+            assert_eq!(graph.ancestry.limit(), ancestry_cap(records));
+            let appended = node(
+                "jve1:appended",
+                "issuer",
+                &[&format!("jve1:{:064x}", count - 2)],
+                "judgment.set",
+            );
+            let mut fork = graph.clone();
+            fork.append_ordinary(appended.clone());
+            assert_eq!(
+                fork.ancestry.limit(),
+                ancestry_cap(records) + ANCESTRY_CAP_PER_RECORD
+            );
+            let mut full_nodes = nodes;
+            full_nodes.insert(appended.id.clone(), appended);
+            let full = Graph::new(full_nodes, &limits);
+            assert_eq!(full.ancestry.limit(), fork.ancestry.limit());
+            assert_eq!(
+                fork.ancestry.failed(),
+                full.ancestry.failed(),
+                "count {count}"
+            );
+            if !full.ancestry.failed() {
+                assert_eq!(fork.ancestry.bytes(), full.ancestry.bytes());
+            }
+        }
     }
 
     #[test]
@@ -2196,26 +2257,20 @@ mod tests {
             traversal: Some(1_000_000_000),
             ..Limits::default()
         };
-        let graph = Graph::new(interleaved_with_acceptance(2_348), &limits);
+        let graph = Graph::new(interleaved_with_acceptance(3_425), &limits);
         assert!(!graph.resource.get());
         let mut fork_a = graph.clone();
         let fork_b = graph.clone();
-        let tip_a = format!("jve1:{:064x}", 2_346usize);
-        let tip_b = format!("jve1:{:064x}", 2_347usize);
-        fork_a.append_ordinary(node(
-            "jve1:appended",
-            "issuer",
-            &[&tip_a, &tip_b],
-            "judgment.set",
-        ));
+        let tip_a = format!("jve1:{:064x}", 3_423usize);
+        fork_a.append_ordinary(node("jve1:appended", "issuer", &[&tip_a], "judgment.set"));
         assert!(fork_a.resource.get());
         // The sibling and the parent keep their own accounting and
         // their closures stay correct.
         assert!(!fork_b.resource.get());
         assert!(!fork_b.ancestry.failed());
         assert!(!graph.ancestry.failed());
-        let last = format!("jve1:{:064x}", 2_347usize);
-        let first = format!("jve1:{:064x}", 1usize);
+        let last = format!("jve1:{:064x}", 3_424usize);
+        let first = format!("jve1:{:064x}", 0usize);
         assert!(fork_b.own[&last].ids.contains(&first));
         assert!(fork_b.own[&last].complete());
     }
