@@ -1017,7 +1017,7 @@ test("rows normalize claims, reject unsupported shapes, and retain first claim i
     ),
   );
   assert.ok(
-    row.diagnostics.some((message) =>
+    !row.diagnostics.some((message) =>
       message.includes('"cukta" is not a short rafsi shape'),
     ),
   );

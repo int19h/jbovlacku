@@ -21,31 +21,32 @@ test("nearby draft search discloses the exact query and sends only a POST body",
     page.getByText("Download a search package in Settings", { exact: false }),
   ).toBeVisible();
   expect(searches).toHaveLength(0);
-  let disclosure = "";
-  page.once("dialog", async (dialog) => {
-    disclosure = dialog.message();
-    await dialog.accept();
-  });
   await page
     .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  const consent = page.getByRole("dialog", { name: "Search this server" });
+  await expect(consent).toBeVisible();
+  const disclosure = (await consent.textContent()) ?? "";
+  await consent
+    .getByRole("button", { name: "Search this server", exact: true })
     .click();
   await expect(
     page
       .locator("ol.similar")
       .getByRole("link", { name: "cukta", exact: true }),
   ).toBeVisible();
-  expect(disclosure).toContain('"book"');
+  expect(disclosure).toContain('"book private committee"');
   expect(disclosure).toContain('"en"');
-  expect(disclosure).not.toContain("private committee");
-  expect(searches).toHaveLength(1);
-  expect(searches[0].method).toBe("POST");
-  expect(new URL(searches[0].url).search).toBe("");
-  expect(searches[0].body).toEqual({
-    q: "book",
-    language: "en",
-    limit: 10,
-    literal: "1",
-  });
+  expect(searches.map((s) => (s.body as { q: string }).q).sort()).toEqual([
+    "book",
+    "committee",
+    "private",
+  ]);
+  for (const search of searches) {
+    expect(search.method).toBe("POST");
+    expect(new URL(search.url).search).toBe("");
+    expect(search.body).toMatchObject({ language: "en", literal: "1" });
+  }
   await page
     .getByLabel("Meaning", { exact: true })
     .fill("another private phrase");
@@ -55,16 +56,17 @@ test("nearby draft search discloses the exact query and sends only a POST body",
   await expect(
     page.getByText("Download a search package in Settings", { exact: false }),
   ).toBeVisible();
-  expect(searches).toHaveLength(1);
-  page.once("dialog", async (dialog) => {
-    disclosure = dialog.message();
-    await dialog.dismiss();
-  });
+  expect(searches).toHaveLength(3);
   await page
     .getByRole("button", { name: "search this server", exact: true })
     .click();
-  expect(disclosure).toContain('"another"');
-  expect(searches).toHaveLength(1);
+  const declined = page.getByRole("dialog", { name: "Search this server" });
+  await expect(declined).toBeVisible();
+  expect((await declined.textContent()) ?? "").toContain(
+    '"another private phrase"',
+  );
+  await declined.getByRole("button", { name: "Not now" }).click();
+  expect(searches).toHaveLength(3);
   await page
     .getByLabel("Meaning", { exact: true })
     .fill("book private committee");
@@ -74,7 +76,7 @@ test("nearby draft search discloses the exact query and sends only a POST body",
   await expect(
     page.getByText("Download a search package in Settings", { exact: false }),
   ).toBeVisible();
-  expect(searches).toHaveLength(1);
+  expect(searches).toHaveLength(3);
 });
 
 test("the identity page describes a profile body absent from its snapshot", async ({

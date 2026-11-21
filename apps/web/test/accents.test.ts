@@ -537,7 +537,7 @@ test("wizard blocks accented rafsi before Publish and preserves the entered spel
   );
   await expect(
     page.getByRole("button", { name: "Publish", exact: true }),
-  ).toHaveCount(2);
+  ).toHaveCount(1);
   for (const publish of await page
     .getByRole("button", { name: "Publish", exact: true })
     .all())

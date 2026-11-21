@@ -54,9 +54,9 @@ import {
 import type { GroupItem, SignedGroup } from "../../app/actions.ts";
 import type { Envelope, Formation } from "../../model/types.ts";
 import {
-  actionBar,
   DRAFT_KEY,
   DraftSaver,
+  exportDraft,
   forgetDraft,
   loadDraft,
   stepBar,
@@ -220,6 +220,12 @@ export async function publishPage(
           },
         ),
       );
+      if (!app.session.identity) {
+        const heading = card.querySelector("h2.sr");
+        if (heading) heading.textContent = "Definition by your key";
+        for (const anchor of card.querySelectorAll("a.identity-link"))
+          anchor.replaceWith(document.createTextNode("your key"));
+      }
       preview.append(card);
     } else
       preview.append(
@@ -689,8 +695,6 @@ export async function publishPage(
       !rootAcknowledged ||
       !componentsAcknowledged;
     publish.disabled = disabled;
-    const primary = bar?.querySelector<HTMLButtonElement>(".btn-primary");
-    if (primary) primary.disabled = disabled;
   };
   /** The group from the reviewed draft: definition, endorsement, every claim, and each pair endorsement. */
   const buildGroup = (): GroupItem[] => {
@@ -752,11 +756,17 @@ export async function publishPage(
       )
         return;
       publish.disabled = true;
+      const spelling = body.word.spelling;
       try {
         await app.session.requireUnlocked(
-          `Publishing ${body.word.spelling}`,
+          `Publishing ${spelling}`,
           async () => {
-            if (!(await app.session.firstSignatureDisclosure())) return;
+            if (
+              !(await app.session.firstSignatureDisclosure(
+                `This publish also signs your definition of ${spelling} and its endorsements as public records. Other servers can copy them, and undo does not erase them.`,
+              ))
+            )
+              return;
             const latestInventory = savedInventory(
               await savedPackages(app.store),
             ).inventory;
@@ -901,17 +911,21 @@ export async function publishPage(
   aside.append(panel);
   columns.append(left, aside);
   main.append(columns);
-  bar = actionBar(saver, {
-    back: {
-      label: "Back",
-      href: draft.parents.length ? "/new/editor" : "/new/places",
-    },
-    primary: {
-      label: "Publish",
-      disabled: true,
-      action: () => publish.click(),
-    },
-  });
+  bar = el("div", { class: "action-bar" });
+  bar.append(
+    el(
+      "div",
+      { class: "actions" },
+      link("Back", draft.parents.length ? "/new/editor" : "/new/places", {
+        class: "btn btn-quiet",
+      }),
+      saver.indicator,
+      button("Export draft", () => exportDraft(saver.draft), {
+        class: "btn btn-quiet",
+        style: "font-size:14px",
+      }),
+    ),
+  );
   main.append(bar);
   refreshPublish();
   if (published) {

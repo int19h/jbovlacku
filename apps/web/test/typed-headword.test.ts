@@ -229,10 +229,13 @@ test("missing package and offline lookup stay honest without passive draft uploa
   const panel = page.getByRole("region", { name: "Typed word", exact: true });
   await expect(panel).toContainText("The word could not be checked.");
   expect(requests).toEqual([]);
-  page.on("dialog", (dialog) => void dialog.accept());
   await context.setOffline(true);
   await panel
     .getByRole("button", { name: "Check this word on the server" })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
     .click();
   await expect(panel).toContainText(
     "The word could not be checked on this server:",
@@ -243,7 +246,6 @@ test("missing package and offline lookup stay honest without passive draft uploa
 test("remote duplicate consent belongs to one word and language and ignores an old response", async ({
   page,
 }) => {
-  page.on("dialog", (dialog) => void dialog.accept());
   await page.goto("/new/meaning");
   await page.getByLabel("Lojban word", { exact: true }).fill("cukta");
   const panel = page.getByRole("region", { name: "Typed word", exact: true });
@@ -263,6 +265,10 @@ test("remote duplicate consent belongs to one word and language and ignores an o
   });
   await panel
     .getByRole("button", { name: "Check this word on the server" })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
     .click();
   await started;
   await page.getByLabel("Lojban word", { exact: true }).fill("bangu");
@@ -389,7 +395,6 @@ for (const spelling of ["sairzba", "bangu'y'ismu", "SAI,rZBA"])
 test("remote existence remains visible when a definition cannot be fetched", async ({
   page,
 }) => {
-  page.on("dialog", (dialog) => void dialog.accept());
   await page.goto("/new/meaning");
   await page.route("**/api/v1/events/**", (route) =>
     route.fulfill({
@@ -407,6 +412,10 @@ test("remote existence remains visible when a definition cannot be fetched", asy
   const panel = page.getByRole("region", { name: "Typed word", exact: true });
   await panel
     .getByRole("button", { name: "Check this word on the server" })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
     .click();
   await expect(panel).toContainText("Already exists:");
   await expect(panel).toContainText("Definition unavailable.");
