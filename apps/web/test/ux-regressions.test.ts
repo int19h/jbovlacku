@@ -1,8 +1,64 @@
 import { test, expect, type Page } from "@playwright/test";
-import { acceptFirstSignature, createIdentity, openWord } from "./helpers.ts";
+import {
+  acceptFirstSignature,
+  createIdentity,
+  fixture,
+  openWord,
+} from "./helpers.ts";
 
 const firstScore = (page: Page) =>
   page.locator("article.definition").first().getByRole("img");
+
+type Hit = {
+  word?: { spelling?: string };
+  definitions: string[];
+  preview?: Record<string, unknown> & {
+    event?: string;
+    attribution?:
+      | ({ dates: Record<string, string> } & Record<string, unknown>)
+      | null;
+  };
+};
+/**
+ * Routes server search pages so that the ckusro row previews the imported
+ * definition. The shared test server can hold a newer native "library"
+ * definition of ckusro from another suite, and the server previews the
+ * lowest event ID among equal matches, so that definition can win. The
+ * imported fields below are the seed's signed values, as the server sends
+ * them. `edit` then changes each hit for one test.
+ */
+async function routeImportedPreview(page: Page, edit?: (hit: Hit) => void) {
+  const f = fixture();
+  await page.route("**/api/v1/search?*", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { hits?: Hit[] };
+    for (const hit of body.hits ?? []) {
+      if (
+        hit.word?.spelling === "ckusro" &&
+        hit.preview &&
+        hit.preview.event !== f.definitions.imported &&
+        hit.definitions.includes(f.definitions.imported)
+      )
+        hit.preview = {
+          ...hit.preview,
+          event: f.definitions.imported,
+          word_kind: "lujvo",
+          plain_text: "x1 is a library of books x2.",
+          selmaho: [],
+          issuer: f.identities.importer,
+          notes: false,
+          attribution: {
+            source: "https://lensisku.invalid",
+            author: "arj",
+            account: { origin: "https://lensisku.invalid", account: 8 },
+            dates: { created_at: "2003-03-12T10:00:00Z" },
+          },
+        };
+      edit?.(hit);
+    }
+    await route.fulfill({ response, json: body });
+  });
+}
 
 async function choosePersonal(page: Page) {
   await page.getByRole("link", { name: /^Trust:/ }).click();
@@ -32,9 +88,8 @@ test("server search rows show rafsi, attribution, date, and notes from the searc
     cukta.locator(".attribution-line a[href^='/identity/']"),
   ).toBeVisible();
   await expect(cukta.getByRole("link", { name: "notes" })).toBeVisible();
-  // The imported definition is the only "library" gloss. A shared test
-  // server can hold other definitions of the same word from other suites,
-  // so this query keeps the imported row the preview.
+  // The imported row needs the imported definition as its preview.
+  await routeImportedPreview(page);
   await page.goto("/search?q=library&lang=en");
   const imported = results.locator("article").filter({
     has: page.getByRole("link", { name: "ckusro", exact: true }),
@@ -79,6 +134,7 @@ test("a server row upgrades its attribution line from the signed record", async 
 }) => {
   // With the reads allowed, the imported author links to the source-account
   // evidence, as the row did before the preview carried the fields.
+  await routeImportedPreview(page);
   await page.goto("/search?q=library&lang=en");
   const results = page.getByRole("region", { name: "Search results" });
   const imported = results.locator("article").filter({
@@ -101,6 +157,7 @@ test("a refused body read keeps the preview attribution line", async ({
     return route.abort();
   });
   const results = page.getByRole("region", { name: "Search results" });
+  await routeImportedPreview(page);
   await page.goto("/search?q=library&lang=en");
   const imported = results.locator("article").filter({
     has: page.getByRole("link", { name: "ckusro", exact: true }),
@@ -132,23 +189,19 @@ test("the preview date bound keeps the date label the row reads", async ({
   await page.route("**/api/v1/words/**", (route) => route.abort());
   await page.route("**/api/v1/events/**", (route) => route.abort());
   await page.route("**/api/v1/bodies/**", (route) => route.abort());
-  await page.route("**/api/v1/search?*", async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    for (const hit of body.hits ?? [])
-      if (hit.preview?.attribution && hit.word?.spelling === "ckusro")
-        hit.preview.attribution.dates = {
-          a: "1",
-          b: "2",
-          c: "3",
-          created_at: "2020-01-15T12:00:00Z",
-          d: "4",
-          e: "5",
-          f: "6",
-          g: "7",
-          time: "1000000000",
-        };
-    await route.fulfill({ response, json: body });
+  await routeImportedPreview(page, (hit) => {
+    if (hit.preview?.attribution && hit.word?.spelling === "ckusro")
+      hit.preview.attribution.dates = {
+        a: "1",
+        b: "2",
+        c: "3",
+        created_at: "2020-01-15T12:00:00Z",
+        d: "4",
+        e: "5",
+        f: "6",
+        g: "7",
+        time: "1000000000",
+      };
   });
   await page.goto("/search?q=library&lang=en");
   const results = page.getByRole("region", { name: "Search results" });
@@ -299,6 +352,7 @@ test("the recompute button keeps focus while the note follows the calculation", 
 test("focus stays on a row link when the signed record upgrades the attribution line", async ({
   page,
 }) => {
+  await routeImportedPreview(page);
   for (const [query, spelling, selector] of [
     ["book", "cukta", ".attribution-line a[href$='#notes']"],
     ["library", "ckusro", ".attribution-line a.identity-link"],
