@@ -950,8 +950,11 @@ export function renderExisting(
     "aria-live": "polite",
   });
   container.append(box);
+  let updateGeneration = 0;
   const update = async () => {
+    const mine = ++updateGeneration;
     const state = await handoverState(app, record);
+    if (mine !== updateGeneration || !box.isConnected) return;
     box.replaceChildren();
     const line =
       state.transferDone && state.acceptDone
@@ -991,13 +994,16 @@ export function renderExisting(
     );
     if (!(state.transferDone && state.acceptDone))
       box.append(
+        p(
+          "Retries reuse the stored events and look the receipt up by event ID first. No replacement acceptance is ever signed automatically.",
+          "small",
+        ),
         el(
           "p",
           { class: "small" },
-          text(
-            "Retries reuse the stored events and look the receipt up by event ID first. No replacement acceptance is ever signed automatically. ",
-          ),
           link("Not delivered", "/outbox", { class: "touch-link" }),
+          text("  "),
+          button("Check again", () => void update(), { class: "btn" }),
         ),
       );
     else

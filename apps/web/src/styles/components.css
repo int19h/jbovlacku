@@ -63,6 +63,11 @@
   gap: 8px;
   align-items: center;
 }
+@media (max-width: 640px) {
+  .actions > .btn-quiet {
+    margin-inline-start: -10px;
+  }
+}
 
 /* Fields */
 .field-label {
@@ -1343,6 +1348,10 @@ label:is(.check, .opt, .chip):has(> input:only-of-type)
   color: var(--accent);
   text-decoration: underline;
   text-underline-offset: 0.18em;
+}
+.rich-word-link:empty,
+.rich-web-link:empty {
+  margin-inline: 0.15em;
 }
 .rich-word-link:empty::after,
 .rich-web-link:empty::after {
