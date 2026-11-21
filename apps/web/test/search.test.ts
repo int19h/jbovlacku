@@ -2,7 +2,6 @@ import { test, expect } from "@playwright/test";
 import {
   corePath,
   createIdentity,
-  acceptFirstSignature,
   establishOwnHistory,
   openWord,
   fixture,
