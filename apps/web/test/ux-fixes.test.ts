@@ -967,3 +967,135 @@ test("after overlapping renders, Download is disabled while the picked language 
   await expect(download).toBeDisabled();
   held.release();
 });
+
+test("a refresh leaves focus on the page when the focused Remove button is gone from the new list", async ({
+  page,
+  context,
+}) => {
+  await setupGatedStore(page, ["en", "fr"], ["en", "fr"]);
+  // Another tab removes French. This tab still shows the French row.
+  const other = await context.newPage();
+  await other.goto("/preferences");
+  await removeButton(other, "fr").click();
+  await expect(removeButton(other, "fr")).toHaveCount(0);
+  // The refresh's render waits after reading English.
+  await armGate(page, "get-en");
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await gateHit(page, "get-en");
+  await removeButton(page, "fr").focus();
+  await expect(removeButton(page, "fr")).toBeFocused();
+  await resumeGate(page, "get-en");
+  await expect(removeButton(page, "fr")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Refresh English" }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Refresh English" }),
+  ).not.toBeFocused();
+  expect(
+    await page.evaluate(() => document.activeElement === document.body),
+  ).toBe(true);
+});
+
+test("the shown buttons follow the running marks while a list is built", async ({
+  page,
+}) => {
+  await setupGatedStore(page, ["en", "de", "fr"], ["en", "fr"]);
+  // A refresh of English is held at the network. Remove English meanwhile.
+  let through!: () => void;
+  let requests = 0;
+  const gate = new Promise<void>((resolve) => {
+    through = resolve;
+  });
+  await page.route("**/api/v1/packages/en**", async (route) => {
+    requests++;
+    await gate;
+    await route.continue();
+  });
+  await page.getByRole("button", { name: "Refresh English" }).click();
+  await expect.poll(() => requests).toBe(1);
+  await removeButton(page, "en").click();
+  await expect(removeButton(page, "en")).toHaveCount(0);
+  const pick = page.getByLabel("Download a package");
+  const download = page.getByRole("button", { name: "Download", exact: true });
+  await pick.selectOption("en");
+  await expect(download).toBeDisabled();
+  // The refused refresh ends, and its render waits after reading French.
+  await armGate(page, "get-fr");
+  through();
+  await gateHit(page, "get-fr");
+  await expect(statusText(page)).toContainText(
+    "The English package was not saved.",
+  );
+  // The mark is clear, so the shown Download is enabled before the new list.
+  await expect(pick).toHaveValue("en");
+  await expect(download).toBeEnabled();
+  await resumeGate(page, "get-fr");
+  await expect(download).toBeEnabled();
+});
+
+test("a shown Refresh button is enabled when its run ends, before the new list", async ({
+  page,
+}) => {
+  await setupGatedStore(page, ["en", "fr"], ["en", "fr"]);
+  // The refresh's render waits after reading French.
+  await armGate(page, "get-fr");
+  const refresh = page.getByRole("button", { name: "Refresh English" });
+  await refresh.click();
+  await gateHit(page, "get-fr");
+  await expect(statusText(page)).toContainText(
+    "The English package is refreshed.",
+  );
+  await expect(refresh).toBeEnabled();
+  await resumeGate(page, "get-fr");
+  await expect(refresh).toBeEnabled();
+});
+
+test("the row check of a render runs after its list is shown", async ({
+  page,
+}) => {
+  // English has a row that only the full row check rejects.
+  await setupGatedStore(page, ["en", "fr", "de"], ["fr", "de"]);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "en", {
+      snapshot: "sha256:" + "b".repeat(64),
+      version: 2,
+      entries: [{}],
+    });
+  });
+  // Record each change of a shown row's detail to the invalid message.
+  await page.evaluate(() => {
+    const scope = window as unknown as { shownChecks: number };
+    scope.shownChecks = 0;
+    new MutationObserver((records) => {
+      for (const record of records)
+        if (
+          record.target instanceof HTMLElement &&
+          record.target.tagName === "SMALL" &&
+          record.target.textContent?.startsWith("The search package is invalid")
+        )
+          scope.shownChecks++;
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  // Removing German renders the list. The render waits after reading
+  // French, after English's row is built.
+  await armGate(page, "get-fr");
+  await removeButton(page, "de").click();
+  await gateHit(page, "get-fr");
+  // Give an early row check time to run while the list is held.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  await resumeGate(page, "get-fr");
+  await expect(removeButton(page, "de")).toHaveCount(0);
+  await expect(page.locator(".row", { hasText: "English" })).toContainText(
+    "The search package is invalid",
+  );
+  // The check changed the row after the row was shown.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as unknown as { shownChecks: number }).shownChecks,
+      ),
+    )
+    .toBe(1);
+});

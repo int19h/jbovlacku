@@ -28,6 +28,16 @@ import {
 } from "../data/saved-package.ts";
 import type { Preferences } from "../data/store.ts";
 
+/** The outcome of one render of the Settings package list. */
+interface RenderResult {
+  /** The number of the render, in the order that renders started. */
+  render: number;
+  /** True if the render replaced the shown list. */
+  published: boolean;
+  /** The element that had focus just before a published render replaced the list. */
+  focusedAtPublish: Element | null;
+}
+
 export async function preferencesPage(
   _route: Route,
   context: RenderContext,
@@ -204,17 +214,20 @@ export async function preferencesPage(
   // each with the token of the run that set the mark. A run clears the
   // mark only while it still holds its own token, so an older run cannot
   // clear the mark of a newer run of the same language. Refresh buttons
-  // of a marked language render disabled, and Download is disabled while
-  // the picked language is marked.
+  // of a marked language are disabled, and Download is disabled while the
+  // picked language is marked. Every change of a mark updates the shown
+  // buttons at once, so they always match the marks.
   const runningPackages = new Map<string, symbol>();
   const startRun = (language: string) => {
     const token = Symbol(language);
     runningPackages.set(language, token);
+    syncPackageButtons();
     return token;
   };
   const endRun = (language: string, token: symbol) => {
-    if (runningPackages.get(language) === token)
-      runningPackages.delete(language);
+    if (runningPackages.get(language) !== token) return;
+    runningPackages.delete(language);
+    syncPackageButtons();
   };
   // The language picked for a download. A render that publishes its list
   // reads it from the live picker first, so the new picker shows it.
@@ -245,10 +258,15 @@ export async function preferencesPage(
     if (picker && download)
       download.disabled = runningPackages.has(picker.value);
   };
-  /** Sets the Refresh button of a language, if it is listed, from its running state. */
-  const syncRefreshButton = (language: string) => {
-    const refresh = findControl<HTMLButtonElement>("refresh", language);
-    if (refresh) refresh.disabled = runningPackages.has(language);
+  /** Sets every shown Refresh button and Download from the running marks. */
+  const syncPackageButtons = () => {
+    for (const refresh of packages.querySelectorAll<HTMLButtonElement>(
+      '[data-package-control="refresh"]',
+    ))
+      refresh.disabled = runningPackages.has(
+        refresh.dataset.packageLanguage ?? "",
+      );
+    syncDownloadButton();
   };
   /**
    * Tells whether the end of a run may move focus. It may only when focus
@@ -281,9 +299,9 @@ export async function preferencesPage(
   };
   /**
    * Ends a failed run. Storage did not change, so the list does not render
-   * again. The current controls are updated in place: the Refresh button
-   * of the language, and Download for the picked language. Focus moves
-   * only under the rule of `focusIsFree`, and never to a disabled button.
+   * again. `endRun` has already updated the shown buttons in place. Focus
+   * moves only under the rule of `focusIsFree`, and never to a disabled
+   * button.
    */
   const endFailedRun = (
     own: HTMLButtonElement,
@@ -292,8 +310,7 @@ export async function preferencesPage(
     hadFocus: boolean,
   ) => {
     const mayFocus = hadFocus && focusIsFree(own);
-    syncRefreshButton(language);
-    syncDownloadButton();
+    syncPackageButtons();
     refocusPackageButton(mayFocus, kinds);
   };
   // Counts the renders that started. Only the newest render publishes its
@@ -308,14 +325,20 @@ export async function preferencesPage(
    * live picker's language while that language is still offered, and
    * focus moves to the new copy of the list control that had focus, if
    * that copy exists and is enabled. The focus does not scroll the page.
-   * Returns the number of this render.
+   * The row checks of a published list run in one task after the list is
+   * shown. A dropped list runs none. Returns the number of this render
+   * and, for a published list, the element that had focus just before the
+   * replacement.
    */
-  const renderPackages = async () => {
+  const renderPackages = async (): Promise<RenderResult> => {
     const render = ++renderCount;
     const list = document.createDocumentFragment();
-    await buildPackages(list);
-    if (render !== renderCount || !context.live()) return render;
-    const focused = controlKey(document.activeElement);
+    const checks: (() => void)[] = [];
+    await buildPackages(list, checks);
+    if (render !== renderCount || !context.live())
+      return { render, published: false, focusedAtPublish: null };
+    const focusedAtPublish = document.activeElement;
+    const focused = controlKey(focusedAtPublish);
     const livePicker = findControl<HTMLSelectElement>("picker");
     if (livePicker) pickedPackage = livePicker.value;
     const newPicker = findControl<HTMLSelectElement>("picker", "", list);
@@ -327,13 +350,17 @@ export async function preferencesPage(
     packages.replaceChildren(list);
     // A run may have started or ended while the list was built, so every
     // button takes the running marks as they are now.
-    for (const refresh of packages.querySelectorAll<HTMLButtonElement>(
-      '[data-package-control="refresh"]',
-    ))
-      refresh.disabled = runningPackages.has(
-        refresh.dataset.packageLanguage ?? "",
-      );
-    syncDownloadButton();
+    syncPackageButtons();
+    if (checks.length)
+      setTimeout(() => {
+        for (const check of checks)
+          try {
+            check();
+          } catch (error) {
+            // One failed check does not stop the checks of later rows.
+            reportError(error);
+          }
+      });
     if (focused) {
       const [kind, language] = focused.split(":");
       const copy = findControl<HTMLButtonElement | HTMLSelectElement>(
@@ -342,11 +369,33 @@ export async function preferencesPage(
       );
       if (copy && !copy.disabled) copy.focus({ preventScroll: true });
     }
-    return render;
+    return { render, published: true, focusedAtPublish };
   };
-  /** True while the render with this number is the newest one that started. */
-  const isNewestRender = (render: number) => render === renderCount;
-  const buildPackages = async (list: DocumentFragment) => {
+  /**
+   * Ends a run that rendered the list. The handler may move focus only if
+   * its render published and is still the newest, and the focus that the
+   * publish step saw was the handler's own button or no control. If the
+   * reader had moved focus to another control that the new list lacks,
+   * focus stays on the page. Then `refocusPackageButton` applies its own
+   * rule.
+   */
+  const endRenderedRun = (
+    result: RenderResult,
+    own: HTMLButtonElement,
+    mayFocus: boolean,
+    kinds: [string, string?][],
+  ) => {
+    const seen = result.focusedAtPublish;
+    const free = seen === null || seen === document.body || seen === own;
+    refocusPackageButton(
+      mayFocus && result.published && result.render === renderCount && free,
+      kinds,
+    );
+  };
+  const buildPackages = async (
+    list: DocumentFragment,
+    checks: (() => void)[],
+  ) => {
     if (!session.storageAvailable) {
       list.append(
         p(
@@ -399,11 +448,12 @@ export async function preferencesPage(
       );
       list.append(row);
       // This page reads no rows, so it checks them in a task of its own
-      // after the row is shown. A valid package keeps its count, and an
-      // unusable one shows the message in its place.
+      // after the row is shown: `renderPackages` runs the checks of a list
+      // after it publishes that list. A valid package keeps its count, and
+      // an unusable one shows the message in its place.
       const pkg = cached;
       if (pkg)
-        setTimeout(() => {
+        checks.push(() => {
           try {
             for (const entry of pkg.entries) savedRow(entry, pkg.version);
           } catch (error) {
@@ -435,9 +485,9 @@ export async function preferencesPage(
           const language = pick.input.value;
           if (runningPackages.has(language)) return;
           pickedPackage = language;
-          const token = startRun(language);
+          // Read focus before the mark disables the button.
           const hadFocus = document.activeElement === go;
-          syncDownloadButton();
+          const token = startRun(language);
           let rendered = false;
           try {
             const expected = await app.store.packageRevisionOf(language);
@@ -463,7 +513,7 @@ export async function preferencesPage(
             const mayFocus = hadFocus && focusIsFree(go);
             const render = await renderPackages();
             rendered = true;
-            refocusPackageButton(mayFocus && isNewestRender(render), [
+            endRenderedRun(render, go, mayFocus, [
               ["download"],
               ["refresh", language],
             ]);
@@ -507,8 +557,9 @@ export async function preferencesPage(
           `Refresh ${languageName(key)}`,
           async () => {
             if (runningPackages.has(key)) return;
-            const token = startRun(key);
+            // Read focus before the mark disables the button.
             const hadFocus = document.activeElement === refresh;
+            const token = startRun(key);
             refresh.disabled = true;
             let rendered = false;
             try {
@@ -525,9 +576,7 @@ export async function preferencesPage(
                 const mayFocus = hadFocus && focusIsFree(refresh);
                 const render = await renderPackages();
                 rendered = true;
-                refocusPackageButton(mayFocus && isNewestRender(render), [
-                  ["download"],
-                ]);
+                endRenderedRun(render, refresh, mayFocus, [["download"]]);
                 return;
               }
               const pkg = await downloadPackage(key);
@@ -548,7 +597,7 @@ export async function preferencesPage(
               const mayFocus = hadFocus && focusIsFree(refresh);
               const render = await renderPackages();
               rendered = true;
-              refocusPackageButton(mayFocus && isNewestRender(render), [
+              endRenderedRun(render, refresh, mayFocus, [
                 ["refresh", key],
                 ["download"],
               ]);
