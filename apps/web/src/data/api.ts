@@ -12,6 +12,14 @@ import {
   verifyEnvelope,
 } from "../../../../packages/core/src/browser.ts";
 import {
+  PREVIEW_RAFSI_COUNT,
+  PREVIEW_RAFSI_LENGTH,
+  PREVIEW_SELMAHO_COUNT,
+  PREVIEW_SELMAHO_LENGTH,
+  boundedPreviewAttribution,
+  boundedPreviewList,
+} from "../../../../packages/search/src/preview-row.ts";
+import {
   eventId,
   hashId,
   identityId,
@@ -672,41 +680,48 @@ export function forgetWord(id: string) {
   for (const key of [...wordCache.keys()])
     if (key.includes(`|${id}|`)) wordCache.delete(key);
 }
-/** The bounded row fields of a search preview. Every field stays optional. */
-function validPreviewRow(preview: Record<string, unknown>): boolean {
-  const shortList = (value: unknown, limit: number) =>
-    value === undefined ||
-    (Array.isArray(value) &&
-      value.length <= limit &&
-      value.every((item) => typeof item === "string" && item.length <= 128));
-  if (!shortList(preview.rafsi, 64) || !shortList(preview.selmaho, 16))
-    return false;
-  if (preview.issuer !== undefined && !identityId(preview.issuer)) return false;
-  if (preview.notes !== undefined && typeof preview.notes !== "boolean")
-    return false;
-  if (preview.attribution === undefined || preview.attribution === null)
-    return true;
-  const attribution = preview.attribution;
-  if (!isObject(attribution)) return false;
-  const dates = attribution.dates;
-  return (
-    typeof attribution.source === "string" &&
-    attribution.source.length <= 512 &&
-    (attribution.author === null ||
-      (typeof attribution.author === "string" &&
-        attribution.author.length <= 512)) &&
-    (attribution.account === null ||
-      (isObject(attribution.account) &&
-        typeof attribution.account.origin === "string" &&
-        attribution.account.origin.length <= 512 &&
-        Number.isSafeInteger(attribution.account.account))) &&
-    isObject(dates) &&
-    Object.entries(dates).length <= 16 &&
-    Object.entries(dates).every(
-      ([key, value]) =>
-        key.length <= 64 && typeof value === "string" && value.length <= 128,
-    )
-  );
+/**
+ * Brings the optional row fields of a search preview within the preview
+ * bounds (packages/search/src/preview-row.ts), in place. A field the server
+ * sent too long is dropped or shortened by the same rule the server applies.
+ * A field of the wrong shape is removed, so the row falls back to the
+ * per-definition read for it. No row field ever rejects the page.
+ */
+function boundPreviewRow(preview: Record<string, unknown>) {
+  if (preview.rafsi !== undefined) {
+    const rafsi = boundedPreviewList(
+      preview.rafsi,
+      PREVIEW_RAFSI_COUNT,
+      PREVIEW_RAFSI_LENGTH,
+    );
+    if (rafsi) preview.rafsi = rafsi;
+    else delete preview.rafsi;
+  }
+  if (preview.selmaho !== undefined) {
+    const selmaho = boundedPreviewList(
+      preview.selmaho,
+      PREVIEW_SELMAHO_COUNT,
+      PREVIEW_SELMAHO_LENGTH,
+    );
+    if (selmaho) preview.selmaho = selmaho;
+    else delete preview.selmaho;
+  }
+  // The issuer, notes flag and attribution make one attribution line, so
+  // they stay or go together.
+  const attribution =
+    preview.attribution === undefined
+      ? null
+      : boundedPreviewAttribution(preview.attribution);
+  if (
+    (preview.issuer !== undefined && !identityId(preview.issuer)) ||
+    (preview.notes !== undefined && typeof preview.notes !== "boolean") ||
+    attribution === undefined
+  ) {
+    delete preview.issuer;
+    delete preview.notes;
+    delete preview.attribution;
+  } else if (preview.attribution !== undefined)
+    preview.attribution = attribution;
 }
 const validCursor = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 512;
@@ -735,13 +750,13 @@ export function validateHits(hits: unknown, pageLimit: number): SearchHit[] {
             typeof hit.preview.plain_text === "string" &&
             Array.from(hit.preview.plain_text).length <= 240 &&
             typeof hit.preview.status === "string" &&
-            hit.preview.status.length > 0 &&
-            validPreviewRow(hit.preview))),
+            hit.preview.status.length > 0)),
     )
   )
     throw new Error(
       "The server returned an invalid search page. Start a new search to retry.",
     );
+  for (const hit of hits) if (hit.preview) boundPreviewRow(hit.preview);
   return hits as SearchHit[];
 }
 /** Searches disclosed meaning text literally in a JSON body. */

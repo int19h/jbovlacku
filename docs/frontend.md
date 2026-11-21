@@ -1745,9 +1745,20 @@ Remove pause periods and commas and read `h` as an apostrophe in each complete s
 Segmented cmavo pieces, other punctuation, and unrecognized text do not establish that spelling.
 The response uses the same language, view, snapshot, receipt, eligibility, and retired-results filters as its hits.
 Search cursors include the group and literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
-Each hit preview carries the row fields a result row shows: at most 64 rafsi spellings and 16 selma'o names for the word, the signing identity, a notes flag, and imported source attribution with at most 16 date entries.
-The browser shows these fields from the response itself. It does not read each result's word or definition record to fill a row.
-An older response without the preview fields keeps the earlier per-definition backfill.
+Each hit preview carries the row fields a result row shows: rafsi spellings and selma'o names for the word, the signing identity, a notes flag, and imported source attribution.
+The format allows any length in these fields, so the preview bounds each one by count and by length in UTF-16 code units:
+
+- At most 16 rafsi spellings of at most 64 units each, and at most 8 selma'o names of at most 32 units each. A longer spelling or name is dropped, and the next ones take its place, in their order.
+- The attribution `source` and `author` are at most 256 units each. A longer value is cut to 255 units, without splitting a surrogate pair, and ends with "…".
+- An attribution `account` whose `origin` is longer than 256 units becomes null.
+- At most 8 date entries, each with a label of at most 32 units and a value of at most 64 units. A longer entry is dropped, and the next ones take its place, in their key order.
+
+So the row fields of one hit hold at most 2,816 units of string content, and those of a 100-hit page at most 281,600 units. That is at most about 845 KB of UTF-8 before JSON escaping.
+The server applies these bounds before it sends a page. The browser applies the same rule to each page it receives, so a longer value is dropped or cut and never makes the browser reject the page.
+If a row field has the wrong type, the browser removes that field, and the row reads it from the definition as an older response does. The signing identity, notes flag and attribution are removed together.
+The browser shows the row fields from the response itself. It does not read a result's word or definition record for these fields.
+Each row still reads its word for the score and its definition for the rich preview text.
+An older response without the preview fields keeps the earlier per-definition backfill for every field.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
 An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.
 These errors return no partial hits. The server enforces the shared compiled-work limits and its documented execution limits.
@@ -1939,11 +1950,12 @@ SearchResponse = {
 }
 SearchPreview = {
   event: candidate-ID, word_kind: string, plain_text: string,
-  status: string, rafsi: [string], selmaho: [string],
+  status: string, rafsi: [string] (≤ 16, each ≤ 64 units),
+  selmaho: [string] (≤ 8, each ≤ 32 units),
   issuer?: identity-ID, notes?: boolean,
-  attribution?: {source: string, author: string | null,
-                 account: {origin: string, account: integer} | null,
-                 dates: {string: string}} | null
+  attribution?: {source: string (≤ 256 units), author: string (≤ 256 units) | null,
+                 account: {origin: string (≤ 256 units), account: integer} | null,
+                 dates: {string (≤ 32 units): string (≤ 64 units)} (≤ 8 entries)} | null
 }
 VirtualDescriptor = {base: event-ID, conversion: "se" | "te" | "ve" | "xe", rule: "place-conversion-v1"}
 VirtualReference = {id: virtual-ID, descriptor: VirtualDescriptor, base_body: body-ID,

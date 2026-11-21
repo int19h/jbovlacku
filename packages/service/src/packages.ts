@@ -65,11 +65,11 @@ export interface MaterializedPackage {
   bytes: number;
 }
 /**
- * Bounded row metadata for one definition, keyed by event ID. The server
- * search response copies these fields into each hit preview, so a result
- * row needs no per-definition read. The same bounds as version 2 entries
- * apply: at most 64 rafsi are held per word elsewhere, and the attribution
- * dates come from the signed legacy body.
+ * Row metadata for one definition, keyed by event ID. The server search
+ * response copies these fields into each hit preview, within the preview
+ * bounds of packages/search/src/preview-row.ts, so a result row needs no
+ * per-definition read. The attribution dates come from the signed legacy
+ * body.
  */
 export interface SearchPreviewMeta {
   /** The signing identity of the publication. For imports, the importer. */

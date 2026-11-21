@@ -79,19 +79,79 @@ test("hit previews carry bounded rafsi, selmaho, and attribution fields", () => 
     },
   );
   assert.equal(hits.length, 1);
-  assert.equal(hits[0].preview.rafsi.length, 64);
+  assert.equal(hits[0].preview.rafsi.length, 16);
   assert.deepEqual(hits[0].preview.selmaho, ["A", "B"]);
   assert.equal(hits[0].preview.issuer, "ed25519:" + "a".repeat(64));
   assert.equal(hits[0].preview.notes, true);
   assert.equal(hits[0].preview.attribution?.author, "Synthetic author");
-  assert.equal(
-    Object.keys(hits[0].preview.attribution?.dates ?? {}).length,
-    16,
-  );
+  assert.equal(Object.keys(hits[0].preview.attribution?.dates ?? {}).length, 8);
   // Without preview metadata the row fields stay absent, not invented.
   const bare = lexicalSearch([entry], "book", "en", evaluation);
   assert.equal(bare[0].preview.issuer, undefined);
   assert.deepEqual(bare[0].preview.rafsi, []);
+});
+
+test("hit previews drop or shorten row strings over their length bounds", () => {
+  const entry: SearchEntry = {
+    event: "long",
+    word: { language: "jbo", spelling: "cukta" },
+    language: "en",
+    glosses: [{ text: "book" }],
+    plain_text: "A synthetic book.",
+    classification: {
+      kind: "gismu",
+      selmaho: [
+        "X".repeat(33),
+        "BAI",
+        ...Array.from({ length: 10 }, (_, i) => `S${i}`),
+      ],
+    },
+    body: "body",
+  };
+  const evaluation = {
+    publications: {
+      long: { word: "cukta-word", eligible: "eligible", status: "active" },
+    },
+    receipts: { long: { interpretation: "effective" } },
+  } as unknown as Evaluation;
+  const [hit] = lexicalSearch(
+    [entry],
+    "book",
+    "en",
+    evaluation,
+    false,
+    undefined,
+    { "cukta-word": ["r".repeat(65), "cku"] },
+    {},
+    undefined,
+    {
+      long: {
+        issuer: "ed25519:" + "a".repeat(64),
+        notes: false,
+        attribution: {
+          source: "s".repeat(300),
+          // A surrogate pair straddles the cut and is not split.
+          author: "a".repeat(254) + "😀" + "a".repeat(10),
+          account: { origin: "o".repeat(257), account: 7 },
+          dates: {
+            ["l".repeat(33)]: "2003",
+            long: "9".repeat(65),
+            created: "2003-03-01",
+          },
+        },
+      },
+    },
+  );
+  assert.deepEqual(hit.preview.rafsi, ["cku"]);
+  assert.deepEqual(hit.preview.selmaho, [
+    "BAI",
+    ...Array.from({ length: 7 }, (_, i) => `S${i}`),
+  ]);
+  const attribution = hit.preview.attribution!;
+  assert.equal(attribution.source, "s".repeat(255) + "…");
+  assert.equal(attribution.author, "a".repeat(254) + "…");
+  assert.equal(attribution.account, null);
+  assert.deepEqual(attribution.dates, { created: "2003-03-01" });
 });
 
 test("related lexical queries scan every entry once even above ten HTTP pages", () => {

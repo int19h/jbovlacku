@@ -186,12 +186,20 @@ export function calculationPanel(
     // One state for the whole page: a calculation that is ready for another
     // snapshot or view does not score this content, so the panel says so
     // instead of presenting that calculation as this page's.
+    const expected = options.expected;
+    const differs =
+      status.state === "ready" && expected
+        ? status.snapshot !== expected.snapshot && status.view !== expected.view
+          ? "snapshot and view"
+          : status.snapshot !== expected.snapshot
+            ? "snapshot"
+            : status.view !== expected.view
+              ? "view"
+              : null
+        : null;
     line.textContent =
-      status.state === "ready" &&
-      options.expected &&
-      (status.snapshot !== options.expected.snapshot ||
-        status.view !== options.expected.view)
-        ? `${options.label} calculated in this browser from ${plural(status.events, "verified record")} for another snapshot. Personal scores are unavailable for this snapshot.`
+      status.state === "ready" && differs
+        ? `${options.label} calculated in this browser from ${plural(status.events, "verified record")} for another ${differs}. Personal scores are unavailable for this ${differs}.`
         : statusText(status, options.includeSnapshot);
     const busy =
       status.state === "downloading" || status.state === "evaluating";

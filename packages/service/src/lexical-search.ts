@@ -16,11 +16,22 @@ import {
 } from "../../search/src/pattern-scan.ts";
 import type { SearchEntry, SearchPreviewMeta } from "./packages.ts";
 
+import {
+  PREVIEW_RAFSI_COUNT,
+  PREVIEW_RAFSI_LENGTH,
+  PREVIEW_SELMAHO_COUNT,
+  PREVIEW_SELMAHO_LENGTH,
+  boundedPreviewAttribution,
+  boundedPreviewList,
+} from "../../search/src/preview-row.ts";
+
 /**
- * The bounded fields a hit preview carries for its row: at most 64 rafsi
- * spellings and 16 selma'o names for the word, the signing identity, a notes
- * flag, and imported source attribution with at most 16 date entries. Row
- * rendering needs no further read for these fields.
+ * The bounded fields a hit preview carries for its row: rafsi spellings and
+ * selma'o names for the word, the signing identity, a notes flag, and
+ * imported source attribution. Every string is bounded by length and every
+ * list by count (packages/search/src/preview-row.ts), so the response size
+ * per hit stays small whatever the signed bodies hold. Row rendering needs
+ * no further read for these fields.
  */
 export interface SearchPreview {
   event: string;
@@ -36,24 +47,12 @@ export interface SearchPreview {
   /** Imported source attribution, when metadata is supplied. */
   attribution?: SearchPreviewMeta["attribution"];
 }
-const PREVIEW_RAFSI_LIMIT = 64;
-const PREVIEW_SELMAHO_LIMIT = 16;
-const PREVIEW_DATE_LIMIT = 16;
 /** Copies one preview-meta value within the preview bounds. */
 function boundedMeta(meta: SearchPreviewMeta): SearchPreviewMeta {
   return {
     issuer: meta.issuer,
     notes: meta.notes,
-    attribution: meta.attribution
-      ? {
-          source: meta.attribution.source,
-          author: meta.attribution.author,
-          account: meta.attribution.account,
-          dates: Object.fromEntries(
-            Object.entries(meta.attribution.dates).slice(0, PREVIEW_DATE_LIMIT),
-          ),
-        }
-      : null,
+    attribution: boundedPreviewAttribution(meta.attribution) ?? null,
   };
 }
 
@@ -135,12 +134,18 @@ export function lexicalSearch(
           ? characters.slice(0, 239).join("") + "…"
           : plainText,
       status: publication.status,
-      rafsi: (rafsi[publication.word] ?? []).slice(0, PREVIEW_RAFSI_LIMIT),
-      selmaho: Array.isArray(classification?.selmaho)
-        ? classification.selmaho
-            .filter((name): name is string => typeof name === "string")
-            .slice(0, PREVIEW_SELMAHO_LIMIT)
-        : [],
+      rafsi:
+        boundedPreviewList(
+          rafsi[publication.word],
+          PREVIEW_RAFSI_COUNT,
+          PREVIEW_RAFSI_LENGTH,
+        ) ?? [],
+      selmaho:
+        boundedPreviewList(
+          classification?.selmaho,
+          PREVIEW_SELMAHO_COUNT,
+          PREVIEW_SELMAHO_LENGTH,
+        ) ?? [],
       ...(meta ? boundedMeta(meta) : {}),
     };
     const old = hits.get(wordId);

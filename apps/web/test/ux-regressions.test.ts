@@ -43,6 +43,37 @@ test("server search rows show rafsi, attribution, date, and notes from the searc
   await expect(imported.locator(".attribution-line")).toContainText("Mar 2003");
 });
 
+test("a server search page with an over-long preview field still shows the hit", async ({
+  page,
+}) => {
+  // The format allows any selma'o length, so one signer's long name must
+  // not cost the page. The browser drops the long name and keeps the row.
+  await page.route("**/api/v1/words/**", (route) => route.abort());
+  await page.route("**/api/v1/events/**", (route) => route.abort());
+  await page.route("**/api/v1/bodies/**", (route) => route.abort());
+  await page.route("**/api/v1/search?*", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    for (const hit of body.hits ?? [])
+      if (hit.preview && hit.word?.spelling === "cukta") {
+        hit.preview.selmaho = ["X".repeat(200), "BAI"];
+        hit.preview.rafsi = ["r".repeat(200), ...(hit.preview.rafsi ?? [])];
+      }
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto("/search?q=book&lang=en");
+  const results = page.getByRole("region", { name: "Search results" });
+  const cukta = results.locator("article").filter({
+    has: page.getByRole("link", { name: "cukta", exact: true }),
+  });
+  await expect(cukta.locator(".rafsi")).toHaveText("cku");
+  await expect(cukta.getByText("BAI", { exact: true })).toBeVisible();
+  await expect(
+    cukta.locator(".attribution-line a[href^='/identity/']"),
+  ).toBeVisible();
+  await expect(page.getByText(/invalid search page/)).toHaveCount(0);
+});
+
 test("a stale personal calculation is not presented as this page's calculation", async ({
   page,
 }) => {
