@@ -39,11 +39,7 @@ import {
 } from "../../data/saved-package.ts";
 import { getWord, loadRecord, remoteDraftSearch } from "../../data/api.ts";
 import { placeholderCount, type Draft } from "../../model/draft.ts";
-import {
-  countNodes,
-  placeMarker,
-  readableProse,
-} from "../../model/richtext.ts";
+import { countNodes, placeMarker } from "../../model/richtext.ts";
 import {
   actionBar,
   formPath,
@@ -414,7 +410,7 @@ export async function meaningPage(
           "li",
           { tabindex: "-1" },
           link(
-            readableProse(entry.plain_text) || "Open this definition",
+            entry.plain_text || "Open this definition",
             routes.definition(entry.event),
           ),
         );
@@ -726,7 +722,7 @@ export async function meaningPage(
         if (!part) continue;
         const code = circledPlace(part);
         if (code !== null) preview.append(placeMarker(code, null));
-        else preview.append(el("bdi", { text: readableProse(part) }));
+        else preview.append(el("bdi", { text: part }));
       }
       item.append(preview);
       const actions = el("span", {

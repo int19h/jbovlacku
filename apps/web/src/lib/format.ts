@@ -190,8 +190,14 @@ const readingLanguageNames: Record<string, string> = {
   tlh: "Klingon",
   tpi: "Tok Pisin",
   tok: "Toki Pona",
+  // The platform names these tags "English (SIMPLE)", "French (FACILE)",
+  // and "art (PICTURE)". These names are the English names in the Lensisku
+  // language table.
+  "en-simple": "Simple English",
+  "fr-facile": "Easy French",
   "art-guaspi": "Guaspi",
   "art-x-guaspi": "Guaspi",
+  "art-picture": "Picture language",
 };
 export const listedLanguage = (tag: string) => tag.toLowerCase() !== "test";
 export function languageName(tag: string): string {
@@ -208,7 +214,7 @@ export function languageName(tag: string): string {
   }
   try {
     const name = languageNames.of(tag);
-    return name && name !== tag && !/^art\s*\(/i.test(name) ? name : tag;
+    return name && name !== tag ? name : tag;
   } catch {
     return tag;
   }

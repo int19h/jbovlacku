@@ -163,7 +163,7 @@ A download keeps its requested language even when the language selector changes 
 
 Search sits in the header of every page. Result rows show the headword, rafsi, type, highlighted definition text, attribution, and a net score with Endorse and Oppose arrows.
 Word pages show every definition under the selected view, with place strips, revision notices, comparisons, source evidence, rafsi pair cards, and reviewer details.
-After an HTTP 503 read failure, word and search pages offer Retry reading with the same URL and selected view.
+After an HTTP 503 read failure, word pages offer Retry reading and search pages offer one Retry search, with the same URL and selected view.
 A failed retry shows its retry number and announces the current error reason, including HTTP 500 and connection failures.
 Revision comparisons group changes by readable fields and numbered places, with rich text and complete place and source details.
 They align inserted and removed list items and keep exact structured values in closed disclosures.
