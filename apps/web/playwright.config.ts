@@ -53,6 +53,11 @@ export default defineConfig({
       use: { browserName: "firefox" },
     },
     {
+      name: "firefox-publish",
+      testMatch: /ux-polish-publish\.test\.ts/,
+      use: { browserName: "firefox" },
+    },
+    {
       name: "firefox-authoring",
       testMatch: /authoring\.test\.ts/,
       grep: /a first-time contributor writes a short literal definition|the full editor preserves every structured field/,

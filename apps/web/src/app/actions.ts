@@ -14,6 +14,7 @@ import { freshPeer, type DeliveryEngine } from "../data/delivery.ts";
 import { LIFECYCLE_KINDS } from "../data/lifecycle.ts";
 import {
   describeTransport,
+  resolvedLabel,
   type OutboxItem,
   type OutboxLabel,
   type Publication,
@@ -177,6 +178,7 @@ export class Signer {
       ids.push(transport.envelope.id);
       previous = [transport.envelope.id];
     }
+    for (const item of signed) item.label = resolvedLabel(item, signed);
     await session.store.queueGroup(signed, publication);
     // The commit is the boundary. A failure after it never reports an unsaved group.
     try {

@@ -15,7 +15,7 @@ import {
   requiresLifecycleDelivery,
 } from "../data/outbox-graph.ts";
 import type { Envelope } from "../model/types.ts";
-import type { OutboxItem } from "../data/store.ts";
+import { resolvedLabel, type OutboxItem } from "../data/store.ts";
 
 export async function outboxPage(
   _route: Route,
@@ -123,7 +123,9 @@ export async function outboxPage(
       );
     if (kinds.has("unknown"))
       reasons.push(
-        "Some delivery outcomes are unknown. The client asks for receipts before it sends the same bytes again.",
+        waiting.some((item) => Object.values(item.peers).some((peer) => peer.state === "unknown" && peer.failure === "offline"))
+          ? "Some delivery outcomes are unknown. No connection to the server was reported for some records. The client asks for receipts before it sends the same bytes again."
+          : "Some delivery outcomes are unknown. The client asks for receipts before it sends the same bytes again.",
       );
     if (kinds.has("queued"))
       reasons.push(
@@ -168,7 +170,7 @@ export async function outboxPage(
       } catch {
         /* Keep unreadable local records available for export. */
       }
-      list.append(row(app, item, discardState));
+      list.append(row(app, item, discardState, items, active.filter((other) => other.group === item.group && other.order > item.order && !isFinished(other))));
     }
     empty.textContent = active.length ? "" : "No unfinished records.";
     exportLine.hidden = active.length === 0;
@@ -187,8 +189,8 @@ export async function outboxPage(
             el(
               "span",
               {},
-              el("strong", { text: item.label.subject }),
-              text(` ${item.label.action}`, "meta"),
+              el("strong", { text: resolvedLabel(item, items).subject }),
+              text(` ${resolvedLabel(item, items).action}`, "meta"),
             ),
             el("small", {
               text: Object.entries(item.peers)
@@ -241,7 +243,10 @@ function row(
     | "leaf"
     | "dependent"
     | "unavailable" = "unavailable",
+  allItems: OutboxItem[] = [item],
+  dependents: OutboxItem[] = [],
 ): HTMLElement {
+  const label = resolvedLabel(item, allItems);
   const li = el("li", { class: "row", "data-outbox-record": item.id });
   const info = el("span", { class: "t" });
   const signed = item.signedAt ? new Date(item.signedAt) : null;
@@ -257,9 +262,9 @@ function row(
       el(
         "strong",
         { style: "font-weight:650;font-size:17px" },
-        el("bdi", { text: item.label.subject }),
+        el("bdi", { text: label.subject }),
       ),
-      text(` ${item.label.action}${when ? ` · ${when}` : ""}`, "meta"),
+      text(` ${label.action}${when ? ` · ${when}` : ""}`, "meta"),
     ),
   );
   for (const [peerId, peer] of Object.entries(item.peers)) {
@@ -395,8 +400,11 @@ function row(
     "Stop retrying",
     async () => {
       await app.delivery.stop(item.id);
+      for (const dependent of dependents) await app.delivery.stop(dependent.id);
       app.announce(
-        "Stopped. The signed record and its receipts stay in this browser. This does not retract a public record or cancel a request already in flight.",
+        dependents.length
+          ? "Stopped. This record and the records that depend on it stay in this browser with their receipts. This does not retract a public record or cancel a request already in flight."
+          : "Stopped. The signed record and its receipts stay in this browser. This does not retract a public record or cancel a request already in flight.",
       );
     },
     {
