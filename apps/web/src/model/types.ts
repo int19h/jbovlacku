@@ -365,6 +365,17 @@ export interface SearchHit {
     word_kind: string;
     plain_text: string;
     status: string;
+    /** Bounded row fields from the server. Absent on older servers. */
+    rafsi?: string[];
+    selmaho?: string[];
+    issuer?: string;
+    notes?: boolean;
+    attribution?: {
+      source: string;
+      author: string | null;
+      account: { origin: string; account: number } | null;
+      dates: Record<string, string>;
+    } | null;
   };
 }
 export { matchKinds } from "../../../../packages/search/src/index.ts";

@@ -1745,6 +1745,25 @@ Remove pause periods and commas and read `h` as an apostrophe in each complete s
 Segmented cmavo pieces, other punctuation, and unrecognized text do not establish that spelling.
 The response uses the same language, view, snapshot, receipt, eligibility, and retired-results filters as its hits.
 Search cursors include the group and literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
+Each hit preview carries the row fields a result row shows: rafsi spellings for the word, and the selma'o names, signing identity, notes flag, and imported source attribution of the previewed definition.
+The rafsi are those that the word route gives under the served view. A claim that the view does not select is left out. An assignment whose claims are all inactive is left out. Each other assignment shows the spelling of its first claim in ID order, if that claim body is retained. The spellings are sorted, and the first 16 stay.
+The server prepares these lists once for each evaluated snapshot and view, in one pass over the retained claims. A request reads one prepared list for each hit of the returned page, for the requested view.
+The signing identity, notes flag, and attribution are present together or absent together. The attribution is null for a native definition.
+The signed format limits some of these fields and not others. A rafsi spelling is at most 64 UTF-8 bytes, and a signing identity is exactly 72 ASCII characters. The format sets no length for selma'o names, the attribution `source` and `author`, the account `origin`, or date labels and values, beyond the body size limit.
+The preview adds its own bounds, by count and by length in UTF-16 code units:
+
+- At most 16 rafsi spellings of at most 64 units each, and at most 8 selma'o names of at most 32 units each. A longer spelling or name is dropped, and the next ones take its place, in their order.
+- The attribution `source` and `author` are at most 256 units each. A longer value is cut to at most 255 units, so that a surrogate pair is never split, and ends with "…".
+- An attribution `account` whose `origin` is longer than 256 units becomes null.
+- At most 8 date entries, each with a label of at most 32 units and a value of at most 64 units. A longer entry is dropped. The labels that a row reads come first, in this order: `time`, `created_at`, `created`, `updated_at`, `updated`. The other labels follow in their key order.
+
+So the row fields of one hit hold at most 2,888 units of string content, including the 72-unit signing identity, and those of a 100-hit page at most 288,800 units. That is at most about 852 KB of UTF-8 before JSON escaping.
+The server applies these bounds once, when it builds the search packages of a snapshot, and when it prepares the rafsi lists. The browser applies the same rule to each page it receives, so a longer value is dropped or cut and never makes the browser reject the page.
+If a row field has the wrong type, the browser removes that field. A list with an item that is not a string, and a date map with a value that is not a string, count as the wrong type. A valid empty list stays, and the row shows no items for it. The row then reads a removed field as an older response does: rafsi from the word's rafsi claims, and the selma'o names, signing identity, notes flag and attribution from the definition. The signing identity, notes flag and attribution are removed together. They are also removed together if one or two of them are missing.
+The browser shows the row fields from the response at once. It does not need a result's word or definition record for these fields.
+Each row still reads its word for the score and its definition for the rich preview text.
+When the definition read returns the definition body, the row replaces the attribution line with the full line from the signed record. That line adds the author link and the signer's profile name where the record and the profile have them. If the read fails or returns no body, the preview line stays.
+An older response without the preview fields keeps the earlier per-definition backfill for every field.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
 An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.
 These errors return no partial hits. The server enforces the shared compiled-work limits and its documented execution limits.
@@ -1930,8 +1949,18 @@ SearchResponse = {
   snapshot: ID, view: event-ID, query: string, language: string,
   segmentation?: "complete" | "limited", all_lojban?: boolean,
   hits: [{word: WordObject, word_id: word-ID, match: match-kind,
-          definitions: [candidate-ID]}], virtuals: [VirtualReference],
+          definitions: [candidate-ID], preview?: SearchPreview}],
+  virtuals: [VirtualReference],
   virtual_statuses: [VirtualStatus], next: cursor | null
+}
+SearchPreview = {
+  event: candidate-ID, word_kind: string, plain_text: string,
+  status: string, rafsi?: [string] (≤ 16, each ≤ 64 units),
+  selmaho?: [string] (≤ 8, each ≤ 32 units),
+  issuer?: identity-ID, notes?: boolean,
+  attribution?: {source: string (≤ 256 units), author: string (≤ 256 units) | null,
+                 account: {origin: string (≤ 256 units), account: integer} | null,
+                 dates: {string (≤ 32 units): string (≤ 64 units)} (≤ 8 entries)} | null
 }
 VirtualDescriptor = {base: event-ID, conversion: "se" | "te" | "ve" | "xe", rule: "place-conversion-v1"}
 VirtualReference = {id: virtual-ID, descriptor: VirtualDescriptor, base_body: body-ID,
