@@ -220,7 +220,7 @@ export async function preferencesPage(
         (button) => button.textContent === label && !button.disabled,
       );
       if (candidate) {
-        candidate.focus();
+        candidate.focus({ preventScroll: true });
         return;
       }
     }
@@ -240,7 +240,7 @@ export async function preferencesPage(
     const mayFocus = hadFocus && focusIsFree(own);
     if (own.isConnected) {
       own.disabled = runningPackages.has(language);
-      if (mayFocus) own.focus();
+      if (mayFocus) own.focus({ preventScroll: true });
       return;
     }
     try {

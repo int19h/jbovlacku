@@ -542,3 +542,50 @@ test("a failed download leaves focus in a field the user moved to", async ({
   ).toBeEnabled();
   await expectSearchKeptFocus(page);
 });
+
+/** Scrolls the page so that the Refresh English button is above the viewport, and returns the scroll position. */
+async function scrollPastRefresh(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const button = [...document.querySelectorAll("button")].find(
+      (node) => node.textContent === "Refresh English",
+    )!;
+    window.scrollTo(
+      0,
+      window.scrollY + button.getBoundingClientRect().bottom + 150,
+    );
+    return window.scrollY;
+  });
+}
+
+for (const fail of [false, true])
+  test(`a ${fail ? "failed" : "successful"} refresh keeps the scroll position the user chose`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 500 });
+    const held = await startHeldRefresh(page, fail);
+    const scrolled = await scrollPastRefresh(page);
+    // The button must be out of view, so a focus with scrolling would move the page.
+    expect(scrolled).toBeGreaterThan(0);
+    await expect(
+      page.getByRole("button", { name: "Refresh English" }),
+    ).not.toBeInViewport();
+    held.release();
+    if (fail) {
+      await expect(statusText(page)).toContainText(
+        "No connection to the server.",
+      );
+      await expect(
+        page.getByRole("button", { name: "Refresh English" }),
+      ).toBeEnabled();
+    } else {
+      await expect(statusText(page)).toContainText(
+        "The English package is refreshed.",
+      );
+      await waitForRenderAfterRun(page, "Refresh English");
+    }
+    // Focus is free, so it returns to the button, but the page does not move.
+    await expect(
+      page.getByRole("button", { name: "Refresh English" }),
+    ).toBeFocused();
+    expect(await page.evaluate(() => window.scrollY)).toBe(scrolled);
+  });
