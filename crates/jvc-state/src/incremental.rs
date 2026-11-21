@@ -1256,6 +1256,7 @@ impl EvaluatedState {
             ancestry_bytes: Option<usize>,
             register_maxima_work: Vec<usize>,
             register_maxima_member_work: Vec<usize>,
+            account_contribution_digests: Vec<String>,
         }
         #[derive(Serialize)]
         struct SavedResults<'a> {
@@ -1269,6 +1270,7 @@ impl EvaluatedState {
             ancestry_bytes: Option<usize>,
             register_maxima_work: Vec<usize>,
             register_maxima_member_work: Vec<usize>,
+            account_contribution_digests: Vec<String>,
         }
         let consumed_work = self.consumed_work();
         let ancestry_bytes = self
@@ -1288,6 +1290,12 @@ impl EvaluatedState {
             .values()
             .map(|register| register.maxima_member_work)
             .collect();
+        let account_contribution_digests: Vec<String> = self
+            .evaluation
+            .accounts
+            .values()
+            .map(|account| contributions_digest(&account.contributions))
+            .collect();
         let saved_options = self.saved_options();
         let mut bytes = if results_only {
             serde_json::to_vec(&SavedResults {
@@ -1301,6 +1309,7 @@ impl EvaluatedState {
                 ancestry_bytes,
                 register_maxima_work,
                 register_maxima_member_work,
+                account_contribution_digests,
             })
         } else {
             serde_json::to_vec(&SavedFull {
@@ -1315,6 +1324,7 @@ impl EvaluatedState {
                 ancestry_bytes,
                 register_maxima_work,
                 register_maxima_member_work,
+                account_contribution_digests,
             })
         }
         .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
@@ -1374,6 +1384,7 @@ impl EvaluatedState {
                     ancestry_bytes: full.ancestry_bytes,
                     register_maxima_work: full.register_maxima_work,
                     register_maxima_member_work: full.register_maxima_member_work,
+                    account_contribution_digests: full.account_contribution_digests,
                     digest: full.digest,
                 };
                 (saved, CHECKPOINT_VERSION, nodes)
@@ -1491,6 +1502,7 @@ struct SavedFullCheckpoint {
     ancestry_bytes: Option<usize>,
     register_maxima_work: Vec<usize>,
     register_maxima_member_work: Vec<usize>,
+    account_contribution_digests: Vec<String>,
     #[allow(dead_code)]
     digest: String,
 }
@@ -1509,6 +1521,7 @@ struct SavedResultsCheckpoint {
     ancestry_bytes: Option<usize>,
     register_maxima_work: Vec<usize>,
     register_maxima_member_work: Vec<usize>,
+    account_contribution_digests: Vec<String>,
     #[allow(dead_code)]
     digest: String,
 }
@@ -1799,6 +1812,21 @@ fn check_saved_state(
         || saved.evaluation.registers.len() != saved.register_maxima_member_work.len()
     {
         return Err("register_counter_lens");
+    }
+    // Checkpoints no longer store each credited publication's copy of
+    // its account's contributions, which restore used to compare with
+    // the account. This digest, written at save time in account order,
+    // keeps that comparison: an account whose evidence and claims were
+    // both cut no longer matches it.
+    if saved.evaluation.accounts.len() != saved.account_contribution_digests.len()
+        || saved
+            .evaluation
+            .accounts
+            .values()
+            .zip(&saved.account_contribution_digests)
+            .any(|(account, digest)| contributions_digest(&account.contributions) != *digest)
+    {
+        return Err("account_contribution_digest");
     }
     for (id, node) in nodes {
         if id != &node.id {
@@ -2853,6 +2881,16 @@ fn judgment_diff(before: &Evaluation, after: &Evaluation) -> Option<JudgmentChan
         return None;
     }
     Some(changes)
+}
+
+/// The digest of an account's contributions map, as a checkpoint
+/// stores it.
+fn contributions_digest(contributions: &BTreeMap<String, BTreeSet<String>>) -> String {
+    jvc_core::hash_id(
+        "sha256:",
+        b"",
+        &serde_json::to_vec(contributions).unwrap_or_default(),
+    )
 }
 
 /// Sets the contributions that a checkpoint leaves out. As in
@@ -7024,6 +7062,7 @@ mod rebuild_tests {
         }
 
         for field in [
+            "account_contribution_digests",
             "options.selected_view",
             "options.import_selections",
             "options.overlay",

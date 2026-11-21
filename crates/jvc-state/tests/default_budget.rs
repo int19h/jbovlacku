@@ -564,6 +564,17 @@ fn restore_refuses_evidence_that_is_not_the_witness_observation() {
             json!([observation_id(1, 1, 0)]);
     };
     assert_evidence_refused(&records, &selections, &renamed);
+    // Two claims: the first witness's observation of the second claim,
+    // and that claim, are cut from its evidence and its contribution.
+    // What is left is valid on its own, but a fresh evaluation gives
+    // the witness both claims.
+    let (records, selections) = account_fixture(2, 2, 3);
+    let cut = |value: &mut Value| {
+        let account = &mut value["evaluation"]["accounts"][&token];
+        account["observation_evidence"][&w0] = json!([observation_id(2, 0, 0)]);
+        account["contributions"][&w0] = json!([id(2_000_000)]);
+    };
+    assert_evidence_refused(&records, &selections, &cut);
 }
 
 fn assert_evidence_refused(
@@ -597,7 +608,7 @@ fn assert_evidence_refused(
         mutate(&mut changed);
         assert!(
             restore(&sealed(changed)).is_err(),
-            "results_only={results_only}: evidence from another witness was accepted"
+            "results_only={results_only}: changed witness evidence was accepted"
         );
     }
 }
