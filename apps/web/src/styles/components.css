@@ -544,13 +544,17 @@ details.disclosure > .body {
   margin-top: 22px;
   border-bottom: 1px solid var(--line);
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
 }
 .tab {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 6px;
+  min-height: 44px;
   padding: 0 14px;
+  white-space: nowrap;
   color: var(--ink2);
   text-decoration: none;
   border-bottom: 2px solid transparent;
@@ -636,8 +640,10 @@ details.disclosure > .body {
 .after-definitions span {
   color: var(--ink2);
 }
+.places-table th:first-child,
 .places-table td:first-child {
-  width: 32px;
+  min-width: 64px;
+  white-space: nowrap;
 }
 .kv {
   margin: 0;

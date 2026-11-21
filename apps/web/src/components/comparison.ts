@@ -3,6 +3,7 @@ import { el, p, button } from "../lib/dom.ts";
 import { renderRichText, visibleJson, visibleText } from "../model/richtext.ts";
 import { sameValue, changedItems } from "../model/comparison.ts";
 import { kindLabel } from "../model/types.ts";
+import { readableSourceLocator } from "../lib/format.ts";
 
 export const fieldLabels: Record<string, string> = {
   word: "Word",
@@ -96,7 +97,13 @@ export function readableValue(value: unknown, field: string): HTMLElement {
     return list.childElementCount ? list : p("Not specified", "meta");
   }
   return p(
-    visibleText(field === "kind" ? kindLabel(String(value)) : String(value)),
+    visibleText(
+      field === "kind"
+        ? kindLabel(String(value))
+        : field === "locator"
+          ? readableSourceLocator(String(value))
+          : String(value),
+    ),
   );
 }
 

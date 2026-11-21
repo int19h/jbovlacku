@@ -88,7 +88,13 @@ export async function definitionPage(
   }
   const definition = record as LoadedRecord<DefinitionBody>;
   const spelling = definition.body?.word.spelling;
-  context.title(spelling ? `Definition: ${spelling}` : "Definition");
+  const comparing =
+    route.params.has("compare") && eventId(route.params.get("compare") ?? "");
+  context.title(
+    spelling
+      ? `${comparing ? "Compare" : "Definition"}: ${spelling}`
+      : "Definition",
+  );
   const head = el("div", { class: "word-head" });
   head.append(el("h1", { lang: "jbo", text: spelling ?? "Definition" }));
   if (spelling)
@@ -98,7 +104,9 @@ export async function definitionPage(
   main.append(
     head,
     p(
-      "One immutable revision. Its exact event ID identifies this publication.",
+      comparing
+        ? "One immutable revision. Its exact event ID identifies this publication. The comparison with the parent revision is below."
+        : "One immutable revision. Its exact event ID identifies this publication.",
       "meta",
     ),
   );

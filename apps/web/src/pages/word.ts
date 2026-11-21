@@ -14,7 +14,12 @@ import {
   icon,
   disclosure,
 } from "../lib/dom.ts";
-import { listedLanguage, languageName, plural } from "../lib/format.ts";
+import {
+  listedLanguage,
+  languageName,
+  plural,
+  rationalSign,
+} from "../lib/format.ts";
 import {
   navigate,
   routes,
@@ -225,7 +230,13 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       ...words,
       text(` · ${compound.components.map((c) => c.rafsi).join(" + ")}`),
     );
-  } else composition.hidden = true;
+  } else if ([...kinds].includes("lujvo"))
+    // A lujvo without compound evidence has no known composition. Say so
+    // instead of leaving the reader to guess from the missing line.
+    composition.append(
+      text("Composition is not recorded for this lujvo.", "meta"),
+    );
+  else composition.hidden = true;
   // Rafsi line from claims.
   const claims: {
     assignment: string;
@@ -317,8 +328,43 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         onRefresh: rerender,
       }),
     );
-  // Scores under the selected view. The personal view waits for the local calculation.
-  const view = await viewScores(app, id, word);
+  // Scores under the selected view. In the personal view the definitions
+  // render at once while the local calculation runs; the page re-renders
+  // with the scores when that calculation is ready for this snapshot.
+  const viewPromise = viewScores(app, id, word);
+  let view: Awaited<typeof viewPromise>;
+  if (personal && app.personal.status.state !== "ready") {
+    const status = app.personal.status;
+    view = {
+      personal: true,
+      reason:
+        status.state === "failed"
+          ? status.message
+          : "The local calculation is not ready yet.",
+      stale: false,
+      snapshot: word.snapshot,
+      view: word.view,
+      calculation: null,
+      scores: [],
+      layers: [],
+      unavailable_scores: [],
+    };
+    // A ready calculation re-renders the page with its scores. A settled
+    // failure or cancel re-renders once, so the note names that state
+    // instead of the provisional one. A failed state attaches no handler,
+    // so the second render cannot loop.
+    if (status.state !== "failed")
+      void viewPromise.then((settled) => {
+        if (
+          context.live() &&
+          (settled.calculation ||
+            (settled.reason && settled.reason !== view.reason))
+        )
+          rerender();
+      });
+  } else {
+    view = await viewPromise;
+  }
   if (!context.live()) return;
   const own = app.session.preferences.myJudgmentsFirst
     ? await app.own.registers()
@@ -454,9 +500,18 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       rankedLayers[layer].filter((d) => visible.has(d)).length > 1
     ) {
       const size = rankedLayers[layer].filter((d) => visible.has(d)).length;
+      const layerScores = rankedLayers[layer]
+        .filter((d) => visible.has(d))
+        .map((d) => view.scores.find((s) => s.target === d))
+        .filter((s) => s !== undefined);
+      const allZero =
+        layerScores.length > 0 &&
+        layerScores.every(
+          (s) => rationalSign(s.net[0]) === 0 && rationalSign(s.net[1]) === 0,
+        );
       main.append(
         p(
-          `${plural(size, "alternative")} with unresolved order. ${myJudgmentsFirst ? "Your judgments appear first within this layer." : "Presentation order follows event IDs."}`,
+          `${plural(size, "alternative")} with unresolved order. No score in this group is clearly ahead of the others${allZero ? ", and every score in this group is zero" : ""}. ${myJudgmentsFirst ? "Your judgments appear first within this layer." : "Presentation order follows event IDs."}`,
           "meta",
         ),
       );

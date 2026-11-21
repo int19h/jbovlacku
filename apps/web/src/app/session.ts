@@ -44,7 +44,12 @@ export class Session {
   private preferenceWaitExpired = false;
   private preferenceStatusListeners = new Set<(message: string) => void>();
   /** A pending action to resume after the key is created or unlocked. */
-  pending: { description: string; run: () => Promise<void> } | null = null;
+  pending: {
+    description: string;
+    run: () => Promise<void>;
+    /** The page the reader came from, so a resumed action returns there. */
+    returnTo: string;
+  } | null = null;
   constructor(public store: LocalStore) {
     if (typeof BroadcastChannel !== "undefined") {
       this.preferenceChannel = new BroadcastChannel("jbovlacku-preferences");
@@ -356,7 +361,11 @@ export class Session {
         "Browser storage is unavailable. Restore storage access and reload before signing.",
       );
     if (!this.backup) {
-      this.pending = { description, run };
+      this.pending = {
+        description,
+        run,
+        returnTo: location.pathname + location.search + location.hash,
+      };
       navigate("/identity");
       return;
     }
@@ -369,6 +378,13 @@ export class Session {
     if (!pending || !this.unlocked) return false;
     this.pending = null;
     await pending.run();
+    // Bring the reader back to the page the action came from. The action's
+    // own announcement is in the shell, so it stays visible there.
+    if (
+      pending.returnTo &&
+      pending.returnTo !== location.pathname + location.search + location.hash
+    )
+      navigate(pending.returnTo);
     return true;
   }
   private unlockDialog(description: string): Promise<boolean> {
