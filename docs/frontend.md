@@ -313,7 +313,7 @@ A failed download leaves the saved package and revision unchanged.
 
 A package save reads the revision before its download starts. It writes only when that revision is still the current one, and the check and the write are one transaction. So a save never overwrites a Remove or another save that finished after it started. A Remove always wins over a save that started earlier.
 A Refresh acts only on a package that is still saved when the Refresh starts. When the package is gone, the Refresh downloads nothing and says that the package is no longer saved. Download is the way to add it again.
-A rafsi lookup downloads the current package for each of its languages. It saves that package under the same revision check. It does not save a package that the reader removed. A later Download or Refresh saves it again.
+A rafsi lookup downloads the current package for each of its languages. When browser storage is available, it saves a version 2 package under the same revision check. It does not save a package that the reader removed. A later Download saves it again.
 
 One static module worker validates and searches saved packages outside the main thread.
 Download hashing and entry checks retain their existing download path.

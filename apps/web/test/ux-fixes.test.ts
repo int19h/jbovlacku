@@ -191,19 +191,13 @@ test("a blank claim link shows the claim page's unavailable message", async ({
   await expect(
     page.getByRole("heading", { name: "Assign a rafsi" }),
   ).toBeVisible();
-  await expect(page.locator("main")).toContainText(
-    "This link names no word.",
-  );
+  await expect(page.locator("main")).toContainText("This link names no word.");
   await expect(page.locator("main")).not.toContainText('{"code"');
 });
 
-test("a blank rafsi link does not show a raw core error", async ({
-  page,
-}) => {
+test("a blank rafsi link does not show a raw core error", async ({ page }) => {
   await page.goto("/rafsi/%20");
-  await expect(page.locator("main")).toContainText(
-    "No retained claim assigns",
-  );
+  await expect(page.locator("main")).toContainText("No retained claim assigns");
   await expect(page.locator("main")).not.toContainText('{"code"');
 });
 
@@ -235,9 +229,7 @@ test("a failed download keeps the picked language", async ({ page }) => {
   ).toBeEnabled();
 });
 
-test("a failed refresh keeps focus on the Refresh button", async ({
-  page,
-}) => {
+test("a failed refresh keeps focus on the Refresh button", async ({ page }) => {
   await page.goto("/preferences");
   await page.getByRole("button", { name: "Download", exact: true }).click();
   await expect(statusText(page)).toContainText(
@@ -441,4 +433,112 @@ test("opening a rafsi page does not save back a removed package", async ({
   await page.goto("/preferences");
   await expect(page.getByRole("button", { name: "Remove" })).toHaveCount(0);
   expect(await storedPackageKeys(page)).toEqual([]);
+});
+
+/** The header search field, where the user moves focus during a run. */
+const searchField = (page: Page) =>
+  page.getByLabel("Search words and meanings");
+
+/** Moves focus to the header search field and types the first letters. */
+async function typeInSearchDuringRun(page: Page): Promise<void> {
+  await searchField(page).click();
+  await page.keyboard.type("kla");
+  await expect(searchField(page)).toBeFocused();
+}
+
+/** Checks that the search field kept focus and gets the next letters. */
+async function expectSearchKeptFocus(page: Page): Promise<void> {
+  await expect(searchField(page)).toBeFocused();
+  await page.keyboard.type("ma");
+  await expect(searchField(page)).toHaveValue("klama");
+}
+
+/** Stores English, holds package requests and starts a refresh of English. */
+async function startHeldRefresh(page: Page, fail: boolean) {
+  await page.goto("/preferences");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(statusText(page)).toContainText(
+    "The English search package is saved in this browser.",
+  );
+  const held = holdPackageRequests(page, fail);
+  const refresh = page.getByRole("button", { name: "Refresh English" });
+  await refresh.click();
+  await expect.poll(() => held.started()).toBeGreaterThan(0);
+  // Marks the pressed button, so the test can see when a render replaced it.
+  await refresh.evaluate((node) => node.setAttribute("data-pressed", ""));
+  return held;
+}
+
+/** Waits until a render replaced the pressed button and the list shows its new buttons. */
+async function waitForRenderAfterRun(page: Page, label: string) {
+  await expect(page.locator("button[data-pressed]")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: label, exact: true }),
+  ).toBeEnabled();
+}
+
+test("a successful refresh leaves focus in a field the user moved to", async ({
+  page,
+}) => {
+  const held = await startHeldRefresh(page, false);
+  await typeInSearchDuringRun(page);
+  held.release();
+  await expect(statusText(page)).toContainText(
+    "The English package is refreshed.",
+  );
+  await waitForRenderAfterRun(page, "Refresh English");
+  await expectSearchKeptFocus(page);
+});
+
+test("a failed refresh leaves focus in a field the user moved to", async ({
+  page,
+}) => {
+  const held = await startHeldRefresh(page, true);
+  await typeInSearchDuringRun(page);
+  held.release();
+  await expect(statusText(page)).toContainText("No connection to the server.");
+  // The failure enables the pressed button in place; focus moves, if at
+  // all, in the same step.
+  await expect(
+    page.getByRole("button", { name: "Refresh English" }),
+  ).toBeEnabled();
+  await expectSearchKeptFocus(page);
+});
+
+/** Holds package requests and starts a download of English, with French still offered. */
+async function startHeldDownload(page: Page, fail: boolean) {
+  await offerFrench(page);
+  await page.goto("/preferences");
+  const held = holdPackageRequests(page, fail);
+  const download = page.getByRole("button", { name: "Download", exact: true });
+  await download.click();
+  await expect.poll(() => held.started()).toBeGreaterThan(0);
+  await download.evaluate((node) => node.setAttribute("data-pressed", ""));
+  return held;
+}
+
+test("a successful download leaves focus in a field the user moved to", async ({
+  page,
+}) => {
+  const held = await startHeldDownload(page, false);
+  await typeInSearchDuringRun(page);
+  held.release();
+  await expect(statusText(page)).toContainText(
+    "The English search package is saved in this browser.",
+  );
+  await waitForRenderAfterRun(page, "Download");
+  await expectSearchKeptFocus(page);
+});
+
+test("a failed download leaves focus in a field the user moved to", async ({
+  page,
+}) => {
+  const held = await startHeldDownload(page, true);
+  await typeInSearchDuringRun(page);
+  held.release();
+  await expect(statusText(page)).toContainText("No connection to the server.");
+  await expect(
+    page.getByRole("button", { name: "Download", exact: true }),
+  ).toBeEnabled();
+  await expectSearchKeptFocus(page);
 });

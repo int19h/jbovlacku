@@ -199,9 +199,21 @@ export async function preferencesPage(
   const runningPackages = new Set<string>();
   // The language last picked for a download. Renders of the list keep it.
   let pickedPackage = "";
+  /**
+   * Tells whether the end of a run may move focus. It may only when focus
+   * is still on the handler's own button, or on no control: the page body
+   * or nothing, as after a render removed the focused button. Focus that
+   * the user moved to another control stays there.
+   */
+  const focusIsFree = (own?: HTMLButtonElement) => {
+    const active = document.activeElement;
+    return active === null || active === document.body || active === own;
+  };
   /** Focuses the current list button with one of these labels, in label order, for a button that had focus before a render replaced it. */
   const refocusPackageButton = (hadFocus: boolean, labels: string[]) => {
-    if (!hadFocus || !context.live()) return;
+    // The render removed the handler's button, so focus that is still free
+    // is on the body. Any other active element is the user's choice.
+    if (!hadFocus || !context.live() || !focusIsFree()) return;
     const buttons = [...packages.querySelectorAll("button")];
     for (const label of labels) {
       const candidate = buttons.find(
@@ -225,14 +237,15 @@ export async function preferencesPage(
     labels: string[],
     hadFocus: boolean,
   ) => {
+    const mayFocus = hadFocus && focusIsFree(own);
     if (own.isConnected) {
       own.disabled = runningPackages.has(language);
-      if (hadFocus) own.focus();
+      if (mayFocus) own.focus();
       return;
     }
     try {
       await renderPackages();
-      refocusPackageButton(hadFocus, labels);
+      refocusPackageButton(mayFocus, labels);
     } catch {}
   };
   const renderPackages = async () => {
@@ -324,9 +337,10 @@ export async function preferencesPage(
             // Clear the running mark before the render, so the new
             // buttons for this language render enabled.
             runningPackages.delete(language);
+            const mayFocus = hadFocus && focusIsFree(go);
             await renderPackages();
             rendered = true;
-            refocusPackageButton(hadFocus, [
+            refocusPackageButton(mayFocus, [
               "Download",
               `Refresh ${languageName(language)}`,
             ]);
@@ -339,10 +353,12 @@ export async function preferencesPage(
             // button when no render replaced it, so the picker keeps its
             // language, or the current button after a fresh render.
             if (!rendered)
-              await enableCurrentPackageButton(go, language, [
-                "Download",
-                `Refresh ${languageName(language)}`,
-              ], hadFocus);
+              await enableCurrentPackageButton(
+                go,
+                language,
+                ["Download", `Refresh ${languageName(language)}`],
+                hadFocus,
+              );
           }
         },
         { class: "btn" },
@@ -383,9 +399,10 @@ export async function preferencesPage(
                   `The ${languageName(key)} package is no longer saved in this browser.`,
                 );
                 runningPackages.delete(key);
+                const mayFocus = hadFocus && focusIsFree(refresh);
                 await renderPackages();
                 rendered = true;
-                refocusPackageButton(hadFocus, ["Download"]);
+                refocusPackageButton(mayFocus, ["Download"]);
                 return;
               }
               const pkg = await downloadPackage(key);
@@ -403,9 +420,10 @@ export async function preferencesPage(
                   : `The ${languageName(key)} package was not saved. It changed in this browser while the refresh ran.`,
               );
               runningPackages.delete(key);
+              const mayFocus = hadFocus && focusIsFree(refresh);
               await renderPackages();
               rendered = true;
-              refocusPackageButton(hadFocus, [
+              refocusPackageButton(mayFocus, [
                 `Refresh ${languageName(key)}`,
                 "Download",
               ]);
@@ -418,10 +436,12 @@ export async function preferencesPage(
               // own button when no render replaced it, or the current
               // button after a fresh render.
               if (!rendered)
-                await enableCurrentPackageButton(refresh, key, [
-                  `Refresh ${languageName(key)}`,
-                  "Download",
-                ], hadFocus);
+                await enableCurrentPackageButton(
+                  refresh,
+                  key,
+                  [`Refresh ${languageName(key)}`, "Download"],
+                  hadFocus,
+                );
             }
           },
           { class: "btn btn-quiet" },
