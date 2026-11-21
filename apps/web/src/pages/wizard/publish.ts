@@ -30,9 +30,10 @@ import {
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import { draftToBody } from "../../model/draft.ts";
+import { INVALID_PACKAGE_MESSAGE } from "../../data/saved-package.ts";
 import {
-  cachedPackage,
-  inventoryFromPackage,
+  savedInventory,
+  savedPackages,
   inventoryCoverage,
   conflictReviewKey,
   currentRootConflicts,
@@ -275,8 +276,11 @@ export async function publishPage(
     "aria-label": "Known conflicts",
   });
   left.append(conflicts);
-  const inventory = inventoryFromPackage(await cachedPackage(app.store));
+  const { inventory, invalid: packageInvalid } = savedInventory(
+    await savedPackages(app.store),
+  );
   if (!context.live()) return;
+  if (packageInvalid) conflicts.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
   for (const claim of claims)
     for (const known of inventory.claims)
       if (known.rafsi === claim.rafsi && known.word !== wordId)
@@ -322,8 +326,9 @@ export async function publishPage(
   conflicts.append(rootLine);
   if (draft.kind === "gismu" && body) {
     if (!inventory.snapshot)
-      rootLine.textContent =
-        "Root conflicts were not checked again: no local package is downloaded. Coverage is unknown.";
+      rootLine.textContent = packageInvalid
+        ? "Root conflicts were not checked again: no usable local package is downloaded. Coverage is unknown."
+        : "Root conflicts were not checked again: no local package is downloaded. Coverage is unknown.";
     else
       try {
         foundRoots = currentRootConflicts(body.word.spelling, inventory);
@@ -752,9 +757,9 @@ export async function publishPage(
           `Publishing ${body.word.spelling}`,
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
-            const latestInventory = inventoryFromPackage(
-              await cachedPackage(app.store),
-            );
+            const latestInventory = savedInventory(
+              await savedPackages(app.store),
+            ).inventory;
             if (reviewedInventory !== inventoryVersion(latestInventory)) {
               outcome.replaceChildren(
                 p(

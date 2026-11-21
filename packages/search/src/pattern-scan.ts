@@ -45,7 +45,8 @@ export function scanPatterns(
       let rafsi = false;
       for (const spelling of entry.rafsi) {
         check();
-        rafsi = pattern.test(spelling) || rafsi;
+        // An empty array slot is no rafsi, as in the package checks.
+        if (spelling !== undefined) rafsi = pattern.test(spelling) || rafsi;
       }
       if (headword || rafsi)
         rows.push({

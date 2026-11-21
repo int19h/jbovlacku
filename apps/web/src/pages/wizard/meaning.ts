@@ -32,6 +32,11 @@ import {
 } from "../../app/router.ts";
 import type { App } from "../../app/context.ts";
 import { packageWordEntries, type CachedPackage } from "../../data/search.ts";
+import {
+  INVALID_PACKAGE_MESSAGE,
+  PackageValidationError,
+  savedPackage,
+} from "../../data/saved-package.ts";
 import { getWord, loadRecord, remoteDraftSearch } from "../../data/api.ts";
 import { placeholderCount, type Draft } from "../../model/draft.ts";
 import { countNodes, placeMarker } from "../../model/richtext.ts";
@@ -328,7 +333,10 @@ export async function meaningPage(
   left.append(typedStatus);
   let typedConsent: string | null = null;
   let typedRequest = 0;
-  const typedPackages = new Map<string, Promise<CachedPackage | undefined>>();
+  const typedPackages = new Map<
+    string,
+    Promise<CachedPackage | null | "invalid">
+  >();
   const typedKey = () =>
     JSON.stringify([typedWord(draft.spelling), draft.language]);
   const checkTypedWord = async () => {
@@ -350,11 +358,20 @@ export async function meaningPage(
       typedPackages.set(
         draft.language,
         app.store
-          .get<CachedPackage>("packages", draft.language)
-          .catch(() => undefined),
+          .get("packages", draft.language)
+          .catch(() => undefined)
+          .then(savedPackage)
+          .catch((error: unknown) => {
+            if (!(error instanceof PackageValidationError)) throw error;
+            return "invalid" as const;
+          }),
       );
-    const packageData = await typedPackages.get(draft.language);
+    const typedPackage = await typedPackages.get(draft.language);
     if (!valid()) return;
+    // An unusable package shows the message and counts as no package, so
+    // the server check below stays available.
+    let packageInvalid = typedPackage === "invalid";
+    let packageData = typedPackage === "invalid" ? null : typedPackage;
     let id: string;
     try {
       id = wordId({ language: "jbo", spelling });
@@ -469,8 +486,16 @@ export async function meaningPage(
       );
       return definitionsList;
     };
+    // The word index reads every row through the shared row check and the
+    // core. A row that fails either makes the package unusable, as on the
+    // other pages.
+    const entries = packageData ? packageWordEntries(packageData, id) : [];
+    if (packageData && packageWordEntries.invalidEntryCount(packageData) > 0) {
+      packageInvalid = true;
+      packageData = null;
+    }
+    if (packageInvalid) typedStatus.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
     if (packageData) {
-      const entries = packageWordEntries(packageData, id);
       if (entries.length)
         showExisting(
           entries,
@@ -483,7 +508,7 @@ export async function meaningPage(
             "meta",
           ),
         );
-    } else
+    } else if (!packageInvalid)
       typedStatus.append(
         p(
           "The word could not be checked. No local package is downloaded for this language.",
@@ -662,6 +687,7 @@ export async function meaningPage(
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let nearbyRequest = 0;
+  let invalidAnnounced = false;
   const scheduleNearby = () => {
     nearbyRequest++;
     if (remoteConsent !== consentKey()) remoteConsent = null;
@@ -743,10 +769,26 @@ export async function meaningPage(
       request === nearbyRequest &&
       value === meaning.input.value &&
       language === draft.language;
+    // An unusable package, by this page's read or by the worker's verdict,
+    // is announced once per page and then treated as no local package, so
+    // the consent and server branch below still runs.
+    const unusable = (error: unknown) => {
+      if (!(error instanceof PackageValidationError)) throw error;
+      if (current() && !invalidAnnounced) {
+        invalidAnnounced = true;
+        app.announce(error.message);
+      }
+      return null;
+    };
     try {
-      const pkg = await app.store.get<CachedPackage>("packages", language);
+      let pkg: CachedPackage | null;
+      try {
+        pkg = savedPackage(await app.store.get("packages", language));
+      } catch (error) {
+        pkg = unusable(error);
+      }
       if (!current()) return;
-      cached = pkg ?? null;
+      cached = pkg;
       renderMode();
       if (!terms.length) {
         renderHits([], "local");
@@ -756,14 +798,22 @@ export async function meaningPage(
         // Rank all query lists in the worker before selecting six nearby rows.
         // Each word goes in its typed spelling, so the local length limit
         // reads what the reader typed; the worker lowercases it afterwards.
-        const found = await searchPackage(pkg, language, terms, {
-          patterns: false,
-          nearby: true,
-          limit: 6,
-          signal: context.signal,
-        });
-        if (current()) renderHits(found.hits[0], "local");
-        return;
+        try {
+          const found = await searchPackage(pkg, language, terms, {
+            patterns: false,
+            nearby: true,
+            limit: 6,
+            signal: context.signal,
+          });
+          if (current()) renderHits(found.hits[0], "local");
+          return;
+        } catch (error) {
+          // An obsolete request changes nothing: it returns before it
+          // touches the page's state.
+          if (!current()) return;
+          cached = unusable(error);
+          renderMode();
+        }
       }
       renderHits([], "local");
       if (remoteConsent !== consentKey()) {

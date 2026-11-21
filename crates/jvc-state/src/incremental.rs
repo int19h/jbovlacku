@@ -1,8 +1,8 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v9";
-const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v9";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v10";
+const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v10";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
 
@@ -64,13 +64,13 @@ pub struct EvaluatedState {
     rafsi_assignments: std::rc::Rc<BTreeSet<String>>,
     selection_allowance: usize,
     remaining_work: usize,
-    /// Ancestry bytes spent by the evaluation this state carries,
-    /// saved across a checkpoint. A restored state has no graph, so
-    /// the first advance seeds the rebuilt graph's cap counter with
-    /// this total; without it the counter would miss the
-    /// evaluation-time unions and could pass the cap where a full
-    /// evaluation fails it. `None` on an old checkpoint forces a
-    /// rebuild on the first advance instead.
+    /// Ancestry bytes counted for the closures the graph of this
+    /// state keeps, saved across a checkpoint. A restored state has
+    /// no graph, so the first advance seeds the rebuilt graph's cap
+    /// counter with this total. Evaluation keeps no closures of its
+    /// own, so for a checkpoint that this build wrote the total
+    /// equals what the rebuilt graph counts. `None` forces a rebuild
+    /// on the first advance instead.
     saved_ancestry_bytes: Option<usize>,
     checkpoint_restored: bool,
     statistics: UpdateStatistics,
@@ -718,12 +718,14 @@ impl EvaluatedState {
                     appended_any = true;
                     let appended = self.append(node, work);
                     self.statistics.incremental_records += 1;
-                    if !appended {
-                        rebuild_reason = Some("register_members".into());
-                        break;
-                    }
+                    // A resource failure inside the append also stops
+                    // the register update, so it is reported first.
                     if self.graph.as_ref().is_some_and(|g| g.resource.get()) {
                         rebuild_reason = Some("history_resource_unavailable".into());
+                        break;
+                    }
+                    if !appended {
+                        rebuild_reason = Some("register_members".into());
                         break;
                     }
                 }
@@ -1125,20 +1127,15 @@ impl EvaluatedState {
             // Price the register from its stored charge: the base
             // evaluation already paid for the previous member set,
             // so refund exactly that and keep the new charge. No
-            // unions are replayed to recover the old charge.
-            let (previous_charge, previous_work, previous_member_work) = self
+            // merges are replayed to recover the old charge. The
+            // maxima merges build only temporary sets, so they charge
+            // work and no ancestry bytes.
+            let (previous_work, previous_member_work) = self
                 .evaluation
                 .registers
                 .get(&key)
-                .map(|register| {
-                    (
-                        register.maxima_charge,
-                        register.maxima_work,
-                        register.maxima_member_work,
-                    )
-                })
-                .unwrap_or((0, 0, 0));
-            graph.ancestry.refund(previous_charge);
+                .map(|register| (register.maxima_work, register.maxima_member_work))
+                .unwrap_or((0, 0));
             graph.budget.set(graph.budget.get() + previous_work);
             // Closed form, when it applies: the fast path's parents
             // cover the issuer's whole block, so every same-issuer
@@ -1147,9 +1144,8 @@ impl EvaluatedState {
             // no other member can be a head (a non-head member sits
             // inside some head's closure, which sits inside the new
             // record's), the new record is the only head, and a full
-            // evaluation's maxima charge for the register is one
-            // merge of its closure into an empty accumulator:
-            // fresh ranges times 8, plus 64. A register with a head
+            // evaluation's maxima work for the register is one merge
+            // of its closure into an empty accumulator. A register with a head
             // outside the new closure (for example a member from
             // another issuer whose actor is this issuer) keeps the
             // general member-set path below.
@@ -1167,15 +1163,11 @@ impl EvaluatedState {
                         .all(|head| new_closure.ids.contains(head))
                 })
                 .unwrap_or(true);
-            let (heads, new_charge, new_work) = if sole_head && new_closure.ids.fresh_ranges == 1 {
-                let amount = new_closure.ids.fresh_ranges * 8 + 64;
-                if !graph.ancestry.charge(amount) {
-                    graph.resource.set(true);
-                }
+            let (heads, new_work) = if sole_head && new_closure.ids.fresh_ranges == 1 {
                 if new_member_work > 0 {
                     let _ = graph.charge(new_member_work);
                 }
-                (BTreeSet::from([node.id.clone()]), amount, new_member_work)
+                (BTreeSet::from([node.id.clone()]), new_member_work)
             } else {
                 // Otherwise a full evaluation's maxima runs over every
                 // member of the register, and finding the members walks
@@ -1217,7 +1209,6 @@ impl EvaluatedState {
                     heads,
                     conflicted: values.len() > 1,
                     values,
-                    maxima_charge: new_charge,
                     maxima_work: new_work,
                     maxima_member_work: new_member_work,
                 },
@@ -1259,7 +1250,6 @@ impl EvaluatedState {
             consumed_work: usize,
             remaining_work: usize,
             ancestry_bytes: Option<usize>,
-            register_maxima_charges: Vec<usize>,
             register_maxima_work: Vec<usize>,
             register_maxima_member_work: Vec<usize>,
         }
@@ -1273,7 +1263,6 @@ impl EvaluatedState {
             consumed_work: usize,
             remaining_work: usize,
             ancestry_bytes: Option<usize>,
-            register_maxima_charges: Vec<usize>,
             register_maxima_work: Vec<usize>,
             register_maxima_member_work: Vec<usize>,
         }
@@ -1283,12 +1272,6 @@ impl EvaluatedState {
             .as_ref()
             .map(|graph| graph.ancestry.bytes())
             .or(self.saved_ancestry_bytes);
-        let register_maxima_charges: Vec<usize> = self
-            .evaluation
-            .registers
-            .values()
-            .map(|register| register.maxima_charge)
-            .collect();
         let register_maxima_work: Vec<usize> = self
             .evaluation
             .registers
@@ -1312,7 +1295,6 @@ impl EvaluatedState {
                 consumed_work,
                 remaining_work: self.remaining_work,
                 ancestry_bytes,
-                register_maxima_charges,
                 register_maxima_work,
                 register_maxima_member_work,
             })
@@ -1327,7 +1309,6 @@ impl EvaluatedState {
                 consumed_work,
                 remaining_work: self.remaining_work,
                 ancestry_bytes,
-                register_maxima_charges,
                 register_maxima_work,
                 register_maxima_member_work,
             })
@@ -1387,7 +1368,6 @@ impl EvaluatedState {
                     consumed_work: full.consumed_work,
                     remaining_work: full.remaining_work,
                     ancestry_bytes: full.ancestry_bytes,
-                    register_maxima_charges: full.register_maxima_charges,
                     register_maxima_work: full.register_maxima_work,
                     register_maxima_member_work: full.register_maxima_member_work,
                     digest: full.digest,
@@ -1449,8 +1429,7 @@ impl EvaluatedState {
         // them; the checkpoint's array restores them in register
         // order.
         let mut evaluation = saved.evaluation;
-        if evaluation.registers.len() != saved.register_maxima_charges.len()
-            || evaluation.registers.len() != saved.register_maxima_work.len()
+        if evaluation.registers.len() != saved.register_maxima_work.len()
             || evaluation.registers.len() != saved.register_maxima_member_work.len()
         {
             return Err(jvc_core::Error::new(
@@ -1458,14 +1437,12 @@ impl EvaluatedState {
                 "checkpoint version or binding does not match",
             ));
         }
-        for (((register, charge), work), member_work) in evaluation
+        for ((register, work), member_work) in evaluation
             .registers
             .values_mut()
-            .zip(saved.register_maxima_charges.iter())
             .zip(saved.register_maxima_work.iter())
             .zip(saved.register_maxima_member_work.iter())
         {
-            register.maxima_charge = *charge;
             register.maxima_work = *work;
             register.maxima_member_work = *member_work;
         }
@@ -1502,7 +1479,6 @@ struct SavedFullCheckpoint {
     remaining_work: usize,
     #[serde(deserialize_with = "Option::deserialize")]
     ancestry_bytes: Option<usize>,
-    register_maxima_charges: Vec<usize>,
     register_maxima_work: Vec<usize>,
     register_maxima_member_work: Vec<usize>,
     #[allow(dead_code)]
@@ -1521,7 +1497,6 @@ struct SavedResultsCheckpoint {
     remaining_work: usize,
     #[serde(deserialize_with = "Option::deserialize")]
     ancestry_bytes: Option<usize>,
-    register_maxima_charges: Vec<usize>,
     register_maxima_work: Vec<usize>,
     register_maxima_member_work: Vec<usize>,
     #[allow(dead_code)]
@@ -1810,8 +1785,7 @@ fn check_saved_state(
     resolved: &policy::ResolvedSelections<'_>,
     validated_selections: &mut BTreeMap<String, bool>,
 ) -> Result<(), &'static str> {
-    if saved.evaluation.registers.len() != saved.register_maxima_charges.len()
-        || saved.evaluation.registers.len() != saved.register_maxima_work.len()
+    if saved.evaluation.registers.len() != saved.register_maxima_work.len()
         || saved.evaluation.registers.len() != saved.register_maxima_member_work.len()
     {
         return Err("register_counter_lens");
@@ -2593,20 +2567,13 @@ fn check_saved_state(
     // Registers, judgments, trust, and register counter cross-checks.
     let mut judgment_registers = 0usize;
     let mut trust_registers = 0usize;
-    let mut total_maxima_charges = 0usize;
     let mut total_maxima_work = 0usize;
-    for (((key, reg), &charge), (&work, &member_work)) in saved
-        .evaluation
-        .registers
-        .iter()
-        .zip(&saved.register_maxima_charges)
-        .zip(
-            saved
-                .register_maxima_work
-                .iter()
-                .zip(&saved.register_maxima_member_work),
-        )
-    {
+    for ((key, reg), (&work, &member_work)) in saved.evaluation.registers.iter().zip(
+        saved
+            .register_maxima_work
+            .iter()
+            .zip(&saved.register_maxima_member_work),
+    ) {
         if reg.key != *key
             || reg.heads.is_empty()
             || reg.values.is_empty()
@@ -2635,24 +2602,20 @@ fn check_saved_state(
         if reg.values != expected_values {
             return Err("register_values");
         }
-        if charge < 72 || charge % 8 != 0 || member_work > work {
+        if member_work > work {
             return Err("register_counter_bounds");
         }
-        if charge == 72 && reg.heads.len() == 1 && work != member_work {
-            return Err("register_single_union_work");
-        }
-        if register_node_counts.get(key).copied() == Some(1) {
-            let r = (charge - 64) / 8;
-            if member_work != r - 1 || work != (r - 1).saturating_mul(2) {
-                return Err("register_single_member_counters");
-            }
+        // One member: its closure is merged into an empty
+        // accumulator once, so the maxima work is twice the member
+        // work.
+        if register_node_counts.get(key).copied() == Some(1)
+            && Some(work) != member_work.checked_mul(2)
+        {
+            return Err("register_single_member_counters");
         }
         if all_nodes_root_no_accept && member_work != 0 {
             return Err("register_root_member_work");
         }
-        total_maxima_charges = total_maxima_charges
-            .checked_add(charge)
-            .ok_or("register_charge_overflow")?;
         total_maxima_work = total_maxima_work
             .checked_add(work)
             .ok_or("register_work_overflow")?;
@@ -2681,9 +2644,7 @@ fn check_saved_state(
             trust_registers += 1;
         }
     }
-    if total_maxima_charges > super::ancestors::MAX_ANCESTOR_BYTES {
-        return Err("register_charge_cap");
-    }
+    let ancestry_cap = super::ancestors::ancestry_cap(nodes.len());
     if !resource_refused
         && total_maxima_work
             .checked_add(nodes.len().saturating_mul(2))
@@ -2692,17 +2653,8 @@ fn check_saved_state(
         return Err("register_work_exceeds_consumed");
     }
     if let Some(bytes) = saved.ancestry_bytes {
-        if bytes > super::ancestors::MAX_ANCESTOR_BYTES || bytes % 8 != 0 {
+        if bytes > ancestry_cap || bytes % 8 != 0 {
             return Err("ancestry_bytes_invalid");
-        }
-        if !resource_refused
-            && bytes
-                < nodes
-                    .len()
-                    .saturating_mul(72)
-                    .saturating_add(total_maxima_charges)
-        {
-            return Err("ancestry_bytes_too_small");
         }
     }
     if saved.evaluation.judgments.values().any(BTreeMap::is_empty)
@@ -3432,7 +3384,7 @@ mod rebuild_tests {
             input.add_host_verified_record(record);
         };
         let mut ids: Vec<String> = Vec::new();
-        for i in 0..2_348usize {
+        for i in 0..3_425usize {
             let id = format!("jve1:{i:064x}");
             let previous = (i >= 2)
                 .then(|| format!("jve1:{:064x}", i - 2))
@@ -4675,11 +4627,9 @@ mod rebuild_tests {
     }
 
     /// A restored state counts ancestry bytes exactly as a full
-    /// evaluation does, including the evaluation-time account carry
-    /// unions: the checkpoint saves the byte total and the first
-    /// advance seeds the rebuilt graph with it. The fixture carries
-    /// a certified account claim, so account evaluation really runs
-    /// the carry unions this test covers.
+    /// evaluation does. The fixture carries a certified account
+    /// claim, so account evaluation really runs the carry unions;
+    /// they build temporary sets and add no ancestry bytes.
     #[test]
     fn restored_state_keeps_full_ancestry_bytes() {
         let (view, view_body) = event(
@@ -4742,19 +4692,15 @@ mod rebuild_tests {
         );
         let base_state = prepared.clone().into_state();
         assert!(base_state.evaluation().available);
-        // The carry unions run during evaluation, so the evaluated
-        // byte total exceeds the graph-construction total. Without
-        // this gap the checkpoint assertions below could not catch a
-        // missing restoration seed.
+        // The carry unions run during evaluation and build only
+        // temporary sets, so the evaluated byte total equals the
+        // graph-construction total: the graph that a restored state
+        // builds measures the same total again.
         let construction_bytes =
             graph::Graph::new(prepared.nodes.clone(), &prepared.options.limits)
                 .ancestry
                 .bytes();
-        assert!(
-            cap_bytes(&base_state) > construction_bytes,
-            "evaluated {} bytes, construction {construction_bytes}",
-            cap_bytes(&base_state)
-        );
+        assert_eq!(cap_bytes(&base_state), construction_bytes);
         let saved = base_state.checkpoint("host-checked").unwrap();
         let saved_value: Value = serde_json::from_slice(&saved).unwrap();
         assert_eq!(
@@ -5011,7 +4957,7 @@ mod rebuild_tests {
 
     /// A non-semantic judgment in the register group must not enter
     /// the incremental member set: `registers` skips it, so the
-    /// append's charged unions and refund match a full evaluation
+    /// append's charged work and refund match a full evaluation
     /// even with fragmented (interleaved-chain) closures.
     #[test]
     fn nonsemantic_judgment_stays_out_of_the_register_member_set() {
@@ -5284,14 +5230,14 @@ mod rebuild_tests {
                     value
                         .as_object_mut()
                         .unwrap()
-                        .remove("register_maxima_charges");
+                        .remove("register_maxima_work");
                 }
                 "short" => {
-                    let array = value["register_maxima_charges"].as_array_mut().unwrap();
+                    let array = value["register_maxima_work"].as_array_mut().unwrap();
                     array.pop();
                 }
                 _ => {
-                    value["register_maxima_charges"]
+                    value["register_maxima_work"]
                         .as_array_mut()
                         .unwrap()
                         .push(0.into());
@@ -5820,9 +5766,10 @@ mod rebuild_tests {
             graph::Graph::new(prepared.nodes.clone(), &prepared.options.limits)
                 .ancestry
                 .bytes();
-        assert!(
-            cap_bytes(&prepared.clone().into_state()) > construction_bytes,
-            "carry evaluation must add ancestry bytes beyond construction"
+        assert_eq!(
+            cap_bytes(&prepared.clone().into_state()),
+            construction_bytes,
+            "carries are temporary sets and add no ancestry bytes"
         );
         // The ID sorts between the two claims, so a fresh layout
         // splits the carried closure.
@@ -5848,12 +5795,12 @@ mod rebuild_tests {
             overlay: None,
             limits: Limits::default(),
         };
-        // Fork A appends on both heavy chain tips and crosses the cap.
+        // Fork A appends on a heavy chain tip and crosses the cap.
         // It must rebuild and return the full (unavailable) result.
         let (judgment_a, _) = signed(
             7,
             9500,
-            vec![ids[2_346].clone(), ids[2_347].clone()],
+            vec![ids[3_423].clone()],
             json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
         );
         let mut delta = PreparedEvaluationInput::new(options.clone());
@@ -6897,8 +6844,8 @@ mod rebuild_tests {
 
         let full_json: Value = serde_json::from_slice(&full_bytes).unwrap();
         let result_json: Value = serde_json::from_slice(&result_bytes).unwrap();
-        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v9"));
-        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v9"));
+        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v10"));
+        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v10"));
         assert!(result_json.get("nodes").is_none());
         // The v8 publication scan counts are gone. A checkpoint that
         // still carries them, or names the v8 version, is refused.
@@ -8844,6 +8791,348 @@ mod rebuild_tests {
         assert_eq!(after_res.consumed_work(), expected_state.consumed_work());
     }
 
+    /// Fast-path appends by keys whose blocks sit between existing
+    /// blocks, mixed with appends that merge across the insertion
+    /// points of those keys. Key `A` transfers to key `C`, and `C`
+    /// has two roots (so no succession forms), one of them accepting
+    /// the transfer: the structural closure of a record that covers
+    /// `C`'s block holds `A`'s transfer, and over the shared layout
+    /// that range fuses with `C`'s block. A key that sorts between `A`
+    /// and `C` and appends first splits that range in a fresh layout.
+    /// After every step the live state, a restored full checkpoint
+    /// and a restored result checkpoint, each advanced by the step's
+    /// record, must equal a full evaluation: evaluation, kept bytes
+    /// and work.
+    #[test]
+    fn appends_across_inserted_blocks_match_full_evaluation_in_every_path() {
+        let mut keys: Vec<String> = (0..8u8)
+            .map(|i| identity_from_seed(&[90 + i; 32]))
+            .collect();
+        keys.sort();
+        let (a, c) = (keys[1].clone(), keys[4].clone());
+        let inserted = [&keys[0], &keys[2], &keys[3], &keys[5], &keys[6], &keys[7]];
+        let mut base_input = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        base_input.add_record(&publication, body.as_deref());
+        let transfer = format!("jve1:{:064x}", 0xa1usize);
+        base_input.add_host_verified_record(host(
+            transfer.clone(),
+            &a,
+            vec![],
+            json!({"kind":"identity.transfer","successor":c}),
+        ));
+        let c_merge = format!("jve1:{:064x}", 0xc1usize);
+        let c_accept = format!("jve1:{:064x}", 0xc2usize);
+        base_input.add_host_verified_record(host(
+            c_merge.clone(),
+            &c,
+            vec![],
+            json!({"kind":"identity.merge"}),
+        ));
+        base_input.add_host_verified_record(host(
+            c_accept.clone(),
+            &c,
+            vec![],
+            json!({"kind":"identity.accept","transfer":transfer}),
+        ));
+        // The first sequence is the minimal case: a key between `A`
+        // and `C` appends a root, then `C` merges its two roots.
+        let mut sequences: Vec<Vec<usize>> = vec![vec![1, 6, 6, 2, 6]];
+        let mut rng = Rng(0x5EED_1234);
+        for _ in 0..12 {
+            sequences.push((0..8).map(|_| rng.below(7) as usize).collect());
+        }
+        let mut compared = 0usize;
+        let mut fast = 0usize;
+        for (sequence_index, sequence) in sequences.iter().enumerate() {
+            let mut prepared = base_input.clone();
+            let mut heads: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            heads.insert(c.clone(), vec![c_merge.clone(), c_accept.clone()]);
+            let mut live = unshared(&prepared).into_state();
+            assert!(live.evaluation().available);
+            for (step, &pick) in sequence.iter().enumerate() {
+                // Picks 0 to 5 are the inserted keys, 6 is `C`.
+                let issuer = if pick < 6 {
+                    inserted[pick].clone()
+                } else {
+                    c.clone()
+                };
+                let id = format!("jve1:{:064x}", 0x1_0000 + 0x100 * sequence_index + step);
+                let previous = heads.get(&issuer).cloned().unwrap_or_default();
+                let value = if step % 2 == 0 { "bless" } else { "curse" };
+                let record = host(
+                    id.clone(),
+                    &issuer,
+                    previous,
+                    json!({"kind":"judgment.set","target":publication_id,"value":value}),
+                );
+                heads.insert(issuer.clone(), vec![id]);
+                let options = prepared.options.clone();
+                let delta = || {
+                    let mut delta = PreparedEvaluationInput::new(options.clone());
+                    delta.add_host_verified_record(record.clone());
+                    delta
+                };
+                let full_checkpoint = live.checkpoint("inserted").unwrap();
+                let result_checkpoint = live.result_checkpoint("inserted").unwrap();
+                let records: Vec<HostVerifiedRecord> = prepared
+                    .nodes
+                    .values()
+                    .map(|n| HostVerifiedRecord { node: n.clone() })
+                    .collect();
+                prepared.add_host_verified_record(record.clone());
+                live = live.advance(delta(), &[]);
+                if !live.statistics().rebuilt {
+                    fast += 1;
+                }
+                let restored_full =
+                    EvaluatedState::restore_host_checkpoint(&full_checkpoint, "inserted")
+                        .unwrap()
+                        .advance(delta(), &[]);
+                let restored_results = EvaluatedState::restore_host_result_checkpoint(
+                    &result_checkpoint,
+                    "inserted",
+                    records,
+                )
+                .unwrap()
+                .advance(delta(), &[]);
+                let full = prepared.clone().into_state();
+                for (path, state) in [
+                    ("live", &live),
+                    ("restored full checkpoint", &restored_full),
+                    ("restored result checkpoint", &restored_results),
+                ] {
+                    let at = format!("sequence {sequence_index}, step {step}, {path}");
+                    assert_eq!(state.evaluation(), full.evaluation(), "{at}");
+                    assert_eq!(cap_bytes(state), cap_bytes(&full), "{at}");
+                    assert_eq!(state.consumed_work(), full.consumed_work(), "{at}");
+                }
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 5 + 12 * 8);
+        assert!(
+            fast > compared / 2,
+            "{fast} of {compared} appends took the fast path"
+        );
+    }
+
+    /// A history near the cap for `appended_near_the_cap_refuses_in_every_path_where_full_refuses`.
+    /// One key accepts transfers from `sources` other keys, so the
+    /// structural closure of a record that covers its block keeps one
+    /// range per source block. The key has one root per acceptance,
+    /// so no transfer becomes a lifecycle succession, and the own and
+    /// accepted closures of such a record keep one range each. Each
+    /// source block starts with a record that no closure contains, so
+    /// source blocks never fuse with each other, and no closure
+    /// crosses the end of the accepting key's block, where an append
+    /// inserts. A source block just before the accepting key's block
+    /// fuses with it, so 190 sources give 190 ranges. Two interleaved
+    /// chains of a filler key bring the kept storage near the cap, and
+    /// `tune` root records each raise the cap by one allowance without
+    /// kept storage.
+    fn near_cap_accepting_history(
+        sources: usize,
+        filler: usize,
+        weight: usize,
+        tune: usize,
+    ) -> (PreparedEvaluationInput, HostVerifiedRecord) {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        let publication_id = publication.id().to_string();
+        prepared.add_record(&publication, body.as_deref());
+        let successor = identity_from_seed(&[60u8; 32]);
+        let merge = json!({"kind":"identity.merge"});
+        let mut accepts: Vec<String> = Vec::new();
+        for j in 0..sources {
+            let mut seed = [61u8; 32];
+            seed[..8].copy_from_slice(&(j as u64).to_le_bytes());
+            let source = identity_from_seed(&seed);
+            let transfer = format!("jve1:{:064x}", 610_000 + 4 * j + 1);
+            prepared.add_host_verified_record(host(
+                transfer.clone(),
+                &source,
+                vec![],
+                json!({"kind":"identity.transfer","successor":successor}),
+            ));
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 610_000 + 4 * j),
+                &source,
+                vec![],
+                merge.clone(),
+            ));
+            let accept = format!("jve1:{:064x}", 620_000 + j);
+            prepared.add_host_verified_record(host(
+                accept.clone(),
+                &successor,
+                vec![],
+                json!({"kind":"identity.accept","transfer":transfer}),
+            ));
+            accepts.push(accept);
+        }
+        // Merge the accepts, at most 64 predecessors per record.
+        let mut head: Option<String> = None;
+        for (i, group) in accepts.chunks(63).enumerate() {
+            let mut previous: Vec<String> = group.to_vec();
+            previous.extend(head.clone());
+            let id = format!("jve1:{:064x}", 630_000 + i);
+            prepared.add_host_verified_record(host(
+                id.clone(),
+                &successor,
+                previous,
+                merge.clone(),
+            ));
+            head = Some(id);
+        }
+        let filler_key = identity_from_seed(&[62u8; 32]);
+        for i in 0..filler {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 800_000 + i),
+                &filler_key,
+                (i >= 2)
+                    .then(|| format!("jve1:{:064x}", 800_000 + i - 2))
+                    .into_iter()
+                    .collect(),
+                merge.clone(),
+            ));
+        }
+        // One record that names filler record `weight` keeps a closure
+        // of about `weight / 2` ranges. It sorts last in the filler
+        // block, so it splits no other closure.
+        prepared.add_host_verified_record(host(
+            format!("jve1:{:064x}", 850_000usize),
+            &filler_key,
+            vec![format!("jve1:{:064x}", 800_000 + weight)],
+            merge.clone(),
+        ));
+        let tune_key = identity_from_seed(&[63u8; 32]);
+        for i in 0..tune {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 900_000 + i),
+                &tune_key,
+                vec![],
+                merge.clone(),
+            ));
+        }
+        let appended = host(
+            format!("jve1:{:064x}", 999_999usize),
+            &successor,
+            head.into_iter().collect(),
+            json!({"kind":"judgment.set","target":publication_id,"value":"bless"}),
+        );
+        (prepared, appended)
+    }
+
+    /// An append whose kept closures cross the cap refuses in every
+    /// path exactly where full evaluation refuses: the live state, a
+    /// restored full checkpoint and a restored result checkpoint.
+    /// The appended record keeps a structural closure of 190 ranges
+    /// (16 + 8 * 190 = 1,536 bytes), and its own and accepted closures
+    /// of one range count nothing. With no tuning record the history
+    /// has 1,280 bytes of room after the append, and every path refuses.
+    /// With one tuning record more it has 2,304 bytes, every path
+    /// accepts, the live append takes the fast path, and all paths
+    /// count the same bytes, also after a checkpoint of the live
+    /// state is restored.
+    #[test]
+    fn appended_near_the_cap_refuses_in_every_path_where_full_refuses() {
+        for (tune, room, available) in [(0usize, 1_280i64, false), (1, 2_304, true)] {
+            let (prepared, appended) = near_cap_accepting_history(190, 3_440, 262, tune);
+            let state = prepared.clone().into_state();
+            assert!(state.evaluation().available, "tune {tune}");
+            let records = prepared.nodes.len();
+            assert_eq!(
+                crate::ancestors::ancestry_cap(records + 1) as i64 - cap_bytes(&state) as i64,
+                room
+            );
+            let mut full = prepared.clone();
+            full.add_host_verified_record(appended.clone());
+            let full_state = full.clone().into_state();
+            assert_eq!(full_state.evaluation().available, available, "tune {tune}");
+            let delta = || {
+                let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+                delta.add_host_verified_record(appended.clone());
+                delta
+            };
+            let live = state.clone().advance(delta(), &[]);
+            let full_checkpoint = state.checkpoint("near-cap").unwrap();
+            let restored_full =
+                EvaluatedState::restore_host_checkpoint(&full_checkpoint, "near-cap")
+                    .unwrap()
+                    .advance(delta(), &[]);
+            let records_list: Vec<HostVerifiedRecord> = prepared
+                .nodes
+                .values()
+                .map(|n| HostVerifiedRecord { node: n.clone() })
+                .collect();
+            let result_checkpoint = state.result_checkpoint("near-cap").unwrap();
+            let restored_results = EvaluatedState::restore_host_result_checkpoint(
+                &result_checkpoint,
+                "near-cap",
+                records_list,
+            )
+            .unwrap()
+            .advance(delta(), &[]);
+            for (path, advanced) in [
+                ("live", &live),
+                ("restored full checkpoint", &restored_full),
+                ("restored result checkpoint", &restored_results),
+            ] {
+                assert_eq!(
+                    advanced.evaluation(),
+                    full_state.evaluation(),
+                    "tune {tune}, {path}"
+                );
+            }
+            if available {
+                assert!(!live.statistics().rebuilt, "the append takes the fast path");
+                assert_eq!(cap_bytes(&live), cap_bytes(&full_state));
+                assert_eq!(cap_bytes(&restored_full), cap_bytes(&full_state));
+                assert_eq!(cap_bytes(&restored_results), cap_bytes(&full_state));
+                // A checkpoint of the live state restores the same
+                // count that a full evaluation keeps.
+                let saved = live.checkpoint("near-cap").unwrap();
+                let restored = EvaluatedState::restore_host_checkpoint(&saved, "near-cap")
+                    .unwrap()
+                    .advance(PreparedEvaluationInput::new(prepared.options.clone()), &[]);
+                assert_eq!(restored.evaluation(), full_state.evaluation());
+                assert_eq!(cap_bytes(&restored), cap_bytes(&full_state));
+            }
+        }
+    }
+
+    /// A history whose ancestry bytes pass the fixed base of the cap,
+    /// but not the cap for its record count, evaluates. Both of its
+    /// checkpoints restore, and an append after the restore matches a
+    /// full evaluation.
+    #[test]
+    fn a_history_past_the_cap_base_evaluates_and_restores() {
+        use crate::ancestors::{ANCESTRY_CAP_BASE, ancestry_cap};
+        let mut prepared = base();
+        prepared.options.limits.traversal = Some(1_000_000_000);
+        let issuer = identity_from_seed(&[8u8; 32]);
+        // Two interleaved chains of one issuer: each closure holds
+        // many ranges, so the bytes pass the base with few records.
+        for i in 0..5_900usize {
+            prepared.add_host_verified_record(host(
+                format!("jve1:{:064x}", 800_000 + i),
+                &issuer,
+                (i >= 2)
+                    .then(|| format!("jve1:{:064x}", 800_000 + i - 2))
+                    .into_iter()
+                    .collect(),
+                json!({"kind":"identity.merge"}),
+            ));
+        }
+        let state = prepared.clone().into_state();
+        assert!(state.evaluation().available);
+        let bytes = cap_bytes(&state);
+        assert!(bytes > ANCESTRY_CAP_BASE, "{bytes} bytes");
+        assert!(bytes <= ancestry_cap(prepared.nodes.len()));
+        assert_state_roundtrips_and_appends(&state, &prepared, 7);
+    }
+
     #[test]
     fn incremental_fixtures_roundtrip_both_checkpoints_and_append() {
         let mut count = 0usize;
@@ -9342,7 +9631,6 @@ mod rebuild_tests {
                 "work_plus_one",
                 "work_minus_one",
                 "member_plus_one",
-                "charge_plus_eight",
                 "ancestry_plus_eight",
             ] {
                 let mut cp: Value = serde_json::from_slice(raw).unwrap();
@@ -9358,10 +9646,6 @@ mod rebuild_tests {
                     "member_plus_one" => {
                         cp["register_maxima_member_work"][0] =
                             json!(cp["register_maxima_member_work"][0].as_u64().unwrap() + 1);
-                    }
-                    "charge_plus_eight" => {
-                        cp["register_maxima_charges"][0] =
-                            json!(cp["register_maxima_charges"][0].as_u64().unwrap() + 8);
                     }
                     "ancestry_plus_eight" => {
                         cp["ancestry_bytes"] = json!(cp["ancestry_bytes"].as_u64().unwrap() + 8);

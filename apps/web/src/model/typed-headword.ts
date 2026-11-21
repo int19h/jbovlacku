@@ -701,7 +701,11 @@ export function sourceOptions(
       summary: entry.plain_text,
     });
     for (const rafsi of listed)
-      if (!component.claims.some((claim) => claim.rafsi === rafsi))
+      // An empty array slot is no rafsi, as in the worker's checks.
+      if (
+        rafsi !== undefined &&
+        !component.claims.some((claim) => claim.rafsi === rafsi)
+      )
         component.claims.push({
           rafsi,
           pair: rafsiPairId(wordId(entry.word), rafsi),
