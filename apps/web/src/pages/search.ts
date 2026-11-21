@@ -74,7 +74,7 @@ import {
   sourceDate,
 } from "../components/attribution.ts";
 import { zbalermorna } from "../lib/zbalermorna.ts";
-import { placeMarker, readableProse } from "../model/richtext.ts";
+import { placeMarker } from "../model/richtext.ts";
 import { appendReadRetry } from "../components/readretry.ts";
 
 const PAGE_SIZE = 20;
@@ -107,7 +107,7 @@ interface SearchState {
  */
 function appendHighlighted(node: HTMLElement, value: string, query: string) {
   const q = query.toLocaleLowerCase("en");
-  for (const part of [readableProse(value)]) {
+  for (const part of [value]) {
     if (!part) continue;
     const lower = part.toLocaleLowerCase("en");
     let index = 0;
@@ -573,6 +573,7 @@ export async function searchPage(
     const before = results.firstElementChild;
     if (before !== ordered[0].node)
       results.prepend(...ordered.map((group) => group.node));
+    placeRetry();
     for (const [key, group] of Object.entries(groups) as [
       SearchGroup,
       typeof groups.lojban,
@@ -661,9 +662,19 @@ export async function searchPage(
         expanding ||
         control.closest("section")?.getAttribute("aria-busy") === "true";
   };
-  // One retry for the whole search, on the first group that fails. The
-  // other group keeps its error text without a second identical button.
-  let retryOffered = false;
+  // One retry for the whole search. It opens the same route again, so it
+  // retries every group. It sits in the first failed group in reading
+  // order, so the reader meets it with the first error. The other group
+  // keeps its error text without a second identical button.
+  let retryButton: Element | undefined;
+  const placeRetry = () => {
+    if (!retryButton) return;
+    const notice = orderedGroups()
+      .find((group) => group.failed && group.rows.querySelector(".read-error"))
+      ?.rows.querySelector(".read-error");
+    if (notice && retryButton.parentElement !== notice)
+      notice.append(retryButton);
+  };
   const showError = (key: SearchGroup, error: unknown) => {
     const group = groups[key];
     group.failed = true;
@@ -676,15 +687,13 @@ export async function searchPage(
         "notice",
       ),
     );
-    if (!retryOffered)
-      retryOffered = appendReadRetry(
-        notice,
-        error,
-        context,
-        app.announce,
-        "Retry search",
-      );
+    if (
+      !retryButton &&
+      appendReadRetry(notice, error, context, app.announce, "Retry search")
+    )
+      retryButton = notice.lastElementChild ?? undefined;
     group.rows.append(notice);
+    placeRetry();
   };
   const loadNext = async (key: SearchGroup, all = false) => {
     const group = groups[key];

@@ -209,7 +209,7 @@ Pattern mode returns `headword-pattern` results before `rafsi-pattern` results. 
 Spelling comparison uses stable ordinal order across hosts. It does not depend on the host locale.
 It uses no gloss, definition-text, segmentation, or component fallback. One card groups every matching definition of a word.
 Headword matches take precedence when a word also has a matching rafsi.
-Both classes use the ordinary pages and “show all” limit. Pattern mode leaves the ordinary segmented-search classes unchanged.
+Both classes use the ordinary pages and “Show all” limit. Pattern mode leaves the ordinary segmented-search classes unchanged.
 The rafsi page accepts the same patterns. It shows each matched spelling with its word and retains conflicting assignments separately.
 The rafsi page retains at most 1,000 matched pairs across its languages. A visible notice reports any cut.
 Conflict notices group by normalized rafsi spelling and list different stored spellings. Pair identifiers still use each raw stored spelling.
@@ -433,7 +433,7 @@ The meaning group's Search source disclosure shows that separate snapshot and vi
 A fresh reload checks current capabilities, profile, and consent instead of restoring the saved meaning group.
 Similarity never becomes an editorial score.
 
-Each group offers pagination and “show all” with its remaining count. The page offers “Missing a word for this? Add it,” and a retired-results filter.
+Each group offers pagination and “Show all” with its remaining count. The page offers “Missing a word for this? Add it,” and a retired-results filter.
 One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits per lexical group. Meaning search retains at most 100 definitions and pages them locally.
 Only one expansion runs at once. Navigation cancels it, and repeated cursors or results stop it.
 Each lexical group shows its own loading or failure state. A failed group does not prevent the other group from loading.
@@ -1764,7 +1764,8 @@ An existing event, including an equivalent valid signature variant, returns HTTP
 HTTP 400 reports malformed transport. HTTP 422 reports a rejected envelope or body with a field-specific code.
 HTTP 413 reports size limits. HTTP 429 reports a quota and retry interval.
 HTTP 403 reports local admission refusal. HTTP 503 reports temporary service failure or unavailable computation.
-After an HTTP 503 read failure, a word or search page keeps the reason visible and offers “Retry reading”.
+After an HTTP 503 read failure, a word page keeps the reason visible and offers “Retry reading”.
+A search page keeps the reason visible in each failed lexical result group. It offers one “Retry search” button for the whole search, in the first failed group in reading order.
 The retry preserves the route, language, and selected view. It replaces the current history entry and performs no signed write.
 If a retry fails, the page shows its retry number and keeps the current error reason visible.
 It announces the retry number and reason through the shell status region, even when the new failure differs from HTTP 503.

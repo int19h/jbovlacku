@@ -1,10 +1,14 @@
 import { test, expect } from "@playwright/test";
 
-test("local rows read TeX and wiki previews as plain text and hide the unavailable status", async ({
+test("local rows keep signed preview text literal and hide the unavailable status", async ({
   page,
 }) => {
+  // Signed text is shown literally. TeX, wiki quotes, Lojban apostrophes,
+  // dollar amounts, and underscores all stay exactly as stored.
+  const literal =
+    "$z_1$, more than ``{ko}'' and ''ba'e'' with $5 to $10 at file_2.txt needle";
   await page.goto("/");
-  await page.evaluate(async () => {
+  await page.evaluate(async (plain_text) => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     await new LocalStore().put("packages", "en", {
       snapshot: "sha256:" + "d".repeat(64),
@@ -14,23 +18,18 @@ test("local rows read TeX and wiki previews as plain text and hide the unavailab
           word: { language: "jbo", spelling: "broda" },
           language: "en",
           glosses: [{ language: "en", text: "needle", sense: null }],
-          plain_text: "$z_1$, more than $z_2$ with ''kla'' and $x_{3}$ needle",
+          plain_text,
           classification: { kind: "gismu", selmaho: [] },
           body: null,
         },
       ],
     });
-  });
+  }, literal);
   await page.goto("/search?q=needle&lang=en");
   const results = page.getByRole("region", { name: "Search results" });
   await expect(results.locator("article")).toHaveCount(1);
-  await expect(
-    results.getByText("z₁, more than z₂ with kla and x₃ needle", {
-      exact: true,
-    }),
-  ).toBeVisible();
+  await expect(results.locator("article p.text")).toHaveText(literal);
   await expect(results.getByText("status: unavailable")).toHaveCount(0);
-  await expect(results.getByText("$z_1$")).toHaveCount(0);
   // The score stays an accessible unavailable value, never a fake zero.
   await expect(
     results.getByRole("img", { name: "Score unavailable" }),
@@ -95,6 +94,43 @@ test("a 503 for both groups offers one Retry search button", async ({
     main.getByRole("button", { name: "Retry search", exact: true }),
   ).toHaveCount(1);
   await expect(main.locator(".read-error")).toHaveCount(2);
+  // Both groups fail, so Definitions comes first in reading order even
+  // though the Lojban group fails first. The reader meets the button with
+  // the first error.
+  const results = page.getByRole("region", { name: "Search results" });
+  const firstFailed = results.locator("section:has(.read-error)").first();
+  await expect(firstFailed.locator("h2")).toHaveText(/^Definitions/);
+  await expect(
+    firstFailed.getByRole("button", { name: "Retry search", exact: true }),
+  ).toHaveCount(1);
+});
+
+test("a failed Settings storage read ends the Loading note", async ({
+  page,
+}) => {
+  // Make every getAllKeys request on the packages store fail, as an
+  // IndexedDB read error would.
+  await page.addInitScript(() => {
+    const original = IDBObjectStore.prototype.getAllKeys;
+    IDBObjectStore.prototype.getAllKeys = function (
+      this: IDBObjectStore,
+      ...args: Parameters<IDBObjectStore["getAllKeys"]>
+    ) {
+      if (this.name !== "packages") return original.apply(this, args);
+      const request = {
+        error: new Error("Storage read failed in this test."),
+        onsuccess: null as null | (() => void),
+        onerror: null as null | (() => void),
+      };
+      setTimeout(() => request.onerror?.(), 0);
+      return request as unknown as IDBRequest<IDBValidKey[]>;
+    };
+  });
+  await page.goto("/preferences");
+  await expect(
+    page.getByText("Storage read failed in this test.", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Loading…", { exact: true })).toHaveCount(0);
 });
 
 test("pagination labels use the same case", async ({ page }) => {
@@ -169,6 +205,8 @@ test("language options use readable names, not raw tags", async ({ page }) => {
     "tlh",
     "tpi",
     "tok",
+    "en-simple",
+    "fr-facile",
     "art-loglan",
     "art-picture",
     "art-guaspi",
@@ -188,8 +226,10 @@ test("language options use readable names, not raw tags", async ({ page }) => {
   await expect(languages.locator("option")).toHaveText([
     "Guaspi",
     "Loglan",
-    "Picture",
+    "Picture language",
     "English",
+    "Simple English",
+    "Easy French",
     "Lojban",
     "Klingon",
     "Toki Pona",
@@ -201,11 +241,51 @@ test("language options use readable names, not raw tags", async ({ page }) => {
   ).toHaveText([
     "Guaspi",
     "Loglan",
-    "Picture",
+    "Picture language",
     "English",
+    "Simple English",
+    "Easy French",
     "Lojban",
     "Klingon",
     "Toki Pona",
     "Tok Pisin",
   ]);
+});
+
+test("the rafsi page labels its pagination Show all", async ({ page }) => {
+  const entries = Array.from({ length: 25 }, (_, index) => ({
+    event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+    word: { language: "jbo", spelling: "broda" },
+    language: "en",
+    glosses: [{ language: "en", text: "book", sense: null }],
+    plain_text: `Definition ${index} is a book.`,
+    classification: { kind: "gismu", selmaho: [] },
+    body: null,
+    issuer: "ed25519:" + "a".repeat(64),
+    notes: false,
+    rafsi: [`raf${index}`],
+    rafsi_complete: true,
+    attribution: null,
+  }));
+  await page.goto("/");
+  await page.evaluate(async (entries) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "en", {
+      snapshot: "sha256:" + "b".repeat(64),
+      version: 2,
+      entries,
+    });
+  }, entries);
+  await Promise.all([
+    page.route("**/api/v1/manifest*", (route) => route.abort()),
+    page.route("**/api/v1/packages*", (route) => route.abort()),
+    page.route("**/api/v1/package-parts*", (route) => route.abort()),
+  ]);
+  await page.goto(`/rafsi/${encodeURIComponent("raf*")}`);
+  await expect(
+    page.getByRole("button", { name: "Show all", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "show all", exact: true }),
+  ).toHaveCount(0);
 });
