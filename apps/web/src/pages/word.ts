@@ -50,6 +50,7 @@ import {
 import { recomputePanel } from "../components/recompute.ts";
 import { describeProfile } from "../model/profiles.ts";
 import { appendReadRetry } from "../components/readretry.ts";
+import { onDisconnect } from "../lib/lifetime.ts";
 
 export async function wordPage(route: Route, context: RenderContext, app: App) {
   const { main } = context;
@@ -314,6 +315,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         context,
         label: "Personal view",
         includeSnapshot: false,
+        expected: { snapshot: word.snapshot, view: word.view },
         onRefresh: rerender,
       }),
     );
@@ -326,29 +328,68 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   if (!context.live()) return;
   const myJudgmentsFirst = Boolean(own);
   if (view.personal && view.reason) {
-    const reason = view.stale
-      ? "The local calculation uses another snapshot or view. Recompute from records for these definitions."
-      : view.reason;
-    const note = p(
-      `Personal scores are unavailable: ${reason} ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`,
-      "small",
-    );
-    if (view.stale)
-      note.append(
-        text(" "),
-        button(
-          "Recompute for this snapshot",
-          () => {
-            void app.personal
-              .ensure({ mode: "personal", refresh: true })
-              .then((status) => {
-                if (status.state === "ready") rerender();
-              });
-          },
-          { class: "btn btn-quiet" },
+    const note = p("", "small");
+    // The note follows the live calculation state, like the panel above it.
+    // A later failure, cancel, or retry replaces the reason instead of
+    // leaving the first reason beside a panel that says another.
+    const showNote = (reason: string, stale: boolean) => {
+      note.replaceChildren(
+        text(
+          `Personal scores are unavailable: ${reason} ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`,
         ),
       );
+      if (stale)
+        note.append(
+          text(" "),
+          button(
+            "Recompute for this snapshot",
+            () => {
+              void app.personal
+                .ensure({ mode: "personal", refresh: true })
+                .then((status) => {
+                  if (status.state === "ready") rerender();
+                });
+            },
+            { class: "btn btn-quiet" },
+          ),
+        );
+    };
+    showNote(
+      view.stale
+        ? "The local calculation uses another snapshot or view. Recompute from records for these definitions."
+        : view.reason,
+      view.stale,
+    );
     main.append(note);
+    let initial = true;
+    onDisconnect(
+      note,
+      app.personal.subscribe((status) => {
+        // The first call only repeats the state the note already shows.
+        if (initial) {
+          initial = false;
+          return;
+        }
+        if (!context.live()) return;
+        if (status.state === "ready") {
+          if (status.snapshot === word.snapshot && status.view === word.view) {
+            // The panel refresh re-renders the page with these scores.
+            return;
+          }
+          showNote(
+            "The local calculation uses another snapshot or view. Recompute from records for these definitions.",
+            true,
+          );
+        } else if (status.state === "failed") showNote(status.message, false);
+        else
+          showNote(
+            status.state === "idle"
+              ? "No local calculation yet."
+              : "The local calculation is not ready yet.",
+            false,
+          );
+      }),
+    );
   }
   if (!view.personal && view.calculation === null)
     main.append(

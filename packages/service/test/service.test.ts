@@ -981,6 +981,12 @@ test("search preview uses strongest lexical entry with stable ties and active-vi
       word_kind: "gismu",
       status: "active",
       plain_text: undefined,
+      // The preview also carries the bounded row fields.
+      rafsi: [],
+      selmaho: [],
+      issuer: identityFromSeed(seed),
+      notes: false,
+      attribution: null,
     },
   );
   assert.equal(Array.from(first.hits[0].preview.plain_text).length, 240);

@@ -120,6 +120,12 @@ export function calculationPanel(
     label: string;
     includeSnapshot?: boolean;
     onRefresh?: () => void;
+    /**
+     * The snapshot and view of the content beside this panel, when the page
+     * has one. A ready calculation for another snapshot or view is reported
+     * as unavailable for this content, never as the content's calculation.
+     */
+    expected?: { snapshot: string; view: string };
   } & (
     | { mode: "personal"; context: RenderContext }
     | { mode: "site"; context?: RenderContext }
@@ -177,7 +183,16 @@ export function calculationPanel(
   if (options.mode === "personal") actions.append(useSite);
   region.append(line, actions);
   const update = (status: PersonalStatus) => {
-    line.textContent = statusText(status, options.includeSnapshot);
+    // One state for the whole page: a calculation that is ready for another
+    // snapshot or view does not score this content, so the panel says so
+    // instead of presenting that calculation as this page's.
+    line.textContent =
+      status.state === "ready" &&
+      options.expected &&
+      (status.snapshot !== options.expected.snapshot ||
+        status.view !== options.expected.view)
+        ? `${options.label} calculated in this browser from ${plural(status.events, "verified record")} for another snapshot. Personal scores are unavailable for this snapshot.`
+        : statusText(status, options.includeSnapshot);
     const busy =
       status.state === "downloading" || status.state === "evaluating";
     cancel.hidden = !busy;

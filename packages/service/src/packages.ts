@@ -64,10 +64,27 @@ export interface MaterializedPackage {
   hash: string;
   bytes: number;
 }
+/**
+ * Bounded row metadata for one definition, keyed by event ID. The server
+ * search response copies these fields into each hit preview, so a result
+ * row needs no per-definition read. The same bounds as version 2 entries
+ * apply: at most 64 rafsi are held per word elsewhere, and the attribution
+ * dates come from the signed legacy body.
+ */
+export interface SearchPreviewMeta {
+  /** The signing identity of the publication. For imports, the importer. */
+  issuer: string;
+  /** Whether the definition has notes. */
+  notes: boolean;
+  /** Imported source attribution, or null for native publications. */
+  attribution: SearchEntryV2["attribution"];
+}
 export interface MaterializedPackages {
   entries: SearchEntry[];
   /** Private, bounded rafsi metadata for the shared pattern matcher. */
   searchRafsi?: Record<string, string[]>;
+  /** Bounded per-definition row metadata for server search previews. */
+  searchMeta?: Record<string, SearchPreviewMeta>;
   /** Private cache metadata. Null means that publication receipts are unavailable. */
   effectiveDefinitions?: string[] | null;
   /** Eligible active and retired definitions under the selected view. */
@@ -452,6 +469,16 @@ export async function buildPackages(
         [...rafsiByWord].map(([word, spellings]) => [
           word,
           [...spellings].sort().slice(0, PACKAGE_RAFSI_LIMIT),
+        ]),
+      ),
+      searchMeta: Object.fromEntries(
+        entries2.map((entry) => [
+          entry.event,
+          {
+            issuer: entry.issuer,
+            notes: entry.notes,
+            attribution: entry.attribution,
+          },
         ]),
       ),
       ...(effectiveDefinitions !== undefined ? { effectiveDefinitions } : {}),

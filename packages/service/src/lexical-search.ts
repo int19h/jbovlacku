@@ -14,7 +14,48 @@ import {
   scanPatterns,
   type PatternScanner,
 } from "../../search/src/pattern-scan.ts";
-import type { SearchEntry } from "./packages.ts";
+import type { SearchEntry, SearchPreviewMeta } from "./packages.ts";
+
+/**
+ * The bounded fields a hit preview carries for its row: at most 64 rafsi
+ * spellings and 16 selma'o names for the word, the signing identity, a notes
+ * flag, and imported source attribution with at most 16 date entries. Row
+ * rendering needs no further read for these fields.
+ */
+export interface SearchPreview {
+  event: string;
+  word_kind: string;
+  plain_text: string;
+  status: string;
+  rafsi: string[];
+  selmaho: string[];
+  /** The signing identity, when the caller supplies preview metadata. */
+  issuer?: string;
+  /** Whether the definition has notes, when metadata is supplied. */
+  notes?: boolean;
+  /** Imported source attribution, when metadata is supplied. */
+  attribution?: SearchPreviewMeta["attribution"];
+}
+const PREVIEW_RAFSI_LIMIT = 64;
+const PREVIEW_SELMAHO_LIMIT = 16;
+const PREVIEW_DATE_LIMIT = 16;
+/** Copies one preview-meta value within the preview bounds. */
+function boundedMeta(meta: SearchPreviewMeta): SearchPreviewMeta {
+  return {
+    issuer: meta.issuer,
+    notes: meta.notes,
+    attribution: meta.attribution
+      ? {
+          source: meta.attribution.source,
+          author: meta.attribution.author,
+          account: meta.attribution.account,
+          dates: Object.fromEntries(
+            Object.entries(meta.attribution.dates).slice(0, PREVIEW_DATE_LIMIT),
+          ),
+        }
+      : null,
+  };
+}
 
 /** Scan each entry once and retain the public lexical match tiers and order. */
 export function lexicalSearch(
@@ -27,6 +68,7 @@ export function lexicalSearch(
   rafsi: Record<string, string[]> = {},
   options: SearchOptions = {},
   selectedRows?: LexicalMatch<SearchEntry>[],
+  previewMeta?: Record<string, SearchPreviewMeta>,
 ) {
   const hits = new Map<
     string,
@@ -36,12 +78,7 @@ export function lexicalSearch(
       match: MatchKind;
       position: number;
       definitions: string[];
-      preview: {
-        event: string;
-        word_kind: string;
-        plain_text: string;
-        status: string;
-      };
+      preview: SearchPreview;
     }
   >();
   const pattern = options.patterns !== false && isPatternQuery(query);
@@ -82,10 +119,12 @@ export function lexicalSearch(
     const wordId = publication.word;
     const classification = entry.classification as {
       kind?: unknown;
+      selmaho?: unknown;
     } | null;
     const plainText = entry.plain_text.replace(/\s+/gu, " ").trim();
     const characters = Array.from(plainText);
-    const preview = {
+    const meta = previewMeta?.[entry.event];
+    const preview: SearchPreview = {
       event: entry.event,
       word_kind:
         typeof classification?.kind === "string"
@@ -96,6 +135,13 @@ export function lexicalSearch(
           ? characters.slice(0, 239).join("") + "…"
           : plainText,
       status: publication.status,
+      rafsi: (rafsi[publication.word] ?? []).slice(0, PREVIEW_RAFSI_LIMIT),
+      selmaho: Array.isArray(classification?.selmaho)
+        ? classification.selmaho
+            .filter((name): name is string => typeof name === "string")
+            .slice(0, PREVIEW_SELMAHO_LIMIT)
+        : [],
+      ...(meta ? boundedMeta(meta) : {}),
     };
     const old = hits.get(wordId);
     if (old) {
@@ -159,6 +205,7 @@ export async function lexicalSearchAsync(
     }),
   signal?: AbortSignal,
   options: SearchOptions = {},
+  previewMeta?: Record<string, SearchPreviewMeta>,
 ) {
   if (options.patterns === false || !isPatternQuery(query))
     return lexicalSearch(
@@ -170,6 +217,8 @@ export async function lexicalSearchAsync(
       undefined,
       rafsi,
       options,
+      undefined,
+      previewMeta,
     );
   const source = entries.filter((entry) => {
     const publication = evaluation.publications[entry.event];
@@ -203,5 +252,6 @@ export async function lexicalSearchAsync(
       match: row.match,
       position: 0,
     })),
+    previewMeta,
   );
 }

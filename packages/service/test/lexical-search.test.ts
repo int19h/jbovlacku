@@ -36,6 +36,64 @@ test("accent aliases share one hit whose display follows the selected definition
   assert.deepEqual(lexicalSearch(entries, "\u0301", "en", evaluation), []);
 });
 
+test("hit previews carry bounded rafsi, selmaho, and attribution fields", () => {
+  const entry: SearchEntry = {
+    event: "previewed",
+    word: { language: "jbo", spelling: "cukta" },
+    language: "en",
+    glosses: [{ text: "book" }],
+    plain_text: "A synthetic book.",
+    classification: { kind: "gismu", selmaho: ["A", "B"] },
+    body: "body",
+  };
+  const evaluation = {
+    publications: {
+      previewed: { word: "cukta-word", eligible: "eligible", status: "active" },
+    },
+    receipts: { previewed: { interpretation: "effective" } },
+  } as unknown as Evaluation;
+  const dates = Object.fromEntries(
+    Array.from({ length: 20 }, (_, index) => [`d${index}`, `200${index}`]),
+  );
+  const hits = lexicalSearch(
+    [entry],
+    "book",
+    "en",
+    evaluation,
+    false,
+    undefined,
+    { "cukta-word": Array.from({ length: 70 }, (_, index) => `r${index}`) },
+    {},
+    undefined,
+    {
+      previewed: {
+        issuer: "ed25519:" + "a".repeat(64),
+        notes: true,
+        attribution: {
+          source: "Synthetic source",
+          author: "Synthetic author",
+          account: null,
+          dates,
+        },
+      },
+    },
+  );
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].preview.rafsi.length, 64);
+  assert.deepEqual(hits[0].preview.selmaho, ["A", "B"]);
+  assert.equal(hits[0].preview.issuer, "ed25519:" + "a".repeat(64));
+  assert.equal(hits[0].preview.notes, true);
+  assert.equal(hits[0].preview.attribution?.author, "Synthetic author");
+  assert.equal(
+    Object.keys(hits[0].preview.attribution?.dates ?? {}).length,
+    16,
+  );
+  // Without preview metadata the row fields stay absent, not invented.
+  const bare = lexicalSearch([entry], "book", "en", evaluation);
+  assert.equal(bare[0].preview.issuer, undefined);
+  assert.deepEqual(bare[0].preview.rafsi, []);
+});
+
 test("related lexical queries scan every entry once even above ten HTTP pages", () => {
   const entries: SearchEntry[] = Array.from({ length: 1205 }, (_, index) => ({
     event: `event-${index}`,

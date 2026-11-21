@@ -672,6 +672,42 @@ export function forgetWord(id: string) {
   for (const key of [...wordCache.keys()])
     if (key.includes(`|${id}|`)) wordCache.delete(key);
 }
+/** The bounded row fields of a search preview. Every field stays optional. */
+function validPreviewRow(preview: Record<string, unknown>): boolean {
+  const shortList = (value: unknown, limit: number) =>
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.length <= limit &&
+      value.every((item) => typeof item === "string" && item.length <= 128));
+  if (!shortList(preview.rafsi, 64) || !shortList(preview.selmaho, 16))
+    return false;
+  if (preview.issuer !== undefined && !identityId(preview.issuer)) return false;
+  if (preview.notes !== undefined && typeof preview.notes !== "boolean")
+    return false;
+  if (preview.attribution === undefined || preview.attribution === null)
+    return true;
+  const attribution = preview.attribution;
+  if (!isObject(attribution)) return false;
+  const dates = attribution.dates;
+  return (
+    typeof attribution.source === "string" &&
+    attribution.source.length <= 512 &&
+    (attribution.author === null ||
+      (typeof attribution.author === "string" &&
+        attribution.author.length <= 512)) &&
+    (attribution.account === null ||
+      (isObject(attribution.account) &&
+        typeof attribution.account.origin === "string" &&
+        attribution.account.origin.length <= 512 &&
+        Number.isSafeInteger(attribution.account.account))) &&
+    isObject(dates) &&
+    Object.entries(dates).length <= 16 &&
+    Object.entries(dates).every(
+      ([key, value]) =>
+        key.length <= 64 && typeof value === "string" && value.length <= 128,
+    )
+  );
+}
 const validCursor = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 512;
 export function validateHits(hits: unknown, pageLimit: number): SearchHit[] {
@@ -699,7 +735,8 @@ export function validateHits(hits: unknown, pageLimit: number): SearchHit[] {
             typeof hit.preview.plain_text === "string" &&
             Array.from(hit.preview.plain_text).length <= 240 &&
             typeof hit.preview.status === "string" &&
-            hit.preview.status.length > 0)),
+            hit.preview.status.length > 0 &&
+            validPreviewRow(hit.preview))),
     )
   )
     throw new Error(

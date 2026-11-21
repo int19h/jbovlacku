@@ -1745,6 +1745,9 @@ Remove pause periods and commas and read `h` as an apostrophe in each complete s
 Segmented cmavo pieces, other punctuation, and unrecognized text do not establish that spelling.
 The response uses the same language, view, snapshot, receipt, eligibility, and retired-results filters as its hits.
 Search cursors include the group and literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
+Each hit preview carries the row fields a result row shows: at most 64 rafsi spellings and 16 selma'o names for the word, the signing identity, a notes flag, and imported source attribution with at most 16 date entries.
+The browser shows these fields from the response itself. It does not read each result's word or definition record to fill a row.
+An older response without the preview fields keeps the earlier per-definition backfill.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
 An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.
 These errors return no partial hits. The server enforces the shared compiled-work limits and its documented execution limits.
@@ -1930,8 +1933,17 @@ SearchResponse = {
   snapshot: ID, view: event-ID, query: string, language: string,
   segmentation?: "complete" | "limited", all_lojban?: boolean,
   hits: [{word: WordObject, word_id: word-ID, match: match-kind,
-          definitions: [candidate-ID]}], virtuals: [VirtualReference],
+          definitions: [candidate-ID], preview?: SearchPreview}],
+  virtuals: [VirtualReference],
   virtual_statuses: [VirtualStatus], next: cursor | null
+}
+SearchPreview = {
+  event: candidate-ID, word_kind: string, plain_text: string,
+  status: string, rafsi: [string], selmaho: [string],
+  issuer?: identity-ID, notes?: boolean,
+  attribution?: {source: string, author: string | null,
+                 account: {origin: string, account: integer} | null,
+                 dates: {string: string}} | null
 }
 VirtualDescriptor = {base: event-ID, conversion: "se" | "te" | "ve" | "xe", rule: "place-conversion-v1"}
 VirtualReference = {id: virtual-ID, descriptor: VirtualDescriptor, base_body: body-ID,

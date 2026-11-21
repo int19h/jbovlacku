@@ -651,6 +651,7 @@ export class DictionaryService {
               );
               if (
                 !payload.packages.searchRafsi ||
+                !payload.packages.searchMeta ||
                 !hasPackageSearchView(
                   payload.packages,
                   this.options.selectedView ?? zeroView,
@@ -2618,6 +2619,7 @@ export class DictionaryService {
         this.options.patternScanner,
         request.signal,
         { patterns: !literal, ...(group ? { group } : {}) },
+        packages.searchMeta,
       );
       const cursorHash = this.hashJson({
         search: "patterns-v3",

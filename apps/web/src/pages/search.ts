@@ -960,6 +960,48 @@ function hitRow(
       ),
     );
   }
+  // The server preview already carries the bounded row fields, so the row
+  // shows them at once. Older responses without them keep the backfill below.
+  let previewMetaRendered = false;
+  const preview = hit.preview;
+  if (preview) {
+    if (preview.rafsi?.length) {
+      rafsiSpan.textContent = preview.rafsi.join(", ");
+      rafsiSpan.hidden = false;
+    }
+    if (preview.selmaho?.length) {
+      selmaho.textContent = preview.selmaho.join(", ");
+      selmaho.hidden = false;
+    }
+    if (preview.issuer) {
+      previewMetaRendered = true;
+      if (preview.attribution) {
+        const author = preview.attribution.author;
+        meta.append(
+          author
+            ? el("bdi", {
+                text: author,
+                title: `${preview.attribution.source} source author`,
+              })
+            : text(`${preview.attribution.source} author unknown`),
+        );
+        meta.append(
+          text(" · imported by "),
+          identityLink(preview.issuer, null, { resolve: false }),
+        );
+        const date = sourceDate({
+          legacy: { attribution: { dates: preview.attribution.dates } },
+        } as never);
+        if (date) meta.append(text(` · ${date}`));
+      } else
+        meta.append(identityLink(preview.issuer, null, { resolve: false }));
+      if (preview.notes)
+        meta.append(
+          text(" · "),
+          link("notes", `${routes.definition(previewId)}#notes`),
+        );
+    }
+  }
   const target = {
     id: previewId,
     word: hit.word_id,
@@ -996,7 +1038,7 @@ function hitRow(
       controlSlot.replaceChildren(
         judgmentControl(app, target, judgmentOptions),
       );
-      if (word?.assignments.length) {
+      if (word?.assignments.length && preview?.rafsi === undefined) {
         void loadRafsiSpellings(word, remote.snapshot, context).then(
           (spellings) => {
             if (!context.live() || !spellings.length) return;
@@ -1009,20 +1051,26 @@ function hitRow(
         const record = await loadDefinition(previewId, remote.snapshot);
         if (!context.live()) return;
         if (record.body) previewRich(textNode, record.body.text, query);
-        const attributed = attribution(record.envelope, record.body);
-        meta.replaceChildren(attributed.node);
-        if (attributed.date) meta.append(text(` · ${attributed.date}`));
-        if (record.body?.notes.length)
-          meta.append(
-            text(" · "),
-            link("notes", `${routes.definition(previewId)}#notes`),
-          );
-        if (record.body?.classification.selmaho.length) {
+        // A failed or older backfill never clears the preview row fields.
+        if (!previewMetaRendered) {
+          const attributed = attribution(record.envelope, record.body);
+          meta.replaceChildren(attributed.node);
+          if (attributed.date) meta.append(text(` · ${attributed.date}`));
+          if (record.body?.notes.length)
+            meta.append(
+              text(" · "),
+              link("notes", `${routes.definition(previewId)}#notes`),
+            );
+        }
+        if (
+          preview?.selmaho === undefined &&
+          record.body?.classification.selmaho.length
+        ) {
           selmaho.textContent = record.body.classification.selmaho.join(", ");
           selmaho.hidden = false;
         }
       } catch {
-        meta.textContent = "";
+        // The preview text and row fields stay as the server sent them.
       }
     })();
   } else {
