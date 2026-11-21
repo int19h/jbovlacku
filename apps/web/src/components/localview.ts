@@ -24,6 +24,13 @@ export interface ViewScores {
   layers: string[][];
   unavailable_scores: string[];
 }
+/** The reason a calculation for another snapshot or view gives no scores here. */
+export function staleReason(
+  calculation: { snapshot: string; view: string },
+  content: { snapshot: string; view: string },
+): string {
+  return `The local calculation is for snapshot ${calculation.snapshot.slice(7, 19)}… and view ${calculation.view.slice(5, 17)}…, but this content is from snapshot ${content.snapshot.slice(7, 19)}… and view ${content.view.slice(5, 17)}…. Recompute from records to calculate this snapshot.`;
+}
 /** Scores for a word under the selected view mode. Never substitutes site scores in the personal view. */
 export async function viewScores(
   app: App,
@@ -49,7 +56,7 @@ export async function viewScores(
       // calculation for another snapshot is not shown beside this content.
       return {
         personal: true,
-        reason: `The local calculation is for snapshot ${ranking.snapshot.slice(7, 19)}… and view ${ranking.view.slice(5, 17)}…, but this content is from snapshot ${word.snapshot.slice(7, 19)}… and view ${word.view.slice(5, 17)}…. Recompute from records to calculate this snapshot.`,
+        reason: staleReason(ranking, word),
         stale: true,
         snapshot: word.snapshot,
         view: word.view,
@@ -120,6 +127,12 @@ export function calculationPanel(
     label: string;
     includeSnapshot?: boolean;
     onRefresh?: () => void;
+    /**
+     * The snapshot and view of the content beside this panel, when the page
+     * has one. A ready calculation for another snapshot or view is reported
+     * as unavailable for this content, never as the content's calculation.
+     */
+    expected?: { snapshot: string; view: string };
   } & (
     | { mode: "personal"; context: RenderContext }
     | { mode: "site"; context?: RenderContext }
@@ -177,7 +190,25 @@ export function calculationPanel(
   if (options.mode === "personal") actions.append(useSite);
   region.append(line, actions);
   const update = (status: PersonalStatus) => {
-    line.textContent = statusText(status, options.includeSnapshot);
+    // One state for the whole page: a calculation that is ready for another
+    // snapshot or view does not score this content, so the panel says so
+    // instead of presenting that calculation as this page's.
+    const expected = options.expected;
+    const differs =
+      status.state === "ready" && expected
+        ? status.snapshot !== expected.snapshot && status.view !== expected.view
+          ? "snapshot and view"
+          : status.snapshot !== expected.snapshot
+            ? "snapshot"
+            : status.view !== expected.view
+              ? "view"
+              : null
+        : null;
+    // A previous calculation is named by the mode that produced it.
+    line.textContent =
+      status.state === "ready" && differs
+        ? `${status.mode === "personal" ? "Personal" : "Site"} view calculated in this browser from ${plural(status.events, "verified record")} for another ${differs}. Personal scores are unavailable for this ${differs}.`
+        : statusText(status, options.includeSnapshot);
     const busy =
       status.state === "downloading" || status.state === "evaluating";
     cancel.hidden = !busy;
