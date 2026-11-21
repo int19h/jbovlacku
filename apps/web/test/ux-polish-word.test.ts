@@ -1086,5 +1086,11 @@ test("declining the first-signature notice does not carry the key page's status 
   await expect(page).toHaveURL(/\/word\/cukta$/);
   await expect(page.locator("main h1")).toHaveText("cukta");
   await page.waitForTimeout(500);
-  await expect(page.getByRole("status")).not.toContainText("Test it below");
+  // The shell's status line, found by its element so that an empty line
+  // still matches.
+  const line = page.locator("#app > .status[role=status]");
+  await expect(line).toHaveCount(1);
+  // Read once: a retrying "not" assertion would also pass if some later
+  // render cleared the line.
+  expect(await line.textContent()).not.toContain("Test it below");
 });
