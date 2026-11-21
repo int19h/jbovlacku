@@ -231,6 +231,8 @@ export function describePeer(peer: PeerDelivery): string {
     case "accepted":
       return "Delivered.";
     case "queued":
+      if (peer.sendStarted !== undefined)
+        return "A send started. Its outcome is not confirmed yet.";
       return peer.attempts === 0
         ? "Waiting to send."
         : "Waiting to send again.";
@@ -264,28 +266,35 @@ export function recipientLabel(item: OutboxItem, peerId: string): string {
     `recipient "${peerId}" without a saved address`
   );
 }
+/** True when no attempt stored an outcome or a send mark since `seen` was read. */
+export function unchangedSince(
+  stored: PeerDelivery,
+  seen: PeerDelivery,
+): boolean {
+  return (
+    stored.attempt === seen.attempt && stored.sendAttempt === seen.sendAttempt
+  );
+}
 /**
- * Merges the outcome of one attempt with the peer state stored meanwhile. A
- * final state recorded by another tab stays. A newer decision stays when this
- * attempt started before it. Attempt counters never go down.
+ * Merges the outcome of one attempt with the peer state stored meanwhile.
+ * `seen` is the state the attempt read and `attempt` is its random ID. An
+ * accepted state always stays. An acceptance from a valid receipt always
+ * applies. Any other outcome applies only while this attempt's own send
+ * mark is stored, or when no other attempt stored an outcome or a mark
+ * since `seen` was read. Attempt counters never go down.
  */
 export function mergePeer(
   stored: PeerDelivery,
   next: PeerDelivery,
-  started: number,
+  seen: PeerDelivery,
+  attempt: string,
 ): PeerDelivery {
   const attempts = Math.max(stored.attempts, next.attempts);
-  const storedFinal = stored.state === "accepted" || stored.state === "refused";
-  const nextFinal = next.state === "accepted" || next.state === "refused";
   if (stored.state === "accepted" && next.state !== "accepted") return stored;
-  if (storedFinal && !nextFinal) return { ...stored, attempts };
-  if (
-    stored.lastAttempt !== null &&
-    stored.lastAttempt > started &&
-    next.state !== "accepted"
-  )
-    return { ...stored, attempts };
-  return { ...next, attempts };
+  if (next.state === "accepted") return { ...next, attempts };
+  if (stored.sendAttempt === attempt || unchangedSince(stored, seen))
+    return { ...next, attempts };
+  return { ...stored, attempts };
 }
 
 export class DeliveryEngine {
@@ -684,6 +693,9 @@ export class DeliveryEngine {
   ): Promise<OutboxItem | undefined> {
     let item = await this.fresh(id);
     if (!item) return undefined;
+    // navigator.onLine is only a hint. An attempt always runs, so a
+    // reachable server still receives the record when the browser
+    // reports offline. A network failure decides the outcome below.
     // Earlier records of the same group go first so dependencies arrive in order.
     const earlier = (await this.items()).filter(
       (other) =>
@@ -703,7 +715,23 @@ export class DeliveryEngine {
       if (!explicit && (current.stopped || !this.automaticallyDue(peer, now)))
         continue;
       const started = Date.now();
-      const next = await this.attempt(current, peerId, peer);
+      // Random, so two attempts that start in the same millisecond differ.
+      const attemptId = crypto.randomUUID();
+      const next = await this.attempt(
+        current,
+        peerId,
+        peer,
+        started,
+        attemptId,
+      );
+      // Null means that this attempt sent nothing and has no outcome to
+      // store: the record was certainly not sent, or another attempt owns
+      // the send. Nothing is written, so a state that another tab or a
+      // Resume stored meanwhile stays as it is.
+      if (next === null) {
+        await this.notify();
+        continue;
+      }
       // Merge only this peer's result with what is stored now. A stop, another
       // tab's acceptance, or a newer retry decision stays.
       await this.store.mergeOutbox(id, (stored) => ({
@@ -711,7 +739,7 @@ export class DeliveryEngine {
         peers: {
           ...stored.peers,
           [peerId]: stored.peers[peerId]
-            ? mergePeer(stored.peers[peerId], next, started)
+            ? mergePeer(stored.peers[peerId], next, peer, attemptId)
             : next,
         },
       }));
@@ -723,7 +751,9 @@ export class DeliveryEngine {
     item: OutboxItem,
     peerId: string,
     peer: PeerDelivery,
-  ): Promise<PeerDelivery> {
+    started: number,
+    attemptId: string,
+  ): Promise<PeerDelivery | null> {
     const target = savedPeer(item, peerId);
     if (!target)
       return {
@@ -731,8 +761,8 @@ export class DeliveryEngine {
         nextAttempt: null,
         error: `Recipient "${peerId}" is not configured in this record. The record saved no address for it, and current preferences never replace a missing address. Nothing was sent.`,
         failure: "unresolved",
+        attempt: attemptId,
       };
-    const started = Date.now();
     const attempts = peer.attempts + 1;
     const fetchVariant = (id: string) =>
       objectBytes(`/events/${encodeURIComponent(id)}`, 20480, {
@@ -761,24 +791,115 @@ export class DeliveryEngine {
               ? "server"
               : null,
         receipt,
+        attempt: attemptId,
       };
     };
+    // Set just before the POST starts. Before that point only receipt and
+    // event reads have run, and they change nothing on a server.
+    let posted = false;
     try {
-      // After an unknown outcome, ask whether the record arrived before sending again.
-      if (peer.state === "unknown" || peer.state === "missing-body") {
+      // After an unknown or refused outcome, ask whether the record
+      // arrived before sending again. While the browser reports offline,
+      // a queued record is looked up first too, so that a failed lookup
+      // shows that the POST was never sent. No peer is rewritten first.
+      if (
+        peer.state === "unknown" ||
+        peer.state === "missing-body" ||
+        peer.state === "refused" ||
+        peer.sendStarted !== undefined ||
+        !navigator.onLine
+      ) {
         try {
           const receipt = await getReceipt(item.id, { peer: target });
           const settled = await settle(receipt);
           if (settled.state === "accepted" || settled.state === "refused")
             return settled;
         } catch (error) {
-          if (!(error instanceof RequestError && error.status === 404))
-            throw error;
+          const notFound =
+            error instanceof RequestError && error.status === 404;
+          // A queued record was never sent, so its lookup only checks the
+          // connection. An error answer, or an answer without a usable
+          // receipt, lets the POST go ahead. Only a valid receipt can show
+          // that the record was delivered.
+          const neverSent =
+            peer.state === "queued" && peer.sendStarted === undefined;
+          const answered =
+            neverSent &&
+            !(error instanceof TransportError) &&
+            !(error instanceof DOMException && error.name === "AbortError");
+          if (!notFound && !answered) throw error;
         }
       }
+      // Store that delivery is uncertain before the POST starts. If the page
+      // closes while the request is open, the next attempt in any tab then
+      // asks for the receipt before it sends again. A first send stays
+      // queued, so it shows neutral progress. Any other outcome becomes
+      // unknown with an attempt due, so a refusal does not stay on view
+      // for a record that may have arrived. The merge keeps an accepted
+      // state and any state from a later attempt.
+      //
+      // The same transaction decides whether this attempt may send. It may
+      // not when the record is accepted, or when another attempt stored an
+      // outcome or its own send mark since this attempt read the record.
+      // That other attempt then owns the outcome, and this one sends
+      // nothing and stores nothing.
+      let maySend = false;
+      await this.store.mergeOutbox(item.id, (stored) => {
+        maySend = false;
+        const current = stored.peers[peerId];
+        if (
+          !current ||
+          current.state === "accepted" ||
+          !unchangedSince(current, peer)
+        )
+          return stored;
+        maySend = true;
+        const mark = { sendAttempt: attemptId, sendStarted: started };
+        return {
+          ...stored,
+          peers: {
+            ...stored.peers,
+            [peerId]:
+              current.state === "queued"
+                ? { ...current, ...mark }
+                : {
+                    ...current,
+                    state: "unknown",
+                    attempts: Math.max(current.attempts, attempts),
+                    lastAttempt: started,
+                    nextAttempt: started,
+                    error: "A send started. Its outcome is unknown.",
+                    failure: null,
+                    ...mark,
+                  },
+          },
+        };
+      });
+      if (!maySend) return null;
+      // Open pages show the mark, for example the saved publication row.
+      await this.notify();
+      posted = true;
       const receipt = await postEvent(item.transport, { peer: target });
       return settle(receipt);
     } catch (error) {
+      // A failed lookup or read before the POST is not an answer about the
+      // record, even when the status is one that refuses a POST. It is
+      // retried after the backoff. A refusal, or a record whose earlier POST
+      // may have arrived, becomes unknown, so the retry asks again.
+      if (error instanceof RequestError && !posted)
+        return {
+          state:
+            peer.state === "refused" || peer.sendStarted !== undefined
+              ? "unknown"
+              : peer.state,
+          attempts,
+          lastAttempt: started,
+          nextAttempt: started + backoff(attempts, error.retryAfterMs),
+          error: `${error.message}${error.code ? ` (${error.code})` : ""}`,
+          failure: "server",
+          receipt: peer.receipt,
+          attempt: attemptId,
+        };
       if (error instanceof RequestError) {
         const refused = REFUSAL_STATUSES.includes(error.status);
         return {
@@ -791,8 +912,21 @@ export class DeliveryEngine {
           error: `${error.message}${error.code ? ` (${error.code})` : ""}`,
           failure: refused ? "refused" : "server",
           receipt: peer.receipt,
+          attempt: attemptId,
         };
       }
+      // Fetch gives the same network error for a connection that was never
+      // made and for one that dropped after the server took the request, so
+      // the error cannot show whether a POST arrived. Only a failure before
+      // the POST started shows that the record was not sent. While the
+      // browser reports offline, such a failure keeps the stored outcome
+      // and retry schedule. Any other failure, including every timeout or
+      // drop of the POST itself, makes the outcome unknown, and the next
+      // attempt asks for a receipt first. With the browser online, a failed
+      // lookup also makes the outcome unknown, so its retry waits for the
+      // backoff.
+      if (error instanceof TransportError && !posted && !navigator.onLine)
+        return null;
       const transport = error instanceof TransportError ? error.kind : null;
       return {
         state: "unknown",
@@ -802,6 +936,7 @@ export class DeliveryEngine {
         error: error instanceof Error ? error.message : "Delivery is unknown.",
         failure: transport ?? "server",
         receipt: peer.receipt,
+        attempt: attemptId,
       };
     }
   }
@@ -829,12 +964,24 @@ export class DeliveryEngine {
           peerId,
           peer.state === "accepted"
             ? peer
-            : ({
-                ...peer,
-                state: peer.state === "queued" ? "queued" : "unknown",
-                nextAttempt: Date.now(),
-                failure: peer.failure === "unresolved" ? null : peer.failure,
-              } as PeerDelivery),
+            : peer.state === "refused"
+              ? // Resume retries a refused record, so its outcome is unknown
+                // until the attempt asks for the receipt.
+                ({
+                  ...peer,
+                  state: "unknown",
+                  nextAttempt: Date.now(),
+                  error:
+                    "A server refused this record before. Resume retries it.",
+                  failure: null,
+                } as PeerDelivery)
+              : // Every other outcome stays. The attempt asks for the receipt
+                // first after an unknown or header-only outcome.
+                ({
+                  ...peer,
+                  nextAttempt: Date.now(),
+                  failure: peer.failure === "unresolved" ? null : peer.failure,
+                } as PeerDelivery),
         ]),
       ),
     }));
@@ -844,22 +991,10 @@ export class DeliveryEngine {
   }
   /** Immediate explicit attempt. Follows the receipt lookup and immutable retry rules. */
   async tryNow(id: string) {
-    await this.store.mergeOutbox(id, (item) => ({
-      ...item,
-      peers: Object.fromEntries(
-        Object.entries(item.peers).map(([peerId, peer]) => [
-          peerId,
-          peer.state === "accepted" || peer.state === "queued"
-            ? peer
-            : ({
-                ...peer,
-                state: peer.state === "refused" ? "unknown" : peer.state,
-                failure: peer.failure === "unresolved" ? null : peer.failure,
-              } as PeerDelivery),
-        ]),
-      ),
-    }));
-    await this.notify();
+    // No peer is rewritten before the attempt. The attempt itself asks
+    // for a receipt first. While the browser reports offline, a lookup that
+    // fails at the network level keeps a refused record refused. With the
+    // browser online, the same failure makes the outcome unknown.
     const result = await this.deliver(id, true);
     this.schedule();
     return result;

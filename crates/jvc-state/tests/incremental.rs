@@ -184,6 +184,11 @@ fn score(
     let score = jvc_rank::score(&candidate, &ranking.weights).unwrap();
     Some((ranking.weights, score))
 }
+/// `previous` IDs over every record of the input.
+fn predecessors(input: &EvaluationInput) -> usize {
+    input.events.iter().map(|e| e.header().previous.len()).sum()
+}
+
 fn options(input: &EvaluationInput) -> EvaluationOptions {
     EvaluationOptions {
         selected_view: input.selected_view.clone(),
@@ -459,8 +464,12 @@ fn host_checkpoint_rejects_invalid_fields_and_changed_options_keep_parent_isolat
         .clone();
     wrong_id["nodes"][&id]["id"] = json!(format!("jve1:{}", "f".repeat(64)));
     let mut excess_work = saved;
-    excess_work["remaining_work"] =
-        json!(f.input.limits.traversal_budget(f.input.events.len()) + 1);
+    excess_work["remaining_work"] = json!(
+        f.input
+            .limits
+            .traversal_budget(f.input.events.len(), predecessors(&f.input))
+            + 1
+    );
     for invalid in [missing, wrong_id, excess_work] {
         assert!(
             EvaluatedState::restore_host_checkpoint(
@@ -472,7 +481,12 @@ fn host_checkpoint_rejects_invalid_fields_and_changed_options_keep_parent_isolat
     }
     let restored = EvaluatedState::restore_host_checkpoint(&bytes, "guard-checks").unwrap();
     let restored_expected = restored.evaluation().clone();
-    f.input.limits.traversal = Some(f.input.limits.traversal_budget(f.input.events.len()) + 1000);
+    f.input.limits.traversal = Some(
+        f.input
+            .limits
+            .traversal_budget(f.input.events.len(), predecessors(&f.input))
+            + 1000,
+    );
     f.input.overlay = Some(
         json!({"version":1,"base_view":f.input.selected_view,"root_changes":[{"identity":key(1),"q":{"numerator":2,"denominator":1}}],"trust":[],"blocked":[],"work":null}),
     );

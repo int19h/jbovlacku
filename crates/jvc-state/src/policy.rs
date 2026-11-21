@@ -70,12 +70,11 @@ pub(crate) fn resolve_referenced_selections_cached<'a>(
     let Some(body) = node.body.as_ref() else {
         return resolved;
     };
-    let base_budget = DEFAULT_TRAVERSAL_BASE
-        .saturating_add(nodes.len().saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD));
+    // The default budget without the selection term.
+    let base = DEFAULT_TRAVERSAL_BASE;
     #[cfg(test)]
-    let base_budget = RESOLVER_BASE_OVERRIDE
-        .with(|o| o.get())
-        .unwrap_or(base_budget);
+    let base = RESOLVER_BASE_OVERRIDE.with(|o| o.get()).unwrap_or(base);
+    let base_budget = default_input_budget(base, nodes.len(), predecessor_edges(nodes));
     let mut invalid_work = 0usize;
     for entry in body
         .view()
@@ -204,6 +203,9 @@ pub(crate) fn select(
         todo.extend(parents);
         if id == input.selected_view {
             let mut invalid_selections = resolved.invalid.clone();
+            // A selection that several entries name is read, and
+            // charged, once.
+            let mut charged_selections: BTreeSet<&str> = BTreeSet::new();
             for entry in body
                 .view()
                 .index("import_sets")
@@ -226,8 +228,9 @@ pub(crate) fn select(
                     result.reasons.insert("import_selection_unavailable".into());
                     continue;
                 };
-                if let Some(ids) = import_selections.get(selection_id)
+                if let Some((selection_id, ids)) = import_selections.get_key_value(selection_id)
                     && !ids.is_empty()
+                    && charged_selections.insert(selection_id.as_str())
                     && !graph.charge(ids.len())
                 {
                     result.available = false;
@@ -1576,7 +1579,8 @@ pub(crate) fn reset_selection_hash_validations() {
 
 #[cfg(test)]
 thread_local! {
-    /// Test override of the resolver's base budget.
+    /// Test override of the base that the resolver's bound starts
+    /// from. The record and predecessor terms still apply.
     pub(crate) static RESOLVER_BASE_OVERRIDE: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
 }

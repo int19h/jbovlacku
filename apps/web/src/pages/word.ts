@@ -20,6 +20,7 @@ import {
   plural,
   rationalSign,
 } from "../lib/format.ts";
+import { nullOnSpellingRefusal } from "../lib/core-error.ts";
 import {
   navigate,
   routes,
@@ -62,10 +63,29 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   main.className = "surface-word";
   const key: string = route.segments[1] ?? "";
   const isId: boolean = /^jvw1:[0-9a-f]{64}$/.test(key);
-  const id = isId
-    ? key
-    : wordId({ language: "jbo", spelling: key.normalize("NFC") });
   const spellingHint = isId ? null : key.normalize("NFC");
+  let id: string;
+  if (isId) id = key;
+  else {
+    // Only the core's spelling refusal names no word. Any other failure
+    // from the core is rethrown and reported as itself.
+    const resolved = nullOnSpellingRefusal(() =>
+      wordId({ language: "jbo", spelling: spellingHint! }),
+    );
+    if (resolved === null) {
+      main.className = "";
+      context.title("Page unavailable");
+      main.append(
+        el("h1", { class: "page", text: "Page unavailable" }),
+        p(
+          "This link does not name a word. Use the search field or the links above to return to the dictionary.",
+          "notice",
+        ),
+      );
+      return;
+    }
+    id = resolved;
+  }
   const requestedLanguage =
     route.params.get("lang") ?? app.session.preferences.definitionLanguage;
   context.title(spellingHint ?? "Word");

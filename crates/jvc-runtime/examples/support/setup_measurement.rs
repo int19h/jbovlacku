@@ -241,7 +241,7 @@ pub fn small_shapes() -> AllocationCoverage {
         "issuer":"issuer", "kind":"definition.publish", "word":"word", "language":"en", "assignment":null,
         "lineage":{}, "imported":false, "source":null, "source_record":null, "account":null,
         "authority":"native", "controller":null, "claim":null, "observations":[], "status_frontier":[],
-        "deciding_claim":null, "controller_candidates":[], "witness_contributions":{}, "missing":[],
+        "deciding_claim":null, "controller_candidates":[], "missing":[],
         "content_available":true, "eligible":"eligible", "status":"active", "reasons":[]
     });
     for n in [

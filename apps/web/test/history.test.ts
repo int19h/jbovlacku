@@ -38,7 +38,10 @@ test("a failed local write never reports a saved group and sends nothing", async
       return new Response("{}");
     };
     const store = {
-      get: async () => [],
+      // One remembered own head, so signing from saved history may proceed
+      // to the failing write.
+      get: async (name: string) =>
+        name === "heads" ? ["jve1:" + "b".repeat(64)] : [],
       list: async () => [],
       queueGroup: async () => {
         throw new Error("Storage failed");
