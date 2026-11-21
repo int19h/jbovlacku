@@ -785,7 +785,7 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             account: a.clone(),
             controller,
             candidates: candidates.clone(),
-            contributions,
+            contributions: std::rc::Rc::new(contributions),
             observation_evidence,
             certificates,
             chain: chain_ids,
@@ -814,6 +814,7 @@ pub(crate) fn evaluate(graph: &Graph, input: &EvaluationOptions, result: &mut Ev
             }
             let p = result.publications.get_mut(id).unwrap();
             p.controller_candidates = state.candidates.clone();
+            // Shared: the charge above covers the reference.
             p.witness_contributions = state.contributions.clone();
             p.claim = state.controller.clone();
             p.controller = state.controller_identity.clone();

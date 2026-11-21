@@ -363,7 +363,7 @@ impl Serialize for PublicationStatuses<'_> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(self.0.publications.len()))?;
         for id in self.0.publications.keys() {
-            if let Some(status) = jvc_state::publication_status(self.0, id) {
+            if let Some(status) = jvc_state::publication_status_ref(self.0, id) {
                 map.serialize_entry(id, &status)?;
             }
         }
