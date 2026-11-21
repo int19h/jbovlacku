@@ -65,7 +65,7 @@
 }
 @media (max-width: 640px) {
   .actions > .btn-quiet {
-    margin-inline-start: -10px;
+    padding-inline-start: 0;
   }
 }
 

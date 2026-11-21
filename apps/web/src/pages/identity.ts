@@ -595,6 +595,7 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
       return;
     }
     submit.disabled = true;
+    const identityBefore = session.identity;
     try {
       const created = await session.create(pass.input.value);
       pass.input.value = repeat.input.value = "";
@@ -618,7 +619,8 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
       createError.hidden = false;
       app.announce(createError.textContent);
       submit.disabled = false;
-      if (session.backup) rerender();
+      if (session.identity !== identityBefore) rerender();
+      else pass.input.focus();
     }
   });
   main.append(form);
@@ -685,6 +687,7 @@ function importBackupForm(
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     importError.hidden = true;
+    const identityBefore = app.session.identity;
     const selected = file.input.files?.[0];
     if (!selected) {
       importError.textContent = "Select a backup file.";
@@ -710,7 +713,10 @@ function importBackupForm(
       importError.hidden = false;
       app.announce(importError.textContent);
       submit.disabled = false;
-      if (app.session.backup) rerender();
+      // A rerender is only for a changed selected identity. Otherwise the
+      // form, its alert and focus stay where the user left them.
+      if (app.session.identity !== identityBefore) rerender();
+      else pass.input.focus();
     }
   });
   void mode;

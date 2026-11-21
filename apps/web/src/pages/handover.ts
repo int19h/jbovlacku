@@ -953,6 +953,7 @@ export function renderExisting(
   let updateGeneration = 0;
   const update = async () => {
     const mine = ++updateGeneration;
+    const restoreFocus = box.contains(document.activeElement);
     const state = await handoverState(app, record);
     if (mine !== updateGeneration || !box.isConnected) return;
     box.replaceChildren();
@@ -964,13 +965,13 @@ export function renderExisting(
           : state.acceptDone
             ? "Acceptance delivered, transfer waiting."
             : "Old key retired locally. Both events are waiting to upload.";
-    box.append(
-      el("p", {
-        class: "small",
-        style: "font-weight:650;margin:0",
-        text: line,
-      }),
-    );
+    const statusLine = el("p", {
+      class: "small",
+      style: "font-weight:650;margin:0",
+      text: line,
+      tabindex: "-1",
+    });
+    box.append(statusLine);
     box.append(
       p(
         `Old key ${shortIdentity(record.old)} → new key ${shortIdentity(record.successor)}. Transfer ${record.transfer.slice(0, 20)}…, acceptance ${record.accept.slice(0, 20)}….`,
@@ -1013,6 +1014,11 @@ export function renderExisting(
           "small",
         ),
       );
+    if (restoreFocus) {
+      if (state.transferDone && state.acceptDone)
+        statusLine.focus({ preventScroll: true });
+      else box.querySelector("button")?.focus({ preventScroll: true });
+    }
   };
   void update();
   const unsubscribe = app.delivery.subscribe(() => void update());

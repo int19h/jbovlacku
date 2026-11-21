@@ -84,6 +84,31 @@ test("backup test and import errors stay inline by the field", async ({
   await context.close();
 });
 
+test("a failed import of the existing key keeps its form, alert and focus", async ({
+  page,
+}) => {
+  const backup = await createIdentity(page);
+  await page.getByRole("button", { name: "Import", exact: true }).click();
+  const form = page.getByRole("form", {
+    name: "Import an encrypted backup",
+  });
+  await form.getByLabel("Backup file").setInputFiles({
+    name: "backup.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(backup)),
+  });
+  await form.getByLabel("Backup passphrase").fill("wrong passphrase");
+  await form
+    .getByRole("button", { name: "Open backup locally" })
+    .click();
+  await expect(form.getByRole("alert")).toHaveText(
+    "This file did not unlock with that passphrase.",
+  );
+  await expect(form.getByRole("alert")).toBeVisible();
+  await expect(form).toBeVisible();
+  await expect(form.getByLabel("Backup passphrase")).toBeFocused();
+});
+
 test("unlock uses its own message and focus lands on the Lock control", async ({
   page,
 }) => {
@@ -161,6 +186,28 @@ test("handover banner keeps the delivery link out of the sentence and offers Che
   await banner.getByRole("button", { name: "Check again" }).click();
   await expect(banner).toContainText("Old key retired, acceptance waiting.");
   await page.unrouteAll({ behavior: "ignoreErrors" });
+  // Activating Check again keeps focus on the replacement control.
+  await banner.getByRole("button", { name: "Check again" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(banner).toContainText("Old key retired, acceptance waiting.");
+  await expect(
+    banner.getByRole("button", { name: "Check again" }),
+  ).toBeFocused();
+  // Deliver the acceptance from a second page of the same browser, then a
+  // focused Check again moves focus to the status text, not the body.
+  const other = await page.context().newPage();
+  await other.goto("/outbox");
+  await other.getByRole("button", { name: "Try now" }).click();
+  await expect(other.locator("#app > [role=status]")).toHaveText("Delivered.");
+  await other.close();
+  await banner.getByRole("button", { name: "Check again" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(banner).toContainText("Handover complete");
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.activeElement?.textContent?.trim() ?? ""),
+    )
+    .toContain("Handover complete");
 });
 
 test("identity intro paragraphs and empty editor links have visible separation", async ({
@@ -190,6 +237,29 @@ test("identity intro paragraphs and empty editor links have visible separation",
     return value;
   });
   expect(margin).toBeGreaterThan(0);
+});
+
+test("same-row action buttons keep their gap at 600 px", async ({ page }) => {
+  await page.setViewportSize({ width: 600, height: 844 });
+  await page.goto("/identity");
+  await expect(
+    page.getByRole("form", { name: "Create a key" }),
+  ).toBeVisible();
+  const boxes = await page.evaluate(() => {
+    const form = document.querySelector('form[aria-label="Create a key"]')!;
+    const buttons = [...form.querySelectorAll("button")];
+    const create = buttons.find(
+      (b) => b.textContent?.trim() === "Create a key",
+    )!;
+    const reveal = buttons.find(
+      (b) => b.textContent?.trim() === "Reveal passphrases",
+    )!;
+    const a = create.getBoundingClientRect();
+    const b = reveal.getBoundingClientRect();
+    return { sameRow: Math.abs(a.top - b.top) < 4, gap: b.left - a.right };
+  });
+  expect(boxes.sameRow).toBe(true);
+  expect(boxes.gap).toBeGreaterThanOrEqual(0);
 });
 
 test("phone Reveal passphrase aligns with the import button edge", async ({
