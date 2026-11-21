@@ -1094,3 +1094,49 @@ test("declining the first-signature notice does not carry the key page's status 
   // render cleared the line.
   expect(await line.textContent()).not.toContain("Test it below");
 });
+
+test("a part swapped in after a failure keeps following the calculation in open score details", async ({
+  page,
+}) => {
+  await page.goto("/trust");
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await expect(
+    page.getByRole("link", { name: "Trust: personal view" }),
+  ).toBeVisible();
+  // The first calculation is held, so the page renders provisionally, and
+  // then fails. The settled part replaces the provisional one in place.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let offline = false;
+  await page.route("**/api/v1/inventory?*", async (route) => {
+    await held;
+    return offline
+      ? route.abort()
+      : route.fulfill({ status: 500, body: "broken" });
+  });
+  await page.goto("/word/cukta?lang=en");
+  const note = page.getByText(/^Personal scores are unavailable:/);
+  await expect(note).toContainText("The local calculation is not ready yet.");
+  release();
+  await expect(note).toContainText("Request failed (500).", { timeout: 30000 });
+  const details = page
+    .locator("article.definition")
+    .first()
+    .locator("details.judgment-details");
+  await details.locator("summary").click();
+  await expect(details.locator(".body")).toContainText("Request failed (500).");
+  // A retry that fails differently updates the swapped-in part in place.
+  offline = true;
+  const panel = page.getByRole("region", { name: "Personal view" });
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("No connection to the server.");
+  await expect(note).toContainText("No connection to the server.");
+  await expect(details).toHaveAttribute("open", "");
+  const reason = details
+    .locator(".body p.small")
+    .filter({ hasText: "Your personal view" });
+  await expect(reason).toContainText("No connection to the server.");
+  await expect(reason).not.toContainText("Request failed (500).");
+});

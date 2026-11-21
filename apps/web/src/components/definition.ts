@@ -352,7 +352,11 @@ export function definitionBlock(
       score: options.score,
       unavailable: options.unavailable,
       personal: options.personal,
-      reason: options.reason,
+      // Read when used, so the score title and details follow a page that
+      // updates the reason.
+      get reason() {
+        return options.reason;
+      },
       status: options.status,
       calculation: options.calculation,
       large: true,

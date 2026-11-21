@@ -54,7 +54,7 @@ export default defineConfig({
     },
     {
       name: "firefox-ux",
-      testMatch: /ux-fixes\.test\.ts/,
+      testMatch: /(?:ux-regressions|ux-fixes)\.test\.ts/,
       use: { browserName: "firefox" },
     },
     {

@@ -36,7 +36,11 @@ import {
   type TypeDictionary,
 } from "./assistance.ts";
 import { nearbyQuery, rankNearby } from "./nearby.ts";
-import { lexicalSearch, lexicalSearchAsync } from "./lexical-search.ts";
+import {
+  lexicalSearch,
+  lexicalSearchAsync,
+  previewRafsiByWord,
+} from "./lexical-search.ts";
 import { PatternError } from "../../search/src/index.ts";
 import {
   checkpointBindingKey,
@@ -651,6 +655,8 @@ export class DictionaryService {
               );
               if (
                 !payload.packages.searchRafsi ||
+                !payload.packages.searchMeta ||
+                !payload.packages.searchRafsiClaims ||
                 !hasPackageSearchView(
                   payload.packages,
                   this.options.selectedView ?? zeroView,
@@ -2618,6 +2624,7 @@ export class DictionaryService {
         this.options.patternScanner,
         request.signal,
         { patterns: !literal, ...(group ? { group } : {}) },
+        packages.searchMeta,
       );
       const cursorHash = this.hashJson({
         search: "patterns-v3",
@@ -2650,7 +2657,25 @@ export class DictionaryService {
         )
           throw new ApiError(400, "bad_cursor", "Search cursor is invalid.");
       }
-      const page = ordered.slice(offset, offset + this.limit(url, 100));
+      // Rafsi follow the claim states of the served view, as on the word
+      // route. The lists are prepared once per evaluated snapshot and view,
+      // so each hit of this page reads one prepared list.
+      const rafsiByWord = packages.searchRafsiClaims
+        ? previewRafsiByWord(packages.searchRafsiClaims, evaluation)
+        : null;
+      const page = ordered
+        .slice(offset, offset + this.limit(url, 100))
+        .map((hit) =>
+          rafsiByWord
+            ? {
+                ...hit,
+                preview: {
+                  ...hit.preview,
+                  rafsi: rafsiByWord.get(hit.word_id) ?? [],
+                },
+              }
+            : hit,
+        );
       return json({
         snapshot: snapshot.snapshot,
         view,

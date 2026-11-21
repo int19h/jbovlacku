@@ -10,6 +10,12 @@ import {
 } from "../../core/src/index.ts";
 import type { ObjectStore, Snapshot } from "./storage.ts";
 import { orderedPrefetch, readRecordBytes } from "./record-reads.ts";
+import {
+  PREVIEW_SELMAHO_COUNT,
+  PREVIEW_SELMAHO_LENGTH,
+  boundedPreviewAttribution,
+  boundedPreviewList,
+} from "../../search/src/preview-row.ts";
 /**
  * Rafsi spellings listed per version 2 entry. The browser applies the same
  * bound. A longer list is cut, and the entry says so. The exact claims of a
@@ -64,10 +70,38 @@ export interface MaterializedPackage {
   hash: string;
   bytes: number;
 }
+/**
+ * Row metadata for one definition, keyed by event ID. It is bounded once,
+ * when the packages are built, by the preview rule of
+ * packages/search/src/preview-row.ts. The server search response copies it
+ * into each hit preview as it is. The attribution dates come from the
+ * signed legacy body.
+ */
+export interface SearchPreviewMeta {
+  /** The signing identity of the publication. For imports, the importer. */
+  issuer: string;
+  /** Whether the definition has notes. */
+  notes: boolean;
+  /** Imported source attribution, or null for native publications. */
+  attribution: SearchEntryV2["attribution"];
+  /** The definition's selma'o names, within the preview bounds. */
+  selmaho: string[];
+}
+/**
+ * Every retained rafsi claim of a word, as [claim event ID, spelling]. The
+ * spelling is null when the claim body is unavailable. The search route
+ * reads the claim states of the served view from these, for the hits of one
+ * page only.
+ */
+export type SearchRafsiClaims = Record<string, [string, string | null][]>;
 export interface MaterializedPackages {
   entries: SearchEntry[];
   /** Private, bounded rafsi metadata for the shared pattern matcher. */
   searchRafsi?: Record<string, string[]>;
+  /** Bounded per-definition row metadata for server search previews. */
+  searchMeta?: Record<string, SearchPreviewMeta>;
+  /** Retained rafsi claims by word, for server search previews. */
+  searchRafsiClaims?: SearchRafsiClaims;
   /** Private cache metadata. Null means that publication receipts are unavailable. */
   effectiveDefinitions?: string[] | null;
   /** Eligible active and retired definitions under the selected view. */
@@ -180,6 +214,7 @@ export async function buildPackages(
   // Rafsi spellings from retained claim bodies, by word ID.
   const rafsiByWord = new Map<string, Set<string>>();
   const incompleteRafsi = new Set<string>();
+  const rafsiClaims: SearchRafsiClaims = {};
   async function* records(kind: EvaluationPackageRecord["kind"]) {
     if (prepared) {
       if (reuse || trustedHostRecords) {
@@ -264,11 +299,19 @@ export async function buildPackages(
   }
   for await (const record of records("rafsi.publish")) {
     const word = String(record.word);
+    const claims = Object.hasOwn(rafsiClaims, word)
+      ? rafsiClaims[word]
+      : (rafsiClaims[word] = []);
     if (!record.body) {
       incompleteRafsi.add(word);
+      claims.push([record.id, null]);
       continue;
     }
     const body = record.body;
+    claims.push([
+      record.id,
+      typeof body.rafsi === "string" ? body.rafsi : null,
+    ]);
     if (typeof word === "string" && typeof body.rafsi === "string") {
       const set = rafsiByWord.get(word) ?? new Set<string>();
       set.add(body.rafsi);
@@ -454,6 +497,23 @@ export async function buildPackages(
           [...spellings].sort().slice(0, PACKAGE_RAFSI_LIMIT),
         ]),
       ),
+      searchMeta: Object.fromEntries(
+        entries2.map((entry) => [
+          entry.event,
+          {
+            issuer: entry.issuer,
+            notes: entry.notes,
+            attribution: boundedPreviewAttribution(entry.attribution) ?? null,
+            selmaho:
+              boundedPreviewList(
+                (entry.classification as { selmaho?: unknown } | null)?.selmaho,
+                PREVIEW_SELMAHO_COUNT,
+                PREVIEW_SELMAHO_LENGTH,
+              ) ?? [],
+          },
+        ]),
+      ),
+      searchRafsiClaims: rafsiClaims,
       ...(effectiveDefinitions !== undefined ? { effectiveDefinitions } : {}),
       ...(searchDefinitions ? { searchDefinitions, searchView } : {}),
       packages: await build(entries, 1),
