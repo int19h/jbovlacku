@@ -760,7 +760,7 @@ async function setupGatedStore(
   }, saved);
   await page.reload();
   await expect(
-    page.getByRole("button", { name: "Refresh English" }),
+    page.getByRole("button", { name: "Remove", exact: true }).first(),
   ).toBeVisible();
   await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
