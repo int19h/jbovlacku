@@ -47,6 +47,11 @@ export interface DefinitionBlockOptions {
   preview?: boolean;
   /** Omits the score-details disclosure, for a render that a scored re-render will replace. */
   deferScoreDetails?: boolean;
+  /**
+   * False for a block that replaces one already on the page: a "#source-…"
+   * link then neither opens the Source disclosure nor scrolls to it again.
+   */
+  followHash?: boolean;
   placeAnchorPrefix?: string;
 }
 export function placeGloss(place: Place, language: string): string | null {
@@ -488,8 +493,9 @@ export function definitionBlock(
       { id: `source-${id}` },
     );
     if (
-      location.hash === `#source-${id}` ||
-      location.hash === `#${encodeURIComponent(`source-${id}`)}`
+      options.followHash !== false &&
+      (location.hash === `#source-${id}` ||
+        location.hash === `#${encodeURIComponent(`source-${id}`)}`)
     ) {
       source.open = true;
       requestAnimationFrame(() => {

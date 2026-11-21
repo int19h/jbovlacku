@@ -13,6 +13,7 @@ import {
   describe,
   icon,
   disclosure,
+  openNow,
 } from "../lib/dom.ts";
 import {
   listedLanguage,
@@ -368,18 +369,24 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   // scroll position and the status line stay.
   const viewPromise = viewScores(app, id, word);
   const status = app.personal.status;
-  const provisional = personal && status.state !== "ready";
+  // A cancel is settled: no automatic call restarts it, so the page shows
+  // its reason with every control, as for any settled state. After any
+  // other failure, viewScores has already started a new calculation, so
+  // the old failure is not the current state, and the page is provisional
+  // until that calculation settles.
+  const cancelled =
+    personal && status.state === "failed" && status.kind === "cancelled";
+  const provisional = personal && status.state !== "ready" && !cancelled;
+  // In both cases the page renders before viewScores settles.
+  const early = provisional || cancelled;
   let view: ViewScores;
-  if (provisional) {
-    // Only a cancel is settled: no automatic call restarts it. After any
-    // other failure, viewScores has already started a new calculation, so
-    // the old failure is not the current state.
-    const cancelled = status.state === "failed" && status.kind === "cancelled";
+  if (early) {
     view = {
       personal: true,
-      reason: cancelled
-        ? status.message
-        : "The local calculation is not ready yet.",
+      reason:
+        status.state === "failed" && cancelled
+          ? status.message
+          : "The local calculation is not ready yet.",
       stale: false,
       snapshot: word.snapshot,
       view: word.view,
@@ -401,7 +408,11 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
    * The scored part of the page under one view. Its wrapper is a plain
    * block with no margin, padding or border, so it does not change layout.
    */
-  const scoredPart = (view: ViewScores, provisional: boolean): HTMLElement => {
+  const scoredPart = (
+    view: ViewScores,
+    provisional: boolean,
+    replacing: boolean,
+  ): HTMLElement => {
     const main = el("div", { class: "word-scored" });
     if (view.personal && view.reason) {
       const reason = view.stale
@@ -576,6 +587,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         // The scored part replaces this block, so its score details
         // (which load reviewers when opened) wait for that part.
         deferScoreDetails: provisional,
+        followHash: !replacing,
       });
       block.dataset.key = definition;
       main.append(block);
@@ -733,19 +745,39 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     main.append(sourceDetails);
     return main;
   };
-  let part = scoredPart(view, provisional);
+  let part = scoredPart(view, provisional, false);
   main.append(part);
-  if (provisional)
-    void viewPromise.then((settled) => {
+  if (early)
+    void viewPromise.then(async (settled) => {
       if (!context.live() || !part.isConnected) return;
       // A cancel settles with the same reason. Nothing changes then.
       if (!settled.calculation && settled.reason === view.reason) return;
-      const next = scoredPart(settled, false);
+      // A dialog that an action opened (unlock, first signature) keeps
+      // its opener on the page, so the swap waits until no dialog is open.
+      await noOpenDialog();
+      if (!context.live() || !part.isConnected) return;
+      const next = scoredPart(settled, false, true);
       replaceKeepingPlace(part, next);
       part = next;
     });
   void disclosure;
   void RequestError;
+}
+/** Resolves when no modal dialog is open, after one more task. */
+async function noOpenDialog(): Promise<void> {
+  for (;;) {
+    const open = document.querySelector<HTMLDialogElement>("dialog[open]");
+    if (open) {
+      await new Promise((resolve) =>
+        open.addEventListener("close", resolve, { once: true }),
+      );
+      continue;
+    }
+    // One action can open a second dialog right after the first closes,
+    // for example unlock and then the first-signature notice.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (!document.querySelector("dialog[open]")) return;
+  }
 }
 /** Where a node sits: its keyed block, and its place among like nodes there. */
 interface Place {
@@ -754,7 +786,14 @@ interface Place {
   label: string;
   index: number;
 }
+/**
+ * What identifies a node among its like nodes. A link is named by its
+ * target, because its text can change later (an identity link shows the
+ * profile name when it arrives). Other nodes are named by their accessible
+ * label or text; a details element by its summary.
+ */
 function nodeLabel(node: Element): string {
+  if (node.tagName === "A") return node.getAttribute("href") ?? "";
   const own = node.getAttribute("aria-label");
   if (own) return own;
   const summary =
@@ -789,12 +828,30 @@ function find(root: HTMLElement, place: Place): HTMLElement | null {
   if (!scope) return null;
   return alike(scope, place.tag, place.label)[place.index] ?? null;
 }
+/** The element that the URL fragment names, when it is on screen. */
+function visibleHashTarget(root: HTMLElement): HTMLElement | null {
+  if (!location.hash) return null;
+  let id: string;
+  try {
+    id = decodeURIComponent(location.hash.slice(1));
+  } catch {
+    return null;
+  }
+  const target = document.getElementById(id);
+  if (!target || !root.contains(target)) return null;
+  const box = target.getBoundingClientRect();
+  return box.bottom > 0 && box.top < window.innerHeight ? target : null;
+}
 /**
  * Replaces one part of the page with a new version of it, without a
- * navigation. The reader keeps their place: the block that holds focus (or
- * the first block on screen) stays where it was on screen, open disclosures
- * stay open, and focus returns to the same control. The status line is not
- * touched.
+ * navigation. The status line is not touched. The reader keeps:
+ * - focus, on the same control, found by its block and identity;
+ * - every open disclosure, nested ones included;
+ * - their reading position, when they have one. The anchor is the focused
+ *   control, else (once they have scrolled into this part) the fragment
+ *   target or the first block on screen. The anchor keeps its place on
+ *   screen. A reader at the top of the page with no focus in this part
+ *   stays where they are.
  */
 function replaceKeepingPlace(old: HTMLElement, next: HTMLElement) {
   const focused =
@@ -802,14 +859,30 @@ function replaceKeepingPlace(old: HTMLElement, next: HTMLElement) {
     old.contains(document.activeElement)
       ? document.activeElement
       : null;
-  const blocks = [...old.querySelectorAll<HTMLElement>("[data-key]")];
+  const scrolledIn = old.getBoundingClientRect().top < 0;
   const anchor =
-    focused?.closest<HTMLElement>("[data-key]") ??
-    blocks.find((n) => n.getBoundingClientRect().bottom > 0) ??
-    null;
-  const anchorKey = anchor?.dataset.key ?? null;
+    focused ??
+    (scrolledIn
+      ? (visibleHashTarget(old) ??
+        [...old.querySelectorAll<HTMLElement>("[data-key]")].find(
+          (n) => n.getBoundingClientRect().bottom > 0,
+        ) ??
+        null)
+      : null);
+  // A block is found again by its key. Any other anchor by its place.
+  const anchorPlace =
+    anchor && !anchor.dataset.key ? placeOf(old, anchor) : null;
+  // A fallback when the anchor itself is not in the new part.
+  const anchorBlock = anchor?.closest<HTMLElement>("[data-key]") ?? null;
+  const blockKey =
+    anchorBlock && old.contains(anchorBlock)
+      ? (anchorBlock.dataset.key ?? null)
+      : null;
   const anchorTop = anchor?.getBoundingClientRect().top ?? 0;
+  const blockTop = anchorBlock?.getBoundingClientRect().top ?? 0;
   const scrollY = window.scrollY;
+  // Document order puts an outer disclosure before the ones inside it, so
+  // each outer body exists before its nested disclosures are looked up.
   const open = [...old.querySelectorAll("details[open]")].map((d) =>
     placeOf(old, d),
   );
@@ -817,10 +890,42 @@ function replaceKeepingPlace(old: HTMLElement, next: HTMLElement) {
   old.replaceWith(next);
   for (const place of open) {
     const details = find(next, place);
-    if (details instanceof HTMLDetailsElement) details.open = true;
+    if (details instanceof HTMLDetailsElement) openNow(details);
   }
-  const moved = anchorKey ? keyed(next, anchorKey) : null;
-  if (moved) window.scrollBy(0, moved.getBoundingClientRect().top - anchorTop);
-  else window.scrollTo(0, scrollY);
-  if (focus) find(next, focus)?.focus({ preventScroll: true });
+  const settle = () => {
+    const target = anchorPlace ? find(next, anchorPlace) : null;
+    const block = !target && blockKey ? keyed(next, blockKey) : null;
+    if (target)
+      window.scrollBy(0, target.getBoundingClientRect().top - anchorTop);
+    else if (block)
+      window.scrollBy(0, block.getBoundingClientRect().top - blockTop);
+    else window.scrollTo(0, scrollY);
+    return window.scrollY;
+  };
+  let placed = settle();
+  const restoreFocus = () => {
+    if (!focus) return true;
+    const target = find(next, focus);
+    if (!target) return false;
+    target.focus({ preventScroll: true });
+    return true;
+  };
+  const restored = restoreFocus();
+  if (restored && !anchor) return;
+  // Some content arrives a task later: a disclosure with an asynchronous
+  // body, or the reviewer list in score details. Place the anchor and focus
+  // again when it arrives, for a short time, unless the reader has scrolled
+  // or moved focus meanwhile.
+  let focusPending = !restored;
+  const observer = new MutationObserver(() => {
+    if (Math.abs(window.scrollY - placed) <= 1) placed = settle();
+    if (
+      focusPending &&
+      (document.activeElement === document.body ||
+        document.activeElement === null)
+    )
+      focusPending = !restoreFocus();
+  });
+  observer.observe(next, { childList: true, subtree: true });
+  setTimeout(() => observer.disconnect(), 2000);
 }

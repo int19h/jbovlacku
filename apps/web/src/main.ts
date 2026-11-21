@@ -153,6 +153,7 @@ async function start() {
     offlineSigning,
     announce: (message) => {
       preferenceMessage = undefined;
+      session.announcements++;
       shell.announce(message);
     },
   };

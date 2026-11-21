@@ -2,7 +2,9 @@ import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
   corePath,
+  createIdentity,
   fixture,
+  openWord,
   PASSPHRASE,
 } from "./helpers.ts";
 
@@ -748,4 +750,341 @@ test("phone language tabs show the selected tab, with unclipped focus ring and u
   });
   expect(ring.focusVisible).toBe(true);
   expect(ring.inside).toBe(true);
+});
+
+// Round 3: the in-place update of personal scores, and the key-creation return.
+
+/** Turns on the personal view and holds the record download until released. */
+async function heldPersonal(page: Page) {
+  await page.goto("/trust");
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await expect(
+    page.getByRole("link", { name: "Trust: personal view" }),
+  ).toBeVisible();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/v1/manifest*", async (route) => {
+    await held;
+    await route.continue();
+  });
+  return release;
+}
+const block = (page: Page, key: string) =>
+  page.locator(`article.definition[data-key="${key}"]`);
+const scored = (page: Page, key?: string) =>
+  expect(
+    (key
+      ? block(page, key)
+      : page.locator("article.definition").first()
+    ).getByRole("img", { name: /in your personal view$/ }),
+  ).toBeVisible({ timeout: 40000 });
+const order = (page: Page) =>
+  page
+    .locator("article.definition")
+    .evaluateAll((n) => n.map((a) => (a as HTMLElement).dataset.key));
+/** A curator profile name that arrives after the identity link is drawn. */
+async function namedCurator(page: Page) {
+  const f = fixture();
+  await page.route(
+    `**/api/v1/identities/${encodeURIComponent(f.identities.curator)}*`,
+    async (route) => {
+      const real = await (await route.fetch()).json();
+      await route.fulfill({
+        json: {
+          ...real,
+          profile: {
+            state: "known",
+            claims: [
+              {
+                id: "jve1:" + "a".repeat(64),
+                body: { name: "Curator Alice", bio: [], links: [] },
+              },
+            ],
+          },
+        },
+      });
+    },
+  );
+}
+
+test("a reader at the top of a word page stays there when personal scores reorder it", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const release = await heldPersonal(page);
+  await page.goto("/word/cukta");
+  await expect(page.locator("article.definition").first()).toBeVisible();
+  const before = await order(page);
+  release();
+  await scored(page);
+  await page.waitForTimeout(300);
+  // The fixture's ranked order differs from the provisional event order.
+  expect((await order(page))[0]).not.toBe(before[0]);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  await expect(page.locator("main h1")).toBeInViewport();
+});
+
+test("a heading that the app focused stays focused and on screen when scores arrive", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const release = await heldPersonal(page);
+  await openWord(page, "cukta");
+  await expect(page.locator("article.definition").first()).toBeVisible();
+  await expect(page.locator("main h1")).toBeFocused();
+  release();
+  await scored(page);
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  await expect(page.locator("main h1")).toBeFocused();
+  await expect(page.locator("main h1")).toBeInViewport();
+});
+
+test("focus on a link inside an open disclosure survives the scores", async ({
+  page,
+}) => {
+  const f = fixture();
+  const release = await heldPersonal(page);
+  await page.goto("/word/cukta");
+  const cukta1 = block(page, f.definitions.cukta1);
+  await expect(cukta1).toBeVisible();
+  await cukta1.getByText("Notes", { exact: true }).click();
+  const note = () =>
+    block(page, f.definitions.cukta1).locator("details#notes a", {
+      hasText: "ckusro",
+    });
+  await expect(note()).toBeVisible();
+  await note().focus();
+  release();
+  await scored(page, f.definitions.cukta1);
+  await page.waitForTimeout(300);
+  await expect(note()).toBeFocused();
+});
+
+test("focus on an identity link that shows a profile name survives the scores", async ({
+  page,
+}) => {
+  const f = fixture();
+  await namedCurator(page);
+  const release = await heldPersonal(page);
+  await page.goto("/word/cukta");
+  const author = () =>
+    block(page, f.definitions.cukta1)
+      .locator(".byline a.identity-link")
+      .first();
+  await expect(author()).toHaveText("Curator Alice");
+  await author().focus();
+  release();
+  await scored(page, f.definitions.cukta1);
+  await page.waitForTimeout(300);
+  await expect(author()).toBeFocused();
+});
+
+test("a nested open disclosure stays open when the scores arrive", async ({
+  page,
+}) => {
+  const release = await heldPersonal(page);
+  await page.goto("/word/ckusro");
+  const source = () =>
+    page
+      .locator("article.definition")
+      .first()
+      .locator("details.disclosure", {
+        has: page.locator("summary", { hasText: /^Source$/ }),
+      });
+  const evidence = () =>
+    source().locator("details.disclosure", {
+      has: page.locator("summary", { hasText: /Original source author/ }),
+    });
+  await source().locator("summary").click();
+  await evidence().locator("summary").click();
+  await expect(evidence().locator("pre.json")).toBeVisible();
+  release();
+  await scored(page);
+  await page.waitForTimeout(300);
+  await expect(source()).toHaveAttribute("open", "");
+  await expect(evidence()).toHaveAttribute("open", "");
+  await expect(evidence().locator("pre.json")).toBeVisible();
+});
+
+test("open disclosures above a focused control do not push it down after the scores", async ({
+  page,
+}) => {
+  const f = fixture();
+  await page.setViewportSize({ width: 390, height: 600 });
+  const release = await heldPersonal(page);
+  await page.goto("/word/cukta");
+  const c1 = block(page, f.definitions.cukta1);
+  const c2 = block(page, f.definitions.cukta2);
+  await expect(c1).toBeVisible();
+  await c1.getByText("Places in detail", { exact: true }).click();
+  await expect(c1.locator(".places-table")).toBeVisible();
+  await c1.getByText("Signed record", { exact: true }).click();
+  await expect(c1.locator("pre.json")).toBeVisible();
+  await c2.scrollIntoViewIfNeeded();
+  await c2.getByRole("button", { name: "Endorse" }).focus();
+  const top = () =>
+    page.evaluate(
+      () => (document.activeElement as HTMLElement).getBoundingClientRect().top,
+    );
+  const before = await top();
+  release();
+  await scored(page, f.definitions.cukta1);
+  await page.waitForTimeout(500);
+  await expect(
+    block(page, f.definitions.cukta2).getByRole("button", { name: "Endorse" }),
+  ).toBeFocused();
+  expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(2);
+  await expect(
+    block(page, f.definitions.cukta1).locator("pre.json"),
+  ).toBeVisible();
+});
+
+test("a Source link in the URL does not pull the reader back when the scores arrive", async ({
+  page,
+}) => {
+  const f = fixture();
+  await page.setViewportSize({ width: 390, height: 600 });
+  const release = await heldPersonal(page);
+  await page.goto(`/word/cukta#source-${f.definitions.cukta1}`);
+  await expect(page.locator("article.definition").first()).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => window.scrollY))
+    .toBeGreaterThan(0);
+  // The reader goes back to the top while the calculation runs.
+  await page.evaluate(() => window.scrollTo(0, 0));
+  release();
+  await scored(page);
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+});
+
+test("Continue in the first-signature notice still publishes when the scores arrive behind it", async ({
+  page,
+}) => {
+  const f = fixture();
+  await createIdentity(page);
+  await page.getByRole("link", { name: /^Trust:/ }).click();
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await expect(
+    page.getByRole("link", { name: "Trust: personal view" }),
+  ).toBeVisible();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/v1/manifest*", async (route) => {
+    await held;
+    await route.continue();
+  });
+  await openWord(page, "cukta");
+  await expect(block(page, f.definitions.cukta1)).toBeVisible();
+  await block(page, f.definitions.cukta1)
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Before your first public signature",
+  });
+  await expect(dialog).toBeVisible();
+  release();
+  // Let the calculation finish while the notice is open.
+  await expect(
+    page.getByRole("region", { name: "Personal view" }),
+  ).toContainText("calculated in this browser", { timeout: 40000 });
+  await dialog.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "Your endorsement is published.",
+    { timeout: 15000 },
+  );
+  await scored(page, f.definitions.cukta1);
+  await expect(
+    block(page, f.definitions.cukta1).getByRole("button", { name: "Endorse" }),
+  ).toHaveAttribute("aria-pressed", "true", { timeout: 15000 });
+});
+
+test("after a cancelled calculation, later word pages keep score details", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  const endorsed = page.locator("article.definition").first();
+  const key = await endorsed.getAttribute("data-key");
+  await endorsed.getByRole("button", { name: "Endorse" }).click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toContainText(
+    "Your endorsement is published.",
+  );
+  const siteDetails = await page.locator("details.judgment-details").count();
+  expect(siteDetails).toBeGreaterThan(0);
+  // The calculation's download is held until the reader cancels it.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/v1/records?*", async (route) => {
+    await held;
+    await route.continue().catch(() => {});
+  });
+  await page.getByRole("link", { name: /^Trust:/ }).click();
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await openWord(page, "cukta");
+  const panel = page.getByRole("region", { name: "Personal view" });
+  await expect(panel).toContainText(/Downloading/);
+  await panel.getByRole("button", { name: "Cancel" }).click();
+  await expect(panel).toContainText("The local calculation was cancelled.");
+  release();
+  await page.locator(".tabs .tab").last().click();
+  await expect(page).toHaveURL(/lang=all/);
+  await expect(page.locator("article.definition").first()).toBeVisible();
+  await expect(page.locator("details.judgment-details")).toHaveCount(
+    siteDetails,
+  );
+  // The reader can still clear their judgment from the details.
+  const details = block(page, key!).locator("details.judgment-details");
+  await details.locator("summary").click();
+  await expect(
+    details.getByRole("button", { name: /Clear my judgment/ }),
+  ).toBeVisible();
+});
+
+test("a return path never becomes another host after dot segments collapse", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const results = await page.evaluate(async () => {
+    const { returnPath } = await import(String("/src/app/router.ts"));
+    return [
+      "/foo/..//evil.example/path?x=1#y",
+      "/a/b/../..//evil.example",
+      "/./\\evil.example",
+      "/word/cukta?lang=all#x",
+    ].map((value) => returnPath(value));
+  });
+  expect(results).toEqual([null, null, null, "/word/cukta?lang=all#x"]);
+});
+
+test("declining the first-signature notice does not carry the key page's status to the word", async ({
+  page,
+}) => {
+  await page.goto("/word/cukta");
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await expect(page).toHaveURL(/\/identity$/);
+  await page.getByLabel("New passphrase", { exact: true }).fill(PASSPHRASE);
+  await page.getByLabel("Repeat passphrase").fill(PASSPHRASE);
+  await page.getByRole("button", { name: "Create a key" }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "Before your first public signature",
+  });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Not now" }).click();
+  await expect(page).toHaveURL(/\/word\/cukta$/);
+  await expect(page.locator("main h1")).toHaveText("cukta");
+  await page.waitForTimeout(500);
+  await expect(page.getByRole("status")).not.toContainText("Test it below");
 });

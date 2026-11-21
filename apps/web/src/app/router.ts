@@ -106,6 +106,9 @@ export function returnPath(value: string): string | null {
     return null;
   }
   if (url.origin !== location.origin) return null;
+  // Dot segments can collapse "/a/..//host" into "//host", so the rule
+  // applies again to the normalized path.
+  if (/^\/[/\\]/.test(url.pathname)) return null;
   return url.pathname + url.search + url.hash;
 }
 export function onNavigate(listener: Listener) {

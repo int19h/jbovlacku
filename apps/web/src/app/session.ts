@@ -45,6 +45,8 @@ export class Session {
   private preferenceStatusListeners = new Set<(message: string) => void>();
   /** Set by a resumed action that navigates: the next render keeps the status line. */
   preserveStatusOnce = false;
+  /** Counts announcements in the status line. The shell advances it. */
+  announcements = 0;
   /** A pending action to resume after the key is created or unlocked. */
   pending: {
     description: string;
@@ -387,6 +389,7 @@ export class Session {
     this.pending = null;
     const requests = navigationCount();
     const before = location.href;
+    const announced = this.announcements;
     await pending.run();
     // An action that chose its own page, such as a rafsi claim that opens
     // the word, keeps that page. Otherwise the reader goes back to the page
@@ -397,9 +400,12 @@ export class Session {
       target &&
       target !== location.pathname + location.search + location.hash
     ) {
-      // The action's announcement (for example "published") must survive
-      // this navigation, so the render it causes keeps the status line.
-      this.preserveStatusOnce = true;
+      // The action's own announcement (for example "published") must
+      // survive this navigation, so the render it causes keeps the status
+      // line. An action that announced nothing, or that the reader
+      // declined, leaves only the key page's message, which does not
+      // belong on the returned page, so the render clears it.
+      this.preserveStatusOnce = this.announcements !== announced;
       navigate(target);
     }
     return true;
