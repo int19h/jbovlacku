@@ -1753,9 +1753,9 @@ The format allows any length in these fields, so the preview bounds each one by 
 - An attribution `account` whose `origin` is longer than 256 units becomes null.
 - At most 8 date entries, each with a label of at most 32 units and a value of at most 64 units. A longer entry is dropped, and the next ones take its place, in their key order.
 
-So the row fields of one hit hold at most 2,816 units of string content, and those of a 100-hit page at most 281,600 units. That is at most about 845 KB of UTF-8 before JSON escaping.
+So the row fields of one hit hold at most 2,888 units of string content, including the 72-unit signing identity, and those of a 100-hit page at most 288,800 units. That is at most about 852 KB of UTF-8 before JSON escaping.
 The server applies these bounds before it sends a page. The browser applies the same rule to each page it receives, so a longer value is dropped or cut and never makes the browser reject the page.
-If a row field has the wrong type, the browser removes that field, and the row reads it from the definition as an older response does. The signing identity, notes flag and attribution are removed together.
+If a row field has the wrong type, the browser removes that field, and the row reads it as an older response does: rafsi from the word's rafsi claims, and the selma'o names, signing identity, notes flag and attribution from the definition. The signing identity, notes flag and attribution are removed together.
 The browser shows the row fields from the response itself. It does not read a result's word or definition record for these fields.
 Each row still reads its word for the score and its definition for the rich preview text.
 An older response without the preview fields keeps the earlier per-definition backfill for every field.
