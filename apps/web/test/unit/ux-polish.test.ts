@@ -11,6 +11,10 @@ test("language names are readable and hide the test tag", () => {
   assert.equal(languageName("en-simple"), "Simple English");
   assert.equal(languageName("fr-facile"), "Easy French");
   assert.equal(languageName("en"), "English");
+  // A subtag after "art-" can be a region, so unknown tags keep the
+  // platform name instead of a guessed language name.
+  assert.notEqual(languageName("art-ca"), "Ca");
+  assert.match(languageName("art-ca"), /^art[ -]/i);
   assert.equal(listedLanguage("test"), false);
   assert.equal(listedLanguage("en"), true);
 });

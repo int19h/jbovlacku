@@ -573,7 +573,6 @@ export async function searchPage(
     const before = results.firstElementChild;
     if (before !== ordered[0].node)
       results.prepend(...ordered.map((group) => group.node));
-    placeRetry();
     for (const [key, group] of Object.entries(groups) as [
       SearchGroup,
       typeof groups.lojban,
@@ -662,19 +661,6 @@ export async function searchPage(
         expanding ||
         control.closest("section")?.getAttribute("aria-busy") === "true";
   };
-  // One retry for the whole search. It opens the same route again, so it
-  // retries every group. It sits in the first failed group in reading
-  // order, so the reader meets it with the first error. The other group
-  // keeps its error text without a second identical button.
-  let retryButton: Element | undefined;
-  const placeRetry = () => {
-    if (!retryButton) return;
-    const notice = orderedGroups()
-      .find((group) => group.failed && group.rows.querySelector(".read-error"))
-      ?.rows.querySelector(".read-error");
-    if (notice && retryButton.parentElement !== notice)
-      notice.append(retryButton);
-  };
   const showError = (key: SearchGroup, error: unknown) => {
     const group = groups[key];
     group.failed = true;
@@ -687,13 +673,8 @@ export async function searchPage(
         "notice",
       ),
     );
-    if (
-      !retryButton &&
-      appendReadRetry(notice, error, context, app.announce, "Retry search")
-    )
-      retryButton = notice.lastElementChild ?? undefined;
+    appendReadRetry(notice, error, context, app.announce);
     group.rows.append(notice);
-    placeRetry();
   };
   const loadNext = async (key: SearchGroup, all = false) => {
     const group = groups[key];
@@ -779,7 +760,9 @@ export async function searchPage(
     refresh();
   };
   // Show the groups with their "Searching…" status before the first
-  // request waits, so a slow search never leaves an empty body.
+  // lexical request waits, so a slow server search never leaves an empty
+  // body. A local search first waits for the package worker above, with
+  // the single "Searching…" note, and shows the groups after that.
   searching.remove();
   results.append(...orderedGroups().map((group) => group.node));
   const saved = history.state?.dictionarySearch as SearchState | undefined;
@@ -954,12 +937,13 @@ function hitRow(
   rafsiSpan.hidden = true;
   line1.append(rafsiSpan);
   if (kind && kind !== "unknown") line1.append(text(kindLabel(kind), "meta"));
-  // An unavailable status is the local package's lack of evidence, not a
-  // reader-facing state. Known states other than active stay visible.
+  // A local row's status is always "unavailable", because the package
+  // carries no status evidence, so local rows do not show it. A server row
+  // shows every state other than active, including "unavailable".
   if (
     hit.preview &&
     hit.preview.status !== "active" &&
-    hit.preview.status !== "unavailable"
+    (remote || hit.preview.status !== "unavailable")
   )
     line1.append(
       el("span", {
