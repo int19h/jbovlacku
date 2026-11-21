@@ -329,30 +329,30 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   const myJudgmentsFirst = Boolean(own);
   if (view.personal && view.reason) {
     const note = p("", "small");
+    const noteText = text("");
+    note.append(noteText);
+    let recompute: HTMLButtonElement | null = null;
     // The note follows the live calculation state, like the panel above it.
     // A later failure, cancel, or retry replaces the reason instead of
-    // leaving the first reason beside a panel that says another.
+    // leaving the first reason beside a panel that says another. The text
+    // changes in place, and the recompute button, once shown, stays in the
+    // document, so a reader who activated it keeps focus on it.
     const showNote = (reason: string, stale: boolean) => {
-      note.replaceChildren(
-        text(
-          `Personal scores are unavailable: ${reason} ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`,
-        ),
-      );
-      if (stale)
-        note.append(
-          text(" "),
-          button(
-            "Recompute for this snapshot",
-            () => {
-              void app.personal
-                .ensure({ mode: "personal", refresh: true })
-                .then((status) => {
-                  if (status.state === "ready") rerender();
-                });
-            },
-            { class: "btn btn-quiet" },
-          ),
+      noteText.textContent = `Personal scores are unavailable: ${reason} ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`;
+      if (stale && !recompute) {
+        recompute = button(
+          "Recompute for this snapshot",
+          () => {
+            void app.personal
+              .ensure({ mode: "personal", refresh: true })
+              .then((status) => {
+                if (status.state === "ready") rerender();
+              });
+          },
+          { class: "btn btn-quiet" },
         );
+        note.append(text(" "), recompute);
+      }
     };
     showNote(
       view.stale

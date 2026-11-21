@@ -707,21 +707,24 @@ function boundPreviewRow(preview: Record<string, unknown>) {
     else delete preview.selmaho;
   }
   // The issuer, notes flag and attribution make one attribution line, so
-  // they stay or go together.
-  const attribution =
-    preview.attribution === undefined
-      ? null
-      : boundedPreviewAttribution(preview.attribution);
+  // they are present together or absent together. Without the attribution,
+  // an issuer would draw an imported definition as a native one.
   if (
-    (preview.issuer !== undefined && !identityId(preview.issuer)) ||
-    (preview.notes !== undefined && typeof preview.notes !== "boolean") ||
+    preview.issuer === undefined &&
+    preview.notes === undefined &&
+    preview.attribution === undefined
+  )
+    return;
+  const attribution = boundedPreviewAttribution(preview.attribution);
+  if (
+    !identityId(preview.issuer) ||
+    typeof preview.notes !== "boolean" ||
     attribution === undefined
   ) {
     delete preview.issuer;
     delete preview.notes;
     delete preview.attribution;
-  } else if (preview.attribution !== undefined)
-    preview.attribution = attribution;
+  } else preview.attribution = attribution;
 }
 const validCursor = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 512;

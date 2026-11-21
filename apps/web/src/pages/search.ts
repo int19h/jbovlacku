@@ -961,8 +961,10 @@ function hitRow(
     );
   }
   // The server preview already carries the bounded row fields, so the row
-  // shows them at once. Older responses without them keep the backfill below.
-  let previewMetaRendered = false;
+  // shows them at once. The signed record read below then upgrades the
+  // attribution line to its full form, with the author evidence link and
+  // the profile name. If that read fails, the preview line stays. Older
+  // responses without the fields keep the backfill below.
   const preview = hit.preview;
   if (preview) {
     if (preview.rafsi?.length) {
@@ -974,7 +976,6 @@ function hitRow(
       selmaho.hidden = false;
     }
     if (preview.issuer) {
-      previewMetaRendered = true;
       if (preview.attribution) {
         const author = preview.attribution.author;
         meta.append(
@@ -1051,17 +1052,16 @@ function hitRow(
         const record = await loadDefinition(previewId, remote.snapshot);
         if (!context.live()) return;
         if (record.body) previewRich(textNode, record.body.text, query);
-        // A failed or older backfill never clears the preview row fields.
-        if (!previewMetaRendered) {
-          const attributed = attribution(record.envelope, record.body);
-          meta.replaceChildren(attributed.node);
-          if (attributed.date) meta.append(text(` · ${attributed.date}`));
-          if (record.body?.notes.length)
-            meta.append(
-              text(" · "),
-              link("notes", `${routes.definition(previewId)}#notes`),
-            );
-        }
+        // The signed record gives the full attribution line, as on a row
+        // without preview fields. A failed read never clears the preview line.
+        const attributed = attribution(record.envelope, record.body);
+        meta.replaceChildren(attributed.node);
+        if (attributed.date) meta.append(text(` · ${attributed.date}`));
+        if (record.body?.notes.length)
+          meta.append(
+            text(" · "),
+            link("notes", `${routes.definition(previewId)}#notes`),
+          );
         if (
           preview?.selmaho === undefined &&
           record.body?.classification.selmaho.length

@@ -16,6 +16,18 @@ export const PREVIEW_ATTRIBUTION_LENGTH = 256;
 export const PREVIEW_DATE_COUNT = 8;
 export const PREVIEW_DATE_LABEL_LENGTH = 32;
 export const PREVIEW_DATE_VALUE_LENGTH = 64;
+/**
+ * The date labels a row reads, in the order it prefers them
+ * (apps/web/src/lib/source-date.ts). The bound keeps these before any other
+ * label.
+ */
+export const PREVIEW_DATE_LABELS: readonly string[] = [
+  "time",
+  "created_at",
+  "created",
+  "updated_at",
+  "updated",
+];
 
 export interface PreviewAttribution {
   source: string;
@@ -63,7 +75,8 @@ export function shortenedPreviewText(text: string, limit: number): string {
  * The attribution within the preview bounds. The source and author are
  * shortened. An account whose origin is too long becomes null. A date entry
  * whose label or value is too long is dropped, and at most
- * `PREVIEW_DATE_COUNT` entries stay in their order. Null stays null.
+ * `PREVIEW_DATE_COUNT` entries stay: the labels in `PREVIEW_DATE_LABELS`
+ * first, then the others in key order. Null stays null.
  * Undefined means the value does not have the attribution shape.
  */
 export function boundedPreviewAttribution(
@@ -83,12 +96,20 @@ export function boundedPreviewAttribution(
     )
   )
     return undefined;
-  if (!isObject(value.dates)) return undefined;
+  const all = value.dates;
+  if (!isObject(all)) return undefined;
   // Object.fromEntries defines own properties, so a "__proto__" label stays
-  // an ordinary date label.
+  // an ordinary date label. The labels the row reads come first, so the
+  // bound never drops the date the row shows while it keeps one the row
+  // ignores.
+  const labels = [
+    ...PREVIEW_DATE_LABELS.filter((label) => Object.hasOwn(all, label)),
+    ...Object.keys(all).filter((label) => !PREVIEW_DATE_LABELS.includes(label)),
+  ];
   const kept: [string, string][] = [];
-  for (const [label, date] of Object.entries(value.dates)) {
+  for (const label of labels) {
     if (kept.length === PREVIEW_DATE_COUNT) break;
+    const date = all[label];
     if (
       label.length <= PREVIEW_DATE_LABEL_LENGTH &&
       typeof date === "string" &&

@@ -130,3 +130,137 @@ test("a long selma'o name from a non-root signer does not cost the search page",
     coordinator.close();
   }
 });
+
+test("preview rafsi leave out a withdrawn claim, as the word route does", async () => {
+  await mkdir(process.env.JVC_TEST_ROOT ?? tmpdir(), { recursive: true });
+  const directory = await mkdtemp(
+    join(process.env.JVC_TEST_ROOT ?? tmpdir(), "jvc-preview-rafsi-"),
+  );
+  directories.push(directory);
+  const objects = new FileObjectStore(join(directory, "objects"));
+  const coordinator = new SqliteCoordinator(
+    join(directory, "coordinator.sqlite"),
+    16,
+  );
+  try {
+    const { createEvent, wordId, rafsiPairId } =
+      await import("../../core/src/index.ts");
+    const a = new Uint8Array(32).fill(36);
+    const b = new Uint8Array(32).fill(37);
+    const word = { language: "jbo" as const, spelling: "klama" };
+    const definition = createEvent(
+      root,
+      [],
+      "7".repeat(32),
+      {
+        kind: "definition.publish",
+        word: wordId(word),
+        language: "en",
+        parents: [],
+        origin: "native",
+      },
+      {
+        word,
+        language: "en",
+        text: [["probe movement"]],
+        frame: null,
+        operands: [],
+        glosses: [{ language: "en", text: "movement", sense: null }],
+        notes: [],
+        etymology: { text: [], formation: null, compound: null },
+        examples: [],
+        classification: { kind: "gismu", selmaho: [] },
+        labels: [],
+        sources: [],
+        license: { expression: "CC0-1.0", url: null, attribution: "probe" },
+        legacy: null,
+      },
+    );
+    const claim = (seed: Uint8Array, rafsi: string, nonce: string) =>
+      createEvent(
+        seed,
+        [],
+        nonce,
+        {
+          kind: "rafsi.publish",
+          word: wordId(word),
+          assignment: rafsiPairId(wordId(word), rafsi),
+          origin: "native",
+        },
+        { word, rafsi, rationale: [], sources: [], legacy: null },
+      );
+    const kla = claim(a, "kla", "1".repeat(32));
+    const zzz = claim(b, "zzz", "2".repeat(32));
+    // The signer of zzz withdraws the claim.
+    const withdrawn = createEvent(
+      b,
+      [zzz.envelope.id],
+      "3".repeat(32),
+      { kind: "status.set", target: zzz.envelope.id, value: "deprecated" },
+      null,
+    );
+    const view = createEvent(
+      root,
+      [],
+      "c".repeat(32),
+      { kind: "view.publish", parents: [] },
+      {
+        name: "Probe view",
+        description: [],
+        roots: [
+          {
+            identity: identityFromSeed(root),
+            q: { numerator: 1, denominator: 1 },
+          },
+        ],
+        rafsi_threshold: { numerator: 1, denominator: 1 },
+        H: { numerator: 1, denominator: 1 },
+        alpha: { numerator: 1, denominator: 2 },
+        excluded: [],
+        calculation: "simple-routes-bounds-v1",
+        work: 1000,
+        import_sets: [],
+        account_witnesses: [],
+        account_authority: false,
+        notes: [],
+      },
+    );
+    const service = new DictionaryService(objects, coordinator, {
+      serverId: "probe",
+      policyUrl: "https://example.invalid/policy",
+      selectedView: view.envelope.id,
+    });
+    await service.admitMany(
+      [definition, view, kla, zzz, withdrawn].map((value) =>
+        utf8(JSON.stringify(value)),
+      ),
+    );
+    const response = await service.fetch(
+      request("/search?q=movement&language=en"),
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const page = (await response.json()) as {
+      hits: { preview: { rafsi?: string[] } }[];
+    };
+    assert.deepEqual(page.hits[0].preview.rafsi, ["kla"]);
+    // The row on main shows the first claim of each assignment that is not
+    // inactive on the word route. The preview gives the same list.
+    const wordResponse = (await (
+      await service.fetch(request(`/words/${encodeURIComponent(wordId(word))}`))
+    ).json()) as {
+      assignments: { id: string; claims: string[]; status: string }[];
+    };
+    const spelling = new Map([
+      [kla.envelope.id, "kla"],
+      [zzz.envelope.id, "zzz"],
+    ]);
+    assert.deepEqual(
+      wordResponse.assignments
+        .filter((assignment) => assignment.status !== "inactive")
+        .map((assignment) => spelling.get(assignment.claims[0])),
+      page.hits[0].preview.rafsi,
+    );
+  } finally {
+    coordinator.close();
+  }
+});

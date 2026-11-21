@@ -74,6 +74,61 @@ test("a server search page with an over-long preview field still shows the hit",
   await expect(page.getByText(/invalid search page/)).toHaveCount(0);
 });
 
+test("a server row upgrades its attribution line from the signed record", async ({
+  page,
+}) => {
+  // With the reads allowed, the imported author links to the source-account
+  // evidence, as the row did before the preview carried the fields.
+  await page.goto("/search?q=library&lang=en");
+  const results = page.getByRole("region", { name: "Search results" });
+  const imported = results.locator("article").filter({
+    has: page.getByRole("link", { name: "ckusro", exact: true }),
+  });
+  const author = imported.locator(".attribution-line a", { hasText: "arj" });
+  await expect(author).toHaveAttribute("href", /^https:\/\//);
+  await expect(author).toHaveAttribute("title", /evidence/);
+  await expect(imported.locator(".attribution-line")).toContainText("Mar 2003");
+});
+
+test("the preview date bound keeps the date label the row reads", async ({
+  page,
+}) => {
+  // The row keeps the preview line, so the date comes from the bounded
+  // preview dates. Nine labels exceed the bound of eight.
+  await page.route("**/api/v1/words/**", (route) => route.abort());
+  await page.route("**/api/v1/events/**", (route) => route.abort());
+  await page.route("**/api/v1/bodies/**", (route) => route.abort());
+  await page.route("**/api/v1/search?*", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    for (const hit of body.hits ?? [])
+      if (hit.preview?.attribution && hit.word?.spelling === "ckusro")
+        hit.preview.attribution.dates = {
+          a: "1",
+          b: "2",
+          c: "3",
+          created_at: "2020-01-15T12:00:00Z",
+          d: "4",
+          e: "5",
+          f: "6",
+          g: "7",
+          time: "1000000000",
+        };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto("/search?q=library&lang=en");
+  const results = page.getByRole("region", { name: "Search results" });
+  const imported = results.locator("article").filter({
+    has: page.getByRole("link", { name: "ckusro", exact: true }),
+  });
+  await expect(imported.locator(".attribution-line")).toContainText("arj");
+  // The SQL time label wins over created_at, as on the definition page.
+  await expect(imported.locator(".attribution-line")).toContainText("Sep 2001");
+  await expect(imported.locator(".attribution-line")).not.toContainText(
+    "Jan 2020",
+  );
+});
+
 test("a stale personal calculation is not presented as this page's calculation", async ({
   page,
 }) => {
@@ -156,4 +211,53 @@ test("the unavailable note follows the latest calculation failure", async ({
   await expect(panel).toContainText("No connection to the server.");
   await expect(note).toContainText("No connection to the server.");
   await expect(note).not.toContainText("Request failed (500).");
+});
+
+test("the recompute button keeps focus while the note follows the calculation", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await choosePersonal(page);
+  await openWord(page, "cukta");
+  const panel = page.getByRole("region", { name: "Personal view" });
+  await expect(panel).toContainText(
+    /Personal view calculated in this browser from \d+ verified records\./,
+  );
+  await openWord(page, "vlacku");
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toHaveText(
+    "Your endorsement is published.",
+  );
+  await page.evaluate(() => {
+    const anchor = document.createElement("a");
+    anchor.href = "/word/cukta?fresh=1";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  });
+  await expect(page).toHaveTitle("cukta · jbovlacku");
+  const recompute = page.getByRole("button", {
+    name: "Recompute for this snapshot",
+  });
+  const note = page.getByText(/Personal scores are unavailable:/);
+  await expect(recompute).toBeVisible();
+  // Hold the inventory so the busy state lasts, then refuse it.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/v1/inventory?*", async (route) => {
+    await held;
+    await route.abort();
+  });
+  await recompute.focus();
+  await page.keyboard.press("Enter");
+  await expect(note).toContainText("The local calculation is not ready yet.");
+  await expect(recompute).toBeFocused();
+  release();
+  await expect(note).toContainText("No connection to the server.");
+  await expect(recompute).toBeFocused();
 });

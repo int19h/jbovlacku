@@ -14,46 +14,79 @@ import {
   scanPatterns,
   type PatternScanner,
 } from "../../search/src/pattern-scan.ts";
-import type { SearchEntry, SearchPreviewMeta } from "./packages.ts";
-
+import type {
+  SearchEntry,
+  SearchPreviewMeta,
+  SearchRafsiClaims,
+} from "./packages.ts";
 import {
   PREVIEW_RAFSI_COUNT,
   PREVIEW_RAFSI_LENGTH,
-  PREVIEW_SELMAHO_COUNT,
-  PREVIEW_SELMAHO_LENGTH,
-  boundedPreviewAttribution,
-  boundedPreviewList,
 } from "../../search/src/preview-row.ts";
 
 /**
- * The bounded fields a hit preview carries for its row: rafsi spellings and
- * selma'o names for the word, the signing identity, a notes flag, and
- * imported source attribution. Every string is bounded by length and every
- * list by count (packages/search/src/preview-row.ts), so the response size
- * per hit stays small whatever the signed bodies hold. Row rendering needs
- * no further read for these fields.
+ * The fields a hit preview carries for its row: rafsi spellings for the
+ * word, and the selma'o names, signing identity, notes flag, and imported
+ * source attribution of the previewed definition. Every string is bounded by
+ * length and every list by count (packages/search/src/preview-row.ts), so
+ * the response size per hit stays small whatever the signed bodies hold.
+ * The row fields are present only when the caller supplies the metadata.
  */
 export interface SearchPreview {
   event: string;
   word_kind: string;
   plain_text: string;
   status: string;
-  rafsi: string[];
-  selmaho: string[];
-  /** The signing identity, when the caller supplies preview metadata. */
+  /** Rafsi of the word's active assignments under the served view. */
+  rafsi?: string[];
+  selmaho?: string[];
+  /** The signing identity. Present together with `notes` and `attribution`. */
   issuer?: string;
-  /** Whether the definition has notes, when metadata is supplied. */
   notes?: boolean;
-  /** Imported source attribution, when metadata is supplied. */
   attribution?: SearchPreviewMeta["attribution"];
 }
-/** Copies one preview-meta value within the preview bounds. */
-function boundedMeta(meta: SearchPreviewMeta): SearchPreviewMeta {
-  return {
-    issuer: meta.issuer,
-    notes: meta.notes,
-    attribution: boundedPreviewAttribution(meta.attribution) ?? null,
-  };
+
+/**
+ * The rafsi a row shows for one word under the served view, as the word
+ * route gives them: claims the view does not select are left out, an
+ * assignment whose claims are all inactive is left out, and each other
+ * assignment shows the spelling of its first claim in ID order, if that
+ * claim body is retained. Assignments come in ID order. The work is linear
+ * in the word's retained claims, and the route runs it for page hits only.
+ */
+export function previewRafsi(
+  claims: SearchRafsiClaims[string] | undefined,
+  evaluation: Evaluation,
+): string[] {
+  const assignments = new Map<string, [string, string | null][]>();
+  for (const claim of claims ?? []) {
+    const publication = evaluation.publications[claim[0]];
+    if (!publication?.assignment || publication.eligible === "not_selected")
+      continue;
+    const list = assignments.get(publication.assignment) ?? [];
+    list.push(claim);
+    assignments.set(publication.assignment, list);
+  }
+  const spellings = new Set<string>();
+  for (const id of [...assignments.keys()].sort()) {
+    const list = assignments.get(id)!;
+    if (
+      list.every(
+        ([event]) => evaluation.publications[event].eligible === "inactive",
+      )
+    )
+      continue;
+    const [, spelling] = list.reduce((first, claim) =>
+      claim[0] < first[0] ? claim : first,
+    );
+    if (
+      spelling !== null &&
+      spelling.length <= PREVIEW_RAFSI_LENGTH &&
+      spellings.size < PREVIEW_RAFSI_COUNT
+    )
+      spellings.add(spelling);
+  }
+  return [...spellings];
 }
 
 /** Scan each entry once and retain the public lexical match tiers and order. */
@@ -118,7 +151,6 @@ export function lexicalSearch(
     const wordId = publication.word;
     const classification = entry.classification as {
       kind?: unknown;
-      selmaho?: unknown;
     } | null;
     const plainText = entry.plain_text.replace(/\s+/gu, " ").trim();
     const characters = Array.from(plainText);
@@ -134,19 +166,16 @@ export function lexicalSearch(
           ? characters.slice(0, 239).join("") + "…"
           : plainText,
       status: publication.status,
-      rafsi:
-        boundedPreviewList(
-          rafsi[publication.word],
-          PREVIEW_RAFSI_COUNT,
-          PREVIEW_RAFSI_LENGTH,
-        ) ?? [],
-      selmaho:
-        boundedPreviewList(
-          classification?.selmaho,
-          PREVIEW_SELMAHO_COUNT,
-          PREVIEW_SELMAHO_LENGTH,
-        ) ?? [],
-      ...(meta ? boundedMeta(meta) : {}),
+      // The metadata is bounded when the packages are built, so a hit only
+      // copies references here.
+      ...(meta
+        ? {
+            selmaho: meta.selmaho,
+            issuer: meta.issuer,
+            notes: meta.notes,
+            attribution: meta.attribution,
+          }
+        : {}),
     };
     const old = hits.get(wordId);
     if (old) {

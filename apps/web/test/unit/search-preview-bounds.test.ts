@@ -74,3 +74,17 @@ test("a preview row field of the wrong shape is removed and the hit stays", () =
   assert.deepEqual(kept.preview.selmaho, ["BAI"]);
   assert.equal(kept.preview.plain_text, "A synthetic book.");
 });
+
+test("a signing identity without its attribution is removed, so an import is never drawn as native", () => {
+  const [kept] = validateHits([hit({ issuer, notes: false })], 100);
+  assert.ok(kept.preview);
+  assert.equal(kept.preview.issuer, undefined);
+  assert.equal(kept.preview.notes, undefined);
+  assert.equal(kept.preview.attribution, undefined);
+  const [native] = validateHits(
+    [hit({ issuer, notes: false, attribution: null })],
+    100,
+  );
+  assert.equal(native.preview?.issuer, issuer);
+  assert.equal(native.preview?.attribution, null);
+});
