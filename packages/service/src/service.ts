@@ -39,7 +39,7 @@ import { nearbyQuery, rankNearby } from "./nearby.ts";
 import {
   lexicalSearch,
   lexicalSearchAsync,
-  previewRafsi,
+  previewRafsiByWord,
 } from "./lexical-search.ts";
 import { PatternError } from "../../search/src/index.ts";
 import {
@@ -2657,18 +2657,21 @@ export class DictionaryService {
         )
           throw new ApiError(400, "bad_cursor", "Search cursor is invalid.");
       }
-      const claims = packages.searchRafsiClaims;
       // Rafsi follow the claim states of the served view, as on the word
-      // route. They are read for the hits of this page only.
+      // route. The lists are prepared once per evaluated snapshot and view,
+      // so each hit of this page reads one prepared list.
+      const rafsiByWord = packages.searchRafsiClaims
+        ? previewRafsiByWord(packages.searchRafsiClaims, evaluation)
+        : null;
       const page = ordered
         .slice(offset, offset + this.limit(url, 100))
         .map((hit) =>
-          claims
+          rafsiByWord
             ? {
                 ...hit,
                 preview: {
                   ...hit.preview,
-                  rafsi: previewRafsi(claims[hit.word_id], evaluation),
+                  rafsi: rafsiByWord.get(hit.word_id) ?? [],
                 },
               }
             : hit,

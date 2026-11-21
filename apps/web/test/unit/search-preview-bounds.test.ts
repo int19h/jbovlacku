@@ -88,3 +88,32 @@ test("a signing identity without its attribution is removed, so an import is nev
   assert.equal(native.preview?.issuer, issuer);
   assert.equal(native.preview?.attribution, null);
 });
+
+test("a list or date map with a wrong-typed item is removed, and a valid empty list stays", () => {
+  const [malformed] = validateHits(
+    [
+      hit({
+        rafsi: [42],
+        selmaho: [123, "BAI"],
+        issuer,
+        notes: false,
+        attribution: {
+          source: "s",
+          author: "a",
+          account: null,
+          dates: { time: 1046655664 },
+        },
+      }),
+    ],
+    100,
+  );
+  assert.ok(malformed.preview);
+  // The row takes the documented fallback for each removed field.
+  assert.equal(malformed.preview.rafsi, undefined);
+  assert.equal(malformed.preview.selmaho, undefined);
+  assert.equal(malformed.preview.issuer, undefined);
+  assert.equal(malformed.preview.attribution, undefined);
+  const [empty] = validateHits([hit({ rafsi: [], selmaho: [] })], 100);
+  assert.deepEqual(empty.preview?.rafsi, []);
+  assert.deepEqual(empty.preview?.selmaho, []);
+});

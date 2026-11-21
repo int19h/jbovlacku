@@ -1058,6 +1058,14 @@ function hitRow(
         // lose the source author, date, and notes link, so a row whose
         // preview drew the line keeps it. A failed read never clears it.
         if (record.body || !preview?.issuer) {
+          // A reader may have focused a link of the preview line. The new
+          // line has links to the same places, so focus moves to the one
+          // with the same destination, without scrolling.
+          const focused =
+            document.activeElement instanceof HTMLAnchorElement &&
+            meta.contains(document.activeElement)
+              ? document.activeElement.getAttribute("href")
+              : null;
           const attributed = attribution(record.envelope, record.body);
           meta.replaceChildren(attributed.node);
           if (attributed.date) meta.append(text(` · ${attributed.date}`));
@@ -1066,6 +1074,10 @@ function hitRow(
               text(" · "),
               link("notes", `${routes.definition(previewId)}#notes`),
             );
+          if (focused !== null)
+            [...meta.querySelectorAll("a")]
+              .find((anchor) => anchor.getAttribute("href") === focused)
+              ?.focus({ preventScroll: true });
         }
         if (
           preview?.selmaho === undefined &&

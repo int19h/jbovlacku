@@ -45,6 +45,7 @@ import { zbalermorna } from "../lib/zbalermorna.ts";
 import {
   calculationPanel,
   provenanceLine,
+  staleReason,
   viewScores,
 } from "../components/localview.ts";
 import { recomputePanel } from "../components/recompute.ts";
@@ -327,6 +328,13 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     : null;
   if (!context.live()) return;
   const myJudgmentsFirst = Boolean(own);
+  // The current reason for unavailable personal scores. The page reads it
+  // when it builds each score, and the note's listener keeps it current.
+  const live = { reason: view.reason ?? undefined, stale: view.stale };
+  let staleLine: HTMLElement | null = null;
+  const staleNote =
+    "The local calculation uses another snapshot or view. Recompute from records for these definitions.";
+  const unavailableTitle = "Score unavailable in the personal view.";
   if (view.personal && view.reason) {
     const note = p("", "small");
     const noteText = text("");
@@ -354,40 +362,44 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         note.append(text(" "), recompute);
       }
     };
-    showNote(
-      view.stale
-        ? "The local calculation uses another snapshot or view. Recompute from records for these definitions."
-        : view.reason,
-      view.stale,
-    );
+    showNote(view.stale ? staleNote : view.reason, view.stale);
     main.append(note);
-    let initial = true;
+    // Every place that states the reason follows the current status: the
+    // note, the "Source and scores" line, and the score titles and details.
+    // The first call reconciles a status that changed while the page read
+    // the reader's own history.
     onDisconnect(
       note,
       app.personal.subscribe((status) => {
-        // The first call only repeats the state the note already shows.
-        if (initial) {
-          initial = false;
-          return;
-        }
         if (!context.live()) return;
+        let reason: string;
+        let stale = false;
         if (status.state === "ready") {
           if (status.snapshot === word.snapshot && status.view === word.view) {
-            // The panel refresh re-renders the page with these scores.
+            // The page's own read already gave its reason, which can be
+            // specific to this word. A recompute re-renders the page.
             return;
           }
-          showNote(
-            "The local calculation uses another snapshot or view. Recompute from records for these definitions.",
-            true,
-          );
-        } else if (status.state === "failed") showNote(status.message, false);
+          reason = staleReason(status, word);
+          stale = true;
+        } else if (status.state === "failed") reason = status.message;
         else
-          showNote(
+          reason =
             status.state === "idle"
               ? "No local calculation yet."
-              : "The local calculation is not ready yet.",
-            false,
-          );
+              : "The local calculation is not ready yet.";
+        live.reason = reason;
+        live.stale = stale;
+        showNote(stale ? staleNote : reason, stale);
+        if (staleLine) {
+          staleLine.textContent = reason;
+          staleLine.hidden = !stale;
+        }
+        for (const score of main.querySelectorAll<HTMLElement>(
+          ".judgment .score.unavailable",
+        ))
+          if (score.title.startsWith(unavailableTitle))
+            score.title = `${unavailableTitle} ${reason}`;
       }),
     );
   }
@@ -403,7 +415,13 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       "div",
       { class: "body" },
       provenanceLine(view, false),
-      view.stale && view.reason ? p(view.reason, "small") : null,
+      view.personal && view.reason
+        ? (staleLine = el("p", {
+            class: "small",
+            text: live.stale ? (live.reason ?? "") : "",
+            hidden: !live.stale,
+          }))
+        : null,
       personal ? null : recomputePanel(app, id, word),
     ),
   );
@@ -508,7 +526,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         score,
         unavailable,
         personal: view.personal,
-        reason: view.reason ?? undefined,
+        get reason() {
+          return live.reason;
+        },
         status: statusOf(definition),
         calculation: view.calculation,
         secondary: layer !== null && layer > 0,
@@ -593,7 +613,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         score,
         unavailable,
         personal: view.personal,
-        reason: view.reason ?? undefined,
+        get reason() {
+          return live.reason;
+        },
         calculation: view.calculation,
         large: true,
         onChange: refresh,

@@ -42,14 +42,16 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 /**
  * The string items of a list that fit `length`, at most `count` of them, in
  * their order. An item that is too long is dropped. Undefined when the value
- * is not a list.
+ * is not a list or holds an item that is not a string: such a list is
+ * malformed, not empty. A valid empty list stays empty.
  */
 export function boundedPreviewList(
   value: unknown,
   count: number,
   length: number,
 ): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
+    return undefined;
   const result: string[] = [];
   for (const item of value) {
     if (result.length === count) break;
@@ -77,7 +79,8 @@ export function shortenedPreviewText(text: string, limit: number): string {
  * whose label or value is too long is dropped, and at most
  * `PREVIEW_DATE_COUNT` entries stay: the labels in `PREVIEW_DATE_LABELS`
  * first, then the others in key order. Null stays null.
- * Undefined means the value does not have the attribution shape.
+ * Undefined means the value does not have the attribution shape, including a
+ * date value that is not a string.
  */
 export function boundedPreviewAttribution(
   value: unknown,
@@ -97,7 +100,12 @@ export function boundedPreviewAttribution(
   )
     return undefined;
   const all = value.dates;
-  if (!isObject(all)) return undefined;
+  // A date map with a value that is not a string is malformed, not empty.
+  if (
+    !isObject(all) ||
+    Object.values(all).some((date) => typeof date !== "string")
+  )
+    return undefined;
   // Object.fromEntries defines own properties, so a "__proto__" label stays
   // an ordinary date label. The labels the row reads come first, so the
   // bound never drops the date the row shows while it keeps one the row

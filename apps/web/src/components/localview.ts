@@ -24,6 +24,13 @@ export interface ViewScores {
   layers: string[][];
   unavailable_scores: string[];
 }
+/** The reason a calculation for another snapshot or view gives no scores here. */
+export function staleReason(
+  calculation: { snapshot: string; view: string },
+  content: { snapshot: string; view: string },
+): string {
+  return `The local calculation is for snapshot ${calculation.snapshot.slice(7, 19)}… and view ${calculation.view.slice(5, 17)}…, but this content is from snapshot ${content.snapshot.slice(7, 19)}… and view ${content.view.slice(5, 17)}…. Recompute from records to calculate this snapshot.`;
+}
 /** Scores for a word under the selected view mode. Never substitutes site scores in the personal view. */
 export async function viewScores(
   app: App,
@@ -49,7 +56,7 @@ export async function viewScores(
       // calculation for another snapshot is not shown beside this content.
       return {
         personal: true,
-        reason: `The local calculation is for snapshot ${ranking.snapshot.slice(7, 19)}… and view ${ranking.view.slice(5, 17)}…, but this content is from snapshot ${word.snapshot.slice(7, 19)}… and view ${word.view.slice(5, 17)}…. Recompute from records to calculate this snapshot.`,
+        reason: staleReason(ranking, word),
         stale: true,
         snapshot: word.snapshot,
         view: word.view,
@@ -197,9 +204,10 @@ export function calculationPanel(
               ? "view"
               : null
         : null;
+    // A previous calculation is named by the mode that produced it.
     line.textContent =
       status.state === "ready" && differs
-        ? `${options.label} calculated in this browser from ${plural(status.events, "verified record")} for another ${differs}. Personal scores are unavailable for this ${differs}.`
+        ? `${status.mode === "personal" ? "Personal" : "Site"} view calculated in this browser from ${plural(status.events, "verified record")} for another ${differs}. Personal scores are unavailable for this ${differs}.`
         : statusText(status, options.includeSnapshot);
     const busy =
       status.state === "downloading" || status.state === "evaluating";

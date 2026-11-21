@@ -295,3 +295,201 @@ test("the recompute button keeps focus while the note follows the calculation", 
   await expect(note).toContainText("No connection to the server.");
   await expect(recompute).toBeFocused();
 });
+
+test("focus stays on a row link when the signed record upgrades the attribution line", async ({
+  page,
+}) => {
+  for (const [query, spelling, selector] of [
+    ["book", "cukta", ".attribution-line a[href$='#notes']"],
+    ["library", "ckusro", ".attribution-line a.identity-link"],
+  ] as const) {
+    let release = () => {};
+    let held = 0;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/api/v1/bodies/**", async (route) => {
+      held += 1;
+      await gate;
+      await route.continue();
+    });
+    await page.goto(`/search?q=${query}&lang=en`);
+    const row = page
+      .getByRole("region", { name: "Search results" })
+      .locator("article")
+      .filter({ has: page.getByRole("link", { name: spelling, exact: true }) });
+    const target = row.locator(selector);
+    await expect(target).toBeVisible();
+    await expect.poll(() => held).toBeGreaterThan(0);
+    await target.focus();
+    await expect(target).toBeFocused();
+    release();
+    // The upgraded line carries the signed record's date or author link.
+    if (spelling === "ckusro")
+      await expect(
+        row.locator(".attribution-line a", { hasText: "arj" }),
+      ).toHaveAttribute("href", /^https:\/\//);
+    else await expect(row.getByRole("img", { name: "place 1" })).toBeVisible();
+    await expect(row.locator(selector)).toBeFocused();
+    await page.unroute("**/api/v1/bodies/**");
+  }
+});
+
+test("a malformed preview list takes the documented fallback", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/search?*", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    for (const hit of body.hits ?? [])
+      if (hit.preview && hit.word?.spelling === "cukta")
+        hit.preview.rafsi = [42];
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto("/search?q=book&lang=en");
+  const cukta = page
+    .getByRole("region", { name: "Search results" })
+    .locator("article")
+    .filter({ has: page.getByRole("link", { name: "cukta", exact: true }) });
+  // The row reads the rafsi from the word's claims, as an older response does.
+  await expect(cukta.locator(".rafsi")).toHaveText("cku");
+});
+
+test("score titles and the source line follow a cancelled recompute", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await choosePersonal(page);
+  await openWord(page, "cukta");
+  const panel = page.getByRole("region", { name: "Personal view" });
+  await expect(panel).toContainText(/verified records\./);
+  await openWord(page, "vlacku");
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toHaveText(
+    "Your endorsement is published.",
+  );
+  await page.evaluate(() => {
+    const anchor = document.createElement("a");
+    anchor.href = "/word/cukta?fresh=1";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  });
+  await expect(page).toHaveTitle("cukta · jbovlacku");
+  const sourceLine = page.locator("details.word-source .body p", {
+    hasText: "The local calculation is for snapshot",
+  });
+  await expect(sourceLine).toHaveCount(1);
+  await expect(firstScore(page)).toHaveAttribute(
+    "title",
+    /The local calculation is for snapshot/,
+  );
+  // Hold the inventory so the recompute stays busy, then cancel it.
+  await page.route("**/api/v1/inventory?*", () => new Promise(() => {}));
+  await page
+    .getByRole("button", { name: "Recompute for this snapshot" })
+    .click();
+  await panel.getByRole("button", { name: "Cancel" }).click();
+  await expect(panel).toContainText("cancelled");
+  // No local calculation exists any more, so nothing on the page names one.
+  await expect(firstScore(page)).toHaveAttribute("title", /cancelled/);
+  await expect(sourceLine).toHaveCount(0);
+  await page.getByText("Score details").first().click();
+  await expect(
+    page.locator("details.judgment-details .body").first(),
+  ).toContainText("cancelled");
+});
+
+test("the note reconciles a status that changed during the own-history read", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().setPreferences({
+      viewMode: "personal",
+      myJudgmentsFirst: true,
+    });
+  });
+  let offline = false;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const heads = page.waitForRequest("**/api/v1/identity-heads/**");
+  await page.route("**/api/v1/identity-heads/**", async (route) => {
+    await gate;
+    await route.continue();
+  });
+  await page.route("**/api/v1/inventory?*", (route) =>
+    offline ? route.abort() : route.fulfill({ status: 500, body: "broken" }),
+  );
+  await page.goto("/word/cukta?lang=en");
+  const panel = page.getByRole("region", { name: "Personal view" });
+  const note = page.getByText(/^Personal scores are unavailable:/);
+  try {
+    await expect(panel).toContainText("Request failed (500).");
+    await heads;
+    offline = true;
+    await panel.getByRole("button", { name: "Recompute from records" }).click();
+    await expect(panel).toContainText("No connection to the server.");
+  } finally {
+    release();
+  }
+  await expect(note).toContainText("No connection to the server.");
+  await expect(note).not.toContainText("Request failed (500).");
+});
+
+test("a previous site calculation is not named as personal", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  await page.getByText("Source and scores", { exact: true }).click();
+  await page.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(
+    page.getByRole("region", { name: "Local calculation" }),
+  ).toContainText("Site view calculated in this browser");
+  await openWord(page, "vlacku");
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toHaveText(
+    "Your endorsement is published.",
+  );
+  await choosePersonal(page);
+  // Record every text the personal panel shows on the fresh word page.
+  await page.evaluate(() => {
+    const lines: string[] = [];
+    (window as unknown as { panelLines: string[] }).panelLines = lines;
+    const read = () => {
+      const node = document.querySelector(
+        '[role="region"][aria-label="Personal view"] p',
+      );
+      if (node?.textContent && lines.at(-1) !== node.textContent)
+        lines.push(node.textContent);
+    };
+    new MutationObserver(read).observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+    const anchor = document.createElement("a");
+    anchor.href = "/word/cukta?fresh=1";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  });
+  await expect(page.locator("article.definition").first()).toBeVisible();
+  const lines = await page.evaluate(
+    () => (window as unknown as { panelLines: string[] }).panelLines,
+  );
+  expect(lines.length).toBeGreaterThan(0);
+  for (const line of lines)
+    expect(line).not.toMatch(/^Personal view calculated .* for another/);
+  expect(lines[0]).toMatch(/^Site view calculated in this browser/);
+});
