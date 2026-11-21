@@ -436,6 +436,10 @@ test("a 503 history read signs from the history saved in this browser", async ({
   // A second fallback record names the first fallback record as its parent.
   // Any judgment signed now has that parent, so the first article is enough.
   await openWord(page, "cukta");
+  // The definitions must load before every API read answers 503.
+  await expect(page.locator("article.definition").first()).toBeVisible({
+    timeout: 30000,
+  });
   await unavailable();
   await page
     .locator("article.definition")
