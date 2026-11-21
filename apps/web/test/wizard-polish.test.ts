@@ -82,6 +82,54 @@ test("remote nearby search sends the whole consented query through an in-app dia
   await expect(page.getByText("searching this server")).toBeVisible();
 });
 
+test("remote consent focus: cancel keeps the invoker, accept lands on the Meaning input", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page
+    .getByLabel("Meaning", { exact: true })
+    .fill("book private committee");
+  const invoker = page.getByRole("button", {
+    name: "search this server",
+    exact: true,
+  });
+  await invoker.click();
+  const consent = page.getByRole("dialog", { name: "Search this server" });
+  await consent.getByRole("button", { name: "Not now" }).click();
+  await expect(invoker).toBeFocused();
+  await invoker.click();
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
+    .click();
+  await expect(
+    page.locator("ol.similar").getByRole("link", { name: "cukta" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Meaning", { exact: true })).toBeFocused();
+});
+
+test("typed-word consent focus: cancel keeps the invoker, accept lands on the Lojban word input", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.getByLabel("Lojban word", { exact: true }).fill("cukta");
+  const panel = page.getByRole("region", { name: "Typed word", exact: true });
+  const invoker = panel.getByRole("button", {
+    name: "Check this word on the server",
+  });
+  await invoker.click();
+  const consent = page.getByRole("dialog", { name: "Search this server" });
+  await consent.getByRole("button", { name: "Not now" }).click();
+  await expect(invoker).toBeFocused();
+  await invoker.click();
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
+    .click();
+  await expect(panel).toContainText("Already exists:");
+  await expect(page.getByLabel("Lojban word", { exact: true })).toBeFocused();
+});
+
 test("lujvo builder: Enter adds a part as entered without a package", async ({
   page,
 }) => {

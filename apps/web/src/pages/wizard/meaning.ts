@@ -67,8 +67,16 @@ import type {
 function shortSnapshot(snapshot: string): string {
   return `${snapshot.slice(7, 19)}…`;
 }
-/** In-app consent for sending draft text to this server. Replaces the native confirm. */
-function askRemoteConsent(message: string): Promise<boolean> {
+/**
+ * In-app consent for sending draft text to this server. Replaces the native
+ * confirm. Cancel restores focus to the invoker. Acceptance removes the
+ * invoker when the search re-renders, so it focuses `acceptFocus` instead,
+ * without scrolling.
+ */
+function askRemoteConsent(
+  message: string,
+  acceptFocus?: HTMLElement,
+): Promise<boolean> {
   return new Promise((resolve) => {
     const opener = document.activeElement as HTMLElement | null;
     const dialog = el("dialog", {
@@ -90,9 +98,12 @@ function askRemoteConsent(message: string): Promise<boolean> {
       ),
     );
     dialog.addEventListener("close", () => {
-      resolve(dialog.returnValue === "ok");
+      const accepted = dialog.returnValue === "ok";
+      resolve(accepted);
       dialog.remove();
-      if (opener?.isConnected) opener.focus();
+      if (accepted && acceptFocus?.isConnected)
+        acceptFocus.focus({ preventScroll: true });
+      else if (opener?.isConnected) opener.focus();
     });
     document.body.append(dialog);
     dialog.showModal();
@@ -569,6 +580,7 @@ export async function meaningPage(
             if (
               !(await askRemoteConsent(
                 `Check ${location.host} for ${JSON.stringify(spelling)} in definition language ${JSON.stringify(draft.language)}? The request sends this word and language.`,
+                word.input,
               ))
             )
               return;
@@ -703,6 +715,7 @@ export async function meaningPage(
               if (
                 !(await askRemoteConsent(
                   `Search ${location.host} for ${JSON.stringify(query)} in definition language ${JSON.stringify(draft.language)}? The request sends this query and language.`,
+                  meaning.input,
                 ))
               )
                 return;
