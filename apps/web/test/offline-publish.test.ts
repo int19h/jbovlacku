@@ -1194,7 +1194,7 @@ test("a first send whose POST started says that it waits for confirmation", asyn
     );
     return describePeer({ ...freshPeer(), sendStarted: Date.now() });
   });
-  expect(text).toBe("A send started. Waiting for the server to confirm it.");
+  expect(text).toBe("A send started. Its outcome is not confirmed yet.");
 });
 
 test("the local-only setting names its condition and how to publish without it", async ({
@@ -1212,4 +1212,40 @@ test("the local-only setting names its condition and how to publish without it",
     "Clear “Sign from history saved in this browser only” and publish with a connection.",
   );
   expect(await outboxItems(page)).toHaveLength(0);
+});
+
+test("the open publication page shows a started first send while its POST is open", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await toPublish(page, "brodu");
+  // The server takes the first POST, and its answer waits.
+  const held = holdable();
+  let first = true;
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST" || !first) return route.continue();
+    first = false;
+    const response = await route.fetch();
+    held.arrive();
+    await held.released;
+    await route.fulfill({ response }).catch(() => {});
+  });
+  await page.locator("aside").getByRole("button", { name: "Publish" }).click();
+  await acceptFirstSignature(page);
+  await held.arrived;
+  const saved = page.getByRole("region", { name: "Saved publication" });
+  await expect(saved).toContainText(
+    "A send started. Its outcome is not confirmed yet.",
+  );
+  await expect(page.getByRole("link", { name: /not delivered/ })).toBeHidden();
+  held.release();
+  await expect
+    .poll(
+      async () =>
+        (await outboxItems(page)).every(
+          (item: any) => item.peers.self.state === "accepted",
+        ),
+      { timeout: 30000 },
+    )
+    .toBe(true);
 });

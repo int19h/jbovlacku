@@ -232,7 +232,7 @@ export function describePeer(peer: PeerDelivery): string {
       return "Delivered.";
     case "queued":
       if (peer.sendStarted !== undefined)
-        return "A send started. Waiting for the server to confirm it.";
+        return "A send started. Its outcome is not confirmed yet.";
       return peer.attempts === 0
         ? "Waiting to send."
         : "Waiting to send again.";
@@ -876,6 +876,8 @@ export class DeliveryEngine {
         };
       });
       if (!maySend) return null;
+      // Open pages show the mark, for example the saved publication row.
+      await this.notify();
       posted = true;
       const receipt = await postEvent(item.transport, { peer: target });
       return settle(receipt);

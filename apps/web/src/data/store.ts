@@ -96,9 +96,11 @@ export interface PeerDelivery {
   attempt?: string;
   /**
    * The random ID of the attempt whose POST started, stored before the POST.
-   * Only that attempt's outcome, or a valid receipt that shows acceptance,
-   * removes it. A value left after a closed page means that the POST may
-   * have reached the server, so the next attempt asks for the receipt first.
+   * That attempt's outcome removes it. A valid receipt that shows acceptance
+   * removes it too. So does the outcome or new mark of a later attempt whose
+   * read saw this mark, when nothing changed after that read. A value left
+   * after a closed page means that the POST may have reached the server, so
+   * the next attempt asks for the receipt first.
    */
   sendAttempt?: string;
   /** When the POST of `sendAttempt` started. */
@@ -732,7 +734,9 @@ export class LocalStore {
         const current = request.result as OutboxItem | undefined;
         if (!current) return;
         result = mutate(current);
-        outbox.put(result, id);
+        // A mutation that returns the same object changes nothing, so
+        // nothing is written.
+        if (result !== current) outbox.put(result, id);
       };
       tx.oncomplete = () => resolve(result);
       tx.onabort = () =>
