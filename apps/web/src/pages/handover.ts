@@ -953,9 +953,11 @@ export function renderExisting(
   let updateGeneration = 0;
   const update = async () => {
     const mine = ++updateGeneration;
-    const restoreFocus = box.contains(document.activeElement);
     const state = await handoverState(app, record);
     if (mine !== updateGeneration || !box.isConnected) return;
+    // Focus is decided here, not before the read. A reader who moved focus
+    // elsewhere during the read keeps that choice.
+    const restoreFocus = box.contains(document.activeElement);
     box.replaceChildren();
     const line =
       state.transferDone && state.acceptDone

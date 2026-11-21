@@ -210,6 +210,53 @@ test("handover banner keeps the delivery link out of the sentence and offers Che
     .toContain("Handover complete");
 });
 
+test("a delayed banner refresh does not steal focus moved elsewhere", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  let posts = 0;
+  await page.route("**/api/v1/events", async (route) => {
+    posts++;
+    if (posts === 2) {
+      await route.fulfill({
+        status: 503,
+        json: { code: "busy", message: "Later.", event: null, field: null },
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole("link", { name: "Start" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Move to a new key" }),
+  ).toBeVisible();
+  await createSuccessor(page);
+  const sign = page.getByRole("button", { name: "Sign the handover" });
+  for (const box of await page.getByRole("checkbox").all()) await box.check();
+  await expect(sign).toBeEnabled();
+  await sign.click();
+  const banner = page.getByRole("region", { name: "Handover status" });
+  await expect(banner).toContainText("Old key retired, acceptance waiting.");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.list;
+    LocalStore.prototype.list = async function (store: string) {
+      if (store === "outbox") {
+        LocalStore.prototype.list = original;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      return original.call(this, store);
+    };
+  });
+  await banner.getByRole("button", { name: "Check again" }).click();
+  const search = page.getByLabel("Search words and meanings");
+  await search.focus();
+  await expect(search).toBeFocused();
+  await page.waitForTimeout(700);
+  await expect(search).toBeFocused();
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
 test("identity intro paragraphs and empty editor links have visible separation", async ({
   page,
 }) => {
