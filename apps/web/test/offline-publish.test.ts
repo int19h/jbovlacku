@@ -1106,11 +1106,13 @@ for (const [outcome, sameClock] of [
     const other = await context.newPage();
     await other.goto("/outbox");
     await expect(other.getByRole("button", { name: "Try now" })).toBeVisible();
+    // Both tabs read one fixed time, later than every stored time.
+    const fixed = Date.now() + 5000;
     if (sameClock)
       for (const tab of [page, other])
-        await tab.evaluate(() => {
-          Date.now = () => 1795000000000;
-        });
+        await tab.evaluate((time) => {
+          Date.now = () => time;
+        }, fixed);
     // Tab A's lookup answers "not found" only after tab B finished.
     const lookup = holdable();
     await page.route("**/api/v1/receipts/*", async (route) => {
