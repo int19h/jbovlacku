@@ -151,7 +151,8 @@ test("a records page that omits an inventory record or alters a body never produ
   await page.route("**/api/v1/records?*", async (route) => {
     const response = await route.fetch();
     const json = await response.json();
-    json.items = json.items.slice(1);
+    // Omit one record of the last page, so the transport ends one record short.
+    if (json.next === null) json.items = json.items.slice(1);
     await route.fulfill({ response, json });
   });
   await page.goto("/trust");
@@ -493,16 +494,19 @@ test("an authenticated record that the schema cannot interpret stays inert and n
       };
       // The server's real records.
       const server = await (await fetch("/api/v1/manifest")).json();
-      const page1 = await (
-        await fetch(
-          `/api/v1/records?snapshot=${encodeURIComponent(server.snapshot)}&limit=200`,
-        )
-      ).json();
-      const base = page1.items as {
-        id: string;
-        envelope: any;
-        body: unknown;
-      }[];
+      // Read every records page. The shared test server can hold more
+      // records than one page.
+      const base: { id: string; envelope: any; body: unknown }[] = [];
+      for (let after = ""; ; ) {
+        const page = await (
+          await fetch(
+            `/api/v1/records?snapshot=${encodeURIComponent(server.snapshot)}&limit=200${after ? `&after=${encodeURIComponent(after)}` : ""}`,
+          )
+        ).json();
+        base.push(...page.items);
+        if (page.next === null || !page.items.length) break;
+        after = page.items.at(-1).id;
+      }
       const selectionsIds = (
         await (
           await fetch(
@@ -652,14 +656,17 @@ test("an authenticated record that the schema cannot interpret stays inert and n
               }[kind],
               next: null,
             };
-          } else if (url.pathname.endsWith("/records"))
+          } else if (url.pathname.endsWith("/records")) {
+            const after = url.searchParams.get("after") ?? "";
+            const rest = snap.items.filter((item: any) => item.id > after);
+            const items = rest.slice(0, 200);
             value = {
               snapshot: snap.snapshot,
               logical_inventory: snap.logical_inventory,
-              items: snap.items,
-              next: null,
+              items,
+              next: rest.length > items.length ? items.at(-1)!.id : null,
             };
-          else if (url.pathname.includes("/import-selections/"))
+          } else if (url.pathname.includes("/import-selections/"))
             return new Response(
               selectionBytes[
                 decodeURIComponent(url.pathname.split("/").at(-1)!)
@@ -1356,13 +1363,19 @@ test("the Personal view panel completes with available scores when the snapshot 
         core.contentHash(core.utf8(canon(value)));
       const saved = globalThis.fetch;
       const server = await (await saved("/api/v1/manifest")).json();
-      const base = (
-        await (
+      // Read every records page. The shared test server can hold more
+      // records than one page.
+      const base: { id: string; envelope: any; body: unknown }[] = [];
+      for (let after = ""; ; ) {
+        const page = await (
           await saved(
-            `/api/v1/records?snapshot=${encodeURIComponent(server.snapshot)}&limit=200`,
+            `/api/v1/records?snapshot=${encodeURIComponent(server.snapshot)}&limit=200${after ? `&after=${encodeURIComponent(after)}` : ""}`,
           )
-        ).json()
-      ).items as { id: string; envelope: any; body: unknown }[];
+        ).json();
+        base.push(...page.items);
+        if (page.next === null || !page.items.length) break;
+        after = page.items.at(-1).id;
+      }
       const selectionsIds = (
         await (
           await saved(
@@ -1446,13 +1459,17 @@ test("the Personal view panel completes with available scores when the snapshot 
             next: null,
           });
         }
-        if (url.pathname.endsWith("/records"))
+        if (url.pathname.endsWith("/records")) {
+          const after = url.searchParams.get("after") ?? "";
+          const rest = items.filter((item) => item.id > after);
+          const page = rest.slice(0, 200);
           return json({
             snapshot,
             logical_inventory: logical,
-            items,
-            next: null,
+            items: page,
+            next: rest.length > page.length ? page.at(-1)!.id : null,
           });
+        }
         if (url.pathname.includes(zeroWord)) {
           const real = await (await toServer()).json();
           return json({ view: real.view });

@@ -92,6 +92,19 @@ export interface PeerDelivery {
   /** The failure class of the last attempt. */
   failure: "offline" | "timeout" | "server" | "refused" | "unresolved" | null;
   receipt: import("../model/types.ts").Receipt | null;
+  /** The random ID of the attempt that stored this outcome. */
+  attempt?: string;
+  /**
+   * The random ID of the attempt whose POST started, stored before the POST.
+   * That attempt's outcome removes it. A valid receipt that shows acceptance
+   * removes it too. So does the outcome or new mark of a later attempt whose
+   * read saw this mark, when nothing changed after that read. A value left
+   * after a closed page means that the POST may have reached the server, so
+   * the next attempt asks for the receipt first.
+   */
+  sendAttempt?: string;
+  /** When the POST of `sendAttempt` started. */
+  sendStarted?: number;
 }
 /** The exact draft revision that a group publishes. */
 export interface Publication {
@@ -757,7 +770,9 @@ export class LocalStore {
         const current = request.result as OutboxItem | undefined;
         if (!current) return;
         result = mutate(current);
-        outbox.put(result, id);
+        // A mutation that returns the same object changes nothing, so
+        // nothing is written.
+        if (result !== current) outbox.put(result, id);
       };
       tx.oncomplete = () => resolve(result);
       tx.onabort = () =>

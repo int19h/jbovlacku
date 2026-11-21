@@ -43,6 +43,11 @@ export default defineConfig({
       use: { browserName: "firefox" },
     },
     {
+      name: "firefox-offline",
+      testMatch: /offline-publish\.test\.ts/,
+      use: { browserName: "firefox" },
+    },
+    {
       name: "firefox-ux",
       testMatch: /(?:ux-regressions|ux-fixes)\.test\.ts/,
       use: { browserName: "firefox" },

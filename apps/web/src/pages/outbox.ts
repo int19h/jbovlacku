@@ -271,8 +271,11 @@ function row(
     if (peer.lastAttempt)
       parts.push(`Last try ${clockTime(new Date(peer.lastAttempt))}.`);
     parts.push(
+      // A timeout keeps its own text. The browser's offline report does
+      // not show that a request that timed out was never sent.
       !navigator.onLine &&
         peer.failure !== "unresolved" &&
+        peer.failure !== "timeout" &&
         peer.state !== "accepted" &&
         peer.state !== "refused"
         ? "Waiting for a connection."
