@@ -962,8 +962,9 @@ function hitRow(
   }
   // The server preview already carries the bounded row fields, so the row
   // shows them at once. The signed record read below then upgrades the
-  // attribution line to its full form, with the author evidence link and
-  // the profile name. If that read fails, the preview line stays. Older
+  // attribution line to its full form, with the author link and the profile
+  // name where the record and the profile have them. If that read fails or
+  // returns no body, the preview line stays. Older
   // responses without the fields keep the backfill below.
   const preview = hit.preview;
   if (preview) {
@@ -1053,15 +1054,19 @@ function hitRow(
         if (!context.live()) return;
         if (record.body) previewRich(textNode, record.body.text, query);
         // The signed record gives the full attribution line, as on a row
-        // without preview fields. A failed read never clears the preview line.
-        const attributed = attribution(record.envelope, record.body);
-        meta.replaceChildren(attributed.node);
-        if (attributed.date) meta.append(text(` · ${attributed.date}`));
-        if (record.body?.notes.length)
-          meta.append(
-            text(" · "),
-            link("notes", `${routes.definition(previewId)}#notes`),
-          );
+        // without preview fields. Without its body, the record line would
+        // lose the source author, date, and notes link, so a row whose
+        // preview drew the line keeps it. A failed read never clears it.
+        if (record.body || !preview?.issuer) {
+          const attributed = attribution(record.envelope, record.body);
+          meta.replaceChildren(attributed.node);
+          if (attributed.date) meta.append(text(` · ${attributed.date}`));
+          if (record.body?.notes.length)
+            meta.append(
+              text(" · "),
+              link("notes", `${routes.definition(previewId)}#notes`),
+            );
+        }
         if (
           preview?.selmaho === undefined &&
           record.body?.classification.selmaho.length

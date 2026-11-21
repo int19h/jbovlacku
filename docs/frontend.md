@@ -1746,7 +1746,7 @@ Segmented cmavo pieces, other punctuation, and unrecognized text do not establis
 The response uses the same language, view, snapshot, receipt, eligibility, and retired-results filters as its hits.
 Search cursors include the group and literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
 Each hit preview carries the row fields a result row shows: rafsi spellings for the word, and the selma'o names, signing identity, notes flag, and imported source attribution of the previewed definition.
-The rafsi are those that the word route gives under the served view. A claim that the view does not select is left out. An assignment whose claims are all inactive is left out. Each other assignment shows the spelling of its first claim in ID order, if that claim body is retained. Assignments come in ID order.
+The rafsi are those that the word route gives under the served view. A claim that the view does not select is left out. An assignment whose claims are all inactive is left out. Each other assignment shows the spelling of its first claim in ID order, if that claim body is retained. The spellings are sorted, and the first 16 stay.
 The server reads these claim states for the hits of the returned page only.
 The signing identity, notes flag, and attribution are present together or absent together. The attribution is null for a native definition.
 The format allows any length in these fields, so the preview bounds each one by count and by length in UTF-16 code units:
@@ -1761,7 +1761,7 @@ The server applies these bounds once, when it builds the search packages of a sn
 If a row field has the wrong type, the browser removes that field, and the row reads it as an older response does: rafsi from the word's rafsi claims, and the selma'o names, signing identity, notes flag and attribution from the definition. The signing identity, notes flag and attribution are removed together. They are also removed together if one or two of them are missing.
 The browser shows the row fields from the response at once. It does not need a result's word or definition record for these fields.
 Each row still reads its word for the score and its definition for the rich preview text.
-When the definition read succeeds, the row replaces the attribution line with the full line from the signed record. That line links an imported author to the source-account evidence and shows the signer's profile name. If the read fails, the preview line stays.
+When the definition read returns the definition body, the row replaces the attribution line with the full line from the signed record. That line adds the author link and the signer's profile name where the record and the profile have them. If the read fails or returns no body, the preview line stays.
 An older response without the preview fields keeps the earlier per-definition backfill for every field.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
 An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.

@@ -90,6 +90,40 @@ test("a server row upgrades its attribution line from the signed record", async 
   await expect(imported.locator(".attribution-line")).toContainText("Mar 2003");
 });
 
+test("a refused body read keeps the preview attribution line", async ({
+  page,
+}) => {
+  // The envelope read succeeds and the body read fails. The record line
+  // would then lose the source author, the date, and the notes link.
+  let refused = 0;
+  await page.route("**/api/v1/bodies/**", (route) => {
+    refused += 1;
+    return route.abort();
+  });
+  const results = page.getByRole("region", { name: "Search results" });
+  await page.goto("/search?q=library&lang=en");
+  const imported = results.locator("article").filter({
+    has: page.getByRole("link", { name: "ckusro", exact: true }),
+  });
+  await expect(imported.locator(".hit-judgment")).not.toBeEmpty();
+  await expect.poll(() => refused).toBeGreaterThan(0);
+  // Give the row time to apply the failed read.
+  await page.waitForTimeout(1500);
+  const line = imported.locator(".attribution-line");
+  await expect(line).toContainText("arj");
+  await expect(line).toContainText("imported by");
+  await expect(line).toContainText("Mar 2003");
+  refused = 0;
+  await page.goto("/search?q=book&lang=en");
+  const cukta = results.locator("article").filter({
+    has: page.getByRole("link", { name: "cukta", exact: true }),
+  });
+  await expect(cukta.locator(".hit-judgment")).not.toBeEmpty();
+  await expect.poll(() => refused).toBeGreaterThan(0);
+  await page.waitForTimeout(1500);
+  await expect(cukta.getByRole("link", { name: "notes" })).toBeVisible();
+});
+
 test("the preview date bound keeps the date label the row reads", async ({
   page,
 }) => {

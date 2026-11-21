@@ -131,7 +131,7 @@ test("a long selma'o name from a non-root signer does not cost the search page",
   }
 });
 
-test("preview rafsi leave out a withdrawn claim, as the word route does", async () => {
+test("preview rafsi leave out a withdrawn claim and sort as the row does", async () => {
   await mkdir(process.env.JVC_TEST_ROOT ?? tmpdir(), { recursive: true });
   const directory = await mkdtemp(
     join(process.env.JVC_TEST_ROOT ?? tmpdir(), "jvc-preview-rafsi-"),
@@ -145,7 +145,6 @@ test("preview rafsi leave out a withdrawn claim, as the word route does", async 
   try {
     const { createEvent, wordId, rafsiPairId } =
       await import("../../core/src/index.ts");
-    const a = new Uint8Array(32).fill(36);
     const b = new Uint8Array(32).fill(37);
     const word = { language: "jbo" as const, spelling: "klama" };
     const definition = createEvent(
@@ -189,13 +188,21 @@ test("preview rafsi leave out a withdrawn claim, as the word route does", async 
         },
         { word, rafsi, rationale: [], sources: [], legacy: null },
       );
-    const kla = claim(a, "kla", "1".repeat(32));
-    const zzz = claim(b, "zzz", "2".repeat(32));
-    // The signer of zzz withdraws the claim.
+    // Seven shown rafsi whose pair-ID order differs from their spelling
+    // order, and one more that its signer withdraws.
+    const names = ["kla", "lam", "ka'a", "kam", "kal", "lama", "mak"];
+    const active = names.map((rafsi, index) =>
+      claim(
+        new Uint8Array(32).fill(40 + index),
+        rafsi,
+        String(index).repeat(32),
+      ),
+    );
+    const zzz = claim(b, "zzz", "a".repeat(32));
     const withdrawn = createEvent(
       b,
       [zzz.envelope.id],
-      "3".repeat(32),
+      "b".repeat(32),
       { kind: "status.set", target: zzz.envelope.id, value: "deprecated" },
       null,
     );
@@ -231,7 +238,7 @@ test("preview rafsi leave out a withdrawn claim, as the word route does", async 
       selectedView: view.envelope.id,
     });
     await service.admitMany(
-      [definition, view, kla, zzz, withdrawn].map((value) =>
+      [definition, view, ...active, zzz, withdrawn].map((value) =>
         utf8(JSON.stringify(value)),
       ),
     );
@@ -242,22 +249,34 @@ test("preview rafsi leave out a withdrawn claim, as the word route does", async 
     const page = (await response.json()) as {
       hits: { preview: { rafsi?: string[] } }[];
     };
-    assert.deepEqual(page.hits[0].preview.rafsi, ["kla"]);
+    assert.deepEqual(page.hits[0].preview.rafsi, [
+      "ka'a",
+      "kal",
+      "kam",
+      "kla",
+      "lam",
+      "lama",
+      "mak",
+    ]);
     // The row on main shows the first claim of each assignment that is not
-    // inactive on the word route. The preview gives the same list.
+    // inactive on the word route, sorted by spelling. The preview gives the
+    // same list in the same order.
     const wordResponse = (await (
       await service.fetch(request(`/words/${encodeURIComponent(wordId(word))}`))
     ).json()) as {
       assignments: { id: string; claims: string[]; status: string }[];
     };
-    const spelling = new Map([
-      [kla.envelope.id, "kla"],
-      [zzz.envelope.id, "zzz"],
-    ]);
+    const spelling = new Map(
+      [...active, zzz].map((event, index) => [
+        event.envelope.id,
+        [...names, "zzz"][index],
+      ]),
+    );
     assert.deepEqual(
       wordResponse.assignments
         .filter((assignment) => assignment.status !== "inactive")
-        .map((assignment) => spelling.get(assignment.claims[0])),
+        .map((assignment) => spelling.get(assignment.claims[0]))
+        .sort(),
       page.hits[0].preview.rafsi,
     );
   } finally {

@@ -51,8 +51,10 @@ export interface SearchPreview {
  * route gives them: claims the view does not select are left out, an
  * assignment whose claims are all inactive is left out, and each other
  * assignment shows the spelling of its first claim in ID order, if that
- * claim body is retained. Assignments come in ID order. The work is linear
- * in the word's retained claims, and the route runs it for page hits only.
+ * claim body is retained. The spellings are sorted, as on a row without
+ * preview fields and on a local row, and the first ones within the count
+ * bound stay. The work is linear in the word's retained claims, and the
+ * route runs it for page hits only.
  */
 export function previewRafsi(
   claims: SearchRafsiClaims[string] | undefined,
@@ -68,8 +70,7 @@ export function previewRafsi(
     assignments.set(publication.assignment, list);
   }
   const spellings = new Set<string>();
-  for (const id of [...assignments.keys()].sort()) {
-    const list = assignments.get(id)!;
+  for (const list of assignments.values()) {
     if (
       list.every(
         ([event]) => evaluation.publications[event].eligible === "inactive",
@@ -79,14 +80,10 @@ export function previewRafsi(
     const [, spelling] = list.reduce((first, claim) =>
       claim[0] < first[0] ? claim : first,
     );
-    if (
-      spelling !== null &&
-      spelling.length <= PREVIEW_RAFSI_LENGTH &&
-      spellings.size < PREVIEW_RAFSI_COUNT
-    )
+    if (spelling !== null && spelling.length <= PREVIEW_RAFSI_LENGTH)
       spellings.add(spelling);
   }
-  return [...spellings];
+  return [...spellings].sort().slice(0, PREVIEW_RAFSI_COUNT);
 }
 
 /** Scan each entry once and retain the public lexical match tiers and order. */
