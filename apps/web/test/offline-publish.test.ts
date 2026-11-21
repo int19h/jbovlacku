@@ -635,3 +635,105 @@ test("a connection that drops after the server took the POST makes delivery unkn
   expect(log).not.toContain("POST");
   await clearAfterReload(page, 1);
 });
+
+test("Resume while offline keeps a header-only outcome and retries a refused record", async ({
+  page,
+}) => {
+  await page.goto("/outbox");
+  await expect(page.locator("main h1")).toBeAttached();
+  await page.context().setOffline(true);
+  const result = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { DeliveryEngine, describePeer } = await import(
+      String("/src/data/delivery.ts")
+    );
+    const store = new LocalStore();
+    const record = (id: string, peer: object) => ({
+      id,
+      identity: "test",
+      transport: "{}",
+      recipients: {
+        self: { origin: location.origin, base: "/api/v1", label: "this site" },
+      },
+      group: id,
+      order: 0,
+      stopped: true,
+      signedAt: Date.now(),
+      label: { subject: "test", action: "judgment", href: "/" },
+      peers: {
+        self: {
+          attempts: 1,
+          lastAttempt: Date.now() - 60000,
+          nextAttempt: null,
+          receipt: null,
+          ...peer,
+        },
+      },
+    });
+    await store.put(
+      "outbox",
+      "header-only",
+      record("header-only", {
+        state: "missing-body",
+        error: "The server has the header without its body.",
+        failure: "server",
+      }),
+    );
+    await store.put(
+      "outbox",
+      "refused",
+      record("refused", {
+        state: "refused",
+        error: "Probe refusal. (probe)",
+        failure: "refused",
+      }),
+    );
+    const engine = new DeliveryEngine(store);
+    const before = Date.now();
+    await engine.resume("header-only");
+    await engine.resume("refused");
+    const peerOf = async (id: string) =>
+      (await store.get("outbox", id)).peers.self;
+    const headerOnly = await peerOf("header-only");
+    const refused = await peerOf("refused");
+    const stopped = [
+      (await store.get("outbox", "header-only")).stopped,
+      (await store.get("outbox", "refused")).stopped,
+    ];
+    await store.delete("outbox", "header-only");
+    await store.delete("outbox", "refused");
+    return {
+      headerOnly: {
+        state: headerOnly.state,
+        attempts: headerOnly.attempts,
+        scheduled: headerOnly.nextAttempt >= before,
+        text: describePeer(headerOnly),
+      },
+      refused: {
+        state: refused.state,
+        failure: refused.failure,
+        attempts: refused.attempts,
+        scheduled: refused.nextAttempt >= before,
+        text: describePeer(refused),
+      },
+      stopped,
+    };
+  });
+  await page.context().setOffline(false);
+  expect(result).toEqual({
+    headerOnly: {
+      state: "missing-body",
+      attempts: 1,
+      scheduled: true,
+      text: "The server has the header without its body.",
+    },
+    refused: {
+      state: "unknown",
+      failure: null,
+      attempts: 1,
+      scheduled: true,
+      text: "A server refused this record before. Resume retries it. The client asks whether the record arrived before it sends the same bytes again.",
+    },
+    stopped: [false, false],
+  });
+});

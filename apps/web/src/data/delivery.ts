@@ -865,12 +865,24 @@ export class DeliveryEngine {
           peerId,
           peer.state === "accepted"
             ? peer
-            : ({
-                ...peer,
-                state: peer.state === "queued" ? "queued" : "unknown",
-                nextAttempt: Date.now(),
-                failure: peer.failure === "unresolved" ? null : peer.failure,
-              } as PeerDelivery),
+            : peer.state === "refused"
+              ? // Resume retries a refused record, so its outcome is unknown
+                // until the attempt asks for the receipt.
+                ({
+                  ...peer,
+                  state: "unknown",
+                  nextAttempt: Date.now(),
+                  error:
+                    "A server refused this record before. Resume retries it.",
+                  failure: null,
+                } as PeerDelivery)
+              : // Every other outcome stays. The attempt asks for the receipt
+                // first after an unknown or header-only outcome.
+                ({
+                  ...peer,
+                  nextAttempt: Date.now(),
+                  failure: peer.failure === "unresolved" ? null : peer.failure,
+                } as PeerDelivery),
         ]),
       ),
     }));

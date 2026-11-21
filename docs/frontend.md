@@ -1623,9 +1623,9 @@ The browser retrieves missing signing or handover evidence from configured peers
 When that history read fails at the network level, times out, or answers 502, 503 or 504, signing falls back to the history saved in this browser, provided this browser already holds at least one own event for the signing key and the parent list computed from it is not empty.
 A key with no own event in this browser does not sign in that case. The page says that publishing needs a connection the first time this key publishes in this browser, and nothing is signed.
 The browser's online report is only a hint for explicit actions. An explicit publish, “Try now” or Resume always attempts delivery, so a reachable server still receives the record when the browser reports offline. Automatic retries wait until the browser reports a connection.
-While the browser reports offline, every attempt asks for the receipt before it sends. If that lookup fails at the network level and the browser still reports offline, the record was not sent, so the stored outcome and retry schedule stay unchanged. A refused record then stays refused.
+While the browser reports offline, every attempt asks for the receipt before it sends. If that lookup fails at the network level and the browser still reports offline, the record was not sent, so the stored outcome and retry schedule stay unchanged. After “Try now”, a refused record then stays refused.
 A timeout or a dropped connection during the send itself means delivery unknown, whatever the browser reports. A network failure while the browser reports online also means delivery unknown, and a refused record then becomes unknown with a new retry time.
-Resume clears the stop and schedules the next attempt whether or not the browser reports a connection. The record is sent when a server answers.
+Resume clears the stop and schedules the next attempt whether or not the browser reports a connection. The record is sent when a server answers. Resume makes a refused outcome unknown, because it retries the record. Every other outcome, such as a header stored without its body, stays until an attempt gets an answer.
 
 It never discards a remembered own branch merely because a peer omits it.
 Device synchronization exchanges known history references and uploads pending events. A handover includes every known relevant device branch.
