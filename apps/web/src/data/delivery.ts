@@ -787,6 +787,7 @@ export class DeliveryEngine {
         peer.state === "unknown" ||
         peer.state === "missing-body" ||
         peer.state === "refused" ||
+        peer.sendStarted !== undefined ||
         !navigator.onLine
       ) {
         try {
@@ -800,14 +801,19 @@ export class DeliveryEngine {
           // A queued record was never sent, so its lookup only checks the
           // connection. Any server answer lets the POST go ahead.
           const answered =
-            error instanceof RequestError && peer.state === "queued";
+            error instanceof RequestError &&
+            peer.state === "queued" &&
+            peer.sendStarted === undefined;
           if (!notFound && !answered) throw error;
         }
       }
       // Store that delivery is uncertain before the POST starts. If the page
       // closes while the request is open, the next attempt in any tab then
-      // asks for the receipt before it sends again. The merge keeps an
-      // accepted state and any state from a later attempt.
+      // asks for the receipt before it sends again. A first send stays
+      // queued, so it shows neutral progress. Any other outcome becomes
+      // unknown with an attempt due, so a refusal does not stay on view
+      // for a record that may have arrived. The merge keeps an accepted
+      // state and any state from a later attempt.
       const sending: PeerDelivery = {
         ...peer,
         state: "unknown",
@@ -816,28 +822,36 @@ export class DeliveryEngine {
         nextAttempt: started,
         error: "The record is being sent.",
         failure: null,
+        sendStarted: started,
       };
-      await this.store.mergeOutbox(item.id, (stored) =>
-        stored.peers[peerId]
-          ? {
-              ...stored,
-              peers: {
-                ...stored.peers,
-                [peerId]: mergePeer(stored.peers[peerId], sending, started),
-              },
-            }
-          : stored,
-      );
+      await this.store.mergeOutbox(item.id, (stored) => {
+        const current = stored.peers[peerId];
+        if (!current) return stored;
+        return {
+          ...stored,
+          peers: {
+            ...stored.peers,
+            [peerId]:
+              current.state === "queued"
+                ? { ...current, sendStarted: started }
+                : mergePeer(current, sending, started),
+          },
+        };
+      });
       posted = true;
       const receipt = await postEvent(item.transport, { peer: target });
       return settle(receipt);
     } catch (error) {
       // A failed lookup or read before the POST is not an answer about the
       // record, even when the status is one that refuses a POST. It is
-      // retried after the backoff, and a refusal becomes unknown.
+      // retried after the backoff. A refusal, or a record whose earlier POST
+      // may have arrived, becomes unknown, so the retry asks again.
       if (error instanceof RequestError && !posted)
         return {
-          state: peer.state === "refused" ? "unknown" : peer.state,
+          state:
+            peer.state === "refused" || peer.sendStarted !== undefined
+              ? "unknown"
+              : peer.state,
           attempts,
           lastAttempt: started,
           nextAttempt: started + backoff(attempts, error.retryAfterMs),

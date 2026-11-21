@@ -92,6 +92,12 @@ export interface PeerDelivery {
   /** The failure class of the last attempt. */
   failure: "offline" | "timeout" | "server" | "refused" | "unresolved" | null;
   receipt: import("../model/types.ts").Receipt | null;
+  /**
+   * Set when a POST starts and removed by its outcome. A value left after a
+   * closed page means that the POST may have reached the server, so the
+   * next attempt asks for the receipt first.
+   */
+  sendStarted?: number;
 }
 /** The exact draft revision that a group publishes. */
 export interface Publication {
@@ -350,8 +356,7 @@ function selectAddedInventoryIds(
 function idbRequest<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () =>
-      reject(request.transaction?.error ?? request.error);
+    request.onerror = () => reject(request.transaction?.error ?? request.error);
   });
 }
 interface ProjectionSnapshotMeta {

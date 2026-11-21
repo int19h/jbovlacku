@@ -556,11 +556,14 @@ test("a POST that reached the server and timed out while the browser reports off
     .click();
   await acceptFirstSignature(page);
   const peerOf = async () => (await outboxItems(page))[0]?.peers.self;
+  // The outcome is unknown from the start of the POST. The timeout then
+  // records its own failure.
   await expect
-    .poll(async () => (await peerOf())?.state, { timeout: 40000 })
-    .toBe("unknown");
+    .poll(async () => (await peerOf())?.failure, { timeout: 40000 })
+    .toBe("timeout");
   expect(answered).toBe(201);
   const timedOut = await peerOf();
+  expect(timedOut.state).toBe("unknown");
   expect(timedOut.failure).toBe("timeout");
   expect(timedOut.attempts).toBe(1);
   expect(timedOut.lastAttempt).not.toBeNull();
@@ -610,10 +613,11 @@ test("a connection that drops after the server took the POST makes delivery unkn
   await acceptFirstSignature(page);
   const peerOf = async () => (await outboxItems(page))[0]?.peers.self;
   await expect
-    .poll(async () => (await peerOf())?.state, { timeout: 30000 })
-    .toBe("unknown");
+    .poll(async () => (await peerOf())?.failure, { timeout: 30000 })
+    .toBe("offline");
   expect(answered).toBe(201);
   const dropped = await peerOf();
+  expect(dropped.state).toBe("unknown");
   expect(dropped.failure).toBe("offline");
   expect(dropped.attempts).toBe(1);
   expect(dropped.lastAttempt).not.toBeNull();
