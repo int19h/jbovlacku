@@ -90,6 +90,75 @@ pub fn publication_status(evaluation: &Evaluation, id: &str) -> Option<Publicati
         observations: p.observations.clone(),
     })
 }
+/// The serialized form of `publication_status`, borrowed from the
+/// evaluation. It writes the same JSON without copying the account's
+/// evidence for each publication, so a full status export does not
+/// clone every observation ID once per publication.
+#[derive(Serialize)]
+pub struct PublicationStatusRef<'a> {
+    event: &'a str,
+    state: &'a Status,
+    frontier: &'a BTreeSet<String>,
+    reasons: &'a BTreeSet<String>,
+    controller_candidates: &'a BTreeSet<String>,
+    deciding_claim: &'a Option<String>,
+    witness_contributions: ContributionsRef<'a>,
+    authority: &'a Authority,
+    controller: &'a Option<String>,
+    claim: &'a Option<String>,
+    observations: &'a BTreeSet<String>,
+}
+struct ContributionsRef<'a>(Option<&'a AccountState>);
+#[derive(Serialize)]
+struct WitnessContributionRef<'a> {
+    witness: &'a str,
+    claims: &'a BTreeSet<String>,
+    observations: &'a BTreeSet<String>,
+}
+impl Serialize for ContributionsRef<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        const NONE: &BTreeSet<String> = &BTreeSet::new();
+        let Some(account) = self.0 else {
+            return serializer.serialize_seq(Some(0))?.end();
+        };
+        let mut seq = serializer.serialize_seq(Some(account.contributions.len()))?;
+        for (witness, claims) in account.contributions.iter() {
+            seq.serialize_element(&WitnessContributionRef {
+                witness,
+                claims,
+                observations: account.observation_evidence.get(witness).unwrap_or(NONE),
+            })?;
+        }
+        seq.end()
+    }
+}
+pub fn publication_status_ref<'a>(
+    evaluation: &'a Evaluation,
+    id: &str,
+) -> Option<PublicationStatusRef<'a>> {
+    let (event, p) = evaluation.publications.get_key_value(id)?;
+    Some(PublicationStatusRef {
+        event,
+        state: &p.status,
+        frontier: &p.status_frontier,
+        reasons: &p.reasons,
+        controller_candidates: &p.controller_candidates,
+        deciding_claim: &p.deciding_claim,
+        witness_contributions: ContributionsRef(
+            p.account
+                .as_ref()
+                .and_then(|a| evaluation.accounts.get(&a.token())),
+        ),
+        authority: &p.authority,
+        controller: &p.controller,
+        claim: &p.claim,
+        observations: &p.observations,
+    })
+}
 pub fn account_control(
     evaluation: &Evaluation,
     snapshot: &str,
