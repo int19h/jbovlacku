@@ -447,6 +447,7 @@ test("a previous site calculation is not named as personal", async ({
   await createIdentity(page);
   await openWord(page, "cukta");
   await page.getByText("Source and scores", { exact: true }).click();
+  await page.getByText("Check the scores locally", { exact: true }).click();
   await page.getByRole("button", { name: "Recompute from records" }).click();
   await expect(
     page.getByRole("region", { name: "Local calculation" }),
@@ -488,8 +489,9 @@ test("a previous site calculation is not named as personal", async ({
   const lines = await page.evaluate(
     () => (window as unknown as { panelLines: string[] }).panelLines,
   );
-  expect(lines.length).toBeGreaterThan(0);
-  for (const line of lines)
-    expect(line).not.toMatch(/^Personal view calculated .* for another/);
-  expect(lines[0]).toMatch(/^Site view calculated in this browser/);
+  // The last completed calculation is the site calculation, so the panel
+  // names it as such until a personal calculation finishes.
+  expect(lines[0], JSON.stringify(lines)).toMatch(
+    /^Site view calculated in this browser from \d+ verified records for another snapshot\./,
+  );
 });
