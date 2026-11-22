@@ -289,7 +289,7 @@ export async function meaningSearchGroup(
             );
             for (const [label, limit] of [
               ["Show more", 20],
-              ["show all", 100],
+              ["Show all", 100],
             ] as const)
               controls.append(
                 button(label, () => {

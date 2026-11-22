@@ -189,6 +189,10 @@ export async function searchPage(
   );
   const results = el("section", { "aria-label": "Search results" });
   const missing = el("div", { class: "missing-line" });
+  // A pending note for the wait before the result groups exist. The groups
+  // replace it with their own "Searching…" status once they render.
+  const searching = p("Searching…", "meta");
+  if (query) results.append(searching);
   main.append(countLine);
   // In the personal view the rows score from the local calculation. Its
   // state and its refresh action stay visible beside the results.
@@ -287,6 +291,7 @@ export async function searchPage(
         cached = undefined;
         app.announce(describe(error));
       } else {
+        searching.remove();
         results.append(p(describe(error), "notice"));
         return;
       }
@@ -349,6 +354,7 @@ export async function searchPage(
   );
   if (query || cached) results.before(provenance);
   if (!query) {
+    searching.remove();
     count.textContent = "Type a word or a meaning to search.";
     if (app.session.preferences.searchMode === "local" && !cached) {
       const note = p(
@@ -565,8 +571,24 @@ export async function searchPage(
     const ordered = orderedGroups();
     // Keep the DOM order equal to the reading and keyboard order.
     const before = results.firstElementChild;
-    if (before !== ordered[0].node)
-      results.prepend(...ordered.map((group) => group.node));
+    if (before !== ordered[0].node) {
+      const [first, second] = ordered.map((group) => group.node);
+      // Moving an element drops its focus, and the groups are on the page
+      // before the first response. When both groups are already here, move
+      // only the one that does not hold the reader's focus.
+      const present =
+        first.parentElement === results && second.parentElement === results;
+      if (!present) results.prepend(first, second);
+      else if (
+        !(
+          first.compareDocumentPosition(second) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+        )
+      ) {
+        if (second.contains(document.activeElement)) second.before(first);
+        else first.after(second);
+      }
+    }
     for (const [key, group] of Object.entries(groups) as [
       SearchGroup,
       typeof groups.lojban,
@@ -594,7 +616,7 @@ export async function searchPage(
         );
         for (const [label, all] of [
           ["Show more", false],
-          ["show all", true],
+          ["Show all", true],
         ] as const) {
           const more = button(
             label,
@@ -753,6 +775,12 @@ export async function searchPage(
     remember();
     refresh();
   };
+  // Show the groups with their "Searching…" status before the first
+  // lexical request waits, so a slow server search never leaves an empty
+  // body. A local search first waits for the package worker above, with
+  // the single "Searching…" note, and shows the groups after that.
+  searching.remove();
+  results.append(...orderedGroups().map((group) => group.node));
   const saved = history.state?.dictionarySearch as SearchState | undefined;
   const restorable =
     !context.readRetryAttempt &&
@@ -925,7 +953,16 @@ function hitRow(
   rafsiSpan.hidden = true;
   line1.append(rafsiSpan);
   if (kind && kind !== "unknown") line1.append(text(kindLabel(kind), "meta"));
-  if (hit.preview && hit.preview.status !== "active")
+  // A local preview always says "unavailable". A package can carry
+  // search_status ordering evidence, but that evidence does not supply a
+  // complete current publication status, so local rows do not show it. A
+  // server row shows every state other than active, including
+  // "unavailable".
+  if (
+    hit.preview &&
+    hit.preview.status !== "active" &&
+    (remote || hit.preview.status !== "unavailable")
+  )
     line1.append(
       el("span", {
         class: "meta",
@@ -959,6 +996,50 @@ function hitRow(
         routes.word(hit.word.spelling, language),
       ),
     );
+  }
+  // The server preview already carries the bounded row fields, so the row
+  // shows them at once. The signed record read below then upgrades the
+  // attribution line to its full form, with the author link and the profile
+  // name where the record and the profile have them. If that read fails or
+  // returns no body, the preview line stays. Older
+  // responses without the fields keep the backfill below.
+  const preview = hit.preview;
+  if (preview) {
+    if (preview.rafsi?.length) {
+      rafsiSpan.textContent = preview.rafsi.join(", ");
+      rafsiSpan.hidden = false;
+    }
+    if (preview.selmaho?.length) {
+      selmaho.textContent = preview.selmaho.join(", ");
+      selmaho.hidden = false;
+    }
+    if (preview.issuer) {
+      if (preview.attribution) {
+        const author = preview.attribution.author;
+        meta.append(
+          author
+            ? el("bdi", {
+                text: author,
+                title: `${preview.attribution.source} source author`,
+              })
+            : text(`${preview.attribution.source} author unknown`),
+        );
+        meta.append(
+          text(" · imported by "),
+          identityLink(preview.issuer, null, { resolve: false }),
+        );
+        const date = sourceDate({
+          legacy: { attribution: { dates: preview.attribution.dates } },
+        } as never);
+        if (date) meta.append(text(` · ${date}`));
+      } else
+        meta.append(identityLink(preview.issuer, null, { resolve: false }));
+      if (preview.notes)
+        meta.append(
+          text(" · "),
+          link("notes", `${routes.definition(previewId)}#notes`),
+        );
+    }
   }
   const target = {
     id: previewId,
@@ -996,7 +1077,7 @@ function hitRow(
       controlSlot.replaceChildren(
         judgmentControl(app, target, judgmentOptions),
       );
-      if (word?.assignments.length) {
+      if (word?.assignments.length && preview?.rafsi === undefined) {
         void loadRafsiSpellings(word, remote.snapshot, context).then(
           (spellings) => {
             if (!context.live() || !spellings.length) return;
@@ -1009,20 +1090,41 @@ function hitRow(
         const record = await loadDefinition(previewId, remote.snapshot);
         if (!context.live()) return;
         if (record.body) previewRich(textNode, record.body.text, query);
-        const attributed = attribution(record.envelope, record.body);
-        meta.replaceChildren(attributed.node);
-        if (attributed.date) meta.append(text(` · ${attributed.date}`));
-        if (record.body?.notes.length)
-          meta.append(
-            text(" · "),
-            link("notes", `${routes.definition(previewId)}#notes`),
-          );
-        if (record.body?.classification.selmaho.length) {
+        // The signed record gives the full attribution line, as on a row
+        // without preview fields. Without its body, the record line would
+        // lose the source author, date, and notes link, so a row whose
+        // preview drew the line keeps it. A failed read never clears it.
+        if (record.body || !preview?.issuer) {
+          // A reader may have focused a link of the preview line. The new
+          // line has links to the same places, so focus moves to the one
+          // with the same destination, without scrolling.
+          const focused =
+            document.activeElement instanceof HTMLAnchorElement &&
+            meta.contains(document.activeElement)
+              ? document.activeElement.getAttribute("href")
+              : null;
+          const attributed = attribution(record.envelope, record.body);
+          meta.replaceChildren(attributed.node);
+          if (attributed.date) meta.append(text(` · ${attributed.date}`));
+          if (record.body?.notes.length)
+            meta.append(
+              text(" · "),
+              link("notes", `${routes.definition(previewId)}#notes`),
+            );
+          if (focused !== null)
+            [...meta.querySelectorAll("a")]
+              .find((anchor) => anchor.getAttribute("href") === focused)
+              ?.focus({ preventScroll: true });
+        }
+        if (
+          preview?.selmaho === undefined &&
+          record.body?.classification.selmaho.length
+        ) {
           selmaho.textContent = record.body.classification.selmaho.join(", ");
           selmaho.hidden = false;
         }
       } catch {
-        meta.textContent = "";
+        // The preview text and row fields stay as the server sent them.
       }
     })();
   } else {

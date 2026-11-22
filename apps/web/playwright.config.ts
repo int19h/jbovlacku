@@ -49,7 +49,7 @@ export default defineConfig({
     },
     {
       name: "firefox-ux",
-      testMatch: /ux-fixes\.test\.ts/,
+      testMatch: /(?:ux-regressions|ux-fixes)\.test\.ts/,
       use: { browserName: "firefox" },
     },
     {
@@ -61,6 +61,16 @@ export default defineConfig({
       name: "firefox-authoring",
       testMatch: /authoring\.test\.ts/,
       grep: /a first-time contributor writes a short literal definition|the full editor preserves every structured field/,
+      use: { browserName: "firefox" },
+    },
+    {
+      name: "firefox-identity",
+      testMatch: /ux-polish-identity\.test\.ts/,
+      use: { browserName: "firefox" },
+    },
+    {
+      name: "firefox-ux-polish",
+      testMatch: /ux-polish-search\.test\.ts/,
       use: { browserName: "firefox" },
     },
   ],

@@ -241,6 +241,10 @@ export function judgmentControl(
   oppose.addEventListener("click", act("curse"));
   return wrapper;
 }
+/** The explanation of an unavailable personal score, for one reason. */
+export function personalReasonText(reason: string | undefined): string {
+  return `Your personal view applies private choices from this browser. ${reason ?? "The local calculation has no score for this item."} No numeric score is assumed. The site view scores are available after switching the view on the Trust page.`;
+}
 /** The reviewer disclosure. It states the aggregate evidence that the server supplies. */
 export function scoreDetails(
   app: App,
@@ -270,11 +274,12 @@ export function scoreDetails(
       ownActions.replaceChildren(node),
     );
     if (options.personal && !score) {
+      const reason = p(personalReasonText(options.reason), "small");
+      // A page that follows the calculation status updates this text in
+      // place while the disclosure stays open.
+      reason.dataset.personalReason = "";
       body.append(
-        p(
-          `Your personal view applies private choices from this browser. ${options.reason ?? "The local calculation has no score for this item."} No numeric score is assumed. The site view scores are available after switching the view on the Trust page.`,
-          "small",
-        ),
+        reason,
         el(
           "p",
           { class: "meta" },

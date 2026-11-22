@@ -424,7 +424,8 @@ export async function compromisePage(
         event.preventDefault();
         submit.disabled = true;
         try {
-          key = await unlockKey(backup, pass.input.value);
+          // The backup is already stored in this browser. No file is involved.
+          key = await unlockKey(backup, pass.input.value, true);
           pass.input.value = "";
           dialog.close("unlocked");
         } catch (failure) {

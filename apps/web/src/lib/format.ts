@@ -191,6 +191,17 @@ const readingLanguageNames: Record<string, string> = {
   tpi: "Tok Pisin",
   "art-guaspi": "Guaspi",
   "art-x-guaspi": "Guaspi",
+  // These dictionary tags get an explicit name, so every browser shows the
+  // same dictionary name. Platform names for them differ between browsers
+  // or are raw tags. These are the English names in the Lensisku language
+  // table. Every other tag uses an override above, such as Guaspi, or else
+  // the platform name. No rule guesses a name from a subtag, because a
+  // subtag after "art-" can be a region or a script.
+  tok: "Toki Pona",
+  "en-simple": "Simple English",
+  "fr-facile": "Easy French",
+  "art-loglan": "Loglan",
+  "art-picture": "Picture language",
 };
 export const listedLanguage = (tag: string) => tag.toLowerCase() !== "test";
 export function languageName(tag: string): string {

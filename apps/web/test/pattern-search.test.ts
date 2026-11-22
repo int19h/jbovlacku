@@ -313,7 +313,7 @@ test("pattern show all keeps stable order and version 1 discloses missing rafsi 
     ),
   ).toBeVisible();
   const first = await page.locator("article.hit .hw").allTextContents();
-  await page.getByRole("button", { name: "show all", exact: true }).click();
+  await page.getByRole("button", { name: "Show all", exact: true }).click();
   await expect(page.locator("article.hit")).toHaveCount(27);
   const all = await page.locator("article.hit .hw").allTextContents();
   expect(all.slice(0, 20)).toEqual(first);
@@ -709,7 +709,7 @@ test("rafsi patterns show 20 cards first and show all keeps each assignment and 
   const first = await cards.evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute("aria-label")),
   );
-  await page.getByRole("button", { name: "show all", exact: true }).click();
+  await page.getByRole("button", { name: "Show all", exact: true }).click();
   await expect(cards).toHaveCount(30);
   const all = await cards.evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute("aria-label")),
@@ -758,7 +758,7 @@ test("navigation cancels a rafsi expansion before it requests the remaining card
   await expect(page.locator("section.definition[aria-label]")).toHaveCount(20);
   expect(requested).toBe(20);
   hold = true;
-  await page.getByRole("button", { name: "show all", exact: true }).click();
+  await page.getByRole("button", { name: "Show all", exact: true }).click();
   await expect.poll(() => release !== undefined).toBe(true);
   await page.evaluate(async () => {
     (await import(String("/src/app/router.ts"))).navigate(
@@ -890,7 +890,7 @@ test("navigation cancels actual rafsi claim bodies and prevents later claim requ
   await page.goto("/rafsi/r*");
   await expect(page.locator("section.definition[aria-label]")).toHaveCount(20);
   claimMode = true;
-  await page.getByRole("button", { name: "show all", exact: true }).click();
+  await page.getByRole("button", { name: "Show all", exact: true }).click();
   await expect.poll(() => release !== undefined).toBe(true);
   try {
     await page.evaluate(async () => {

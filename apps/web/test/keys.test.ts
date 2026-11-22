@@ -143,8 +143,11 @@ test("lock, unlock, and stay unlocked follow the key page controls", async ({
   await expect(page.getByRole("link", { name: /key locked/ })).toBeVisible();
   await page.getByLabel("Passphrase", { exact: true }).fill("wrong");
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "That passphrase did not unlock the key.",
+  );
   await expect(page.getByRole("status")).toHaveText(
-    "This file did not unlock with that passphrase.",
+    "That passphrase did not unlock the key.",
   );
   await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
