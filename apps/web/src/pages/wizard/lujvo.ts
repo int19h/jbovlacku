@@ -533,21 +533,37 @@ export async function lujvoPage(
     searchTimer = setTimeout(() => void renderSearch(), 200);
   });
   addField.input.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
+    if (event.key !== "Enter" || event.isComposing) return;
     event.preventDefault();
     void (async () => {
       clearTimeout(searchTimer);
       await renderSearch();
-      const query = addField.input.value.trim().toLowerCase();
+      const query = addField.input.value.trim();
       if (!query) return;
+      const normalized = (value: string) =>
+        analyzeWord(state.profile, value).normalized?.toLowerCase() ??
+        value.trim().toLowerCase();
+      const target = normalized(query);
       const buttons = [...addResults.querySelectorAll("button")];
-      const exact = buttons.find(
-        (b) => b.getAttribute("aria-label")?.toLowerCase() === `add ${query}`,
+      const packageButtons = buttons.filter((b) => {
+        const label = b.getAttribute("aria-label") ?? "";
+        return /^add /i.test(label) && !/as entered$/i.test(label);
+      });
+      const exact = packageButtons.find(
+        (b) =>
+          normalized((b.getAttribute("aria-label") ?? "").slice(4)) ===
+          target,
       );
-      const entered = buttons.find((b) =>
-        b.getAttribute("aria-label")?.toLowerCase().endsWith("as entered"),
-      );
-      (exact ?? entered)?.click();
+      if (exact) {
+        exact.click();
+        return;
+      }
+      if (packageButtons.length) return;
+      buttons
+        .find((b) =>
+          b.getAttribute("aria-label")?.toLowerCase().endsWith("as entered"),
+        )
+        ?.click();
     })();
   });
   let result: LujvoResult | null = null;
@@ -580,7 +596,7 @@ export async function lujvoPage(
       const item = el("li", {
         class: "card part",
         style:
-          "padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center",
+          "position:relative;padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center",
       });
       if (fixedParts) {
         const part = {
@@ -701,7 +717,9 @@ export async function lujvoPage(
           disabled: index === state.components.length - 1 ? true : undefined,
         }),
       );
-      const name = el("span", { style: "flex:1 1 160px;min-width:0" });
+      const name = el("span", {
+        style: "flex:1 1 160px;min-width:0;padding-right:52px",
+      });
       name.append(
         el("strong", {
           lang: "jbo",
@@ -745,7 +763,7 @@ export async function lujvoPage(
         name.append(text(" · exact definition chosen", "meta"));
       const chips = el("fieldset", {
         style:
-          "border:0;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:8px",
+          "border:0;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:8px;flex:1 1 100%",
       });
       chips.append(
         el("legend", { class: "sr", text: `Rafsi for ${component.spelling}` }),
@@ -858,9 +876,10 @@ export async function lujvoPage(
           "aria-label": `Remove ${component.spelling}`,
         },
       );
-      remove.style.marginLeft = "auto";
-      remove.style.alignSelf = "flex-start";
-      item.append(moves, name, remove, chips, known.wrapper);
+      remove.style.position = "absolute";
+      remove.style.top = "14px";
+      remove.style.right = "16px";
+      item.append(moves, name, chips, known.wrapper, remove);
       if (row?.diagnostics.length)
         item.append(
           el("p", {

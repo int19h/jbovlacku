@@ -763,7 +763,9 @@ export async function publishPage(
           async () => {
             if (
               !(await app.session.firstSignatureDisclosure(
-                `This publish also signs your definition of ${spelling} and its endorsements as public records. Other servers can copy them, and undo does not erase them.`,
+                claims.length
+                  ? `This publish signs your definition of ${spelling}, your endorsement of it, ${claims.length} rafsi claim${claims.length === 1 ? "" : "s"} (${claims.map((claim) => claim.rafsi).join(", ")}), and an endorsement of each claim.`
+                  : `This publish signs your definition of ${spelling} and your endorsement of it.`,
               ))
             )
               return;

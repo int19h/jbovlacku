@@ -478,6 +478,23 @@ test("repeated components stay separate and cmavo need claims", () => {
   assert.equal(rowChoices("cll", cmavo).choices.length, 1);
 });
 
+test("a whole-word core choice offered for a brivla is not reported as not offered", () => {
+  const row = rowChoices(
+    "extended-v4",
+    component("a", "leksiko", ["leksiko"], "fuhivla"),
+  );
+  assert.ok(
+    row.choices.some(
+      (choice) => choice.form === "leksiko" && choice.origin === "core",
+    ),
+  );
+  assert.ok(
+    !row.diagnostics.some((message) =>
+      message.includes('"leksiko" is not a short rafsi shape'),
+    ),
+  );
+});
+
 test("work limit refuses before enumerating the choice product", () => {
   assert.throws(
     () =>

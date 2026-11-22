@@ -404,7 +404,15 @@ export function rowChoicesWithParser(
     choices,
     lock_valid: lockValid,
     recognition_incomplete: incomplete,
-    diagnostics,
+    // An offered form is never reported as not offered, even when its
+    // choice is added after the claims are checked.
+    diagnostics: diagnostics.filter((message) => {
+      const claimed =
+        /^Claimed rafsi "(.+)" is not a short rafsi shape and is not offered\.$/.exec(
+          message,
+        )?.[1];
+      return claimed === undefined || !choices.some((c) => c.form === claimed);
+    }),
   });
   if (
     bytes(component.spelling) > MAX_WORD_BYTES ||

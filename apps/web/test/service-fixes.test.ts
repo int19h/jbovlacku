@@ -35,7 +35,8 @@ test("nearby draft search discloses the exact query and sends only a POST body",
       .locator("ol.similar")
       .getByRole("link", { name: "cukta", exact: true }),
   ).toBeVisible();
-  expect(disclosure).toContain('"book private committee"');
+  expect(disclosure).toContain('"book", "private", "committee"');
+  expect(disclosure).toContain("Each word is sent as a separate request");
   expect(disclosure).toContain('"en"');
   expect(searches.map((s) => (s.body as { q: string }).q).sort()).toEqual([
     "book",
@@ -63,7 +64,7 @@ test("nearby draft search discloses the exact query and sends only a POST body",
   const declined = page.getByRole("dialog", { name: "Search this server" });
   await expect(declined).toBeVisible();
   expect((await declined.textContent()) ?? "").toContain(
-    '"another private phrase"',
+    '"another", "private", "phrase"',
   );
   await declined.getByRole("button", { name: "Not now" }).click();
   expect(searches).toHaveLength(3);
