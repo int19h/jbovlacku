@@ -487,6 +487,24 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   const staleNote =
     "The local calculation uses another snapshot or view. Recompute from records for these definitions.";
   const unavailableTitle = "Score unavailable in the personal view.";
+  /** The reason that a calculation status gives, or null for a ready one for this snapshot. */
+  const statusReason = (
+    status: typeof app.personal.status,
+  ): { reason: string; stale: boolean } | null => {
+    if (status.state === "ready")
+      return status.snapshot === word.snapshot && status.view === word.view
+        ? null
+        : { reason: staleReason(status, word), stale: true };
+    if (status.state === "failed")
+      return { reason: status.message, stale: false };
+    return {
+      reason:
+        status.state === "idle"
+          ? "No local calculation yet."
+          : "The local calculation is not ready yet.",
+      stale: false,
+    };
+  };
   let note: HTMLElement | null = null;
   let showNote: ((reason: string, stale: boolean) => void) | null = null;
   if (view.personal && view.reason) {
@@ -528,22 +546,12 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       shown,
       app.personal.subscribe((status) => {
         if (!context.live()) return;
-        let reason: string;
-        let stale = false;
-        if (status.state === "ready") {
-          if (status.snapshot === word.snapshot && status.view === word.view) {
-            // The page's own read gives its reason, which can be specific
-            // to this word. The settled read updates the page.
-            return;
-          }
-          reason = staleReason(status, word);
-          stale = true;
-        } else if (status.state === "failed") reason = status.message;
-        else
-          reason =
-            status.state === "idle"
-              ? "No local calculation yet."
-              : "The local calculation is not ready yet.";
+        const current = statusReason(status);
+        // A ready calculation for this snapshot: the page's own read gives
+        // its reason, which can be specific to this word. The settled read
+        // updates the page.
+        if (!current) return;
+        const { reason, stale } = current;
         live.reason = reason;
         live.stale = stale;
         showNote?.(stale ? staleNote : reason, stale);
@@ -939,11 +947,21 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       await pressFinished();
       if (!context.live() || !part.isConnected) return;
       view = settled;
-      live.reason = settled.reason ?? undefined;
-      live.stale = settled.stale;
-      if (settled.personal && settled.reason)
-        showNote?.(settled.stale ? staleNote : settled.reason, settled.stale);
-      else {
+      // A read that ended without scores can be older than the status: a
+      // retry may have failed differently since. The status then gives the
+      // reason, as the note's listener does.
+      const current = settled.calculation
+        ? null
+        : statusReason(app.personal.status);
+      live.reason = current?.reason ?? settled.reason ?? undefined;
+      live.stale = current?.stale ?? settled.stale;
+      if (settled.personal && live.reason) {
+        showNote?.(live.stale ? staleNote : live.reason, live.stale);
+        for (const text of part.querySelectorAll<HTMLElement>(
+          "details.judgment-details [data-personal-reason]",
+        ))
+          text.textContent = personalReasonText(live.reason);
+      } else {
         // Scores are known. The note leaves the page, which ends its
         // listener.
         note?.remove();
@@ -953,8 +971,8 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       provenance.replaceWith(line);
       provenance = line;
       if (staleLine) {
-        staleLine.textContent = settled.stale ? (settled.reason ?? "") : "";
-        staleLine.hidden = !settled.stale;
+        staleLine.textContent = live.stale ? (live.reason ?? "") : "";
+        staleLine.hidden = !live.stale;
       }
       profileSlot.replaceChildren(
         ...(unknownProfileOf(settled) ? [profileNote(settled)] : []),
