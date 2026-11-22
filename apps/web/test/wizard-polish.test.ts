@@ -96,6 +96,7 @@ test("remote consent focus: cancel keeps the invoker, accept lands on the Meanin
   await invoker.click();
   const consent = page.getByRole("dialog", { name: "Search this server" });
   await consent.getByRole("button", { name: "Not now" }).click();
+  await page.waitForTimeout(500);
   await expect(invoker).toBeFocused();
   await invoker.click();
   await page
@@ -128,6 +129,68 @@ test("typed-word consent focus: cancel keeps the invoker, accept lands on the Lo
     .click();
   await expect(panel).toContainText("Already exists:");
   await expect(page.getByLabel("Lojban word", { exact: true })).toBeFocused();
+});
+
+test("nearby cancel focus survives a slow read, the debounce, and an edit while open", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  const meaning = page.getByLabel("Meaning", { exact: true });
+  const invoker = page.getByRole("button", {
+    name: "search this server",
+    exact: true,
+  });
+  const consent = page.getByRole("dialog", { name: "Search this server" });
+  // Slow cancel: the debounce fires while the dialog is open.
+  await meaning.fill("book private committee");
+  await invoker.click();
+  await page.waitForTimeout(500);
+  await consent.getByRole("button", { name: "Not now" }).click();
+  await expect(invoker).toBeFocused();
+  // Fast cancel: focus must still be on the invoker after the debounce.
+  await meaning.fill("book");
+  await invoker.click();
+  await consent.getByRole("button", { name: "Not now" }).click();
+  await page.waitForTimeout(500);
+  await expect(invoker).toBeFocused();
+  // Edit while the dialog is open, then cancel.
+  await meaning.fill("settled book");
+  await page.waitForTimeout(500);
+  await invoker.click();
+  await meaning.evaluate((element: HTMLTextAreaElement) => {
+    element.value = "settled book edited";
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await consent.getByRole("button", { name: "Not now" }).click();
+  const tag = await page.evaluate(() => document.activeElement?.tagName);
+  expect(tag).not.toBe("BODY");
+  await expect(invoker).toBeFocused();
+});
+
+test("typed-word cancel focus survives an edit while the dialog is open", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  const word = page.getByLabel("Lojban word", { exact: true });
+  await word.fill("cukta");
+  const panel = page.getByRole("region", { name: "Typed word", exact: true });
+  await panel
+    .getByRole("button", { name: "Check this word on the server" })
+    .click();
+  await word.evaluate((element: HTMLInputElement) => {
+    element.value = "sinxa";
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForTimeout(50);
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Not now" })
+    .click();
+  const tag = await page.evaluate(() => document.activeElement?.tagName);
+  expect(tag).not.toBe("BODY");
+  await expect(
+    panel.getByRole("button", { name: "Check this word on the server" }),
+  ).toBeFocused();
 });
 
 test("remote consent focus: a removed Meaning field falls back without landing on the body", async ({

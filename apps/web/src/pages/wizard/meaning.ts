@@ -102,6 +102,8 @@ function askRemoteConsent(
   options: {
     signal: AbortSignal;
     acceptFocus: readonly (HTMLElement | null | undefined)[];
+    /** Extra cancel targets, read at close in case the invoker re-rendered. */
+    cancelFocus?: () => readonly (HTMLElement | null | undefined)[];
   },
 ): Promise<boolean> {
   if (options.signal.aborted || remoteConsentActive)
@@ -136,7 +138,12 @@ function askRemoteConsent(
       resolve(accepted);
       dialog.remove();
       if (accepted) focusConsentTarget(options.acceptFocus);
-      else if (opener?.isConnected) opener.focus();
+      else
+        focusConsentTarget([
+          opener,
+          ...(options.cancelFocus?.() ?? []),
+          ...options.acceptFocus,
+        ]);
     });
     document.body.append(dialog);
     dialog.showModal();
@@ -622,6 +629,13 @@ export async function meaningPage(
                 {
                   signal: context.signal,
                   acceptFocus: [word.input, stepHeading],
+                  cancelFocus: () => [
+                    [...typedStatus.querySelectorAll("button")].find(
+                      (candidate) =>
+                        candidate.textContent ===
+                        "Check this word on the server",
+                    ) ?? null,
+                  ],
                 },
               ))
             )
@@ -744,7 +758,19 @@ export async function meaningPage(
   const nearbyQuery = () => meaningQueries(meaning.input.value).join(" ");
   const remoteQuery = () => nearbyQuery();
   const consentKey = () => JSON.stringify([remoteQuery(), draft.language]);
+  let modeSignature = "";
   const renderMode = () => {
+    // Keep the existing nodes when nothing changed, so a background
+    // refresh never removes a focused control or the consent invoker.
+    const signature = `${
+      cached
+        ? "local"
+        : remoteConsent === consentKey()
+          ? "searching"
+          : "search"
+    }|${assistanceVisibility(app, context).enabled}`;
+    if (signature === modeSignature) return;
+    modeSignature = signature;
     modeLabel.replaceChildren();
     if (cached) modeLabel.append(text("by words, from the downloaded package"));
     else {
@@ -769,6 +795,9 @@ export async function meaningPage(
                 !(await askRemoteConsent(message, {
                   signal: context.signal,
                   acceptFocus: [meaning.input, stepHeading],
+                  cancelFocus: () => [
+                    modeLabel.querySelector("button") ?? null,
+                  ],
                 }))
               )
                 return;
