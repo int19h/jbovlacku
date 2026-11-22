@@ -223,8 +223,12 @@ export function calculationPanel(
           : statusText(status, options.includeSnapshot);
     const busy =
       status.state === "downloading" || status.state === "evaluating";
+    // Focus on Cancel moves to Recompute when the run ends, so the end of a
+    // run never drops the reader's focus.
+    const cancelFocused = document.activeElement === cancel;
     cancel.hidden = !busy;
     retry.disabled = busy;
+    if (cancelFocused && !busy) retry.focus();
     const warning =
       status.state === "failed" ||
       Boolean(differs) ||

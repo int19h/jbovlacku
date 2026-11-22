@@ -151,3 +151,79 @@ export async function establishOwnHistory(page: Page) {
   });
   await expect(page).toHaveTitle(/·/);
 }
+/**
+ * Signs a transfer from a new key to a successor key, and its acceptance when
+ * `accepted` is true, and waits until a snapshot contains them.
+ */
+export async function transferFixture(
+  page: Page,
+  accepted = false,
+  base = "/api/v1",
+) {
+  const old = await createIdentity(page);
+  const data = await page.evaluate(
+    async ({ old, accepted, base, corePath, passphrase }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const { createKey, unlockKey } = await import(
+        String("/src/data/keys.ts")
+      );
+      const { signWith } = await import(String("/src/data/lifecycle.ts"));
+      const successor = await createKey(passphrase);
+      const transfer = await signWith(
+        await unlockKey(old, passphrase),
+        old.identity,
+        [],
+        { kind: "identity.transfer", successor: successor.backup.identity },
+      );
+      const send = async (transport: unknown) => {
+        const response = await fetch(`${base}/events`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(transport),
+        });
+        if (!response.ok) throw new Error(await response.text());
+      };
+      await send(transfer);
+      let accept = null;
+      if (accepted) {
+        accept = await signWith(successor.key, successor.backup.identity, [], {
+          kind: "identity.accept",
+          transfer: transfer.envelope.id,
+        });
+        await send(accept);
+      }
+      return {
+        old,
+        successor: successor.backup,
+        transfer: transfer.envelope,
+        accept: accept?.envelope,
+      };
+    },
+    { old, accepted, base, corePath, passphrase: PASSPHRASE },
+  );
+  // Recovery tests require these peer records in the completed snapshot.
+  for (const event of [data.transfer, ...(data.accept ? [data.accept] : [])]) {
+    await expect
+      .poll(() =>
+        page.evaluate(
+          async ({ id, base }) => {
+            const response = await fetch(
+              `${base}/receipts/${encodeURIComponent(id)}`,
+            );
+            if (!response.ok) return false;
+            const receipt = await response.json();
+            return (
+              receipt.snapshot !== null &&
+              !receipt.reasons.some((reason: string) =>
+                ["index_lag", "evaluation_pending"].includes(reason),
+              )
+            );
+          },
+          { id: event.id, base },
+        ),
+      )
+      .toBe(true);
+  }
+  return data;
+}

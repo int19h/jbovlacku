@@ -1,9 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
+  corePath,
   createIdentity,
   fixture,
   openWord,
+  PASSPHRASE,
+  transferFixture,
 } from "./helpers.ts";
 
 /** Chooses the personal view on the Trust page. */
@@ -777,4 +780,356 @@ test("the footer room grows when a visible status message wraps after a resize",
   await expect.poll(overlap, { timeout: 5000 }).toBeLessThanOrEqual(0);
   // Click-through stays.
   await expect(status).toHaveCSS("pointer-events", "none");
+});
+
+/** Holds every records download until the returned function runs. */
+async function holdRecords(page: Page) {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/v1/records?*", async (route) => {
+    await gate;
+    await route.continue();
+  });
+  return release;
+}
+/** Leaves the Trust page and returns to it inside the app. */
+async function returnToTrust(page: Page) {
+  await page.getByRole("link", { name: "About", exact: true }).last().click();
+  await page
+    .getByRole("link", { name: "Trust: personal view", exact: true })
+    .click();
+}
+
+test("a calculation that ends keeps the reader's entry, focus, disclosure and place at 360x640", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 640 });
+  await choosePersonal(page);
+  const panel = page.getByRole("region", { name: "Local calculation" });
+  const release = await holdRecords(page);
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("Downloading records");
+  // The run started on the earlier visit, so the panel on this visit did not start it.
+  await returnToTrust(page);
+  await expect(panel).toContainText("Downloading records");
+  await page.locator("summary", { hasText: "Settings and history" }).click();
+  await expect(
+    page.getByText("Outward allowance (H)", { exact: true }),
+  ).toBeVisible();
+  const field = page.getByRole("textbox", { name: "Signed view event ID" });
+  await field.fill("jve1:12345");
+  await field.evaluate((node) => node.scrollIntoView({ block: "center" }));
+  await frames(page);
+  const capture = () =>
+    page.evaluate(() => {
+      const field = document.querySelector<HTMLInputElement>(
+        "input[aria-label='Signed view event ID']",
+      );
+      return {
+        focus: document.activeElement?.getAttribute("aria-label") ?? null,
+        value: field?.value ?? null,
+        open: [
+          ...document.querySelectorAll("main details[open] > summary"),
+        ].map((node) => node.textContent),
+        top: Math.round(field?.getBoundingClientRect().top ?? -1),
+      };
+    });
+  const before = await capture();
+  expect(before.focus).toBe("Signed view event ID");
+  expect(before.open).toEqual(["Settings and history"]);
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(200);
+  release();
+  await expect(panel).toContainText("Personal view calculated in this browser");
+  await frames(page);
+  expect(await capture()).toEqual(before);
+});
+
+test("a late conflict-history read adds no second copy of the rules", async ({
+  page,
+}) => {
+  const key = await createIdentity(page);
+  await page.evaluate(
+    async ({ key, subject, passphrase, corePath }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const { unlockKey } = await import(String("/src/data/keys.ts"));
+      const { signWith } = await import(String("/src/data/lifecycle.ts"));
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const unlocked = await unlockKey(key, passphrase);
+      // Two records that no device has seen together: a public conflict.
+      const events = [];
+      for (const value of ["heed", "shun"])
+        events.push(
+          (
+            await signWith(unlocked, key.identity, [], {
+              kind: "trust.set",
+              subject,
+              scope: { kind: "*", word: "*", language: "*" },
+              value,
+            })
+          ).envelope,
+        );
+      await new LocalStore().recordBranch(key.identity, events);
+    },
+    {
+      key,
+      subject: fixture().identities.curator,
+      passphrase: PASSPHRASE,
+      corePath,
+    },
+  );
+  await page.goto("/trust");
+  const conflicts = page.getByRole("heading", {
+    name: "Conflicting public choices",
+    exact: true,
+  });
+  await expect(conflicts).toBeVisible();
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  const panel = page.getByRole("region", { name: "Local calculation" });
+  const release = await holdRecords(page);
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("Downloading records");
+  await page.getByRole("link", { name: "About", exact: true }).last().click();
+  let reads = 0;
+  let history!: () => void;
+  const historyGate = new Promise<void>((resolve) => (history = resolve));
+  await page.route("**/identity-heads/**", async (route) => {
+    if (++reads === 1) await historyGate;
+    await route.continue();
+  });
+  await page
+    .getByRole("link", { name: "Trust: personal view", exact: true })
+    .click();
+  await expect.poll(() => reads).toBe(1);
+  release();
+  await expect(panel).toContainText("Personal view calculated");
+  history();
+  await expect(
+    page.getByRole("textbox", { name: "Signed view event ID" }),
+  ).toBeVisible();
+  await frames(page);
+  await expect(conflicts).toHaveCount(1);
+  await expect(
+    page.getByRole("heading", { name: "Site view", exact: true }),
+  ).toHaveCount(1);
+  await expect(
+    page.locator("main").getByRole("button", { name: "Undo", exact: true }),
+  ).toHaveCount(1);
+});
+
+test("a public choice signed after a calculation ended shows on the open Trust page", async ({
+  page,
+}) => {
+  const key = await createIdentity(page);
+  await page.evaluate(
+    async ({ issuer, subject }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      const overlay = await store.overlay();
+      overlay.trust.push({
+        issuer,
+        subject,
+        scope: { kind: "*", word: "*", language: "*" },
+        value: "heed",
+        weight: null,
+      });
+      await store.setOverlay(overlay);
+      // Navigate inside the app so the key stays unlocked.
+      (await import(String("/src/app/router.ts"))).navigate("/trust");
+    },
+    { issuer: key.identity, subject: fixture().identities.delegate },
+  );
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  const panel = page.getByRole("region", { name: "Local calculation" });
+  const release = await holdRecords(page);
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("Downloading records");
+  await page.getByRole("button", { name: "Make public", exact: true }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "Trust: public signed record",
+  });
+  await expect(dialog).toBeVisible();
+  release();
+  await expect(panel).toContainText("Personal view calculated");
+  await dialog.getByRole("button", { name: "Trust", exact: true }).click();
+  await acceptFirstSignature(page);
+  await expect(statusRegion(page)).toContainText(
+    "Signed. Others can build on it.",
+  );
+  await expect(
+    page.locator("main").getByRole("button", { name: "Undo", exact: true }),
+  ).toHaveCount(1);
+});
+
+/**
+ * Selects a successor key and saves a private Trust rule for the delegate
+ * under its predecessor. The snapshot holds the signed handover.
+ */
+async function handoverRule(page: Page) {
+  const data = await transferFixture(page, true);
+  const subject = fixture().identities.delegate;
+  await page.evaluate(
+    async ({ data, subject }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      await store.put("keys", "selected", data.successor);
+      const overlay = await store.overlay();
+      overlay.trust.push({
+        issuer: data.old.identity,
+        subject,
+        scope: { kind: "*", word: "*", language: "*" },
+        value: "heed",
+        weight: null,
+      });
+      await store.setOverlay(overlay);
+    },
+    { data, subject },
+  );
+  return subject;
+}
+
+test("the person page moves a rule to Your choices when a calculation confirms its handover", async ({
+  page,
+}) => {
+  const subject = await handoverRule(page);
+  await choosePersonal(page);
+  const panel = page.getByRole("region", { name: "Local calculation" });
+  const release = await holdRecords(page);
+  await page.evaluate(async () => {
+    // Records when the calculation that the panel starts is ready.
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const ensure = PersonalCalculator.prototype.ensure;
+    PersonalCalculator.prototype.ensure = function (...args: unknown[]) {
+      const result = ensure.apply(this, args as never);
+      void result.then((status: { state: string }) => {
+        (window as unknown as { seenReady: string }).seenReady = status.state;
+      });
+      return result;
+    };
+  });
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("Downloading records");
+  await page.evaluate(
+    async (subject) =>
+      (await import(String("/src/app/router.ts"))).navigate(
+        `/identity/${encodeURIComponent(subject)}`,
+      ),
+    subject,
+  );
+  const line = page.locator("main p", { hasText: "Manage on the Trust page" });
+  await expect(line).toContainText("Private rules saved under another key");
+  const manage = page.getByRole("link", { name: "Manage on the Trust page" });
+  await manage.focus();
+  release();
+  await page.waitForFunction(
+    () => (window as unknown as { seenReady?: string }).seenReady === "ready",
+  );
+  await expect(line).toHaveText(
+    "Your choices: Trusted privately for all judgments. Manage on the Trust page",
+  );
+  await expect(manage).toBeFocused();
+});
+
+test("a cancel that clears the loaded calculation updates the rule reasons at once", async ({
+  page,
+}) => {
+  await handoverRule(page);
+  await choosePersonal(page);
+  const panel = page.getByRole("region", { name: "Local calculation" });
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("Personal view calculated");
+  const source = page.getByText(
+    /^Private rule labels use personal calculation snapshot/,
+  );
+  const attention = page.getByRole("heading", {
+    name: "Private rules that need attention",
+  });
+  await expect(source).toBeVisible();
+  await expect(attention).toHaveCount(0);
+  let finish!: () => void;
+  const held = new Promise<void>((resolve) => (finish = resolve));
+  await page.route("**/api/v1/inventory?*", async (route) => {
+    await held;
+    await route.continue().catch(() => {});
+  });
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("Downloading");
+  await panel.getByRole("button", { name: "Cancel" }).click();
+  await expect(panel).toContainText("cancelled");
+  await expect(attention).toBeVisible();
+  await expect(
+    page.getByText(/No personal calculation is loaded/),
+  ).toBeVisible();
+  await expect(source).toBeHidden();
+  // Focus on Cancel moves to Recompute when Cancel hides.
+  await expect(
+    panel.getByRole("button", { name: "Recompute from records" }),
+  ).toBeFocused();
+  finish();
+});
+
+test("a rule saved before this browser had a key is described as such", async ({
+  page,
+}) => {
+  const subject = fixture().identities.curator;
+  await page.goto("/identity");
+  await page.evaluate(async (subject) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const overlay = await store.overlay();
+    overlay.trust.push({
+      issuer: "local",
+      subject,
+      scope: { kind: "*", word: "*", language: "*" },
+      value: "heed",
+      weight: null,
+    });
+    await store.setOverlay(overlay);
+  }, subject);
+  await page.goto(`/identity/${encodeURIComponent(subject)}`);
+  await expect(
+    page.locator("main p", { hasText: "Manage on the Trust page" }),
+  ).toHaveText(
+    "Private rules saved before this browser had a key: Trusted privately for all judgments. They move to your key when you create or restore one. Manage on the Trust page",
+  );
+  await page.goto("/trust");
+  await expect(
+    page.locator("main .row", { hasText: "all judgments" }),
+  ).toContainText(
+    "This rule was saved before this browser had a key. It moves to your key when you create or restore one.",
+  );
+});
+
+test("a run that ends in the site view keeps focus in its panel until the reader leaves it", async ({
+  page,
+}) => {
+  await choosePersonal(page);
+  const panel = page.getByRole("region", { name: "Local calculation" });
+  const siteNote = page.getByText("It needs no calculation in this browser.");
+  const release = await holdRecords(page);
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("Downloading records");
+  await page.getByRole("radio", { name: "Site view only" }).check();
+  await expect(
+    page.getByRole("link", { name: "Trust: site view" }),
+  ).toBeVisible();
+  await panel.getByRole("button", { name: "Cancel" }).focus();
+  release();
+  const recompute = panel.getByRole("button", {
+    name: "Recompute from records",
+  });
+  await expect(recompute).toBeFocused();
+  await expect(panel).toContainText("Personal view calculated");
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    page.getByRole("radio", { name: "Site view only" }),
+  ).toBeFocused();
+  await expect(panel).toHaveCount(0);
+  await expect(siteNote).toBeVisible();
 });

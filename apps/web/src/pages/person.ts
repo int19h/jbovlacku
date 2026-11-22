@@ -23,6 +23,7 @@ import {
 } from "../components/attribution.ts";
 import { countNodes, renderRichText } from "../model/richtext.ts";
 import { routes, type RenderContext, type Route } from "../app/router.ts";
+import { onDisconnect } from "../lib/lifetime.ts";
 import type { App } from "../app/context.ts";
 import {
   identityId,
@@ -387,7 +388,10 @@ export async function personPage(
       (b) => b.identity === identity,
     );
     if (!own.length && !privateRules.length && !blocks.length) {
-      choices.hidden = true;
+      // A line that holds focus stays, with only its link.
+      if (choices.contains(document.activeElement))
+        choicesText.textContent = "";
+      else choices.hidden = true;
       return;
     }
     const parts: string[] = [];
@@ -396,9 +400,21 @@ export async function personPage(
         parts.push(
           `${state.value === "heed" ? "Trusted" : "Ignored"} publicly for ${describeKey(key)}`,
         );
+    // A rule saved before this browser had a key has the issuer `local`. It
+    // names no key and moves to the reader's key when one is created or
+    // restored.
     const others: string[] = [];
+    const beforeKey: string[] = [];
+    const noIssuer: string[] = [];
     for (const rule of privateRules)
-      (ownRule(rule.issuer) ? parts : others).push(
+      (ownRule(rule.issuer)
+        ? parts
+        : rule.issuer === "local"
+          ? beforeKey
+          : /^ed25519:[0-9a-f]{64}$/.test(rule.issuer)
+            ? others
+            : noIssuer
+      ).push(
         `${rule.value === "heed" ? "Trusted" : "Ignored"} privately for ${describeScope(rule.scope)}`,
       );
     for (const block of blocks)
@@ -409,9 +425,36 @@ export async function personPage(
       sentences.push(
         `Private rules saved under another key: ${others.join("; ")}. They apply only when the personal calculation connects that key to yours.`,
       );
+    if (beforeKey.length)
+      sentences.push(
+        `Private rules saved before this browser had a key: ${beforeKey.join("; ")}. They move to your key when you create or restore one.`,
+      );
+    if (noIssuer.length)
+      sentences.push(
+        `Private rules with no valid issuer: ${noIssuer.join("; ")}. They do not apply. Remove them on the Trust page.`,
+      );
     choicesText.textContent = `${sentences.join(" ")} `;
     choices.hidden = false;
   };
+  // The line names the loaded calculation's handovers, so it follows a
+  // calculation that ends while the page is open. Only the text changes.
+  const continuityKey = () => {
+    const loaded = app.personal.loadedContinuity;
+    return loaded ? JSON.stringify([loaded.snapshot, loaded.actors]) : null;
+  };
+  let shownContinuity = continuityKey();
+  onDisconnect(
+    choices,
+    app.personal.subscribe((status) => {
+      if (status.state === "downloading" || status.state === "evaluating")
+        return;
+      const key = continuityKey();
+      if (key === shownContinuity) return;
+      shownContinuity = key;
+      void showChoices();
+    }),
+    context.signal,
+  );
   await showChoices();
   if (!context.live()) return;
   main.append(choices);
