@@ -300,12 +300,9 @@ for (const [label, saved] of savedPackages) {
     // after the reader allows it, the server results appear, as on main
     // for a stored null.
     await seed(page, saved, { meaning: "book", step: 1 });
+    page.on("dialog", (dialog) => void dialog.accept());
     await page.goto("/new/meaning");
     await page.getByRole("button", { name: "search this server" }).click();
-    await page
-      .getByRole("dialog", { name: "Search this server" })
-      .getByRole("button", { name: "Search this server", exact: true })
-      .click();
     await expect(page.locator("ol.similar")).toContainText("cukta");
     const body = await page.locator("body").innerText();
     expect(body).not.toMatch(RAW_ERROR);

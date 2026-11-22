@@ -713,13 +713,12 @@ export async function remoteDraftSearch(
   language: string,
   pageLimit: number,
   options: RequestOptions = {},
-  context: { snapshot: string; view: string } | null = null,
 ): Promise<SearchResponse> {
   return remoteSearch(
     query,
     language,
     pageLimit,
-    context,
+    null,
     null,
     { ...options, literal: true },
     true,

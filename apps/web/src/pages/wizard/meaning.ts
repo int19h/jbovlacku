@@ -4,7 +4,6 @@ import { kindLabel } from "../../model/types.ts";
 import {
   nearbyQuery as meaningQueries,
   nearbyTerms,
-  rankNearby,
 } from "../../../../../packages/service/src/nearby.ts";
 import { wordId } from "../../../../../packages/core/src/browser.ts";
 import {
@@ -66,89 +65,6 @@ import type {
 /** Short snapshot label used across the wizard: `6bcfa3cf6336…`. */
 function shortSnapshot(snapshot: string): string {
   return `${snapshot.slice(7, 19)}…`;
-}
-/**
- * Focus the first candidate that is connected, enabled, and actually takes
- * focus, without scrolling. Called when the consent dialog closes, before
- * any network wait, so later completion never moves focus.
- */
-function focusConsentTarget(
-  candidates: readonly (HTMLElement | null | undefined)[],
-): void {
-  for (const target of candidates) {
-    if (!target?.isConnected) continue;
-    if (
-      (target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement ||
-        target instanceof HTMLButtonElement) &&
-      target.disabled
-    )
-      continue;
-    target.focus({ preventScroll: true });
-    if (document.activeElement === target) return;
-  }
-}
-/**
- * In-app consent for sending draft text to this server. Replaces the native
- * confirm. When the route ends, the dialog closes as cancelled. On
- * acceptance, focus moves at close, before any network wait, to the first
- * surviving target; on cancel it returns to the invoker.
- */
-/** One remote consent dialog at a time, from open through close handling. */
-let remoteConsentActive = false;
-function askRemoteConsent(
-  message: string,
-  options: {
-    signal: AbortSignal;
-    acceptFocus: readonly (HTMLElement | null | undefined)[];
-    /** Extra cancel targets, read at close in case the invoker re-rendered. */
-    cancelFocus?: () => readonly (HTMLElement | null | undefined)[];
-  },
-): Promise<boolean> {
-  if (options.signal.aborted || remoteConsentActive)
-    return Promise.resolve(false);
-  remoteConsentActive = true;
-  return new Promise((resolve) => {
-    const opener = document.activeElement as HTMLElement | null;
-    const dialog = el("dialog", {
-      class: "sheet",
-      "aria-labelledby": "remote-consent-title",
-    });
-    dialog.append(
-      el("h2", { id: "remote-consent-title", text: "Search this server" }),
-      p(message, "small"),
-      el(
-        "div",
-        { class: "actions", style: "margin-top:14px" },
-        button("Search this server", () => dialog.close("ok"), {
-          class: "btn btn-primary",
-        }),
-        button("Not now", () => dialog.close("cancel"), {
-          class: "btn btn-quiet",
-        }),
-      ),
-    );
-    const abort = () => dialog.close("cancel");
-    options.signal.addEventListener("abort", abort, { once: true });
-    dialog.addEventListener("close", () => {
-      const accepted = dialog.returnValue === "ok";
-      options.signal.removeEventListener("abort", abort);
-      remoteConsentActive = false;
-      resolve(accepted);
-      dialog.remove();
-      if (accepted) focusConsentTarget(options.acceptFocus);
-      else
-        focusConsentTarget([
-          opener,
-          ...(options.cancelFocus?.() ?? []),
-          ...options.acceptFocus,
-        ]);
-    });
-    document.body.append(dialog);
-    dialog.showModal();
-    dialog.querySelector<HTMLElement>(".btn-primary")?.focus();
-  });
 }
 function highlightPlaceholders(meaning: string): HTMLElement {
   const node = el("p", { style: "margin-top:4px" });
@@ -309,14 +225,8 @@ export async function meaningPage(
     class: "main-col",
     style: "flex:1 1 360px",
   });
-  const stepHeading = el("h1", {
-    id: "h1",
-    class: "page",
-    tabindex: "-1",
-    text: "What does the word mean?",
-  });
   left.append(
-    stepHeading,
+    el("h1", { id: "h1", class: "page", text: "What does the word mean?" }),
     el(
       "p",
       { class: "muted", style: "margin:8px 0 20px" },
@@ -622,28 +532,11 @@ export async function meaningPage(
         button(
           "Check this word on the server",
           async () => {
-            if (key !== typedKey()) return;
             if (
-              !(await askRemoteConsent(
-                `Check ${location.host} for ${JSON.stringify(spelling)}? The browser requests this word's ID from the server and filters the returned definitions to definition language ${JSON.stringify(draft.language)} in this browser.`,
-                {
-                  signal: context.signal,
-                  acceptFocus: [word.input, stepHeading],
-                  cancelFocus: () => [
-                    [...typedStatus.querySelectorAll("button")].find(
-                      (candidate) =>
-                        candidate.textContent ===
-                        "Check this word on the server",
-                    ) ?? null,
-                  ],
-                },
-              ))
-            )
-              return;
-            if (
-              !context.live() ||
               key !== typedKey() ||
-              typedConsent === key
+              !confirm(
+                `Check ${location.host} for ${JSON.stringify(spelling)} in definition language ${JSON.stringify(draft.language)}? The request sends this word and language.`,
+              )
             )
               return;
             typedConsent = key;
@@ -733,9 +626,6 @@ export async function meaningPage(
       "display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px",
   });
   const modeLabel = el("span", { class: "meta" });
-  const modeMain = el("span");
-  const modeAssist = el("span");
-  modeLabel.append(modeMain, modeAssist);
   head.append(
     el("h2", {
       id: "similar-h",
@@ -755,105 +645,52 @@ export async function meaningPage(
   const list = el("ol", { class: "similar" });
   const note = el("p", { class: "meta" });
   right.append(list, note);
-  // The Settings note keeps its link node while the same note applies.
-  let settingsNoteShown = false;
-  const showSettingsNote = () => {
-    if (settingsNoteShown) return;
-    settingsNoteShown = true;
-    note.replaceChildren(
-      text("Download a search package in "),
-      link("Settings", routes.preferences),
-      text(" for local nearby search, or allow a search on this server."),
-    );
-  };
-  let remoteCache: {
-    key: string;
-    hits?: SearchHit[];
-    promise?: Promise<SearchHit[]>;
-  } | null = null;
   let cached: CachedPackage | null = null;
   // Consent covers one exact query and its definition language.
   let remoteConsent: string | null = null;
   const nearbyQuery = () => meaningQueries(meaning.input.value).join(" ");
-  const remoteQuery = () => nearbyQuery();
+  const remoteQuery = () => nearbyQuery().split(" ")[0];
   const consentKey = () => JSON.stringify([remoteQuery(), draft.language]);
-  let modeSignature = "";
-  let assistShown: boolean | null = null;
   const renderMode = () => {
-    // Keep the existing nodes when nothing changed, so a background
-    // refresh never removes a focused control or the consent invoker.
-    // The assistance suffix renders separately for the same reason.
-    const signature = cached
-      ? "local"
-      : remoteConsent === consentKey()
-        ? "searching"
-        : "search";
-    if (signature !== modeSignature) {
-      modeSignature = signature;
-      modeMain.replaceChildren();
-      if (cached)
-        modeMain.append(text("by words, from the downloaded package"));
-      else {
-        modeMain.append(text("no local package · "));
-        if (remoteConsent === consentKey())
-          modeMain.append(text("searching this server"));
-        else
-          modeMain.append(
+    modeLabel.replaceChildren();
+    if (cached) modeLabel.append(text("by words, from the downloaded package"));
+    else {
+      modeLabel.append(text("no local package · "));
+      if (remoteConsent === consentKey())
+        modeLabel.append(text("searching this server"));
+      else
+        modeLabel.append(
           button(
             "search this server",
             async () => {
-              if (remoteConsent === consentKey()) return;
-              const terms = meaningQueries(meaning.input.value);
-              if (!terms.length) return;
-              const disclosed = consentKey();
-              const language = JSON.stringify(draft.language);
-              const message =
-                terms.length > 1
-                  ? `Search ${location.host} for these ${terms.length} words in definition language ${language}: ${terms.map((term) => JSON.stringify(term)).join(", ")}. Each word is sent as a separate request, with the language.`
-                  : `Search ${location.host} for ${JSON.stringify(terms[0])} in definition language ${language}? The request sends this word and language.`;
+            if (remoteConsent !== consentKey()) {
+              const query = remoteQuery();
+              if (!query) return;
               if (
-                !(await askRemoteConsent(message, {
-                  signal: context.signal,
-                  acceptFocus: [meaning.input, stepHeading],
-                  cancelFocus: () => [
-                    modeLabel.querySelector("button") ?? null,
-                  ],
-                }))
+                !confirm(
+                  `Search ${location.host} for ${JSON.stringify(query)} in definition language ${JSON.stringify(draft.language)}? The request sends this query and language.`,
+                )
               )
                 return;
-              if (
-                !context.live() ||
-                consentKey() !== disclosed ||
-                remoteConsent === disclosed
-              )
-                return;
-              clearTimeout(timer);
-              remoteConsent = disclosed;
+              remoteConsent = consentKey();
               renderMode();
               await nearby();
-            },
-            {
-              class: "btn btn-quiet",
-              style: "padding:0 6px;font-size:13px",
-            },
-          ),
-        );
-      }
-    }
-    const assisted = assistanceVisibility(app, context).enabled;
-    if (assisted !== assistShown) {
-      assistShown = assisted;
-      modeAssist.replaceChildren(
-        ...(assisted
-          ? [
-              text(" · "),
-              link("by meaning: not configured", routes.preferences, {
-                class: "meta touch-link",
-              }),
-            ]
-          : []),
+            }
+          },
+          {
+            class: "btn btn-quiet",
+            style: "padding:0 6px;font-size:13px",
+          },
+        ),
       );
     }
+    if (assistanceVisibility(app, context).enabled)
+      modeLabel.append(
+        text(" · "),
+        link("by meaning: not configured", routes.preferences, {
+          class: "meta touch-link",
+        }),
+      );
   };
   const unsubscribeAssistance = assistanceVisibility(app, context).subscribe(
     renderMode,
@@ -872,7 +709,6 @@ export async function meaningPage(
     timer = setTimeout(() => void nearby(), 400);
   };
   const renderHits = (hits: SearchHit[], source: "local" | "remote") => {
-    settingsNoteShown = false;
     list.replaceChildren();
     if (!hits.length) {
       note.textContent = meaning.input.value.trim()
@@ -992,56 +828,21 @@ export async function meaningPage(
           renderMode();
         }
       }
-      list.replaceChildren();
+      renderHits([], "local");
       if (remoteConsent !== consentKey()) {
-        showSettingsNote();
+        note.replaceChildren(
+          text("Download a search package in "),
+          link("Settings", routes.preferences),
+          text(" for local nearby search, or allow a search on this server."),
+        );
         return;
       }
-      // A finished or pending result for this exact key is reused, so an
-      // edit that keeps the key sends nothing new.
-      const key = consentKey();
-      if (remoteCache?.key === key) {
-        const hits = remoteCache.hits ?? (await remoteCache.promise!);
-        if (current()) renderHits(hits, "remote");
-        return;
-      }
-      settingsNoteShown = false;
-      note.textContent = "Searching this server for close definitions.";
-      const queries = meaningQueries(value);
-      const promise = (async (): Promise<SearchHit[]> => {
-        const [firstQuery, ...rest] = queries;
-        const first = await remoteDraftSearch(firstQuery, language, 10, {
-          signal: context.signal,
-        });
-        // One snapshot and view for the whole ranking.
-        const pinned = { snapshot: first.snapshot, view: first.view };
-        const results = [first];
-        if (rest.length)
-          results.push(
-            ...(await Promise.all(
-              rest.map((query) =>
-                remoteDraftSearch(query, language, 10, {
-                  signal: context.signal,
-                }, pinned),
-              ),
-            )),
-          );
-        return rankNearby(results.map((result) => result.hits));
-      })();
-      remoteCache = { key, promise };
-      try {
-        const hits = await promise;
-        if (remoteCache?.key === key) remoteCache = { key, hits };
-        if (current()) renderHits(hits, "remote");
-      } catch (error) {
-        if (remoteCache?.key === key) remoteCache = null;
-        throw error;
-      }
+      const result = await remoteDraftSearch(remoteQuery(), language, 10, {
+        signal: context.signal,
+      });
+      if (current()) renderHits(result.hits, "remote");
     } catch (error) {
-      if (current()) {
-        settingsNoteShown = false;
-        note.textContent = describe(error);
-      }
+      if (current()) note.textContent = describe(error);
     }
   };
   void nearby();
