@@ -35,8 +35,31 @@ export async function trustPage(
   main.className = "";
   const rerender = () => {
     if (!live()) return;
+    // The view radios and the panel buttons render before the first wait,
+    // so focus on one of them moves to its replacement.
+    const focused = document.activeElement;
+    const radio =
+      focused instanceof HTMLInputElement && main.contains(focused)
+        ? focused.name === "view-mode" && focused.value
+        : null;
+    const panelButton =
+      focused instanceof HTMLButtonElement &&
+      focused.closest("[role=region][aria-label='Local calculation']") &&
+      main.contains(focused)
+        ? focused.textContent
+        : null;
     main.replaceChildren();
     void trustPage(_route, context, app);
+    const target = radio
+      ? main.querySelector<HTMLElement>(`input[name=view-mode][value=${radio}]`)
+      : panelButton
+        ? [
+            ...main.querySelectorAll<HTMLButtonElement>(
+              "[role=region][aria-label='Local calculation'] button",
+            ),
+          ].find((node) => node.textContent === panelButton && !node.hidden)
+        : null;
+    target?.focus();
   };
   main.append(
     el("h1", { class: "page", text: "Trust" }),

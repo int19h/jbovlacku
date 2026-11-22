@@ -577,6 +577,8 @@ test("a calculation that ends after a view switch updates the private rule reaso
   await expect(
     page.getByText(/^Private rule labels use personal calculation snapshot/),
   ).toHaveCount(1);
+  // The page renders again, and focus stays on the chosen view.
+  await expect(personal).toBeFocused();
 });
 
 test("a view change in another tab updates the radio and the panel", async ({
