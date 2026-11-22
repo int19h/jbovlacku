@@ -192,7 +192,9 @@ test("the reviewer table names the reader as you", async ({ page }) => {
       `td:first-child a[href="/identity/${encodeURIComponent(f.identities.author)}"]`,
     ),
   });
-  await expect(authorRow).toContainText("trusted by you");
+  // Other suites can also trust the author publicly, so the reader can be
+  // one of several named trusters.
+  await expect(authorRow).toContainText(/trusted by [^·]*\byou\b/);
   await expect(authorRow.getByRole("link", { name: "you" })).toHaveAttribute(
     "href",
     /^\/identity\/ed25519/,
