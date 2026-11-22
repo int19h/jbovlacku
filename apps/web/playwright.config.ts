@@ -64,6 +64,11 @@ export default defineConfig({
       use: { browserName: "firefox" },
     },
     {
+      name: "firefox-identity",
+      testMatch: /ux-polish-identity\.test\.ts/,
+      use: { browserName: "firefox" },
+    },
+    {
       name: "firefox-ux-polish",
       testMatch: /ux-polish-search\.test\.ts/,
       use: { browserName: "firefox" },

@@ -1561,6 +1561,7 @@ The client derives the public key from that private key.
 Decryption and private-key parse failures show one message: “This file did not unlock with that passphrase.”
 It must match the file's identity before the client accepts the key. A mismatched file never replaces an existing identity.
 A duplicate import selects the existing identity and merges no unsigned claims about current event heads.
+Unlocking the key that is already stored in this browser involves no file. A decryption, private-key parse, or identity mismatch failure in that unlock says: “That passphrase did not unlock the key.” Format and concurrency errors keep their own messages.
 
 Public keys and OpenSSH public-key lines can import as contacts, never as signing identities.
 The CLI can convert a private key through established tools. The first browser release does not promise arbitrary OpenSSH private-file imports.
@@ -1604,6 +1605,7 @@ After a successful handover, offer explicit migration of public heeds and root a
 Explain that retired-key possession can still disrupt inherited references and contested status authority.
 The app signs the old-key transfer and the new-key acceptance locally, then stores both in the outbox before upload.
 Upload can be partial. The UI shows “Old key retired, acceptance waiting” until both events arrive at the selected peer.
+The banner follows delivery notifications as the state changes. It offers no manual re-check. Its “Not delivered” link leads to the outbox, where Try now and Resume retry delivery.
 
 It retains the new encrypted key and the acceptance event for retry.
 If new evidence withdraws known continuity, show that change and the responsible event IDs. Recompute inherited judgments and trust.
