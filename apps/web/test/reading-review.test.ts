@@ -571,6 +571,9 @@ test("missing own judgments disclose the failure and keep ranking order", async 
     body.layers = [[ids[1], ids[0]], [ids[2]]];
     await route.fulfill({ response, json: body });
   });
+  // With a key, a missing register is a load failure. Without a key the
+  // page says that there is no key instead.
+  await createIdentity(page);
   await page.goto("/preferences");
   await page.getByLabel("Show my judgments first on word pages").check();
   await page.evaluate(async () => {

@@ -307,14 +307,17 @@ async function preferencesBody(context: RenderContext, app: App) {
     packageNotes,
   );
   const noteLines = new Map<string, HTMLElement>();
-  /** Shows a line for a language. Outcomes are announced too. */
+  /**
+   * Shows a line for a language. A quiet line, such as progress or a
+   * remove that the list already shows, is not announced. An outcome or an
+   * error is announced too, even after the reader left this page.
+   */
   const packageNote = (
     language: string,
     message: string,
-    kind: "progress" | "outcome" | "error",
+    kind: "quiet" | "outcome" | "error",
   ) => {
-    // An outcome is announced even after the reader left this page.
-    if (kind !== "progress") app.announce(message);
+    if (kind !== "quiet") app.announce(message);
     if (!context.live()) return;
     let line = noteLines.get(language);
     if (!line) {
@@ -565,7 +568,7 @@ async function preferencesBody(context: RenderContext, app: App) {
             packageNote(
               key,
               `The ${languageName(key)} package is removed from this browser.`,
-              "outcome",
+              "quiet",
             );
             await renderPackages();
           },
@@ -623,7 +626,7 @@ async function preferencesBody(context: RenderContext, app: App) {
             packageNote(
               language,
               progressText("Downloading", language, null),
-              "progress",
+              "quiet",
             );
             const expected = await app.store.packageRevisionOf(language);
             const pkg = await downloadPackage(language, {
@@ -631,13 +634,13 @@ async function preferencesBody(context: RenderContext, app: App) {
                 packageNote(
                   language,
                   progressText("Downloading", language, progress),
-                  "progress",
+                  "quiet",
                 ),
             });
             packageNote(
               language,
               `Saving the ${languageName(language)} package in this browser.`,
-              "progress",
+              "quiet",
             );
             // A remove or another save of this package that committed
             // while the download ran wins; this save then does nothing.
@@ -720,7 +723,7 @@ async function preferencesBody(context: RenderContext, app: App) {
             const token = startRun(key);
             refresh.disabled = true;
             let rendered = false;
-            packageNote(key, progressText("Refreshing", key, null), "progress");
+            packageNote(key, progressText("Refreshing", key, null), "quiet");
             try {
               const expected = await app.store.packageRevisionOf(key);
               const stored = await app.store.keys("packages");
@@ -745,13 +748,13 @@ async function preferencesBody(context: RenderContext, app: App) {
                   packageNote(
                     key,
                     progressText("Refreshing", key, progress),
-                    "progress",
+                    "quiet",
                   ),
               });
               packageNote(
                 key,
                 `Saving the ${languageName(key)} package in this browser.`,
-                "progress",
+                "quiet",
               );
               // A remove or another save of this package that committed
               // while the refresh ran wins; this save then does nothing.
