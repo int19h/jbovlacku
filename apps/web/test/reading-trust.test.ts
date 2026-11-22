@@ -1343,6 +1343,7 @@ test("private rule labels use the loaded calculation continuity across a newer a
         session: {
           identity: transfer.successor.identity,
           preferences: { viewMode: "personal" },
+          subscribe: () => () => {},
         },
         own: { registers: async () => null },
       };

@@ -146,12 +146,14 @@ export async function trustPage(
       )
         rerender();
     }),
+    context.signal,
   );
   onDisconnect(
     modeSlot,
     app.session.subscribe(() => {
       if (!modeSaving) syncMode();
     }),
+    context.signal,
   );
   main.append(
     modeSlot,
