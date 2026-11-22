@@ -252,7 +252,7 @@ export async function handoverPage(
       );
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (pass.input.value.length < 12) {
+        if (Array.from(pass.input.value).length < 12) {
           error.textContent = "Use at least 12 characters.";
           error.hidden = false;
           return;
@@ -950,8 +950,28 @@ export function renderExisting(
     "aria-live": "polite",
   });
   container.append(box);
+  let updateGeneration = 0;
+  let shownGeneration = 0;
   const update = async () => {
-    const state = await handoverState(app, record);
+    const mine = ++updateGeneration;
+    let state: Awaited<ReturnType<typeof handoverState>>;
+    try {
+      state = await handoverState(app, record);
+    } catch {
+      // A failed read keeps the last shown state. It must not cancel an
+      // older successful read that is still to be shown.
+      return;
+    }
+    // Show the most recent successful result. Only a result that a newer
+    // call has already shown replaces this one.
+    if (!box.isConnected || mine < shownGeneration) return;
+    shownGeneration = mine;
+    // Focus is decided here, not before the read. A reader who moved focus
+    // elsewhere during the read keeps that choice. The kind of element that
+    // had focus decides which replacement gets it back.
+    const active = document.activeElement;
+    const focusKind =
+      active && box.contains(active) ? active.tagName : null;
     box.replaceChildren();
     const line =
       state.transferDone && state.acceptDone
@@ -961,13 +981,13 @@ export function renderExisting(
           : state.acceptDone
             ? "Acceptance delivered, transfer waiting."
             : "Old key retired locally. Both events are waiting to upload.";
-    box.append(
-      el("p", {
-        class: "small",
-        style: "font-weight:650;margin:0",
-        text: line,
-      }),
-    );
+    const statusLine = el("p", {
+      class: "small",
+      style: "font-weight:650;margin:0",
+      text: line,
+      tabindex: "-1",
+    });
+    box.append(statusLine);
     box.append(
       p(
         `Old key ${shortIdentity(record.old)} → new key ${shortIdentity(record.successor)}. Transfer ${record.transfer.slice(0, 20)}…, acceptance ${record.accept.slice(0, 20)}….`,
@@ -991,12 +1011,13 @@ export function renderExisting(
     );
     if (!(state.transferDone && state.acceptDone))
       box.append(
+        p(
+          "Retries reuse the stored events and look the receipt up by event ID first. No replacement acceptance is ever signed automatically. Retry or resume delivery from Not delivered.",
+          "small",
+        ),
         el(
           "p",
           { class: "small" },
-          text(
-            "Retries reuse the stored events and look the receipt up by event ID first. No replacement acceptance is ever signed automatically. ",
-          ),
           link("Not delivered", "/outbox", { class: "touch-link" }),
         ),
       );
@@ -1007,6 +1028,13 @@ export function renderExisting(
           "small",
         ),
       );
+    if (focusKind) {
+      if (state.transferDone && state.acceptDone)
+        statusLine.focus({ preventScroll: true });
+      else if (focusKind === "A")
+        box.querySelector("a")?.focus({ preventScroll: true });
+      else statusLine.focus({ preventScroll: true });
+    }
   };
   void update();
   const unsubscribe = app.delivery.subscribe(() => void update());
