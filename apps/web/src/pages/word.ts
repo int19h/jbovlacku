@@ -258,9 +258,15 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       ...words,
       text(` · ${compound.components.map((c) => c.rafsi).join(" + ")}`),
     );
-  } else if ([...kinds].includes("lujvo"))
+  } else if (
+    [...kinds].includes("lujvo") &&
+    failures.size === 0 &&
+    [...records.values()].every((record) => record.body)
+  )
     // A lujvo without compound evidence has no known composition. Say so
-    // instead of leaving the reader to guess from the missing line.
+    // instead of leaving the reader to guess from the missing line. A
+    // definition that did not load, or has no body, could hold that
+    // evidence, so the line then says nothing.
     composition.append(
       text("Composition is not recorded for this lujvo.", "meta"),
     );
@@ -982,22 +988,31 @@ function replaceKeepingPlace(old: HTMLElement, next: HTMLElement) {
     return window.scrollY;
   };
   let placed = settle();
+  let restoring = false;
   const restoreFocus = () => {
     if (!focus) return true;
     const target = find(next, focus);
     if (!target) return false;
+    restoring = true;
     target.focus({ preventScroll: true });
+    restoring = false;
     return true;
   };
   const restored = restoreFocus();
-  if (restored && !anchor) return;
+  // Only an open disclosure (a reopened one, or score details) can still
+  // fill a task later. Without one, and with focus back, the place is final.
+  if (restored && !next.querySelector("details[open]")) return;
   // Some content arrives a task later: a disclosure with an asynchronous
   // body, or the reviewer list in score details. Place the anchor and focus
-  // again when it arrives, for a short time, unless the reader has scrolled
-  // or moved focus meanwhile.
+  // again when it arrives, for a short time. The watch ends as soon as the
+  // reader acts: a scroll, a focus move, a pointer press or a key press.
+  // Then their own action decides what is on screen.
   let focusPending = !restored;
+  const active = document.activeElement;
+  const controller = new AbortController();
   const observer = new MutationObserver(() => {
-    if (Math.abs(window.scrollY - placed) <= 1) placed = settle();
+    if (Math.abs(window.scrollY - placed) > 1) return stop();
+    placed = settle();
     if (
       focusPending &&
       (document.activeElement === document.body ||
@@ -1005,6 +1020,28 @@ function replaceKeepingPlace(old: HTMLElement, next: HTMLElement) {
     )
       focusPending = !restoreFocus();
   });
+  const timer = setTimeout(() => stop(), 2000);
+  function stop() {
+    observer.disconnect();
+    controller.abort();
+    clearTimeout(timer);
+  }
+  const options = { capture: true, signal: controller.signal };
+  window.addEventListener("pointerdown", stop, options);
+  window.addEventListener("keydown", stop, options);
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (Math.abs(window.scrollY - placed) > 1) stop();
+    },
+    options,
+  );
+  document.addEventListener(
+    "focusin",
+    (event) => {
+      if (!restoring && event.target !== active) stop();
+    },
+    options,
+  );
   observer.observe(next, { childList: true, subtree: true });
-  setTimeout(() => observer.disconnect(), 2000);
 }

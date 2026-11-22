@@ -1146,3 +1146,81 @@ test("a part swapped in after a failure keeps following the calculation in open 
   await expect(reason).toContainText("No connection to the server.");
   await expect(reason).not.toContainText("Request failed (500).");
 });
+
+// Round 4: the reader's own action right after the swap wins.
+for (const withOpenDisclosure of [false, true])
+  test(`a summary that the reader opens right after the scores stays in view${withOpenDisclosure ? ", with a disclosure already open" : ""}`, async ({
+    page,
+  }) => {
+    const f = fixture();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const release = await heldPersonal(page);
+    await page.goto("/word/cukta");
+    const c1 = () => block(page, f.definitions.cukta1);
+    const c2 = () => block(page, f.definitions.cukta2);
+    await expect(c2()).toBeVisible();
+    if (withOpenDisclosure) {
+      // An open disclosure keeps the swap's watch for late content running.
+      await c2().getByText("Signed record", { exact: true }).click();
+      await expect(c2().locator("pre.json")).toBeVisible();
+    }
+    await c2().getByRole("button", { name: "Endorse" }).focus();
+    release();
+    await scored(page, f.definitions.cukta1);
+    // Within the two seconds after the swap, the reader opens a disclosure
+    // above the control that held focus.
+    const summary = c1().locator("summary", { hasText: /^Signed record$/ });
+    await summary.scrollIntoViewIfNeeded();
+    const before = await page.evaluate(() => window.scrollY);
+    await summary.click();
+    await expect(c1().locator("pre.json")).toBeVisible();
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => window.scrollY)).toBe(before);
+    await expect(summary).toBeInViewport();
+    await expect(summary).toBeFocused();
+  });
+
+test("a lujvo with a definition that did not load makes no claim about its composition", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const built = await page.evaluate(
+    async ({ corePath: path, make: source }) => {
+      const core = await import(path);
+      await core.initializeCore();
+      const build = new Function("core", "return " + source)(core);
+      const word = { language: "jbo", spelling: "jbobautest" };
+      return [0, 1].map((index) =>
+        build(95, index, word, "en", { kind: "lujvo" }),
+      );
+    },
+    { corePath, make: definitionRecord },
+  );
+  const ids = built.map((r: any) => r.envelope.id);
+  // The second definition is listed but does not load. It could carry the
+  // compound evidence that the first one lacks.
+  const missing = `jve1:${"e".repeat(64)}`;
+  await serveWord(page, built, {
+    word: { language: "jbo", spelling: "jbobautest" },
+    definitions: [...ids, missing],
+    rafsi: [],
+    assignments: [],
+    layers: [[...ids, missing]],
+    statuses: [...ids, missing].map((event: string) => ({
+      event,
+      state: "active",
+    })),
+    unavailable_scores: [],
+    scores: [...ids, missing].map(zeroScore),
+  });
+  await page.route(
+    `**/api/v1/events/${encodeURIComponent(missing)}*`,
+    (route) => route.fulfill({ status: 404, body: "missing" }),
+  );
+  await page.goto("/word/jbobautest");
+  await expect(page.getByText(/is unavailable:/)).toBeVisible();
+  await expect(page.locator("article.definition")).toHaveCount(2);
+  await expect(
+    page.getByText("Composition is not recorded for this lujvo."),
+  ).toHaveCount(0);
+});
