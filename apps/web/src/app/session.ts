@@ -111,6 +111,9 @@ export class Session {
     if (JSON.stringify(preferences) !== JSON.stringify(this.preferences)) {
       this.preferences = preferences;
       setPreferredView(preferences.view);
+      // Another tab changed the saved settings. A theme write of this tab
+      // that is still running applies its own result when it ends.
+      if (!this.preferencesSaving) applyTheme(preferences.theme);
       this.changed();
     }
     return this.preferences;

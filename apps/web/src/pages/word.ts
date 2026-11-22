@@ -506,9 +506,13 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         ),
       );
     } else {
+      // Without a key there are no judgments of yours, which is not a
+      // failure.
       main.append(
         p(
-          "Your judgments could not be loaded. Definitions follow ranking layers, then event order.",
+          app.session.identity || !app.session.storageAvailable
+            ? "Your judgments could not be loaded. Definitions follow ranking layers, then event order."
+            : "You have no key in this browser, so no judgments of yours change this order. Definitions follow ranking layers, then event order.",
           "meta",
         ),
       );

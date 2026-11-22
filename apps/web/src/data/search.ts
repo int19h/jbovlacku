@@ -161,8 +161,17 @@ export interface PackageQuota {
   entries?: number;
   bytes?: number;
 }
+/** How far a package download has come. Parts are counted after their checks. */
+export interface PackageProgress {
+  parts: number;
+  totalParts: number;
+  bytes: number;
+  totalBytes: number;
+}
 export interface PackageDownloadOptions extends RequestOptions {
   packageQuota?: PackageQuota;
+  /** Called after the package index and after each part that passed its checks. */
+  onProgress?: (progress: PackageProgress) => void;
 }
 const V1_FIELDS = [
   "event",
@@ -493,6 +502,13 @@ async function downloadEntries(
   }
   const entries: PackageEntry[] = [];
   let previous = "";
+  const progress: PackageProgress = {
+    parts: 0,
+    totalParts: pkg.parts.length,
+    bytes: 0,
+    totalBytes,
+  };
+  options.onProgress?.({ ...progress });
   try {
     for (const part of pkg.parts) {
       const bytes = await objectBytes(
@@ -515,6 +531,9 @@ async function downloadEntries(
         previous = entry.event;
         entries.push(entry);
       }
+      progress.parts++;
+      progress.bytes += part.bytes;
+      options.onProgress?.({ ...progress });
     }
   } catch (error) {
     // Growing the retained entry array without a per-language total can
