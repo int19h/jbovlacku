@@ -688,6 +688,51 @@ test("a note after a version 1 fallback gives the cause and no recovery instruct
   await expect(row).not.toContainText("download another package");
 });
 
+test("a saved fallback reason that ends with the recovery instruction shows only the cause", async ({
+  page,
+}) => {
+  // A damaged version 2 index makes the download save version 1 with a
+  // reason.
+  await page.route("**/api/v1/packages/en?**", (route) =>
+    new URL(route.request().url()).searchParams.get("version") === "2"
+      ? route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: "{}",
+        })
+      : route.continue(),
+  );
+  await settings(page);
+  await page
+    .getByLabel("Download a package", { exact: true })
+    .selectOption("en");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(page.locator("[data-package-note=en]")).toContainText(
+    "saved version 1",
+  );
+  // Earlier code saved the whole error message as the reason.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const cached = await store.get("packages", "en");
+    cached.downgrade =
+      "The search package hash did not match. Search this server or download another package.";
+    await store.put("packages", "en", cached);
+  });
+  await settings(page);
+  const row = page
+    .locator(".row", {
+      has: page.locator(
+        "[data-package-control=remove][data-package-language=en]",
+      ),
+    })
+    .locator("small");
+  await expect(row).toContainText(
+    "Version 1 was saved instead of version 2: The search package hash did not match.",
+  );
+  await expect(row).not.toContainText("download another package");
+});
+
 test("a new saved value from another tab clears an earlier failed save", async ({
   page,
   context,

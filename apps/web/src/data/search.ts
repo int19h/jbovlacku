@@ -363,7 +363,7 @@ export async function downloadPackage(
 /** The instruction that ends a package error that leaves no usable package. */
 const PACKAGE_RECOVERY = " Search this server or download another package.";
 /** The cause of a package error, without its recovery instruction. */
-const packageCause = (message: string) =>
+export const packageCause = (message: string) =>
   message.endsWith(PACKAGE_RECOVERY)
     ? message.slice(0, -PACKAGE_RECOVERY.length)
     : message;

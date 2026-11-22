@@ -16,6 +16,7 @@ import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import {
   downloadPackage,
+  packageCause,
   reportPackageError,
   type CachedPackage,
   type PackageProgress,
@@ -628,7 +629,7 @@ async function preferencesBody(context: RenderContext, app: App) {
           : cached
             ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}… · version ${cached.version ?? 1}${
                 cached.downgrade
-                  ? `. Version 1 was saved instead of version 2: ${cached.downgrade}`
+                  ? `. Version 1 was saved instead of version 2: ${packageCause(cached.downgrade)}`
                   : ""
               }`
             : "unreadable",
