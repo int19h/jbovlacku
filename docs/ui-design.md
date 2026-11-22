@@ -230,7 +230,7 @@ Personal calculation controls and score-availability warnings remain visible. De
 In the personal view, definitions appear while the local calculation runs, with unavailable scores, in event order.
 When the calculation finishes, the page updates in place. Definitions, controls, and open disclosures stay as they are. Only scores, score titles, and notes change.
 The definitions move into score order only while the reader has not started to read: no focus in the definitions or the sections that follow them, no pointer or key input on the page, no text selection, and no scroll into the definitions or the notes above them.
-Otherwise the definitions stay where they are. A note near the top reads “Personal scores changed the order.” Its “Show in score order” button moves them into score order and moves focus to the first definition, with a visible focus ring.
+Otherwise the definitions stay where they are. A note near the top reads “Personal scores changed the order.” Its “Show in score order” button moves them into score order and moves focus to the first definition. The definition shows a visible focus ring, after a click or a key press, until focus leaves it.
 While a judgment action for a target is in flight, every control that can sign a judgment for that target stays disabled until the action finishes. This includes the actions in Score details.
 When several routes contribute, summarize them and expose the complete details. Do not claim one route as the whole explanation.
 The explanation reads “The score adds the weight of each reviewer in your trust view.”

@@ -1680,3 +1680,200 @@ test("Show in score order from the keyboard puts a visible focus ring on the fir
   expect(focused.first).toBe(true);
   await expect(page.locator("article.definition").first()).toBeInViewport();
 });
+
+// Round 7.
+
+test("after Clear my judgment succeeds, no second clear is offered before the history read ends", async ({
+  page,
+}) => {
+  const target = fixture().definitions.cukta1;
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  const entry = block(page, target);
+  const endorse = entry.getByRole("button", { name: "Endorse" });
+  await endorse.click();
+  await acceptFirstSignature(page);
+  await expect(endorse).toHaveAttribute("aria-pressed", "true", {
+    timeout: 20000,
+  });
+  // Deliveries go through. Once the clear is delivered, the next reads of
+  // the signer's history wait.
+  const signed = new Set<string>();
+  let holdHistory = false;
+  let releaseHistory!: () => void;
+  const historyHeld = new Promise<void>(
+    (resolve) => (releaseHistory = resolve),
+  );
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const envelope = route.request().postDataJSON().envelope;
+    if (envelope.header.action.kind === "judgment.set") {
+      signed.add(envelope.id);
+      holdHistory = true;
+    }
+    await route.continue();
+  });
+  await page.route("**/api/v1/identity-heads/**", async (route) => {
+    if (holdHistory) await historyHeld;
+    await route.continue();
+  });
+  await entry.locator("details.judgment-details > summary").click();
+  const clear = entry.getByRole("button", { name: "Clear my judgment" });
+  await expect(clear).toBeEnabled();
+  let offered: boolean;
+  try {
+    await clear.click();
+    await expect(page.getByRole("status")).toContainText(
+      "Your judgment is cleared.",
+    );
+    expect(signed.size).toBe(1);
+    await page.waitForTimeout(500);
+    // A second press, as the reader would make it while the history read
+    // is open. An enabled button gets an ordinary click.
+    offered = await clear.isEnabled();
+    await clear.click({ force: !offered });
+    await page.waitForTimeout(1000);
+  } finally {
+    releaseHistory();
+  }
+  // The finished read shows no judgment to clear.
+  await expect(clear).toHaveCount(0, { timeout: 20000 });
+  // A second signature can wait for the history read. Give it time.
+  await page.waitForTimeout(2000);
+  expect(signed.size).toBe(1);
+  // The old action was retired while the history read was open.
+  expect(offered).toBe(false);
+});
+
+test("a press that starts while the definitions load holds back the reorder", async ({
+  page,
+}) => {
+  const f = fixture();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const releaseScores = await heldPersonal(page);
+  let releaseDefinition!: () => void;
+  const definitionHeld = new Promise<void>(
+    (resolve) => (releaseDefinition = resolve),
+  );
+  await page.route(
+    `**/api/v1/events/${encodeURIComponent(f.definitions.cukta1)}*`,
+    async (route) => {
+      await definitionHeld;
+      await route.continue();
+    },
+  );
+  await page.goto("/word/cukta");
+  const copy = page.getByRole("button", { name: "Copy cukta" });
+  await expect(copy).toBeVisible();
+  await expect(page.locator("article.definition")).toHaveCount(0);
+  await copy.hover();
+  await page.mouse.down();
+  let before: (string | undefined)[] = [];
+  try {
+    releaseDefinition();
+    await expect(page.locator("article.definition")).toHaveCount(4);
+    before = await order(page);
+    releaseScores();
+    // The calculation finishes while the button is down. The scores wait
+    // for the release, and the order stays meanwhile.
+    await expect(
+      page.getByText(/Personal view calculated in this browser from/),
+    ).toBeVisible({ timeout: 40000 });
+    await page.waitForTimeout(1500);
+    expect(await order(page)).toEqual(before);
+  } finally {
+    await page.mouse.up();
+  }
+  await scored(page);
+  await page.waitForTimeout(300);
+  expect(await order(page)).toEqual(before);
+  await expect(
+    page.getByRole("button", { name: "Show in score order" }),
+  ).toBeVisible();
+});
+
+test("a word whose definitions all fail to load shows only the failure notices", async ({
+  page,
+}) => {
+  const f = fixture();
+  const definitions = new Set<string>();
+  await page.route("**/api/v1/words/**", async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    for (const id of json.definitions ?? []) definitions.add(id);
+    await route.fulfill({ response, json });
+  });
+  await page.route("**/api/v1/events/**", (route) => {
+    const url = decodeURIComponent(route.request().url());
+    return [...definitions].some((id) => url.includes(id))
+      ? route.fulfill({ status: 404, body: "missing" })
+      : route.continue();
+  });
+  await page.goto("/word/cukta");
+  await expect(page.getByText(/^Definition .* is unavailable:/)).toHaveCount(4);
+  expect(definitions.has(f.definitions.cukta1)).toBe(true);
+  const list = page.locator(".definition-list");
+  expect(await list.evaluate((node) => node.childNodes.length)).toBe(0);
+  await expect(page.locator("main")).not.toContainText("undefined");
+});
+
+test("Show in score order by pointer puts a visible focus ring on the first definition until focus leaves", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const release = await heldPersonal(page);
+  await page.goto("/word/cukta");
+  await expect(page.locator("article.definition").first()).toBeVisible();
+  // A pointer click on Copy while the scores are pending.
+  await page.getByRole("button", { name: "Copy cukta" }).click();
+  release();
+  await scored(page);
+  const show = page.getByRole("button", { name: "Show in score order" });
+  await show.click();
+  await expect(show).toHaveCount(0);
+  const ring = () =>
+    page.evaluate(() => {
+      const first = document.querySelector("article.definition")!;
+      const style = getComputedStyle(first);
+      return {
+        focused: document.activeElement === first,
+        outline: style.outlineStyle,
+        outlineWidth: parseFloat(style.outlineWidth),
+      };
+    });
+  const shown = await ring();
+  expect(shown.focused).toBe(true);
+  expect(shown.outline).not.toBe("none");
+  expect(shown.outlineWidth).toBeGreaterThanOrEqual(2);
+  // Focus leaves: the ring goes.
+  await page.getByRole("button", { name: "Copy cukta" }).focus();
+  const gone = await ring();
+  expect(gone.focused).toBe(false);
+  expect(gone.outline === "none" || gone.outlineWidth === 0).toBe(true);
+});
+
+test("a rotation to a narrower one-row strip brings the selected language back into it", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 640, height: 360 });
+  await manyLanguages(page);
+  await page.goto("/word/jbobautest?lang=all");
+  const strip = page.locator(".tabs");
+  await expect(strip.locator('.tab[aria-current="true"]')).toHaveText(/^All/);
+  const inside = () =>
+    strip.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      const tab = node
+        .querySelector('[aria-current="true"]')!
+        .getBoundingClientRect();
+      return {
+        overflowing: node.scrollWidth > node.clientWidth,
+        inside: tab.left >= box.left - 0.5 && tab.right <= box.right + 0.5,
+      };
+    });
+  // Both widths use the one-row strip.
+  await expect.poll(inside).toEqual({ overflowing: true, inside: true });
+  await page.waitForTimeout(200);
+  await page.setViewportSize({ width: 360, height: 640 });
+  await expect.poll(inside).toEqual({ overflowing: true, inside: true });
+});

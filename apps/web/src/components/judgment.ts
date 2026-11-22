@@ -107,6 +107,7 @@ function setBusy(target: string, value: boolean) {
   for (const listener of busyListeners) listener();
 }
 const controls = new WeakMap<HTMLElement, (options: JudgmentOptions) => void>();
+const detailsPainters = new WeakMap<HTMLDetailsElement, () => void>();
 /**
  * Shows a new score in an existing control. The buttons, the reader's
  * focus, and any action in flight stay as they are.
@@ -287,8 +288,8 @@ export function judgmentControl(
 /**
  * A judgment control and its score details, placed in a parent. The score
  * details can wait, for a render whose scores are not known yet. An update
- * shows new scores in the same control and adds the details, or replaces
- * closed details; open details stay as the reader has them.
+ * shows new scores in the same control and adds the details, or relabels
+ * closed details in place; open details stay as the reader has them.
  */
 export interface ScoreSlot {
   update(
@@ -314,11 +315,15 @@ export function scoreSlot(
       options.unavailable = patch.unavailable;
       options.calculation = patch.calculation;
       updateJudgmentControl(control, options);
-      if (details?.open) return;
-      const next = scoreDetails(app, target, options);
-      if (details) details.replaceWith(next);
-      else control.after(next);
-      details = next;
+      // Open details stay as the reader has them. Closed details keep their
+      // node, so a focused summary keeps focus; only the label changes, and
+      // the next opening draws the new score.
+      if (details) {
+        if (!details.open) detailsPainters.get(details)?.();
+        return;
+      }
+      details = scoreDetails(app, target, options);
+      control.after(details);
     },
   };
 }
@@ -332,22 +337,27 @@ export function scoreDetails(
   target: JudgmentTarget,
   options: JudgmentOptions,
 ): HTMLDetailsElement {
-  const score = options.unavailable ? null : options.score;
-  const summaryText =
-    score && score.direct_reviewers > 0
-      ? plural(score.direct_reviewers, "reviewer")
-      : "Score details";
+  // The summary and the body read the options when they are drawn, so an
+  // update can change a closed disclosure without rebuilding it.
+  const current = () => (options.unavailable ? null : options.score);
+  const summaryLabel = el("span");
+  const paintSummary = () => {
+    const score = current();
+    summaryLabel.textContent =
+      score && score.direct_reviewers > 0
+        ? plural(score.direct_reviewers, "reviewer")
+        : "Score details";
+  };
+  paintSummary();
   const details = el("details", { class: "judgment-details" });
-  const summary = el(
-    "summary",
-    {},
-    el("span", { text: summaryText }),
-    icon("chevron", "chev", 14),
-  );
+  detailsPainters.set(details, paintSummary);
+  const summary = el("summary", {}, summaryLabel, icon("chevron", "chev", 14));
   const body = el("div", { class: "body", style: "padding:4px 0 8px" });
   details.append(summary, body);
   details.addEventListener("toggle", async () => {
+    paintSummary();
     if (!details.open) return;
+    const score = current();
     body.replaceChildren();
     const ownActions = el("div");
     body.append(ownActions);
@@ -669,22 +679,26 @@ async function renderOwnActions(
     : [["Clear my judgment", "clear"]];
   // These buttons share the page-wide in-flight set with the judgment
   // controls, so one target never has two judgment actions in flight.
+  // After one action succeeds, these buttons describe a state that is no
+  // longer current. They stay disabled until the history read draws new ones.
+  let retired = false;
   const buttons: HTMLButtonElement[] = [];
   const syncDisabled = () => {
     for (const node of buttons)
-      node.disabled = !app.session.storageAvailable || busy.has(target.id);
+      node.disabled =
+        retired || !app.session.storageAvailable || busy.has(target.id);
   };
   for (const [label, value] of choices)
     buttons.push(
       button(
         label,
         () => {
-          if (busy.has(target.id)) return;
+          if (retired || busy.has(target.id)) return;
           return app.session.requireUnlocked(
             target.describe(value),
             async () => {
               if (!(await app.session.firstSignatureDisclosure())) return;
-              if (busy.has(target.id)) return;
+              if (retired || busy.has(target.id)) return;
               setBusy(target.id, true);
               let done = false;
               try {
@@ -704,6 +718,7 @@ async function renderOwnActions(
                         : "Your opposition is published."
                     : "Your judgment is signed and saved here. Delivery is not finished. See Not delivered.",
                 );
+                retired = true;
                 options.onChange?.();
                 done = true;
               } catch (error) {

@@ -150,6 +150,64 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   if (waiting) app.own.invalidate();
   const spelling = word.word?.spelling ?? spellingHint ?? "Word unavailable";
   context.title(spelling);
+  // Input from the reader since the first word controls appeared. Any of
+  // it means that the reader has started to read or act, so a settled
+  // calculation does not move the definitions by itself. Tracking starts
+  // before the definitions load, so a press or key during that load counts.
+  let input = false;
+  for (const type of ["pointerdown", "keydown", "wheel", "touchstart"])
+    window.addEventListener(type, () => (input = true), {
+      capture: true,
+      passive: true,
+      signal: context.signal,
+    });
+  // A press in progress. An update waits for its release, so the layout
+  // under the pointer does not change before the click completes. Only a
+  // primary press can start a click. A press can also end without a
+  // release on the page: a context menu, or a switch to another window or
+  // tab. Each of those ends the press too.
+  let pressed = false;
+  let released: (() => void)[] = [];
+  window.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.button === 0) pressed = true;
+    },
+    { capture: true, signal: context.signal },
+  );
+  const endPress = () => {
+    if (!pressed) return;
+    pressed = false;
+    const waiting = released;
+    released = [];
+    // After the click that this release completes.
+    setTimeout(() => waiting.forEach((resolve) => resolve()), 0);
+  };
+  for (const type of ["pointerup", "pointercancel", "contextmenu"])
+    window.addEventListener(type, endPress, {
+      capture: true,
+      signal: context.signal,
+    });
+  // Only the window's own blur. A blur of an element inside the page is a
+  // focus move, and a press moves focus.
+  window.addEventListener(
+    "blur",
+    (event) => {
+      if (event.target === window) endPress();
+    },
+    { signal: context.signal },
+  );
+  document.addEventListener(
+    "visibilitychange",
+    () => {
+      if (document.hidden) endPress();
+    },
+    { signal: context.signal },
+  );
+  const pressFinished = () =>
+    pressed
+      ? new Promise<void>((resolve) => released.push(resolve))
+      : Promise.resolve();
   const head = el("div", { class: "word-head" });
   const h1 = el("h1", { lang: "jbo", text: spelling });
   head.append(h1);
@@ -371,13 +429,14 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   };
   showCurrentTab();
   requestAnimationFrame(showCurrentTab);
-  // A resize or a rotation can turn the wrapped tabs into the one-row strip.
-  // The selected tab is then brought into the strip again.
-  let overflowing = tabs.scrollWidth > tabs.clientWidth;
+  // A resize or a rotation can turn the wrapped tabs into the one-row strip,
+  // or make the strip narrower. Each time its width changes, a selected tab
+  // outside the strip is brought into it again.
+  let stripWidth = tabs.clientWidth;
   const stripWatch = new ResizeObserver(() => {
-    const now = tabs.scrollWidth > tabs.clientWidth;
-    if (now && !overflowing) showCurrentTab();
-    overflowing = now;
+    if (tabs.clientWidth === stripWidth) return;
+    stripWidth = tabs.clientWidth;
+    showCurrentTab();
   });
   stripWatch.observe(tabs);
   onDisconnect(tabs, () => stripWatch.disconnect(), context.signal);
@@ -442,63 +501,6 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   const myJudgmentsFirst = Boolean(own);
   const statusOf = (definition: string) =>
     word.statuses.find((s) => s?.event === definition)?.state;
-  // Input from the reader since this render. Any of it means that the
-  // reader has started to read or act, so a settled calculation does not
-  // move the definitions by itself.
-  let input = false;
-  for (const type of ["pointerdown", "keydown", "wheel", "touchstart"])
-    window.addEventListener(type, () => (input = true), {
-      capture: true,
-      passive: true,
-      signal: context.signal,
-    });
-  // A press in progress. An update waits for its release, so the layout
-  // under the pointer does not change before the click completes. Only a
-  // primary press can start a click. A press can also end without a
-  // release on the page: a context menu, or a switch to another window or
-  // tab. Each of those ends the press too.
-  let pressed = false;
-  let released: (() => void)[] = [];
-  window.addEventListener(
-    "pointerdown",
-    (event) => {
-      if (event.button === 0) pressed = true;
-    },
-    { capture: true, signal: context.signal },
-  );
-  const endPress = () => {
-    if (!pressed) return;
-    pressed = false;
-    const waiting = released;
-    released = [];
-    // After the click that this release completes.
-    setTimeout(() => waiting.forEach((resolve) => resolve()), 0);
-  };
-  for (const type of ["pointerup", "pointercancel", "contextmenu"])
-    window.addEventListener(type, endPress, {
-      capture: true,
-      signal: context.signal,
-    });
-  // Only the window's own blur. A blur of an element inside the page is a
-  // focus move, and a press moves focus.
-  window.addEventListener(
-    "blur",
-    (event) => {
-      if (event.target === window) endPress();
-    },
-    { signal: context.signal },
-  );
-  document.addEventListener(
-    "visibilitychange",
-    () => {
-      if (document.hidden) endPress();
-    },
-    { signal: context.signal },
-  );
-  const pressFinished = () =>
-    pressed
-      ? new Promise<void>((resolve) => released.push(resolve))
-      : Promise.resolve();
   // The part of the page that depends on scores. It is built once. A
   // settled calculation updates it in place.
   const part = el("div", { class: "word-scored" });
@@ -790,6 +792,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     const keep = new Set<Node>(sequence);
     for (const child of [...list.children])
       if (!keep.has(child)) child.remove();
+    // No definition loaded. The list stays empty, and the failure notices
+    // after it say why.
+    if (!sequence.length) return;
     const focusedNode = document.activeElement;
     let at = sequence.findIndex(
       (n) => focusedNode !== null && n.contains(focusedNode),
@@ -987,8 +992,14 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       } else {
         // Scores are known. The note leaves the page, which ends its
         // listener.
-        note?.remove();
+        // A reader who has focus in it keeps the note until focus leaves.
+        const done = note;
         note = null;
+        if (done?.contains(document.activeElement))
+          done.addEventListener("focusout", () => done.remove(), {
+            once: true,
+          });
+        else done?.remove();
       }
       const line = provenanceLine(settled, false);
       provenance.replaceWith(line);
@@ -1027,11 +1038,18 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
             // The definition itself takes focus, so the focus ring is
             // visible. Its heading names it.
             const first = list.querySelector<HTMLElement>("article.definition");
+            // A pointer click does not match :focus-visible, so a class
+            // draws the ring after either kind of activation. Both end when
+            // focus leaves the definition.
             if (first) {
               first.tabIndex = -1;
+              first.classList.add("focus-ring");
               first.addEventListener(
                 "blur",
-                () => first.removeAttribute("tabindex"),
+                () => {
+                  first.removeAttribute("tabindex");
+                  first.classList.remove("focus-ring");
+                },
                 { once: true },
               );
               first.focus();
