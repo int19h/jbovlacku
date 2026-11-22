@@ -518,7 +518,8 @@ function activityRow(
       void loadRecord(target)
         .then((record) => {
           const spelling = (record.body as { word?: { spelling?: string } } | null)?.word?.spelling;
-          if (spelling) targetLink.textContent = spelling;
+          // The row may have left the page while the record loaded.
+          if (spelling && targetLink.isConnected) targetLink.textContent = spelling;
         })
         .catch(() => {});
     node.append(
