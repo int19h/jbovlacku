@@ -924,10 +924,14 @@ function savedGroupState(items: OutboxItem[]) {
   const unfinished = items.filter((item) =>
     Object.values(item.peers).some((peer) => peer.state !== "accepted"),
   );
+  const stopped = unfinished.filter((item) => item.stopped);
+  const retryable = unfinished.filter((item) => !item.stopped);
   const failed = unfinished.some((item) => isNotDelivered(item));
   const sending = unfinished.length > 0 && !failed;
   return {
     unfinished,
+    stopped,
+    retryable,
     failed,
     sending,
     headline: sending
@@ -938,11 +942,11 @@ function savedGroupState(items: OutboxItem[]) {
     explanation: sending
       ? `All ${items.length} signed records are saved in this browser. Their first delivery is in progress.`
       : unfinished.length
-        ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes and sent again automatically. Publishing again would create a second definition, so this page offers delivery of the saved records instead.`
+        ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes${stopped.length ? `. ${stopped.length === 1 ? "One record is" : `${stopped.length} records are`} stopped and ${stopped.length === 1 ? "waits" : "wait"} for Resume in Not delivered${retryable.length ? "; the others are sent again automatically" : ""}` : " and are sent again automatically"}. Publishing again would create a second definition, so this page offers delivery of the saved records instead.`
         : `All ${items.length} signed records were accepted.`,
     lines: items.map(
       (item) =>
-        `${item.label.action} ${item.label.subject}: ${Object.values(item.peers).map(describePeer).join(" ")}`,
+        `${item.label.action} ${item.label.subject}: ${Object.values(item.peers).map(describePeer).join(" ")}${item.stopped ? " Stopped." : ""}`,
     ),
   };
 }
@@ -1068,7 +1072,7 @@ function savedPublicationView(
   };
   const retry = async () => {
     if (retrying || readFailed || !currentItems || !live()) return;
-    const unfinished = savedGroupState(currentItems).unfinished;
+    const unfinished = savedGroupState(currentItems).retryable;
     retrying = true;
     paint();
     try {
@@ -1156,7 +1160,7 @@ function renderSavedGroup(
   const list = el("ul", { class: "small", style: "margin:8px 0 0" });
   for (const line of state.lines) list.append(el("li", { text: line }));
   const actions = el("div", { class: "actions", style: "margin-top:8px" });
-  if (state.failed)
+  if (state.failed && state.retryable.length)
     actions.append(
       button("Try now", retry, {
         class: "btn",

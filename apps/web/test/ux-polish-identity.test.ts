@@ -631,6 +631,313 @@ test("six emoji do not satisfy the 12-character minimum", async ({ page }) => {
   );
 });
 
+async function refusedHandover(page: Page) {
+  await createIdentity(page);
+  await page.route("**/api/v1/events", (route) =>
+    route.fulfill({
+      status: 403,
+      json: { code: "refused", message: "Refused.", event: null, field: null },
+    }),
+  );
+  await page.getByRole("link", { name: "Start" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Move to a new key" }),
+  ).toBeVisible();
+  await createSuccessor(page);
+  const sign = page.getByRole("button", { name: "Sign the handover" });
+  for (const box of await page.getByRole("checkbox").all()) await box.check();
+  await expect(sign).toBeEnabled();
+  await sign.click();
+  const banner = page.getByRole("region", { name: "Handover status" });
+  await expect(banner).toContainText(/Acceptance:.*refused/);
+  const ids = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().list("outbox"))
+      .sort((a: any, b: any) => a.order - b.order)
+      .map((i: any) => i.id);
+  });
+  return { banner, ids };
+}
+
+test("a receipt save failure says the outcome could not be saved", async ({
+  page,
+}) => {
+  const { banner, ids } = await refusedHandover(page);
+  await page.unroute("**/api/v1/events");
+  await page.evaluate(async (target) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.mergeOutbox;
+    let count = 0;
+    LocalStore.prototype.mergeOutbox = async function (
+      id: string,
+      fn: never,
+    ) {
+      if (id === target && ++count === 2) {
+        LocalStore.prototype.mergeOutbox = original;
+        throw new DOMException("Cannot save receipt.", "QuotaExceededError");
+      }
+      return original.call(this, id, fn);
+    };
+  }, ids[0]);
+  await banner.getByRole("button", { name: "Check again" }).click();
+  await expect(banner.getByRole("alert")).toContainText(
+    "The browser could not save the outcome",
+  );
+  await expect(banner.getByRole("alert")).not.toContainText(
+    "could not start",
+  );
+  await banner.getByRole("button", { name: "Check again" }).click();
+  await expect(banner).toContainText("Handover complete");
+});
+
+test("a one-time local write failure names the record and keeps its evidence", async ({
+  page,
+}) => {
+  const { banner, ids } = await refusedHandover(page);
+  const requests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/receipts/"))
+      requests.push(
+        `GET ${decodeURIComponent(request.url()).includes(ids[1]) ? "accept" : "transfer"}`,
+      );
+    if (request.method() === "POST" && request.url().endsWith("/events"))
+      requests.push(
+        `POST ${request.postData()?.includes(ids[1]) ? "accept" : "transfer"}`,
+      );
+  });
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.mergeOutbox;
+    LocalStore.prototype.mergeOutbox = async function () {
+      LocalStore.prototype.mergeOutbox = original;
+      throw new DOMException(
+        "Local storage quota exhausted.",
+        "QuotaExceededError",
+      );
+    };
+  });
+  await banner.getByRole("button", { name: "Check again" }).click();
+  await expect(banner.getByRole("alert")).toContainText(
+    "The browser could not send the transfer: Local storage quota exhausted.",
+  );
+  await expect(banner).toContainText(/Transfer:.*refused/);
+  await page.waitForTimeout(300);
+  expect(
+    requests.filter((entry) => entry.endsWith("transfer")),
+  ).toEqual(["GET transfer"]);
+});
+
+test("an outbox read failure keeps the last evidence and shows the error", async ({
+  page,
+}) => {
+  const { banner } = await refusedHandover(page);
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.list;
+    LocalStore.prototype.list = async function (store: string) {
+      if (store === "outbox")
+        throw new Error("Cannot read the local outbox.");
+      return original.call(this, store);
+    };
+  });
+  await banner.getByRole("button", { name: "Check again" }).click();
+  await page.waitForTimeout(300);
+  await expect(banner.getByRole("alert")).toContainText(
+    "The browser could not read the saved delivery state",
+  );
+  await expect(banner).toContainText(/Transfer:.*refused/);
+  expect(pageErrors.join(" ")).not.toContain("Cannot read the local outbox");
+});
+
+test("the saved publication page shows stopped records and offers no retry for them", async ({
+  page,
+  context,
+}) => {
+  await page.route("**/api/v1/events", (route) =>
+    route.fulfill({
+      status: 403,
+      json: { code: "refused", message: "Refused.", event: null, field: null },
+    }),
+  );
+  await createIdentity(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    await new LocalStore().put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "brode",
+        kind: "gismu",
+        meaning: "A disposable test meaning.",
+        text: "A disposable test meaning.",
+        structured: false,
+        frameMode: "none",
+        step: 5,
+        rafsiClaims: [{ rafsi: "rod", rationale: "Disposable claim." }],
+      }),
+    );
+  });
+  await page.goto("/new/publish");
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Publish", exact: true })
+    .click();
+  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+  await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+  await unlock.getByRole("button", { name: "Unlock" }).click();
+  const first = page.getByRole("dialog", {
+    name: "Before your first public signature",
+  });
+  await expect(first).toBeVisible();
+  await first.getByRole("button", { name: "Continue" }).click();
+  const saved = page.getByRole("region", { name: "Saved publication" });
+  await expect(saved).toContainText("Saved. Not delivered yet.");
+  const other = await context.newPage();
+  await other.goto("/outbox");
+  await expect(
+    other.getByRole("button", { name: "Stop retrying" }).first(),
+  ).toBeVisible();
+  await other.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    for (const item of await store.list("outbox"))
+      await store.mergeOutbox(item.id, (stored: any) => ({
+        ...stored,
+        stopped: true,
+      }));
+  });
+  await other.close();
+  await page.reload();
+  await expect(saved).toContainText("Saved. Not delivered yet.");
+  await expect(saved).toContainText("Stopped.");
+  await expect(saved).toContainText(/Resume in Not delivered/);
+  await expect(saved).not.toContainText("sent again automatically");
+  await expect(saved.getByRole("button", { name: "Try now" })).toHaveCount(0);
+});
+
+test("a failed import keeps focus on the body after the reader clicks prose", async ({
+  page,
+}) => {
+  const backup = await createIdentity(page);
+  await page.getByRole("button", { name: "Import", exact: true }).click();
+  const form = page.getByRole("form", {
+    name: "Import an encrypted backup",
+  });
+  await form.getByLabel("Backup file").setInputFiles({
+    name: "backup.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(backup)),
+  });
+  await form.getByLabel("Backup passphrase").fill("incorrect passphrase");
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    File.prototype.text = async function () {
+      File.prototype.text = original;
+      await new Promise<void>(
+        (resolve) => ((window as any).continueFile = resolve),
+      );
+      return original.call(this);
+    };
+  });
+  // Submit with focus on the body, then click prose while the read is held.
+  await page
+    .getByText(/This site supplies the code that uses your key/)
+    .click();
+  expect(await page.evaluate(() => document.activeElement?.tagName)).toBe(
+    "BODY",
+  );
+  await page.evaluate(() => {
+    document
+      .querySelector<HTMLFormElement>(
+        'form[aria-label="Import an encrypted backup"]',
+      )!
+      .requestSubmit();
+  });
+  await page
+    .getByText(/This site supplies the code that uses your key/)
+    .click();
+  await page.evaluate(() => (window as any).continueFile());
+  await expect(form.getByRole("alert")).toBeVisible();
+  expect(await page.evaluate(() => document.activeElement?.tagName)).toBe(
+    "BODY",
+  );
+});
+
+test("successful key work removes its window focus listeners", async ({
+  page,
+}) => {
+  const backup = await (async () => {
+    await page.goto("/identity");
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__added = 0;
+      w.__removed = 0;
+      const add = EventTarget.prototype.addEventListener;
+      const remove = EventTarget.prototype.removeEventListener;
+      EventTarget.prototype.addEventListener = function (
+        type: string,
+        ...rest: any[]
+      ) {
+        if (this === window && (type === "pointerdown" || type === "keydown"))
+          w.__added++;
+        return (add as any).apply(this, [type, ...rest]);
+      };
+      EventTarget.prototype.removeEventListener = function (
+        type: string,
+        ...rest: any[]
+      ) {
+        if (this === window && (type === "pointerdown" || type === "keydown"))
+          w.__removed++;
+        return (remove as any).apply(this, [type, ...rest]);
+      };
+    });
+    await page.getByLabel("New passphrase", { exact: true }).fill(PASSPHRASE);
+    await page.getByLabel("Repeat passphrase").fill(PASSPHRASE);
+    await page.getByRole("button", { name: "Create a key" }).click();
+    await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
+    const afterCreate = await page.evaluate(() => {
+      const w = window as any;
+      return { added: w.__added, removed: w.__removed };
+    });
+    expect(afterCreate.removed).toBe(afterCreate.added);
+    return page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return new LocalStore().get("keys", "selected");
+    });
+  })();
+  for (let round = 0; round < 2; round++) {
+    await page.getByRole("button", { name: "Import", exact: true }).click();
+    const form = page.getByRole("form", {
+      name: "Import an encrypted backup",
+    });
+    await form.getByLabel("Backup file").setInputFiles({
+      name: "backup.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(backup)),
+    });
+    await form.getByLabel("Backup passphrase").fill(PASSPHRASE);
+    await form.getByRole("button", { name: "Open backup locally" }).click();
+    await expect(
+      page.locator("#app > [role=status]"),
+    ).toHaveText("The backup opened locally. Keep the file in a safe place.");
+    await expect(form).toBeHidden();
+    const afterImport = await page.evaluate(() => {
+      const w = window as any;
+      return { added: w.__added, removed: w.__removed };
+    });
+    expect(afterImport.removed).toBe(afterImport.added);
+  }
+  const counts = await page.evaluate(() => {
+    const w = window as any;
+    return { added: w.__added, removed: w.__removed };
+  });
+  expect(counts.added).toBeGreaterThan(0);
+  expect(counts.removed).toBe(counts.added);
+});
+
 test("identity intro paragraphs and empty editor links have visible separation", async ({
   page,
 }) => {
@@ -716,3 +1023,4 @@ test("phone Reveal passphrase aligns with the import button edge", async ({
     Math.abs(positions.revealTextLeft - positions.submitLeft),
   ).toBeLessThanOrEqual(2);
 });
+

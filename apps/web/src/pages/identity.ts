@@ -35,21 +35,32 @@ import {
  * on the body with no pointer or key press since then (the submitted control
  * was disabled or replaced). Any later choice by the reader wins.
  */
-function trackSubmitFocus(): { shouldRestore: () => boolean } {
+function trackSubmitFocus(): {
+  shouldRestore: () => boolean;
+  dispose: () => void;
+} {
   const element = document.activeElement;
   let interacted = false;
+  let removed = false;
   const mark = () => {
     interacted = true;
   };
   window.addEventListener("pointerdown", mark, true);
   window.addEventListener("keydown", mark, true);
+  const dispose = () => {
+    if (removed) return;
+    removed = true;
+    window.removeEventListener("pointerdown", mark, true);
+    window.removeEventListener("keydown", mark, true);
+  };
   return {
+    dispose,
     shouldRestore() {
-      window.removeEventListener("pointerdown", mark, true);
-      window.removeEventListener("keydown", mark, true);
+      dispose();
       const active = document.activeElement;
       return (
-        active === element || (active === document.body && !interacted)
+        (active === element && element !== document.body) ||
+        (active === document.body && !interacted)
       );
     },
   };
@@ -630,9 +641,9 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
       app.announce(createError.textContent);
       return;
     }
+    const focus = trackSubmitFocus();
     submit.disabled = true;
     const identityBefore = session.identity;
-    const focus = trackSubmitFocus();
     try {
       const created = await session.create(pass.input.value);
       pass.input.value = repeat.input.value = "";
@@ -650,14 +661,17 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
           app.announce(describe(error));
         }
       }
+      focus.dispose();
       rerender();
     } catch (error) {
       createError.textContent = describe(error);
       createError.hidden = false;
       app.announce(createError.textContent);
       submit.disabled = false;
-      if (session.identity !== identityBefore) rerender();
-      else if (focus.shouldRestore())
+      if (session.identity !== identityBefore) {
+        focus.dispose();
+        rerender();
+      } else if (focus.shouldRestore())
         pass.input.focus({ preventScroll: true });
     }
   });
@@ -735,8 +749,8 @@ function importBackupForm(
       app.announce(importError.textContent);
       return;
     }
-    submit.disabled = true;
     const focus = trackSubmitFocus();
+    submit.disabled = true;
     try {
       await app.session.importBackup(selected, pass.input.value);
       pass.input.value = "";
@@ -748,6 +762,7 @@ function importBackupForm(
           app.announce(describe(error));
         }
       }
+      focus.dispose();
       rerender();
     } catch (error) {
       importError.textContent = describe(error);
@@ -756,8 +771,10 @@ function importBackupForm(
       submit.disabled = false;
       // A rerender is only for a changed selected identity. Otherwise the
       // form, its alert and focus stay where the user left them.
-      if (app.session.identity !== identityBefore) rerender();
-      else if (focus.shouldRestore())
+      if (app.session.identity !== identityBefore) {
+        focus.dispose();
+        rerender();
+      } else if (focus.shouldRestore())
         pass.input.focus({ preventScroll: true });
     }
   });
@@ -824,8 +841,8 @@ function backupTestForm(
       app.announce(testError.textContent);
       return;
     }
-    submit.disabled = true;
     const focus = trackSubmitFocus();
+    submit.disabled = true;
     try {
       await app.session.testBackup(selected, pass.input.value);
       pass.input.value = "";
