@@ -252,7 +252,7 @@ export async function handoverPage(
       );
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (pass.input.value.length < 12) {
+        if (Array.from(pass.input.value).length < 12) {
           error.textContent = "Use at least 12 characters.";
           error.hidden = false;
           return;
@@ -951,6 +951,7 @@ export function renderExisting(
   });
   container.append(box);
   let updateGeneration = 0;
+  let retryFailure: string | null = null;
   const update = async () => {
     const mine = ++updateGeneration;
     const state = await handoverState(app, record);
@@ -1014,21 +1015,25 @@ export function renderExisting(
             async () => {
               try {
                 const current = await handoverState(app, record);
-                if (
-                  current.transfer &&
-                  !current.transferDone &&
-                  !current.transfer.stopped
-                )
-                  await app.delivery.tryNow(current.transfer.id);
-                if (
+                // One explicit attempt per record: trying the acceptance
+                // delivers the earlier transfer first, so a single call
+                // covers both. A stopped acceptance falls back to the
+                // transfer alone.
+                const target =
                   current.accept &&
                   !current.acceptDone &&
                   !current.accept.stopped
-                )
-                  await app.delivery.tryNow(current.accept.id);
-              } finally {
-                await update();
+                    ? current.accept
+                    : current.transfer &&
+                        !current.transferDone &&
+                        !current.transfer.stopped
+                      ? current.transfer
+                      : null;
+                if (target) await app.delivery.tryNow(target.id);
+              } catch (error) {
+                retryFailure = describe(error);
               }
+              await update();
             },
             { class: "btn" },
           ),
@@ -1041,6 +1046,16 @@ export function renderExisting(
           "small",
         ),
       );
+    if (retryFailure) {
+      box.append(
+        el("p", {
+          class: "notice",
+          role: "alert",
+          text: `The retry could not start in this browser: ${retryFailure}`,
+        }),
+      );
+      retryFailure = null;
+    }
     if (focusKind) {
       if (state.transferDone && state.acceptDone)
         statusLine.focus({ preventScroll: true });

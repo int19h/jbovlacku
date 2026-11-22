@@ -30,13 +30,29 @@ import {
 } from "../components/attribution.ts";
 
 /**
- * Whether focus stayed with a form while its key work ran: still inside the
- * form, or on the body only because the submitted control was disabled or
- * replaced. A reader who chose another control keeps that choice.
+ * Tracks focus from a form submit until its key work settles. Focus may be
+ * moved only when it is still on the element that was focused at submit, or
+ * on the body with no pointer or key press since then (the submitted control
+ * was disabled or replaced). Any later choice by the reader wins.
  */
-function focusStayed(container: HTMLElement): boolean {
-  const active = document.activeElement;
-  return !active || active === document.body || container.contains(active);
+function trackSubmitFocus(): { shouldRestore: () => boolean } {
+  const element = document.activeElement;
+  let interacted = false;
+  const mark = () => {
+    interacted = true;
+  };
+  window.addEventListener("pointerdown", mark, true);
+  window.addEventListener("keydown", mark, true);
+  return {
+    shouldRestore() {
+      window.removeEventListener("pointerdown", mark, true);
+      window.removeEventListener("keydown", mark, true);
+      const active = document.activeElement;
+      return (
+        active === element || (active === document.body && !interacted)
+      );
+    },
+  };
 }
 
 export async function identityPage(
@@ -61,19 +77,12 @@ export async function identityPage(
   }
   let unsubscribePage = () => {};
   let cancelProfile = () => {};
-  const rerender = (focusHeading = false) => {
+  const rerender = () => {
     unsubscribePage();
     cancelProfile();
     if (!context.live()) return;
     main.replaceChildren();
     void identityPage(route, context, app);
-    if (focusHeading) {
-      const heading = main.querySelector("h1");
-      if (heading instanceof HTMLElement) {
-        heading.tabIndex = -1;
-        heading.focus();
-      }
-    }
   };
   if (!session.backup) {
     renderCreate(main, app, rerender);
@@ -255,7 +264,21 @@ export async function identityPage(
       ),
     );
     main.append(banner);
-    const testForm = backupTestForm(app, rerender);
+    const testForm = backupTestForm(app, (restoreFocus) => {
+      // A passing test updates the banner in place. The rest of the page,
+      // including any control the reader moved to, stays connected.
+      banner.replaceWith(
+        p(
+          "Your backup test passed in this browser. This does not prove that you still keep a durable copy.",
+          "meta",
+        ),
+      );
+      testForm.remove();
+      if (restoreFocus) {
+        heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+      }
+    });
     testForm.hidden = true;
     main.append(testForm);
   } else
@@ -323,6 +346,7 @@ export async function identityPage(
       form.append(pass.wrapper, submit, unlockError);
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
+        const focus = trackSubmitFocus();
         submit.disabled = true;
         unlockError.hidden = true;
         try {
@@ -336,14 +360,15 @@ export async function identityPage(
               app.announce(describe(error));
             }
           }
-          if (focusStayed(lockRow))
-            lockRow.querySelector("button")?.focus();
+          if (focus.shouldRestore())
+            lockRow.querySelector("button")?.focus({ preventScroll: true });
         } catch (error) {
           unlockError.textContent = describe(error);
           unlockError.hidden = false;
           app.announce(unlockError.textContent);
           submit.disabled = false;
-          if (focusStayed(form)) pass.input.focus();
+          if (focus.shouldRestore())
+            pass.input.focus({ preventScroll: true });
         }
       });
       lockRow.append(form);
@@ -592,7 +617,7 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     createError.hidden = true;
-    if (pass.input.value.length < 12) {
+    if (Array.from(pass.input.value).length < 12) {
       createError.textContent = "Use at least 12 characters.";
       createError.hidden = false;
       app.announce(createError.textContent);
@@ -607,6 +632,7 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
     }
     submit.disabled = true;
     const identityBefore = session.identity;
+    const focus = trackSubmitFocus();
     try {
       const created = await session.create(pass.input.value);
       pass.input.value = repeat.input.value = "";
@@ -631,7 +657,8 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
       app.announce(createError.textContent);
       submit.disabled = false;
       if (session.identity !== identityBefore) rerender();
-      else if (focusStayed(form)) pass.input.focus();
+      else if (focus.shouldRestore())
+        pass.input.focus({ preventScroll: true });
     }
   });
   main.append(form);
@@ -709,6 +736,7 @@ function importBackupForm(
       return;
     }
     submit.disabled = true;
+    const focus = trackSubmitFocus();
     try {
       await app.session.importBackup(selected, pass.input.value);
       pass.input.value = "";
@@ -729,7 +757,8 @@ function importBackupForm(
       // A rerender is only for a changed selected identity. Otherwise the
       // form, its alert and focus stay where the user left them.
       if (app.session.identity !== identityBefore) rerender();
-      else if (focusStayed(form)) pass.input.focus();
+      else if (focus.shouldRestore())
+        pass.input.focus({ preventScroll: true });
     }
   });
   void mode;
@@ -737,7 +766,7 @@ function importBackupForm(
 }
 function backupTestForm(
   app: App,
-  rerender: (focusHeading?: boolean) => void,
+  succeed: (restoreFocus: boolean) => void,
 ): HTMLFormElement {
   const form = el("form", {
     class: "card",
@@ -796,17 +825,19 @@ function backupTestForm(
       return;
     }
     submit.disabled = true;
+    const focus = trackSubmitFocus();
     try {
       await app.session.testBackup(selected, pass.input.value);
       pass.input.value = "";
       app.announce("The backup unlocked and matches this identity.");
-      rerender(focusStayed(form));
+      succeed(focus.shouldRestore());
     } catch (error) {
       testError.textContent = describe(error);
       testError.hidden = false;
       app.announce(testError.textContent);
       submit.disabled = false;
-      if (focusStayed(form)) pass.input.focus();
+      if (focus.shouldRestore())
+        pass.input.focus({ preventScroll: true });
     }
   });
   return form;

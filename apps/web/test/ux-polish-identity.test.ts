@@ -387,6 +387,250 @@ test("key work does not steal focus moved to the search field", async ({
   await expect(search).toBeFocused();
 });
 
+test("Check again honors a later stop, attempts each record once, and reports local failures", async ({
+  page,
+  context,
+}) => {
+  await createIdentity(page);
+  await page.route("**/api/v1/events", (route) =>
+    route.fulfill({
+      status: 403,
+      json: { code: "refused", message: "Refused.", event: null, field: null },
+    }),
+  );
+  await page.getByRole("link", { name: "Start" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Move to a new key" }),
+  ).toBeVisible();
+  await createSuccessor(page);
+  const sign = page.getByRole("button", { name: "Sign the handover" });
+  for (const box of await page.getByRole("checkbox").all()) await box.check();
+  await expect(sign).toBeEnabled();
+  await sign.click();
+  const banner = page.getByRole("region", { name: "Handover status" });
+  await expect(banner).toContainText(/Acceptance:.*refused/);
+  const ids = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().list("outbox"))
+      .sort((a: any, b: any) => a.order - b.order)
+      .map((i: any) => i.id);
+  });
+  // A local storage failure is shown in the banner, with the evidence kept.
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    (window as any).origMerge = LocalStore.prototype.mergeOutbox;
+    LocalStore.prototype.mergeOutbox = async function () {
+      throw new DOMException(
+        "Local storage quota exhausted.",
+        "QuotaExceededError",
+      );
+    };
+  });
+  await banner.getByRole("button", { name: "Check again" }).click();
+  await expect(banner.getByRole("alert")).toContainText(
+    "The retry could not start in this browser",
+  );
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    LocalStore.prototype.mergeOutbox = (window as any).origMerge;
+  });
+  await expect(banner).toContainText(/Acceptance:.*refused/);
+  expect(pageErrors.join(" ")).not.toContain("quota");
+  // One activation: one receipt lookup and one POST per record, transfer first.
+  const trace: string[] = [];
+  const observe = (request: any) => {
+    if (request.url().includes("/receipts/"))
+      trace.push(
+        `GET ${decodeURIComponent(request.url()).includes(ids[1]) ? "accept" : "transfer"}`,
+      );
+    if (request.method() === "POST" && request.url().endsWith("/events"))
+      trace.push(
+        `POST ${request.postData()?.includes(ids[1]) ? "accept" : "transfer"}`,
+      );
+  };
+  page.on("request", observe);
+  await banner.getByRole("button", { name: "Check again" }).click();
+  await expect
+    .poll(() => trace.filter((entry) => entry === "POST accept").length)
+    .toBe(1);
+  await page.waitForTimeout(300);
+  page.off("request", observe);
+  expect(trace).toEqual([
+    "GET transfer",
+    "POST transfer",
+    "GET accept",
+    "POST accept",
+  ]);
+  // A stop in another tab during the transfer retry keeps the acceptance waiting.
+  const other = await context.newPage();
+  await other.goto("/outbox");
+  const row = other.locator(`[data-outbox-record="${ids[1]}"]`).first();
+  await expect(
+    row.getByRole("button", { name: "Stop retrying" }),
+  ).toBeVisible();
+  await page.unroute("**/api/v1/events");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let held!: () => void;
+  const waiting = new Promise<void>((resolve) => (held = resolve));
+  trace.length = 0;
+  page.on("request", observe);
+  await page.route("**/receipts/**", async (route) => {
+    if (decodeURIComponent(route.request().url()).includes(ids[0])) {
+      held();
+      await gate;
+    }
+    await route.continue();
+  });
+  await banner.getByRole("button", { name: "Check again" }).click();
+  await waiting;
+  await row.getByRole("button", { name: "Stop retrying" }).click();
+  await expect(row.getByRole("button", { name: "Resume" })).toBeVisible();
+  release();
+  await expect(banner).toContainText("Old key retired, acceptance waiting.");
+  await page.waitForTimeout(300);
+  page.off("request", observe);
+  expect(trace.filter((entry) => entry === "POST accept")).toHaveLength(0);
+  expect(trace.filter((entry) => entry === "GET accept")).toHaveLength(0);
+  const accept = await page.evaluate(async (id) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const item = await new LocalStore().get("outbox", id);
+    return {
+      stopped: item.stopped,
+      states: Object.values(item.peers).map((peer: any) => peer.state),
+    };
+  }, ids[1]);
+  expect(accept.stopped).toBe(true);
+  expect(accept.states).not.toContain("accepted");
+  await other.close();
+});
+
+test("unlock keeps the reading position when the reader clicks prose during the wait", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 550 });
+  await createIdentity(page);
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+  await page.evaluate(async () => {
+    const { Session } = await import(String("/src/app/session.ts"));
+    const original = Session.prototype.unlock;
+    Session.prototype.unlock = async function (...args: any[]) {
+      await new Promise<void>(
+        (resolve) => ((window as any).releaseUnlock = resolve),
+      );
+      return original.apply(this, args as any);
+    };
+  });
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await page
+    .getByText(/This site supplies the code that uses your key/)
+    .click();
+  const during = await page.evaluate(() => ({
+    y: window.scrollY,
+    tag: document.activeElement?.tagName,
+  }));
+  expect(during.tag).toBe("BODY");
+  await page.evaluate(() => (window as any).releaseUnlock());
+  await expect(page.getByText("Unlocked", { exact: true })).toBeAttached();
+  await page.waitForTimeout(300);
+  const settled = await page.evaluate(() => ({
+    y: window.scrollY,
+    tag: document.activeElement?.tagName,
+  }));
+  expect(settled.tag).toBe("BODY");
+  expect(Math.abs(settled.y - during.y)).toBeLessThanOrEqual(40);
+});
+
+test("a failed import keeps focus moved to the backup file field", async ({
+  page,
+}) => {
+  const backup = await createIdentity(page);
+  await page.getByRole("button", { name: "Import", exact: true }).click();
+  const form = page.getByRole("form", {
+    name: "Import an encrypted backup",
+  });
+  await form.getByLabel("Backup file").setInputFiles({
+    name: "backup.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(backup)),
+  });
+  await form.getByLabel("Backup passphrase").fill("incorrect passphrase");
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    File.prototype.text = async function () {
+      File.prototype.text = original;
+      await new Promise<void>(
+        (resolve) => ((window as any).continueFile = resolve),
+      );
+      return original.call(this);
+    };
+  });
+  await form.getByRole("button", { name: "Open backup locally" }).click();
+  await form.getByLabel("Backup file").focus();
+  await expect(form.getByLabel("Backup file")).toBeFocused();
+  await page.evaluate(() => (window as any).continueFile());
+  await expect(form.getByRole("alert")).toBeVisible();
+  await expect(form.getByLabel("Backup file")).toBeFocused();
+});
+
+test("a passing backup test keeps focus moved to the download control", async ({
+  page,
+}) => {
+  const backup = await createIdentity(page);
+  const download = page.getByRole("button", {
+    name: "Download the encrypted backup",
+  });
+  await page.getByRole("button", { name: "Test the backup" }).click();
+  const testForm = page.getByRole("form", { name: "Test the backup" });
+  await testForm.getByLabel("Backup file").setInputFiles({
+    name: "backup.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(backup)),
+  });
+  await testForm.getByLabel("Backup passphrase").fill(PASSPHRASE);
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    File.prototype.text = async function () {
+      File.prototype.text = original;
+      await new Promise<void>(
+        (resolve) => ((window as any).continueFile = resolve),
+      );
+      return original.call(this);
+    };
+  });
+  await testForm.getByRole("button", { name: "Run the test" }).click();
+  await download.focus();
+  await expect(download).toBeFocused();
+  await page.evaluate(() => (window as any).continueFile());
+  await expect(
+    page.getByText("Your backup test passed in this browser."),
+  ).toBeVisible();
+  await expect(download).toBeFocused();
+});
+
+test("six emoji do not satisfy the 12-character minimum", async ({ page }) => {
+  const emoji = "😀".repeat(6);
+  expect([...emoji].length).toBe(6);
+  await page.goto("/identity");
+  await page.getByLabel("New passphrase", { exact: true }).fill(emoji);
+  await page.getByLabel("Repeat passphrase").fill(emoji);
+  await page.getByRole("button", { name: "Create a key" }).click();
+  await expect(
+    page.getByRole("form", { name: "Create a key" }).getByRole("alert"),
+  ).toHaveText("Use at least 12 characters.");
+  await createIdentity(page);
+  await page.getByRole("link", { name: "Start" }).click();
+  await page.getByLabel("New passphrase for the new key").fill(emoji);
+  await page.getByLabel("Repeat passphrase").fill(emoji);
+  await page.getByRole("button", { name: "Create the new key" }).click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "Use at least 12 characters.",
+  );
+});
+
 test("identity intro paragraphs and empty editor links have visible separation", async ({
   page,
 }) => {

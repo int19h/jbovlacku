@@ -1555,7 +1555,7 @@ A later profile can change its work factor or standard container. Old files rema
 Import decrypts locally and parses PKCS8 strictly as an Ed25519 private key. Reject other algorithms and malformed DER.
 The client derives the public key from that private key.
 Decryption and private-key parse failures show one message: “This file did not unlock with that passphrase.”
-Unlocking the key that is already stored in this browser involves no file. A failed unlock says: “That passphrase did not unlock the key.”
+Unlocking the key that is already stored in this browser involves no file. A decryption, private-key parse, or identity mismatch failure in that unlock says: “That passphrase did not unlock the key.” Format and concurrency errors keep their own messages.
 It must match the file's identity before the client accepts the key. A mismatched file never replaces an existing identity.
 A duplicate import selects the existing identity and merges no unsigned claims about current event heads.
 
