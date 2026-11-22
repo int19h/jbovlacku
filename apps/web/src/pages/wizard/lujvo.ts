@@ -343,8 +343,10 @@ export async function lujvoPage(
   // Search for parts.
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   let partSearch = 0;
+  let partLookupFailed = false;
   const renderSearch = async () => {
     const request = ++partSearch;
+    partLookupFailed = false;
     addResults.replaceChildren();
     const query = addField.input.value.trim();
     if (!query) return;
@@ -366,6 +368,7 @@ export async function lujvoPage(
         ).hits[0];
     } catch (error) {
       lookupUnavailable = true;
+      partLookupFailed = true;
       if (current())
         addResults.append(el("li", { class: "notice", text: describe(error) }));
     }
@@ -540,6 +543,8 @@ export async function lujvoPage(
       await renderSearch();
       const query = addField.input.value.trim();
       if (!query) return;
+      // A failed lookup keeps its error and the explicit entered choice.
+      if (partLookupFailed) return;
       const normalized = (value: string) =>
         analyzeWord("extended-v4", value).normalized?.toLowerCase() ??
         value.trim().toLowerCase();
@@ -549,16 +554,25 @@ export async function lujvoPage(
         const label = b.getAttribute("aria-label") ?? "";
         return /^add /i.test(label) && !/as entered$/i.test(label);
       });
-      const exact = packageButtons.find(
-        (b) =>
-          normalized((b.getAttribute("aria-label") ?? "").slice(4)) ===
-          target,
-      );
+      const spellings = packageButtons.map((button) => ({
+        button,
+        spelling: (button.getAttribute("aria-label") ?? "").slice(4),
+      }));
+      // Case is part of word identity: an exact spelling wins first.
+      const typedPlain = query.replace(/^\.+|\.+$/g, "");
+      const exact = spellings.find((entry) => entry.spelling === typedPlain);
       if (exact) {
-        exact.click();
+        exact.button.click();
         return;
       }
-      if (packageButtons.length) return;
+      const aliases = spellings.filter(
+        (entry) => normalized(entry.spelling) === target,
+      );
+      if (aliases.length === 1) {
+        aliases[0].button.click();
+        return;
+      }
+      if (aliases.length > 1 || packageButtons.length) return;
       buttons
         .find((b) =>
           b.getAttribute("aria-label")?.toLowerCase().endsWith("as entered"),

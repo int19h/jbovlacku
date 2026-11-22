@@ -625,7 +625,7 @@ export async function meaningPage(
             if (key !== typedKey()) return;
             if (
               !(await askRemoteConsent(
-                `Check ${location.host} for ${JSON.stringify(spelling)} in definition language ${JSON.stringify(draft.language)}? The request sends this word and language.`,
+                `Check ${location.host} for ${JSON.stringify(spelling)}? The browser requests this word's ID from the server and filters the returned definitions to definition language ${JSON.stringify(draft.language)} in this browser.`,
                 {
                   signal: context.signal,
                   acceptFocus: [word.input, stepHeading],
@@ -733,6 +733,9 @@ export async function meaningPage(
       "display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px",
   });
   const modeLabel = el("span", { class: "meta" });
+  const modeMain = el("span");
+  const modeAssist = el("span");
+  modeLabel.append(modeMain, modeAssist);
   head.append(
     el("h2", {
       id: "similar-h",
@@ -752,6 +755,22 @@ export async function meaningPage(
   const list = el("ol", { class: "similar" });
   const note = el("p", { class: "meta" });
   right.append(list, note);
+  // The Settings note keeps its link node while the same note applies.
+  let settingsNoteShown = false;
+  const showSettingsNote = () => {
+    if (settingsNoteShown) return;
+    settingsNoteShown = true;
+    note.replaceChildren(
+      text("Download a search package in "),
+      link("Settings", routes.preferences),
+      text(" for local nearby search, or allow a search on this server."),
+    );
+  };
+  let remoteCache: {
+    key: string;
+    hits?: SearchHit[];
+    promise?: Promise<SearchHit[]>;
+  } | null = null;
   let cached: CachedPackage | null = null;
   // Consent covers one exact query and its definition language.
   let remoteConsent: string | null = null;
@@ -759,26 +778,27 @@ export async function meaningPage(
   const remoteQuery = () => nearbyQuery();
   const consentKey = () => JSON.stringify([remoteQuery(), draft.language]);
   let modeSignature = "";
+  let assistShown: boolean | null = null;
   const renderMode = () => {
     // Keep the existing nodes when nothing changed, so a background
     // refresh never removes a focused control or the consent invoker.
-    const signature = `${
-      cached
-        ? "local"
-        : remoteConsent === consentKey()
-          ? "searching"
-          : "search"
-    }|${assistanceVisibility(app, context).enabled}`;
-    if (signature === modeSignature) return;
-    modeSignature = signature;
-    modeLabel.replaceChildren();
-    if (cached) modeLabel.append(text("by words, from the downloaded package"));
-    else {
-      modeLabel.append(text("no local package · "));
-      if (remoteConsent === consentKey())
-        modeLabel.append(text("searching this server"));
-      else
-        modeLabel.append(
+    // The assistance suffix renders separately for the same reason.
+    const signature = cached
+      ? "local"
+      : remoteConsent === consentKey()
+        ? "searching"
+        : "search";
+    if (signature !== modeSignature) {
+      modeSignature = signature;
+      modeMain.replaceChildren();
+      if (cached)
+        modeMain.append(text("by words, from the downloaded package"));
+      else {
+        modeMain.append(text("no local package · "));
+        if (remoteConsent === consentKey())
+          modeMain.append(text("searching this server"));
+        else
+          modeMain.append(
           button(
             "search this server",
             async () => {
@@ -818,14 +838,22 @@ export async function meaningPage(
             },
           ),
         );
+      }
     }
-    if (assistanceVisibility(app, context).enabled)
-      modeLabel.append(
-        text(" · "),
-        link("by meaning: not configured", routes.preferences, {
-          class: "meta touch-link",
-        }),
+    const assisted = assistanceVisibility(app, context).enabled;
+    if (assisted !== assistShown) {
+      assistShown = assisted;
+      modeAssist.replaceChildren(
+        ...(assisted
+          ? [
+              text(" · "),
+              link("by meaning: not configured", routes.preferences, {
+                class: "meta touch-link",
+              }),
+            ]
+          : []),
       );
+    }
   };
   const unsubscribeAssistance = assistanceVisibility(app, context).subscribe(
     renderMode,
@@ -844,6 +872,7 @@ export async function meaningPage(
     timer = setTimeout(() => void nearby(), 400);
   };
   const renderHits = (hits: SearchHit[], source: "local" | "remote") => {
+    settingsNoteShown = false;
     list.replaceChildren();
     if (!hits.length) {
       note.textContent = meaning.input.value.trim()
@@ -963,30 +992,56 @@ export async function meaningPage(
           renderMode();
         }
       }
-      renderHits([], "local");
+      list.replaceChildren();
       if (remoteConsent !== consentKey()) {
-        note.replaceChildren(
-          text("Download a search package in "),
-          link("Settings", routes.preferences),
-          text(" for local nearby search, or allow a search on this server."),
-        );
+        showSettingsNote();
         return;
       }
+      // A finished or pending result for this exact key is reused, so an
+      // edit that keeps the key sends nothing new.
+      const key = consentKey();
+      if (remoteCache?.key === key) {
+        const hits = remoteCache.hits ?? (await remoteCache.promise!);
+        if (current()) renderHits(hits, "remote");
+        return;
+      }
+      settingsNoteShown = false;
+      note.textContent = "Searching this server for close definitions.";
       const queries = meaningQueries(value);
-      const results = await Promise.all(
-        queries.map((query) =>
-          remoteDraftSearch(query, language, 10, {
-            signal: context.signal,
-          }),
-        ),
-      );
-      if (current())
-        renderHits(
-          rankNearby(results.map((result) => result.hits)),
-          "remote",
-        );
+      const promise = (async (): Promise<SearchHit[]> => {
+        const [firstQuery, ...rest] = queries;
+        const first = await remoteDraftSearch(firstQuery, language, 10, {
+          signal: context.signal,
+        });
+        // One snapshot and view for the whole ranking.
+        const pinned = { snapshot: first.snapshot, view: first.view };
+        const results = [first];
+        if (rest.length)
+          results.push(
+            ...(await Promise.all(
+              rest.map((query) =>
+                remoteDraftSearch(query, language, 10, {
+                  signal: context.signal,
+                }, pinned),
+              ),
+            )),
+          );
+        return rankNearby(results.map((result) => result.hits));
+      })();
+      remoteCache = { key, promise };
+      try {
+        const hits = await promise;
+        if (remoteCache?.key === key) remoteCache = { key, hits };
+        if (current()) renderHits(hits, "remote");
+      } catch (error) {
+        if (remoteCache?.key === key) remoteCache = null;
+        throw error;
+      }
     } catch (error) {
-      if (current()) note.textContent = describe(error);
+      if (current()) {
+        settingsNoteShown = false;
+        note.textContent = describe(error);
+      }
     }
   };
   void nearby();

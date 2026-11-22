@@ -520,6 +520,284 @@ test("lujvo Enter adds the framed exact package hit under CLL rules", async ({
   ).toContainText("cku");
 });
 
+test("lujvo Enter gives the exact word priority over case aliases", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const builders = await import(String("/src/model/builders.ts"));
+    const store = new LocalStore();
+    const entry = (spelling: string, rafsi: string, index: number) => ({
+      event: "jve1:" + String(index + 1).repeat(64),
+      word: { language: "jbo", spelling },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+      issuer: "ed25519:" + "1".repeat(64),
+      notes: false,
+      attribution: null,
+      rafsi: [rafsi],
+      rafsi_complete: true,
+    });
+    await store.put("packages", "en", {
+      version: 2,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: [entry("CUKTA", "cuk", 0), entry("cukta", "cku", 1)],
+    });
+    await store.put(
+      "drafts",
+      "current",
+      newDraft({
+        spelling: "",
+        kind: "lujvo",
+        meaning: "A disposable meaning.",
+        text: "A disposable meaning.",
+        structured: false,
+        step: 3,
+        lujvo: { ...builders.newLujvoState(), components: [] },
+      }),
+    );
+  });
+  await page.goto("/new/lujvo");
+  await page.getByLabel("Add a part").fill("cukta");
+  await page.getByLabel("Add a part").press("Enter");
+  await expect
+    .poll(async () =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const draft: any = await new LocalStore().get("drafts", "current");
+        return (draft.lujvo?.components ?? []).map(
+          (component: any) => component.spelling,
+        );
+      }),
+    )
+    .toEqual(["cukta"]);
+  const claims = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const draft: any = await new LocalStore().get("drafts", "current");
+    return draft.lujvo.components[0].claims.map((claim: any) => claim.rafsi);
+  });
+  expect(claims).toEqual(["cku"]);
+});
+
+test("lujvo Enter keeps the error and entered choice when the lookup fails", async ({
+  page,
+}) => {
+  await downloadPackage(page);
+  await startLujvo(page);
+  await page.route("**/package-search-worker.ts*", (route) => route.abort());
+  await page.getByLabel("Add a part").fill("cukta");
+  await page.getByLabel("Add a part").press("Enter");
+  const matching = page.getByRole("list", { name: "Matching words" });
+  await expect(matching).toContainText("could not start");
+  await expect(
+    matching.getByRole("button", { name: "Add cukta as entered" }),
+  ).toBeVisible();
+  await expect(page.getByRole("list", { name: "Components" })).toContainText(
+    "No parts yet",
+  );
+});
+
+test("an edit that keeps the consent key sends nothing new", async ({
+  page,
+}) => {
+  const sent: string[] = [];
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname === "/api/v1/search" &&
+      request.method() === "POST"
+    )
+      sent.push((request.postDataJSON() as { q: string }).q);
+  });
+  await page.goto("/new/meaning");
+  await page
+    .getByLabel("Meaning", { exact: true })
+    .fill("book private committee");
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
+    .click();
+  await expect(page.locator("ol.similar")).toContainText("cukta");
+  expect([...sent].sort()).toEqual(["book", "committee", "private"]);
+  await page
+    .getByLabel("Meaning", { exact: true })
+    .fill("book private committee.");
+  await page.waitForTimeout(800);
+  expect(sent).toHaveLength(3);
+});
+
+test("nearby remote search pins one snapshot for the whole ranking", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  const ids = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    return {
+      cukta: core.wordId({ language: "jbo", spelling: "cukta" }),
+      cipni: core.wordId({ language: "jbo", spelling: "cipni" }),
+      vlacku: core.wordId({ language: "jbo", spelling: "vlacku" }),
+    };
+  }, corePath);
+  const snapshot = "sha256:" + "1".repeat(64);
+  const view = "jve1:" + "a".repeat(64);
+  const hit = (spelling: string, wordId: string, text: string) => ({
+    word: { language: "jbo", spelling },
+    word_id: wordId,
+    match: "token",
+    definitions: ["jve1:" + "2".repeat(64)],
+    preview: {
+      event: "jve1:" + "2".repeat(64),
+      word_kind: "gismu",
+      plain_text: text,
+      status: "active",
+    },
+  });
+  await page.route("**/api/v1/search", async (route) => {
+    const body = route.request().postDataJSON() as {
+      q: string;
+      snapshot?: string;
+    };
+    const hits =
+      body.q === "book"
+        ? [hit("cukta", ids.cukta, "book")]
+        : body.snapshot === snapshot
+          ? [hit("cipni", ids.cipni, "bird")]
+          : [hit("vlacku", ids.vlacku, "wrong snapshot")];
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ snapshot, view, hits, next: null }),
+    });
+  });
+  await page.getByLabel("Meaning", { exact: true }).fill("book bird");
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
+    .click();
+  await expect(page.locator("ol.similar")).toContainText("cipni");
+  await expect(page.locator("ol.similar")).not.toContainText("vlacku");
+});
+
+test("the Settings link in the nearby note keeps focus across the debounce", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.getByLabel("Meaning", { exact: true }).fill("book private");
+  const settings = page
+    .locator("p.meta")
+    .getByRole("link", { name: "Settings" });
+  await expect(settings).toBeVisible();
+  await page
+    .getByLabel("Meaning", { exact: true })
+    .fill("book private committee");
+  await settings.focus();
+  await page.waitForTimeout(700);
+  await expect(settings).toBeFocused();
+});
+
+test("the nearby panel shows a pending message until the search finishes", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/v1/search", async (route) => {
+    await gate;
+    await route.continue();
+  });
+  await page.goto("/new/meaning");
+  await page
+    .getByLabel("Meaning", { exact: true })
+    .fill("book private committee");
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
+    .click();
+  await expect(page.locator("main")).toContainText(
+    "Searching this server for close definitions.",
+  );
+  await expect(page.locator("main")).not.toContainText(
+    "No close definitions found. A new word is fine.",
+  );
+  release();
+  await expect(page.locator("ol.similar")).toContainText("cukta");
+});
+
+test("typed-word consent describes the word-ID request and local filter", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.getByLabel("Language", { exact: true }).selectOption("other");
+  await page.getByLabel("Other language tag", { exact: true }).fill("fr");
+  await page.getByLabel("Lojban word", { exact: true }).fill("cukta");
+  await page
+    .getByRole("region", { name: "Typed word" })
+    .getByRole("button", { name: "Check this word on the server" })
+    .click();
+  const consent = page.getByRole("dialog", { name: "Search this server" });
+  await expect(consent).toContainText("requests this word's ID");
+  await expect(consent).toContainText(
+    'filters the returned definitions to definition language "fr"',
+  );
+  await expect(consent).not.toContainText("sends this word and language");
+  await consent.getByRole("button", { name: "Not now" }).click();
+});
+
+test("a late assistance response keeps the focused search button after cancel", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/v1/capabilities", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as Record<string, any>;
+    await gate;
+    body.features = { ...(body.features ?? {}), assistance: true };
+    body.assistance_profiles = [
+      {
+        id: "p1",
+        label: "P",
+        provider: "Prov",
+        model: "M",
+        operations: ["type"],
+        disclosure: "D",
+      },
+    ];
+    await route.fulfill({ response, body: JSON.stringify(body) });
+  });
+  await page.goto("/new/meaning");
+  await page.getByLabel("Meaning", { exact: true }).fill("book bird");
+  const invoker = page.getByRole("button", {
+    name: "search this server",
+    exact: true,
+  });
+  await invoker.click();
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Not now" })
+    .click();
+  await expect(invoker).toBeFocused();
+  release();
+  await expect(page.getByText("by meaning: not configured")).toBeVisible();
+  await expect(invoker).toBeFocused();
+});
+
 test("lujvo builder: Enter adds the exact package match", async ({ page }) => {
   await downloadPackage(page);
   await startLujvo(page);
