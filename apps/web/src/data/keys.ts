@@ -7,6 +7,7 @@ import {
 import type { KeyBackup } from "./store.ts";
 const alg = "PBES2-HS256+A128KW";
 const unlockMessage = "This file did not unlock with that passphrase.";
+const storedUnlockMessage = "That passphrase did not unlock the key.";
 let decrypting = false;
 export function parseBackup(raw: string): KeyBackup {
   if (utf8(raw).byteLength > 16384)
@@ -58,6 +59,7 @@ export function parseBackup(raw: string): KeyBackup {
 }
 async function keyFromPkcs8(
   pkcs8: Uint8Array,
+  message: string = unlockMessage,
 ): Promise<{ key: CryptoKey; identity: string }> {
   const key = await crypto.subtle.importKey(
     "pkcs8",
@@ -72,9 +74,9 @@ async function keyFromPkcs8(
       canonical.length !== pkcs8.length ||
       canonical.some((n, i) => n !== pkcs8[i])
     )
-      throw new Error(unlockMessage);
+      throw new Error(message);
     const jwk = await crypto.subtle.exportKey("jwk", key);
-    if (jwk.crv !== "Ed25519" || !jwk.d) throw new Error(unlockMessage);
+    if (jwk.crv !== "Ed25519" || !jwk.d) throw new Error(message);
     const seed = base64url.decode(jwk.d);
     try {
       const identity = identityFromSeed(seed);
@@ -125,9 +127,13 @@ export async function createKey(
 export async function unlockKey(
   backup: KeyBackup,
   passphrase: string,
+  stored = false,
 ): Promise<CryptoKey> {
+  // Concurrency refusals and container validation errors keep their own
+  // messages. Only decryption, key parse and identity failures map below.
   if (decrypting) throw new Error("Another backup is still opening.");
   parseBackup(JSON.stringify(backup));
+  const message = stored ? storedUnlockMessage : unlockMessage;
   decrypting = true;
   let plaintext: Uint8Array | undefined;
   try {
@@ -136,11 +142,11 @@ export async function unlockKey(
       contentEncryptionAlgorithms: ["A256GCM"],
       maxPBES2Count: 600000,
     }));
-    const { key, identity } = await keyFromPkcs8(plaintext);
-    if (identity !== backup.identity) throw new Error(unlockMessage);
+    const { key, identity } = await keyFromPkcs8(plaintext, message);
+    if (identity !== backup.identity) throw new Error(message);
     return key;
   } catch {
-    throw new Error(unlockMessage);
+    throw new Error(message);
   } finally {
     plaintext?.fill(0);
     decrypting = false;

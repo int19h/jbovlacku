@@ -29,6 +29,43 @@ import {
   forgetProfile,
 } from "../components/attribution.ts";
 
+/**
+ * Tracks focus from a form submit until its key work settles. Focus may be
+ * moved only when it is still on the element that was focused at submit, or
+ * on the body with no pointer or key press since then (the submitted control
+ * was disabled or replaced). Any later choice by the reader wins.
+ */
+function trackSubmitFocus(): {
+  shouldRestore: () => boolean;
+  dispose: () => void;
+} {
+  const element = document.activeElement;
+  let interacted = false;
+  let removed = false;
+  const mark = () => {
+    interacted = true;
+  };
+  window.addEventListener("pointerdown", mark, true);
+  window.addEventListener("keydown", mark, true);
+  const dispose = () => {
+    if (removed) return;
+    removed = true;
+    window.removeEventListener("pointerdown", mark, true);
+    window.removeEventListener("keydown", mark, true);
+  };
+  return {
+    dispose,
+    shouldRestore() {
+      dispose();
+      const active = document.activeElement;
+      return (
+        (active === element && element !== document.body) ||
+        (active === document.body && !interacted)
+      );
+    },
+  };
+}
+
 export async function identityPage(
   route: Route,
   context: RenderContext,
@@ -238,7 +275,21 @@ export async function identityPage(
       ),
     );
     main.append(banner);
-    const testForm = backupTestForm(app, rerender);
+    const testForm = backupTestForm(app, (restoreFocus) => {
+      // A passing test replaces the banner with the passed note and
+      // removes the test form. The rest of the page is not replaced.
+      banner.replaceWith(
+        p(
+          "Your backup test passed in this browser. This does not prove that you still keep a durable copy.",
+          "meta",
+        ),
+      );
+      testForm.remove();
+      if (restoreFocus) {
+        heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+      }
+    });
     testForm.hidden = true;
     main.append(testForm);
   } else
@@ -260,6 +311,7 @@ export async function identityPage(
         { class: "t" },
         el("span", {
           class: "lock-state",
+          tabindex: "-1",
           text: session.unlocked ? "Unlocked" : "Locked",
         }),
         el("small", {
@@ -297,10 +349,18 @@ export async function identityPage(
         class: "btn",
         text: "Unlock",
       });
-      form.append(pass.wrapper, submit);
+      const unlockError = el("p", {
+        class: "notice",
+        role: "alert",
+        style: "flex-basis:100%",
+      });
+      unlockError.hidden = true;
+      form.append(pass.wrapper, submit, unlockError);
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
+        const focus = trackSubmitFocus();
         submit.disabled = true;
+        unlockError.hidden = true;
         try {
           await session.unlock(pass.input.value);
           pass.input.value = "";
@@ -312,9 +372,20 @@ export async function identityPage(
               app.announce(describe(error));
             }
           }
+          if (focus.shouldRestore()) {
+            // The status text, not the Lock button: a repeated Enter or
+            // Space must not activate anything here.
+            const state = lockRow.querySelector(".lock-state");
+            if (state instanceof HTMLElement)
+              state.focus({ preventScroll: true });
+          }
         } catch (error) {
-          app.announce(describe(error));
+          unlockError.textContent = describe(error);
+          unlockError.hidden = false;
+          app.announce(unlockError.textContent);
           submit.disabled = false;
+          if (focus.shouldRestore())
+            pass.input.focus({ preventScroll: true });
         }
       });
       lockRow.append(form);
@@ -478,13 +549,7 @@ export async function identityPage(
 }
 function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
   const { session } = app;
-  main.append(
-    el("h1", { class: "page", text: "Your key" }),
-    p(
-      "A key is one Ed25519 pair that this browser creates. The private key signs your publications and judgments. It never leaves this browser unencrypted.",
-      "small",
-    ),
-  );
+  main.append(el("h1", { class: "page", text: "Your key" }));
   if (session.pending)
     main.append(
       p(
@@ -493,9 +558,15 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
       ),
     );
   main.append(
-    p(
-      "Lost your key? Import its backup below, or create a new identity. Nothing can recover a key without its backup, and no successor exists unless the old key signed a handover. Contacts can trust the new identity. That does not rewrite old signatures or hide the loss.",
-      "small",
+    el(
+      "div",
+      { class: "stack small", style: "margin:8px 0 16px" },
+      p(
+        "A key is one Ed25519 pair that this browser creates. The private key signs your publications and judgments. It never leaves this browser unencrypted.",
+      ),
+      p(
+        "Lost your key? Import its backup below, or create a new identity. Nothing can recover a key without its backup, and no successor exists unless the old key signed a handover. Contacts can trust the new identity. That does not rewrite old signatures or hide the loss.",
+      ),
     ),
   );
   if (!isSecureContext)
@@ -517,7 +588,7 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
     type: "password",
     autocomplete: "new-password",
     required: true,
-    hint: "The passphrase encrypts the backup. Nobody can reset it.",
+    hint: "At least 12 characters. The passphrase encrypts the backup. Nobody can reset it.",
   });
   const repeat = field("Repeat passphrase", {
     type: "password",
@@ -541,9 +612,12 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
     text: "Create a key",
   });
   submit.disabled = !isSecureContext;
+  const createError = el("p", { class: "notice", role: "alert" });
+  createError.hidden = true;
   form.append(
     pass.wrapper,
     repeat.wrapper,
+    createError,
     el("div", { class: "actions" }, submit, reveal),
   );
   form.append(
@@ -559,11 +633,23 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
   );
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (pass.input.value !== repeat.input.value) {
-      app.announce("The passphrases do not match.");
+    createError.hidden = true;
+    if (Array.from(pass.input.value).length < 12) {
+      createError.textContent = "Use at least 12 characters.";
+      createError.hidden = false;
+      app.announce(createError.textContent);
+      pass.input.focus();
       return;
     }
+    if (pass.input.value !== repeat.input.value) {
+      createError.textContent = "The passphrases do not match.";
+      createError.hidden = false;
+      app.announce(createError.textContent);
+      return;
+    }
+    const focus = trackSubmitFocus();
     submit.disabled = true;
+    const identityBefore = session.identity;
     try {
       const created = await session.create(pass.input.value);
       pass.input.value = repeat.input.value = "";
@@ -581,11 +667,18 @@ function renderCreate(main: HTMLElement, app: App, rerender: () => void) {
           app.announce(describe(error));
         }
       }
+      focus.dispose();
       rerender();
     } catch (error) {
-      app.announce(describe(error));
+      createError.textContent = describe(error);
+      createError.hidden = false;
+      app.announce(createError.textContent);
       submit.disabled = false;
-      if (session.backup) rerender();
+      if (session.identity !== identityBefore) {
+        focus.dispose();
+        rerender();
+      } else if (focus.shouldRestore())
+        pass.input.focus({ preventScroll: true });
     }
   });
   main.append(form);
@@ -633,6 +726,8 @@ function importBackupForm(
     "Reveal passphrase",
     () => {
       pass.input.type = pass.input.type === "password" ? "text" : "password";
+      reveal.textContent =
+        pass.input.type === "password" ? "Reveal passphrase" : "Hide passphrase";
     },
     { class: "btn btn-quiet" },
   );
@@ -641,18 +736,26 @@ function importBackupForm(
     class: "btn",
     text: "Open backup locally",
   });
+  const importError = el("p", { class: "notice", role: "alert" });
+  importError.hidden = true;
   form.append(
     file.wrapper,
     pass.wrapper,
+    importError,
     el("div", { class: "actions" }, submit, reveal),
   );
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    importError.hidden = true;
+    const identityBefore = app.session.identity;
     const selected = file.input.files?.[0];
     if (!selected) {
-      app.announce("Select a backup file.");
+      importError.textContent = "Select a backup file.";
+      importError.hidden = false;
+      app.announce(importError.textContent);
       return;
     }
+    const focus = trackSubmitFocus();
     submit.disabled = true;
     try {
       await app.session.importBackup(selected, pass.input.value);
@@ -665,17 +768,29 @@ function importBackupForm(
           app.announce(describe(error));
         }
       }
+      focus.dispose();
       rerender();
     } catch (error) {
-      app.announce(describe(error));
+      importError.textContent = describe(error);
+      importError.hidden = false;
+      app.announce(importError.textContent);
       submit.disabled = false;
-      if (app.session.backup) rerender();
+      // A rerender is only for a changed selected identity. Otherwise the
+      // form, its alert and focus stay where the user left them.
+      if (app.session.identity !== identityBefore) {
+        focus.dispose();
+        rerender();
+      } else if (focus.shouldRestore())
+        pass.input.focus({ preventScroll: true });
     }
   });
   void mode;
   return form;
 }
-function backupTestForm(app: App, rerender: () => void): HTMLFormElement {
+function backupTestForm(
+  app: App,
+  succeed: (restoreFocus: boolean) => void,
+): HTMLFormElement {
   const form = el("form", {
     class: "card",
     style: "margin-top:12px",
@@ -714,27 +829,38 @@ function backupTestForm(app: App, rerender: () => void): HTMLFormElement {
     },
     { class: "btn btn-quiet" },
   );
+  const testError = el("p", { class: "notice", role: "alert" });
+  testError.hidden = true;
   form.append(
     file.wrapper,
     pass.wrapper,
+    testError,
     el("div", { class: "actions" }, submit, skip),
   );
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    testError.hidden = true;
     const selected = file.input.files?.[0];
     if (!selected) {
-      app.announce("Select a backup file.");
+      testError.textContent = "Select a backup file.";
+      testError.hidden = false;
+      app.announce(testError.textContent);
       return;
     }
+    const focus = trackSubmitFocus();
     submit.disabled = true;
     try {
       await app.session.testBackup(selected, pass.input.value);
       pass.input.value = "";
       app.announce("The backup unlocked and matches this identity.");
-      rerender();
+      succeed(focus.shouldRestore());
     } catch (error) {
-      app.announce(describe(error));
+      testError.textContent = describe(error);
+      testError.hidden = false;
+      app.announce(testError.textContent);
       submit.disabled = false;
+      if (focus.shouldRestore())
+        pass.input.focus({ preventScroll: true });
     }
   });
   return form;
