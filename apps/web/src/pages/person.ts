@@ -28,10 +28,10 @@ import {
   identityId,
   type ProfileBody,
   type IdentityResponse,
+  type TrustScope,
 } from "../model/types.ts";
-import { trustPanel } from "../components/trustpanel.ts";
+import { describeScope, trustPanel } from "../components/trustpanel.ts";
 import { loadSiteView } from "./trust.ts";
-import { scopeKey } from "../data/history.ts";
 
 export async function personPage(
   route: Route,
@@ -341,45 +341,53 @@ export async function personPage(
         ),
       );
   }
-  const overlay = await app.store.overlay().catch(() => null);
-  const registers = await app.own.registers();
-  if (!context.live()) return;
-  const own = registers
-    ? [...registers.trust.entries()].filter(
-        ([key, state]) =>
-          key.startsWith(`${identity}|`) &&
-          state.known &&
-          !state.conflicted &&
-          state.value &&
-          state.value !== "clear",
-      )
-    : [];
-  const privateRules = (overlay?.trust ?? []).filter(
-    (r) => r.subject === identity && r.value !== "clear",
-  );
-  const blocks = (overlay?.blocked ?? []).filter(
-    (b) => b.identity === identity,
-  );
-  if (own.length || privateRules.length || blocks.length) {
+  // Your choices about this identity. A save in the trust panel below
+  // renders the line again, so it lists every current choice.
+  const choices = el("div");
+  const showChoices = async () => {
+    const overlay = await app.store.overlay().catch(() => null);
+    const registers = await app.own.registers();
+    if (!context.live()) return;
+    const own = registers
+      ? [...registers.trust.entries()].filter(
+          ([key, state]) =>
+            key.startsWith(`${identity}|`) &&
+            state.known &&
+            !state.conflicted &&
+            state.value &&
+            state.value !== "clear",
+        )
+      : [];
+    const privateRules = (overlay?.trust ?? []).filter(
+      (r) => r.subject === identity && r.value !== "clear",
+    );
+    const blocks = (overlay?.blocked ?? []).filter(
+      (b) => b.identity === identity,
+    );
+    choices.replaceChildren();
+    if (!own.length && !privateRules.length && !blocks.length) return;
     const status = el("p", { class: "small" });
     const parts: string[] = [];
     for (const [key, state] of own)
       if (state.known && !state.conflicted)
         parts.push(
-          `${state.value === "heed" ? "Trusted" : "Ignored"} publicly (${describeKey(key)})`,
+          `${state.value === "heed" ? "Trusted" : "Ignored"} publicly for ${describeKey(key)}`,
         );
     for (const rule of privateRules)
       parts.push(
-        `${rule.value === "heed" ? "Trusted" : "Ignored"} privately (${scopeKey(rule.scope)})`,
+        `${rule.value === "heed" ? "Trusted" : "Ignored"} privately for ${describeScope(rule.scope)}`,
       );
     for (const block of blocks)
-      parts.push(`Ignored privately (${scopeKey(block.scope)})`);
+      parts.push(`Ignored privately for ${describeScope(block.scope)}`);
     status.append(
       text(`Your choices: ${parts.join("; ")}. `),
       link("Manage on the Trust page", routes.trust, { class: "touch-link" }),
     );
-    main.append(status);
-  }
+    choices.append(status);
+  };
+  await showChoices();
+  if (!context.live()) return;
+  main.append(choices);
   if (!isSelf) {
     const actions = el("div", { class: "actions", style: "margin-top:20px" });
     const slot = el("div");
@@ -387,11 +395,12 @@ export async function personPage(
       slot.replaceChildren(
         trustPanel(app, {
           subject: identity,
-          name: null,
+          name: name ?? shortIdentity(identity),
           mode,
           onDone: () => {
             slot.replaceChildren();
             trustButton.focus();
+            void showChoices();
           },
         }),
       );
@@ -775,14 +784,11 @@ async function profileEditor(
 }
 function describeKey(key: string) {
   const [, kind, word, language] = key.split("|");
-  if (kind === "*" && word === "*" && language === "*") return "all judgments";
-  return [
-    kind !== "*" ? kind : null,
-    word !== "*" ? `word ${word.slice(0, 13)}…` : null,
-    language !== "*" ? language : null,
-  ]
-    .filter(Boolean)
-    .join(", ");
+  return describeScope({
+    kind: kind as TrustScope["kind"],
+    word,
+    language,
+  });
 }
 async function reportDialog(app: App, subject: string, opener: HTMLElement) {
   const { richField } = await import("../components/rich-field.ts");
@@ -806,6 +812,12 @@ async function reportDialog(app: App, subject: string, opener: HTMLElement) {
   for (const [value, label] of categories)
     category.append(el("option", { value, text: label }));
   const reason = richField("Explanation", { value: [], local: false, rows: 4 });
+  const reasonError = el("p", {
+    class: "notice",
+    role: "alert",
+    text: "Write an explanation before the preview. A report needs one.",
+  });
+  reasonError.hidden = true;
   const submit = el("button", {
     type: "submit",
     class: "btn btn-primary",
@@ -831,12 +843,24 @@ async function reportDialog(app: App, subject: string, opener: HTMLElement) {
       category,
     ),
     reason.wrapper,
+    reasonError,
     el("div", { class: "actions" }, submit, cancel),
   );
+  reason.input.addEventListener("input", () => {
+    if (reasonError.hidden || !richHasContent(reason.input.value)) return;
+    reasonError.hidden = true;
+    reason.input.removeAttribute("aria-invalid");
+  });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const explanation = reason.input.value;
-    if (!richHasContent(explanation)) return;
+    if (!richHasContent(explanation)) {
+      // The preview needs an explanation. Say so beside the field.
+      reasonError.hidden = false;
+      reason.input.setAttribute("aria-invalid", "true");
+      reason.input.focus();
+      return;
+    }
     const preview = el(
       "div",
       { class: "stack small", style: "margin-top:12px" },

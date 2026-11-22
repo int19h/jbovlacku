@@ -114,7 +114,7 @@ Source metadata stays in Search source and snapshot. The first upload notice sta
 One screen-reader count region announces lexical groups in displayed order. Local counts include the full total and the shown count when rows remain hidden.
 A settled meaning update includes those lexical counts before its meaning count. Smaller group headings show their counts on the same line.
 Each expansion preserves keyboard focus. Search cards keep votes beside attribution and omit reviewer disclosures.
-Word pages fold snapshot and view IDs and the local score comparison into Source and scores. Reading language lists show names and omit the test tag unless it is active.
+Word pages fold snapshot and view IDs into Source and scores. In the site view the disclosure also holds the local score comparison. Reading language lists show names and omit the test tag unless it is active.
 Downloaded search packages permit local search without a request for each query. Version 2 packages carry authors, notes, and rafsi for result rows.
 A package has no per-language totals: any part, entry, or byte count downloads, and each part keeps its 4 MiB and 2,000-entry bound. An optional package download quota (`packageQuota`: parts, entries, bytes) can cap one download. It is off by default.
 

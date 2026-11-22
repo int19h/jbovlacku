@@ -388,6 +388,13 @@ export function scoreDetails(
             ),
           );
           const tbody = el("tbody");
+          // The reader's own key is named "you", not by its fingerprint.
+          const self = app.session.identity;
+          const person = (identity: string, start = false) =>
+            identityLink(
+              identity,
+              identity === self ? (start ? "You" : "you") : undefined,
+            );
           for (const reviewer of reviewers) {
             const route: string[] = [];
             if (reviewer.root)
@@ -409,7 +416,7 @@ export function scoreDetails(
               );
               reviewer.incoming.forEach((from, i) => {
                 if (i) routeCell.append(text(", "));
-                routeCell.append(identityLink(from));
+                routeCell.append(person(from));
               });
               if (!reviewer.incoming_complete)
                 routeCell.append(
@@ -434,9 +441,15 @@ export function scoreDetails(
                 el(
                   "td",
                   {},
-                  identityLink(reviewer.identity),
+                  person(reviewer.identity, true),
                   text(
-                    reviewer.verdict === "bless" ? " endorses" : " opposes",
+                    reviewer.identity === self
+                      ? reviewer.verdict === "bless"
+                        ? " endorse"
+                        : " oppose"
+                      : reviewer.verdict === "bless"
+                        ? " endorses"
+                        : " opposes",
                     "meta",
                   ),
                 ),

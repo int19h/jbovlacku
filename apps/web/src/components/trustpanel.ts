@@ -9,7 +9,7 @@ import {
   append,
   link,
 } from "../lib/dom.ts";
-import { fingerprintText } from "../lib/format.ts";
+import { fingerprintText, shortIdentity } from "../lib/format.ts";
 import type { App } from "../app/context.ts";
 import { loadSiteView } from "../data/view.ts";
 import { describeProfile } from "../model/profiles.ts";
@@ -161,14 +161,15 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
     "aria-labelledby": "tp-h",
     style: "margin-top:12px",
   });
-  const label = options.name ?? subject.slice(8, 16);
+  // The title names the person as the page heading does.
+  const label = options.name ?? shortIdentity(subject);
   panel.append(
-    el("h2", {
-      id: "tp-h",
-      class: "section",
-      style: "margin-top:0",
-      text: `${mode === "trust" ? "Trust" : "Ignore"} ${label}`,
-    }),
+    el(
+      "h2",
+      { id: "tp-h", class: "section", style: "margin-top:0" },
+      text(`${mode === "trust" ? "Trust" : "Ignore"} `),
+      el("bdi", { text: label }),
+    ),
     p(
       mode === "trust"
         ? "Their endorsements count for you, and so do the people they trust."

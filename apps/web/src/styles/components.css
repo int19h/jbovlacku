@@ -258,10 +258,15 @@ main.surface-publish {
   padding: 10px 14px;
   font-size: 14px;
   z-index: 10;
+  /* The message never blocks a control under it. */
+  pointer-events: none;
 }
 .status:empty {
   opacity: 0;
-  pointer-events: none;
+}
+/* While a message shows, the page can scroll its last controls above it. */
+.status:not(:empty) + .footer {
+  padding-bottom: 80px;
 }
 .notice {
   padding: 12px 14px;

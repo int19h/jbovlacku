@@ -225,7 +225,7 @@ Reading language lists use readable names, including Lojban, Klingon, Tok Pisin,
 
 Each definition block shows 21px prose, glosses, author, date, permanent event link, and judgment controls.
 “N reviewers” opens reviewer identities, units, and influence-route details under the actual selected view. A zero count uses “Score details” instead.
-A closed Source and scores disclosure follows the word content. It contains snapshot and view IDs and the local score comparison.
+A closed Source and scores disclosure follows the word content. It contains snapshot and view IDs and, in the site view, the local score comparison.
 Personal calculation controls and score-availability warnings remain visible. Detailed identifiers stay in Source and scores.
 When several routes contribute, summarize them and expose the complete details. Do not claim one route as the whole explanation.
 The explanation reads “The score adds the weight of each reviewer in your trust view.”

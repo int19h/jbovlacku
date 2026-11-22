@@ -67,6 +67,7 @@ export async function trustPage(
         radio.checked = radio.value === saved;
       for (const l of seg.querySelectorAll("label"))
         l.classList.toggle("on", l.querySelector("input")!.checked);
+      showMode();
     });
     seg.append(wrapper);
   }
@@ -78,21 +79,47 @@ export async function trustPage(
       seg,
     ),
   );
+  // The calculation panel belongs to the personal view only. The site view
+  // uses the server's scores and needs no local calculation.
+  const modeSlot = el("div");
+  const showMode = () => {
+    modeSlot.replaceChildren(
+      app.session.preferences.viewMode === "personal"
+        ? calculationPanel(app, {
+            mode: "personal",
+            context,
+            label: "Local calculation",
+            idleText:
+              "No local calculation yet. It starts when you open a word page, or now with Recompute from records.",
+            onRefresh: rerender,
+          })
+        : p(
+            "The site view shows this server's scores. It needs no calculation in this browser.",
+            "small",
+          ),
+    );
+  };
+  showMode();
   main.append(
-    p(
-      "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 only if its continuity group has no allocation or private root change. A zero allocation or removal also prevents that addition. The personal view applies your own effective public shuns as local blocks, as the format specifies: the core resolves their scopes and identity continuity in the calculation's snapshot, so a narrower public heed or a public clear can lift such a block. A private Trust rule does not cancel that block. A private Ignore stays until you remove it, also after a public clear. When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
-      "meta",
-    ),
-    p(
-      "A private Ignore or a personal block removes that person and every route through them in your view only. A public shun is a signed declaration. Its effect on routes follows the calculation profile of the signed view, shown below, and it does not remove every influence of that person in every reader's view.",
-      "meta",
-    ),
-    calculationPanel(app, {
-      mode: "personal",
-      context,
-      label: "Local calculation",
-      onRefresh: rerender,
-    }),
+    modeSlot,
+    disclosure("How the two views work", () => [
+      p(
+        "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 only if its continuity group has no allocation or private root change. A zero allocation or removal also prevents that addition.",
+        "small",
+      ),
+      p(
+        "The personal view applies your own effective public shuns as local blocks, as the format specifies: the core resolves their scopes and identity continuity in the calculation's snapshot, so a narrower public heed or a public clear can lift such a block. A private Trust rule does not cancel that block. A private Ignore stays until you remove it, also after a public clear.",
+        "small",
+      ),
+      p(
+        "When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
+        "small",
+      ),
+      p(
+        "A private Ignore or a personal block removes that person and every route through them in your view only. A public shun is a signed declaration. Its effect on routes follows the calculation profile of the signed view, shown below, and it does not remove every influence of that person in every reader's view.",
+        "small",
+      ),
+    ]),
   );
   const overlay = await app.store.overlay().catch(() => null);
   const registers = await app.own.registers();
