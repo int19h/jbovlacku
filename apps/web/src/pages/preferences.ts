@@ -107,9 +107,27 @@ async function preferencesBody(context: RenderContext, app: App) {
   context.signal.addEventListener("abort", () => unsubscribe(), {
     once: true,
   });
-  /** Keeps a select control on the saved value of its key. */
-  const syncSelect = (key: keyof Preferences, input: HTMLSelectElement) =>
-    syncs.push(() => {
+  /**
+   * Adds the sync of one control and runs it at once. The page builds its
+   * controls after requests that can wait, and a change from another tab
+   * can arrive during such a request. The first run gives the control the
+   * current saved value instead of the value that the page read first.
+   */
+  const track = (sync: () => void) => {
+    syncs.push(sync);
+    sync();
+  };
+  /**
+   * Keeps a select control on the saved value of its key. When the control
+   * takes a new saved value, an earlier failed save of it no longer
+   * describes what the control shows, so its note is hidden.
+   */
+  const syncSelect = (
+    key: keyof Preferences,
+    input: HTMLSelectElement,
+    note: HTMLElement,
+  ) =>
+    track(() => {
       if (saves.has(key)) return;
       const value = String(session.preferences[key]);
       if (input.value === value) return;
@@ -121,6 +139,7 @@ async function preferencesBody(context: RenderContext, app: App) {
           }),
         );
       input.value = value;
+      note.hidden = true;
     });
   /** A note in place under one control. It is empty and hidden until used. */
   const controlNote = () => {
@@ -155,9 +174,9 @@ async function preferencesBody(context: RenderContext, app: App) {
   if (manifestError !== null)
     main.append(
       p(
-        // Saved settings and packages work only with browser storage. Without
-        // it, the shell and the package list show the storage warning.
-        `The server's languages and search packages did not load: ${manifestError}${session.storageAvailable ? " Settings and packages saved in this browser still work." : ""} Open Settings again to retry.`,
+        // Only the server list is reported here. Each saved package row
+        // shows the state of that package.
+        `The server's languages and search packages did not load: ${manifestError} Open Settings again to retry.`,
         "notice",
       ),
     );
@@ -169,8 +188,8 @@ async function preferencesBody(context: RenderContext, app: App) {
     value: prefs.definitionLanguage,
     hint: "Definitions shown by default. The interface language is English in this prototype.",
   });
-  syncSelect("definitionLanguage", languageField.input);
   const languageNote = controlNote();
+  syncSelect("definitionLanguage", languageField.input, languageNote);
   languageField.input.addEventListener(
     "change",
     () =>
@@ -194,24 +213,41 @@ async function preferencesBody(context: RenderContext, app: App) {
   try {
     const capabilities = await getCapabilities({ signal: context.signal });
     if (!context.live()) return;
+    // Why the meaning search profiles did not load, or null after a read.
+    let profilesError = null as string | null;
     const meaningAvailable =
       capabilities.features.semantic_search &&
       (
         await embeddingProfiles(null, prefs.definitionLanguage, {
           signal: context.signal,
-        }).catch(() => [])
+        }).catch((error: unknown) => {
+          profilesError = describe(error);
+          return [];
+        })
       ).some((profile) => profile.query_available);
-    if (assistanceProfiles(capabilities).length || meaningAvailable) {
+    if (!context.live()) return;
+    const assistanceShown =
+      assistanceProfiles(capabilities).length || meaningAvailable;
+    if (!assistanceShown && profilesError !== null)
+      // The server offers meaning search, and only its profiles tell
+      // whether assistance applies. A failed request has not said that.
+      main.append(
+        p(
+          `Assistance settings did not load: the meaning search profiles did not load. ${profilesError} Open Settings again to retry.`,
+          "small",
+        ),
+      );
+    else if (assistanceShown) {
       const saved = el("p", {
         id: "assistance-save-status",
         class: "small",
         role: "status",
       });
       let saving = false;
-      let pendingValue = prefs.useAiAssistance !== false;
+      let pendingValue = session.preferences.useAiAssistance !== false;
       const choice = checkbox(
         "Use AI assistance",
-        prefs.useAiAssistance !== false,
+        session.preferences.useAiAssistance !== false,
         async (value) => {
           if (saving) {
             input.checked = pendingValue;
@@ -242,9 +278,13 @@ async function preferencesBody(context: RenderContext, app: App) {
         },
       );
       const input = choice.querySelector("input")!;
-      syncs.push(() => {
-        if (!saving)
-          input.checked = session.preferences.useAiAssistance !== false;
+      track(() => {
+        if (saving) return;
+        const value = session.preferences.useAiAssistance !== false;
+        if (input.checked === value) return;
+        input.checked = value;
+        // An earlier outcome described another value.
+        saved.textContent = "";
       });
       input.setAttribute("aria-describedby", saved.id);
       input.setAttribute("aria-disabled", "false");
@@ -274,11 +314,11 @@ async function preferencesBody(context: RenderContext, app: App) {
   // The remote search disclosure stays in place under the control.
   const modeDisclosure = p("", "small");
   modeDisclosure.hidden = true;
-  syncSelect("searchMode", modeField.input);
   const modeNote = controlNote();
+  syncSelect("searchMode", modeField.input, modeNote);
   modeField.input.addEventListener("change", async () => {
     const mode = modeField.input.value as "local" | "remote";
-    if (mode === "remote" && !prefs.remoteSearchDisclosed) {
+    if (mode === "remote" && !session.preferences.remoteSearchDisclosed) {
       modeDisclosure.textContent = `Remote search sends each query to ${selfPeer.label}. Earlier local queries are not uploaded.`;
       modeDisclosure.hidden = false;
       app.announce(modeDisclosure.textContent);
@@ -312,15 +352,20 @@ async function preferencesBody(context: RenderContext, app: App) {
     packageNotes,
   );
   const noteLines = new Map<string, HTMLElement>();
+  // Whether the line of a language says that its package is saved in this
+  // browser or that it is not. A line with no entry makes no such claim.
+  const noteClaims = new Map<string, "saved" | "absent">();
   /**
    * Shows a line for a language. A quiet line, such as progress or a
    * remove that the list already shows, is not announced. An outcome or an
-   * error is announced too, even after the reader left this page.
+   * error is announced too, even after the reader left this page. A claim
+   * records whether the line says that the package is saved.
    */
   const packageNote = (
     language: string,
     message: string,
     kind: "quiet" | "outcome" | "error",
+    claim?: "saved" | "absent",
   ) => {
     if (kind !== "quiet") app.announce(message);
     if (!context.live()) return;
@@ -332,6 +377,31 @@ async function preferencesBody(context: RenderContext, app: App) {
     }
     line.className = kind === "error" ? "notice" : "small";
     line.textContent = message;
+    if (claim) noteClaims.set(language, claim);
+    else noteClaims.delete(language);
+  };
+  /**
+   * Another tab can save or remove a package. When a shown list reads a
+   * state that a line contradicts, the line takes the state of the list.
+   */
+  const reconcileNotes = (keys: string[]) => {
+    for (const [language, claim] of noteClaims) {
+      const stored = keys.includes(language);
+      if (claim === "saved" && !stored)
+        packageNote(
+          language,
+          `The ${languageName(language)} package is no longer saved in this browser.`,
+          "quiet",
+          "absent",
+        );
+      else if (claim === "absent" && stored)
+        packageNote(
+          language,
+          `The ${languageName(language)} package is saved in this browser.`,
+          "quiet",
+          "saved",
+        );
+    }
   };
   const mebibytes = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MiB`;
   /** The progress line of one running download or refresh. */
@@ -467,7 +537,7 @@ async function preferencesBody(context: RenderContext, app: App) {
     const render = ++renderCount;
     const list = document.createDocumentFragment();
     const checks: (() => void)[] = [];
-    await buildPackages(list, checks);
+    const keys = await buildPackages(list, checks);
     if (render !== renderCount || !context.live())
       return { render, published: false, focusedAtPublish: null };
     const focusedAtPublish = document.activeElement;
@@ -481,6 +551,7 @@ async function preferencesBody(context: RenderContext, app: App) {
     )
       newPicker.value = pickedPackage;
     packages.replaceChildren(list);
+    if (keys) reconcileNotes(keys);
     // A run may have started or ended while the list was built, so every
     // button takes the running marks as they are now.
     syncPackageButtons();
@@ -525,10 +596,11 @@ async function preferencesBody(context: RenderContext, app: App) {
       kinds,
     );
   };
+  /** Builds the list and returns the saved languages that it read. */
   const buildPackages = async (
     list: DocumentFragment,
     checks: (() => void)[],
-  ) => {
+  ): Promise<string[] | null> => {
     if (!session.storageAvailable) {
       list.append(
         p(
@@ -536,7 +608,7 @@ async function preferencesBody(context: RenderContext, app: App) {
           "notice",
         ),
       );
-      return;
+      return null;
     }
     const keys = await app.store.keys("packages");
     for (const key of keys) {
@@ -574,6 +646,7 @@ async function preferencesBody(context: RenderContext, app: App) {
               key,
               `The ${languageName(key)} package is removed from this browser.`,
               "quiet",
+              "absent",
             );
             await renderPackages();
           },
@@ -663,6 +736,7 @@ async function preferencesBody(context: RenderContext, app: App) {
                   ? `The ${languageName(language)} search package is saved in this browser as version 1. ${pkg.downgrade}`
                   : `The ${languageName(language)} search package is saved in this browser.`,
               saved ? "outcome" : "error",
+              saved ? "saved" : undefined,
             );
             // Clear the running mark before the render, so the new
             // buttons for this language render enabled.
@@ -740,6 +814,7 @@ async function preferencesBody(context: RenderContext, app: App) {
                   key,
                   `The ${languageName(key)} package is no longer saved in this browser.`,
                   "outcome",
+                  "absent",
                 );
                 endRun(key, token);
                 const mayFocus = hadFocus && focusIsFree(refresh);
@@ -775,6 +850,7 @@ async function preferencesBody(context: RenderContext, app: App) {
                   ? `The ${languageName(key)} package is refreshed.`
                   : `The ${languageName(key)} package was not saved. It changed in this browser while the refresh ran.`,
                 saved ? "outcome" : "error",
+                saved ? "saved" : undefined,
               );
               endRun(key, token);
               const mayFocus = hadFocus && focusIsFree(refresh);
@@ -809,6 +885,7 @@ async function preferencesBody(context: RenderContext, app: App) {
         refresh.disabled = runningPackages.has(key);
         list.append(refresh);
       }
+    return keys;
   };
   await renderPackages();
   if (!context.live()) return;
@@ -935,8 +1012,8 @@ async function preferencesBody(context: RenderContext, app: App) {
     ],
     value: prefs.theme,
   });
-  syncSelect("theme", theme.input);
   const themeNote = controlNote();
+  syncSelect("theme", theme.input, themeNote);
   theme.input.addEventListener("change", async () => {
     const value = theme.input.value as "system" | "light" | "dark";
     await save(
@@ -960,8 +1037,8 @@ async function preferencesBody(context: RenderContext, app: App) {
     value: prefs.orthography,
     hint: "Display only. Signed spellings and copied text stay Latin unless you choose otherwise.",
   });
-  syncSelect("orthography", orthography.input);
   const orthographyNote = controlNote();
+  syncSelect("orthography", orthography.input, orthographyNote);
   orthography.input.addEventListener(
     "change",
     () =>
@@ -993,9 +1070,12 @@ async function preferencesBody(context: RenderContext, app: App) {
     },
   );
   const judgmentsInput = judgments.querySelector("input")!;
-  syncs.push(() => {
-    if (!saves.has("myJudgmentsFirst"))
-      judgmentsInput.checked = session.preferences.myJudgmentsFirst;
+  track(() => {
+    if (saves.has("myJudgmentsFirst")) return;
+    const value = session.preferences.myJudgmentsFirst;
+    if (judgmentsInput.checked === value) return;
+    judgmentsInput.checked = value;
+    judgmentsNote.hidden = true;
   });
   // The order uses the judgments that your key signed, so it needs a key.
   const judgmentsHint = el("p", {

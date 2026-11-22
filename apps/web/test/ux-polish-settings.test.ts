@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { createIdentity, openWord } from "./helpers.ts";
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
@@ -428,13 +429,197 @@ test("offline Settings without browser storage does not claim that saved data wo
   );
 });
 
-test("offline Settings with browser storage says that saved data still works", async ({
+test("saving the theme keeps a cached word page for Back", async ({ page }) => {
+  await page.goto("/word/cukta");
+  await expect(page.locator(".word-head h1")).toContainText("cukta");
+  await page
+    .getByRole("contentinfo")
+    .getByRole("link", { name: "Settings", exact: true })
+    .click();
+  await page.getByLabel("Theme", { exact: true }).selectOption("dark");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  let wordRequests = 0;
+  await page.route("**/api/v1/words/*", (route) => {
+    wordRequests++;
+    return route.abort();
+  });
+  await page.goBack();
+  // The view did not change, so the cached word response still serves Back.
+  await expect(page.locator(".word-head h1")).toContainText("cukta");
+  expect(wordRequests).toBe(0);
+});
+
+test("Settings shows a theme that another tab saved while the page loaded", async ({
+  page,
+  context,
+}) => {
+  const other = await context.newPage();
+  await settings(other);
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let started = () => {};
+  const seen = new Promise<void>((resolve) => (started = resolve));
+  await page.route("**/api/v1/manifest*", async (route) => {
+    started();
+    await held;
+    await route.continue().catch(() => {});
+  });
+  await page.goto("/preferences");
+  await seen;
+  await other.getByLabel("Theme", { exact: true }).selectOption("dark");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  release();
+  await page.getByLabel("Theme", { exact: true }).waitFor();
+  await expect(page.getByText("Loading…", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Theme", { exact: true })).toHaveValue("dark");
+  await other.close();
+});
+
+test("the word page does not deny a key that another tab saved", async ({
+  page,
+  context,
+}) => {
+  await settings(page);
+  await page
+    .getByRole("checkbox", { name: "Show my judgments first on word pages" })
+    .check();
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().preferences()).myJudgmentsFirst;
+      }),
+    )
+    .toBe(true);
+  const other = await context.newPage();
+  await createIdentity(other);
+  await openWord(page, "cukta");
+  const main = page.locator("main");
+  await expect(main).toContainText(
+    "This tab has not loaded the key that is now saved in this browser. Reload the page to put your judgments first.",
+  );
+  await expect(main).not.toContainText("You have no key in this browser");
+  await other.close();
+});
+
+test("offline Settings leaves the state of a saved package to its row", async ({
   page,
 }) => {
-  await page.route("**/api/v1/manifest*", (route) => route.abort());
-  await page.goto("/preferences");
+  await page.goto("/about");
+  await page.locator("main h1").waitFor();
+  // A saved package with one malformed entry.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "eo", {
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: [{}],
+    });
+  });
+  await page.route("**/api/v1/**", (route) => route.abort());
+  await page
+    .getByRole("contentinfo")
+    .getByRole("link", { name: "Settings", exact: true })
+    .click();
   await page.getByLabel("Theme", { exact: true }).waitFor();
-  await expect(page.locator("main")).toContainText(
-    "The server's languages and search packages did not load: No connection to the server. Settings and packages saved in this browser still work. Open Settings again to retry.",
+  const main = page.locator("main");
+  await expect(main).toContainText(
+    "The server's languages and search packages did not load: No connection to the server. Open Settings again to retry.",
   );
+  await expect(main).toContainText("The search package is invalid.");
+  await expect(main).not.toContainText("still work");
+});
+
+test("a failed request for meaning search profiles does not say that assistance is unavailable", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/capabilities*", (route) =>
+    route.fulfill({
+      json: {
+        server_id: "local-test",
+        features: { semantic_search: true, assistance: false },
+        assistance_profiles: [],
+      },
+    }),
+  );
+  await page.route("**/api/v1/embedding-profiles*", (route) => route.abort());
+  await settings(page);
+  const line = page
+    .getByRole("heading", { name: "Assistance", exact: true })
+    .locator("xpath=following-sibling::*[1]");
+  await expect(line).toHaveText(
+    "Assistance settings did not load: the meaning search profiles did not load. No connection to the server. Open Settings again to retry.",
+  );
+  await expect(page.locator("main")).not.toContainText(
+    "Not available on this server.",
+  );
+});
+
+test("a package note follows the list after another tab removed the package", async ({
+  page,
+  context,
+}) => {
+  await page.goto("/about");
+  await page.locator("main h1").waitFor();
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "eo", {
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: [],
+    });
+  });
+  await settings(page);
+  const picker = page.getByLabel("Download a package", { exact: true });
+  await picker.selectOption("en");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  const note = page.locator("[data-package-note=en]");
+  await expect(note).toHaveText(
+    "The English search package is saved in this browser.",
+  );
+  const other = await context.newPage();
+  await settings(other);
+  await other
+    .locator("[data-package-control=remove][data-package-language=en]")
+    .click();
+  await expect(
+    other.locator("[data-package-control=remove][data-package-language=en]"),
+  ).toHaveCount(0);
+  // This removal rebuilds the list from storage, which no longer has English.
+  await page
+    .locator("[data-package-control=remove][data-package-language=eo]")
+    .click();
+  await expect(picker.locator("option[value=en]")).toHaveCount(1);
+  await expect(note).toHaveText(
+    "The English package is no longer saved in this browser.",
+  );
+  await other.close();
+});
+
+test("a new saved value from another tab clears an earlier failed save", async ({
+  page,
+  context,
+}) => {
+  await settings(page);
+  const other = await context.newPage();
+  await settings(other);
+  // The next single write of this tab fails.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    LocalStore.prototype.setPreferences = async function () {
+      LocalStore.prototype.setPreferences = original;
+      throw new DOMException("Preference transaction aborted.", "AbortError");
+    };
+  });
+  const theme = page.getByLabel("Theme", { exact: true });
+  await theme.selectOption("dark");
+  const note = page
+    .locator(".field-group", { has: theme })
+    .locator("xpath=following-sibling::p[1]");
+  await expect(note).toHaveText("Not saved: Preference transaction aborted.");
+  await expect(theme).toHaveValue("system");
+  await other.getByLabel("Theme", { exact: true }).selectOption("dark");
+  await expect(theme).toHaveValue("dark");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(note).toBeHidden();
+  await other.close();
 });
