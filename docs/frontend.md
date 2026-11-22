@@ -375,8 +375,8 @@ Within a class, use lexical relevance and stable word-ID order. Search ordering 
 The word page uses the format's definition layers and attributed score calculations. Show alternative definitions instead of collapsing them into one word-level score.
 In the personal view, the word page shows its definitions before the local calculation finishes. When the calculation finishes, the page updates the existing definitions in place. It never rebuilds a definition, a judgment control, or a disclosure.
 The page applies the score order by itself only while the reader has not focused, selected, pressed, typed, or scrolled into the definitions since the page was shown. A reorder moves the existing nodes and never removes the focused one from the page.
-After reader input, the order stays, and the page offers “Show in score order”. That button applies the order and moves focus to the first definition heading.
-While a judgment for a target is being signed or delivered, every control for that target keeps Endorse and Oppose disabled.
+After reader input, the order stays, and the page offers “Show in score order”. That button applies the order and moves focus to the first definition, which shows a visible focus ring.
+While a judgment for a target is being signed or delivered, every control that can sign a judgment for that target stays disabled. This includes Endorse and Oppose, and the actions in Score details.
 Typo suggestions and rafsi decomposition are labeled suggestions, not silent spelling corrections.
 
 Each result uses a dense row with three content lines and a thin separator.

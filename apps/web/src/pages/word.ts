@@ -453,25 +453,48 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       signal: context.signal,
     });
   // A press in progress. An update waits for its release, so the layout
-  // under the pointer does not change before the click completes.
+  // under the pointer does not change before the click completes. Only a
+  // primary press can start a click. A press can also end without a
+  // release on the page: a context menu, or a switch to another window or
+  // tab. Each of those ends the press too.
   let pressed = false;
   let released: (() => void)[] = [];
-  window.addEventListener("pointerdown", () => (pressed = true), {
-    capture: true,
-    signal: context.signal,
-  });
-  for (const type of ["pointerup", "pointercancel"])
-    window.addEventListener(
-      type,
-      () => {
-        pressed = false;
-        const waiting = released;
-        released = [];
-        // After the click that this release completes.
-        setTimeout(() => waiting.forEach((resolve) => resolve()), 0);
-      },
-      { capture: true, signal: context.signal },
-    );
+  window.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.button === 0) pressed = true;
+    },
+    { capture: true, signal: context.signal },
+  );
+  const endPress = () => {
+    if (!pressed) return;
+    pressed = false;
+    const waiting = released;
+    released = [];
+    // After the click that this release completes.
+    setTimeout(() => waiting.forEach((resolve) => resolve()), 0);
+  };
+  for (const type of ["pointerup", "pointercancel", "contextmenu"])
+    window.addEventListener(type, endPress, {
+      capture: true,
+      signal: context.signal,
+    });
+  // Only the window's own blur. A blur of an element inside the page is a
+  // focus move, and a press moves focus.
+  window.addEventListener(
+    "blur",
+    (event) => {
+      if (event.target === window) endPress();
+    },
+    { signal: context.signal },
+  );
+  document.addEventListener(
+    "visibilitychange",
+    () => {
+      if (document.hidden) endPress();
+    },
+    { signal: context.signal },
+  );
   const pressFinished = () =>
     pressed
       ? new Promise<void>((resolve) => released.push(resolve))
@@ -1001,12 +1024,17 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
           "Show in score order",
           () => {
             arrange(view);
-            const heading = list.querySelector<HTMLElement>(
-              "article.definition h2",
-            );
-            if (heading) {
-              heading.tabIndex = -1;
-              heading.focus();
+            // The definition itself takes focus, so the focus ring is
+            // visible. Its heading names it.
+            const first = list.querySelector<HTMLElement>("article.definition");
+            if (first) {
+              first.tabIndex = -1;
+              first.addEventListener(
+                "blur",
+                () => first.removeAttribute("tabindex"),
+                { once: true },
+              );
+              first.focus();
             }
             orderSlot.replaceChildren();
           },

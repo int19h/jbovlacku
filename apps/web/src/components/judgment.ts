@@ -667,41 +667,72 @@ async function renderOwnActions(
         ["Clear my judgment", "clear"],
       ]
     : [["Clear my judgment", "clear"]];
+  // These buttons share the page-wide in-flight set with the judgment
+  // controls, so one target never has two judgment actions in flight.
+  const buttons: HTMLButtonElement[] = [];
+  const syncDisabled = () => {
+    for (const node of buttons)
+      node.disabled = !app.session.storageAvailable || busy.has(target.id);
+  };
   for (const [label, value] of choices)
-    actions.append(
+    buttons.push(
       button(
         label,
-        () =>
-          app.session.requireUnlocked(target.describe(value), async () => {
-            if (!(await app.session.firstSignatureDisclosure())) return;
-            try {
-              const results = await app.signer.publish([
-                {
-                  action: { kind: "judgment.set", target: target.id, value },
-                  body: null,
-                },
-              ]);
-              app.own.invalidate();
-              app.announce(
-                deliveryAccepted(results)
-                  ? value === "clear"
-                    ? "Your judgment is cleared. The earlier public record stays in history."
-                    : value === "bless"
-                      ? "Your endorsement is published."
-                      : "Your opposition is published."
-                  : "Your judgment is signed and saved here. Delivery is not finished. See Not delivered.",
-              );
-              options.onChange?.();
-              slot.replaceChildren(
-                await renderOwnActions(app, target, options),
-              );
-            } catch (error) {
-              app.announce(describe(error));
-            }
-          }),
+        () => {
+          if (busy.has(target.id)) return;
+          return app.session.requireUnlocked(
+            target.describe(value),
+            async () => {
+              if (!(await app.session.firstSignatureDisclosure())) return;
+              if (busy.has(target.id)) return;
+              setBusy(target.id, true);
+              let done = false;
+              try {
+                const results = await app.signer.publish([
+                  {
+                    action: { kind: "judgment.set", target: target.id, value },
+                    body: null,
+                  },
+                ]);
+                app.own.invalidate();
+                app.announce(
+                  deliveryAccepted(results)
+                    ? value === "clear"
+                      ? "Your judgment is cleared. The earlier public record stays in history."
+                      : value === "bless"
+                        ? "Your endorsement is published."
+                        : "Your opposition is published."
+                    : "Your judgment is signed and saved here. Delivery is not finished. See Not delivered.",
+                );
+                options.onChange?.();
+                done = true;
+              } catch (error) {
+                app.announce(describe(error));
+              } finally {
+                setBusy(target.id, false);
+              }
+              if (!done) return;
+              try {
+                slot.replaceChildren(
+                  await renderOwnActions(app, target, options),
+                );
+              } catch (error) {
+                app.announce(describe(error));
+              }
+            },
+          );
+        },
         { class: "btn btn-quiet" },
       ),
     );
+  syncDisabled();
+  busyListeners.add(syncDisabled);
+  onDisconnect(
+    actions,
+    () => busyListeners.delete(syncDisabled),
+    options.signal,
+  );
+  actions.append(...buttons);
   slot.append(actions);
   return slot;
 }

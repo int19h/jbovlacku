@@ -1430,9 +1430,7 @@ test("after reader input the order stays, and Show in score order applies it", a
   expect(after).not.toEqual(before);
   expect([...after].sort()).toEqual([...before].sort());
   await expect(offer).toHaveCount(0);
-  await expect(
-    page.locator("article.definition").first().locator("h2"),
-  ).toBeFocused();
+  await expect(page.locator("article.definition").first()).toBeFocused();
 });
 
 test("a comparison whose parent body is missing says so in the lead", async ({
@@ -1537,4 +1535,151 @@ test("rotating to a phone brings the selected language into the tab strip", asyn
       }),
     )
     .toBe(true);
+});
+
+/**
+ * A word page whose first definition carries the reader's delivered
+ * endorsement. Every later judgment.set that reaches delivery is counted
+ * by record ID and held open until `allowPost` runs.
+ */
+async function endorsedAndHeld(page: Page) {
+  const target = fixture().definitions.cukta1;
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  const entry = block(page, target);
+  const endorse = entry.getByRole("button", { name: "Endorse" });
+  await endorse.click();
+  await acceptFirstSignature(page);
+  await expect(endorse).toHaveAttribute("aria-pressed", "true", {
+    timeout: 20000,
+  });
+  let allowPost!: () => void;
+  const postHeld = new Promise<void>((resolve) => (allowPost = resolve));
+  const signed = new Set<string>();
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const envelope = route.request().postDataJSON().envelope;
+    if (envelope.header.action.kind === "judgment.set") signed.add(envelope.id);
+    await postHeld;
+    await route.abort();
+  });
+  await entry.locator("details.judgment-details > summary").click();
+  const clear = entry.getByRole("button", { name: "Clear my judgment" });
+  await expect(clear).toBeVisible();
+  return { entry, endorse, clear, signed, allowPost };
+}
+
+test("Clear my judgment in Score details uses the in-flight rule, so only one judgment is signed", async ({
+  page,
+}) => {
+  const { entry, endorse, clear, signed, allowPost } =
+    await endorsedAndHeld(page);
+  try {
+    await clear.click();
+    await expect.poll(() => signed.size).toBe(1);
+    // A second press while the first delivery is open signs nothing.
+    await clear.click({ force: true });
+    await endorse.click({ force: true });
+    await page.waitForTimeout(1000);
+    expect(signed.size).toBe(1);
+    // Every control that can sign for this target waits for the delivery.
+    await expect(clear).toBeDisabled();
+    await expect(endorse).toBeDisabled();
+    await expect(entry.getByRole("button", { name: "Oppose" })).toBeDisabled();
+  } finally {
+    allowPost();
+  }
+  // The actions return when the delivery ends.
+  await expect(endorse).toBeEnabled({ timeout: 20000 });
+});
+
+test("an Endorse action in flight keeps Clear my judgment in Score details disabled", async ({
+  page,
+}) => {
+  const { endorse, clear, signed, allowPost } = await endorsedAndHeld(page);
+  try {
+    // Endorse on an endorsed definition clears it.
+    await endorse.click();
+    await expect.poll(() => signed.size).toBe(1);
+    await clear.click({ force: true });
+    await page.waitForTimeout(1000);
+    expect(signed.size).toBe(1);
+    await expect(clear).toBeDisabled();
+  } finally {
+    allowPost();
+  }
+});
+
+test("a right-button press that never ends does not hold back the scores", async ({
+  page,
+}) => {
+  const f = fixture();
+  const release = await heldSmall(page);
+  const summary = block(page, f.definitions.cukta1).locator("summary", {
+    hasText: /^Signed record$/,
+  });
+  await summary.scrollIntoViewIfNeeded();
+  await summary.hover();
+  // A context menu takes the release, so the page sees no pointerup.
+  await page.mouse.down({ button: "right" });
+  try {
+    release();
+    await scored(page, f.definitions.cukta1);
+  } finally {
+    await page.mouse.up({ button: "right" });
+  }
+});
+
+test("a press that the window loses does not hold back the scores", async ({
+  page,
+}) => {
+  const f = fixture();
+  const release = await heldSmall(page);
+  await page.locator("main h1").hover();
+  await page.mouse.down();
+  try {
+    // The reader switches to another window while the button is down.
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    release();
+    await scored(page, f.definitions.cukta1);
+  } finally {
+    await page.mouse.up();
+  }
+});
+
+test("Show in score order from the keyboard puts a visible focus ring on the first definition", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const release = await heldPersonal(page);
+  await page.goto("/word/cukta");
+  await expect(page.locator("article.definition").first()).toBeVisible();
+  await page.keyboard.press("Shift");
+  release();
+  await scored(page);
+  const show = page.getByRole("button", { name: "Show in score order" });
+  await show.focus();
+  await page.keyboard.press("Enter");
+  await expect(show).toHaveCount(0);
+  const focused = await page.evaluate(() => {
+    const node = document.activeElement as HTMLElement;
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    return {
+      first: node === document.querySelector("article.definition"),
+      width: rect.width,
+      height: rect.height,
+      focusVisible: node.matches(":focus-visible"),
+      outline: style.outlineStyle,
+      outlineWidth: parseFloat(style.outlineWidth),
+    };
+  });
+  // The focused node has a visible size and draws its focus ring.
+  expect(focused.width).toBeGreaterThan(200);
+  expect(focused.height).toBeGreaterThan(40);
+  expect(focused.focusVisible).toBe(true);
+  expect(focused.outline).not.toBe("none");
+  expect(focused.outlineWidth).toBeGreaterThanOrEqual(2);
+  expect(focused.first).toBe(true);
+  await expect(page.locator("article.definition").first()).toBeInViewport();
 });
