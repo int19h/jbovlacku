@@ -896,13 +896,11 @@ test("a nested open disclosure stays open when the scores arrive", async ({
 }) => {
   const release = await heldPersonal(page);
   await page.goto("/word/ckusro");
+  // The imported definition. Other tests can add native revisions.
   const source = () =>
-    page
-      .locator("article.definition")
-      .first()
-      .locator("details.disclosure", {
-        has: page.locator("summary", { hasText: /^Source$/ }),
-      });
+    block(page, fixture().definitions.imported).locator("details.disclosure", {
+      has: page.locator("summary", { hasText: /^Source$/ }),
+    });
   const evidence = () =>
     source().locator("details.disclosure", {
       has: page.locator("summary", { hasText: /Original source author/ }),
@@ -1387,9 +1385,8 @@ test("a nested disclosure inside a closed one is still open when the reader reop
   page,
 }) => {
   const release = await heldSmall(page, "ckusro");
-  const source = page
-    .locator("article.definition")
-    .first()
+  // The imported definition. Other tests can add native revisions.
+  const source = block(page, fixture().definitions.imported)
     .locator("details.disclosure")
     .filter({ has: page.locator(":scope > summary", { hasText: /^Source$/ }) });
   const evidence = source.locator("details.disclosure").filter({
