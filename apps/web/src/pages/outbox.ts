@@ -400,10 +400,9 @@ function row(
     "Stop retrying",
     async () => {
       await app.delivery.stop(item.id);
-      for (const dependent of dependents) await app.delivery.stop(dependent.id);
       app.announce(
         dependents.length
-          ? "Stopped. This record and the records that depend on it stay in this browser with their receipts. This does not retract a public record or cancel a request already in flight."
+          ? "Stopped. The signed record and its receipts stay in this browser. Records that depend on this record keep retrying and wait for it; select Stop retrying on each of those rows to stop them too. This does not retract a public record or cancel a request already in flight."
           : "Stopped. The signed record and its receipts stay in this browser. This does not retract a public record or cancel a request already in flight.",
       );
     },
