@@ -263,6 +263,101 @@ test("consent sends only the disclosed terms and lists each separate request", a
   ).toBeVisible();
 });
 
+test("accepting nearby consent within the debounce sends each word once", async ({
+  page,
+}) => {
+  const sent: string[] = [];
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname === "/api/v1/search" &&
+      request.method() === "POST"
+    )
+      sent.push((request.postDataJSON() as { q: string }).q);
+  });
+  await page.goto("/new/meaning");
+  await page
+    .getByLabel("Meaning", { exact: true })
+    .fill("book private committee");
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
+    .click();
+  await expect(page.locator("ol.similar")).toContainText("cukta");
+  await page.waitForTimeout(700);
+  expect([...sent].sort()).toEqual(["book", "committee", "private"]);
+});
+
+test("only one remote consent dialog opens, and one consent sends once", async ({
+  page,
+}) => {
+  const sent: string[] = [];
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname === "/api/v1/search" &&
+      request.method() === "POST"
+    )
+      sent.push((request.postDataJSON() as { q: string }).q);
+  });
+  await page.goto("/new/meaning");
+  await page.getByLabel("Meaning", { exact: true }).fill("book");
+  await page.waitForTimeout(500);
+  const invoker = page.getByRole("button", {
+    name: "search this server",
+    exact: true,
+  });
+  await invoker.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect(page.locator("dialog[open]")).toHaveCount(1);
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
+    .click();
+  await expect(page.locator("ol.similar")).toContainText("cukta");
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
+  expect(sent).toEqual(["book"]);
+
+  // Close-event gap: accept and re-activate the opener in one task.
+  await page.getByLabel("Meaning", { exact: true }).fill("committee");
+  await page.waitForTimeout(500);
+  await invoker.click();
+  await expect(page.locator("dialog[open]")).toHaveCount(1);
+  await invoker.evaluate(() => {
+    const accept = document.querySelector<HTMLButtonElement>(
+      "dialog[open] .btn-primary",
+    );
+    const opener = [
+      ...document.querySelectorAll<HTMLButtonElement>("button"),
+    ].find((button) => button.textContent === "search this server");
+    accept?.click();
+    opener?.click();
+  });
+  await page.waitForTimeout(400);
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
+  expect(sent).toEqual(["book", "committee"]);
+
+  // Programmatic double click on the typed-word control opens one dialog.
+  await page.getByLabel("Lojban word", { exact: true }).fill("cukta");
+  const panel = page.getByRole("region", { name: "Typed word", exact: true });
+  await panel
+    .getByRole("button", { name: "Check this word on the server" })
+    .evaluate((button: HTMLButtonElement) => {
+      button.click();
+      button.click();
+    });
+  await expect(page.locator("dialog[open]")).toHaveCount(1);
+  await page
+    .getByRole("dialog", { name: "Search this server" })
+    .getByRole("button", { name: "Search this server", exact: true })
+    .click();
+  await expect(panel).toContainText("Already exists:");
+  await expect(page.locator("dialog[open]")).toHaveCount(0);
+});
+
 test("remote consent dialog closes when the route ends", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("link", { name: "Add a word" }).click();
@@ -332,6 +427,25 @@ test("lujvo Enter with a package adds only exact matches and keeps other matches
     await expect(matching).toContainText("cukta");
     await expect(components).toContainText("No parts yet");
   }
+  await part.fill(".cukta.");
+  await part.press("Enter");
+  await expect(components).toContainText("cukta");
+  await part.fill("sinxa");
+  await part.press("Enter");
+  await expect(components).toContainText("sinxa");
+  await expect(
+    page.getByRole("group", { name: "Rafsi for cukta" }),
+  ).toContainText("cku");
+});
+
+test("lujvo Enter adds the framed exact package hit under CLL rules", async ({
+  page,
+}) => {
+  await downloadPackage(page);
+  await startLujvo(page);
+  await page.getByRole("radio", { name: "CLL rules" }).check();
+  const part = page.getByLabel("Add a part");
+  const components = page.getByRole("list", { name: "Components" });
   await part.fill(".cukta.");
   await part.press("Enter");
   await expect(components).toContainText("cukta");

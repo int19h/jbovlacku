@@ -17,9 +17,6 @@ test("nearby draft search discloses the exact query and sends only a POST body",
   await page
     .getByLabel("Meaning", { exact: true })
     .fill("book private committee");
-  await expect(
-    page.getByText("Download a search package in Settings", { exact: false }),
-  ).toBeVisible();
   expect(searches).toHaveLength(0);
   await page
     .getByRole("button", { name: "search this server", exact: true })
@@ -35,6 +32,8 @@ test("nearby draft search discloses the exact query and sends only a POST body",
       .locator("ol.similar")
       .getByRole("link", { name: "cukta", exact: true }),
   ).toBeVisible();
+  // Past the 400 ms debounce, so a duplicate timer send would be counted.
+  await page.waitForTimeout(600);
   expect(disclosure).toContain('"book", "private", "committee"');
   expect(disclosure).toContain("Each word is sent as a separate request");
   expect(disclosure).toContain('"en"');

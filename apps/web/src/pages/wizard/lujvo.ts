@@ -541,7 +541,7 @@ export async function lujvoPage(
       const query = addField.input.value.trim();
       if (!query) return;
       const normalized = (value: string) =>
-        analyzeWord(state.profile, value).normalized?.toLowerCase() ??
+        analyzeWord("extended-v4", value).normalized?.toLowerCase() ??
         value.trim().toLowerCase();
       const target = normalized(query);
       const buttons = [...addResults.querySelectorAll("button")];

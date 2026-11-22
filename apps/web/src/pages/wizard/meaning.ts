@@ -95,6 +95,8 @@ function focusConsentTarget(
  * acceptance, focus moves at close, before any network wait, to the first
  * surviving target; on cancel it returns to the invoker.
  */
+/** One remote consent dialog at a time, from open through close handling. */
+let remoteConsentActive = false;
 function askRemoteConsent(
   message: string,
   options: {
@@ -102,7 +104,9 @@ function askRemoteConsent(
     acceptFocus: readonly (HTMLElement | null | undefined)[];
   },
 ): Promise<boolean> {
-  if (options.signal.aborted) return Promise.resolve(false);
+  if (options.signal.aborted || remoteConsentActive)
+    return Promise.resolve(false);
+  remoteConsentActive = true;
   return new Promise((resolve) => {
     const opener = document.activeElement as HTMLElement | null;
     const dialog = el("dialog", {
@@ -128,6 +132,7 @@ function askRemoteConsent(
     dialog.addEventListener("close", () => {
       const accepted = dialog.returnValue === "ok";
       options.signal.removeEventListener("abort", abort);
+      remoteConsentActive = false;
       resolve(accepted);
       dialog.remove();
       if (accepted) focusConsentTarget(options.acceptFocus);
@@ -621,7 +626,12 @@ export async function meaningPage(
               ))
             )
               return;
-            if (!context.live() || key !== typedKey()) return;
+            if (
+              !context.live() ||
+              key !== typedKey() ||
+              typedConsent === key
+            )
+              return;
             typedConsent = key;
             await checkTypedWord();
           },
@@ -762,7 +772,13 @@ export async function meaningPage(
                 }))
               )
                 return;
-              if (!context.live() || consentKey() !== disclosed) return;
+              if (
+                !context.live() ||
+                consentKey() !== disclosed ||
+                remoteConsent === disclosed
+              )
+                return;
+              clearTimeout(timer);
               remoteConsent = disclosed;
               renderMode();
               await nearby();
