@@ -602,7 +602,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     part.append(
       p("Ranking is unavailable for this word. No score is assumed.", "small"),
     );
-  let provenance = provenanceLine(view, false);
+  const provenance = provenanceLine(view, false);
   const sourceDetails = el(
     "details",
     { class: "disclosure word-source", "data-key": "word-source" },
@@ -1001,9 +1001,19 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
           });
         else done?.remove();
       }
-      const line = provenanceLine(settled, false);
-      provenance.replaceWith(line);
-      provenance = line;
+      // The line changes in place. Its leading parts keep their nodes
+      // while their text is the same, so a selection in them stays.
+      const kept = [...provenance.childNodes];
+      const fresh = [...provenanceLine(settled, false).childNodes];
+      let unchanged = 0;
+      while (
+        unchanged < kept.length &&
+        unchanged < fresh.length &&
+        kept[unchanged].isEqualNode(fresh[unchanged])
+      )
+        unchanged++;
+      for (const node of kept.slice(unchanged)) node.remove();
+      provenance.append(...fresh.slice(unchanged));
       if (staleLine) {
         staleLine.textContent = live.stale ? (live.reason ?? "") : "";
         staleLine.hidden = !live.stale;

@@ -1877,3 +1877,28 @@ test("a rotation to a narrower one-row strip brings the selected language back i
   await page.setViewportSize({ width: 360, height: 640 });
   await expect.poll(inside).toEqual({ overflowing: true, inside: true });
 });
+
+test("a selection in the Source and scores line survives the scores", async ({
+  page,
+}) => {
+  const release = await heldPersonal(page);
+  await page.goto("/word/cukta");
+  await expect(page.locator("article.definition").first()).toBeVisible();
+  const source = page.locator("details.word-source");
+  await source.locator("summary").click();
+  const line = source.locator(".body > p.meta").first();
+  await expect(line).toContainText("Snapshot");
+  // The reader selects the snapshot and view part of the line.
+  const selected = await line.evaluate((node) => {
+    const range = document.createRange();
+    range.selectNodeContents(node.firstChild!);
+    getSelection()!.removeAllRanges();
+    getSelection()!.addRange(range);
+    return getSelection()!.toString();
+  });
+  expect(selected).toContain("Snapshot");
+  release();
+  await scored(page);
+  await expect(line).toContainText("personal view calculated in this browser");
+  expect(await page.evaluate(() => getSelection()!.toString())).toBe(selected);
+});
