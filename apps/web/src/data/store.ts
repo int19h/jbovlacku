@@ -92,6 +92,19 @@ export interface PeerDelivery {
   /** The failure class of the last attempt. */
   failure: "offline" | "timeout" | "server" | "refused" | "unresolved" | null;
   receipt: import("../model/types.ts").Receipt | null;
+  /** The random ID of the attempt that stored this outcome. */
+  attempt?: string;
+  /**
+   * The random ID of the attempt whose POST started, stored before the POST.
+   * That attempt's outcome removes it. A valid receipt that shows acceptance
+   * removes it too. So does the outcome or new mark of a later attempt whose
+   * read saw this mark, when nothing changed after that read. A value left
+   * after a closed page means that the POST may have reached the server, so
+   * the next attempt asks for the receipt first.
+   */
+  sendAttempt?: string;
+  /** When the POST of `sendAttempt` started. */
+  sendStarted?: number;
 }
 /** The exact draft revision that a group publishes. */
 export interface Publication {
@@ -553,7 +566,20 @@ export class LocalStore {
       rows,
     };
   }
-  async put(store: string, id: string, value: unknown): Promise<void> {
+  /**
+   * Saves a value. For a package, `expectedRevision` (a revision read before
+   * the value was produced, or null for no committed revision) makes the
+   * save conditional: it happens only when the package's committed revision
+   * is still that value, in the same transaction that checks it. A save or
+   * a remove that commits in between makes this save a no-op. Returns true
+   * when the value was saved.
+   */
+  async put(
+    store: string,
+    id: string,
+    value: unknown,
+    expectedRevision?: string | null,
+  ): Promise<boolean> {
     const db = await this.database;
     const revision = store === "packages" ? packageRevision() : undefined;
     return new Promise((resolve, reject) => {
@@ -561,18 +587,40 @@ export class LocalStore {
         store === "packages" ? [store, "packageRevisions"] : store,
         "readwrite",
       );
-      tx.objectStore(store).put(value, id);
-      if (store === "packages")
-        tx.objectStore("packageRevisions").put(revision, id);
+      let saved = false;
+      const save = () => {
+        saved = true;
+        tx.objectStore(store).put(value, id);
+        if (store === "packages")
+          tx.objectStore("packageRevisions").put(revision, id);
+      };
+      if (store === "packages" && expectedRevision !== undefined) {
+        const check = tx.objectStore("packageRevisions").get(id);
+        check.onsuccess = () => {
+          if ((check.result ?? null) === expectedRevision) save();
+        };
+      } else save();
       tx.oncomplete = () => {
-        if (store === "packages") this.packageCache.delete(id);
-        resolve();
+        if (store === "packages" && saved) this.packageCache.delete(id);
+        resolve(saved);
       };
       tx.onabort = () =>
         reject(
           tx.error ?? new Error("Local storage did not save this change."),
         );
       tx.onerror = () => {};
+    });
+  }
+  /** The committed revision of one package, or undefined when no save or remove of it has committed. A remove still writes a revision, so a removed package keeps one. */
+  async packageRevisionOf(id: string): Promise<string | undefined> {
+    const db = await this.database;
+    return new Promise((resolve, reject) => {
+      const request = db
+        .transaction("packageRevisions")
+        .objectStore("packageRevisions")
+        .get(id);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
     });
   }
   async putProjectedRecord(
@@ -722,7 +770,9 @@ export class LocalStore {
         const current = request.result as OutboxItem | undefined;
         if (!current) return;
         result = mutate(current);
-        outbox.put(result, id);
+        // A mutation that returns the same object changes nothing, so
+        // nothing is written.
+        if (result !== current) outbox.put(result, id);
       };
       tx.oncomplete = () => resolve(result);
       tx.onabort = () =>

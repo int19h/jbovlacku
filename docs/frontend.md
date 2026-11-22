@@ -209,7 +209,7 @@ Pattern mode returns `headword-pattern` results before `rafsi-pattern` results. 
 Spelling comparison uses stable ordinal order across hosts. It does not depend on the host locale.
 It uses no gloss, definition-text, segmentation, or component fallback. One card groups every matching definition of a word.
 Headword matches take precedence when a word also has a matching rafsi.
-Both classes use the ordinary pages and “show all” limit. Pattern mode leaves the ordinary segmented-search classes unchanged.
+Both classes use the ordinary pages and “Show all” limit. Pattern mode leaves the ordinary segmented-search classes unchanged.
 The rafsi page accepts the same patterns. It shows each matched spelling with its word and retains conflicting assignments separately.
 The rafsi page retains at most 1,000 matched pairs across its languages. A visible notice reports any cut.
 Conflict notices group by normalized rafsi spelling and list different stored spellings. Pair identifiers still use each raw stored spelling.
@@ -310,6 +310,10 @@ Browser storage version 4 records a revision marker beside each language package
 Every package read checks that marker, including reads from another connection or tab.
 Each connection retains at most two package objects. A changed revision invalidates that connection's retained data, even when the snapshot ID stays equal.
 A failed download leaves the saved package and revision unchanged.
+
+A package save reads the revision before its download starts. It writes only when that revision is still the current one, and the check and the write are one transaction. So a save never overwrites a Remove or another save that finished after it started. A Remove always wins over a save that started earlier.
+A Refresh acts only on a package that is still saved when the Refresh starts. When the package is gone, the Refresh downloads nothing and says that the package is no longer saved. Download is the way to add it again.
+A rafsi lookup downloads the current package for each of its languages. When browser storage is available, it saves a version 2 package under the same revision check. It does not save a package that the reader removed. A later Download saves it again.
 
 One static module worker validates and searches saved packages outside the main thread.
 Download hashing and entry checks retain their existing download path.
@@ -433,7 +437,7 @@ The meaning group's Search source disclosure shows that separate snapshot and vi
 A fresh reload checks current capabilities, profile, and consent instead of restoring the saved meaning group.
 Similarity never becomes an editorial score.
 
-Each group offers pagination and “show all” with its remaining count. The page offers “Missing a word for this? Add it,” and a retired-results filter.
+Each group offers pagination and “Show all” with its remaining count. The page offers “Missing a word for this? Add it,” and a retired-results filter.
 One click reveals all remaining local hits or fetches remote pages in sequence, up to the browser limit of 1,000 hits per lexical group. Meaning search retains at most 100 definitions and pages them locally.
 Only one expansion runs at once. Navigation cancels it, and repeated cursors or results stop it.
 Each lexical group shows its own loading or failure state. A failed group does not prevent the other group from loading.
@@ -1621,6 +1625,20 @@ It also retains known latest event references for each local signing identity.
 These references identify accepted history through predecessor links. They do not require a complete local copy of that history.
 Language search packages contain searchable dictionary data, not the complete event graph.
 The browser retrieves missing signing or handover evidence from configured peers and exposes unresolved dependencies before proceeding.
+When that history read fails at the network level, times out, or answers 502, 503 or 504, signing falls back to the history saved in this browser, provided this browser already holds at least one own event for the signing key and the parent list computed from it is not empty.
+A 502, 503 or 504 answer keeps its status when its body is larger than the browser accepts, so the fallback also applies then.
+The explicit setting “Sign from history saved in this browser only” follows the same rule: it needs an own event for the key in this browser and a parent list that is not empty. Its message also says to clear the setting and publish with a connection.
+A key with no own event in this browser does not sign in either case. The page says that publishing needs a connection the first time this key publishes in this browser, and nothing is signed.
+The browser's online report is only a hint for explicit actions. An explicit publish, “Try now” or Resume always attempts delivery, so a reachable server still receives the record when the browser reports offline. Automatic retries wait until the browser reports a connection.
+While the browser reports offline, every attempt asks for the receipt before it sends. If that lookup fails at the network level and the browser still reports offline, the record was not sent, so the stored outcome and retry schedule stay unchanged. After “Try now”, a refused record then stays refused.
+While the browser reports offline, the lookup for a record that was never sent only checks the connection. An error answer, or an answer without a usable receipt, lets the send go ahead. Only a valid receipt can show that the record was delivered.
+For any other record, a lookup that gets an error answer other than 404 (not found) is not an answer about the record. It is retried after the backoff and never counts as a refusal.
+Every attempt has a random attempt ID. Before the send starts, the browser stores a send mark with that ID. A first send stays queued, so “Not delivered” does not list it while the browser reports online. The saved publication view says for that record that a send started and that its outcome is not confirmed yet. Any other outcome becomes unknown with an attempt due. If the page closes while the send is open, the next attempt in any tab asks for the receipt before it sends again.
+The transaction that stores the send mark also decides whether the attempt may send. It may not send when the record is accepted, or when another attempt stored an outcome or its own send mark after this attempt read the record. That attempt then sends nothing and stores nothing.
+An attempt's outcome replaces the stored state only while its own send mark is stored, or when no other attempt stored an outcome or a send mark after it read the record. A valid receipt that shows acceptance always applies, and an accepted state always stays.
+Two tabs can still race in two narrow windows until one tab sends each record (issue #142). A newer tab's refusal can hide an older tab's acceptance after the older tab closes. A tab that pauses between its send mark and its send can send the record a second time. In both cases no signed work is lost, and every send carries the same signed bytes. If the outbox shows a refusal after the server accepted the record, “Try now” retrieves the receipt. After a duplicate send, the outbox already shows delivery.
+A timeout or a dropped connection during the send itself means delivery unknown, whatever the browser reports. A network failure while the browser reports online also means delivery unknown, and a refused record then becomes unknown with a new retry time.
+Resume clears the stop and schedules the next attempt whether or not the browser reports a connection. The record is sent when a server answers. Resume makes a refused outcome unknown, because it retries the record. Resume itself leaves every other outcome as it is, such as a header stored without its body. The attempt that follows applies the rules above.
 
 It never discards a remembered own branch merely because a peer omits it.
 Device synchronization exchanges known history references and uploads pending events. A handover includes every known relevant device branch.
@@ -1746,6 +1764,25 @@ Remove pause periods and commas and read `h` as an apostrophe in each complete s
 Segmented cmavo pieces, other punctuation, and unrecognized text do not establish that spelling.
 The response uses the same language, view, snapshot, receipt, eligibility, and retired-results filters as its hits.
 Search cursors include the group and literal mode. A cursor from another mode returns HTTP 400 with `bad_cursor`.
+Each hit preview carries the row fields a result row shows: rafsi spellings for the word, and the selma'o names, signing identity, notes flag, and imported source attribution of the previewed definition.
+The rafsi are those that the word route gives under the served view. A claim that the view does not select is left out. An assignment whose claims are all inactive is left out. Each other assignment shows the spelling of its first claim in ID order, if that claim body is retained. The spellings are sorted, and the first 16 stay.
+The server prepares these lists once for each evaluated snapshot and view, in one pass over the retained claims. A request reads one prepared list for each hit of the returned page, for the requested view.
+The signing identity, notes flag, and attribution are present together or absent together. The attribution is null for a native definition.
+The signed format limits some of these fields and not others. A rafsi spelling is at most 64 UTF-8 bytes, and a signing identity is exactly 72 ASCII characters. The format sets no length for selma'o names, the attribution `source` and `author`, the account `origin`, or date labels and values, beyond the body size limit.
+The preview adds its own bounds, by count and by length in UTF-16 code units:
+
+- At most 16 rafsi spellings of at most 64 units each, and at most 8 selma'o names of at most 32 units each. A longer spelling or name is dropped, and the next ones take its place, in their order.
+- The attribution `source` and `author` are at most 256 units each. A longer value is cut to at most 255 units, so that a surrogate pair is never split, and ends with "…".
+- An attribution `account` whose `origin` is longer than 256 units becomes null.
+- At most 8 date entries, each with a label of at most 32 units and a value of at most 64 units. A longer entry is dropped. The labels that a row reads come first, in this order: `time`, `created_at`, `created`, `updated_at`, `updated`. The other labels follow in their key order.
+
+So the row fields of one hit hold at most 2,888 units of string content, including the 72-unit signing identity, and those of a 100-hit page at most 288,800 units. That is at most about 852 KB of UTF-8 before JSON escaping.
+The server applies these bounds once, when it builds the search packages of a snapshot, and when it prepares the rafsi lists. The browser applies the same rule to each page it receives, so a longer value is dropped or cut and never makes the browser reject the page.
+If a row field has the wrong type, the browser removes that field. A list with an item that is not a string, and a date map with a value that is not a string, count as the wrong type. A valid empty list stays, and the row shows no items for it. The row then reads a removed field as an older response does: rafsi from the word's rafsi claims, and the selma'o names, signing identity, notes flag and attribution from the definition. The signing identity, notes flag and attribution are removed together. They are also removed together if one or two of them are missing.
+The browser shows the row fields from the response at once. It does not need a result's word or definition record for these fields.
+Each row still reads its word for the score and its definition for the rich preview text.
+When the definition read returns the definition body, the row replaces the attribution line with the full line from the signed record. That line adds the author link and the signer's profile name where the record and the profile have them. If the read fails or returns no body, the preview line stays.
+An older response without the preview fields keeps the earlier per-definition backfill for every field.
 `pattern_invalid` returns HTTP 400, and `pattern_timeout` returns HTTP 422.
 An excess pattern request returns HTTP 503 with `search_busy` and `Retry-After: 1`.
 These errors return no partial hits. The server enforces the shared compiled-work limits and its documented execution limits.
@@ -1931,8 +1968,18 @@ SearchResponse = {
   snapshot: ID, view: event-ID, query: string, language: string,
   segmentation?: "complete" | "limited", all_lojban?: boolean,
   hits: [{word: WordObject, word_id: word-ID, match: match-kind,
-          definitions: [candidate-ID]}], virtuals: [VirtualReference],
+          definitions: [candidate-ID], preview?: SearchPreview}],
+  virtuals: [VirtualReference],
   virtual_statuses: [VirtualStatus], next: cursor | null
+}
+SearchPreview = {
+  event: candidate-ID, word_kind: string, plain_text: string,
+  status: string, rafsi?: [string] (≤ 16, each ≤ 64 units),
+  selmaho?: [string] (≤ 8, each ≤ 32 units),
+  issuer?: identity-ID, notes?: boolean,
+  attribution?: {source: string (≤ 256 units), author: string (≤ 256 units) | null,
+                 account: {origin: string (≤ 256 units), account: integer} | null,
+                 dates: {string (≤ 32 units): string (≤ 64 units)} (≤ 8 entries)} | null
 }
 VirtualDescriptor = {base: event-ID, conversion: "se" | "te" | "ve" | "xe", rule: "place-conversion-v1"}
 VirtualReference = {id: virtual-ID, descriptor: VirtualDescriptor, base_body: body-ID,

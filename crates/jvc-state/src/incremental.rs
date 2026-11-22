@@ -1,8 +1,8 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v10";
-const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v10";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v11";
+const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v11";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
 
@@ -63,6 +63,8 @@ pub struct EvaluatedState {
     /// the fast path's `jvr1:` judgment target lookup.
     rafsi_assignments: std::rc::Rc<BTreeSet<String>>,
     selection_allowance: usize,
+    /// `previous` IDs over the retained records, for the default budget.
+    predecessor_edges: usize,
     remaining_work: usize,
     /// Ancestry bytes counted for the closures the graph of this
     /// state keeps, saved across a checkpoint. A restored state has
@@ -103,6 +105,7 @@ impl Clone for EvaluatedState {
             rafsi_words: self.rafsi_words.clone(),
             rafsi_assignments: self.rafsi_assignments.clone(),
             selection_allowance: self.selection_allowance,
+            predecessor_edges: self.predecessor_edges,
             remaining_work: self.remaining_work,
             saved_ancestry_bytes: self.saved_ancestry_bytes,
             checkpoint_restored: self.checkpoint_restored,
@@ -135,6 +138,7 @@ impl EvaluatedState {
             rafsi_words: Default::default(),
             rafsi_assignments: Default::default(),
             selection_allowance: 0,
+            predecessor_edges: 0,
             remaining_work: 0,
             saved_ancestry_bytes: None,
             checkpoint_restored: false,
@@ -257,7 +261,11 @@ impl EvaluatedState {
         self.prepared
             .options
             .limits
-            .traversal_budget_with_selections(self.prepared.nodes.len(), self.selection_allowance)
+            .traversal_budget_with_selections(
+                self.prepared.nodes.len(),
+                self.predecessor_edges,
+                self.selection_allowance,
+            )
     }
 
     pub fn consumed_work(&self) -> usize {
@@ -482,6 +490,7 @@ impl EvaluatedState {
         self.saved_ancestry_bytes = None;
         self.checkpoint_restored = false;
         self.graph = None;
+        self.predecessor_edges = predecessor_edges(&self.prepared.nodes);
         if self.prepared.arena_error().is_some() {
             self.selection_allowance = 0;
             self.evaluation = empty_evaluation(&self.prepared.options);
@@ -509,11 +518,7 @@ impl EvaluatedState {
             &mut selection_cache,
         );
         self.selection_allowance = resolved.allowance;
-        let budget = self
-            .prepared
-            .options
-            .limits
-            .traversal_budget_with_selections(self.prepared.nodes.len(), self.selection_allowance);
+        let budget = self.traversal_budget();
         let graph = Graph::new_with_budget(self.prepared.nodes.clone(), budget);
         self.evaluation = evaluate_graph_with_selections_cached(
             &self.prepared.options,
@@ -830,7 +835,7 @@ impl EvaluatedState {
             return Err("history_changed");
         }
         let record_allowance = if self.prepared.options.limits.traversal.is_none() {
-            DEFAULT_TRAVERSAL_PER_RECORD
+            record_allowance(node)
         } else {
             0
         };
@@ -1070,10 +1075,9 @@ impl EvaluatedState {
         // code a full evaluation runs for this record, and their own
         // charges (closure unions for the new record) come out of the
         // same budget, so the total equals a full evaluation.
+        self.predecessor_edges += node.previous.len();
         if self.prepared.options.limits.traversal.is_none() {
-            self.remaining_work = self
-                .remaining_work
-                .saturating_add(DEFAULT_TRAVERSAL_PER_RECORD);
+            self.remaining_work = self.remaining_work.saturating_add(record_allowance(&node));
         }
         self.remaining_work -= work;
         graph.budget.set(self.remaining_work);
@@ -1245,26 +1249,28 @@ impl EvaluatedState {
             binding: &'a str,
             options: SavedOptions<'a>,
             nodes: &'a BTreeMap<String, Node>,
-            evaluation: &'a Evaluation,
+            evaluation: CheckpointEvaluation<'a>,
             event_limit_exceeded: bool,
             consumed_work: usize,
             remaining_work: usize,
             ancestry_bytes: Option<usize>,
             register_maxima_work: Vec<usize>,
             register_maxima_member_work: Vec<usize>,
+            account_contribution_digests: Vec<String>,
         }
         #[derive(Serialize)]
         struct SavedResults<'a> {
             version: &'static str,
             binding: &'a str,
             options: SavedOptions<'a>,
-            evaluation: &'a Evaluation,
+            evaluation: CheckpointEvaluation<'a>,
             event_limit_exceeded: bool,
             consumed_work: usize,
             remaining_work: usize,
             ancestry_bytes: Option<usize>,
             register_maxima_work: Vec<usize>,
             register_maxima_member_work: Vec<usize>,
+            account_contribution_digests: Vec<String>,
         }
         let consumed_work = self.consumed_work();
         let ancestry_bytes = self
@@ -1284,19 +1290,26 @@ impl EvaluatedState {
             .values()
             .map(|register| register.maxima_member_work)
             .collect();
+        let account_contribution_digests: Vec<String> = self
+            .evaluation
+            .accounts
+            .values()
+            .map(|account| contributions_digest(&account.contributions))
+            .collect();
         let saved_options = self.saved_options();
         let mut bytes = if results_only {
             serde_json::to_vec(&SavedResults {
                 version: RESULTS_CHECKPOINT_VERSION,
                 binding,
                 options: saved_options,
-                evaluation: &self.evaluation,
+                evaluation: CheckpointEvaluation(&self.evaluation),
                 event_limit_exceeded: self.prepared.event_limit_exceeded,
                 consumed_work,
                 remaining_work: self.remaining_work,
                 ancestry_bytes,
                 register_maxima_work,
                 register_maxima_member_work,
+                account_contribution_digests,
             })
         } else {
             serde_json::to_vec(&SavedFull {
@@ -1304,13 +1317,14 @@ impl EvaluatedState {
                 binding,
                 options: saved_options,
                 nodes: &self.prepared.nodes,
-                evaluation: &self.evaluation,
+                evaluation: CheckpointEvaluation(&self.evaluation),
                 event_limit_exceeded: self.prepared.event_limit_exceeded,
                 consumed_work,
                 remaining_work: self.remaining_work,
                 ancestry_bytes,
                 register_maxima_work,
                 register_maxima_member_work,
+                account_contribution_digests,
             })
         }
         .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
@@ -1345,7 +1359,10 @@ impl EvaluatedState {
                 "checkpoint version or binding does not match",
             ));
         }
-        let (saved, expected_version, nodes) = match records {
+        // Checkpoints never write a publication's contributions, so a
+        // reader refuses the field when it is present, even as `{}`.
+        take_explicit_contributions();
+        let decoded = match records {
             Some(records) => {
                 let saved: SavedResultsCheckpoint = serde_json::from_slice(bytes)
                     .map_err(|e| jvc_core::Error::new("checkpoint", e.to_string()))?;
@@ -1370,11 +1387,19 @@ impl EvaluatedState {
                     ancestry_bytes: full.ancestry_bytes,
                     register_maxima_work: full.register_maxima_work,
                     register_maxima_member_work: full.register_maxima_member_work,
+                    account_contribution_digests: full.account_contribution_digests,
                     digest: full.digest,
                 };
                 (saved, CHECKPOINT_VERSION, nodes)
             }
         };
+        if take_explicit_contributions() {
+            return Err(jvc_core::Error::new(
+                "checkpoint",
+                "checkpoint version or binding does not match",
+            ));
+        }
+        let (saved, expected_version, nodes) = decoded;
         let mut saved = saved;
         let mut validated_selections = BTreeMap::new();
         let resolved = if saved.event_limit_exceeded {
@@ -1388,10 +1413,14 @@ impl EvaluatedState {
             )
         };
         let selection_allowance = resolved.allowance;
-        let expected_budget = saved
-            .options
-            .limits
-            .traversal_budget_with_selections(nodes.len(), selection_allowance);
+        // `repack` below keeps every record's `previous`, so this count
+        // also holds for the restored state.
+        let predecessor_edges = predecessor_edges(&nodes);
+        let expected_budget = saved.options.limits.traversal_budget_with_selections(
+            nodes.len(),
+            predecessor_edges,
+            selection_allowance,
+        );
         if saved.version != expected_version
             || saved.binding != binding
             || saved.evaluation.selected_view != saved.options.selected_view
@@ -1446,6 +1475,7 @@ impl EvaluatedState {
             register.maxima_work = *work;
             register.maxima_member_work = *member_work;
         }
+        restore_account_contributions(&mut evaluation);
         let rafsi_words = rafsi_words(&evaluation);
         let rafsi_assignments = rafsi_assignments(&evaluation);
         Ok(Self {
@@ -1456,6 +1486,7 @@ impl EvaluatedState {
             evaluation,
             graph: None,
             selection_allowance,
+            predecessor_edges,
             remaining_work: saved.remaining_work,
             saved_ancestry_bytes: saved.ancestry_bytes,
             checkpoint_restored: true,
@@ -1481,6 +1512,7 @@ struct SavedFullCheckpoint {
     ancestry_bytes: Option<usize>,
     register_maxima_work: Vec<usize>,
     register_maxima_member_work: Vec<usize>,
+    account_contribution_digests: Vec<String>,
     #[allow(dead_code)]
     digest: String,
 }
@@ -1499,6 +1531,7 @@ struct SavedResultsCheckpoint {
     ancestry_bytes: Option<usize>,
     register_maxima_work: Vec<usize>,
     register_maxima_member_work: Vec<usize>,
+    account_contribution_digests: Vec<String>,
     #[allow(dead_code)]
     digest: String,
 }
@@ -1789,6 +1822,21 @@ fn check_saved_state(
         || saved.evaluation.registers.len() != saved.register_maxima_member_work.len()
     {
         return Err("register_counter_lens");
+    }
+    // Checkpoints no longer store each credited publication's copy of
+    // its account's contributions, which restore used to compare with
+    // the account. This digest, written at save time in account order,
+    // keeps that comparison: an account whose evidence and claims were
+    // both cut no longer matches it.
+    if saved.evaluation.accounts.len() != saved.account_contribution_digests.len()
+        || saved
+            .evaluation
+            .accounts
+            .values()
+            .zip(&saved.account_contribution_digests)
+            .any(|(account, digest)| contributions_digest(&account.contributions) != *digest)
+    {
+        return Err("account_contribution_digest");
     }
     for (id, node) in nodes {
         if id != &node.id {
@@ -2245,6 +2293,11 @@ fn check_saved_state(
         return Err("publications_len");
     }
     for (id, p) in &saved.evaluation.publications {
+        // Checkpoints leave the contributions out, and restore sets
+        // them from the account.
+        if !p.witness_contributions.is_empty() {
+            return Err("publication_checkpoint_contributions");
+        }
         let Some(node) = nodes.get(id).filter(|n| {
             n.semantic && matches!(n.kind.as_str(), "definition.publish" | "rafsi.publish")
         }) else {
@@ -2353,6 +2406,27 @@ fn check_saved_state(
             if p.controller.as_deref() != expected_native_controller {
                 return Err("publication_native_controller");
             }
+        } else if node.body.is_none() {
+            // A fresh evaluation reads the source and the account from
+            // the body, so an import without one has neither. Only the
+            // account pass sets the account fields of an import, and
+            // only for one with an account, so they keep their initial
+            // values. Restore attaches account evidence by the account,
+            // so it must not trust a saved one.
+            if p.source.is_some()
+                || p.source_record.is_some()
+                || p.account.is_some()
+                || p.authority != Authority::None
+                || p.controller.is_some()
+                || p.claim.is_some()
+                || !p.observations.is_empty()
+                || !p.status_frontier.is_empty()
+                || p.deciding_claim.is_some()
+                || !p.controller_candidates.is_empty()
+                || !p.missing.is_empty()
+            {
+                return Err("publication_import_without_body");
+            }
         } else if let Some(body) = &node.body {
             let legacy = body.view().index("legacy");
             let expected_source = legacy.index("source").as_str().map(str::to_owned);
@@ -2386,7 +2460,6 @@ fn check_saved_state(
                     if p.claim != state.controller
                         || p.controller != state.controller_identity
                         || p.controller_candidates != state.candidates
-                        || p.witness_contributions != state.contributions
                         || p.observations != state.current_observations
                     {
                         return Err("publication_account_fields");
@@ -2450,6 +2523,31 @@ fn check_saved_state(
         }
         let mut union_candidates = BTreeSet::new();
         for (actor, obs_ids) in &state.observation_evidence {
+            // Each piece of evidence is a present observation of this
+            // account by a key of this witness, as the account pass
+            // selects it. The publications' maps are rebuilt from these
+            // contributions, so a swapped observation must not pass.
+            for oid in obs_ids {
+                let Some(onode) = nodes.get(oid) else {
+                    return Err("account_evidence_record");
+                };
+                let oa = onode.action.view();
+                let issuer_actor = saved
+                    .evaluation
+                    .lifecycle
+                    .key_actor
+                    .get(&onode.issuer)
+                    .unwrap_or(&onode.issuer);
+                if !onode.semantic
+                    || onode.kind != "account.observe"
+                    || oa.index("result") != "present"
+                    || oa.index("origin").as_str() != Some(state.account.origin.as_str())
+                    || oa.index("account").as_u64() != Some(state.account.account)
+                    || issuer_actor != actor
+                {
+                    return Err("account_evidence_record");
+                }
+            }
             let expected_claims: BTreeSet<String> = obs_ids
                 .iter()
                 .filter_map(|oid| nodes.get(oid))
@@ -2793,6 +2891,54 @@ fn judgment_diff(before: &Evaluation, after: &Evaluation) -> Option<JudgmentChan
         return None;
     }
     Some(changes)
+}
+
+/// The digest of an account's contributions map, as a checkpoint
+/// stores it.
+fn contributions_digest(contributions: &BTreeMap<String, BTreeSet<String>>) -> String {
+    jvc_core::hash_id(
+        "sha256:",
+        b"",
+        &serde_json::to_vec(contributions).unwrap_or_default(),
+    )
+}
+
+/// Sets the contributions that a checkpoint leaves out. As in
+/// `accounts::evaluate`, each imported definition credited to an account
+/// shares the account's map when the view gives accounts status
+/// authority. Every other publication keeps an empty map.
+fn restore_account_contributions(evaluation: &mut Evaluation) {
+    if evaluation.accounts.is_empty()
+        || evaluation.reasons.contains("resource_unavailable")
+        || !evaluation
+            .policy
+            .as_ref()
+            .is_some_and(|policy| policy.view().index("account_authority").as_bool() == Some(true))
+    {
+        return;
+    }
+    let results = std::rc::Rc::make_mut(&mut evaluation.results);
+    for p in results.publications.values_mut() {
+        if !p.imported || p.kind != "definition.publish" {
+            continue;
+        }
+        if let Some(state) = p
+            .account
+            .as_ref()
+            .and_then(|a| results.accounts.get(&a.token()))
+        {
+            p.witness_contributions = state.contributions.clone();
+        }
+    }
+}
+
+/// The default budget's growth for one more record.
+fn record_allowance(node: &Node) -> usize {
+    DEFAULT_TRAVERSAL_PER_RECORD.saturating_add(
+        node.previous
+            .len()
+            .saturating_mul(DEFAULT_TRAVERSAL_PER_PREDECESSOR),
+    )
 }
 
 fn supports_local_update(node: &Node) -> bool {
@@ -3971,7 +4117,7 @@ mod rebuild_tests {
                 .prepared
                 .options
                 .limits
-                .traversal_budget(parent.event_count())
+                .traversal_budget(parent.event_count(), parent.predecessor_edges)
                 + 1,
         );
         let expected = parent.clone().advance(clean.clone(), &[]);
@@ -5310,14 +5456,35 @@ mod rebuild_tests {
     /// and after both restore formats.
     #[test]
     fn invalid_selection_prefix_then_valid_list_gives_one_budget_in_every_mode() {
-        // Ten invalid lists of 98 empty strings nearly use up a resolver base of
-        // 1,000 units with their entries; the valid list comes last.
+        // Ten invalid lists of 98 empty strings and their entries nearly
+        // use up a resolver bound of 1,000 base units plus one record;
+        // the valid list comes last.
+        assert_invalid_selection_prefix_gives_one_budget(98, 0);
+    }
+
+    /// The same with records that name absent predecessors. The ten
+    /// invalid lists of 270 empty strings pass the base and record
+    /// terms (1,000 + 256 * 3) but not the predecessor term
+    /// (16 * 128), so the resolver must count predecessors to reach
+    /// the valid list, as the default budget does.
+    #[test]
+    fn invalid_selection_prefix_with_predecessors_gives_one_budget_in_every_mode() {
+        assert_invalid_selection_prefix_gives_one_budget(270, 2);
+    }
+
+    /// `merges` records each name 64 absent predecessors.
+    fn assert_invalid_selection_prefix_gives_one_budget(invalid_len: usize, merges: usize) {
         let base = 1_000usize;
         let valid: Vec<String> = (0..512).map(|i| format!("jve1:{i:064x}")).collect();
         let valid_digest =
             jvc_core::hash_id("sha256:", b"", &canonical_value(&json!(valid)).unwrap());
         let mut selections: BTreeMap<String, Vec<String>> = (0..10)
-            .map(|i| (format!("sha256:{:064x}", i + 1), vec![String::new(); 98]))
+            .map(|i| {
+                (
+                    format!("sha256:{:064x}", i + 1),
+                    vec![String::new(); invalid_len],
+                )
+            })
             .collect();
         selections.insert(valid_digest.clone(), valid);
         let importer = identity_from_seed(&[3; 32]);
@@ -5346,14 +5513,27 @@ mod rebuild_tests {
                 ..Limits::default()
             },
         };
+        let merger = identity_from_seed(&[4; 32]);
+        let absent: Vec<String> = (0..64)
+            .map(|i| format!("jve1:{:064x}", 0xA000 + i))
+            .collect();
         let build = |options: EvaluationOptions| {
             let mut prepared = PreparedEvaluationInput::new(options);
             prepared.add_record(&view, view_body.as_deref());
+            for i in 0..merges {
+                prepared.add_host_verified_record(host(
+                    format!("jve1:{:064x}", 0xB000 + i),
+                    &merger,
+                    absent.clone(),
+                    json!({"kind":"identity.merge"}),
+                ));
+            }
             prepared.into_state()
         };
         policy::RESOLVER_BASE_OVERRIDE.with(|o| o.set(Some(base)));
         let fresh = build(options(None));
-        let expected_budget = Limits::default().traversal_budget_with_selections(1, 512);
+        let expected_budget =
+            Limits::default().traversal_budget_with_selections(1 + merges, 64 * merges, 512);
         let explicit = build(options(Some(expected_budget)));
         let fork_delta = {
             let mut delta = PreparedEvaluationInput::new(options(None));
@@ -6371,7 +6551,7 @@ mod rebuild_tests {
         assert_eq!(defaults.events, None);
         assert_eq!(defaults.traversal, None);
         assert_eq!(
-            defaults.traversal_budget(250_000),
+            defaults.traversal_budget(250_000, 0),
             DEFAULT_TRAVERSAL_BASE + 250_000 * DEFAULT_TRAVERSAL_PER_RECORD
         );
         let mut prepared = base();
@@ -6844,8 +7024,8 @@ mod rebuild_tests {
 
         let full_json: Value = serde_json::from_slice(&full_bytes).unwrap();
         let result_json: Value = serde_json::from_slice(&result_bytes).unwrap();
-        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v10"));
-        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v10"));
+        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v11"));
+        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v11"));
         assert!(result_json.get("nodes").is_none());
         // The v8 publication scan counts are gone. A checkpoint that
         // still carries them, or names the v8 version, is refused.
@@ -6892,6 +7072,7 @@ mod rebuild_tests {
         }
 
         for field in [
+            "account_contribution_digests",
             "options.selected_view",
             "options.import_selections",
             "options.overlay",
@@ -8019,7 +8200,7 @@ mod rebuild_tests {
         }
 
         // 2. 60-entry and 64-entry x 100,000 IDs selection under default budget (traversal: None):
-        // Valid default-budget checkpoints with < 5,000,000 remaining units must restore cleanly.
+        // the selection is charged once, and both checkpoints restore cleanly.
         let ids: Vec<String> = (0..100_000usize)
             .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
             .collect();
@@ -8071,7 +8252,7 @@ mod rebuild_tests {
                 .collect();
             let state = prepared.into_state();
             assert!(state.evaluation().available);
-            assert!(state.consumed_work() > 6_000_000);
+            assert!(state.consumed_work() > 100_000 && state.consumed_work() < 101_000);
 
             let full_cp = state.checkpoint("selection-default").unwrap();
             let res_cp = state.result_checkpoint("selection-default").unwrap();
@@ -8318,10 +8499,10 @@ mod rebuild_tests {
     }
 
     #[test]
-    fn selection_scan_default_budget_passes_distinct_selections_and_refuses_reused_selection() {
+    fn selection_scan_default_budget_passes_distinct_selections_and_a_reused_selection() {
         let importer = identity_from_seed(&[7u8; 32]);
 
-        // 1. Reusing one 100,000-ID selection across 160 entries is super-linear and refuses under default budget.
+        // 1. One 100,000-ID selection named by 160 entries is charged once and passes under the default budget.
         let shared_ids: Vec<String> = (0..100_000usize)
             .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
             .collect();
@@ -8369,13 +8550,8 @@ mod rebuild_tests {
             .map(|n| HostVerifiedRecord { node: n.clone() })
             .collect();
         let reused_state = reused_input.into_state();
-        assert!(!reused_state.evaluation().available);
-        assert!(
-            reused_state
-                .evaluation()
-                .reasons
-                .contains("resource_unavailable")
-        );
+        assert!(reused_state.evaluation().available);
+        assert!(reused_state.consumed_work() < 101_000);
         let reused_full_cp = reused_state.checkpoint("reused-sel").unwrap();
         let reused_res_cp = reused_state.result_checkpoint("reused-sel").unwrap();
         assert!(EvaluatedState::restore_host_checkpoint(&reused_full_cp, "reused-sel").is_ok());
@@ -8507,7 +8683,7 @@ mod rebuild_tests {
     }
 
     #[test]
-    fn unused_invalid_selection_padding_refuses_like_unpadded_reused_selection() {
+    fn unused_invalid_selection_padding_does_not_expand_the_default_budget() {
         let importer = identity_from_seed(&[7u8; 32]);
         let shared_ids: Vec<String> = (0..100_000usize)
             .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
@@ -8559,18 +8735,14 @@ mod rebuild_tests {
             .map(|n| HostVerifiedRecord { node: n.clone() })
             .collect();
         let padded_state = padded_input.into_state();
-        assert!(
-            !padded_state.evaluation().available,
-            "unused invalid selection padding must not expand default budget; consumed={}",
-            padded_state.consumed_work()
+        assert!(padded_state.evaluation().available);
+        // The base, one record and the one referenced valid selection.
+        assert_eq!(
+            padded_state.traversal_budget(),
+            10_100_256,
+            "unused invalid selection padding must not expand default budget"
         );
-        assert!(
-            padded_state
-                .evaluation()
-                .reasons
-                .contains("resource_unavailable")
-        );
-        assert_eq!(padded_state.consumed_work(), 10_100_256);
+        let consumed = padded_state.consumed_work();
         let full_cp = padded_state.checkpoint("invalid-pad").unwrap();
         let res_cp = padded_state.result_checkpoint("invalid-pad").unwrap();
         let restored_full =
@@ -8580,12 +8752,13 @@ mod rebuild_tests {
                 .unwrap();
         assert_eq!(restored_full.evaluation(), padded_state.evaluation());
         assert_eq!(restored_res.evaluation(), padded_state.evaluation());
-        assert_eq!(restored_full.consumed_work(), 10_100_256);
-        assert_eq!(restored_res.consumed_work(), 10_100_256);
+        assert_eq!(restored_full.consumed_work(), consumed);
+        assert_eq!(restored_res.consumed_work(), consumed);
     }
 
     #[test]
-    fn unused_valid_selection_padding_and_referenced_invalid_selection_refuse_at_default_budget() {
+    fn unused_valid_selection_padding_and_referenced_invalid_selection_do_not_expand_the_default_budget()
+     {
         let importer = identity_from_seed(&[7u8; 32]);
         let shared_ids: Vec<String> = (0..100_000usize)
             .map(|i| format!("jve1:{:064x}", 0x100_0000 + i))
@@ -8646,18 +8819,13 @@ mod rebuild_tests {
             .map(|n| HostVerifiedRecord { node: n.clone() })
             .collect();
         let valid_padded_state = valid_padded_input.into_state();
-        assert!(
-            !valid_padded_state.evaluation().available,
-            "unused valid selection padding must not expand default budget; consumed={}",
-            valid_padded_state.consumed_work()
+        assert!(valid_padded_state.evaluation().available);
+        assert_eq!(
+            valid_padded_state.traversal_budget(),
+            10_100_256,
+            "unused valid selection padding must not expand default budget"
         );
-        assert!(
-            valid_padded_state
-                .evaluation()
-                .reasons
-                .contains("resource_unavailable")
-        );
-        assert_eq!(valid_padded_state.consumed_work(), 10_100_256);
+        let consumed = valid_padded_state.consumed_work();
         let full_cp = valid_padded_state.checkpoint("valid-pad").unwrap();
         let res_cp = valid_padded_state.result_checkpoint("valid-pad").unwrap();
         let restored_full = EvaluatedState::restore_host_checkpoint(&full_cp, "valid-pad").unwrap();
@@ -8669,8 +8837,8 @@ mod rebuild_tests {
         .unwrap();
         assert_eq!(restored_full.evaluation(), valid_padded_state.evaluation());
         assert_eq!(restored_res.evaluation(), valid_padded_state.evaluation());
-        assert_eq!(restored_full.consumed_work(), 10_100_256);
-        assert_eq!(restored_res.consumed_work(), 10_100_256);
+        assert_eq!(restored_full.consumed_work(), consumed);
+        assert_eq!(restored_res.consumed_work(), consumed);
 
         // 2. A referenced invalid selection (wrong hash for 100,000 sorted jve1 IDs) adds 0 allowance.
         let bad_hash = format!("sha256:{}", "f".repeat(64));
@@ -8719,14 +8887,8 @@ mod rebuild_tests {
             .map(|n| HostVerifiedRecord { node: n.clone() })
             .collect();
         let mixed_state = mixed_input.into_state();
-        assert!(!mixed_state.evaluation().available);
-        assert!(
-            mixed_state
-                .evaluation()
-                .reasons
-                .contains("resource_unavailable")
-        );
-        assert_eq!(mixed_state.consumed_work(), 10_100_256);
+        assert!(mixed_state.evaluation().available);
+        assert_eq!(mixed_state.traversal_budget(), 10_100_256);
         let mixed_full_cp = mixed_state.checkpoint("mixed-invalid").unwrap();
         let mixed_res_cp = mixed_state.result_checkpoint("mixed-invalid").unwrap();
         assert!(EvaluatedState::restore_host_checkpoint(&mixed_full_cp, "mixed-invalid").is_ok());

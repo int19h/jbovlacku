@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import {
   corePath,
   createIdentity,
-  acceptFirstSignature,
+  establishOwnHistory,
   openWord,
   fixture,
 } from "./helpers.ts";
@@ -75,6 +75,8 @@ test("downloaded local search sends nothing and offline signing uses saved histo
   await privacy.dispose();
   // Offline signing uses the remembered local history only.
   await createIdentity(page);
+  // Signing from saved history needs an own event in this browser.
+  await establishOwnHistory(page);
   await page.getByText("Offline signing").click();
   await page.getByLabel("Sign from history saved in this browser only").check();
   await openWord(page, "cukta");
@@ -85,7 +87,6 @@ test("downloaded local search sends nothing and offline signing uses saved histo
     .first()
     .getByRole("button", { name: "Endorse" })
     .click();
-  await acceptFirstSignature(page);
   await expect(page.getByRole("status")).toHaveText(
     "Your endorsement is published.",
   );
@@ -1213,12 +1214,12 @@ test("remote search pages pin snapshot and view, survive browser back, and rejec
   await expect(
     results.getByRole("img", { name: "Score unavailable" }),
   ).toHaveCount(20);
-  await page.getByRole("button", { name: "show all" }).click();
+  await page.getByRole("button", { name: "Show all" }).click();
   await expect(results.locator("article")).toHaveCount(23);
   expect(await results.locator("article .hw").allTextContents()).toEqual(
     Array.from({ length: 23 }, (_, index) => `fixture-${index + 1}`),
   );
-  await expect(page.getByRole("button", { name: "show all" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Show all" })).toHaveCount(0);
   await page.getByRole("link", { name: "Settings" }).click();
   await page.goBack();
   await expect(page.getByLabel("Search words and meanings")).toHaveValue(
@@ -1246,7 +1247,7 @@ test("remote search pages pin snapshot and view, survive browser back, and rejec
   for (const query of ["loop", "duplicate"]) {
     await page.goto(`/search?q=${query}&lang=en`);
     await expect(results.locator("article")).toHaveCount(1);
-    await page.getByRole("button", { name: "show all" }).click();
+    await page.getByRole("button", { name: "Show all" }).click();
     await expect(results.locator(".notice")).toContainText(
       "Search pagination repeated a cursor or result.",
     );
@@ -1314,7 +1315,7 @@ test("local search pages through many results in stable order, keeps equal-class
   await expect(
     results.getByRole("link", { name: "also: 2 other matching definitions" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "show all" }).click();
+  await page.getByRole("button", { name: "Show all" }).click();
   await expect(results.locator("article")).toHaveCount(121);
   // Browser Back restores every result revealed by show all.
   await page.getByRole("link", { name: "Add a word" }).click();
@@ -1323,7 +1324,7 @@ test("local search pages through many results in stable order, keeps equal-class
   expect(await results.locator("article .hw").allTextContents()).toEqual(
     expected,
   );
-  await expect(page.getByRole("button", { name: "show all" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Show all" })).toHaveCount(0);
   await expect(
     page.getByText("Local results include every retained publication."),
   ).toHaveCount(0);

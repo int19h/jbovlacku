@@ -396,7 +396,7 @@ test("a broad local page keeps its total and show-all cap", async ({
   await expect(definitions).toContainText("985 more");
   await expect(words.locator("article.hit")).toHaveCount(0);
   await definitions
-    .getByRole("button", { name: "show all", exact: true })
+    .getByRole("button", { name: "Show all", exact: true })
     .click();
   await expect(definitions.locator("article.hit")).toHaveCount(1000);
   await expect(definitions).toContainText("5 more");
@@ -405,7 +405,7 @@ test("a broad local page keeps its total and show-all cap", async ({
     "1,005 definition results, 1,000 shown. 0 Lojban results.",
   );
   await expect(
-    page.getByRole("button", { name: "show all", exact: true }),
+    page.getByRole("button", { name: "Show all", exact: true }),
   ).toBeDisabled();
 });
 

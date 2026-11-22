@@ -10,7 +10,8 @@ mod policy;
 mod projection;
 pub use ancestors::{ANCESTRY_CAP_BASE, ANCESTRY_CAP_PER_RECORD, ancestry_cap};
 pub use api::{
-    AccountControl, Authority, Certificate, PublicationStatus, account_control, publication_status,
+    AccountControl, Authority, Certificate, PublicationStatus, PublicationStatusRef,
+    account_control, publication_status, publication_status_ref,
 };
 pub use arena::{
     ArrayValues, CompactValue, ValueView, lookup_work, packed_value_nodes,
@@ -56,14 +57,28 @@ pub struct EvaluationOptions {
     pub overlay: Option<std::rc::Rc<Value>>,
     pub limits: Limits,
 }
+/// The default budget before selections: `base` plus the record and
+/// predecessor terms. The selection resolver stops on the same value,
+/// so the two cannot disagree on it.
+pub(crate) fn default_input_budget(base: usize, records: usize, predecessors: usize) -> usize {
+    base.saturating_add(records.saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD))
+        .saturating_add(predecessors.saturating_mul(DEFAULT_TRAVERSAL_PER_PREDECESSOR))
+}
+/// The number of `previous` IDs over all records, for the default budget.
+pub(crate) fn predecessor_edges(nodes: &BTreeMap<String, graph::Node>) -> usize {
+    nodes.values().map(|node| node.previous.len()).sum()
+}
 impl EvaluationOptions {
     pub(crate) fn traversal_budget_for_nodes(
         &self,
         nodes: &BTreeMap<String, graph::Node>,
     ) -> usize {
         let resolved = policy::resolve_referenced_selections(self, nodes);
-        self.limits
-            .traversal_budget_with_selections(nodes.len(), resolved.allowance)
+        self.limits.traversal_budget_with_selections(
+            nodes.len(),
+            predecessor_edges(nodes),
+            resolved.allowance,
+        )
     }
 }
 /// An opaque projection held only in the trusted host's private storage.
@@ -240,6 +255,10 @@ impl PreparedEvaluationInput {
 }
 pub const DEFAULT_TRAVERSAL_BASE: usize = 10_000_000;
 pub const DEFAULT_TRAVERSAL_PER_RECORD: usize = 256;
+/// Default budget units per `previous` ID that a record names, present
+/// or absent. Each one is part of the input, and graph construction
+/// charges for it in the layout and in each of the three link modes.
+pub const DEFAULT_TRAVERSAL_PER_PREDECESSOR: usize = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -260,13 +279,18 @@ impl Default for Limits {
     }
 }
 impl Limits {
-    pub fn traversal_budget(&self, records: usize) -> usize {
-        self.traversal_budget_with_selections(records, 0)
+    /// `predecessors` counts every `previous` ID of every record.
+    pub fn traversal_budget(&self, records: usize, predecessors: usize) -> usize {
+        self.traversal_budget_with_selections(records, predecessors, 0)
     }
-    pub fn traversal_budget_with_selections(&self, records: usize, selection_ids: usize) -> usize {
+    pub fn traversal_budget_with_selections(
+        &self,
+        records: usize,
+        predecessors: usize,
+        selection_ids: usize,
+    ) -> usize {
         self.traversal.unwrap_or_else(|| {
-            DEFAULT_TRAVERSAL_BASE
-                .saturating_add(records.saturating_mul(DEFAULT_TRAVERSAL_PER_RECORD))
+            default_input_budget(DEFAULT_TRAVERSAL_BASE, records, predecessors)
                 .saturating_add(selection_ids)
         })
     }
@@ -344,13 +368,41 @@ pub struct Publication {
     #[serde(deserialize_with = "Option::deserialize")]
     pub deciding_claim: Option<String>,
     pub controller_candidates: BTreeSet<String>,
-    pub witness_contributions: BTreeMap<String, BTreeSet<String>>,
+    /// The account's contributions, shared with `AccountState`.
+    /// Checkpoints leave it out (`CheckpointEvaluation`), and restore
+    /// sets it from the account again, so a missing field reads as
+    /// empty. A checkpoint reader refuses the field when it is present
+    /// (`take_explicit_contributions`), even as an empty map.
+    #[serde(default, deserialize_with = "deserialize_witness_contributions")]
+    pub witness_contributions: Contributions,
     pub missing: BTreeSet<String>,
     pub content_available: bool,
     pub eligible: Eligibility,
     pub status: Status,
     pub reasons: BTreeSet<String>,
 }
+thread_local! {
+    /// Set when a publication's input names `witness_contributions`.
+    static EXPLICIT_CONTRIBUTIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Serde calls this only when the field is present, so it records the
+/// presence that `#[serde(default)]` alone would hide.
+fn deserialize_witness_contributions<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Contributions, D::Error> {
+    EXPLICIT_CONTRIBUTIONS.with(|seen| seen.set(true));
+    Contributions::deserialize(deserializer)
+}
+/// Whether a publication decoded on this thread since the last call
+/// named `witness_contributions`. Checkpoint readers call it before
+/// and after decoding.
+pub(crate) fn take_explicit_contributions() -> bool {
+    EXPLICIT_CONTRIBUTIONS.with(|seen| seen.replace(false))
+}
+/// Witness keys to the claims they observed. Every publication credited
+/// to an account shares the account's map, so a publication costs one
+/// reference, not a copy of the evidence. Serialized as the plain map.
+pub type Contributions = std::rc::Rc<BTreeMap<String, BTreeSet<String>>>;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AccountState {
@@ -358,7 +410,7 @@ pub struct AccountState {
     #[serde(deserialize_with = "Option::deserialize")]
     pub controller: Option<String>,
     pub candidates: BTreeSet<String>,
-    pub contributions: BTreeMap<String, BTreeSet<String>>,
+    pub contributions: Contributions,
     pub observation_evidence: BTreeMap<String, BTreeSet<String>>,
     pub certificates: Vec<Certificate>,
     pub chain: BTreeSet<String>,
@@ -451,6 +503,126 @@ impl Serialize for Evaluation {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
+        self.serialize_as(serializer, false)
+    }
+}
+/// The evaluation as a checkpoint stores it: every publication without
+/// its `witness_contributions`. Each credited publication shares its
+/// account's map, and the account is stored once, so restore sets the
+/// publications' maps from it instead of reading one copy for each.
+pub(crate) struct CheckpointEvaluation<'a>(pub &'a Evaluation);
+impl Serialize for CheckpointEvaluation<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.0.serialize_as(serializer, true)
+    }
+}
+struct CheckpointPublications<'a>(&'a BTreeMap<String, Publication>);
+impl Serialize for CheckpointPublications<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_map(
+            self.0
+                .iter()
+                .map(|(id, p)| (id, CheckpointPublication::from(p))),
+        )
+    }
+}
+/// A publication's fields in their serialized order, without
+/// `witness_contributions`.
+#[derive(Serialize)]
+struct CheckpointPublication<'a> {
+    id: &'a String,
+    issuer: &'a String,
+    kind: &'a String,
+    word: &'a String,
+    language: &'a Option<String>,
+    assignment: &'a Option<String>,
+    lineage: &'a BTreeMap<String, String>,
+    imported: &'a bool,
+    source: &'a Option<String>,
+    source_record: &'a Option<u64>,
+    account: &'a Option<AccountKey>,
+    authority: &'a Authority,
+    controller: &'a Option<String>,
+    claim: &'a Option<String>,
+    observations: &'a BTreeSet<String>,
+    status_frontier: &'a BTreeSet<String>,
+    deciding_claim: &'a Option<String>,
+    controller_candidates: &'a BTreeSet<String>,
+    missing: &'a BTreeSet<String>,
+    content_available: &'a bool,
+    eligible: &'a Eligibility,
+    status: &'a Status,
+    reasons: &'a BTreeSet<String>,
+}
+impl<'a> From<&'a Publication> for CheckpointPublication<'a> {
+    fn from(p: &'a Publication) -> Self {
+        // Every field is named, so a new publication field does not
+        // compile until it is added here too.
+        let Publication {
+            id,
+            issuer,
+            kind,
+            word,
+            language,
+            assignment,
+            lineage,
+            imported,
+            source,
+            source_record,
+            account,
+            authority,
+            controller,
+            claim,
+            observations,
+            status_frontier,
+            deciding_claim,
+            controller_candidates,
+            witness_contributions: _,
+            missing,
+            content_available,
+            eligible,
+            status,
+            reasons,
+        } = p;
+        Self {
+            id,
+            issuer,
+            kind,
+            word,
+            language,
+            assignment,
+            lineage,
+            imported,
+            source,
+            source_record,
+            account,
+            authority,
+            controller,
+            claim,
+            observations,
+            status_frontier,
+            deciding_claim,
+            controller_candidates,
+            missing,
+            content_available,
+            eligible,
+            status,
+            reasons,
+        }
+    }
+}
+impl Evaluation {
+    fn serialize_as<S: serde::Serializer>(
+        &self,
+        serializer: S,
+        checkpoint: bool,
+    ) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(15))?;
         map.serialize_entry("selected_view", &self.selected_view)?;
@@ -458,7 +630,11 @@ impl Serialize for Evaluation {
         map.serialize_entry("reasons", &self.reasons)?;
         map.serialize_entry("receipts", &self.receipts)?;
         map.serialize_entry("lifecycle", &self.lifecycle)?;
-        map.serialize_entry("publications", &self.publications)?;
+        if checkpoint {
+            map.serialize_entry("publications", &CheckpointPublications(&self.publications))?;
+        } else {
+            map.serialize_entry("publications", &self.publications)?;
+        }
         map.serialize_entry("accounts", &self.accounts)?;
         map.serialize_entry("registers", &self.registers)?;
         map.serialize_entry("judgments", &self.judgments)?;
@@ -628,9 +804,11 @@ fn evaluate_prepared(prepared: PreparedEvaluationInput) -> Evaluation {
         &nodes,
         &mut cache,
     );
-    let budget = input
-        .limits
-        .traversal_budget_with_selections(nodes.len(), resolved.allowance);
+    let budget = input.limits.traversal_budget_with_selections(
+        nodes.len(),
+        predecessor_edges(&nodes),
+        resolved.allowance,
+    );
     let graph = graph::Graph::new_with_budget(nodes, budget);
     let result = evaluate_graph_with_selections_cached(
         &input,
@@ -834,6 +1012,11 @@ fn publications_for(
             .collect(),
         None => graph.nodes.iter().collect(),
     };
+    // The publications are inserted after the loop, so that the loop
+    // and the import index can read the evaluation's policy and
+    // selections.
+    let mut built = Vec::new();
+    let mut imports: Option<ImportEntries<'_>> = None;
     for (id, node) in restricted {
         if !node.semantic || !matches!(node.kind.as_str(), "definition.publish" | "rafsi.publish") {
             continue;
@@ -868,43 +1051,58 @@ fn publications_for(
             let mut selected = false;
             let mut unknown = false;
             if let Some(policy) = &result.policy {
-                for entry in policy
-                    .view()
-                    .index("import_sets")
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                {
-                    if !graph.charge(1) {
-                        break;
-                    }
-                    if entry.index("importer").as_str() != Some(&node.issuer)
-                        || source
-                            .as_deref()
-                            .is_some_and(|s| Some(s) != entry.index("source").as_str())
-                    {
-                        continue;
-                    }
-                    match entry
-                        .index("selection")
-                        .as_str()
-                        .and_then(|s| result.selections.get(s))
-                    {
-                        Some(ids) => {
-                            if ids.contains(id) {
-                                if source.is_some() {
-                                    selected = true;
-                                } else {
-                                    unknown = true;
-                                    reasons.insert("source_attribution_pending".into());
-                                }
+                let index =
+                    imports.get_or_insert_with(|| ImportEntries::new(policy, &result.selections));
+                // A scan of every entry charged one unit per entry. The
+                // lookup charges one unit plus one per selection that
+                // holds this publication, and never more than the scan.
+                let containing = index.containing.get(id.as_str());
+                let work = index.entries.min(1 + containing.map_or(0, Vec::len));
+                if work == 0 || graph.charge(work) {
+                    let group = match &source {
+                        Some(source) => index
+                            .by_source
+                            .get(node.issuer.as_str())
+                            .and_then(|sources| sources.get(source.as_str())),
+                        None => index.by_importer.get(node.issuer.as_str()),
+                    };
+                    if let Some(group) = group {
+                        unknown |= group.missing;
+                        for selection in containing.into_iter().flatten() {
+                            if !group.selections.contains(selection) {
+                                continue;
+                            }
+                            if source.is_some() {
+                                selected = true;
+                            } else {
+                                unknown = true;
+                                reasons.insert("source_attribution_pending".into());
                             }
                         }
-                        None => unknown = true,
                     }
                 }
             } else {
                 unknown = true;
+            }
+            #[cfg(test)]
+            if let Some(policy) = &result.policy
+                && !graph.resource.get()
+            {
+                assert_eq!(
+                    (
+                        selected,
+                        unknown,
+                        reasons.contains("source_attribution_pending")
+                    ),
+                    import_scan(
+                        policy,
+                        &result.selections,
+                        &node.issuer,
+                        id,
+                        source.as_deref()
+                    ),
+                    "import index differs from the entry scan for {id}"
+                );
             }
             if !selected {
                 eligible = if unknown {
@@ -916,7 +1114,7 @@ fn publications_for(
             }
         }
         let lineage = lineage(graph, node);
-        result.publications.insert(
+        built.push((
             id.clone(),
             Publication {
                 id: id.clone(),
@@ -953,7 +1151,7 @@ fn publications_for(
                 status_frontier: BTreeSet::new(),
                 deciding_claim: None,
                 controller_candidates: BTreeSet::new(),
-                witness_contributions: BTreeMap::new(),
+                witness_contributions: Contributions::default(),
                 missing: BTreeSet::new(),
                 content_available: body.is_some(),
                 eligible,
@@ -965,7 +1163,127 @@ fn publications_for(
                 },
                 reasons,
             },
-        );
+        ));
+    }
+    drop(imports);
+    for (id, publication) in built {
+        result.publications.insert(id, publication);
+    }
+}
+
+/// The entry scan that `ImportEntries` replaces: every entry, in order.
+#[cfg(test)]
+fn import_scan(
+    policy: &CompactValue,
+    selections: &BTreeMap<String, BTreeSet<String>>,
+    issuer: &str,
+    id: &str,
+    source: Option<&str>,
+) -> (bool, bool, bool) {
+    let (mut selected, mut unknown, mut pending) = (false, false, false);
+    for entry in policy
+        .view()
+        .index("import_sets")
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if entry.index("importer").as_str() != Some(issuer)
+            || source.is_some_and(|s| Some(s) != entry.index("source").as_str())
+        {
+            continue;
+        }
+        match entry
+            .index("selection")
+            .as_str()
+            .and_then(|s| selections.get(s))
+        {
+            Some(ids) => {
+                if ids.contains(id) {
+                    if source.is_some() {
+                        selected = true;
+                    } else {
+                        unknown = true;
+                        pending = true;
+                    }
+                }
+            }
+            None => unknown = true,
+        }
+    }
+    (selected, unknown, pending)
+}
+
+/// The selected view's import entries, indexed for the publication
+/// pass. A publication with a source matches the entries of its
+/// importer for that source. A publication without a source matches
+/// every entry of its importer.
+struct ImportEntries<'a> {
+    entries: usize,
+    by_source: BTreeMap<String, BTreeMap<String, ImportGroup<'a>>>,
+    by_importer: BTreeMap<String, ImportGroup<'a>>,
+    /// For each ID in a resolved selection, the selections that hold it.
+    containing: BTreeMap<&'a str, Vec<&'a str>>,
+}
+#[derive(Default)]
+struct ImportGroup<'a> {
+    /// Some entry's selection is not a string or is not resolved.
+    missing: bool,
+    /// The resolved selections that the entries name.
+    selections: BTreeSet<&'a str>,
+}
+impl<'a> ImportEntries<'a> {
+    /// One pass over the entries and one over the resolved selections.
+    /// `policy::select` already charged both.
+    fn new(policy: &'a CompactValue, selections: &'a BTreeMap<String, BTreeSet<String>>) -> Self {
+        let mut index = ImportEntries {
+            entries: 0,
+            by_source: BTreeMap::new(),
+            by_importer: BTreeMap::new(),
+            containing: BTreeMap::new(),
+        };
+        for entry in policy
+            .view()
+            .index("import_sets")
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            index.entries += 1;
+            let Some(importer) = entry.index("importer").as_str().map(str::to_owned) else {
+                continue;
+            };
+            let selection = entry
+                .index("selection")
+                .as_str()
+                .and_then(|s| selections.get_key_value(s))
+                .map(|(s, _)| s.as_str());
+            let add = |group: &mut ImportGroup<'a>| match selection {
+                Some(selection) => {
+                    group.selections.insert(selection);
+                }
+                None => group.missing = true,
+            };
+            if let Some(source) = entry.index("source").as_str() {
+                add(index
+                    .by_source
+                    .entry(importer.clone())
+                    .or_default()
+                    .entry(source.to_owned())
+                    .or_default());
+            }
+            add(index.by_importer.entry(importer).or_default());
+        }
+        for (selection, ids) in selections {
+            for id in ids {
+                index
+                    .containing
+                    .entry(id.as_str())
+                    .or_default()
+                    .push(selection.as_str());
+            }
+        }
+        index
     }
 }
 fn native_status(graph: &graph::Graph, result: &mut Evaluation) {

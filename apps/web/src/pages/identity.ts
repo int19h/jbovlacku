@@ -484,7 +484,7 @@ export async function identityPage(
     disclosure("Offline signing", () => [
       offline,
       p(
-        "This option works without a connection. Other devices can have newer branches. A restored key has no saved event history.",
+        "This option works without a connection after this key has published at least one record in this browser. Other devices can have newer branches. A restored key has no saved event history, so it needs a connection for its first record here.",
         "meta",
       ),
     ]),

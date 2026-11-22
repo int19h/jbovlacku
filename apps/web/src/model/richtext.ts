@@ -128,7 +128,12 @@ export function renderRichText(
   if (options.language) container.lang = options.language;
   if (!isRichText(value)) return container;
   for (const paragraph of value) {
-    const row = el(options.paragraph ?? "p");
+    // A span is inline, so paragraphs rendered as spans would join into one
+    // run of text. Keep each paragraph on its own line.
+    const row = el(
+      options.paragraph ?? "p",
+      options.paragraph === "span" ? { style: "display:block" } : {},
+    );
     for (const node of paragraph) {
       const rendered = renderInline(node, options);
       if (rendered) row.append(rendered);

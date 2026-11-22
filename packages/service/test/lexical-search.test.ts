@@ -4,6 +4,13 @@ import { lexicalSearch } from "../src/lexical-search.ts";
 import { rankNearby } from "../src/nearby.ts";
 import type { SearchEntry } from "../src/packages.ts";
 import type { Evaluation } from "../../core/src/index.ts";
+import {
+  PREVIEW_SELMAHO_COUNT,
+  PREVIEW_SELMAHO_LENGTH,
+  boundedPreviewAttribution,
+  boundedPreviewList,
+} from "../../search/src/preview-row.ts";
+import { sourceDate } from "../../../apps/web/src/lib/source-date.ts";
 
 test("accent aliases share one hit whose display follows the selected definition", () => {
   const entries: SearchEntry[] = ["djan", "dján"].map((spelling, index) => ({
@@ -34,6 +41,122 @@ test("accent aliases share one hit whose display follows the selected definition
     assert.equal(hits[0].definitions.length, 2);
   }
   assert.deepEqual(lexicalSearch(entries, "\u0301", "en", evaluation), []);
+});
+
+test("hit previews copy the retained row metadata and nothing more", () => {
+  const entry: SearchEntry = {
+    event: "previewed",
+    word: { language: "jbo", spelling: "cukta" },
+    language: "en",
+    glosses: [{ text: "book" }],
+    plain_text: "A synthetic book.",
+    classification: { kind: "gismu", selmaho: ["A", "B"] },
+    body: "body",
+  };
+  const evaluation = {
+    publications: {
+      previewed: { word: "cukta-word", eligible: "eligible", status: "active" },
+    },
+    receipts: { previewed: { interpretation: "effective" } },
+  } as unknown as Evaluation;
+  const attribution = {
+    source: "Synthetic source",
+    author: "Synthetic author",
+    account: null,
+    dates: { created: "2003-03-01" },
+  };
+  const hits = lexicalSearch(
+    [entry],
+    "book",
+    "en",
+    evaluation,
+    false,
+    undefined,
+    {},
+    {},
+    undefined,
+    {
+      previewed: {
+        issuer: "ed25519:" + "a".repeat(64),
+        notes: true,
+        attribution,
+        selmaho: ["A"],
+      },
+    },
+  );
+  assert.equal(hits.length, 1);
+  // The metadata is bounded when the packages are built, so the hit copies
+  // the retained values as they are.
+  assert.deepEqual(hits[0].preview.selmaho, ["A"]);
+  assert.equal(hits[0].preview.issuer, "ed25519:" + "a".repeat(64));
+  assert.equal(hits[0].preview.notes, true);
+  assert.equal(hits[0].preview.attribution, attribution);
+  assert.equal(hits[0].preview.rafsi, undefined);
+  // Without preview metadata the row fields stay absent, not invented.
+  const bare = lexicalSearch([entry], "book", "en", evaluation);
+  assert.equal(bare[0].preview.issuer, undefined);
+  assert.equal(bare[0].preview.selmaho, undefined);
+});
+
+test("the preview rule drops or shortens row strings over their bounds", () => {
+  assert.deepEqual(
+    boundedPreviewList(
+      ["X".repeat(33), "BAI", ...Array.from({ length: 10 }, (_, i) => `S${i}`)],
+      PREVIEW_SELMAHO_COUNT,
+      PREVIEW_SELMAHO_LENGTH,
+    ),
+    ["BAI", ...Array.from({ length: 7 }, (_, i) => `S${i}`)],
+  );
+  const attribution = boundedPreviewAttribution({
+    source: "s".repeat(300),
+    // A surrogate pair straddles the cut and is not split.
+    author: "a".repeat(254) + "😀" + "a".repeat(10),
+    account: { origin: "o".repeat(257), account: 7 },
+    dates: {
+      ["l".repeat(33)]: "2003",
+      long: "9".repeat(65),
+      created: "2003-03-01",
+    },
+  })!;
+  assert.equal(attribution.source, "s".repeat(255) + "…");
+  assert.equal(attribution.author, "a".repeat(254) + "…");
+  assert.equal(attribution.account, null);
+  assert.deepEqual(attribution.dates, { created: "2003-03-01" });
+});
+
+test("the date bound keeps the labels the row reads before other labels", () => {
+  const dates: Record<string, string> = {
+    a: "1",
+    b: "2",
+    c: "3",
+    created_at: "2020-01-15T00:00:00Z",
+    d: "4",
+    e: "5",
+    f: "6",
+    g: "7",
+    time: "1000000000",
+  };
+  const bounded = boundedPreviewAttribution({
+    source: "s",
+    author: "x",
+    account: null,
+    dates,
+  })!;
+  assert.deepEqual(Object.keys(bounded.dates), [
+    "time",
+    "created_at",
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f",
+  ]);
+  // The row shows the same date as the full record.
+  assert.equal(
+    sourceDate({ legacy: { attribution: { dates: bounded.dates } } }),
+    sourceDate({ legacy: { attribution: { dates } } }),
+  );
 });
 
 test("related lexical queries scan every entry once even above ten HTTP pages", () => {

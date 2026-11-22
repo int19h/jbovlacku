@@ -341,7 +341,7 @@ impl Graph {
     #[allow(dead_code)]
     pub fn new(nodes: impl Into<Rc<BTreeMap<String, Node>>>, limits: &Limits) -> Self {
         let nodes = nodes.into();
-        let budget = limits.traversal_budget(nodes.len());
+        let budget = limits.traversal_budget(nodes.len(), crate::predecessor_edges(&nodes));
         Self::new_with_budget(nodes, budget)
     }
     #[allow(dead_code)]

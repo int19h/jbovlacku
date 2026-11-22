@@ -12,6 +12,14 @@ import {
   verifyEnvelope,
 } from "../../../../packages/core/src/browser.ts";
 import {
+  PREVIEW_RAFSI_COUNT,
+  PREVIEW_RAFSI_LENGTH,
+  PREVIEW_SELMAHO_COUNT,
+  PREVIEW_SELMAHO_LENGTH,
+  boundedPreviewAttribution,
+  boundedPreviewList,
+} from "../../../../packages/search/src/preview-row.ts";
+import {
   eventId,
   hashId,
   identityId,
@@ -61,6 +69,12 @@ export const selfPeer: Peer = {
   label: location.host || "this server",
 };
 
+/** A response body that is larger than the reader allows. */
+export class ByteLimitError extends Error {
+  constructor() {
+    super("The response exceeds the browser byte limit.");
+  }
+}
 export async function readBounded(
   response: Response,
   limit: number,
@@ -68,7 +82,7 @@ export async function readBounded(
 ): Promise<Uint8Array> {
   if (Number(response.headers.get("content-length")) > limit) {
     void response.body?.cancel().catch(() => {});
-    throw new Error("The response exceeds the browser byte limit.");
+    throw new ByteLimitError();
   }
   const reader = response.body?.getReader();
   if (!reader) return new Uint8Array();
@@ -85,8 +99,7 @@ export async function readBounded(
       const { done, value } = await Promise.race([reader.read(), aborted]);
       if (done) break;
       length += value.length;
-      if (length > limit)
-        throw new Error("The response exceeds the browser byte limit.");
+      if (length > limit) throw new ByteLimitError();
       chunks.push(value);
     }
   } catch (error) {
@@ -152,7 +165,10 @@ export async function objectBytes(
     if (options.signal?.aborted) throw error;
     if (error instanceof TypeError)
       throw new TransportError("No connection to the server.", "offline");
-    throw error;
+    // An error answer keeps its status when its body is too large. The body
+    // is discarded, and the error uses the plain status message.
+    if (!(error instanceof ByteLimitError) || response.ok) throw error;
+    bytes = new Uint8Array();
   }
   if (!response.ok) {
     let message = `Request failed (${response.status}).`;
@@ -672,6 +688,52 @@ export function forgetWord(id: string) {
   for (const key of [...wordCache.keys()])
     if (key.includes(`|${id}|`)) wordCache.delete(key);
 }
+/**
+ * Brings the optional row fields of a search preview within the preview
+ * bounds (packages/search/src/preview-row.ts), in place. A field the server
+ * sent too long is dropped or shortened by the same rule the server applies.
+ * A field of the wrong shape is removed, so the row falls back to the
+ * per-definition read for it. No row field ever rejects the page.
+ */
+function boundPreviewRow(preview: Record<string, unknown>) {
+  if (preview.rafsi !== undefined) {
+    const rafsi = boundedPreviewList(
+      preview.rafsi,
+      PREVIEW_RAFSI_COUNT,
+      PREVIEW_RAFSI_LENGTH,
+    );
+    if (rafsi) preview.rafsi = rafsi;
+    else delete preview.rafsi;
+  }
+  if (preview.selmaho !== undefined) {
+    const selmaho = boundedPreviewList(
+      preview.selmaho,
+      PREVIEW_SELMAHO_COUNT,
+      PREVIEW_SELMAHO_LENGTH,
+    );
+    if (selmaho) preview.selmaho = selmaho;
+    else delete preview.selmaho;
+  }
+  // The issuer, notes flag and attribution make one attribution line, so
+  // they are present together or absent together. Without the attribution,
+  // an issuer would draw an imported definition as a native one.
+  if (
+    preview.issuer === undefined &&
+    preview.notes === undefined &&
+    preview.attribution === undefined
+  )
+    return;
+  const attribution = boundedPreviewAttribution(preview.attribution);
+  if (
+    !identityId(preview.issuer) ||
+    typeof preview.notes !== "boolean" ||
+    attribution === undefined
+  ) {
+    delete preview.issuer;
+    delete preview.notes;
+    delete preview.attribution;
+  } else preview.attribution = attribution;
+}
 const validCursor = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= 512;
 export function validateHits(hits: unknown, pageLimit: number): SearchHit[] {
@@ -705,6 +767,7 @@ export function validateHits(hits: unknown, pageLimit: number): SearchHit[] {
     throw new Error(
       "The server returned an invalid search page. Start a new search to retry.",
     );
+  for (const hit of hits) if (hit.preview) boundPreviewRow(hit.preview);
   return hits as SearchHit[];
 }
 /** Searches disclosed meaning text literally in a JSON body. */
