@@ -276,8 +276,8 @@ export async function identityPage(
     );
     main.append(banner);
     const testForm = backupTestForm(app, (restoreFocus) => {
-      // A passing test updates the banner in place. The rest of the page,
-      // including any control the reader moved to, stays connected.
+      // A passing test replaces the banner with the passed note and
+      // removes the test form. The rest of the page is not replaced.
       banner.replaceWith(
         p(
           "Your backup test passed in this browser. This does not prove that you still keep a durable copy.",
@@ -311,6 +311,7 @@ export async function identityPage(
         { class: "t" },
         el("span", {
           class: "lock-state",
+          tabindex: "-1",
           text: session.unlocked ? "Unlocked" : "Locked",
         }),
         el("small", {
@@ -371,8 +372,13 @@ export async function identityPage(
               app.announce(describe(error));
             }
           }
-          if (focus.shouldRestore())
-            lockRow.querySelector("button")?.focus({ preventScroll: true });
+          if (focus.shouldRestore()) {
+            // The status text, not the Lock button: a repeated Enter or
+            // Space must not activate anything here.
+            const state = lockRow.querySelector(".lock-state");
+            if (state instanceof HTMLElement)
+              state.focus({ preventScroll: true });
+          }
         } catch (error) {
           unlockError.textContent = describe(error);
           unlockError.hidden = false;

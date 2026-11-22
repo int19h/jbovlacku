@@ -109,7 +109,7 @@ test("a failed import of the existing key keeps its form, alert and focus", asyn
   await expect(form.getByLabel("Backup passphrase")).toBeFocused();
 });
 
-test("unlock uses its own message and focus lands on the Lock control", async ({
+test("unlock uses its own message and focus lands on the Unlocked status text", async ({
   page,
 }) => {
   const backup = await createIdentity(page);
@@ -144,7 +144,25 @@ test("unlock uses its own message and focus lands on the Lock control", async ({
   await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
   expect(
     await page.evaluate(() => document.activeElement?.textContent?.trim()),
-  ).toBe("Lock");
+  ).toBe("Unlocked");
+  // A second Enter must not lock the key again.
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
+  await expect(page.getByText("Locked", { exact: true })).toHaveCount(0);
+  // A held Enter, whose repeats arrive after the unlock, must not either.
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await expect(page.getByText("Locked", { exact: true })).toBeVisible();
+  await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+  await page.getByLabel("Passphrase", { exact: true }).focus();
+  await page.keyboard.down("Enter");
+  await page.waitForTimeout(700);
+  await page.keyboard.up("Enter");
+  await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
+  await expect(page.getByText("Locked", { exact: true })).toHaveCount(0);
+  expect(
+    await page.evaluate(() => document.activeElement?.textContent?.trim()),
+  ).toBe("Unlocked");
 });
 
 test("handover banner keeps the delivery link out of the sentence and follows delivery updates", async ({
