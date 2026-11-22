@@ -652,6 +652,42 @@ test("a package note does not contradict the version that another tab refreshed"
   await other.close();
 });
 
+test("a note after a version 1 fallback gives the cause and no recovery instruction", async ({
+  page,
+}) => {
+  // A damaged version 2 index fails its hash check. The version 1 package
+  // then downloads, so the reader has a usable package.
+  await page.route("**/api/v1/packages/en?**", (route) =>
+    new URL(route.request().url()).searchParams.get("version") === "2"
+      ? route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: "{}",
+        })
+      : route.continue(),
+  );
+  await settings(page);
+  await page
+    .getByLabel("Download a package", { exact: true })
+    .selectOption("en");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  const note = page.locator("[data-package-note=en]");
+  await expect(note).toHaveText(
+    "The English search package is saved in this browser. This download saved version 1 because version 2 failed: The search package hash did not match.",
+  );
+  const row = page
+    .locator(".row", {
+      has: page.locator(
+        "[data-package-control=remove][data-package-language=en]",
+      ),
+    })
+    .locator("small");
+  await expect(row).toContainText(
+    "Version 1 was saved instead of version 2: The search package hash did not match.",
+  );
+  await expect(row).not.toContainText("download another package");
+});
+
 test("a new saved value from another tab clears an earlier failed save", async ({
   page,
   context,

@@ -354,10 +354,19 @@ export async function downloadPackage(
       options.signal?.aborted
     )
       throw reportPackageError(error);
-    const reason = error.message;
-    return downloadVersion(language, options, reason);
+    // The version 1 download that follows gives the reader a usable
+    // package, so the reason keeps only the cause and drops the recovery
+    // instruction that a failed download ends with.
+    return downloadVersion(language, options, packageCause(error.message));
   }
 }
+/** The instruction that ends a package error that leaves no usable package. */
+const PACKAGE_RECOVERY = " Search this server or download another package.";
+/** The cause of a package error, without its recovery instruction. */
+const packageCause = (message: string) =>
+  message.endsWith(PACKAGE_RECOVERY)
+    ? message.slice(0, -PACKAGE_RECOVERY.length)
+    : message;
 /** A package failure that names the version that failed. */
 export class PackageVersionError extends Error {
   constructor(
