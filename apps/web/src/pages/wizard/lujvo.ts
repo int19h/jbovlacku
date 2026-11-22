@@ -343,9 +343,17 @@ export async function lujvoPage(
   // Search for parts.
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   let partSearch = 0;
+  // The no-package note keeps its Settings link node across re-renders.
+  let packageNote: HTMLLIElement | null = null;
+  const appendResult = (node: HTMLElement) => {
+    if (packageNote?.parentElement === addResults)
+      addResults.insertBefore(node, packageNote);
+    else addResults.append(node);
+  };
   const renderSearch = async () => {
     const request = ++partSearch;
-    addResults.replaceChildren();
+    for (const child of [...addResults.children])
+      if (child !== packageNote) child.remove();
     const query = addField.input.value.trim();
     if (!query) return;
     const current = () =>
@@ -367,7 +375,7 @@ export async function lujvoPage(
     } catch (error) {
       lookupUnavailable = true;
       if (current())
-        addResults.append(el("li", { class: "notice", text: describe(error) }));
+        appendResult(el("li", { class: "notice", text: describe(error) }));
     }
     if (!current()) return;
     for (const hit of hits) {
@@ -439,7 +447,7 @@ export async function lujvoPage(
           },
         ),
       );
-      addResults.append(item);
+      appendResult(item);
     }
     // A recognized form without a dictionary entry.
     const analysis = analyzeWord(state.profile, query);
@@ -510,22 +518,23 @@ export async function lujvoPage(
           },
         ),
       );
-      addResults.append(item);
+      appendResult(item);
     }
-    if (!cached)
-      addResults.append(
-        el(
-          "li",
-          { class: "meta" },
-          text(
-            packageInvalid
-              ? "The saved search package is invalid, so word search is unavailable here. Download another package on the "
-              : "No local package is downloaded, so word search is unavailable here. Download one on the ",
-          ),
-          link("Settings", "/preferences"),
-          text(" page, or add a form as entered."),
+    if (!cached) {
+      packageNote ??= el(
+        "li",
+        { class: "meta" },
+        text(
+          packageInvalid
+            ? "The saved search package is invalid, so word search is unavailable here. Download another package on the "
+            : "No local package is downloaded, so word search is unavailable here. Download one on the ",
         ),
+        link("Settings", "/preferences"),
+        text(" page, or add a form as entered."),
       );
+      if (packageNote.parentElement !== addResults)
+        addResults.append(packageNote);
+    }
   };
   addField.input.addEventListener("input", () => {
     partSearch++;

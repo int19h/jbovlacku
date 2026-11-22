@@ -45,6 +45,64 @@ async function seedPublishDraft(page: Page) {
   });
 }
 
+test("the Settings link in the nearby note keeps focus across the debounce", async ({
+  page,
+}) => {
+  await page.goto("/new/meaning");
+  await page.getByLabel("Meaning", { exact: true }).fill("book private");
+  const settings = page
+    .locator("p.meta")
+    .getByRole("link", { name: "Settings" });
+  await expect(settings).toBeVisible();
+  await expect(settings).toHaveAttribute("href", "/preferences");
+  await page
+    .getByLabel("Meaning", { exact: true })
+    .fill("book private committee");
+  await settings.focus();
+  await page.waitForTimeout(700);
+  await expect(settings).toBeFocused();
+});
+
+test("the Settings link in the lujvo package note keeps focus across the debounce", async ({
+  page,
+}) => {
+  await startLujvo(page);
+  await page.getByLabel("Add a part").fill("cukta");
+  const matching = page.getByRole("list", { name: "Matching words" });
+  const settings = matching.getByRole("link", { name: "Settings" });
+  await expect(settings).toBeVisible();
+  await expect(settings).toHaveAttribute("href", "/preferences");
+  await page.getByLabel("Add a part").fill("cukt");
+  await settings.focus();
+  await page.waitForTimeout(500);
+  await expect(settings).toBeFocused();
+});
+
+test("after consent, searching this server is plain text, not a button", async ({
+  page,
+}) => {
+  const sent: string[] = [];
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname === "/api/v1/search" &&
+      request.method() === "POST"
+    )
+      sent.push((request.postDataJSON() as { q: string }).q);
+  });
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto("/new/meaning");
+  await page.getByLabel("Meaning", { exact: true }).fill("book");
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await expect(page.locator("ol.similar")).toContainText("cukta");
+  expect(sent).toEqual(["book"]);
+  await expect(
+    page.getByRole("button", { name: "searching this server" }),
+  ).toHaveCount(0);
+  await expect(page.getByText("searching this server")).toBeVisible();
+});
+
 test("a gismu stem offered as a chip is not also reported as not offered", async ({
   page,
 }) => {

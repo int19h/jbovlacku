@@ -645,6 +645,17 @@ export async function meaningPage(
   const list = el("ol", { class: "similar" });
   const note = el("p", { class: "meta" });
   right.append(list, note);
+  // The Settings note keeps its link node while the same note applies.
+  let settingsNoteShown = false;
+  const showSettingsNote = () => {
+    if (settingsNoteShown) return;
+    settingsNoteShown = true;
+    note.replaceChildren(
+      text("Download a search package in "),
+      link("Settings", routes.preferences),
+      text(" for local nearby search, or allow a search on this server."),
+    );
+  };
   let cached: CachedPackage | null = null;
   // Consent covers one exact query and its definition language.
   let remoteConsent: string | null = null;
@@ -709,6 +720,7 @@ export async function meaningPage(
     timer = setTimeout(() => void nearby(), 400);
   };
   const renderHits = (hits: SearchHit[], source: "local" | "remote") => {
+    settingsNoteShown = false;
     list.replaceChildren();
     if (!hits.length) {
       note.textContent = meaning.input.value.trim()
@@ -828,13 +840,9 @@ export async function meaningPage(
           renderMode();
         }
       }
-      renderHits([], "local");
+      list.replaceChildren();
       if (remoteConsent !== consentKey()) {
-        note.replaceChildren(
-          text("Download a search package in "),
-          link("Settings", routes.preferences),
-          text(" for local nearby search, or allow a search on this server."),
-        );
+        showSettingsNote();
         return;
       }
       const result = await remoteDraftSearch(remoteQuery(), language, 10, {
