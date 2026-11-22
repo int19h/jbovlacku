@@ -759,6 +759,15 @@ for (const action of ["select", "reset", "fallback"] as const) {
         }),
       ).toBeVisible();
     }
+    if (action === "fallback") {
+      // The Trust page offers the fallback only in the personal view.
+      await page
+        .getByRole("radio", { name: "Mine: site view + my choices" })
+        .check();
+      await expect(
+        page.getByRole("link", { name: "Trust: personal view", exact: true }),
+      ).toBeVisible();
+    }
     await pauseClock(page);
     await holdEachSave(page);
     if (action === "select") {
