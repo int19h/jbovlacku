@@ -64,7 +64,7 @@ test("the trust page panel follows the chosen view and says when the calculation
     .getByRole("radio", { name: "Mine: site view + my choices" })
     .check();
   await expect(panel).toContainText(
-    "No local calculation yet. It starts when you open a word page, or now with Recompute from records.",
+    "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records.",
   );
   await expect(
     panel.getByRole("button", { name: "Use the site view" }),
@@ -257,10 +257,215 @@ test("the status message lets clicks through and leaves room below the page", as
   expect(underneath).toBe(false);
   // At the end of the page the footer links clear the message.
   await page.evaluate(() =>
-    window.scrollTo(0, document.documentElement.scrollHeight),
+    window.scrollTo({
+      top: document.documentElement.scrollHeight,
+      behavior: "instant",
+    }),
   );
   const footer = page.locator("footer.footer a").first();
   const footerBox = (await footer.boundingBox())!;
   const statusBox = (await status.boundingBox())!;
   expect(footerBox.y + footerBox.height).toBeLessThanOrEqual(statusBox.y);
+});
+
+const statusRegion = (page: Page) => page.locator("#app > [role=status]");
+/** Waits two frames, so a scroll that follows focus has happened. */
+const frames = (page: Page) =>
+  page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+/** Scrolls to the end of the page, also when content arrives late. */
+async function scrollToEnd(page: Page) {
+  await expect
+    .poll(async () => {
+      await page.evaluate(() =>
+        window.scrollTo({
+          top: document.documentElement.scrollHeight,
+          behavior: "instant",
+        }),
+      );
+      await frames(page);
+      return page.evaluate(
+        () =>
+          Math.ceil(window.scrollY + window.innerHeight) >=
+          document.documentElement.scrollHeight - 1,
+      );
+    })
+    .toBe(true);
+}
+/** Endorses the first cukta definition and waits for the status message. */
+async function endorseCukta(page: Page, keyboard = false) {
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  const endorse = page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" });
+  if (keyboard) {
+    await endorse.focus();
+    await page.keyboard.press("Enter");
+  } else await endorse.click();
+  await acceptFirstSignature(page);
+  await expect(statusRegion(page)).toHaveText("Your endorsement is published.");
+}
+
+for (const [width, height] of [
+  [360, 640],
+  [1280, 720],
+] as const) {
+  test(`a cleared status message keeps the page height and scroll position at ${width}x${height}`, async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    await page.setViewportSize({ width, height });
+    await endorseCukta(page);
+    await scrollToEnd(page);
+    const before = await page.evaluate(() => ({
+      y: window.scrollY,
+      height: document.documentElement.scrollHeight,
+    }));
+    // At the end of the page the footer links clear the message.
+    const statusBox = (await statusRegion(page).boundingBox())!;
+    for (const footerLink of await page.locator("footer.footer a").all()) {
+      const box = (await footerLink.boundingBox())!;
+      expect(box.y + box.height).toBeLessThanOrEqual(statusBox.y);
+    }
+    await expect(statusRegion(page)).toHaveText("", { timeout: 12000 });
+    await frames(page);
+    const after = await page.evaluate(() => ({
+      y: window.scrollY,
+      height: document.documentElement.scrollHeight,
+    }));
+    expect(after).toEqual(before);
+  });
+
+  test(`a keyboard user reaches every control clear of the status message at ${width}x${height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height });
+    await endorseCukta(page, true);
+    let checked = 0;
+    for (let step = 0; step < 60; step++) {
+      await page.keyboard.press("Tab");
+      await frames(page);
+      const overlap = await page.evaluate(() => {
+        const status = document.querySelector("#app > [role=status]")!;
+        const focused = document.activeElement;
+        if (!status.textContent || !focused || focused === document.body)
+          return null;
+        const a = focused.getBoundingClientRect();
+        const b = status.getBoundingClientRect();
+        return Math.max(
+          0,
+          Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top),
+        );
+      });
+      if (overlap === null) break;
+      checked++;
+      expect(overlap, `focus step ${step}`).toBe(0);
+    }
+    expect(checked).toBeGreaterThan(5);
+  });
+}
+
+test("a long status message uses the phone width and the footer clears it", async ({
+  page,
+}) => {
+  const f = fixture();
+  await page.setViewportSize({ width: 360, height: 640 });
+  await createIdentity(page);
+  await page.goto(`/identity/${encodeURIComponent(f.identities.author)}`);
+  await choosePrivately(page, "Ignore");
+  const box = (await statusRegion(page).boundingBox())!;
+  // The box may use the width between the 16px margins, not only half.
+  expect(box.width).toBeGreaterThan(300);
+  expect(box.x).toBeGreaterThanOrEqual(15);
+  expect(box.x + box.width).toBeLessThanOrEqual(345);
+  await scrollToEnd(page);
+  const statusBox = (await statusRegion(page).boundingBox())!;
+  for (const footerLink of await page.locator("footer.footer a").all()) {
+    const link = (await footerLink.boundingBox())!;
+    expect(link.y + link.height).toBeLessThanOrEqual(statusBox.y);
+  }
+});
+
+test("a running download keeps its panel and Cancel after a switch to the site view", async ({
+  page,
+}) => {
+  await choosePersonal(page);
+  const panel = page.getByRole("region", { name: "Local calculation" });
+  const siteNote = page.getByText("It needs no calculation in this browser.");
+  await page.route("**/api/v1/records?*", () => new Promise(() => {}));
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("Downloading records");
+  await page.getByRole("radio", { name: "Site view only" }).check();
+  await expect(
+    page.getByRole("link", { name: "Trust: site view" }),
+  ).toBeVisible();
+  await expect(panel).toContainText("Downloading records");
+  await expect(siteNote).toHaveCount(0);
+  await panel.getByRole("button", { name: "Cancel" }).click();
+  await expect(panel).toHaveCount(0);
+  await expect(siteNote).toBeVisible();
+  // The same holds for Use the site view in the panel.
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("Downloading records");
+  await panel.getByRole("button", { name: "Use the site view" }).click();
+  await expect(
+    page.getByRole("link", { name: "Trust: site view" }),
+  ).toBeVisible();
+  await expect(panel).toContainText("Downloading records");
+  await expect(panel.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await expect(siteNote).toHaveCount(0);
+});
+
+test("the unlock request keeps a profile name in its own direction", async ({
+  page,
+}) => {
+  const f = fixture();
+  const name = "‮ecila";
+  await page.route(
+    `**/api/v1/identities/${encodeURIComponent(f.identities.author)}*`,
+    async (route) => {
+      if (new URL(route.request().url()).pathname.endsWith("/activity"))
+        return route.continue();
+      const response = await route.fetch();
+      const json = await response.json();
+      json.profile = {
+        state: "known",
+        claims: [
+          {
+            event: `jve1:${"a".repeat(64)}`,
+            issuer: f.identities.author,
+            body_hash: null,
+            body: { name, bio: [], links: [] },
+            body_status: "present",
+          },
+        ],
+        claims_count: 1,
+        claims_complete: true,
+      };
+      await route.fulfill({ response, json });
+    },
+  );
+  await page.goto(`/identity/${encodeURIComponent(f.identities.author)}`);
+  await expect(page.locator("main h1")).toHaveText(name);
+  await page.getByRole("button", { name: "Trust their judgments" }).click();
+  const panel = page.getByRole("region", { name: /^Trust / });
+  await panel.getByRole("radio", { name: /Publicly/ }).check();
+  await panel.getByRole("button", { name: "Trust", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Trust", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/identity$/);
+  await expect(
+    page.getByText(/will continue after you create or import a key/),
+  ).toContainText(`Trusting ⁨${name}⁩ publicly`);
 });

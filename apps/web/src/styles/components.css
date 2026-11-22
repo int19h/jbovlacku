@@ -248,10 +248,14 @@ main.surface-publish {
 }
 .status {
   position: fixed;
-  left: 50%;
+  /* Centered within a 16px margin on each side. The box is as wide as its
+     text, up to the full width between the margins. */
+  left: 16px;
+  right: 16px;
   bottom: 16px;
-  transform: translateX(-50%);
-  max-width: min(40rem, calc(100vw - 32px));
+  width: fit-content;
+  max-width: 40rem;
+  margin-inline: auto;
   background: var(--surface);
   border: 1px solid var(--ink3);
   border-radius: 10px;
@@ -264,9 +268,14 @@ main.surface-publish {
 .status:empty {
   opacity: 0;
 }
-/* While a message shows, the page can scroll its last controls above it. */
-.status:not(:empty) + .footer {
-  padding-bottom: 80px;
+/* The room below the page for the tallest message so far. The shell only
+   grows it, so a cleared message never changes the page height. Focus and
+   scrolling into view keep controls above the same room. */
+html {
+  scroll-padding-bottom: var(--status-room, 0px);
+}
+.footer {
+  padding-bottom: var(--status-room, 0px);
 }
 .notice {
   padding: 12px 14px;

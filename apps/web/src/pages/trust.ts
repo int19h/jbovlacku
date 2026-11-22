@@ -9,6 +9,7 @@ import {
 } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import { calculationPanel } from "../components/localview.ts";
+import { onDisconnect } from "../lib/lifetime.ts";
 import { getManifest, loadRecord } from "../data/api.ts";
 import { loadSiteView } from "../data/view.ts";
 import { eventId, type ViewBody } from "../model/types.ts";
@@ -79,18 +80,27 @@ export async function trustPage(
       seg,
     ),
   );
-  // The calculation panel belongs to the personal view only. The site view
-  // uses the server's scores and needs no local calculation.
+  // The calculation panel belongs to the personal view. The site view uses
+  // the server's scores and needs no local calculation, but a download that
+  // is still running keeps its panel and Cancel until it ends.
   const modeSlot = el("div");
+  let shown: "panel" | "site" | null = null;
+  let busy = false;
   const showMode = () => {
+    const want =
+      app.session.preferences.viewMode === "personal" || busy
+        ? "panel"
+        : "site";
+    if (want === shown) return;
+    shown = want;
     modeSlot.replaceChildren(
-      app.session.preferences.viewMode === "personal"
+      want === "panel"
         ? calculationPanel(app, {
             mode: "personal",
             context,
             label: "Local calculation",
             idleText:
-              "No local calculation yet. It starts when you open a word page, or now with Recompute from records.",
+              "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records.",
             onRefresh: rerender,
           })
         : p(
@@ -99,7 +109,13 @@ export async function trustPage(
           ),
     );
   };
-  showMode();
+  onDisconnect(
+    modeSlot,
+    app.personal.subscribe((status) => {
+      busy = status.state === "downloading" || status.state === "evaluating";
+      showMode();
+    }),
+  );
   main.append(
     modeSlot,
     disclosure("How the two views work", () => [

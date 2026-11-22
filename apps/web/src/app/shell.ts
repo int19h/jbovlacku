@@ -175,6 +175,27 @@ export function buildShell(
   };
   delivery.subscribe(renderMarker);
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
+  // Room below the page for the tallest status message so far. It only
+  // grows, so clearing a message never changes the page height or scroll.
+  let statusRoom = 0;
+  const reserveStatusRoom = () => {
+    const room = Math.ceil(status.getBoundingClientRect().height) + 32;
+    if (room <= statusRoom) return;
+    statusRoom = room;
+    document.documentElement.style.setProperty("--status-room", `${room}px`);
+  };
+  // A focused control under a visible message scrolls clear of it.
+  const uncover = (target: Element | null) => {
+    if (!status.textContent || !(target instanceof HTMLElement)) return;
+    if (target === document.body || status.contains(target)) return;
+    const box = target.getBoundingClientRect();
+    const top = status.getBoundingClientRect().top - 8;
+    if (box.bottom > top && box.top < window.innerHeight)
+      window.scrollBy(0, box.bottom - top);
+  };
+  document.addEventListener("focusin", (event) =>
+    requestAnimationFrame(() => uncover(event.target as Element)),
+  );
   return {
     main,
     status,
@@ -182,8 +203,11 @@ export function buildShell(
     announce(message: string) {
       status.textContent = message;
       clearTimeout(statusTimer);
-      if (message)
+      if (message) {
+        reserveStatusRoom();
+        uncover(document.activeElement);
         statusTimer = setTimeout(() => (status.textContent = ""), 8000);
+      }
     },
     setViewLabel(label: string) {
       viewLink.textContent = label;

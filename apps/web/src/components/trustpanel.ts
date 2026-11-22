@@ -356,7 +356,8 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
         )
           return;
         await app.session.requireUnlocked(
-          `${mode === "trust" ? "Trusting" : "Ignoring"} ${label} publicly`,
+          // First Strong Isolate marks keep a name in its own direction.
+          `${mode === "trust" ? "Trusting" : "Ignoring"} \u2068${label}\u2069 publicly`,
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
             const results = await app.signer.publish([
