@@ -139,18 +139,24 @@ test("the unavailable note follows a failure, a lost connection, and a cancel", 
   await expect(note).toContainText("Request failed (503).");
 });
 
+test("the trust panel names the person as the page heading does", async ({
+  page,
+}) => {
+  const f = fixture();
+  await page.goto(`/identity/${encodeURIComponent(f.identities.author)}`);
+  const heading = (await page.locator("main h1").textContent())!.trim();
+  await page.getByRole("button", { name: "Trust their judgments" }).click();
+  await expect(
+    page.getByRole("region", { name: /^Trust / }).getByRole("heading"),
+  ).toHaveText(`Trust ${heading}`);
+});
+
 test("the person page names each choice in plain words and follows a new choice", async ({
   page,
 }) => {
   const f = fixture();
   await createIdentity(page);
   await page.goto(`/identity/${encodeURIComponent(f.identities.author)}`);
-  const heading = (await page.locator("main h1").textContent())!.trim();
-  await page.getByRole("button", { name: "Trust their judgments" }).click();
-  // The panel names the person as the page heading does.
-  const panel = page.getByRole("region", { name: /^Trust / });
-  await expect(panel.getByRole("heading")).toHaveText(`Trust ${heading}`);
-  await panel.getByRole("button", { name: "Cancel" }).click();
   const choices = page.locator("main p", { hasText: /^Your choices:/ });
   await expect(choices).toHaveCount(0);
   await choosePrivately(page, "Trust");
@@ -179,7 +185,13 @@ test("the reviewer table names the reader as you", async ({ page }) => {
   });
   await third.locator("details.judgment-details summary").click();
   const reviewers = third.getByRole("region", { name: "Reviewers" });
-  const authorRow = reviewers.getByRole("row").filter({ hasText: "endorses" });
+  // Other suites on the shared server can add reviewers, so the row is
+  // found by the author's link in its first cell.
+  const authorRow = reviewers.getByRole("row").filter({
+    has: page.locator(
+      `td:first-child a[href="/identity/${encodeURIComponent(f.identities.author)}"]`,
+    ),
+  });
   await expect(authorRow).toContainText("trusted by you");
   await expect(authorRow.getByRole("link", { name: "you" })).toHaveAttribute(
     "href",

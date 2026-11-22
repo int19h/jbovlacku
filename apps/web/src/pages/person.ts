@@ -344,10 +344,12 @@ export async function personPage(
   // Your choices about this identity. A save in the trust panel below
   // renders the line again, so it lists every current choice.
   const choices = el("div");
+  let choicesRequest = 0;
   const showChoices = async () => {
+    const request = ++choicesRequest;
     const overlay = await app.store.overlay().catch(() => null);
     const registers = await app.own.registers();
-    if (!context.live()) return;
+    if (!context.live() || request !== choicesRequest) return;
     const own = registers
       ? [...registers.trust.entries()].filter(
           ([key, state]) =>
