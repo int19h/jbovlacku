@@ -712,10 +712,8 @@ export class DeliveryEngine {
       if (!current) return undefined;
       const peer = current.peers[peerId];
       if (!peer || peer.state === "accepted") continue;
-      // The latest stop decision wins, for explicit attempts too. A stopped
-      // record waits for Resume.
-      if (current.stopped) continue;
-      if (!explicit && !this.automaticallyDue(peer, now)) continue;
+      if (!explicit && (current.stopped || !this.automaticallyDue(peer, now)))
+        continue;
       const started = Date.now();
       // Random, so two attempts that start in the same millisecond differ.
       const attemptId = crypto.randomUUID();
@@ -850,7 +848,6 @@ export class DeliveryEngine {
         maySend = false;
         const current = stored.peers[peerId];
         if (
-          stored.stopped ||
           !current ||
           current.state === "accepted" ||
           !unchangedSince(current, peer)

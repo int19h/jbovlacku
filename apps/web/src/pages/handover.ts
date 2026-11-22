@@ -951,33 +951,9 @@ export function renderExisting(
   });
   container.append(box);
   let updateGeneration = 0;
-  let retryFailure: string | null = null;
-  let saveFailure: string | null = null;
-  const localErrors = new Map<string, { name: string; error: string }>();
-  const knownPeerText = new Map<string, string>();
   const update = async () => {
     const mine = ++updateGeneration;
-    let state: Awaited<ReturnType<typeof handoverState>>;
-    try {
-      state = await handoverState(app, record);
-    } catch (error) {
-      if (mine !== updateGeneration || !box.isConnected) return;
-      // Keep the last known evidence and show the read failure in place.
-      box.querySelector("[data-read-failure]")?.remove();
-      if (!box.childElementCount)
-        box.append(
-          p("The saved delivery state could not be read.", "small"),
-        );
-      box.append(
-        el("p", {
-          class: "notice",
-          role: "alert",
-          "data-read-failure": "",
-          text: `The browser could not read the saved delivery state: ${describe(error)}`,
-        }),
-      );
-      return;
-    }
+    const state = await handoverState(app, record);
     if (mine !== updateGeneration || !box.isConnected) return;
     // Focus is decided here, not before the read. A reader who moved focus
     // elsewhere during the read keeps that choice. The kind of element that
@@ -1009,108 +985,29 @@ export function renderExisting(
     );
     const peerLine = (item: OutboxItem | null, name: string) => {
       if (!item) return p(`${name}: not in this browser's outbox.`, "meta");
-      const parts = Object.entries(item.peers).map(([id, peer]) => {
-        const key = `${item.id}:${id}`;
-        const label = savedPeer(item, id)?.label ?? id;
-        // An unknown outcome with an error and no send mark means a local
-        // failure stopped the send. Keep the earlier evidence for that peer.
-        if (
-          peer.state === "unknown" &&
-          peer.error &&
-          peer.sendStarted === undefined
-        ) {
-          localErrors.set(item.id, { name, error: peer.error });
-          return knownPeerText.get(key) ?? `${label} ${peer.state}`;
-        }
-        const rendered = `${label} ${peer.state}`;
-        knownPeerText.set(key, rendered);
-        localErrors.delete(item.id);
-        return rendered;
-      });
-      return p(`${name}: ${parts.join(", ")}.`, "meta");
+      return p(
+        `${name}: ${Object.entries(item.peers)
+          .map(
+            ([id, peer]) => `${savedPeer(item, id)?.label ?? id} ${peer.state}`,
+          )
+          .join(", ")}.`,
+        "meta",
+      );
     };
     box.append(
       peerLine(state.transfer, "Transfer"),
       peerLine(state.accept, "Acceptance"),
     );
-    for (const failure of localErrors.values())
-      box.append(
-        el("p", {
-          class: "notice",
-          role: "alert",
-          text: `The browser could not send the ${failure.name === "Transfer" ? "transfer" : "acceptance"}: ${failure.error}`,
-        }),
-      );
     if (!(state.transferDone && state.acceptDone))
       box.append(
         p(
-          "Retries reuse the stored events and look the receipt up by event ID first. No replacement acceptance is ever signed automatically.",
+          "Retries reuse the stored events and look the receipt up by event ID first. No replacement acceptance is ever signed automatically. Retry or resume delivery from Not delivered.",
           "small",
         ),
         el(
           "p",
           { class: "small" },
           link("Not delivered", "/outbox", { class: "touch-link" }),
-          text("  "),
-          button(
-            "Check again",
-            async () => {
-              let before: Awaited<
-                ReturnType<typeof handoverState>
-              > | null = null;
-              let reading = true;
-              try {
-                const current = await handoverState(app, record);
-                before = current;
-                reading = false;
-                // One explicit attempt per record: trying the acceptance
-                // delivers the earlier transfer first, so a single call
-                // covers both. A stopped acceptance falls back to the
-                // transfer alone.
-                const target =
-                  current.accept &&
-                  !current.acceptDone &&
-                  !current.accept.stopped
-                    ? current.accept
-                    : current.transfer &&
-                        !current.transferDone &&
-                        !current.transfer.stopped
-                      ? current.transfer
-                      : null;
-                if (target) await app.delivery.tryNow(target.id);
-              } catch (error) {
-                if (!reading) {
-                  // A send that started before the failure means the browser
-                  // could not save the outcome, not that nothing was tried.
-                  let sent = false;
-                  try {
-                    const after = await handoverState(app, record);
-                    const progressed = (
-                      item: OutboxItem | null,
-                      prior: OutboxItem | null,
-                    ) =>
-                      Boolean(
-                        item &&
-                          prior &&
-                          Object.entries(item.peers).some(
-                            ([id, peer]) =>
-                              peer.attempts !== prior.peers[id]?.attempts ||
-                              (peer.sendStarted !== undefined &&
-                                prior.peers[id]?.sendStarted === undefined),
-                          ),
-                      );
-                    sent =
-                      progressed(after.transfer, before?.transfer ?? null) ||
-                      progressed(after.accept, before?.accept ?? null);
-                  } catch {}
-                  if (sent) saveFailure = describe(error);
-                  else retryFailure = describe(error);
-                }
-              }
-              await update();
-            },
-            { class: "btn" },
-          ),
         ),
       );
     else
@@ -1120,33 +1017,11 @@ export function renderExisting(
           "small",
         ),
       );
-    if (retryFailure) {
-      box.append(
-        el("p", {
-          class: "notice",
-          role: "alert",
-          text: `The retry could not start in this browser: ${retryFailure}`,
-        }),
-      );
-      retryFailure = null;
-    }
-    if (saveFailure) {
-      box.append(
-        el("p", {
-          class: "notice",
-          role: "alert",
-          text: `The browser could not save the outcome: ${saveFailure}. The record will be checked again.`,
-        }),
-      );
-      saveFailure = null;
-    }
     if (focusKind) {
       if (state.transferDone && state.acceptDone)
         statusLine.focus({ preventScroll: true });
       else if (focusKind === "A")
         box.querySelector("a")?.focus({ preventScroll: true });
-      else if (focusKind === "BUTTON")
-        box.querySelector("button")?.focus({ preventScroll: true });
       else statusLine.focus({ preventScroll: true });
     }
   };

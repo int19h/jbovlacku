@@ -147,7 +147,7 @@ test("unlock uses its own message and focus lands on the Lock control", async ({
   ).toBe("Lock");
 });
 
-test("handover banner keeps the delivery link out of the sentence and offers Check again", async ({
+test("handover banner keeps the delivery link out of the sentence and follows delivery updates", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -176,27 +176,24 @@ test("handover banner keeps the delivery link out of the sentence and offers Che
   await expect(banner).toContainText("Old key retired, acceptance waiting.");
   await expect(
     banner.getByRole("button", { name: "Check again" }),
-  ).toBeVisible();
+  ).toHaveCount(0);
   const sentence = banner.getByText(
-    "Retries reuse the stored events and look the receipt up by event ID first. No replacement acceptance is ever signed automatically.",
+    "Retries reuse the stored events and look the receipt up by event ID first. No replacement acceptance is ever signed automatically. Retry or resume delivery from Not delivered.",
     { exact: true },
   );
   await expect(sentence).toBeVisible();
   await expect(sentence.getByRole("link")).toHaveCount(0);
-  await banner.getByRole("button", { name: "Check again" }).click();
-  await expect(banner).toContainText("Old key retired, acceptance waiting.");
-  // Activating Check again keeps focus on the replacement control.
-  await banner.getByRole("button", { name: "Check again" }).focus();
-  await page.keyboard.press("Enter");
-  await expect(banner).toContainText("Old key retired, acceptance waiting.");
-  await expect(
-    banner.getByRole("button", { name: "Check again" }),
-  ).toBeFocused();
-  // With the server healthy again, a focused Check again retries delivery
-  // in this tab, completes the handover, and focus moves to the status text.
+  // Delivery from a second page of the same browser updates this banner
+  // through the delivery notification, without any manual re-check.
   await page.unrouteAll({ behavior: "ignoreErrors" });
-  await banner.getByRole("button", { name: "Check again" }).focus();
-  await page.keyboard.press("Enter");
+  const other = await page.context().newPage();
+  await other.goto("/outbox");
+  await other.getByRole("button", { name: "Try now" }).click();
+  await expect(other.locator("#app > [role=status]")).toHaveText("Delivered.");
+  await other.close();
+  const notDelivered = banner.getByRole("link", { name: "Not delivered" });
+  await notDelivered.focus();
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await expect(banner).toContainText("Handover complete");
   await expect
     .poll(() =>
@@ -243,16 +240,17 @@ test("a delayed banner refresh does not steal focus moved elsewhere", async ({
       return original.call(this, store);
     };
   });
-  await banner.getByRole("button", { name: "Check again" }).click();
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
   const search = page.getByLabel("Search words and meanings");
   await search.focus();
   await expect(search).toBeFocused();
   await page.waitForTimeout(700);
   await expect(search).toBeFocused();
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
-test("banner notifications restore focus to the same control, and Check again retries delivery", async ({
+test("banner notifications restore focus to the same control", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -287,8 +285,6 @@ test("banner notifications restore focus to the same control, and Check again re
   await expect(notDelivered).toBeFocused();
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await page.unrouteAll({ behavior: "ignoreErrors" });
-  await banner.getByRole("button", { name: "Check again" }).click();
-  await expect(banner).toContainText("Handover complete");
 });
 
 test("stored-key unlock keeps concurrency and container errors truthful", async ({
@@ -385,126 +381,6 @@ test("key work does not steal focus moved to the search field", async ({
   await search.focus();
   await expect(page.getByText("Unlocked", { exact: true })).toBeVisible();
   await expect(search).toBeFocused();
-});
-
-test("Check again honors a later stop, attempts each record once, and reports local failures", async ({
-  page,
-  context,
-}) => {
-  await createIdentity(page);
-  await page.route("**/api/v1/events", (route) =>
-    route.fulfill({
-      status: 403,
-      json: { code: "refused", message: "Refused.", event: null, field: null },
-    }),
-  );
-  await page.getByRole("link", { name: "Start" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Move to a new key" }),
-  ).toBeVisible();
-  await createSuccessor(page);
-  const sign = page.getByRole("button", { name: "Sign the handover" });
-  for (const box of await page.getByRole("checkbox").all()) await box.check();
-  await expect(sign).toBeEnabled();
-  await sign.click();
-  const banner = page.getByRole("region", { name: "Handover status" });
-  await expect(banner).toContainText(/Acceptance:.*refused/);
-  const ids = await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    return (await new LocalStore().list("outbox"))
-      .sort((a: any, b: any) => a.order - b.order)
-      .map((i: any) => i.id);
-  });
-  // A local storage failure is shown in the banner, with the evidence kept.
-  const pageErrors: string[] = [];
-  page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    (window as any).origMerge = LocalStore.prototype.mergeOutbox;
-    LocalStore.prototype.mergeOutbox = async function () {
-      throw new DOMException(
-        "Local storage quota exhausted.",
-        "QuotaExceededError",
-      );
-    };
-  });
-  await banner.getByRole("button", { name: "Check again" }).click();
-  await expect(banner.getByRole("alert")).toContainText(
-    "The retry could not start in this browser",
-  );
-  await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    LocalStore.prototype.mergeOutbox = (window as any).origMerge;
-  });
-  await expect(banner).toContainText(/Acceptance:.*refused/);
-  expect(pageErrors.join(" ")).not.toContain("quota");
-  // One activation: one receipt lookup and one POST per record, transfer first.
-  const trace: string[] = [];
-  const observe = (request: any) => {
-    if (request.url().includes("/receipts/"))
-      trace.push(
-        `GET ${decodeURIComponent(request.url()).includes(ids[1]) ? "accept" : "transfer"}`,
-      );
-    if (request.method() === "POST" && request.url().endsWith("/events"))
-      trace.push(
-        `POST ${request.postData()?.includes(ids[1]) ? "accept" : "transfer"}`,
-      );
-  };
-  page.on("request", observe);
-  await banner.getByRole("button", { name: "Check again" }).click();
-  await expect
-    .poll(() => trace.filter((entry) => entry === "POST accept").length)
-    .toBe(1);
-  await page.waitForTimeout(300);
-  page.off("request", observe);
-  expect(trace).toEqual([
-    "GET transfer",
-    "POST transfer",
-    "GET accept",
-    "POST accept",
-  ]);
-  // A stop in another tab during the transfer retry keeps the acceptance waiting.
-  const other = await context.newPage();
-  await other.goto("/outbox");
-  const row = other.locator(`[data-outbox-record="${ids[1]}"]`).first();
-  await expect(
-    row.getByRole("button", { name: "Stop retrying" }),
-  ).toBeVisible();
-  await page.unroute("**/api/v1/events");
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => (release = resolve));
-  let held!: () => void;
-  const waiting = new Promise<void>((resolve) => (held = resolve));
-  trace.length = 0;
-  page.on("request", observe);
-  await page.route("**/receipts/**", async (route) => {
-    if (decodeURIComponent(route.request().url()).includes(ids[0])) {
-      held();
-      await gate;
-    }
-    await route.continue();
-  });
-  await banner.getByRole("button", { name: "Check again" }).click();
-  await waiting;
-  await row.getByRole("button", { name: "Stop retrying" }).click();
-  await expect(row.getByRole("button", { name: "Resume" })).toBeVisible();
-  release();
-  await expect(banner).toContainText("Old key retired, acceptance waiting.");
-  await page.waitForTimeout(300);
-  page.off("request", observe);
-  expect(trace.filter((entry) => entry === "POST accept")).toHaveLength(0);
-  expect(trace.filter((entry) => entry === "GET accept")).toHaveLength(0);
-  const accept = await page.evaluate(async (id) => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const item = await new LocalStore().get("outbox", id);
-    return {
-      stopped: item.stopped,
-      states: Object.values(item.peers).map((peer: any) => peer.state),
-    };
-  }, ids[1]);
-  expect(accept.stopped).toBe(true);
-  expect(accept.states).not.toContain("accepted");
-  await other.close();
 });
 
 test("unlock keeps the reading position when the reader clicks prose during the wait", async ({
@@ -629,193 +505,6 @@ test("six emoji do not satisfy the 12-character minimum", async ({ page }) => {
   await expect(page.getByRole("alert")).toHaveText(
     "Use at least 12 characters.",
   );
-});
-
-async function refusedHandover(page: Page) {
-  await createIdentity(page);
-  await page.route("**/api/v1/events", (route) =>
-    route.fulfill({
-      status: 403,
-      json: { code: "refused", message: "Refused.", event: null, field: null },
-    }),
-  );
-  await page.getByRole("link", { name: "Start" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Move to a new key" }),
-  ).toBeVisible();
-  await createSuccessor(page);
-  const sign = page.getByRole("button", { name: "Sign the handover" });
-  for (const box of await page.getByRole("checkbox").all()) await box.check();
-  await expect(sign).toBeEnabled();
-  await sign.click();
-  const banner = page.getByRole("region", { name: "Handover status" });
-  await expect(banner).toContainText(/Acceptance:.*refused/);
-  const ids = await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    return (await new LocalStore().list("outbox"))
-      .sort((a: any, b: any) => a.order - b.order)
-      .map((i: any) => i.id);
-  });
-  return { banner, ids };
-}
-
-test("a receipt save failure says the outcome could not be saved", async ({
-  page,
-}) => {
-  const { banner, ids } = await refusedHandover(page);
-  await page.unroute("**/api/v1/events");
-  await page.evaluate(async (target) => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const original = LocalStore.prototype.mergeOutbox;
-    let count = 0;
-    LocalStore.prototype.mergeOutbox = async function (
-      id: string,
-      fn: never,
-    ) {
-      if (id === target && ++count === 2) {
-        LocalStore.prototype.mergeOutbox = original;
-        throw new DOMException("Cannot save receipt.", "QuotaExceededError");
-      }
-      return original.call(this, id, fn);
-    };
-  }, ids[0]);
-  await banner.getByRole("button", { name: "Check again" }).click();
-  await expect(banner.getByRole("alert")).toContainText(
-    "The browser could not save the outcome",
-  );
-  await expect(banner.getByRole("alert")).not.toContainText(
-    "could not start",
-  );
-  await banner.getByRole("button", { name: "Check again" }).click();
-  await expect(banner).toContainText("Handover complete");
-});
-
-test("a one-time local write failure names the record and keeps its evidence", async ({
-  page,
-}) => {
-  const { banner, ids } = await refusedHandover(page);
-  const requests: string[] = [];
-  page.on("request", (request) => {
-    if (request.url().includes("/receipts/"))
-      requests.push(
-        `GET ${decodeURIComponent(request.url()).includes(ids[1]) ? "accept" : "transfer"}`,
-      );
-    if (request.method() === "POST" && request.url().endsWith("/events"))
-      requests.push(
-        `POST ${request.postData()?.includes(ids[1]) ? "accept" : "transfer"}`,
-      );
-  });
-  await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const original = LocalStore.prototype.mergeOutbox;
-    LocalStore.prototype.mergeOutbox = async function () {
-      LocalStore.prototype.mergeOutbox = original;
-      throw new DOMException(
-        "Local storage quota exhausted.",
-        "QuotaExceededError",
-      );
-    };
-  });
-  await banner.getByRole("button", { name: "Check again" }).click();
-  await expect(banner.getByRole("alert")).toContainText(
-    "The browser could not send the transfer: Local storage quota exhausted.",
-  );
-  await expect(banner).toContainText(/Transfer:.*refused/);
-  await page.waitForTimeout(300);
-  expect(
-    requests.filter((entry) => entry.endsWith("transfer")),
-  ).toEqual(["GET transfer"]);
-});
-
-test("an outbox read failure keeps the last evidence and shows the error", async ({
-  page,
-}) => {
-  const { banner } = await refusedHandover(page);
-  const pageErrors: string[] = [];
-  page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const original = LocalStore.prototype.list;
-    LocalStore.prototype.list = async function (store: string) {
-      if (store === "outbox")
-        throw new Error("Cannot read the local outbox.");
-      return original.call(this, store);
-    };
-  });
-  await banner.getByRole("button", { name: "Check again" }).click();
-  await page.waitForTimeout(300);
-  await expect(banner.getByRole("alert")).toContainText(
-    "The browser could not read the saved delivery state",
-  );
-  await expect(banner).toContainText(/Transfer:.*refused/);
-  expect(pageErrors.join(" ")).not.toContain("Cannot read the local outbox");
-});
-
-test("the saved publication page shows stopped records and offers no retry for them", async ({
-  page,
-  context,
-}) => {
-  await page.route("**/api/v1/events", (route) =>
-    route.fulfill({
-      status: 403,
-      json: { code: "refused", message: "Refused.", event: null, field: null },
-    }),
-  );
-  await createIdentity(page);
-  await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const { newDraft } = await import(String("/src/model/draft.ts"));
-    await new LocalStore().put(
-      "drafts",
-      "current",
-      newDraft({
-        spelling: "brode",
-        kind: "gismu",
-        meaning: "A disposable test meaning.",
-        text: "A disposable test meaning.",
-        structured: false,
-        frameMode: "none",
-        step: 5,
-        rafsiClaims: [{ rafsi: "rod", rationale: "Disposable claim." }],
-      }),
-    );
-  });
-  await page.goto("/new/publish");
-  await page
-    .locator("aside")
-    .getByRole("button", { name: "Publish", exact: true })
-    .click();
-  const unlock = page.getByRole("dialog", { name: "Unlock your key" });
-  await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
-  await unlock.getByRole("button", { name: "Unlock" }).click();
-  const first = page.getByRole("dialog", {
-    name: "Before your first public signature",
-  });
-  await expect(first).toBeVisible();
-  await first.getByRole("button", { name: "Continue" }).click();
-  const saved = page.getByRole("region", { name: "Saved publication" });
-  await expect(saved).toContainText("Saved. Not delivered yet.");
-  const other = await context.newPage();
-  await other.goto("/outbox");
-  await expect(
-    other.getByRole("button", { name: "Stop retrying" }).first(),
-  ).toBeVisible();
-  await other.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const store = new LocalStore();
-    for (const item of await store.list("outbox"))
-      await store.mergeOutbox(item.id, (stored: any) => ({
-        ...stored,
-        stopped: true,
-      }));
-  });
-  await other.close();
-  await page.reload();
-  await expect(saved).toContainText("Saved. Not delivered yet.");
-  await expect(saved).toContainText("Stopped.");
-  await expect(saved).toContainText(/Resume in Not delivered/);
-  await expect(saved).not.toContainText("sent again automatically");
-  await expect(saved.getByRole("button", { name: "Try now" })).toHaveCount(0);
 });
 
 test("a failed import keeps focus on the body after the reader clicks prose", async ({

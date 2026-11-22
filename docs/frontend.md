@@ -1601,6 +1601,7 @@ After a successful handover, offer explicit migration of public heeds and root a
 Explain that retired-key possession can still disrupt inherited references and contested status authority.
 The app signs the old-key transfer and the new-key acceptance locally, then stores both in the outbox before upload.
 Upload can be partial. The UI shows “Old key retired, acceptance waiting” until both events arrive at the selected peer.
+The banner follows delivery notifications as the state changes. It offers no manual re-check. Its “Not delivered” link leads to the outbox, where Try now and Resume retry delivery.
 
 It retains the new encrypted key and the acceptance event for retry.
 If new evidence withdraws known continuity, show that change and the responsible event IDs. Recompute inherited judgments and trust.
