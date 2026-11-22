@@ -251,9 +251,12 @@ async function preferencesBody(context: RenderContext, app: App) {
       });
       main.append(choice, saved);
     } else main.append(p("Not available on this server.", "small"));
-  } catch {
+  } catch (error) {
+    // A server that did not answer has not said that it lacks assistance.
     if (context.live())
-      main.append(p("Not available on this server.", "small"));
+      main.append(
+        p(`Assistance settings did not load: ${describe(error)}`, "small"),
+      );
   }
   // Search mode.
   main.append(el("h2", { class: "section", text: "Search" }));

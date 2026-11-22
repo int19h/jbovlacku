@@ -169,6 +169,10 @@ test("Settings opened offline says that the server did not answer", async ({
   await expect(main).not.toContainText(
     "This server offers no search package yet.",
   );
+  await expect(main).not.toContainText("Not available on this server.");
+  await expect(main).toContainText(
+    "Assistance settings did not load: No connection to the server.",
+  );
   await expect(main).toContainText(
     "The packages that the server offers are listed when it answers.",
   );
