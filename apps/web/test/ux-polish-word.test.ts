@@ -17,7 +17,7 @@ const definitionRecord = `(seed, index, word, language, patch) => {
     { kind: "definition.publish", word: core.wordId(word), language, parents: [], origin: patch.legacy ? "import" : "native" },
     {
       word, language, text: patch.text ?? [["Definition " + index]], frame: patch.frame ?? null, operands: [], glosses: patch.glosses ?? [], notes: [],
-      etymology: { text: [], formation: null, compound: null }, examples: patch.examples ?? [],
+      etymology: patch.etymology ?? { text: [], formation: null, compound: null }, examples: patch.examples ?? [],
       classification: { kind: patch.kind ?? "other", selmaho: [] }, labels: [], sources: patch.sources ?? [],
       license: { expression: "CC0-1.0", url: null, attribution: "Disposable fixture" }, legacy: patch.legacy ?? null,
     },
@@ -168,7 +168,9 @@ test("phone language tabs stay on one row and a lujvo without compound evidence 
   });
   await page.goto("/word/jbobautest?lang=en");
   await expect(
-    page.getByText("Composition is not recorded for this lujvo."),
+    page.getByText("No structured composition is recorded for this lujvo.", {
+      exact: true,
+    }),
   ).toBeVisible();
   const tops = await page
     .locator(".tabs .tab")
@@ -398,8 +400,9 @@ test("a compare link names the comparison only when it shows one with the parent
   await page.goto(
     `/definition/${encodeURIComponent(f.definitions.cuktaRev)}?compare=${encodeURIComponent(f.definitions.cukta2)}`,
   );
+  // The target is not the parent, so the heading does not call it one.
   await expect(
-    page.getByRole("heading", { name: "Compare with the parent revision" }),
+    page.getByRole("heading", { name: "Compare with another revision" }),
   ).toBeVisible();
   await expect(lead).toHaveText(
     "One immutable revision. Its exact event ID identifies this publication.",
@@ -1101,7 +1104,7 @@ test("declining the first-signature notice does not carry the key page's status 
   expect(await line.textContent()).not.toContain("Test it below");
 });
 
-test("a part swapped in after a failure keeps following the calculation in open score details", async ({
+test("a page updated after a failure keeps following the calculation in open score details", async ({
   page,
 }) => {
   await page.goto("/trust");
@@ -1220,7 +1223,318 @@ test("a lujvo with a definition that did not load makes no claim about its compo
   await page.goto("/word/jbobautest");
   await expect(page.getByText(/is unavailable:/)).toBeVisible();
   await expect(page.locator("article.definition")).toHaveCount(2);
+  // The line says nothing at all, in either wording.
+  await expect(page.locator(".composition-line")).toBeHidden();
+});
+
+// Round 5: scores update the existing nodes in place.
+
+test("a judgment in flight keeps both buttons disabled when scores arrive, so only one is signed", async ({
+  page,
+}) => {
+  const target = fixture().definitions.cukta1;
+  await createIdentity(page);
+  // The personal calculation waits; the first delivery stays open.
+  let allowScore!: () => void;
+  const scoreHeld = new Promise<void>((resolve) => (allowScore = resolve));
+  let allowPost!: () => void;
+  const postHeld = new Promise<void>((resolve) => (allowPost = resolve));
+  const signed: { target: string; value: string }[] = [];
+  await page.route("**/api/v1/inventory?*", async (route) => {
+    await scoreHeld;
+    await route.continue();
+  });
+  await page.getByRole("link", { name: /^Trust:/ }).click();
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
   await expect(
-    page.getByText("Composition is not recorded for this lujvo."),
-  ).toHaveCount(0);
+    page.getByRole("link", { name: "Trust: personal view" }),
+  ).toBeVisible();
+  // Every judgment that reaches delivery is counted, and none is delivered.
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const action = route.request().postDataJSON().envelope.header.action;
+    if (action.kind === "judgment.set")
+      signed.push({ target: action.target, value: action.value });
+    await postHeld;
+    await route.abort();
+  });
+  try {
+    await openWord(page, "cukta");
+    const entry = block(page, target);
+    const endorse = entry.getByRole("button", { name: "Endorse" });
+    await endorse.click();
+    await acceptFirstSignature(page);
+    await expect.poll(() => signed.length).toBe(1);
+    await expect(endorse).toBeDisabled();
+    allowScore();
+    await scored(page, target);
+    // A second press while the first delivery is open signs nothing.
+    await endorse.click({ force: true });
+    await page.waitForTimeout(1000);
+    expect(signed).toEqual([{ target, value: "bless" }]);
+    // The buttons stay disabled while the delivery is open.
+    await expect(endorse).toBeDisabled();
+    await expect(entry.getByRole("button", { name: "Oppose" })).toBeDisabled();
+  } finally {
+    allowPost();
+    allowScore();
+  }
+});
+
+/** A phone-sized page whose personal calculation waits until released. */
+async function heldSmall(page: Page, word = "cukta") {
+  await page.setViewportSize({ width: 390, height: 360 });
+  const release = await heldPersonal(page);
+  await page.goto(`/word/${word}`);
+  await expect(page.locator("article.definition").first()).toBeVisible();
+  return release;
+}
+
+test("a reader who focused a control and wheeled back to the top stays at the top", async ({
+  page,
+}) => {
+  const release = await heldSmall(page);
+  const first = page.locator("article.definition").first();
+  const key = await first.getAttribute("data-key");
+  await first.getByRole("button", { name: "Endorse" }).focus();
+  await page.mouse.move(12, 105);
+  for (let i = 0; i < 10 && (await page.evaluate(() => scrollY)) > 0; i++) {
+    await page.mouse.wheel(0, -650);
+    await page.waitForTimeout(200);
+  }
+  await expect.poll(() => page.evaluate(() => scrollY)).toBe(0);
+  release();
+  await scored(page, key!);
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => scrollY)).toBe(0);
+  await expect(page.locator("main h1")).toBeInViewport();
+  await expect(
+    block(page, key!).getByRole("button", { name: "Endorse" }),
+  ).toBeFocused();
+});
+
+test("a press that started before the scores still opens the summary on release", async ({
+  page,
+}) => {
+  const f = fixture();
+  const release = await heldSmall(page);
+  const summary = block(page, f.definitions.cukta1).locator("summary", {
+    hasText: /^Signed record$/,
+  });
+  await summary.scrollIntoViewIfNeeded();
+  await summary.hover();
+  await page.mouse.down();
+  release();
+  // The calculation finishes while the button is still down.
+  await expect(
+    page.getByRole("region", { name: "Personal view" }),
+  ).toContainText("calculated in this browser", { timeout: 40000 });
+  await page.waitForTimeout(300);
+  await page.mouse.up();
+  await expect(summary.locator("xpath=..")).toHaveAttribute("open", "");
+  await expect(
+    block(page, f.definitions.cukta1).locator("pre.json"),
+  ).toBeVisible();
+  // The scores arrive once the press is over.
+  await scored(page, f.definitions.cukta1);
+});
+
+test("an open record keeps its own scroll position when the scores arrive", async ({
+  page,
+}) => {
+  const f = fixture();
+  const release = await heldSmall(page);
+  const definition = block(page, f.definitions.cukta1);
+  await definition.getByText("Signed record", { exact: true }).click();
+  const record = definition.locator("pre.json");
+  await record.scrollIntoViewIfNeeded();
+  await record.hover();
+  await page.mouse.wheel(0, 270);
+  await expect
+    .poll(() => record.evaluate((n) => n.scrollTop))
+    .toBeGreaterThan(100);
+  const before = await record.evaluate((n) => n.scrollTop);
+  release();
+  await scored(page, f.definitions.cukta1);
+  await page.waitForTimeout(300);
+  expect(
+    Math.abs((await record.evaluate((n) => n.scrollTop)) - before),
+  ).toBeLessThanOrEqual(1);
+});
+
+test("a text selection in a definition survives the scores", async ({
+  page,
+}) => {
+  const release = await heldSmall(page);
+  const prose = page.locator("article.definition .prose").first();
+  const key = await page
+    .locator("article.definition")
+    .first()
+    .getAttribute("data-key");
+  await prose.click({ clickCount: 3 });
+  const selection = () => page.evaluate(() => getSelection()?.toString() ?? "");
+  const before = await selection();
+  expect(before.trim()).not.toBe("");
+  release();
+  await scored(page, key!);
+  await page.waitForTimeout(300);
+  expect(await selection()).toBe(before);
+});
+
+test("a nested disclosure inside a closed one is still open when the reader reopens it", async ({
+  page,
+}) => {
+  const release = await heldSmall(page, "ckusro");
+  const source = page
+    .locator("article.definition")
+    .first()
+    .locator("details.disclosure")
+    .filter({ has: page.locator(":scope > summary", { hasText: /^Source$/ }) });
+  const evidence = source.locator("details.disclosure").filter({
+    has: page.locator("summary", { hasText: /Original source author/ }),
+  });
+  const summary = source.locator(":scope > summary");
+  await summary.click();
+  await evidence.locator(":scope > summary").click();
+  await expect(evidence.locator("pre.json")).toBeVisible();
+  // The reader closes only the outer disclosure.
+  await summary.click();
+  release();
+  await scored(page);
+  await page.waitForTimeout(300);
+  await summary.click();
+  await expect(evidence).toHaveAttribute("open", "");
+  await expect(evidence.locator("pre.json")).toBeVisible();
+});
+
+test("after reader input the order stays, and Show in score order applies it", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const release = await heldPersonal(page);
+  await page.goto("/word/cukta");
+  await expect(page.locator("article.definition").first()).toBeVisible();
+  const before = await order(page);
+  // Any input counts: here a key press on the page.
+  await page.keyboard.press("Shift");
+  release();
+  await scored(page);
+  await page.waitForTimeout(300);
+  expect(await order(page)).toEqual(before);
+  const offer = page.getByText("Personal scores changed the order.");
+  await expect(offer).toBeVisible();
+  await page.getByRole("button", { name: "Show in score order" }).click();
+  const after = await order(page);
+  expect(after).not.toEqual(before);
+  expect([...after].sort()).toEqual([...before].sort());
+  await expect(offer).toHaveCount(0);
+  await expect(
+    page.locator("article.definition").first().locator("h2"),
+  ).toBeFocused();
+});
+
+test("a comparison whose parent body is missing says so in the lead", async ({
+  page,
+  request,
+}) => {
+  const f = fixture();
+  const parent = f.definitions.cukta1;
+  const envelope = await (
+    await request.get(`/api/v1/events/${encodeURIComponent(parent)}`)
+  ).json();
+  await page.route(
+    `**/api/v1/bodies/${encodeURIComponent(envelope.header.content.hash)}*`,
+    (route) =>
+      route.fulfill({
+        status: 404,
+        json: { code: "missing", message: "Missing body" },
+      }),
+  );
+  await page.goto(
+    `/definition/${encodeURIComponent(f.definitions.cuktaRev)}?compare=${encodeURIComponent(parent)}`,
+  );
+  await expect(
+    page.getByText(
+      "One of the two bodies is unavailable, so the comparison cannot show changed fields.",
+    ),
+  ).toBeVisible();
+  const lead = page.locator("main > p.meta").first();
+  await expect(lead).toContainText("One of the two bodies is unavailable");
+  await expect(lead).not.toContainText(
+    "The comparison with the parent revision is below.",
+  );
+});
+
+test("a lujvo whose etymology text gives the composition points to it", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const built = await page.evaluate(
+    async ({ corePath: path, make: source }) => {
+      const core = await import(path);
+      await core.initializeCore();
+      const build = new Function("core", "return " + source)(core);
+      const word = { language: "jbo", spelling: "jbobautest" };
+      return [
+        build(96, 0, word, "en", {
+          kind: "lujvo",
+          etymology: {
+            text: [["From valsi (vla) and cukta (cku)."]],
+            formation: null,
+            compound: null,
+          },
+        }),
+      ];
+    },
+    { corePath, make: definitionRecord },
+  );
+  const ids = built.map((r: any) => r.envelope.id);
+  await serveWord(page, built, {
+    word: { language: "jbo", spelling: "jbobautest" },
+    definitions: ids,
+    rafsi: [],
+    assignments: [],
+    layers: [ids],
+    statuses: ids.map((event: string) => ({ event, state: "active" })),
+    unavailable_scores: [],
+    scores: ids.map(zeroScore),
+  });
+  await page.goto("/word/jbobautest?lang=en");
+  const line = page.locator(".composition-line");
+  await expect(line).toHaveText(
+    "No structured composition is recorded for this lujvo. See Etymology in its definitions.",
+  );
+  await page.getByText("Etymology", { exact: true }).click();
+  await expect(
+    page.getByText("From valsi (vla) and cukta (cku)."),
+  ).toBeVisible();
+});
+
+test("rotating to a phone brings the selected language into the tab strip", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 844, height: 390 });
+  await manyLanguages(page);
+  await page.goto("/word/jbobautest?lang=all");
+  const strip = page.locator(".tabs");
+  await expect(strip.locator('.tab[aria-current="true"]')).toHaveText(/^All/);
+  await page.waitForTimeout(200);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect
+    .poll(() =>
+      strip.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        const tab = node
+          .querySelector('[aria-current="true"]')!
+          .getBoundingClientRect();
+        return (
+          node.scrollWidth > node.clientWidth &&
+          tab.left >= box.left - 0.5 &&
+          tab.right <= box.right + 0.5
+        );
+      }),
+    )
+    .toBe(true);
 });

@@ -267,8 +267,6 @@ export function switchControl(
   return node;
 }
 /** A named disclosure with a chevron and a 44px summary. */
-/** Fills a disclosure body at once, for code that reopens it in place. */
-const fillers = new WeakMap<HTMLDetailsElement, () => void>();
 export function disclosure(
   label: Child,
   body: () => Child | Child[] | Promise<Child | Child[]>,
@@ -279,41 +277,21 @@ export function disclosure(
   const container = el("div", { class: "body" });
   details.append(summary, container);
   let loaded = false;
-  const show = (result: Child | Child[]) => {
-    container.replaceChildren();
-    append(container, ...(Array.isArray(result) ? result : [result]));
-  };
-  const fail = (error: unknown) => {
-    container.replaceChildren(
-      p(error instanceof Error ? error.message : String(error), "notice"),
-    );
-    loaded = false;
-  };
-  // A body that is not a promise is shown in the same task.
-  const load = (): Promise<void> | void => {
-    if (loaded && container.childElementCount) return;
+  details.addEventListener("toggle", async () => {
+    if (!details.open || (loaded && container.childElementCount)) return;
     loaded = true;
     try {
-      const result = body();
-      if (result instanceof Promise) return result.then(show, fail);
-      show(result);
+      const result = await body();
+      container.replaceChildren();
+      append(container, ...(Array.isArray(result) ? result : [result]));
     } catch (error) {
-      fail(error);
+      container.replaceChildren(
+        p(error instanceof Error ? error.message : String(error), "notice"),
+      );
+      loaded = false;
     }
-  };
-  fillers.set(details, () => void load());
-  details.addEventListener("toggle", () => {
-    if (details.open) void load();
   });
   return details;
-}
-/**
- * Opens a details element and, for a disclosure with a synchronous body,
- * fills that body in the same task, so its contents can be found at once.
- */
-export function openNow(details: HTMLDetailsElement) {
-  details.open = true;
-  fillers.get(details)?.();
 }
 const icons: Record<string, string> = {
   search:

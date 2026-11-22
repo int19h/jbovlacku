@@ -153,13 +153,17 @@ export async function definitionPage(
     try {
       const parent = await loadDefinition(compareTo);
       if (!context.live()) return;
-      main.append(comparison(parent, definition));
       const parents =
         (definition.envelope.header.action.parents as string[] | undefined) ??
         [];
-      if (parents.includes(compareTo))
+      const isParent = parents.includes(compareTo);
+      main.append(comparison(parent, definition, isParent));
+      // The lead names only the outcome that the page shows below it.
+      if (isParent)
         lead.textContent +=
-          " The comparison with the parent revision is below.";
+          parent.body && definition.body
+            ? " The comparison with the parent revision is below."
+            : " One of the two bodies is unavailable, so the comparison with the parent revision below cannot show changed fields.";
     } catch (error) {
       if (context.live())
         main.append(p(`Comparison unavailable: ${describe(error)}`, "notice"));
@@ -190,6 +194,7 @@ export async function definitionPage(
 export function comparison(
   parent: LoadedRecord<DefinitionBody>,
   child: LoadedRecord<DefinitionBody>,
+  isParent = true,
 ): HTMLElement {
   const section = el("section", {
     "aria-labelledby": "cmp-h",
@@ -199,7 +204,10 @@ export function comparison(
     el("h2", {
       id: "cmp-h",
       class: "section",
-      text: "Compare with the parent revision",
+      // A link can name any revision. Only a real parent is called one.
+      text: isParent
+        ? "Compare with the parent revision"
+        : "Compare with another revision",
     }),
   );
   const a = parent.body;

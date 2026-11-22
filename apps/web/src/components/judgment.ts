@@ -93,6 +93,30 @@ function ownValue(
     };
   });
 }
+/**
+ * Targets with a judgment action in flight. A control for such a target
+ * keeps Endorse and Oppose disabled until the action finishes, whether it
+ * is the control that started the action or a later one for the same
+ * target.
+ */
+const busy = new Set<string>();
+const busyListeners = new Set<() => void>();
+function setBusy(target: string, value: boolean) {
+  if (value) busy.add(target);
+  else busy.delete(target);
+  for (const listener of busyListeners) listener();
+}
+const controls = new WeakMap<HTMLElement, (options: JudgmentOptions) => void>();
+/**
+ * Shows a new score in an existing control. The buttons, the reader's
+ * focus, and any action in flight stay as they are.
+ */
+export function updateJudgmentControl(
+  control: HTMLElement,
+  options: JudgmentOptions,
+) {
+  controls.get(control)?.(options);
+}
 export function judgmentControl(
   app: App,
   target: JudgmentTarget,
@@ -107,7 +131,6 @@ export function judgmentControl(
     role: "group",
     "aria-label": "Your judgment",
   });
-  const headline = scoreHeadline(options.unavailable ? null : options.score);
   const endorse = el(
     "button",
     { type: "button", "aria-label": "Endorse" },
@@ -118,34 +141,46 @@ export function judgmentControl(
     { type: "button", "aria-label": "Oppose" },
     icon("down", "", options.large ? 22 : 20),
   );
-  const score = el("span", {
-    class: `score${headline.unavailable ? " unavailable" : ""}`,
-    title: headline.title,
-    "aria-label": headline.label,
-    role: "img",
-    text: headline.text,
-  });
-  if (options.personal && !headline.unavailable) {
-    score.title = `${headline.title} In your personal view.`;
-    score.setAttribute(
-      "aria-label",
-      `${headline.label}, in your personal view`,
-    );
-  }
-  if (options.personal && headline.unavailable) {
-    score.title = `Score unavailable in the personal view. ${options.reason ?? "No numeric score is assumed."}`;
-    score.setAttribute("aria-label", "Score unavailable in the personal view");
-  }
-  if (options.status === "deprecated") {
-    score.title = "Deprecated. Its judgments are inactive.";
-    score.setAttribute(
-      "aria-label",
-      "Deprecated definition. Judgments are inactive.",
-    );
-  }
+  const score = el("span", { role: "img" });
+  const paint = (current: JudgmentOptions) => {
+    const headline = scoreHeadline(current.unavailable ? null : current.score);
+    score.className = `score${headline.unavailable ? " unavailable" : ""}`;
+    score.title = headline.title;
+    score.setAttribute("aria-label", headline.label);
+    score.textContent = headline.text;
+    if (current.personal && !headline.unavailable) {
+      score.title = `${headline.title} In your personal view.`;
+      score.setAttribute(
+        "aria-label",
+        `${headline.label}, in your personal view`,
+      );
+    }
+    if (current.personal && headline.unavailable) {
+      score.title = `Score unavailable in the personal view. ${current.reason ?? "No numeric score is assumed."}`;
+      score.setAttribute(
+        "aria-label",
+        "Score unavailable in the personal view",
+      );
+    }
+    if (current.status === "deprecated") {
+      score.title = "Deprecated. Its judgments are inactive.";
+      score.setAttribute(
+        "aria-label",
+        "Deprecated definition. Judgments are inactive.",
+      );
+    }
+  };
+  paint(options);
+  controls.set(wrapper, paint);
+  // Disabled while storage is unavailable, and while a judgment action for
+  // this target is in flight anywhere on the page.
+  const syncDisabled = () => {
+    endorse.disabled = oppose.disabled =
+      !app.session.storageAvailable || busy.has(target.id);
+  };
+  syncDisabled();
   if (!app.session.storageAvailable) {
     // Nothing can be signed or kept without browser storage.
-    endorse.disabled = oppose.disabled = true;
     endorse.title = oppose.title =
       "Browser storage is unavailable, so judgments cannot be signed or kept.";
   }
@@ -194,20 +229,28 @@ export function judgmentControl(
     }
   };
   void applyOwn();
-  // The subscription lasts while the control is in the document.
+  // The subscriptions last while the control is in the document.
   onDisconnect(
     wrapper,
     app.own.subscribe(() => void applyOwn()),
     options.signal,
   );
+  busyListeners.add(syncDisabled);
+  onDisconnect(
+    wrapper,
+    () => busyListeners.delete(syncDisabled),
+    options.signal,
+  );
   const act = (arrow: "bless" | "curse") => async () => {
+    if (busy.has(target.id)) return;
     const pressed =
       (arrow === "bless" ? endorse : oppose).getAttribute("aria-pressed") ===
       "true";
     const value: JudgmentValue = pressed ? "clear" : arrow;
     await app.session.requireUnlocked(target.describe(value), async () => {
       if (!(await app.session.firstSignatureDisclosure())) return;
-      endorse.disabled = oppose.disabled = true;
+      if (busy.has(target.id)) return;
+      setBusy(target.id, true);
       try {
         const results = await app.signer.publish([
           {
@@ -232,7 +275,7 @@ export function judgmentControl(
       } catch (error) {
         app.announce(describe(error));
       } finally {
-        endorse.disabled = oppose.disabled = !app.session.storageAvailable;
+        setBusy(target.id, false);
         void applyOwn();
       }
     });
@@ -240,6 +283,44 @@ export function judgmentControl(
   endorse.addEventListener("click", act("bless"));
   oppose.addEventListener("click", act("curse"));
   return wrapper;
+}
+/**
+ * A judgment control and its score details, placed in a parent. The score
+ * details can wait, for a render whose scores are not known yet. An update
+ * shows new scores in the same control and adds the details, or replaces
+ * closed details; open details stay as the reader has them.
+ */
+export interface ScoreSlot {
+  update(
+    patch: Pick<JudgmentOptions, "score" | "unavailable" | "calculation">,
+  ): void;
+}
+export function scoreSlot(
+  app: App,
+  target: JudgmentTarget,
+  options: JudgmentOptions,
+  parent: HTMLElement,
+  deferDetails = false,
+): ScoreSlot {
+  const control = judgmentControl(app, target, options);
+  parent.append(control);
+  let details: HTMLDetailsElement | null = deferDetails
+    ? null
+    : scoreDetails(app, target, options);
+  if (details) parent.append(details);
+  return {
+    update(patch) {
+      options.score = patch.score;
+      options.unavailable = patch.unavailable;
+      options.calculation = patch.calculation;
+      updateJudgmentControl(control, options);
+      if (details?.open) return;
+      const next = scoreDetails(app, target, options);
+      if (details) details.replaceWith(next);
+      else control.after(next);
+      details = next;
+    },
+  };
 }
 /** The explanation of an unavailable personal score, for one reason. */
 export function personalReasonText(reason: string | undefined): string {
@@ -250,7 +331,7 @@ export function scoreDetails(
   app: App,
   target: JudgmentTarget,
   options: JudgmentOptions,
-): HTMLElement {
+): HTMLDetailsElement {
   const score = options.unavailable ? null : options.score;
   const summaryText =
     score && score.direct_reviewers > 0

@@ -227,6 +227,11 @@ Each definition block shows 21px prose, glosses, author, date, permanent event l
 “N reviewers” opens reviewer identities, units, and influence-route details under the actual selected view. A zero count uses “Score details” instead.
 A closed Source and scores disclosure follows the word content. It contains snapshot and view IDs and the local score comparison.
 Personal calculation controls and score-availability warnings remain visible. Detailed identifiers stay in Source and scores.
+In the personal view, definitions appear while the local calculation runs, with unavailable scores, in event order.
+When the calculation finishes, the page updates in place. Definitions, controls, and open disclosures stay as they are. Only scores, score titles, and notes change.
+The definitions move into score order only while the reader has not started to read: no focus in the definitions or the sections that follow them, no pointer or key input on the page, no text selection, and no scroll into the definitions or the notes above them.
+Otherwise the definitions stay where they are. A note near the top reads “Personal scores changed the order.” Its “Show in score order” button moves them into score order and moves focus to the first definition heading.
+A judgment control that has an action in flight stays disabled until that action finishes.
 When several routes contribute, summarize them and expose the complete details. Do not claim one route as the whole explanation.
 The explanation reads “The score adds the weight of each reviewer in your trust view.”
 The current user's weight follows the calculation and personal overlay. It never comes from an illustrative reviewer table.
