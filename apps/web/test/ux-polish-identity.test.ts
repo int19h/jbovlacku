@@ -287,6 +287,145 @@ test("banner notifications restore focus to the same control", async ({
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
+async function refusedBanner(page: Page) {
+  await createIdentity(page);
+  await page.route("**/api/v1/events", (route) =>
+    route.fulfill({
+      status: 403,
+      json: { code: "refused", message: "Refused.", event: null, field: null },
+    }),
+  );
+  await page.getByRole("link", { name: "Start" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Move to a new key" }),
+  ).toBeVisible();
+  await createSuccessor(page);
+  const sign = page.getByRole("button", { name: "Sign the handover" });
+  for (const box of await page.getByRole("checkbox").all()) await box.check();
+  await expect(sign).toBeEnabled();
+  await sign.click();
+  const banner = page.getByRole("region", { name: "Handover status" });
+  await expect(banner).toContainText(/Acceptance:.*refused/);
+  return banner;
+}
+
+async function deliverFromOtherPage(page: Page, context: any) {
+  const other = await context.newPage();
+  await other.goto("/outbox");
+  const row = other
+    .locator("[data-outbox-record]")
+    .filter({ hasText: /accept/i })
+    .filter({ has: other.getByRole("button", { name: "Try now" }) });
+  await row.getByRole("button", { name: "Try now" }).click();
+  await expect(other.locator("#app > [role=status]")).toHaveText("Delivered.");
+  const stored = await other.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().list("outbox")).map(
+      (item: any) => item.peers.self.state,
+    );
+  });
+  expect(stored).toEqual(["accepted", "accepted"]);
+  await other.close();
+}
+
+test("a failed newer banner read does not cancel an older successful one", async ({
+  page,
+  context,
+}) => {
+  const banner = await refusedBanner(page);
+  await deliverFromOtherPage(page, context);
+  await expect(banner).toContainText(/Acceptance:.*refused/);
+  const wake = () =>
+    page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.list;
+    const trace: string[] = [];
+    (window as any).traceReads = trace;
+    LocalStore.prototype.list = async function (store: string) {
+      if (
+        store !== "outbox" ||
+        !new Error().stack?.includes("handoverState")
+      )
+        return original.call(this, store);
+      if (trace.length === 0) {
+        trace.push("first started");
+        const rows = await original.call(this, store);
+        trace.push("first read");
+        await new Promise<void>(
+          (resolve) => ((window as any).releaseGood = resolve),
+        );
+        trace.push("first returned");
+        return rows;
+      }
+      if (trace.length === 2) {
+        trace.push("second read error");
+        throw new DOMException("One outbox read failed.", "AbortError");
+      }
+      return original.call(this, store);
+    };
+  });
+  const trace = () => page.evaluate(() => (window as any).traceReads as string[]);
+  await wake();
+  await expect.poll(trace).toHaveLength(2);
+  await wake();
+  await expect.poll(trace).toHaveLength(3);
+  await page.evaluate(() => (window as any).releaseGood());
+  await expect.poll(trace).toHaveLength(4);
+  await expect(banner).toContainText("Handover complete");
+});
+
+test("an older banner read does not overwrite a newer shown result", async ({
+  page,
+  context,
+}) => {
+  const banner = await refusedBanner(page);
+  await deliverFromOtherPage(page, context);
+  await expect(banner).toContainText(/Acceptance:.*refused/);
+  const wake = () =>
+    page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.list;
+    let calls = 0;
+    (window as any).bannerReadCalls = () => calls;
+    LocalStore.prototype.list = async function (store: string) {
+      if (
+        store !== "outbox" ||
+        !new Error().stack?.includes("handoverState")
+      )
+        return original.call(this, store);
+      calls++;
+      if (calls === 1) {
+        const rows = await original.call(this, store);
+        const stale = rows.map((row: any) => ({
+          ...row,
+          peers: Object.fromEntries(
+            Object.entries(row.peers).map(([id, peer]: [string, any]) => [
+              id,
+              { ...peer, state: "refused" },
+            ]),
+          ),
+        }));
+        await new Promise<void>(
+          (resolve) => ((window as any).releaseStale = resolve),
+        );
+        return stale;
+      }
+      return original.call(this, store);
+    };
+  });
+  await wake();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).bannerReadCalls()))
+    .toBe(1);
+  await wake();
+  await expect(banner).toContainText("Handover complete");
+  await page.evaluate(() => (window as any).releaseStale());
+  await page.waitForTimeout(300);
+  await expect(banner).toContainText("Handover complete");
+});
+
 test("stored-key unlock keeps concurrency and container errors truthful", async ({
   page,
 }) => {

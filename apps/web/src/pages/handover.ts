@@ -951,10 +951,21 @@ export function renderExisting(
   });
   container.append(box);
   let updateGeneration = 0;
+  let shownGeneration = 0;
   const update = async () => {
     const mine = ++updateGeneration;
-    const state = await handoverState(app, record);
-    if (mine !== updateGeneration || !box.isConnected) return;
+    let state: Awaited<ReturnType<typeof handoverState>>;
+    try {
+      state = await handoverState(app, record);
+    } catch {
+      // A failed read keeps the last shown state. It must not cancel an
+      // older successful read that is still to be shown.
+      return;
+    }
+    // Show the most recent successful result. Only a result that a newer
+    // call has already shown replaces this one.
+    if (!box.isConnected || mine < shownGeneration) return;
+    shownGeneration = mine;
     // Focus is decided here, not before the read. A reader who moved focus
     // elsewhere during the read keeps that choice. The kind of element that
     // had focus decides which replacement gets it back.
