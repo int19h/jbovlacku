@@ -306,3 +306,135 @@ test("zbalermorna beside the headword has the headword size", async ({
   }));
   expect(sizes.glyphs).toBe(sizes.headword);
 });
+
+test("a theme and view from another tab apply while an unrelated save of this tab runs", async ({
+  page,
+  context,
+}) => {
+  await settings(page);
+  // Hold this tab's orthography write until the test releases it.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    LocalStore.prototype.setPreferences = async function (patch: any) {
+      if (patch.orthography) {
+        await new Promise<void>((resolve) => {
+          (window as any).releaseOrthographySave = resolve;
+        });
+        const result = await original.call(this, patch);
+        (window as any).orthographyStoreFinished = true;
+        return result;
+      }
+      return original.call(this, patch);
+    };
+  });
+  const other = await context.newPage();
+  await settings(other);
+  await page
+    .getByLabel("Lojban orthography beside headwords", { exact: true })
+    .selectOption("zbalermorna");
+  await page.waitForFunction(
+    () => typeof (window as any).releaseOrthographySave === "function",
+  );
+  await other.getByLabel("Theme", { exact: true }).selectOption("dark");
+  await expect(other.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.getByLabel("Theme", { exact: true })).toHaveValue("dark");
+  // The other tab's theme applies at once: only a theme write of this tab
+  // may hold it back.
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  // A view that the other tab saves applies too.
+  const view = "jve1:" + "e".repeat(64);
+  await other.evaluate(async (view) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().setPreferences({ view });
+    new BroadcastChannel("jbovlacku-preferences").postMessage("changed");
+  }, view);
+  const preferredView = () =>
+    page.evaluate(async () => {
+      const { getPreferredView } = await import(String("/src/data/api.ts"));
+      return getPreferredView();
+    });
+  await expect.poll(preferredView).toBe(view);
+  await page.evaluate(() => (window as any).releaseOrthographySave());
+  await page.waitForFunction(() => (window as any).orthographyStoreFinished);
+  // The finished unrelated write keeps the saved values applied.
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect.poll(preferredView).toBe(view);
+  expect(
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const saved = await new LocalStore().preferences();
+      return [saved.theme, saved.orthography];
+    }),
+  ).toEqual(["dark", "zbalermorna"]);
+  await other.close();
+});
+
+test("a theme from another tab waits for this tab's own theme write and then applies the saved theme", async ({
+  page,
+  context,
+}) => {
+  await settings(page);
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.setPreferences;
+    LocalStore.prototype.setPreferences = async function (patch: any) {
+      if (patch.theme) {
+        await new Promise<void>((resolve) => {
+          (window as any).releaseThemeSave = resolve;
+        });
+      }
+      return original.call(this, patch);
+    };
+  });
+  const other = await context.newPage();
+  await settings(other);
+  await page.getByLabel("Theme", { exact: true }).selectOption("light");
+  await page.waitForFunction(
+    () => typeof (window as any).releaseThemeSave === "function",
+  );
+  await other.getByLabel("Theme", { exact: true }).selectOption("dark");
+  await expect(other.locator("html")).toHaveAttribute("data-theme", "dark");
+  // This tab's own theme write still runs, so the other tab's theme waits.
+  await page.waitForTimeout(300);
+  await expect(page.locator("html")).not.toHaveAttribute("data-theme", "dark");
+  await page.evaluate(() => (window as any).releaseThemeSave());
+  // The later write of this tab is the saved theme, and it applies.
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await other.close();
+});
+
+test("offline Settings without browser storage does not claim that saved data works", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    indexedDB.open = () => {
+      throw new DOMException("Storage is blocked.", "SecurityError");
+    };
+  });
+  await page.route("**/api/v1/manifest*", (route) => route.abort());
+  await page.goto("/preferences");
+  await page.getByLabel("Theme", { exact: true }).waitFor();
+  const main = page.locator("main");
+  await expect(main).toContainText(
+    "The server's languages and search packages did not load: No connection to the server. Open Settings again to retry.",
+  );
+  await expect(main).not.toContainText("still work");
+  await expect(main).toContainText(
+    "Browser storage is unavailable. Packages cannot be saved.",
+  );
+  await expect(page.getByRole("alert")).toContainText(
+    "Browser storage is unavailable.",
+  );
+});
+
+test("offline Settings with browser storage says that saved data still works", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/manifest*", (route) => route.abort());
+  await page.goto("/preferences");
+  await page.getByLabel("Theme", { exact: true }).waitFor();
+  await expect(page.locator("main")).toContainText(
+    "The server's languages and search packages did not load: No connection to the server. Settings and packages saved in this browser still work. Open Settings again to retry.",
+  );
+});

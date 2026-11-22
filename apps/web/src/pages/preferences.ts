@@ -155,7 +155,9 @@ async function preferencesBody(context: RenderContext, app: App) {
   if (manifestError !== null)
     main.append(
       p(
-        `The server's languages and search packages did not load: ${manifestError} Settings and packages saved in this browser still work. Open Settings again to retry.`,
+        // Saved settings and packages work only with browser storage. Without
+        // it, the shell and the package list show the storage warning.
+        `The server's languages and search packages did not load: ${manifestError}${session.storageAvailable ? " Settings and packages saved in this browser still work." : ""} Open Settings again to retry.`,
         "notice",
       ),
     );
