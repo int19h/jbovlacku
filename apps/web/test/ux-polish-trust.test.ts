@@ -342,32 +342,34 @@ for (const [width, height] of [
     expect(after).toEqual(before);
   });
 
-  test(`a keyboard user reaches every control clear of the status message at ${width}x${height}`, async ({
+  test(`a normal click on a control under the status message activates it at ${width}x${height}`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height });
-    await endorseCukta(page, true);
-    let checked = 0;
-    for (let step = 0; step < 60; step++) {
-      await page.keyboard.press("Tab");
-      await frames(page);
-      const overlap = await page.evaluate(() => {
-        const status = document.querySelector("#app > [role=status]")!;
-        const focused = document.activeElement;
-        if (!status.textContent || !focused || focused === document.body)
-          return null;
-        const a = focused.getBoundingClientRect();
-        const b = status.getBoundingClientRect();
-        return Math.max(
-          0,
-          Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top),
-        );
+    await endorseCukta(page);
+    const add = page.getByRole("link", { name: "Add a definition" });
+    // Put the link in the band of the status message.
+    await add.evaluate((node) => {
+      const status = document
+        .querySelector("#app > [role=status]")!
+        .getBoundingClientRect();
+      const box = node.getBoundingClientRect();
+      window.scrollBy({
+        top: box.top + box.height / 2 - (status.top + status.height / 2),
+        behavior: "instant",
       });
-      if (overlap === null) break;
-      checked++;
-      expect(overlap, `focus step ${step}`).toBe(0);
-    }
-    expect(checked).toBeGreaterThan(5);
+    });
+    await frames(page);
+    const box = (await add.boundingBox())!;
+    const status = (await statusRegion(page).boundingBox())!;
+    expect(box.y + box.height).toBeGreaterThan(status.y);
+    expect(box.y).toBeLessThan(status.y + status.height);
+    // A pointer press of normal length: down, a short hold, then up.
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(80);
+    await page.mouse.up();
+    await expect(page).not.toHaveURL(/\/word\/cukta/);
   });
 }
 
@@ -468,4 +470,49 @@ test("the unlock request keeps a profile name in its own direction", async ({
   await expect(
     page.getByText(/will continue after you create or import a key/),
   ).toContainText(`Trusting ⁨${name}⁩ publicly`);
+});
+
+test("focus inside a dialog does not scroll the page behind it", async ({
+  page,
+}) => {
+  const f = fixture();
+  await page.setViewportSize({ width: 360, height: 640 });
+  await createIdentity(page);
+  await page.goto(`/identity/${encodeURIComponent(f.identities.author)}`);
+  await choosePrivately(page, "Ignore");
+  await page.getByRole("button", { name: "Report abuse" }).click();
+  const dialog = page.getByRole("dialog", { name: "Report identity abuse" });
+  await expect(dialog).toBeVisible();
+  await expect(statusRegion(page)).not.toHaveText("");
+  const before = await page.evaluate(() => window.scrollY);
+  for (let step = 0; step < 12; step++) {
+    await page.keyboard.press("Tab");
+    await frames(page);
+  }
+  await dialog.getByRole("button", { name: "Cancel" }).focus();
+  await frames(page);
+  await expect(statusRegion(page)).not.toHaveText("");
+  expect(await page.evaluate(() => window.scrollY)).toBe(before);
+});
+
+test("the busy panel in the site view offers Cancel and no switch to the site view", async ({
+  page,
+}) => {
+  await choosePersonal(page);
+  const panel = page.getByRole("region", { name: "Local calculation" });
+  await page.route("**/api/v1/records?*", () => new Promise(() => {}));
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await expect(panel).toContainText("Downloading records");
+  await expect(
+    panel.getByRole("button", { name: "Use the site view" }),
+  ).toBeVisible();
+  await page.getByRole("radio", { name: "Site view only" }).check();
+  await expect(
+    page.getByRole("link", { name: "Trust: site view" }),
+  ).toBeVisible();
+  await expect(panel).toContainText("Downloading records");
+  await expect(panel.getByRole("button")).toHaveText([
+    "Cancel",
+    "Recompute from records",
+  ]);
 });

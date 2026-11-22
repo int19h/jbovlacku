@@ -269,11 +269,7 @@ main.surface-publish {
   opacity: 0;
 }
 /* The room below the page for the tallest message so far. The shell only
-   grows it, so a cleared message never changes the page height. Focus and
-   scrolling into view keep controls above the same room. */
-html {
-  scroll-padding-bottom: var(--status-room, 0px);
-}
+   grows it, so a cleared message never changes the page height. */
 .footer {
   padding-bottom: var(--status-room, 0px);
 }

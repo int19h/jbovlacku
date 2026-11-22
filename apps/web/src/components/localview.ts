@@ -191,7 +191,13 @@ export function calculationPanel(
     { class: "btn" },
   );
   actions.append(cancel, retry);
-  if (options.mode === "personal") actions.append(useSite);
+  // A panel that stays while a run ends in the site view offers no switch
+  // to the view that is already in use.
+  if (
+    options.mode === "personal" &&
+    app.session.preferences.viewMode === "personal"
+  )
+    actions.append(useSite);
   region.append(line, actions);
   const update = (status: PersonalStatus) => {
     // One state for the whole page: a calculation that is ready for another

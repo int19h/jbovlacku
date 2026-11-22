@@ -84,17 +84,19 @@ export async function trustPage(
   // the server's scores and needs no local calculation, but a download that
   // is still running keeps its panel and Cancel until it ends.
   const modeSlot = el("div");
-  let shown: "panel" | "site" | null = null;
+  let shown: "personal" | "busy" | "site" | null = null;
   let busy = false;
   const showMode = () => {
     const want =
-      app.session.preferences.viewMode === "personal" || busy
-        ? "panel"
-        : "site";
+      app.session.preferences.viewMode === "personal"
+        ? "personal"
+        : busy
+          ? "busy"
+          : "site";
     if (want === shown) return;
     shown = want;
     modeSlot.replaceChildren(
-      want === "panel"
+      want !== "site"
         ? calculationPanel(app, {
             mode: "personal",
             context,
