@@ -733,7 +733,10 @@ async function preferencesBody(context: RenderContext, app: App) {
               !saved
                 ? `The ${languageName(language)} search package was not saved. It changed in this browser while the download ran.`
                 : pkg.downgrade
-                  ? `The ${languageName(language)} search package is saved in this browser as version 1. ${pkg.downgrade}`
+                  ? // The row names the current version. This line names
+                    // only what this download saved, so it stays true after
+                    // another tab refreshes the package.
+                    `The ${languageName(language)} search package is saved in this browser. This download saved version 1 because version 2 failed: ${pkg.downgrade}`
                   : `The ${languageName(language)} search package is saved in this browser.`,
               saved ? "outcome" : "error",
               saved ? "saved" : undefined,

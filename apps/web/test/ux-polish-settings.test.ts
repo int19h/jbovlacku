@@ -594,6 +594,64 @@ test("a package note follows the list after another tab removed the package", as
   await other.close();
 });
 
+test("a package note does not contradict the version that another tab refreshed", async ({
+  page,
+  context,
+}) => {
+  await page.goto("/about");
+  await page.locator("main h1").waitFor();
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "eo", {
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: [],
+    });
+  });
+  // Only this tab gets a damaged version 2 index, so its download saves
+  // version 1. The other tab refreshes to a valid version 2.
+  await page.route("**/api/v1/packages/en?**", (route) =>
+    new URL(route.request().url()).searchParams.get("version") === "2"
+      ? route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: "{}",
+        })
+      : route.continue(),
+  );
+  await settings(page);
+  await page
+    .getByLabel("Download a package", { exact: true })
+    .selectOption("en");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  const row = (p: Page) =>
+    p
+      .locator(".row", {
+        has: p.locator(
+          "[data-package-control=remove][data-package-language=en]",
+        ),
+      })
+      .locator("small");
+  const note = page.locator("[data-package-note=en]");
+  await expect(row(page)).toContainText("version 1");
+  await expect(note).toContainText("version 1");
+  const other = await context.newPage();
+  await settings(other);
+  await other
+    .getByRole("button", { name: "Refresh English", exact: true })
+    .click();
+  await expect(row(other)).toContainText("version 2");
+  // This removal rebuilds the list from storage, which now has version 2.
+  await page
+    .locator("[data-package-control=remove][data-package-language=eo]")
+    .click();
+  await expect(row(page)).toContainText("version 2");
+  await expect(note).not.toContainText("in this browser as version");
+  await expect(note).toHaveText(
+    /^The English search package is saved in this browser\. This download saved version 1 because version 2 failed: /,
+  );
+  await other.close();
+});
+
 test("a new saved value from another tab clears an earlier failed save", async ({
   page,
   context,
