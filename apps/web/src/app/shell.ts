@@ -185,6 +185,12 @@ export function buildShell(
     statusRoom = room;
     document.documentElement.style.setProperty("--status-room", `${room}px`);
   };
+  // A visible message can wrap onto more lines later, for example after a
+  // resize. The room then grows with it.
+  if (typeof ResizeObserver !== "undefined")
+    new ResizeObserver(() => {
+      if (status.textContent) reserveStatusRoom();
+    }).observe(status);
   return {
     main,
     status,

@@ -21,16 +21,20 @@ import { scopeError } from "../data/scope.ts";
 import { describeProfile } from "../model/profiles.ts";
 
 export { loadSiteView };
+let trustRenders = 0;
 export async function trustPage(
   _route: Route,
   context: RenderContext,
   app: App,
 ) {
   const { main } = context;
+  // A render that a later render replaced stops appending to the page.
+  const generation = ++trustRenders;
+  const live = () => context.live() && generation === trustRenders;
   context.title("Trust");
   main.className = "";
   const rerender = () => {
-    if (!context.live()) return;
+    if (!live()) return;
     main.replaceChildren();
     void trustPage(_route, context, app);
   };
@@ -45,6 +49,17 @@ export async function trustPage(
     "aria-label": "Active view",
   });
   let modeRequest = 0;
+  // The radios and the panel follow the saved preference, also after a
+  // change in another tab.
+  const syncMode = () => {
+    const saved = app.session.preferences.viewMode;
+    for (const radio of seg.querySelectorAll("input"))
+      radio.checked = radio.value === saved;
+    for (const l of seg.querySelectorAll("label"))
+      l.classList.toggle("on", l.querySelector("input")!.checked);
+    showMode();
+  };
+  let modeSaving = 0;
   for (const [value, label] of [
     ["personal", "Mine: site view + my choices"],
     ["site", "Site view only"],
@@ -59,16 +74,15 @@ export async function trustPage(
     );
     input.addEventListener("change", async () => {
       const request = ++modeRequest;
+      modeSaving++;
       try {
         await app.session.setPreferences({ viewMode: value });
-      } catch {}
-      if (!context.live() || request !== modeRequest) return;
-      const saved = app.session.preferences.viewMode;
-      for (const radio of seg.querySelectorAll("input"))
-        radio.checked = radio.value === saved;
-      for (const l of seg.querySelectorAll("label"))
-        l.classList.toggle("on", l.querySelector("input")!.checked);
-      showMode();
+      } catch {
+      } finally {
+        modeSaving--;
+      }
+      if (!live() || request !== modeRequest) return;
+      syncMode();
     });
     seg.append(wrapper);
   }
@@ -103,7 +117,6 @@ export async function trustPage(
             label: "Local calculation",
             idleText:
               "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records.",
-            onRefresh: rerender,
           })
         : p(
             "The site view shows this server's scores. It needs no calculation in this browser.",
@@ -111,11 +124,33 @@ export async function trustPage(
           ),
     );
   };
+  // The private rule reasons below name the loaded calculation. When a
+  // calculation finishes with other continuity, the page renders again,
+  // whichever panel started it.
+  const continuityKey = () => {
+    const loaded = app.personal.loadedContinuity;
+    return loaded
+      ? JSON.stringify([loaded.snapshot, loaded.view, loaded.actors])
+      : null;
+  };
+  let renderedContinuity: string | null | undefined;
   onDisconnect(
     modeSlot,
     app.personal.subscribe((status) => {
       busy = status.state === "downloading" || status.state === "evaluating";
       showMode();
+      if (
+        status.state === "ready" &&
+        renderedContinuity !== undefined &&
+        continuityKey() !== renderedContinuity
+      )
+        rerender();
+    }),
+  );
+  onDisconnect(
+    modeSlot,
+    app.session.subscribe(() => {
+      if (!modeSaving) syncMode();
     }),
   );
   main.append(
@@ -141,8 +176,9 @@ export async function trustPage(
   );
   const overlay = await app.store.overlay().catch(() => null);
   const registers = await app.own.registers();
-  if (!context.live()) return;
+  if (!live()) return;
   const continuity = app.personal.loadedContinuity;
+  renderedContinuity = continuityKey();
   const actor = (key: string) => continuity?.actors[key] ?? key;
   if (continuity && overlay?.trust.some((rule) => rule.value !== "clear"))
     main.append(
@@ -430,7 +466,7 @@ export async function trustPage(
   // Site view.
   main.append(el("h2", { class: "section", text: "Site view" }));
   const view = await loadSiteView(context.signal);
-  if (!context.live()) return;
+  if (!live()) return;
   main.append(viewChooser(app, view.id, context));
   if (!view.body) {
     main.append(

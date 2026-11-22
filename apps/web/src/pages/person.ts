@@ -1,4 +1,4 @@
-import { richHasContent } from "../model/rich-values.ts";
+import { richHasContent, richHasVisibleText } from "../model/rich-values.ts";
 import { editorLoadError } from "../components/editor-load-error.ts";
 /** Public identity: fingerprint, profile when known, trust actions, and this server's evidence. */
 import { deliveryAccepted } from "../data/delivery.ts";
@@ -343,7 +343,15 @@ export async function personPage(
   }
   // Your choices about this identity. A save in the trust panel below
   // renders the line again, so it lists every current choice.
-  const choices = el("div");
+  // The line and its link stay in place, so a refresh keeps focus on the
+  // link. Only the description changes.
+  const choices = el("p", { class: "small" });
+  const choicesText = el("span");
+  choices.append(
+    choicesText,
+    link("Manage on the Trust page", routes.trust, { class: "touch-link" }),
+  );
+  choices.hidden = true;
   let choicesRequest = 0;
   const showChoices = async () => {
     const request = ++choicesRequest;
@@ -363,29 +371,46 @@ export async function personPage(
     const privateRules = (overlay?.trust ?? []).filter(
       (r) => r.subject === identity && r.value !== "clear",
     );
+    // A private rule is the reader's own when its issuer is the reader's key
+    // or a key that the loaded calculation connects to it by a handover, as
+    // in the personal calculation. Other saved rules do not apply.
+    const continuity = app.personal.loadedContinuity;
+    const actor = (key: string) => continuity?.actors[key] ?? key;
+    const reader = app.session.identity;
+    const ownRule = (issuer: string) =>
+      Boolean(
+        reader &&
+        /^ed25519:[0-9a-f]{64}$/.test(issuer) &&
+        actor(issuer) === actor(reader),
+      );
     const blocks = (overlay?.blocked ?? []).filter(
       (b) => b.identity === identity,
     );
-    choices.replaceChildren();
-    if (!own.length && !privateRules.length && !blocks.length) return;
-    const status = el("p", { class: "small" });
+    if (!own.length && !privateRules.length && !blocks.length) {
+      choices.hidden = true;
+      return;
+    }
     const parts: string[] = [];
     for (const [key, state] of own)
       if (state.known && !state.conflicted)
         parts.push(
           `${state.value === "heed" ? "Trusted" : "Ignored"} publicly for ${describeKey(key)}`,
         );
+    const others: string[] = [];
     for (const rule of privateRules)
-      parts.push(
+      (ownRule(rule.issuer) ? parts : others).push(
         `${rule.value === "heed" ? "Trusted" : "Ignored"} privately for ${describeScope(rule.scope)}`,
       );
     for (const block of blocks)
       parts.push(`Ignored privately for ${describeScope(block.scope)}`);
-    status.append(
-      text(`Your choices: ${parts.join("; ")}. `),
-      link("Manage on the Trust page", routes.trust, { class: "touch-link" }),
-    );
-    choices.append(status);
+    const sentences: string[] = [];
+    if (parts.length) sentences.push(`Your choices: ${parts.join("; ")}.`);
+    if (others.length)
+      sentences.push(
+        `Private rules saved under another key: ${others.join("; ")}. They apply only when the personal calculation connects that key to yours.`,
+      );
+    choicesText.textContent = `${sentences.join(" ")} `;
+    choices.hidden = false;
   };
   await showChoices();
   if (!context.live()) return;
@@ -849,14 +874,14 @@ async function reportDialog(app: App, subject: string, opener: HTMLElement) {
     el("div", { class: "actions" }, submit, cancel),
   );
   reason.input.addEventListener("input", () => {
-    if (reasonError.hidden || !richHasContent(reason.input.value)) return;
+    if (reasonError.hidden || !richHasVisibleText(reason.input.value)) return;
     reasonError.hidden = true;
     reason.input.removeAttribute("aria-invalid");
   });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const explanation = reason.input.value;
-    if (!richHasContent(explanation)) {
+    if (!richHasVisibleText(explanation)) {
       // The preview needs an explanation. Say so beside the field.
       reasonError.hidden = false;
       reason.input.setAttribute("aria-invalid", "true");
