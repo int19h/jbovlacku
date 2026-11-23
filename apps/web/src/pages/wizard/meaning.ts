@@ -645,21 +645,9 @@ export async function meaningPage(
   const list = el("ol", { class: "similar" });
   const note = el("p", { class: "meta" });
   right.append(list, note);
-  // The Settings note keeps its link node while the same note applies.
-  let settingsNoteShown = false;
-  const showSettingsNote = () => {
-    if (settingsNoteShown) return;
-    settingsNoteShown = true;
-    note.replaceChildren(
-      text("Download a search package in "),
-      link("Settings", routes.preferences),
-      text(" for local nearby search, or allow a search on this server."),
-    );
-  };
   let cached: CachedPackage | null = null;
   // Consent covers one exact query and its definition language.
   let remoteConsent: string | null = null;
-  let remoteSearching = false;
   const nearbyQuery = () => meaningQueries(meaning.input.value).join(" ");
   const remoteQuery = () => nearbyQuery().split(" ")[0];
   const consentKey = () => JSON.stringify([remoteQuery(), draft.language]);
@@ -668,15 +656,12 @@ export async function meaningPage(
     if (cached) modeLabel.append(text("by words, from the downloaded package"));
     else {
       modeLabel.append(text("no local package · "));
-      if (remoteConsent === consentKey())
-        modeLabel.append(
-          text(remoteSearching ? "searching this server" : "searched this server"),
-        );
-      else
-        modeLabel.append(
-          button(
-            "search this server",
-            async () => {
+      modeLabel.append(
+        button(
+          remoteConsent === consentKey()
+            ? "searching this server"
+            : "search this server",
+          async () => {
             if (remoteConsent !== consentKey()) {
               const query = remoteQuery();
               if (!query) return;
@@ -723,7 +708,6 @@ export async function meaningPage(
     timer = setTimeout(() => void nearby(), 400);
   };
   const renderHits = (hits: SearchHit[], source: "local" | "remote") => {
-    settingsNoteShown = false;
     list.replaceChildren();
     if (!hits.length) {
       note.textContent = meaning.input.value.trim()
@@ -792,22 +776,6 @@ export async function meaningPage(
     const value = meaning.input.value;
     const language = draft.language;
     const terms = nearbyTerms(value);
-    // A consented lookup replaces the old rows and note at once, before
-    // the local package read below. A focused control in either moves to
-    // the Meaning input first, so clearing never drops focus to the body.
-    if (terms.length && remoteConsent === consentKey()) {
-      remoteSearching = true;
-      renderMode();
-      if (
-        document.activeElement instanceof Node &&
-        (note.contains(document.activeElement) ||
-          list.contains(document.activeElement))
-      )
-        meaning.input.focus({ preventScroll: true });
-      settingsNoteShown = false;
-      note.textContent = "";
-      list.replaceChildren();
-    }
     const current = () =>
       context.live() &&
       request === nearbyRequest &&
@@ -859,30 +827,18 @@ export async function meaningPage(
           renderMode();
         }
       }
-      list.replaceChildren();
+      renderHits([], "local");
       if (remoteConsent !== consentKey()) {
-        showSettingsNote();
+        note.textContent =
+          "Download a search package in Settings for local nearby search, or allow a search on this server.";
         return;
       }
-      // A consented lookup replaces the old note; the mode label already
-      // says that a search is running.
-      settingsNoteShown = false;
-      note.textContent = "";
       const result = await remoteDraftSearch(remoteQuery(), language, 10, {
         signal: context.signal,
       });
-      if (current()) {
-        renderHits(result.hits, "remote");
-        remoteSearching = false;
-        renderMode();
-      }
+      if (current()) renderHits(result.hits, "remote");
     } catch (error) {
-      if (current()) {
-        settingsNoteShown = false;
-        note.textContent = describe(error);
-        remoteSearching = false;
-        renderMode();
-      }
+      if (current()) note.textContent = describe(error);
     }
   };
   void nearby();
