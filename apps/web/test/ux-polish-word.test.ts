@@ -2246,3 +2246,45 @@ for (const key of ["no key", "a key"] as const)
         : "Definitions with your judgments appear first within each ranking layer and within the unranked group.",
     );
   });
+
+test("a selection in the judgments-first explanation survives the scores", async ({
+  page,
+}) => {
+  await page.goto("/preferences");
+  await page.getByLabel("Show my judgments first on word pages").check();
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return (await new LocalStore().preferences()).myJudgmentsFirst;
+      }),
+    )
+    .toBe(true);
+  const release = await heldPersonal(page);
+  await page.goto("/word/ckusro?lang=en");
+  const note = page
+    .locator("main p.meta")
+    .filter({ hasText: "You have no key in this browser" });
+  await expect(note).toContainText("Definitions appear in event order.");
+  // Select the word "browser" in the explanation, as a double-click would.
+  await note.evaluate((paragraph) => {
+    const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const at = node.textContent!.indexOf("browser");
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + "browser".length);
+      getSelection()!.removeAllRanges();
+      getSelection()!.addRange(range);
+      return;
+    }
+  });
+  expect(await page.evaluate(() => getSelection()!.toString())).toBe("browser");
+  release();
+  await scored(page);
+  await expect(note).toContainText(
+    "Definitions follow ranking layers, then event order.",
+  );
+  expect(await page.evaluate(() => getSelection()!.toString())).toBe("browser");
+});

@@ -715,14 +715,25 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       : keySavedLater
         ? "This tab has not loaded the key that is now saved in this browser. Reload the page to put your judgments first."
         : "You have no key in this browser, so no judgments of yours change this order.";
+  // The explanation and the order sentence are separate text nodes. Only
+  // the order sentence changes, and only when its wording does, so a
+  // selection in the explanation stays.
+  const orderText = document.createTextNode("");
+  if (judgmentsNote) {
+    if (judgmentsReason) judgmentsNote.append(text(`${judgmentsReason} `));
+    judgmentsNote.append(orderText);
+  }
   const describeOrder = (v: ViewScores) => {
     if (!judgmentsNote) return;
     const ranked = v.calculation !== null && !unknownProfileOf(v);
-    judgmentsNote.textContent = own
+    const sentence = own
       ? ranked
         ? "Definitions with your judgments appear first within each ranking layer and within the unranked group. Scores and ranking layers stay the same."
         : "Definitions with your judgments appear first, followed by event order."
-      : `${judgmentsReason} ${ranked ? "Definitions follow ranking layers, then event order." : "Definitions appear in event order."}`;
+      : ranked
+        ? "Definitions follow ranking layers, then event order."
+        : "Definitions appear in event order.";
+    if (orderText.data !== sentence) orderText.data = sentence;
   };
   if (judgmentsNote) part.append(judgmentsNote);
   const allRecords = [...records.values()];
