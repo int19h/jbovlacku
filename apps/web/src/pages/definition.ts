@@ -88,20 +88,26 @@ export async function definitionPage(
   }
   const definition = record as LoadedRecord<DefinitionBody>;
   const spelling = definition.body?.word.spelling;
-  context.title(spelling ? `Definition: ${spelling}` : "Definition");
+  const comparing =
+    route.params.has("compare") && eventId(route.params.get("compare") ?? "");
+  context.title(
+    spelling
+      ? `${comparing ? "Compare" : "Definition"}: ${spelling}`
+      : "Definition",
+  );
   const head = el("div", { class: "word-head" });
   head.append(el("h1", { lang: "jbo", text: spelling ?? "Definition" }));
   if (spelling)
     head.append(
       link("All definitions", routes.word(spelling), { class: "small" }),
     );
-  main.append(
-    head,
-    p(
-      "One immutable revision. Its exact event ID identifies this publication.",
-      "meta",
-    ),
+  // The lead line names the comparison only once it is on the page and
+  // compares with a real parent of this revision.
+  const lead = p(
+    "One immutable revision. Its exact event ID identifies this publication.",
+    "meta",
   );
+  main.append(head, lead);
   let word: WordResponse | null = null;
   const wordKey = definition.envelope.header.action.word as string;
   try {
@@ -147,7 +153,17 @@ export async function definitionPage(
     try {
       const parent = await loadDefinition(compareTo);
       if (!context.live()) return;
-      main.append(comparison(parent, definition));
+      const parents =
+        (definition.envelope.header.action.parents as string[] | undefined) ??
+        [];
+      const isParent = parents.includes(compareTo);
+      main.append(comparison(parent, definition, isParent));
+      // The lead names only the outcome that the page shows below it.
+      if (isParent)
+        lead.textContent +=
+          parent.body && definition.body
+            ? " The comparison with the parent revision is below."
+            : " One of the two bodies is unavailable, so the comparison with the parent revision below cannot show changed fields.";
     } catch (error) {
       if (context.live())
         main.append(p(`Comparison unavailable: ${describe(error)}`, "notice"));
@@ -178,6 +194,7 @@ export async function definitionPage(
 export function comparison(
   parent: LoadedRecord<DefinitionBody>,
   child: LoadedRecord<DefinitionBody>,
+  isParent = true,
 ): HTMLElement {
   const section = el("section", {
     "aria-labelledby": "cmp-h",
@@ -187,7 +204,10 @@ export function comparison(
     el("h2", {
       id: "cmp-h",
       class: "section",
-      text: "Compare with the parent revision",
+      // A link can name any revision. Only a real parent is called one.
+      text: isParent
+        ? "Compare with the parent revision"
+        : "Compare with another revision",
     }),
   );
   const a = parent.body;
