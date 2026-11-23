@@ -351,6 +351,23 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     ? await app.own.registers()
     : null;
   if (!context.live()) return;
+  // This tab has no key, but another tab can save one after this tab
+  // started. Read the saved key before saying that the browser has none.
+  // Null means that the read failed.
+  let keySavedLater: boolean | null = false;
+  if (
+    app.session.preferences.myJudgmentsFirst &&
+    !own &&
+    !app.session.identity &&
+    app.session.storageAvailable
+  ) {
+    try {
+      keySavedLater = Boolean(await app.store.get("keys", "selected"));
+    } catch {
+      keySavedLater = null;
+    }
+    if (!context.live()) return;
+  }
   const myJudgmentsFirst = Boolean(own);
   // The current reason for unavailable personal scores. The page reads it
   // when it builds each score, and the note's listener keeps it current.
@@ -506,9 +523,17 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         ),
       );
     } else {
+      // Without a key there are no judgments of yours, which is not a
+      // failure.
       main.append(
         p(
-          "Your judgments could not be loaded. Definitions follow ranking layers, then event order.",
+          app.session.identity ||
+            !app.session.storageAvailable ||
+            keySavedLater === null
+            ? "Your judgments could not be loaded. Definitions follow ranking layers, then event order."
+            : keySavedLater
+              ? "This tab has not loaded the key that is now saved in this browser. Reload the page to put your judgments first. Definitions follow ranking layers, then event order."
+              : "You have no key in this browser, so no judgments of yours change this order. Definitions follow ranking layers, then event order.",
           "meta",
         ),
       );

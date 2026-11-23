@@ -236,7 +236,20 @@ async function start() {
         return;
       }
       const head = route.segments[0] ?? "";
-      let page = pages[head];
+      let page: Page | undefined = pages[head];
+      // These pages have no sub-paths. An extra segment names no page.
+      if (
+        route.segments.length > 1 &&
+        [
+          "search",
+          "outbox",
+          "preferences",
+          "about",
+          "trust",
+          "review",
+        ].includes(head)
+      )
+        page = undefined;
       if (head === "new" || head === "draft") {
         const step = route.segments[1] ?? "meaning";
         page =

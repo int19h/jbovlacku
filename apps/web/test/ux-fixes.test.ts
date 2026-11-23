@@ -569,6 +569,13 @@ for (const fail of [false, true])
     await expect(
       page.getByRole("button", { name: "Refresh English" }),
     ).not.toBeInViewport();
+    // The package note above the viewport can change its height when the
+    // run ends. The browser then keeps the visible content in place, so
+    // the check reads the place of a heading below the note.
+    const delivery = page.getByRole("heading", { name: "Delivery" });
+    const deliveryTop = await delivery.evaluate(
+      (node) => node.getBoundingClientRect().top,
+    );
     held.release();
     if (fail) {
       await expect(statusText(page)).toContainText(
@@ -587,7 +594,9 @@ for (const fail of [false, true])
     await expect(
       page.getByRole("button", { name: "Refresh English" }),
     ).toBeFocused();
-    expect(await page.evaluate(() => window.scrollY)).toBe(scrolled);
+    expect(
+      await delivery.evaluate((node) => node.getBoundingClientRect().top),
+    ).toBe(deliveryTop);
   });
 
 /** Offers exactly these languages in the manifest, in this order, all with the English package's metadata. */

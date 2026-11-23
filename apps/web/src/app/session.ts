@@ -38,7 +38,11 @@ export class Session {
   private unlockAttempt: AbortController | undefined;
   private listeners = new Set<SessionListener>();
   private preferenceChannel: BroadcastChannel | undefined;
-  private themeRequest = 0;
+  /**
+   * Writes of this tab that are still running for each setting that the
+   * session applies to the page. While one runs, that setting waits for it.
+   */
+  private appliedWrites = { theme: 0, view: 0 };
   private preferenceWrites = new Set<Promise<Preferences>>();
   private preferenceWait: Promise<void> | undefined;
   private preferenceWaitExpired = false;
@@ -110,10 +114,19 @@ export class Session {
     const preferences = await this.store.preferences();
     if (JSON.stringify(preferences) !== JSON.stringify(this.preferences)) {
       this.preferences = preferences;
-      setPreferredView(preferences.view);
+      // Another tab changed the saved settings.
+      this.applySaved(preferences);
       this.changed();
     }
     return this.preferences;
+  }
+  /**
+   * Applies the saved theme and view, except a setting that a write of this
+   * tab still changes. That write applies the saved value when it ends.
+   */
+  private applySaved(preferences: Preferences) {
+    if (!this.appliedWrites.theme) applyTheme(preferences.theme);
+    if (!this.appliedWrites.view) setPreferredView(preferences.view);
   }
   subscribePreferenceStatus(listener: (message: string) => void) {
     this.preferenceStatusListeners.add(listener);
@@ -127,14 +140,23 @@ export class Session {
     // A true result means that the live caller showed the failure.
     onFailure?: (error: unknown) => boolean,
   ): Promise<Preferences> {
-    const themeRequest = "theme" in patch ? ++this.themeRequest : undefined;
+    const applied = (["theme", "view"] as const).filter((key) => key in patch);
+    for (const key of applied) this.appliedWrites[key]++;
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      for (const key of applied) this.appliedWrites[key]--;
+    };
     const writing = Promise.resolve()
       .then(() => this.store.setPreferences(patch))
       .then((preferences) => {
+        settle();
         this.preferences = preferences;
         this.preferenceChannel?.postMessage("changed");
-        if ("view" in patch) setPreferredView(this.preferences.view);
-        if (themeRequest === this.themeRequest) applyTheme(preferences.theme);
+        // Any finished write applies the saved values, including a theme
+        // or view that another tab saved while this write ran.
+        this.applySaved(preferences);
         this.changed();
         if (this.preferenceWaitExpired)
           this.preferenceStatus(
@@ -145,8 +167,9 @@ export class Session {
         return preferences;
       })
       .catch((error: unknown) => {
-        if (themeRequest === this.themeRequest)
-          applyTheme(this.preferences.theme);
+        // A failed write restores the saved values that it held back.
+        settle();
+        this.applySaved(this.preferences);
         if (!onFailure?.(error))
           this.preferenceStatus(`Not saved: ${describe(error)}`);
         throw error;
