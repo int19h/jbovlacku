@@ -110,12 +110,13 @@ test("U65: Test it stays inside its sentence when the backup warning wraps", asy
     const anchor = node.querySelector("a")!;
     const linkRect = anchor.getClientRects()[0];
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
-    let textNode = walker.nextNode();
-    while (textNode && !textNode.textContent!.includes("your")) textNode = walker.nextNode();
-    const start = textNode.textContent!.indexOf("your");
+    let found = walker.nextNode();
+    while (found && !found.textContent!.includes("your")) found = walker.nextNode();
+    if (!found) return false;
+    const start = found.textContent!.indexOf("your");
     const range = document.createRange();
-    range.setStart(textNode, start);
-    range.setEnd(textNode, start + 4);
+    range.setStart(found, start);
+    range.setEnd(found, start + 4);
     const wordRect = range.getClientRects()[0];
     return linkRect.top < wordRect.bottom && wordRect.top < linkRect.bottom;
   });
