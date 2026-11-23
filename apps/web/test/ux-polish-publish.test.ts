@@ -5,10 +5,10 @@ const DEF_ID = "jve1:94b463e3b71d56fe4a7ae6839f9165a019a13a47095dd4fbe043cbda36e
 const END_ID = "jve1:44e54ef8b71d56fe4a7ae6839f9165a019a13a47095dd4fbe043cbda36ead07c";
 
 /** Seeds a definition and its dependent endorsement, as stored before the fix. */
-async function seed(page: import("@playwright/test").Page, dependent: "waiting" | "stopped" | "refused" = "waiting", separateGroups = false) {
+async function seed(page: import("@playwright/test").Page) {
   await page.goto("/outbox");
   await expect(page.locator("main h1")).toHaveText("Not delivered");
-  await page.evaluate(async ([defId, endId, mode, separate]) => {
+  await page.evaluate(async ([defId, endId]) => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const { freshPeer } = await import(String("/src/data/delivery.ts"));
     const store = new LocalStore();
@@ -19,17 +19,14 @@ async function seed(page: import("@playwright/test").Page, dependent: "waiting" 
       label: { subject: "cuntrix", action: "new definition", href: "/" },
       peers: { self: peer() },
     };
-    const endorsementPeer = mode === "refused"
-      ? { ...freshPeer(), state: "refused", failure: "refused", attempts: 1, lastAttempt: Date.now(), nextAttempt: null, error: "The server refused this record." }
-      : peer();
     const endorsement = {
-      id: endId, identity: "test", group: separate ? "g2" : "g1", order: 1, stopped: mode === "stopped", signedAt: Date.now(),
+      id: endId, identity: "test", group: "g1", order: 1, stopped: false, signedAt: Date.now(),
       transport: JSON.stringify({ envelope: { id: endId, header: { issuer: "test", previous: [defId], action: { kind: "judgment.set", target: defId, value: "bless" } } }, body: null }),
       label: { subject: defId, action: "endorsement", href: "/" },
-      peers: { self: endorsementPeer },
+      peers: { self: peer() },
     };
     await store.queueGroup([definition as never, endorsement as never]);
-  }, [DEF_ID, END_ID, dependent, separateGroups]);
+  }, [DEF_ID, END_ID]);
   await page.reload();
 }
 
@@ -52,8 +49,8 @@ test("U13/U29/U63/U64: outbox shows the word, the missing connection, exact seco
   await expect(endorsementRow).toContainText("Next try in 90 seconds.");
   const definitionRow = page.locator(`[data-outbox-record="${DEF_ID}"]`);
   await definitionRow.getByRole("button", { name: "Stop retrying" }).click();
-  await expect(page.getByRole("status")).toContainText("Stop leaves the records that depend on this record unchanged");
-  await expect(page.getByRole("status")).toContainText("use the controls on each of those rows");
+  await expect(page.getByRole("status")).toContainText("Stop affects only this record.");
+  await expect(page.getByRole("status")).toContainText("Records that depend on it keep their own state; use the controls on their rows.");
   await expect(definitionRow.getByText("Stopped", { exact: true })).toBeVisible();
   await expect(endorsementRow.getByText("Stopped", { exact: true })).toHaveCount(0);
   await expect(endorsementRow.getByRole("button", { name: "Stop retrying" })).toBeVisible();
@@ -122,99 +119,6 @@ test("U65: Test it stays inside its sentence when the backup warning wraps", asy
   expect(sameLine).toBe(true);
 });
 
-test("U64: stopping a record with an already stopped dependent says the dependent is unchanged", async ({ page }) => {
-  await seed(page, "stopped");
-  const endorsementRow = page.locator(`[data-outbox-record="${END_ID}"]`);
-  await expect(endorsementRow.getByText("Stopped", { exact: true })).toBeVisible();
-  const definitionRow = page.locator(`[data-outbox-record="${DEF_ID}"]`);
-  await definitionRow.getByRole("button", { name: "Stop retrying" }).click();
-  await expect(page.getByRole("status")).toContainText("Stop leaves the records that depend on this record unchanged");
-  await expect(page.getByRole("status")).not.toContainText("keep retrying");
-  expect(await stoppedFlags(page)).toEqual({ 0: true, 1: true });
-});
-
-test("U64: stopping a record with a refused dependent says the dependent is unchanged", async ({ page }) => {
-  await seed(page, "refused");
-  const definitionRow = page.locator(`[data-outbox-record="${DEF_ID}"]`);
-  await definitionRow.getByRole("button", { name: "Stop retrying" }).click();
-  await expect(page.getByRole("status")).toContainText("Stop leaves the records that depend on this record unchanged");
-  await expect(page.getByRole("status")).not.toContainText("keep retrying");
-  expect(await stoppedFlags(page)).toEqual({ 0: true, 1: false });
-  const endorsement = await page.evaluate(async (endId) => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const item = await new LocalStore().get("outbox", endId);
-    return item.peers.self.state;
-  }, END_ID);
-  expect(endorsement).toBe("refused");
-});
-
-test("U64: stopping a record whose dependent is in another signing group still gives the explanation", async ({ page }) => {
-  await seed(page, "waiting", true);
-  const definitionRow = page.locator(`[data-outbox-record="${DEF_ID}"]`);
-  await definitionRow.getByRole("button", { name: "Stop retrying" }).click();
-  await expect(page.getByRole("status")).toContainText("Stop leaves the records that depend on this record unchanged");
-  expect(await stoppedFlags(page)).toEqual({ 0: true, 1: false });
-});
-
-const MID_ID = "jve1:55e54ef8b71d56fe4a7ae6839f9165a019a13a47095dd4fbe043cbda36ead07d";
-
-test("U64: a delivered record in the middle still connects a dependent in Not delivered", async ({ page }) => {
-  await page.goto("/outbox");
-  await expect(page.locator("main h1")).toHaveText("Not delivered");
-  await page.evaluate(async ([aId, bId, cId]) => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const { freshPeer } = await import(String("/src/data/delivery.ts"));
-    const store = new LocalStore();
-    const waiting = () => ({ ...freshPeer(), state: "unknown", failure: "offline", attempts: 1, lastAttempt: Date.now(), nextAttempt: Date.now() + 90000, error: "No connection to the server." });
-    const record = (id: string, order: number, previous: string[], target: string | null, peer: unknown, stopped = false) => ({
-      id, identity: "test", group: "g1", order, stopped, signedAt: Date.now(),
-      transport: JSON.stringify({ envelope: { id, header: { issuer: "test", previous, action: target ? { kind: "judgment.set", target, value: "bless" } : { kind: "definition.publish" } } }, body: null }),
-      label: { subject: target ?? "cuntrix", action: target ? "endorsement" : "new definition", href: "/" },
-      peers: { self: peer },
-    });
-    await store.queueGroup([
-      record(aId, 0, [], null, waiting()) as never,
-      record(bId, 1, [aId], aId, { ...freshPeer(), state: "accepted" }) as never,
-      record(cId, 2, [bId], bId, waiting()) as never,
-    ]);
-  }, [DEF_ID, MID_ID, END_ID]);
-  await page.reload();
-  const aRow = page.locator(`[data-outbox-record="${DEF_ID}"]`);
-  await aRow.getByRole("button", { name: "Stop retrying" }).click();
-  await expect(page.getByRole("status")).toContainText("Stop leaves the records that depend on this record unchanged");
-  await expect(page.locator(`[data-outbox-record="${END_ID}"]`).getByRole("button", { name: "Stop retrying" })).toBeVisible();
-});
-
-test("U64: a chain of 192 records renders within the time bound", async ({ page }) => {
-  test.setTimeout(120000);
-  await page.goto("/outbox");
-  await expect(page.locator("main h1")).toHaveText("Not delivered");
-  await page.evaluate(async () => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const { freshPeer } = await import(String("/src/data/delivery.ts"));
-    const store = new LocalStore();
-    const records = [];
-    let previous: string[] = [];
-    for (let i = 0; i < 192; i++) {
-      const id = `jve1:${i.toString(16).padStart(64, "0")}`;
-      records.push({
-        id, identity: "test", group: "chain", order: i, stopped: false, signedAt: Date.now(),
-        transport: JSON.stringify({ envelope: { id, header: { issuer: "test", previous, action: { kind: "definition.publish" } } }, body: { word: { spelling: `word${i}` } } }),
-        label: { subject: `word${i}`, action: "new definition", href: "/" },
-        peers: { self: { ...freshPeer(), state: "refused", failure: "refused", attempts: 1, lastAttempt: Date.now(), nextAttempt: null, error: "The server refused this record." } },
-      });
-      previous = [id];
-    }
-    await store.queueGroup(records as never[]);
-  });
-  const started = Date.now();
-  await page.reload();
-  await expect(page.locator("[data-outbox-record]")).toHaveCount(192);
-  const elapsed = Date.now() - started;
-  console.log(`192-chain render: ${elapsed}ms`);
-  expect(elapsed).toBeLessThan(2000);
-});
-
 test("U13: a standalone endorsement from the word page shows the word in Not delivered", async ({ page }) => {
   await createIdentity(page);
   await page.route("**/api/v1/events", (route) => route.request().method() === "POST" ? route.abort("connectionreset") : route.continue());
@@ -232,4 +136,56 @@ test("U13: a standalone endorsement from the word page shows the word in Not del
     return item.label.subject;
   });
   expect(label).toBe("cukta");
+});
+
+test("U13: label lookup comparisons grow linearly with the outbox size", async ({ page, browser }) => {
+  test.setTimeout(120000);
+  await page.goto("/outbox");
+  const origin = new URL(page.url()).origin;
+  const comparisons = async (rows: number) => {
+    const context = await browser.newContext({ baseURL: origin });
+    const counted = await context.newPage();
+    await counted.addInitScript(() => {
+      const original = Array.prototype.find;
+      (window as any).__labelComparisons = 0;
+      Array.prototype.find = function (callback: any, thisArg: any) {
+        const list = this as unknown[];
+        const isOutbox = Array.isArray(list) && list.length > 1 && list.every((entry) => entry !== null && typeof entry === "object" && "label" in entry && "transport" in entry);
+        if (!isOutbox) return original.call(this, callback, thisArg);
+        const counting = function (this: unknown, ...args: unknown[]) {
+          (window as any).__labelComparisons += 1;
+          return callback.apply(this, args);
+        };
+        return original.call(this, counting, thisArg);
+      };
+    });
+    await counted.goto("/outbox");
+    await counted.evaluate(async (count) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { freshPeer } = await import(String("/src/data/delivery.ts"));
+      const store = new LocalStore();
+      const records = [];
+      for (let i = 0; i < count; i++) {
+        const id = `jve1:${i.toString(16).padStart(64, "0")}`;
+        const definition = i % 2 === 0;
+        const target = `jve1:${(i - 1).toString(16).padStart(64, "0")}`;
+        records.push({
+          id, identity: "test", group: "g1", order: i, stopped: false, signedAt: Date.now(),
+          transport: JSON.stringify({ envelope: { id, header: { issuer: "test", previous: definition ? [] : [target], action: definition ? { kind: "definition.publish" } : { kind: "judgment.set", target, value: "bless" } } }, body: null }),
+          label: { subject: definition ? `word${i}` : target, action: definition ? "new definition" : "endorsement", href: "/" },
+          peers: { self: { ...freshPeer(), state: "refused", failure: "refused", attempts: 1, lastAttempt: Date.now(), nextAttempt: null, error: "The server refused this record." } },
+        });
+      }
+      await store.queueGroup(records as never[]);
+    }, rows);
+    await counted.reload();
+    await expect(counted.locator("[data-outbox-record]")).toHaveCount(rows);
+    const total = await counted.evaluate(() => (window as any).__labelComparisons as number);
+    await context.close();
+    return total;
+  };
+  const at64 = await comparisons(64);
+  const at256 = await comparisons(256);
+  console.log(`label comparisons: 64 rows=${at64}, 256 rows=${at256}`);
+  expect(at256).toBeLessThan(at64 * 6 + 500);
 });

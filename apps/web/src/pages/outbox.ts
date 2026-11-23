@@ -15,7 +15,7 @@ import {
   requiresLifecycleDelivery,
 } from "../data/outbox-graph.ts";
 import type { Envelope } from "../model/types.ts";
-import { resolvedLabel, type OutboxItem } from "../data/store.ts";
+import { labelIndex, resolvedLabel, type OutboxItem } from "../data/store.ts";
 
 export async function outboxPage(
   _route: Route,
@@ -155,38 +155,7 @@ export async function outboxPage(
         dependencies.set(identity, null);
       }
     }
-    // Parse each retained record once, then walk predecessor links from the
-    // visible records, visiting each ancestor once. A delivered record in
-    // the middle still connects the rows at both ends.
-    const previousById = new Map<string, string[]>();
-    for (const entry of items) {
-      try {
-        const previous = (JSON.parse(entry.transport) as { envelope: Envelope }).envelope.header.previous;
-        previousById.set(entry.id, Array.isArray(previous) ? previous.filter((x): x is string => typeof x === "string") : []);
-      } catch {
-        previousById.set(entry.id, []);
-      }
-    }
-    const needsExplanation = new Set<string>();
-    {
-      const visited = new Set<string>();
-      const queue: string[] = [];
-      for (const entry of active)
-        for (const parent of previousById.get(entry.id) ?? [])
-          if (!visited.has(parent)) {
-            visited.add(parent);
-            queue.push(parent);
-          }
-      while (queue.length) {
-        const current = queue.shift()!;
-        needsExplanation.add(current);
-        for (const parent of previousById.get(current) ?? [])
-          if (!visited.has(parent)) {
-            visited.add(parent);
-            queue.push(parent);
-          }
-      }
-    }
+    const labels = labelIndex(items);
     for (const item of active) {
       const dependents = dependencies.get(item.identity);
       let discardState: "lifecycle" | "leaf" | "dependent" | "unavailable" =
@@ -202,7 +171,7 @@ export async function outboxPage(
       } catch {
         /* Keep unreadable local records available for export. */
       }
-      list.append(row(app, item, discardState, items, needsExplanation.has(item.id)));
+      list.append(row(app, item, discardState, labels));
     }
     empty.textContent = active.length ? "" : "No unfinished records.";
     exportLine.hidden = active.length === 0;
@@ -221,8 +190,8 @@ export async function outboxPage(
             el(
               "span",
               {},
-              el("strong", { text: resolvedLabel(item, items).subject }),
-              text(` ${resolvedLabel(item, items).action}`, "meta"),
+              el("strong", { text: resolvedLabel(item, labels).subject }),
+              text(` ${resolvedLabel(item, labels).action}`, "meta"),
             ),
             el("small", {
               text: Object.entries(item.peers)
@@ -275,10 +244,9 @@ function row(
     | "leaf"
     | "dependent"
     | "unavailable" = "unavailable",
-  allItems: OutboxItem[] = [item],
-  hasDependents = false,
+  labels: Map<string, string> = new Map(),
 ): HTMLElement {
-  const label = resolvedLabel(item, allItems);
+  const label = resolvedLabel(item, labels);
   const li = el("li", { class: "row", "data-outbox-record": item.id });
   const info = el("span", { class: "t" });
   const signed = item.signedAt ? new Date(item.signedAt) : null;
@@ -433,9 +401,7 @@ function row(
     async () => {
       await app.delivery.stop(item.id);
       app.announce(
-        hasDependents
-          ? "Stopped. The signed record and its receipts stay in this browser. Stop leaves the records that depend on this record unchanged; use the controls on each of those rows to change them. This does not retract a public record or cancel a request already in flight."
-          : "Stopped. The signed record and its receipts stay in this browser. This does not retract a public record or cancel a request already in flight.",
+        "Stopped. The signed record and its receipts stay in this browser. Stop affects only this record. Records that depend on it keep their own state; use the controls on their rows. This does not retract a public record or cancel a request already in flight.",
       );
     },
     {

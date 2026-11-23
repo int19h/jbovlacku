@@ -48,6 +48,7 @@ import { getWord, selfPeer } from "../../data/api.ts";
 import { describePeer, isNotDelivered } from "../../data/delivery.ts";
 import {
   PublicationConflictError,
+  labelIndex,
   resolvedLabel,
   type OutboxItem,
   type PublicationRecord,
@@ -926,6 +927,7 @@ function savedGroupState(items: OutboxItem[]) {
   );
   const failed = unfinished.some((item) => isNotDelivered(item));
   const sending = unfinished.length > 0 && !failed;
+  const labels = labelIndex(items);
   return {
     unfinished,
     failed,
@@ -940,10 +942,10 @@ function savedGroupState(items: OutboxItem[]) {
       : unfinished.length
         ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes and sent again automatically. Publishing again would create a second definition, so this page offers delivery of the saved records instead.`
         : `All ${items.length} signed records were accepted.`,
-    lines: items.map(
-      (item) =>
-        `${resolvedLabel(item, items).action} ${resolvedLabel(item, items).subject}: ${Object.values(item.peers).map(describePeer).join(" ")}`,
-    ),
+    lines: items.map((item) => {
+      const label = resolvedLabel(item, labels);
+      return `${label.action} ${label.subject}: ${Object.values(item.peers).map(describePeer).join(" ")}`;
+    }),
   };
 }
 

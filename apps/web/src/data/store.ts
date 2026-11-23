@@ -2180,14 +2180,21 @@ export function describeTransport(transport: Transport): OutboxLabel {
       };
   }
 }
+/** One index of record IDs to known words, built once per list. */
+export function labelIndex(items: OutboxItem[]): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const item of items)
+    if (!item.label.subject.startsWith("jve1:")) index.set(item.id, item.label.subject);
+  return index;
+}
 /** Label with a record-ID subject replaced by the target record's word, when that record is in the same list. */
-export function resolvedLabel(item: OutboxItem, items: OutboxItem[]): OutboxLabel {
+export function resolvedLabel(item: OutboxItem, source: OutboxItem[] | Map<string, string>): OutboxLabel {
   if (!item.label.subject.startsWith("jve1:")) return item.label;
   try {
     const action = (JSON.parse(item.transport) as Transport).envelope.header.action as unknown as Record<string, unknown>;
     const target = typeof action.target === "string" ? action.target : null;
     if (!target) return item.label;
-    const found = items.find((other) => other.id === target && !other.label.subject.startsWith("jve1:"));
-    return found ? { ...item.label, subject: found.label.subject } : item.label;
+    const subject = source instanceof Map ? source.get(target) : labelIndex(source).get(target);
+    return subject ? { ...item.label, subject } : item.label;
   } catch { return item.label; }
 }
