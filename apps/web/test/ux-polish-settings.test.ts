@@ -129,9 +129,7 @@ test("failed download lines name their package after the connection returns", as
   ]);
 });
 
-test("a failed refresh says that the saved package is unchanged", async ({
-  page,
-}) => {
+test("a failed refresh says that it changed nothing", async ({ page }) => {
   await settings(page);
   await page
     .getByLabel("Download a package", { exact: true })
@@ -154,7 +152,7 @@ test("a failed refresh says that the saved package is unchanged", async ({
     .click();
   await expect(note).toHaveClass("notice");
   await expect(note).toHaveText(
-    "The English package was not refreshed. The saved package is unchanged: The search package hash did not match.",
+    "The English package was not refreshed. This refresh changed nothing in this browser: The search package hash did not match.",
   );
   await expect(note).not.toContainText("download another package");
   const stored = await page.evaluate(async () => {
@@ -165,6 +163,101 @@ test("a failed refresh says that the saved package is unchanged", async ({
     return { keys: await store.keys("packages"), usable: pkg !== null };
   });
   expect(stored).toEqual({ keys: ["en"], usable: true });
+});
+
+test("a refresh that fails after a remove claims no saved package", async ({
+  page,
+}) => {
+  await settings(page);
+  await page
+    .getByLabel("Download a package", { exact: true })
+    .selectOption("en");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  const note = page.locator("[data-package-note=en]");
+  await expect(note).toHaveText(
+    "The English search package is saved in this browser.",
+  );
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/v1/package-parts/*", async (route) => {
+    await held;
+    await route.abort().catch(() => {});
+  });
+  await page
+    .getByRole("button", { name: "Refresh English", exact: true })
+    .click();
+  await expect(note).toHaveText(/part 0 of/);
+  await page
+    .locator("[data-package-control=remove][data-package-language=en]")
+    .click();
+  await expect(note).toHaveText(
+    "The English package is removed from this browser.",
+  );
+  release();
+  await expect(note).toHaveClass("notice");
+  await expect(note).toHaveText(
+    "The English package was not refreshed. This refresh changed nothing in this browser: No connection to the server.",
+  );
+  await expect(
+    page.locator("[data-package-control=remove][data-package-language=en]"),
+  ).toHaveCount(0);
+  const keys = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return new LocalStore().keys("packages");
+  });
+  expect(keys).toEqual([]);
+});
+
+/** Makes the read of the saved package list fail from the given call on. */
+const failKeysFrom = (page: Page, from: number) =>
+  page.evaluate(async (from) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const original = LocalStore.prototype.keys;
+    let calls = 0;
+    LocalStore.prototype.keys = async function (store: string) {
+      if (store === "packages" && ++calls >= from)
+        throw new Error("Test read failure.");
+      return original.call(this, store);
+    };
+  }, from);
+
+test("an error after a saved download keeps the saved line", async ({
+  page,
+}) => {
+  await settings(page);
+  await failKeysFrom(page, 1);
+  await page
+    .getByLabel("Download a package", { exact: true })
+    .selectOption("en");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(toast(page)).toContainText("Test read failure.");
+  const note = page.locator("[data-package-note=en]");
+  await expect(note).toHaveText(
+    "The English search package is saved in this browser.",
+  );
+  await expect(note).toHaveClass("small");
+});
+
+test("an error after a saved refresh keeps the refreshed line", async ({
+  page,
+}) => {
+  await settings(page);
+  await page
+    .getByLabel("Download a package", { exact: true })
+    .selectOption("en");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  const note = page.locator("[data-package-note=en]");
+  await expect(note).toHaveText(
+    "The English search package is saved in this browser.",
+  );
+  // The first read is the check for a stale row. The second is the list.
+  await failKeysFrom(page, 2);
+  await page
+    .getByRole("button", { name: "Refresh English", exact: true })
+    .click();
+  await expect(toast(page)).toContainText("Test read failure.");
+  await expect(note).toHaveText("The English package is refreshed.");
+  await expect(note).toHaveClass("small");
 });
 
 test("a failed settings save stays in place under its control", async ({

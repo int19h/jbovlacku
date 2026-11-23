@@ -701,6 +701,9 @@ async function preferencesBody(context: RenderContext, app: App) {
           const hadFocus = document.activeElement === go;
           const token = startRun(language);
           let rendered = false;
+          // Set when the outcome line is written. A later error, such as a
+          // failed list read, must not replace that true line.
+          let reported = false;
           try {
             packageNote(
               language,
@@ -742,6 +745,7 @@ async function preferencesBody(context: RenderContext, app: App) {
               saved ? "outcome" : "error",
               saved ? "saved" : undefined,
             );
+            reported = true;
             // Clear the running mark before the render, so the new
             // buttons for this language render enabled.
             endRun(language, token);
@@ -754,6 +758,10 @@ async function preferencesBody(context: RenderContext, app: App) {
             ]);
           } catch (error) {
             // A full store reports its own message instead of a raw quota error.
+            if (reported) {
+              app.announce(describe(reportPackageError(error)));
+              return;
+            }
             // The line stays after the state changes, so it names the
             // package and the attempt in the past tense before the cause.
             packageNote(
@@ -812,6 +820,9 @@ async function preferencesBody(context: RenderContext, app: App) {
             const token = startRun(key);
             refresh.disabled = true;
             let rendered = false;
+            // Set when the outcome line is written. A later error, such as
+            // a failed list read, must not replace that true line.
+            let reported = false;
             packageNote(key, progressText("Refreshing", key, null), "quiet");
             try {
               const expected = await app.store.packageRevisionOf(key);
@@ -826,6 +837,7 @@ async function preferencesBody(context: RenderContext, app: App) {
                   "outcome",
                   "absent",
                 );
+                reported = true;
                 endRun(key, token);
                 const mayFocus = hadFocus && focusIsFree(refresh);
                 const render = await renderPackages();
@@ -862,6 +874,7 @@ async function preferencesBody(context: RenderContext, app: App) {
                 saved ? "outcome" : "error",
                 saved ? "saved" : undefined,
               );
+              reported = true;
               endRun(key, token);
               const mayFocus = hadFocus && focusIsFree(refresh);
               const render = await renderPackages();
@@ -872,11 +885,17 @@ async function preferencesBody(context: RenderContext, app: App) {
               ]);
             } catch (error) {
               // A full store reports its own message instead of a raw quota error.
-              // The saved package stays usable, so the line gives only the
-              // cause, without the recovery instruction of a failed download.
+              if (reported) {
+                app.announce(describe(reportPackageError(error)));
+                return;
+              }
+              // The line names only what this refresh did. The reader or
+              // another tab can remove the package while it runs, so the
+              // line claims nothing about a saved package. It gives the
+              // cause without the recovery instruction of a failed download.
               packageNote(
                 key,
-                `The ${languageName(key)} package was not refreshed. The saved package is unchanged: ${packageCause(describe(reportPackageError(error)))}`,
+                `The ${languageName(key)} package was not refreshed. This refresh changed nothing in this browser: ${packageCause(describe(reportPackageError(error)))}`,
                 "error",
               );
             } finally {
