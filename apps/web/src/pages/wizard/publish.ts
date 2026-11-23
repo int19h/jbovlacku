@@ -764,7 +764,7 @@ export async function publishPage(
             if (
               !(await app.session.firstSignatureDisclosure(
                 claims.length
-                  ? `This publish signs your definition of ${spelling}, your endorsement of it, ${claims.length} rafsi claim${claims.length === 1 ? "" : "s"} (${claims.map((claim) => claim.rafsi).join(", ")}), and ${claims.length === 1 ? "an endorsement of the claim" : "an endorsement of each claim"}.`
+                  ? `This publish signs your definition of ${spelling}, your endorsement of it, ${claims.length} rafsi claim${claims.length === 1 ? "" : "s"} (${claims.map((claim) => claim.rafsi).join(", ")}), and ${claims.length === 1 ? "an endorsement of that rafsi assignment" : "an endorsement of those rafsi assignments"}.`
                   : `This publish signs your definition of ${spelling} and your endorsement of it.`,
               ))
             )

@@ -206,6 +206,57 @@ test("already-exists block truncates the snapshot and publish has one Publish bu
   await expect(page.locator("main")).not.toContainText("Definition by 0000");
 });
 
+test("first-signature dialog names the rafsi assignment endorsement", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  const seedClaims = async (rafsi: string[]) => {
+    await page.goto("/");
+    await page.evaluate(async (claims) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { newDraft } = await import(String("/src/model/draft.ts"));
+      await new LocalStore().put(
+        "drafts",
+        "current",
+        newDraft({
+          spelling: "cukta",
+          kind: "gismu",
+          meaning: "A disposable meaning.",
+          text: "A disposable meaning.",
+          structured: false,
+          step: 5,
+          rafsiClaims: claims.map((claim) => ({
+            rafsi: claim,
+            rationale: "Disposable claim.",
+          })),
+        }),
+      );
+    }, rafsi);
+    await page.goto("/new/publish");
+    await page.getByRole("button", { name: "Publish", exact: true }).click();
+    const unlock = page.getByRole("dialog", { name: "Unlock your key" });
+    if (await unlock.isVisible().catch(() => false)) {
+      await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+      await unlock.getByRole("button", { name: "Unlock" }).click();
+    }
+    return page.getByRole("dialog", {
+      name: "Before your first public signature",
+    });
+  };
+  const dialog = await seedClaims(["cku"]);
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText(
+    "1 rafsi claim (cku), and an endorsement of that rafsi assignment",
+  );
+  await dialog.getByRole("button", { name: "Not now" }).click();
+  const dialog2 = await seedClaims(["cku", "kuk"]);
+  await expect(dialog2).toBeVisible();
+  await expect(dialog2).toContainText(
+    "2 rafsi claims (cku, kuk), and an endorsement of those rafsi assignments",
+  );
+  await dialog2.getByRole("button", { name: "Not now" }).click();
+});
+
 test("first-signature dialog mentions the definition being published", async ({
   page,
 }) => {
