@@ -355,11 +355,16 @@ export function trustPanel(app: App, options: TrustPanelOptions): HTMLElement {
           ))
         )
           return;
+        // The name's own direction controls are left out of this sentence, so
+        // none of them can end the isolate early or turn the words after it.
+        // A name of only such controls falls back to the short identity.
+        const named = label.replace(
+          /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,
+          "",
+        );
         await app.session.requireUnlocked(
-          // First Strong Isolate marks keep a name in its own direction. The
-          // name's own direction controls are left out of this sentence, so
-          // none of them can end the isolate early or turn the words after it.
-          `${mode === "trust" ? "Trusting" : "Ignoring"} \u2068${label.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")}\u2069 publicly`,
+          // First Strong Isolate marks keep a name in its own direction.
+          `${mode === "trust" ? "Trusting" : "Ignoring"} \u2068${named.trim() ? named : shortIdentity(subject)}\u2069 publicly`,
           async () => {
             if (!(await app.session.firstSignatureDisclosure())) return;
             const results = await app.signer.publish([

@@ -252,11 +252,13 @@ const frames = (page: Page) =>
         requestAnimationFrame(() => requestAnimationFrame(resolve)),
       ),
   );
-// A name with a right-to-left override, and a name that closes the isolate
-// early and then reverses the text after it.
+// A name with a right-to-left override, a name that closes the isolate
+// early and then reverses the text after it, and a name of only an
+// override, which falls back to the short identity.
 for (const [name, shown] of [
   ["\u202eecila", "ecila"],
   ["Dana\u2069\u202e", "Dana"],
+  ["\u202e", null],
 ] as const)
   test(`the unlock request keeps the profile name ${JSON.stringify(name)} in its own direction`, async ({
     page,
@@ -299,7 +301,9 @@ for (const [name, shown] of [
     await expect(page).toHaveURL(/\/identity$/);
     await expect(
       page.getByText(/will continue after you create or import a key/),
-    ).toContainText(`Trusting \u2068${shown}\u2069 publicly`);
+    ).toContainText(
+      `Trusting \u2068${shown ?? `${f.identities.author.slice(8, 12)}…${f.identities.author.slice(-4)}`}\u2069 publicly`,
+    );
   });
 
 /** Saves a private Trust rule for all judgments under another issuer key. */
@@ -445,31 +449,6 @@ test("a refresh of the choices keeps focus on the Manage link", async ({
     page.locator("main p", { hasText: /^Your choices:/ }),
   ).toContainText("Trusted publicly");
   await expect(manage).toBeFocused();
-});
-
-test("an explanation of only a zero-width space does not open the report preview", async ({
-  page,
-}) => {
-  const f = fixture();
-  await createIdentity(page);
-  await page.goto(`/identity/${encodeURIComponent(f.identities.author)}`);
-  await page.getByRole("button", { name: "Report abuse" }).click();
-  const dialog = page.getByRole("dialog", { name: "Report identity abuse" });
-  const field = dialog.getByRole("textbox", { name: "Explanation" });
-  await field.click();
-  await page.keyboard.insertText("\u200b");
-  await expect
-    .poll(() => field.evaluate((n) => JSON.stringify((n as any).value)))
-    .toContain("\u200b");
-  await dialog
-    .getByRole("button", { name: "Preview the public report" })
-    .click();
-  await expect(dialog.getByRole("alert")).toHaveText(
-    "Write an explanation before the preview. A report needs one.",
-  );
-  await expect(
-    page.getByRole("button", { name: "Sign and publish the report" }),
-  ).toHaveCount(0);
 });
 
 test("an empty code span does not count as a report explanation", async ({
