@@ -78,6 +78,51 @@ test("the Settings link in the lujvo package note keeps focus across the debounc
   await expect(settings).toBeFocused();
 });
 
+test("the Settings note returns after a failed remote search and an edit", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/search", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        code: "unavailable",
+        message: "Search service temporarily unavailable.",
+        event: null,
+        field: null,
+      }),
+    }),
+  );
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto("/new/meaning");
+  const meaning = page.getByLabel("Meaning", { exact: true });
+  await meaning.fill("book");
+  const settings = page
+    .locator("p.meta")
+    .getByRole("link", { name: "Settings" });
+  await expect(settings).toBeVisible();
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await expect(page.locator("main")).toContainText(
+    "Search service temporarily unavailable.",
+  );
+  await meaning.fill("song");
+  await page.waitForTimeout(700);
+  await expect(settings).toBeVisible();
+});
+
+test("clearing Add a part empties Matching words", async ({ page }) => {
+  await startLujvo(page);
+  const part = page.getByLabel("Add a part");
+  const matching = page.getByRole("list", { name: "Matching words" });
+  await part.fill("cukta");
+  await expect(matching).toContainText("No local package is downloaded");
+  await part.fill("");
+  await page.waitForTimeout(500);
+  await expect(matching.locator("li")).toHaveCount(0);
+});
+
 test("after consent, searching this server is plain text, not a button", async ({
   page,
 }) => {

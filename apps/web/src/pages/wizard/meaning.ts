@@ -850,7 +850,10 @@ export async function meaningPage(
       });
       if (current()) renderHits(result.hits, "remote");
     } catch (error) {
-      if (current()) note.textContent = describe(error);
+      if (current()) {
+        settingsNoteShown = false;
+        note.textContent = describe(error);
+      }
     }
   };
   void nearby();

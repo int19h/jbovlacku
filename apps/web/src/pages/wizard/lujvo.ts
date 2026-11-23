@@ -352,10 +352,13 @@ export async function lujvoPage(
   };
   const renderSearch = async () => {
     const request = ++partSearch;
+    const query = addField.input.value.trim();
+    if (!query) {
+      addResults.replaceChildren();
+      return;
+    }
     for (const child of [...addResults.children])
       if (child !== packageNote) child.remove();
-    const query = addField.input.value.trim();
-    if (!query) return;
     const current = () =>
       context.live() &&
       request === partSearch &&
