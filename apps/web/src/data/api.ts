@@ -644,6 +644,9 @@ export function validateWord(value: unknown, id: string): WordResponse {
  */
 let preferredView: string | null = null;
 export function setPreferredView(view: string | null) {
+  // Saving another setting applies the same view again. Cached word
+  // responses stay valid then, so only a new view clears them.
+  if (view === preferredView) return;
   preferredView = view;
   wordCache.clear();
 }

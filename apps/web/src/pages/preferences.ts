@@ -16,8 +16,10 @@ import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import {
   downloadPackage,
+  packageCause,
   reportPackageError,
   type CachedPackage,
+  type PackageProgress,
 } from "../data/search.ts";
 import { getCapabilities, getManifest, selfPeer } from "../data/api.ts";
 import {
@@ -64,24 +66,94 @@ async function preferencesBody(context: RenderContext, app: App) {
   const { session } = app;
   const prefs = session.preferences;
   // Only the latest failed choice restores a control. Success keeps newer input.
+  // A key stays in the map while its latest save runs.
   const saves = new Map<keyof Preferences, symbol>();
+  /**
+   * Saves one choice. A failure of the latest choice restores the control
+   * and stays in the control's note until a later save of it succeeds. The
+   * shell status announces the failure too.
+   */
   const save = async (
     key: keyof Preferences,
     patch: Partial<Preferences>,
     restore: () => void,
+    note: HTMLElement,
   ) => {
     const request = Symbol();
     saves.set(key, request);
     try {
-      await session.setPreferences(patch);
+      await session.setPreferences(patch, (error) => {
+        if (context.live() && saves.get(key) === request) {
+          note.textContent = `Not saved: ${describe(error)}`;
+          note.hidden = false;
+        }
+        return false;
+      });
+      if (context.live() && saves.get(key) === request) note.hidden = true;
     } catch {
       if (context.live() && saves.get(key) === request) restore();
+    } finally {
+      if (saves.get(key) === request) saves.delete(key);
     }
+  };
+  // Another tab can change the saved settings. The session reads them
+  // again when that tab reports the change, and each control here then
+  // shows the saved value, unless a save of its own is still running.
+  const syncs: (() => void)[] = [];
+  const syncControls = () => {
+    if (!context.live()) return;
+    for (const sync of syncs) sync();
+  };
+  const unsubscribe = session.subscribe(syncControls);
+  context.signal.addEventListener("abort", () => unsubscribe(), {
+    once: true,
+  });
+  /**
+   * Adds the sync of one control and runs it at once. The page builds its
+   * controls after requests that can wait, and a change from another tab
+   * can arrive during such a request. The first run gives the control the
+   * current saved value instead of the value that the page read first.
+   */
+  const track = (sync: () => void) => {
+    syncs.push(sync);
+    sync();
+  };
+  /**
+   * Keeps a select control on the saved value of its key. When the control
+   * takes a new saved value, an earlier failed save of it no longer
+   * describes what the control shows, so its note is hidden.
+   */
+  const syncSelect = (
+    key: keyof Preferences,
+    input: HTMLSelectElement,
+    note: HTMLElement,
+  ) =>
+    track(() => {
+      if (saves.has(key)) return;
+      const value = String(session.preferences[key]);
+      if (input.value === value) return;
+      if (![...input.options].some((option) => option.value === value))
+        input.append(
+          el("option", {
+            value,
+            text: key === "definitionLanguage" ? languageName(value) : value,
+          }),
+        );
+      input.value = value;
+      note.hidden = true;
+    });
+  /** A note in place under one control. It is empty and hidden until used. */
+  const controlNote = () => {
+    const note = el("p", { class: "notice" });
+    note.hidden = true;
+    return note;
   };
   // Languages.
   const languages = new Set<string>(["en", prefs.definitionLanguage]);
   let manifestLanguages: string[] = [];
   let packagesAvailable = true;
+  // Why the server's package list could not be read, or null after a read.
+  let manifestError: string | null = null;
   try {
     const manifest = await getManifest({ signal: context.signal });
     manifestLanguages = manifest.packages
@@ -89,8 +161,26 @@ async function preferencesBody(context: RenderContext, app: App) {
       .filter(listedLanguage);
     packagesAvailable = manifest.packages_available !== false;
     for (const tag of manifestLanguages) languages.add(tag);
-  } catch {}
+  } catch (error) {
+    if (!context.live()) return;
+    manifestError = describe(error);
+    // Packages saved in this browser still work without the server, so
+    // their languages stay available.
+    if (session.storageAvailable)
+      try {
+        for (const tag of await app.store.keys("packages")) languages.add(tag);
+      } catch {}
+  }
   if (!context.live()) return;
+  if (manifestError !== null)
+    main.append(
+      p(
+        // Only the server list is reported here. Each saved package row
+        // shows the state of that package.
+        `The server's languages and search packages did not load: ${manifestError} Open Settings again to retry.`,
+        "notice",
+      ),
+    );
   const languageField = field("Definition language", {
     options: [...languages]
       .filter((tag) => tag === prefs.definitionLanguage || listedLanguage(tag))
@@ -99,6 +189,8 @@ async function preferencesBody(context: RenderContext, app: App) {
     value: prefs.definitionLanguage,
     hint: "Definitions shown by default. The interface language is English in this prototype.",
   });
+  const languageNote = controlNote();
+  syncSelect("definitionLanguage", languageField.input, languageNote);
   languageField.input.addEventListener(
     "change",
     () =>
@@ -110,34 +202,53 @@ async function preferencesBody(context: RenderContext, app: App) {
         () => {
           languageField.input.value = session.preferences.definitionLanguage;
         },
+        languageNote,
       ),
   );
   main.append(
     el("h2", { class: "section", text: "Languages" }),
     languageField.wrapper,
+    languageNote,
   );
   main.append(el("h2", { class: "section", text: "Assistance" }));
   try {
     const capabilities = await getCapabilities({ signal: context.signal });
     if (!context.live()) return;
+    // Why the meaning search profiles did not load, or null after a read.
+    let profilesError = null as string | null;
     const meaningAvailable =
       capabilities.features.semantic_search &&
       (
         await embeddingProfiles(null, prefs.definitionLanguage, {
           signal: context.signal,
-        }).catch(() => [])
+        }).catch((error: unknown) => {
+          profilesError = describe(error);
+          return [];
+        })
       ).some((profile) => profile.query_available);
-    if (assistanceProfiles(capabilities).length || meaningAvailable) {
+    if (!context.live()) return;
+    const assistanceShown =
+      assistanceProfiles(capabilities).length || meaningAvailable;
+    if (!assistanceShown && profilesError !== null)
+      // The server offers meaning search, and only its profiles tell
+      // whether assistance applies. A failed request has not said that.
+      main.append(
+        p(
+          `Assistance settings did not load: the meaning search profiles did not load. ${profilesError} Open Settings again to retry.`,
+          "small",
+        ),
+      );
+    else if (assistanceShown) {
       const saved = el("p", {
         id: "assistance-save-status",
         class: "small",
         role: "status",
       });
       let saving = false;
-      let pendingValue = prefs.useAiAssistance !== false;
+      let pendingValue = session.preferences.useAiAssistance !== false;
       const choice = checkbox(
         "Use AI assistance",
-        prefs.useAiAssistance !== false,
+        session.preferences.useAiAssistance !== false,
         async (value) => {
           if (saving) {
             input.checked = pendingValue;
@@ -168,6 +279,14 @@ async function preferencesBody(context: RenderContext, app: App) {
         },
       );
       const input = choice.querySelector("input")!;
+      track(() => {
+        if (saving) return;
+        const value = session.preferences.useAiAssistance !== false;
+        if (input.checked === value) return;
+        input.checked = value;
+        // An earlier outcome described another value.
+        saved.textContent = "";
+      });
       input.setAttribute("aria-describedby", saved.id);
       input.setAttribute("aria-disabled", "false");
       input.addEventListener("click", (event) => {
@@ -175,33 +294,35 @@ async function preferencesBody(context: RenderContext, app: App) {
       });
       main.append(choice, saved);
     } else main.append(p("Not available on this server.", "small"));
-  } catch {
+  } catch (error) {
+    // A server that did not answer has not said that it lacks assistance.
     if (context.live())
-      main.append(p("Not available on this server.", "small"));
+      main.append(
+        p(`Assistance settings did not load: ${describe(error)}`, "small"),
+      );
   }
   // Search mode.
   main.append(el("h2", { class: "section", text: "Search" }));
   const modeField = field("Search mode", {
+    // Short option labels fit a phone. The hint explains each mode.
     options: [
-      {
-        value: "local",
-        label:
-          "Local: use downloaded packages for word and definition searches",
-      },
-      {
-        value: "remote",
-        label: `Remote: send each query to ${selfPeer.label}`,
-      },
+      { value: "local", label: "Local" },
+      { value: "remote", label: "Remote" },
     ],
     value: prefs.searchMode,
-    hint: "Without a downloaded package for a language, local mode asks the server. Meaning search sends queries to the server and provider after consent.",
+    hint: `Local uses downloaded packages for word and definition searches. Without a downloaded package for a language, local mode asks the server. Remote sends each query to ${selfPeer.label}. Meaning search sends queries to the server and provider after consent.`,
   });
+  // The remote search disclosure stays in place under the control.
+  const modeDisclosure = p("", "small");
+  modeDisclosure.hidden = true;
+  const modeNote = controlNote();
+  syncSelect("searchMode", modeField.input, modeNote);
   modeField.input.addEventListener("change", async () => {
     const mode = modeField.input.value as "local" | "remote";
-    if (mode === "remote" && !prefs.remoteSearchDisclosed) {
-      app.announce(
-        `Remote search sends each query to ${selfPeer.label}. Earlier local queries are not uploaded.`,
-      );
+    if (mode === "remote" && !session.preferences.remoteSearchDisclosed) {
+      modeDisclosure.textContent = `Remote search sends each query to ${selfPeer.label}. Earlier local queries are not uploaded.`;
+      modeDisclosure.hidden = false;
+      app.announce(modeDisclosure.textContent);
     }
     await save(
       "searchMode",
@@ -212,10 +333,16 @@ async function preferencesBody(context: RenderContext, app: App) {
       () => {
         modeField.input.value = session.preferences.searchMode;
       },
+      modeNote,
     );
   });
-  main.append(modeField.wrapper);
+  main.append(modeField.wrapper, modeDisclosure, modeNote);
   const packages = el("div", { class: "stack" });
+  // One line per language with the progress or the last outcome of its
+  // download, refresh or remove. A line stays until the next run of that
+  // language replaces it, so a reader who looks away still finds it next to
+  // the list. A render of the list keeps these lines.
+  const packageNotes = el("div", { class: "stack", "data-package-notes": "" });
   main.append(
     el("h3", {
       class: "small",
@@ -223,7 +350,70 @@ async function preferencesBody(context: RenderContext, app: App) {
       text: "Downloaded search packages",
     }),
     packages,
+    packageNotes,
   );
+  const noteLines = new Map<string, HTMLElement>();
+  // Whether the line of a language says that its package is saved in this
+  // browser or that it is not. A line with no entry makes no such claim.
+  const noteClaims = new Map<string, "saved" | "absent">();
+  /**
+   * Shows a line for a language. A quiet line, such as progress or a
+   * remove that the list already shows, is not announced. An outcome or an
+   * error is announced too, even after the reader left this page. A claim
+   * records whether the line says that the package is saved.
+   */
+  const packageNote = (
+    language: string,
+    message: string,
+    kind: "quiet" | "outcome" | "error",
+    claim?: "saved" | "absent",
+  ) => {
+    if (kind !== "quiet") app.announce(message);
+    if (!context.live()) return;
+    let line = noteLines.get(language);
+    if (!line) {
+      line = el("p", { "data-package-note": language });
+      noteLines.set(language, line);
+      packageNotes.append(line);
+    }
+    line.className = kind === "error" ? "notice" : "small";
+    line.textContent = message;
+    if (claim) noteClaims.set(language, claim);
+    else noteClaims.delete(language);
+  };
+  /**
+   * Another tab can save or remove a package. When a shown list reads a
+   * state that a line contradicts, the line takes the state of the list.
+   */
+  const reconcileNotes = (keys: string[]) => {
+    for (const [language, claim] of noteClaims) {
+      const stored = keys.includes(language);
+      if (claim === "saved" && !stored)
+        packageNote(
+          language,
+          `The ${languageName(language)} package is no longer saved in this browser.`,
+          "quiet",
+          "absent",
+        );
+      else if (claim === "absent" && stored)
+        packageNote(
+          language,
+          `The ${languageName(language)} package is saved in this browser.`,
+          "quiet",
+          "saved",
+        );
+    }
+  };
+  const mebibytes = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MiB`;
+  /** The progress line of one running download or refresh. */
+  const progressText = (
+    verb: "Downloading" | "Refreshing",
+    language: string,
+    progress: PackageProgress | null,
+  ) =>
+    progress === null
+      ? `${verb} the ${languageName(language)} package: reading its index.`
+      : `${verb} the ${languageName(language)} package: ${mebibytes(progress.bytes)} of ${mebibytes(progress.totalBytes)}, part ${progress.parts} of ${progress.totalParts}.`;
   // Languages with a package download or refresh running on this page,
   // each with the token of the run that set the mark. A run clears the
   // mark only while it still holds its own token, so an older run cannot
@@ -348,7 +538,7 @@ async function preferencesBody(context: RenderContext, app: App) {
     const render = ++renderCount;
     const list = document.createDocumentFragment();
     const checks: (() => void)[] = [];
-    await buildPackages(list, checks);
+    const keys = await buildPackages(list, checks);
     if (render !== renderCount || !context.live())
       return { render, published: false, focusedAtPublish: null };
     const focusedAtPublish = document.activeElement;
@@ -362,6 +552,7 @@ async function preferencesBody(context: RenderContext, app: App) {
     )
       newPicker.value = pickedPackage;
     packages.replaceChildren(list);
+    if (keys) reconcileNotes(keys);
     // A run may have started or ended while the list was built, so every
     // button takes the running marks as they are now.
     syncPackageButtons();
@@ -406,10 +597,11 @@ async function preferencesBody(context: RenderContext, app: App) {
       kinds,
     );
   };
+  /** Builds the list and returns the saved languages that it read. */
   const buildPackages = async (
     list: DocumentFragment,
     checks: (() => void)[],
-  ) => {
+  ): Promise<string[] | null> => {
     if (!session.storageAvailable) {
       list.append(
         p(
@@ -417,7 +609,7 @@ async function preferencesBody(context: RenderContext, app: App) {
           "notice",
         ),
       );
-      return;
+      return null;
     }
     const keys = await app.store.keys("packages");
     for (const key of keys) {
@@ -437,7 +629,7 @@ async function preferencesBody(context: RenderContext, app: App) {
           : cached
             ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}… · version ${cached.version ?? 1}${
                 cached.downgrade
-                  ? `. Version 1 was saved instead of version 2: ${cached.downgrade}`
+                  ? `. Version 1 was saved instead of version 2: ${packageCause(cached.downgrade)}`
                   : ""
               }`
             : "unreadable",
@@ -451,6 +643,12 @@ async function preferencesBody(context: RenderContext, app: App) {
             // The delete writes a new package revision, so a download or
             // refresh that is still running cannot save over this remove.
             await app.store.delete("packages", key);
+            packageNote(
+              key,
+              `The ${languageName(key)} package is removed from this browser.`,
+              "quiet",
+              "absent",
+            );
             await renderPackages();
           },
           {
@@ -503,9 +701,29 @@ async function preferencesBody(context: RenderContext, app: App) {
           const hadFocus = document.activeElement === go;
           const token = startRun(language);
           let rendered = false;
+          // Set when the outcome line is written. A later error, such as a
+          // failed list read, must not replace that true line.
+          let reported = false;
           try {
+            packageNote(
+              language,
+              progressText("Downloading", language, null),
+              "quiet",
+            );
             const expected = await app.store.packageRevisionOf(language);
-            const pkg = await downloadPackage(language);
+            const pkg = await downloadPackage(language, {
+              onProgress: (progress) =>
+                packageNote(
+                  language,
+                  progressText("Downloading", language, progress),
+                  "quiet",
+                ),
+            });
+            packageNote(
+              language,
+              `Saving the ${languageName(language)} package in this browser.`,
+              "quiet",
+            );
             // A remove or another save of this package that committed
             // while the download ran wins; this save then does nothing.
             const saved = await app.store.put(
@@ -514,13 +732,20 @@ async function preferencesBody(context: RenderContext, app: App) {
               pkg,
               expected ?? null,
             );
-            app.announce(
+            packageNote(
+              language,
               !saved
                 ? `The ${languageName(language)} search package was not saved. It changed in this browser while the download ran.`
                 : pkg.downgrade
-                  ? `The ${languageName(language)} search package is saved in this browser as version 1. ${pkg.downgrade}`
+                  ? // The row names the current version. This line names
+                    // only what this download saved, so it stays true after
+                    // another tab refreshes the package.
+                    `The ${languageName(language)} search package is saved in this browser. This download saved version 1 because version 2 failed: ${pkg.downgrade}`
                   : `The ${languageName(language)} search package is saved in this browser.`,
+              saved ? "outcome" : "error",
+              saved ? "saved" : undefined,
             );
+            reported = true;
             // Clear the running mark before the render, so the new
             // buttons for this language render enabled.
             endRun(language, token);
@@ -533,7 +758,17 @@ async function preferencesBody(context: RenderContext, app: App) {
             ]);
           } catch (error) {
             // A full store reports its own message instead of a raw quota error.
-            app.announce(describe(reportPackageError(error)));
+            if (reported) {
+              app.announce(describe(reportPackageError(error)));
+              return;
+            }
+            // The line stays after the state changes, so it names the
+            // package and the attempt in the past tense before the cause.
+            packageNote(
+              language,
+              `The ${languageName(language)} package was not downloaded: ${describe(reportPackageError(error))}`,
+              "error",
+            );
           } finally {
             endRun(language, token);
             // A failure changed no storage, so the list stays as it is,
@@ -563,7 +798,16 @@ async function preferencesBody(context: RenderContext, app: App) {
           go,
         ),
       );
-    } else if (!keys.length && packagesAvailable)
+    } else if (manifestError !== null)
+      list.append(
+        p(
+          keys.length
+            ? "The packages that the server offers are listed when it answers."
+            : "No package is saved in this browser. The packages that the server offers are listed when it answers.",
+          "small",
+        ),
+      );
+    else if (!keys.length && packagesAvailable)
       list.append(p("This server offers no search package yet.", "small"));
     for (const key of keys)
       if (manifestLanguages.includes(key)) {
@@ -576,6 +820,10 @@ async function preferencesBody(context: RenderContext, app: App) {
             const token = startRun(key);
             refresh.disabled = true;
             let rendered = false;
+            // Set when the outcome line is written. A later error, such as
+            // a failed list read, must not replace that true line.
+            let reported = false;
+            packageNote(key, progressText("Refreshing", key, null), "quiet");
             try {
               const expected = await app.store.packageRevisionOf(key);
               const stored = await app.store.keys("packages");
@@ -583,9 +831,13 @@ async function preferencesBody(context: RenderContext, app: App) {
                 // This row is stale: the package was removed, in this
                 // tab or another one. Refresh updates a saved package,
                 // so it does not bring one back. Download adds it again.
-                app.announce(
+                packageNote(
+                  key,
                   `The ${languageName(key)} package is no longer saved in this browser.`,
+                  "outcome",
+                  "absent",
                 );
+                reported = true;
                 endRun(key, token);
                 const mayFocus = hadFocus && focusIsFree(refresh);
                 const render = await renderPackages();
@@ -593,7 +845,19 @@ async function preferencesBody(context: RenderContext, app: App) {
                 endRenderedRun(render, refresh, mayFocus, [["download"]]);
                 return;
               }
-              const pkg = await downloadPackage(key);
+              const pkg = await downloadPackage(key, {
+                onProgress: (progress) =>
+                  packageNote(
+                    key,
+                    progressText("Refreshing", key, progress),
+                    "quiet",
+                  ),
+              });
+              packageNote(
+                key,
+                `Saving the ${languageName(key)} package in this browser.`,
+                "quiet",
+              );
               // A remove or another save of this package that committed
               // while the refresh ran wins; this save then does nothing.
               const saved = await app.store.put(
@@ -602,11 +866,15 @@ async function preferencesBody(context: RenderContext, app: App) {
                 pkg,
                 expected ?? null,
               );
-              app.announce(
+              packageNote(
+                key,
                 saved
                   ? `The ${languageName(key)} package is refreshed.`
                   : `The ${languageName(key)} package was not saved. It changed in this browser while the refresh ran.`,
+                saved ? "outcome" : "error",
+                saved ? "saved" : undefined,
               );
+              reported = true;
               endRun(key, token);
               const mayFocus = hadFocus && focusIsFree(refresh);
               const render = await renderPackages();
@@ -617,7 +885,19 @@ async function preferencesBody(context: RenderContext, app: App) {
               ]);
             } catch (error) {
               // A full store reports its own message instead of a raw quota error.
-              app.announce(describe(reportPackageError(error)));
+              if (reported) {
+                app.announce(describe(reportPackageError(error)));
+                return;
+              }
+              // The line names only what this refresh did. The reader or
+              // another tab can remove the package while it runs, so the
+              // line claims nothing about a saved package. It gives the
+              // cause without the recovery instruction of a failed download.
+              packageNote(
+                key,
+                `The ${languageName(key)} package was not refreshed. This refresh changed nothing in this browser: ${packageCause(describe(reportPackageError(error)))}`,
+                "error",
+              );
             } finally {
               endRun(key, token);
               // A failure changed no storage, so the list stays as it is.
@@ -640,19 +920,22 @@ async function preferencesBody(context: RenderContext, app: App) {
         refresh.disabled = runningPackages.has(key);
         list.append(refresh);
       }
+    return keys;
   };
   await renderPackages();
   if (!context.live()) return;
   // Delivery peers.
   main.append(el("h2", { class: "section", text: "Delivery" }));
-  let serverId = selfPeer.label;
+  let serverId: string | null = null;
   try {
     serverId = (await getCapabilities({ signal: context.signal })).server_id;
   } catch {}
   if (!context.live()) return;
   main.append(
     p(
-      `Publications go to one server: ${serverId} at ${selfPeer.label}. Sending a signed record to a server publishes it there.`,
+      serverId === null
+        ? `Publications go to one server at ${selfPeer.label}. Its server name did not load. Sending a signed record to a server publishes it there.`
+        : `Publications go to one server: ${serverId} at ${selfPeer.label}. Sending a signed record to a server publishes it there.`,
       "small",
     ),
     p(
@@ -675,6 +958,16 @@ async function preferencesBody(context: RenderContext, app: App) {
     }
   };
   await describeStorage();
+  // The outcome of the request stays in place under the button.
+  const persistNote = p("", "small");
+  persistNote.hidden = true;
+  const persistOutcome = (message: string, error: boolean) => {
+    app.announce(message);
+    if (!context.live()) return;
+    persistNote.className = error ? "notice" : "small";
+    persistNote.textContent = message;
+    persistNote.hidden = false;
+  };
   main.append(
     el(
       "div",
@@ -684,19 +977,24 @@ async function preferencesBody(context: RenderContext, app: App) {
         async () => {
           try {
             const granted = await navigator.storage?.persist?.();
-            app.announce(
+            persistOutcome(
               granted
                 ? "Persistent storage granted."
                 : "The browser did not grant persistent storage.",
+              false,
             );
           } catch (error) {
-            app.announce(describe(error));
+            persistOutcome(
+              `The request for persistent storage failed: ${describe(error)}`,
+              true,
+            );
           }
           await describeStorage();
         },
         { class: "btn" },
       ),
     ),
+    persistNote,
   );
   // Export.
   main.append(el("h2", { class: "section", text: "Export" }));
@@ -752,13 +1050,20 @@ async function preferencesBody(context: RenderContext, app: App) {
     ],
     value: prefs.theme,
   });
+  const themeNote = controlNote();
+  syncSelect("theme", theme.input, themeNote);
   theme.input.addEventListener("change", async () => {
     const value = theme.input.value as "system" | "light" | "dark";
-    await save("theme", { theme: value }, () => {
-      theme.input.value = session.preferences.theme;
-    });
+    await save(
+      "theme",
+      { theme: value },
+      () => {
+        theme.input.value = session.preferences.theme;
+      },
+      themeNote,
+    );
   });
-  main.append(theme.wrapper);
+  main.append(theme.wrapper, themeNote);
   const orthography = field("Lojban orthography beside headwords", {
     options: [
       { value: "latin", label: "Latin only" },
@@ -770,6 +1075,8 @@ async function preferencesBody(context: RenderContext, app: App) {
     value: prefs.orthography,
     hint: "Display only. Signed spellings and copied text stay Latin unless you choose otherwise.",
   });
+  const orthographyNote = controlNote();
+  syncSelect("orthography", orthography.input, orthographyNote);
   orthography.input.addEventListener(
     "change",
     () =>
@@ -781,20 +1088,41 @@ async function preferencesBody(context: RenderContext, app: App) {
         () => {
           orthography.input.value = session.preferences.orthography;
         },
+        orthographyNote,
       ),
   );
-  main.append(orthography.wrapper);
+  main.append(orthography.wrapper, orthographyNote);
+  const judgmentsNote = controlNote();
   const judgments = checkbox(
     "Show my judgments first on word pages",
     prefs.myJudgmentsFirst,
     async (value) => {
-      await save("myJudgmentsFirst", { myJudgmentsFirst: value }, () => {
-        judgments.querySelector("input")!.checked =
-          session.preferences.myJudgmentsFirst;
-      });
+      await save(
+        "myJudgmentsFirst",
+        { myJudgmentsFirst: value },
+        () => {
+          judgmentsInput.checked = session.preferences.myJudgmentsFirst;
+        },
+        judgmentsNote,
+      );
     },
   );
-  main.append(judgments);
+  const judgmentsInput = judgments.querySelector("input")!;
+  track(() => {
+    if (saves.has("myJudgmentsFirst")) return;
+    const value = session.preferences.myJudgmentsFirst;
+    if (judgmentsInput.checked === value) return;
+    judgmentsInput.checked = value;
+    judgmentsNote.hidden = true;
+  });
+  // The order uses the judgments that your key signed, so it needs a key.
+  const judgmentsHint = el("p", {
+    class: "hint",
+    id: "judgments-first-hint",
+    text: "Uses the judgments that your key signed. Without a key, the order does not change.",
+  });
+  judgmentsInput.setAttribute("aria-describedby", judgmentsHint.id);
+  main.append(judgments, judgmentsHint, judgmentsNote);
   // Optional services.
   main.append(el("h2", { class: "section", text: "Optional services" }));
   try {
