@@ -197,6 +197,67 @@ test("a previous error is hidden while the next consented lookup runs", async ({
   await page.waitForTimeout(500);
 });
 
+test("the consent invitation clears at acceptance while the package read waits", async ({
+  page,
+}) => {
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto("/new/meaning");
+  await page
+    .getByLabel("Meaning", { exact: true })
+    .fill("book private committee");
+  await expect(
+    page.getByText("or allow a search on this server."),
+  ).toBeVisible();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        const request = indexedDB.open("jbovlacku-browser-v1", 6);
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction("packages", "readwrite");
+          const store = tx.objectStore("packages");
+          const hold = window as unknown as {
+            __hold?: { db: IDBDatabase; tx: IDBTransaction };
+            __holdStop?: boolean;
+          };
+          hold.__hold = { db, tx };
+          hold.__holdStop = false;
+          // Chain requests so the transaction never goes inactive.
+          const spin = () => {
+            if (hold.__holdStop) return;
+            const next = store.get("en");
+            next.onsuccess = () => spin();
+            next.onerror = () => spin();
+          };
+          spin();
+          resolve();
+        };
+        request.onerror = () => resolve();
+      }),
+  );
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await expect(page.getByText("searching this server")).toBeVisible();
+  await expect(page.getByText("or allow a search on this server.")).toHaveCount(
+    0,
+  );
+  await page.evaluate(() => {
+    const hold = window as unknown as {
+      __hold?: { db: IDBDatabase; tx: IDBTransaction };
+      __holdStop?: boolean;
+    };
+    hold.__holdStop = true;
+    try {
+      hold.__hold?.tx.abort();
+    } catch {
+      // The held transaction may already have finished on its own.
+    }
+    hold.__hold?.db.close();
+  });
+  await expect(page.locator("ol.similar")).toContainText("cukta");
+});
+
 test("after consent, searching this server is plain text, not a button", async ({
   page,
 }) => {

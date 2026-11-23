@@ -789,6 +789,18 @@ export async function meaningPage(
     const value = meaning.input.value;
     const language = draft.language;
     const terms = nearbyTerms(value);
+    // A consented lookup replaces the old note at once, before the local
+    // package read below. A focused Settings link moves to the Meaning
+    // input first, so clearing the note never drops focus to the body.
+    if (terms.length && remoteConsent === consentKey()) {
+      if (
+        document.activeElement instanceof Node &&
+        note.contains(document.activeElement)
+      )
+        meaning.input.focus({ preventScroll: true });
+      settingsNoteShown = false;
+      note.textContent = "";
+    }
     const current = () =>
       context.live() &&
       request === nearbyRequest &&
