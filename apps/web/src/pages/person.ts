@@ -436,7 +436,7 @@ export async function personPage(
       );
     if (beforeKey.length)
       sentences.push(
-        `Private rules saved before this browser had a key: ${beforeKey.join("; ")}. They move to your key when you create or restore one.`,
+        `Private rules saved before this browser had a key: ${beforeKey.join("; ")}. They move to your key when you create or restore one, unless your key already has a rule for the same person and scope. That rule then takes priority.`,
       );
     if (noIssuer.length)
       sentences.push(

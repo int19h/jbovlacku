@@ -175,22 +175,6 @@ export function buildShell(
   };
   delivery.subscribe(renderMarker);
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
-  // Room below the page for the tallest status message so far. It only
-  // grows, so clearing a message never changes the page height or scroll.
-  // Nothing scrolls when a message shows.
-  let statusRoom = 0;
-  const reserveStatusRoom = () => {
-    const room = Math.ceil(status.getBoundingClientRect().height) + 32;
-    if (room <= statusRoom) return;
-    statusRoom = room;
-    document.documentElement.style.setProperty("--status-room", `${room}px`);
-  };
-  // A visible message can wrap onto more lines later, for example after a
-  // resize. The room then grows with it.
-  if (typeof ResizeObserver !== "undefined")
-    new ResizeObserver(() => {
-      if (status.textContent) reserveStatusRoom();
-    }).observe(status);
   return {
     main,
     status,
@@ -198,10 +182,8 @@ export function buildShell(
     announce(message: string) {
       status.textContent = message;
       clearTimeout(statusTimer);
-      if (message) {
-        reserveStatusRoom();
+      if (message)
         statusTimer = setTimeout(() => (status.textContent = ""), 8000);
-      }
     },
     setViewLabel(label: string) {
       viewLink.textContent = label;

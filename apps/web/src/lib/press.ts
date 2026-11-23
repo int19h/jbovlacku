@@ -11,12 +11,15 @@ export function pressTracker(signal: AbortSignal) {
   // The pointer that started the press. A release or cancel of another
   // pointer, such as a touch during a mouse press, does not end it.
   let pointer: number | null = null;
+  let pointerType = "";
   let released: (() => void)[] = [];
   window.addEventListener(
     "pointerdown",
     (event) => {
-      if (pointer === null && (event.button === 0 || event.button === 1))
+      if (pointer === null && (event.button === 0 || event.button === 1)) {
         pointer = event.pointerId;
+        pointerType = event.pointerType;
+      }
     },
     { capture: true, signal },
   );
@@ -36,7 +39,24 @@ export function pressTracker(signal: AbortSignal) {
       },
       { capture: true, signal },
     );
-  window.addEventListener("contextmenu", endPress, { capture: true, signal });
+  // A context menu ends the press only when it comes from the pressing
+  // pointer, or from a mouse during a mouse press. A context menu event can
+  // be a plain mouse event without a pointer ID.
+  window.addEventListener(
+    "contextmenu",
+    (event) => {
+      const menu = event as Partial<PointerEvent>;
+      if (
+        menu.pointerId === pointer ||
+        (pointerType === "mouse" &&
+          (menu.pointerType === undefined ||
+            menu.pointerType === "" ||
+            menu.pointerType === "mouse"))
+      )
+        endPress();
+    },
+    { capture: true, signal },
+  );
   // Only the window's own blur. A blur of an element inside the page is a
   // focus move, and a press moves focus.
   window.addEventListener(
@@ -54,9 +74,6 @@ export function pressTracker(signal: AbortSignal) {
     { signal },
   );
   return {
-    get pressed() {
-      return pointer !== null;
-    },
     /** Resolves after the press in progress ends, or at once without one. */
     finished: () =>
       pointer !== null

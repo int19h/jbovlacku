@@ -253,30 +253,20 @@ main.surface-publish {
 }
 .status {
   position: fixed;
-  /* Centered within a 16px margin on each side. The box is as wide as its
-     text, up to the full width between the margins. */
-  left: 16px;
-  right: 16px;
+  left: 50%;
   bottom: 16px;
-  width: fit-content;
-  max-width: 40rem;
-  margin-inline: auto;
+  transform: translateX(-50%);
+  max-width: min(40rem, calc(100vw - 32px));
   background: var(--surface);
   border: 1px solid var(--ink3);
   border-radius: 10px;
   padding: 10px 14px;
   font-size: 14px;
   z-index: 10;
-  /* The message never blocks a control under it. */
-  pointer-events: none;
 }
 .status:empty {
   opacity: 0;
-}
-/* The room below the page for the tallest message so far. The shell only
-   grows it, so a cleared message never changes the page height. */
-.footer {
-  padding-bottom: var(--status-room, 0px);
+  pointer-events: none;
 }
 .notice {
   padding: 12px 14px;

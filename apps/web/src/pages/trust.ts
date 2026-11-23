@@ -238,7 +238,7 @@ export async function trustPage(
       !/^ed25519:[0-9a-f]{64}$/.test(rule.issuer) || !sameActor;
     const effect = ineffective
       ? rule.issuer === "local"
-        ? "This rule was saved before this browser had a key. It moves to your key when you create or restore one."
+        ? "This rule was saved before this browser had a key. It moves to your key when you create or restore one, unless your key already has a rule for the same person and scope. That rule then takes priority."
         : !/^ed25519:[0-9a-f]{64}$/.test(rule.issuer)
           ? "This rule has no valid issuer. Remove it or save a rule with your current key."
           : continuity
