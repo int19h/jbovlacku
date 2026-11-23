@@ -170,7 +170,7 @@ export async function outboxPage(
       } catch {
         /* Keep unreadable local records available for export. */
       }
-      list.append(row(app, item, discardState, items, active.filter((other) => other.group === item.group && other.order > item.order && !isFinished(other))));
+      list.append(row(app, item, discardState, items, active.filter((other) => other.id !== item.id && !isFinished(other) && dependsOn(other, item.id, active))));
     }
     empty.textContent = active.length ? "" : "No unfinished records.";
     exportLine.hidden = active.length === 0;
@@ -234,6 +234,27 @@ export async function outboxPage(
   };
   const unsubscribe = app.delivery.subscribe(render);
   context.signal.addEventListener("abort", () => unsubscribe());
+}
+/** True when the record reaches the given ID through its predecessor links. */
+function dependsOn(item: OutboxItem, id: string, items: OutboxItem[]): boolean {
+  const previousOf = (entry: OutboxItem): string[] => {
+    try {
+      const previous = (JSON.parse(entry.transport) as { envelope: Envelope }).envelope.header.previous;
+      return Array.isArray(previous) ? previous.filter((x): x is string => typeof x === "string") : [];
+    } catch { return []; }
+  };
+  const byId = new Map(items.map((entry) => [entry.id, entry]));
+  const seen = new Set<string>();
+  const queue = previousOf(item);
+  while (queue.length) {
+    const current = queue.shift()!;
+    if (current === id) return true;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    const parent = byId.get(current);
+    if (parent) queue.push(...previousOf(parent));
+  }
+  return false;
 }
 function row(
   app: App,

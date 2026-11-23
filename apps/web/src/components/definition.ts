@@ -338,6 +338,7 @@ export function definitionBlock(
     const target = {
       id,
       word: envelope.header.action.word as string,
+      spelling: body?.word.spelling,
       describe: (value: string) =>
         `${value === "bless" ? "Endorsing" : value === "curse" ? "Opposing" : "Clearing your judgment on"} ${body?.word.spelling ?? "this definition"}`,
     };

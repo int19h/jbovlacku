@@ -33,6 +33,8 @@ export interface JudgmentTarget {
   word: string | null;
   /** Short description for the unlock prompt, such as "Endorsing cukta". */
   describe: (value: JudgmentValue) => string;
+  /** Known spelling of the target definition, saved in the local label when signing. */
+  spelling?: string;
 }
 export interface JudgmentOptions {
   score: ScoreRecord | null | undefined;
@@ -213,6 +215,7 @@ export function judgmentControl(
           {
             action: { kind: "judgment.set", target: target.id, value },
             body: null,
+            label: target.spelling ? { subject: target.spelling } : undefined,
           },
         ]);
         app.own.invalidate();
@@ -598,6 +601,7 @@ async function renderOwnActions(
                 {
                   action: { kind: "judgment.set", target: target.id, value },
                   body: null,
+                  label: target.spelling ? { subject: target.spelling } : undefined,
                 },
               ]);
               app.own.invalidate();

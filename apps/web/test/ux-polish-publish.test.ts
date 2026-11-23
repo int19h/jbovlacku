@@ -1,18 +1,18 @@
 import { test, expect } from "@playwright/test";
-import { createIdentity, fixture } from "./helpers.ts";
+import { acceptFirstSignature, createIdentity, fixture, openWord } from "./helpers.ts";
 
 const DEF_ID = "jve1:94b463e3b71d56fe4a7ae6839f9165a019a13a47095dd4fbe043cbda36ead07b";
 const END_ID = "jve1:44e54ef8b71d56fe4a7ae6839f9165a019a13a47095dd4fbe043cbda36ead07c";
 
 /** Seeds a definition and its dependent endorsement, as stored before the fix. */
-async function seed(page: import("@playwright/test").Page, dependent: "waiting" | "stopped" | "refused" = "waiting") {
+async function seed(page: import("@playwright/test").Page, dependent: "waiting" | "stopped" | "refused" = "waiting", separateGroups = false) {
   await page.goto("/outbox");
   await expect(page.locator("main h1")).toHaveText("Not delivered");
-  await page.evaluate(async ([defId, endId, mode]) => {
+  await page.evaluate(async ([defId, endId, mode, separate]) => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const { freshPeer } = await import(String("/src/data/delivery.ts"));
     const store = new LocalStore();
-    const peer = () => ({ ...freshPeer(), state: "unknown", failure: "offline", attempts: 1, lastAttempt: Date.now(), nextAttempt: Date.now() + 60000, error: "No connection to the server." });
+    const peer = () => ({ ...freshPeer(), state: "unknown", failure: "offline", attempts: 1, lastAttempt: Date.now(), nextAttempt: Date.now() + 90000, error: "No connection to the server." });
     const definition = {
       id: defId, identity: "test", group: "g1", order: 0, stopped: false, signedAt: Date.now(),
       transport: JSON.stringify({ envelope: { id: defId, header: { issuer: "test", previous: [], action: { kind: "definition.publish" } } }, body: { word: { spelling: "cuntrix" } } }),
@@ -23,13 +23,13 @@ async function seed(page: import("@playwright/test").Page, dependent: "waiting" 
       ? { ...freshPeer(), state: "refused", failure: "refused", attempts: 1, lastAttempt: Date.now(), nextAttempt: null, error: "The server refused this record." }
       : peer();
     const endorsement = {
-      id: endId, identity: "test", group: "g1", order: 1, stopped: mode === "stopped", signedAt: Date.now(),
+      id: endId, identity: "test", group: separate ? "g2" : "g1", order: 1, stopped: mode === "stopped", signedAt: Date.now(),
       transport: JSON.stringify({ envelope: { id: endId, header: { issuer: "test", previous: [defId], action: { kind: "judgment.set", target: defId, value: "bless" } } }, body: null }),
       label: { subject: defId, action: "endorsement", href: "/" },
       peers: { self: endorsementPeer },
     };
     await store.queueGroup([definition as never, endorsement as never]);
-  }, [DEF_ID, END_ID, dependent]);
+  }, [DEF_ID, END_ID, dependent, separateGroups]);
   await page.reload();
 }
 
@@ -42,12 +42,15 @@ async function stoppedFlags(page: import("@playwright/test").Page) {
 }
 
 test("U13/U29/U63/U64: outbox shows the word, the missing connection, exact seconds, and stop stays per-record", async ({ page }) => {
+  await page.clock.install();
+  await page.clock.pauseAt(new Date());
   await seed(page);
   const endorsementRow = page.locator(`[data-outbox-record="${END_ID}"]`);
   await expect(endorsementRow).toContainText("cuntrix");
   await expect(endorsementRow).not.toContainText("jve1:94b463e3");
+  await expect(endorsementRow).toContainText("No connection to the server.");
   await expect(page.locator("main")).toContainText("No connection to the server was reported for some records.");
-  await expect(endorsementRow).toContainText(/Next try in (59|60) seconds\./);
+  await expect(endorsementRow).toContainText("Next try in 90 seconds.");
   const definitionRow = page.locator(`[data-outbox-record="${DEF_ID}"]`);
   await definitionRow.getByRole("button", { name: "Stop retrying" }).click();
   await expect(page.getByRole("status")).toContainText("Stop leaves the records that depend on this record unchanged");
@@ -103,6 +106,20 @@ test("U65: Test it stays inside its sentence when the backup warning wraps", asy
   expect(pBox.height).toBeGreaterThan(lBox.height * 1.5);
   expect(lBox.y).toBeGreaterThanOrEqual(pBox.y - 1);
   expect(lBox.y).toBeLessThan(pBox.y + lBox.height);
+  const sameLine = await warning.evaluate((node) => {
+    const anchor = node.querySelector("a")!;
+    const linkRect = anchor.getClientRects()[0];
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let textNode = walker.nextNode();
+    while (textNode && !textNode.textContent!.includes("your")) textNode = walker.nextNode();
+    const start = textNode.textContent!.indexOf("your");
+    const range = document.createRange();
+    range.setStart(textNode, start);
+    range.setEnd(textNode, start + 4);
+    const wordRect = range.getClientRects()[0];
+    return linkRect.top < wordRect.bottom && wordRect.top < linkRect.bottom;
+  });
+  expect(sameLine).toBe(true);
 });
 
 test("U64: stopping a record with an already stopped dependent says the dependent is unchanged", async ({ page }) => {
@@ -129,4 +146,31 @@ test("U64: stopping a record with a refused dependent says the dependent is unch
     return item.peers.self.state;
   }, END_ID);
   expect(endorsement).toBe("refused");
+});
+
+test("U64: stopping a record whose dependent is in another signing group still gives the explanation", async ({ page }) => {
+  await seed(page, "waiting", true);
+  const definitionRow = page.locator(`[data-outbox-record="${DEF_ID}"]`);
+  await definitionRow.getByRole("button", { name: "Stop retrying" }).click();
+  await expect(page.getByRole("status")).toContainText("Stop leaves the records that depend on this record unchanged");
+  expect(await stoppedFlags(page)).toEqual({ 0: true, 1: false });
+});
+
+test("U13: a standalone endorsement from the word page shows the word in Not delivered", async ({ page }) => {
+  await createIdentity(page);
+  await page.route("**/api/v1/events", (route) => route.request().method() === "POST" ? route.abort("connectionreset") : route.continue());
+  await openWord(page, "cukta");
+  await page.locator("article.definition").first().getByRole("button", { name: "Endorse" }).click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toContainText("signed and saved here");
+  await page.goto("/outbox");
+  const row = page.locator("[data-outbox-record]").first();
+  await expect(row).toContainText("cukta");
+  await expect(row).not.toContainText("jve1:dc52573a");
+  const label = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const [item] = await new LocalStore().list("outbox");
+    return item.label.subject;
+  });
+  expect(label).toBe("cukta");
 });
