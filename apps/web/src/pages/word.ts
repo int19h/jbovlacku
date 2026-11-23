@@ -698,23 +698,33 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   const profileSlot = el("div", { class: "word-profile-note" });
   if (unknownProfileOf(view)) profileSlot.append(profileNote(view));
   part.append(profileSlot);
-  if (app.session.preferences.myJudgmentsFirst)
-    part.append(
-      p(
-        own
-          ? "Definitions with your judgments appear first within each ranking layer and within the unranked group. Scores and ranking layers stay the same."
-          : // Without a key there are no judgments of yours, which is not
-            // a failure.
-            app.session.identity ||
-              !app.session.storageAvailable ||
-              keySavedLater === null
-            ? "Your judgments could not be loaded. Definitions follow ranking layers, then event order."
-            : keySavedLater
-              ? "This tab has not loaded the key that is now saved in this browser. Reload the page to put your judgments first. Definitions follow ranking layers, then event order."
-              : "You have no key in this browser, so no judgments of yours change this order. Definitions follow ranking layers, then event order.",
-        "meta",
-      ),
-    );
+  // The judgments-first note. Its last sentence describes the order on
+  // screen, so it follows the view that the definitions are arranged by:
+  // while the reader keeps the order from before the scores, it says event
+  // order, and it names the ranking layers once they apply.
+  const judgmentsNote = app.session.preferences.myJudgmentsFirst
+    ? p("", "meta")
+    : null;
+  // Without a key there are no judgments of yours, which is not a failure.
+  const judgmentsReason = own
+    ? ""
+    : app.session.identity ||
+        !app.session.storageAvailable ||
+        keySavedLater === null
+      ? "Your judgments could not be loaded."
+      : keySavedLater
+        ? "This tab has not loaded the key that is now saved in this browser. Reload the page to put your judgments first."
+        : "You have no key in this browser, so no judgments of yours change this order.";
+  const describeOrder = (v: ViewScores) => {
+    if (!judgmentsNote) return;
+    const ranked = v.calculation !== null && !unknownProfileOf(v);
+    judgmentsNote.textContent = own
+      ? ranked
+        ? "Definitions with your judgments appear first within each ranking layer and within the unranked group. Scores and ranking layers stay the same."
+        : "Definitions with your judgments appear first, followed by event order."
+      : `${judgmentsReason} ${ranked ? "Definitions follow ranking layers, then event order." : "Definitions appear in event order."}`;
+  };
+  if (judgmentsNote) part.append(judgmentsNote);
   const allRecords = [...records.values()];
   if (
     word.definitions.length &&
@@ -806,6 +816,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
    * leaves the document: the others move around it.
    */
   const arrange = (v: ViewScores) => {
+    describeOrder(v);
     const { ordered, rankedLayers, unknownProfile } = orderOf(v);
     const sequence: HTMLElement[] = [];
     let lastLayer: number | null = -1;

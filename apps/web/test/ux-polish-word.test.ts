@@ -2183,3 +2183,66 @@ test("a focused note on a page with no score says that the calculation finished"
   await expect(note).not.toContainText("are shown");
   expect(await page.locator("main .judgment .score").count()).toBe(0);
 });
+
+for (const key of ["no key", "a key"] as const)
+  test(`with judgments first and ${key}, the note claims ranked order only once it applies`, async ({
+    page,
+  }) => {
+    if (key === "a key") await createIdentity(page);
+    await page.goto("/preferences");
+    await page.getByLabel("Show my judgments first on word pages").check();
+    await expect
+      .poll(() =>
+        page.evaluate(async () => {
+          const { LocalStore } = await import(String("/src/data/store.ts"));
+          return (await new LocalStore().preferences()).myJudgmentsFirst;
+        }),
+      )
+      .toBe(true);
+    await page.goto("/trust");
+    await page
+      .getByRole("radio", { name: "Mine: site view + my choices" })
+      .check();
+    await expect(
+      page.getByRole("link", { name: "Trust: personal view" }),
+    ).toBeVisible();
+    // The calculation waits for the inventory. The reader's own history,
+    // which a key needs, does not.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/api/v1/inventory?*", async (route) => {
+      await held;
+      await route.continue();
+    });
+    await page.goto("/word/cukta?lang=en");
+    await expect(page.locator("article.definition").first()).toBeVisible();
+    const note = page.locator("main p.meta").filter({
+      hasText:
+        key === "no key"
+          ? "You have no key in this browser"
+          : "Definitions with your judgments appear first",
+    });
+    await expect(note).toHaveCount(1);
+    const before = await order(page);
+    // A press while the calculation is pending keeps the reader's order.
+    await page.getByRole("button", { name: "Copy cukta" }).click();
+    release();
+    await scored(page);
+    const offer = page.getByText("Personal scores changed the order.");
+    await expect(offer).toBeVisible();
+    expect(await order(page)).toEqual(before);
+    // The order on screen is event order, and the note says so.
+    await expect(note).not.toContainText("ranking layer");
+    await expect(note).toContainText(
+      key === "no key"
+        ? "You have no key in this browser, so no judgments of yours change this order. Definitions appear in event order."
+        : "Definitions with your judgments appear first, followed by event order.",
+    );
+    await page.getByRole("button", { name: "Show in score order" }).click();
+    expect(await order(page)).not.toEqual(before);
+    await expect(note).toContainText(
+      key === "no key"
+        ? "You have no key in this browser, so no judgments of yours change this order. Definitions follow ranking layers, then event order."
+        : "Definitions with your judgments appear first within each ranking layer and within the unranked group.",
+    );
+  });
