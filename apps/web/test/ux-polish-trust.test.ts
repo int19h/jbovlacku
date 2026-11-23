@@ -252,15 +252,12 @@ const frames = (page: Page) =>
         requestAnimationFrame(() => requestAnimationFrame(resolve)),
       ),
   );
-// A name with a right-to-left override, a name that closes the isolate
-// early and then reverses the text after it, and a name of only an
-// override, which falls back to the short identity.
-for (const [name, shown] of [
-  ["\u202eecila", "ecila"],
-  ["Dana\u2069\u202e", "Dana"],
-  ["\u202e", null],
-] as const)
-  test(`the unlock request keeps the profile name ${JSON.stringify(name)} in its own direction`, async ({
+// A name with a right-to-left override, a name that closes an isolate early
+// and then reverses the text after it, a name of only an override, and a
+// name of only a zero-width space. The unlock sentence names the person by
+// the short identity, and the heading keeps the literal name.
+for (const name of ["\u202eecila", "Dana\u2069\u202e", "\u202e", "\u200b"])
+  test(`the unlock request names the person by the short identity for the profile name ${JSON.stringify(name)}`, async ({
     page,
   }) => {
     const f = fixture();
@@ -291,7 +288,8 @@ for (const [name, shown] of [
     await page.goto(`/identity/${encodeURIComponent(f.identities.author)}`);
     await expect(page.locator("main h1")).toHaveText(name);
     await page.getByRole("button", { name: "Trust their judgments" }).click();
-    const panel = page.getByRole("region", { name: /^Trust / });
+    // The panel title holds the literal name, which may be invisible.
+    const panel = page.getByRole("region", { name: /^Trust\b/ });
     await panel.getByRole("radio", { name: /Publicly/ }).check();
     await panel.getByRole("button", { name: "Trust", exact: true }).click();
     await page
@@ -301,8 +299,8 @@ for (const [name, shown] of [
     await expect(page).toHaveURL(/\/identity$/);
     await expect(
       page.getByText(/will continue after you create or import a key/),
-    ).toContainText(
-      `Trusting \u2068${shown ?? `${f.identities.author.slice(8, 12)}…${f.identities.author.slice(-4)}`}\u2069 publicly`,
+    ).toHaveText(
+      `Trusting ${f.identities.author.slice(8, 12)}…${f.identities.author.slice(-4)} publicly will continue after you create or import a key.`,
     );
   });
 
