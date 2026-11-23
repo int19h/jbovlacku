@@ -402,7 +402,7 @@ function row(
       await app.delivery.stop(item.id);
       app.announce(
         dependents.length
-          ? "Stopped. The signed record and its receipts stay in this browser. Records that depend on this record keep retrying and wait for it; select Stop retrying on each of those rows to stop them too. This does not retract a public record or cancel a request already in flight."
+          ? "Stopped. The signed record and its receipts stay in this browser. Stop leaves the records that depend on this record unchanged; use the controls on each of those rows to change them. This does not retract a public record or cancel a request already in flight."
           : "Stopped. The signed record and its receipts stay in this browser. This does not retract a public record or cancel a request already in flight.",
       );
     },
