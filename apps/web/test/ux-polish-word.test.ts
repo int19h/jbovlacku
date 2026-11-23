@@ -2150,14 +2150,16 @@ test("a focused note on a page with no score says that the calculation finished"
       return result;
     };
   });
-  // The only definition of ckusro fails to load, so the page has no score.
-  await page.route(
-    `**/api/v1/events/${encodeURIComponent(fixture().definitions.imported)}*`,
-    (route) =>
-      route.fulfill({
-        status: 404,
-        json: { code: "missing", message: "Record unavailable" },
-      }),
+  // Every definition record of ckusro fails to load, so the page has no
+  // score. Earlier tests in a full run can add revisions to ckusro, so the
+  // test does not rely on its one imported definition.
+  await page.route("**/api/v1/events/jve1%3A*", (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({
+          status: 404,
+          json: { code: "missing", message: "Record unavailable" },
+        })
+      : route.continue(),
   );
   await page.evaluate(() => {
     const anchor = document.createElement("a");
