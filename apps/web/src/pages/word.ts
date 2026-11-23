@@ -14,7 +14,12 @@ import {
   icon,
   disclosure,
 } from "../lib/dom.ts";
-import { listedLanguage, languageName, plural } from "../lib/format.ts";
+import {
+  listedLanguage,
+  languageName,
+  plural,
+  rationalSign,
+} from "../lib/format.ts";
 import { nullOnSpellingRefusal } from "../lib/core-error.ts";
 import {
   navigate,
@@ -38,11 +43,14 @@ import {
   type RafsiBody,
   type WordResponse,
 } from "../model/types.ts";
-import { definitionBlock } from "../components/definition.ts";
 import {
-  judgmentControl,
+  definitionBlock,
+  updateDefinitionScore,
+} from "../components/definition.ts";
+import {
   personalReasonText,
-  scoreDetails,
+  scoreSlot,
+  type ScoreSlot,
 } from "../components/judgment.ts";
 import { identityLink } from "../components/attribution.ts";
 import { renderRichText } from "../model/richtext.ts";
@@ -52,6 +60,7 @@ import {
   provenanceLine,
   staleReason,
   viewScores,
+  type ViewScores,
 } from "../components/localview.ts";
 import { recomputePanel } from "../components/recompute.ts";
 import { describeProfile } from "../model/profiles.ts";
@@ -141,6 +150,64 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   if (waiting) app.own.invalidate();
   const spelling = word.word?.spelling ?? spellingHint ?? "Word unavailable";
   context.title(spelling);
+  // Input from the reader since the first word controls appeared. Any of
+  // it means that the reader has started to read or act, so a settled
+  // calculation does not move the definitions by itself. Tracking starts
+  // before the definitions load, so a press or key during that load counts.
+  let input = false;
+  for (const type of ["pointerdown", "keydown", "wheel", "touchstart"])
+    window.addEventListener(type, () => (input = true), {
+      capture: true,
+      passive: true,
+      signal: context.signal,
+    });
+  // A press in progress. An update waits for its release, so the layout
+  // under the pointer does not change before the click completes. Only a
+  // primary press can start a click. A press can also end without a
+  // release on the page: a context menu, or a switch to another window or
+  // tab. Each of those ends the press too.
+  let pressed = false;
+  let released: (() => void)[] = [];
+  window.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.button === 0) pressed = true;
+    },
+    { capture: true, signal: context.signal },
+  );
+  const endPress = () => {
+    if (!pressed) return;
+    pressed = false;
+    const waiting = released;
+    released = [];
+    // After the click that this release completes.
+    setTimeout(() => waiting.forEach((resolve) => resolve()), 0);
+  };
+  for (const type of ["pointerup", "pointercancel", "contextmenu"])
+    window.addEventListener(type, endPress, {
+      capture: true,
+      signal: context.signal,
+    });
+  // Only the window's own blur. A blur of an element inside the page is a
+  // focus move, and a press moves focus.
+  window.addEventListener(
+    "blur",
+    (event) => {
+      if (event.target === window) endPress();
+    },
+    { signal: context.signal },
+  );
+  document.addEventListener(
+    "visibilitychange",
+    () => {
+      if (document.hidden) endPress();
+    },
+    { signal: context.signal },
+  );
+  const pressFinished = () =>
+    pressed
+      ? new Promise<void>((resolve) => released.push(resolve))
+      : Promise.resolve();
   const head = el("div", { class: "word-head" });
   const h1 = el("h1", { lang: "jbo", text: spelling });
   head.append(h1);
@@ -251,6 +318,30 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       ...words,
       text(` · ${compound.components.map((c) => c.rafsi).join(" + ")}`),
     );
+  } else if (
+    [...kinds].includes("lujvo") &&
+    failures.size === 0 &&
+    [...records.values()].every((record) => record.body)
+  ) {
+    // A lujvo without the structured compound field has no composition that
+    // this page can show as words and rafsi. The line names only that
+    // missing field. A definition's etymology text can still describe the
+    // composition, so the line then points to it. A definition that did not
+    // load, or has no body, could hold either, so the line then says
+    // nothing.
+    const described = [...records.values()].some(
+      (record) =>
+        record.body &&
+        (record.body.etymology.text.length || record.body.etymology.formation),
+    );
+    composition.append(
+      text(
+        described
+          ? "No structured composition is recorded for this lujvo. See Etymology in its definitions."
+          : "No structured composition is recorded for this lujvo.",
+        "meta",
+      ),
+    );
   } else composition.hidden = true;
   // Rafsi line from claims.
   const claims: {
@@ -325,6 +416,30 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   allTab.append(text("All"), text(String(word.definitions.length), "meta"));
   tabs.append(allTab);
   main.append(tabs);
+  // On a phone the tab strip scrolls sideways. Bring the selected tab into
+  // the strip without moving the window or focus.
+  const showCurrentTab = () => {
+    const current = tabs.querySelector<HTMLElement>('[aria-current="true"]');
+    if (!current || tabs.scrollWidth <= tabs.clientWidth) return;
+    const strip = tabs.getBoundingClientRect();
+    const tab = current.getBoundingClientRect();
+    if (tab.left < strip.left) tabs.scrollLeft -= strip.left - tab.left;
+    else if (tab.right > strip.right)
+      tabs.scrollLeft += tab.right - strip.right;
+  };
+  showCurrentTab();
+  requestAnimationFrame(showCurrentTab);
+  // A resize or a rotation can turn the wrapped tabs into the one-row strip,
+  // or make the strip narrower. Each time its width changes, a selected tab
+  // outside the strip is brought into it again.
+  let stripWidth = tabs.clientWidth;
+  const stripWatch = new ResizeObserver(() => {
+    if (tabs.clientWidth === stripWidth) return;
+    stripWidth = tabs.clientWidth;
+    showCurrentTab();
+  });
+  stripWatch.observe(tabs);
+  onDisconnect(tabs, () => stripWatch.disconnect(), context.signal);
   const personal = app.session.preferences.viewMode === "personal";
   // A refreshed calculation names the latest snapshot. The page then
   // fetches the word again, so content and scores come from one snapshot.
@@ -344,8 +459,40 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         onRefresh: rerender,
       }),
     );
-  // Scores under the selected view. The personal view waits for the local calculation.
-  const view = await viewScores(app, id, word);
+  // Scores under the selected view. In the personal view the definitions
+  // render at once while the local calculation runs. When it settles, the
+  // page updates in place: every definition, control and disclosure stays,
+  // and only the scores, the notes and, while the reader has not started
+  // to read, the order change.
+  const viewPromise = viewScores(app, id, word);
+  const status = app.personal.status;
+  // A cancel is settled: no automatic call restarts it, so the page shows
+  // its reason with every control, as for any settled state. After any
+  // other failure, viewScores has already started a new calculation, so
+  // the old failure is not the current state, and the page is provisional
+  // until that calculation settles.
+  const cancelled =
+    personal && status.state === "failed" && status.kind === "cancelled";
+  const provisional = personal && status.state !== "ready" && !cancelled;
+  // In both cases the page renders before viewScores settles.
+  const early = provisional || cancelled;
+  let view: ViewScores;
+  if (early) {
+    view = {
+      personal: true,
+      reason:
+        status.state === "failed" && cancelled
+          ? status.message
+          : "The local calculation is not ready yet.",
+      stale: false,
+      snapshot: word.snapshot,
+      view: word.view,
+      calculation: null,
+      scores: [],
+      layers: [],
+      unavailable_scores: [],
+    };
+  } else view = await viewPromise;
   if (!context.live()) return;
   const own = app.session.preferences.myJudgmentsFirst
     ? await app.own.registers()
@@ -369,6 +516,12 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     if (!context.live()) return;
   }
   const myJudgmentsFirst = Boolean(own);
+  const statusOf = (definition: string) =>
+    word.statuses.find((s) => s?.event === definition)?.state;
+  // The part of the page that depends on scores. It is built once. A
+  // settled calculation updates it in place.
+  const part = el("div", { class: "word-scored" });
+  main.append(part);
   // The current reason for unavailable personal scores. The page reads it
   // when it builds each score, and the note's listener keeps it current.
   const live = { reason: view.reason ?? undefined, stale: view.stale };
@@ -376,17 +529,44 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   const staleNote =
     "The local calculation uses another snapshot or view. Recompute from records for these definitions.";
   const unavailableTitle = "Score unavailable in the personal view.";
+  /** The reason that a calculation status gives, or null for a ready one for this snapshot. */
+  const statusReason = (
+    status: typeof app.personal.status,
+  ): { reason: string; stale: boolean } | null => {
+    if (status.state === "ready")
+      return status.snapshot === word.snapshot && status.view === word.view
+        ? null
+        : { reason: staleReason(status, word), stale: true };
+    if (status.state === "failed")
+      return { reason: status.message, stale: false };
+    return {
+      reason:
+        status.state === "idle"
+          ? "No local calculation yet."
+          : "The local calculation is not ready yet.",
+      stale: false,
+    };
+  };
+  let note: HTMLElement | null = null;
+  let showNote: ((reason: string, stale: boolean) => void) | null = null;
+  /**
+   * Says that the calculation settled, for a note that stays while it has
+   * focus: that scores are shown, or, when the page displays no score, that
+   * the calculation finished.
+   */
+  let noteShown: ((scoresShown: boolean) => void) | null = null;
   if (view.personal && view.reason) {
-    const note = p("", "small");
+    const shown = p("", "small");
+    note = shown;
     const noteText = text("");
-    note.append(noteText);
+    shown.append(noteText);
     let recompute: HTMLButtonElement | null = null;
     // The note follows the live calculation state, like the panel above it.
     // A later failure, cancel, or retry replaces the reason instead of
     // leaving the first reason beside a panel that says another. The text
     // changes in place, and the recompute button, once shown, stays in the
     // document, so a reader who activated it keeps focus on it.
-    const showNote = (reason: string, stale: boolean) => {
+    showNote = (reason: string, stale: boolean) => {
       noteText.textContent = `Personal scores are unavailable: ${reason} ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."} No numeric score is assumed.`;
       if (stale && !recompute) {
         recompute = button(
@@ -400,50 +580,48 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
           },
           { class: "btn btn-quiet" },
         );
-        note.append(text(" "), recompute);
+        shown.append(text(" "), recompute);
       }
     };
     showNote(view.stale ? staleNote : view.reason, view.stale);
-    main.append(note);
+    noteShown = (scoresShown) => {
+      showNote = null;
+      noteText.textContent = scoresShown
+        ? "Personal scores for this snapshot are shown."
+        : "The personal calculation for this snapshot finished.";
+    };
+    part.append(shown);
     // Every place that states the reason follows the current status: the
     // note, the "Source and scores" line, and the score titles and details.
     // The first call reconciles a status that changed while the page read
-    // the reader's own history.
+    // the reader's own history. The listener ends when the note leaves the
+    // page, for example when scores arrive.
     onDisconnect(
-      note,
+      shown,
       app.personal.subscribe((status) => {
-        if (!context.live()) return;
-        let reason: string;
-        let stale = false;
-        if (status.state === "ready") {
-          if (status.snapshot === word.snapshot && status.view === word.view) {
-            // The page's own read already gave its reason, which can be
-            // specific to this word. A recompute re-renders the page.
-            return;
-          }
-          reason = staleReason(status, word);
-          stale = true;
-        } else if (status.state === "failed") reason = status.message;
-        else
-          reason =
-            status.state === "idle"
-              ? "No local calculation yet."
-              : "The local calculation is not ready yet.";
+        // A note kept for focus after the scores arrived follows no status.
+        if (!context.live() || !showNote) return;
+        const current = statusReason(status);
+        // A ready calculation for this snapshot: the page's own read gives
+        // its reason, which can be specific to this word. The settled read
+        // updates the page.
+        if (!current) return;
+        const { reason, stale } = current;
         live.reason = reason;
         live.stale = stale;
-        showNote(stale ? staleNote : reason, stale);
+        showNote?.(stale ? staleNote : reason, stale);
         if (staleLine) {
           staleLine.textContent = reason;
           staleLine.hidden = !stale;
         }
-        for (const score of main.querySelectorAll<HTMLElement>(
+        for (const score of part.querySelectorAll<HTMLElement>(
           ".judgment .score.unavailable",
         ))
           if (score.title.startsWith(unavailableTitle))
             score.title = `${unavailableTitle} ${reason}`;
         // An open "Score details" disclosure keeps its place, its controls,
         // and focus. Only its reason text changes.
-        for (const text of main.querySelectorAll<HTMLElement>(
+        for (const text of part.querySelectorAll<HTMLElement>(
           "details.judgment-details [data-personal-reason]",
         ))
           text.textContent = personalReasonText(reason);
@@ -451,17 +629,18 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     );
   }
   if (!view.personal && view.calculation === null)
-    main.append(
+    part.append(
       p("Ranking is unavailable for this word. No score is assumed.", "small"),
     );
+  const provenance = provenanceLine(view, false);
   const sourceDetails = el(
     "details",
-    { class: "disclosure word-source" },
+    { class: "disclosure word-source", "data-key": "word-source" },
     el("summary", {}, icon("chevron", "chev"), "Source and scores"),
     el(
       "div",
       { class: "body" },
-      provenanceLine(view, false),
+      provenance,
       view.personal && view.reason
         ? (staleLine = el("p", {
             class: "small",
@@ -472,81 +651,102 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       personal ? null : recomputePanel(app, id, word),
     ),
   );
-  // Definition order follows layers. Unranked definitions follow.
   const visible = new Set(
     active === "all" ? records.keys() : (byLanguage.get(active) ?? []),
   );
-  const shown = new Set<string>();
-  const ordered: { id: string; layer: number | null }[] = [];
   // Without a calculation the server makes no ranking claim. A calculation
   // from a profile this client does not know makes none that this client can
   // show. In both cases definitions follow event order.
-  const unknownProfile =
-    view.calculation !== null &&
-    !describeProfile(view.calculation.algorithm).known;
-  const rankedLayers =
-    view.calculation === null || unknownProfile ? [] : view.layers;
-  if (unknownProfile)
-    main.append(
-      p(
-        `Scores and order from the calculation profile ${view.calculation!.algorithm} are not shown. This client does not know its route rule. ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."}`,
-        "small",
-      ),
+  const unknownProfileOf = (v: ViewScores) =>
+    v.calculation !== null && !describeProfile(v.calculation.algorithm).known;
+  const hasJudgment = (definition: string): boolean => {
+    const state = own?.judgments.get(definition);
+    return Boolean(
+      state?.known &&
+      (state.conflicted || (state.value && state.value !== "clear")),
     );
-  for (const [index, layer] of rankedLayers.entries())
-    for (const definition of layer)
-      if (visible.has(definition) && !shown.has(definition)) {
-        shown.add(definition);
-        ordered.push({ id: definition, layer: index });
-      }
-  for (const definition of word.definitions)
-    if (visible.has(definition) && !shown.has(definition))
-      ordered.push({ id: definition, layer: null });
-  if (app.session.preferences.myJudgmentsFirst) {
-    if (own) {
-      const hasJudgment = (definition: string): boolean => {
-        const state = own?.judgments.get(definition);
-        return Boolean(
-          state?.known &&
-          (state.conflicted || (state.value && state.value !== "clear")),
-        );
-      };
+  };
+  /** Definition order under one view: layers first, then unranked definitions. */
+  const orderOf = (v: ViewScores) => {
+    const unknownProfile = unknownProfileOf(v);
+    const rankedLayers =
+      v.calculation === null || unknownProfile ? [] : v.layers;
+    const shown = new Set<string>();
+    const ordered: { id: string; layer: number | null }[] = [];
+    for (const [index, layer] of rankedLayers.entries())
+      for (const definition of layer)
+        if (visible.has(definition) && !shown.has(definition)) {
+          shown.add(definition);
+          ordered.push({ id: definition, layer: index });
+        }
+    for (const definition of word.definitions)
+      if (visible.has(definition) && !shown.has(definition))
+        ordered.push({ id: definition, layer: null });
+    if (own)
       ordered.sort(
         (a, b) =>
           (a.layer ?? rankedLayers.length) - (b.layer ?? rankedLayers.length) ||
           Number(hasJudgment(b.id)) - Number(hasJudgment(a.id)),
       );
-      main.append(
-        p(
-          "Definitions with your judgments appear first within each ranking layer and within the unranked group. Scores and ranking layers stay the same.",
-          "meta",
-        ),
-      );
-    } else {
-      // Without a key there are no judgments of yours, which is not a
-      // failure.
-      main.append(
-        p(
-          app.session.identity ||
-            !app.session.storageAvailable ||
-            keySavedLater === null
-            ? "Your judgments could not be loaded. Definitions follow ranking layers, then event order."
-            : keySavedLater
-              ? "This tab has not loaded the key that is now saved in this browser. Reload the page to put your judgments first. Definitions follow ranking layers, then event order."
-              : "You have no key in this browser, so no judgments of yours change this order. Definitions follow ranking layers, then event order.",
-          "meta",
-        ),
-      );
-    }
+    return { ordered, rankedLayers, unknownProfile };
+  };
+  const profileNote = (v: ViewScores) =>
+    p(
+      `Scores and order from the calculation profile ${v.calculation!.algorithm} are not shown. This client does not know its route rule. ${myJudgmentsFirst ? "Your judgments appear first, followed by event order." : "Definitions appear in event order."}`,
+      "small",
+    );
+  const profileSlot = el("div", { class: "word-profile-note" });
+  if (unknownProfileOf(view)) profileSlot.append(profileNote(view));
+  part.append(profileSlot);
+  // The judgments-first note. Its last sentence describes the order on
+  // screen, so it follows the view that the definitions are arranged by:
+  // while the reader keeps the order from before the scores, it says event
+  // order, and it names the ranking layers once they apply.
+  const judgmentsNote = app.session.preferences.myJudgmentsFirst
+    ? p("", "meta")
+    : null;
+  // Without a key there are no judgments of yours, which is not a failure.
+  const judgmentsReason = own
+    ? ""
+    : app.session.identity ||
+        !app.session.storageAvailable ||
+        keySavedLater === null
+      ? "Your judgments could not be loaded."
+      : keySavedLater
+        ? "This tab has not loaded the key that is now saved in this browser. Reload the page to put your judgments first."
+        : "You have no key in this browser, so no judgments of yours change this order.";
+  // The explanation and the order sentence are separate text nodes. Only
+  // the order sentence changes, and only when its wording does, so a
+  // selection in the explanation stays.
+  const orderText = document.createTextNode("");
+  if (judgmentsNote) {
+    if (judgmentsReason) judgmentsNote.append(text(`${judgmentsReason} `));
+    judgmentsNote.append(orderText);
   }
+  const describeOrder = (v: ViewScores) => {
+    if (!judgmentsNote) return;
+    const ranked = v.calculation !== null && !unknownProfileOf(v);
+    const sentence = own
+      ? ranked
+        ? "Definitions with your judgments appear first within each ranking layer and within the unranked group. Scores and ranking layers stay the same."
+        : "Definitions with your judgments appear first, followed by event order."
+      : ranked
+        ? "Definitions follow ranking layers, then event order."
+        : "Definitions appear in event order.";
+    if (orderText.data !== sentence) orderText.data = sentence;
+  };
+  if (judgmentsNote) part.append(judgmentsNote);
   const allRecords = [...records.values()];
-  const statusOf = (definition: string) =>
-    word.statuses.find((s) => s?.event === definition)?.state;
   if (
     word.definitions.length &&
     word.definitions.every((d) => statusOf(d) === "deprecated")
   )
-    main.append(p("No active definitions in this snapshot.", "small"));
+    part.append(p("No active definitions in this snapshot.", "small"));
+  // A note that offers the score order after the reader has started
+  // reading, and the list of definitions with their layer notes.
+  const orderSlot = el("div", { class: "word-order-note" });
+  const list = el("div", { class: "definition-list" });
+  part.append(orderSlot, list);
   const refresh = () => {
     void (async () => {
       try {
@@ -554,54 +754,125 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       } catch {}
     })();
   };
-  let lastLayer: number | null = -1;
-  for (const { id: definition, layer } of ordered) {
-    const record = records.get(definition)!;
-    const score = view.scores.find((s) => s.target === definition) ?? null;
-    const unavailable =
-      view.calculation === null ||
-      view.unavailable_scores.includes(definition) ||
-      !score;
-    if (
-      layer !== null &&
-      layer !== lastLayer &&
-      rankedLayers[layer].filter((d) => visible.has(d)).length > 1
-    ) {
-      const size = rankedLayers[layer].filter((d) => visible.has(d)).length;
-      main.append(
-        p(
-          `${plural(size, "alternative")} with unresolved order. ${myJudgmentsFirst ? "Your judgments appear first within this layer." : "Presentation order follows event IDs."}`,
-          "meta",
-        ),
-      );
-    }
-    lastLayer = layer;
-    main.append(
-      definitionBlock(app, record, {
-        score,
-        unavailable,
-        personal: view.personal,
-        get reason() {
-          return live.reason;
-        },
-        status: statusOf(definition),
-        calculation: view.calculation,
-        secondary: layer !== null && layer > 0,
-        revisions: allRecords,
-        word,
-        onChange: refresh,
-      }),
-    );
-    if (layer === null && !(view.personal && view.reason) && !unknownProfile)
-      main.lastElementChild!.append(
-        p(
-          `No ranking position is available for this definition in the ${view.personal ? "personal view layers" : "server layers"}.`,
-          "meta",
-        ),
-      );
+  const scoreFor = (v: ViewScores, target: string) => {
+    const score = v.scores.find((s) => s.target === target) ?? null;
+    return {
+      score,
+      unavailable:
+        v.calculation === null ||
+        v.unavailable_scores.includes(target) ||
+        !score,
+      calculation: v.calculation,
+    };
+  };
+  // One block per visible definition, built once.
+  const blocks = new Map<string, HTMLElement>();
+  for (const { id: definition } of orderOf(view).ordered) {
+    const block = definitionBlock(app, records.get(definition)!, {
+      ...scoreFor(view, definition),
+      personal: view.personal,
+      get reason() {
+        return live.reason;
+      },
+      status: statusOf(definition),
+      revisions: allRecords,
+      word,
+      onChange: refresh,
+      // Score details show reviewers, which a provisional render does not
+      // know yet. The update adds them.
+      deferScoreDetails: provisional,
+    });
+    block.dataset.key = definition;
+    blocks.set(definition, block);
   }
+  const layerNote = (
+    v: ViewScores,
+    rankedLayers: string[][],
+    layer: number,
+  ): HTMLElement | null => {
+    const members = rankedLayers[layer].filter((d) => visible.has(d));
+    const size = members.length;
+    if (size < 2) return null;
+    // The ranking puts every deprecated definition into one last layer
+    // without comparing them. Other layers come from pairwise comparisons:
+    // either no member is certified ahead of another, or the comparisons
+    // form a cycle. This client cannot tell those two apart, so it states
+    // only what holds for both.
+    const deprecated = rankedLayers[layer].every(
+      (d) => statusOf(d) === "deprecated",
+    );
+    const layerScores = members
+      .map((d) => v.scores.find((s) => s.target === d))
+      .filter((s) => s !== undefined);
+    const allZero =
+      layerScores.length === size &&
+      layerScores.every(
+        (s) => rationalSign(s.net[0]) === 0 && rationalSign(s.net[1]) === 0,
+      );
+    const why = deprecated
+      ? "Deprecated definitions are not ranked against each other."
+      : `The pairwise comparisons do not put the definitions in this group in one order.${allZero ? " Every score in this group is zero." : ""}`;
+    return p(
+      `${plural(size, "alternative")} with unresolved order. ${why} ${myJudgmentsFirst ? "Your judgments appear first within this layer." : "Presentation order follows event IDs."}`,
+      "meta layer-note",
+    );
+  };
+  const currentOrder = () =>
+    [...list.children]
+      .map((n) => (n as HTMLElement).dataset.key)
+      .filter((key): key is string => key !== undefined);
+  /**
+   * Puts the definitions in the order of one view, with its layer notes.
+   * Existing nodes move; none is rebuilt. The node that holds focus never
+   * leaves the document: the others move around it.
+   */
+  const arrange = (v: ViewScores) => {
+    describeOrder(v);
+    const { ordered, rankedLayers, unknownProfile } = orderOf(v);
+    const sequence: HTMLElement[] = [];
+    let lastLayer: number | null = -1;
+    for (const { id: definition, layer } of ordered) {
+      if (layer !== null && layer !== lastLayer) {
+        const noteNode = layerNote(v, rankedLayers, layer);
+        if (noteNode) sequence.push(noteNode);
+      }
+      lastLayer = layer;
+      const block = blocks.get(definition)!;
+      block.classList.toggle("secondary", layer !== null && layer > 0);
+      block.querySelector(":scope > .no-rank")?.remove();
+      if (layer === null && !(v.personal && v.reason) && !unknownProfile)
+        block.append(
+          p(
+            `No ranking position is available for this definition in the ${v.personal ? "personal view layers" : "server layers"}.`,
+            "meta no-rank",
+          ),
+        );
+      sequence.push(block);
+    }
+    const keep = new Set<Node>(sequence);
+    for (const child of [...list.children])
+      if (!keep.has(child)) child.remove();
+    // No definition loaded. The list stays empty, and the failure notices
+    // after it say why.
+    if (!sequence.length) return;
+    const focusedNode = document.activeElement;
+    let at = sequence.findIndex(
+      (n) => focusedNode !== null && n.contains(focusedNode),
+    );
+    if (at < 0) {
+      at = 0;
+      if (list.firstChild !== sequence[0]) list.prepend(sequence[0]);
+    }
+    for (let i = at - 1; i >= 0; i--)
+      if (sequence[i].nextSibling !== sequence[i + 1])
+        list.insertBefore(sequence[i], sequence[i + 1]);
+    for (let i = at + 1; i < sequence.length; i++)
+      if (sequence[i - 1].nextSibling !== sequence[i])
+        list.insertBefore(sequence[i], sequence[i - 1].nextSibling);
+  };
+  arrange(view);
   for (const [definition, failure] of failures)
-    main.append(
+    part.append(
       el(
         "div",
         { class: "definition" },
@@ -625,8 +896,13 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       { class: "btn btn-quiet" },
     ),
   );
-  main.append(after);
+  part.append(after);
   // Rafsi claims section.
+  const rafsiSlots: {
+    assignment: string;
+    eligible: boolean;
+    slot: ScoreSlot;
+  }[] = [];
   if (claims.length) {
     const section = el("section", { "aria-labelledby": "rafsi-h" });
     section.append(
@@ -634,6 +910,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     );
     for (const entry of claims) {
       const card = el("div", { class: "definition" });
+      card.dataset.key = entry.assignment;
       const rafsiSpelling =
         entry.claims.map((c) => c.body?.rafsi).find(Boolean) ?? "unidentified";
       card.append(
@@ -644,16 +921,12 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
           text(` for ${spelling}`, "meta"),
         ),
       );
-      const score =
-        view.scores.find((s) => s.target === entry.assignment) ?? null;
-      const unavailable =
-        entry.status !== "eligible" ||
-        view.unavailable_scores.includes(entry.assignment) ||
-        !score;
+      const eligible = entry.status === "eligible";
+      const scored = scoreFor(view, entry.assignment);
       const byline = el("div", { class: "byline" });
       byline.append(
         text(
-          `${entry.status === "eligible" ? "Eligible pair" : entry.status === "inactive" ? "Inactive pair" : "Pair status unknown"} · ${plural(entry.claims.length, "claim")}`,
+          `${eligible ? "Eligible pair" : entry.status === "inactive" ? "Inactive pair" : "Pair status unknown"} · ${plural(entry.claims.length, "claim")}`,
           "meta",
         ),
         el("span", { class: "spacer" }),
@@ -665,20 +938,21 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
           `${value === "bless" ? "Endorsing" : value === "curse" ? "Opposing" : "Clearing your judgment on"} rafsi ${rafsiSpelling} for ${spelling}`,
       };
       const judgmentOptions = {
-        score,
-        unavailable,
+        ...scored,
+        unavailable: !eligible || scored.unavailable,
         personal: view.personal,
         get reason() {
           return live.reason;
         },
-        calculation: view.calculation,
         large: true,
         onChange: refresh,
       };
-      byline.append(
-        judgmentControl(app, target, judgmentOptions),
-        scoreDetails(app, target, judgmentOptions),
-      );
+      rafsiSlots.push({
+        assignment: entry.assignment,
+        eligible,
+        // As for definitions, score details wait for known scores.
+        slot: scoreSlot(app, target, judgmentOptions, byline, provisional),
+      });
       card.append(byline);
       card.append(
         p(
@@ -705,7 +979,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       }
       section.append(card);
     }
-    main.append(section);
+    part.append(section);
   }
   // See also: component words and derivation sources.
   const related = new Set<string>();
@@ -739,9 +1013,131 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       line.append(link(s, routes.word(s), { lang: "jbo" }));
     });
     section.append(line);
-    main.append(section);
+    part.append(section);
   }
-  main.append(sourceDetails);
+  part.append(sourceDetails);
+  /** Whether the reader has started to read or act in the scored part. */
+  const readerStarted = () => {
+    const selection = getSelection();
+    return (
+      input ||
+      (document.activeElement !== null &&
+        part.contains(document.activeElement)) ||
+      Boolean(selection && selection.rangeCount && !selection.isCollapsed) ||
+      part.getBoundingClientRect().top < 0
+    );
+  };
+  if (early)
+    void viewPromise.then(async (settled) => {
+      if (!context.live() || !part.isConnected) return;
+      // A cancel settles with the same reason. Nothing changes then.
+      if (!settled.calculation && settled.reason === view.reason) return;
+      await pressFinished();
+      if (!context.live() || !part.isConnected) return;
+      view = settled;
+      let keptNote = false;
+      // A read that ended without scores can be older than the status: a
+      // retry may have failed differently since. The status then gives the
+      // reason, as the note's listener does.
+      const current = settled.calculation
+        ? null
+        : statusReason(app.personal.status);
+      live.reason = current?.reason ?? settled.reason ?? undefined;
+      live.stale = current?.stale ?? settled.stale;
+      if (settled.personal && live.reason) {
+        showNote?.(live.stale ? staleNote : live.reason, live.stale);
+        for (const text of part.querySelectorAll<HTMLElement>(
+          "details.judgment-details [data-personal-reason]",
+        ))
+          text.textContent = personalReasonText(live.reason);
+      } else {
+        // Scores are known. The note leaves the page, which ends its
+        // listener.
+        // A reader who has focus in it keeps the note until focus leaves.
+        const done = note;
+        note = null;
+        // Its text changes at once, after the scores below are drawn.
+        if (done?.contains(document.activeElement)) {
+          keptNote = true;
+          done.addEventListener("focusout", () => done.remove(), {
+            once: true,
+          });
+        } else done?.remove();
+      }
+      // The line changes in place. Its leading parts keep their nodes
+      // while their text is the same, so a selection in them stays.
+      const kept = [...provenance.childNodes];
+      const fresh = [...provenanceLine(settled, false).childNodes];
+      let unchanged = 0;
+      while (
+        unchanged < kept.length &&
+        unchanged < fresh.length &&
+        kept[unchanged].isEqualNode(fresh[unchanged])
+      )
+        unchanged++;
+      for (const node of kept.slice(unchanged)) node.remove();
+      provenance.append(...fresh.slice(unchanged));
+      if (staleLine) {
+        staleLine.textContent = live.stale ? (live.reason ?? "") : "";
+        staleLine.hidden = !live.stale;
+      }
+      profileSlot.replaceChildren(
+        ...(unknownProfileOf(settled) ? [profileNote(settled)] : []),
+      );
+      // Scores change in place. Controls, focus and actions in flight stay.
+      for (const [definition, block] of blocks)
+        updateDefinitionScore(block, scoreFor(settled, definition));
+      for (const { assignment, eligible, slot } of rafsiSlots) {
+        const scored = scoreFor(settled, assignment);
+        slot.update({
+          ...scored,
+          unavailable: !eligible || scored.unavailable,
+        });
+      }
+      if (keptNote)
+        noteShown?.(
+          part.querySelector(".judgment .score:not(.unavailable)") !== null,
+        );
+      const order = orderOf(settled).ordered.map((o) => o.id);
+      const same = order.join(" ") === currentOrder().join(" ");
+      if (same || !readerStarted()) {
+        arrange(settled);
+        return;
+      }
+      // The reader has started to read. The definitions stay where they
+      // are, and the reader can choose the score order.
+      const offer = p("Personal scores changed the order. ", "small");
+      offer.append(
+        button(
+          "Show in score order",
+          () => {
+            arrange(view);
+            // The definition itself takes focus, so the focus ring is
+            // visible. Its heading names it.
+            const first = list.querySelector<HTMLElement>("article.definition");
+            // A pointer click does not match :focus-visible, so a class
+            // draws the ring after either kind of activation. Both end when
+            // focus leaves the definition.
+            if (first) {
+              first.tabIndex = -1;
+              first.classList.add("focus-ring");
+              first.addEventListener(
+                "blur",
+                () => {
+                  first.removeAttribute("tabindex");
+                  first.classList.remove("focus-ring");
+                },
+                { once: true },
+              );
+              first.focus();
+            }
+            orderSlot.replaceChildren();
+          },
+          { class: "btn btn-quiet" },
+        ),
+      );
+      orderSlot.replaceChildren(offer);
+    });
   void disclosure;
   void RequestError;
 }

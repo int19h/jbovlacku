@@ -35,7 +35,8 @@ textarea {
   font: inherit;
   color: inherit;
 }
-:focus-visible {
+:focus-visible,
+.focus-ring:focus {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
