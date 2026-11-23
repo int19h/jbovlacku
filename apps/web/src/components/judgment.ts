@@ -95,6 +95,43 @@ function ownValue(
     };
   });
 }
+/**
+ * Targets with a judgment action in flight. A control for such a target
+ * keeps Endorse and Oppose disabled until the action finishes, whether it
+ * is the control that started the action or a later one for the same
+ * target.
+ */
+const busy = new Set<string>();
+const busyListeners = new Set<() => void>();
+function setBusy(target: string, value: boolean) {
+  if (value) busy.add(target);
+  else busy.delete(target);
+  for (const listener of busyListeners) listener();
+}
+/**
+ * Per target, the number of judgment actions that succeeded on this page.
+ * Actions in Score details are drawn from a history read. Once another
+ * action for the target succeeds, every set drawn before it is retired: its
+ * buttons stay disabled until a fresh history read draws what to offer.
+ */
+const settled = new Map<string, number>();
+const retireListeners = new Set<(target: string) => void>();
+function retireActions(target: string) {
+  settled.set(target, (settled.get(target) ?? 0) + 1);
+  for (const listener of [...retireListeners]) listener(target);
+}
+const controls = new WeakMap<HTMLElement, (options: JudgmentOptions) => void>();
+const detailsPainters = new WeakMap<HTMLDetailsElement, () => void>();
+/**
+ * Shows a new score in an existing control. The buttons, the reader's
+ * focus, and any action in flight stay as they are.
+ */
+export function updateJudgmentControl(
+  control: HTMLElement,
+  options: JudgmentOptions,
+) {
+  controls.get(control)?.(options);
+}
 export function judgmentControl(
   app: App,
   target: JudgmentTarget,
@@ -109,7 +146,6 @@ export function judgmentControl(
     role: "group",
     "aria-label": "Your judgment",
   });
-  const headline = scoreHeadline(options.unavailable ? null : options.score);
   const endorse = el(
     "button",
     { type: "button", "aria-label": "Endorse" },
@@ -120,34 +156,46 @@ export function judgmentControl(
     { type: "button", "aria-label": "Oppose" },
     icon("down", "", options.large ? 22 : 20),
   );
-  const score = el("span", {
-    class: `score${headline.unavailable ? " unavailable" : ""}`,
-    title: headline.title,
-    "aria-label": headline.label,
-    role: "img",
-    text: headline.text,
-  });
-  if (options.personal && !headline.unavailable) {
-    score.title = `${headline.title} In your personal view.`;
-    score.setAttribute(
-      "aria-label",
-      `${headline.label}, in your personal view`,
-    );
-  }
-  if (options.personal && headline.unavailable) {
-    score.title = `Score unavailable in the personal view. ${options.reason ?? "No numeric score is assumed."}`;
-    score.setAttribute("aria-label", "Score unavailable in the personal view");
-  }
-  if (options.status === "deprecated") {
-    score.title = "Deprecated. Its judgments are inactive.";
-    score.setAttribute(
-      "aria-label",
-      "Deprecated definition. Judgments are inactive.",
-    );
-  }
+  const score = el("span", { role: "img" });
+  const paint = (current: JudgmentOptions) => {
+    const headline = scoreHeadline(current.unavailable ? null : current.score);
+    score.className = `score${headline.unavailable ? " unavailable" : ""}`;
+    score.title = headline.title;
+    score.setAttribute("aria-label", headline.label);
+    score.textContent = headline.text;
+    if (current.personal && !headline.unavailable) {
+      score.title = `${headline.title} In your personal view.`;
+      score.setAttribute(
+        "aria-label",
+        `${headline.label}, in your personal view`,
+      );
+    }
+    if (current.personal && headline.unavailable) {
+      score.title = `Score unavailable in the personal view. ${current.reason ?? "No numeric score is assumed."}`;
+      score.setAttribute(
+        "aria-label",
+        "Score unavailable in the personal view",
+      );
+    }
+    if (current.status === "deprecated") {
+      score.title = "Deprecated. Its judgments are inactive.";
+      score.setAttribute(
+        "aria-label",
+        "Deprecated definition. Judgments are inactive.",
+      );
+    }
+  };
+  paint(options);
+  controls.set(wrapper, paint);
+  // Disabled while storage is unavailable, and while a judgment action for
+  // this target is in flight anywhere on the page.
+  const syncDisabled = () => {
+    endorse.disabled = oppose.disabled =
+      !app.session.storageAvailable || busy.has(target.id);
+  };
+  syncDisabled();
   if (!app.session.storageAvailable) {
     // Nothing can be signed or kept without browser storage.
-    endorse.disabled = oppose.disabled = true;
     endorse.title = oppose.title =
       "Browser storage is unavailable, so judgments cannot be signed or kept.";
   }
@@ -196,20 +244,28 @@ export function judgmentControl(
     }
   };
   void applyOwn();
-  // The subscription lasts while the control is in the document.
+  // The subscriptions last while the control is in the document.
   onDisconnect(
     wrapper,
     app.own.subscribe(() => void applyOwn()),
     options.signal,
   );
+  busyListeners.add(syncDisabled);
+  onDisconnect(
+    wrapper,
+    () => busyListeners.delete(syncDisabled),
+    options.signal,
+  );
   const act = (arrow: "bless" | "curse") => async () => {
+    if (busy.has(target.id)) return;
     const pressed =
       (arrow === "bless" ? endorse : oppose).getAttribute("aria-pressed") ===
       "true";
     const value: JudgmentValue = pressed ? "clear" : arrow;
     await app.session.requireUnlocked(target.describe(value), async () => {
       if (!(await app.session.firstSignatureDisclosure())) return;
-      endorse.disabled = oppose.disabled = true;
+      if (busy.has(target.id)) return;
+      setBusy(target.id, true);
       try {
         const results = await app.signer.publish([
           {
@@ -219,6 +275,7 @@ export function judgmentControl(
           },
         ]);
         app.own.invalidate();
+        retireActions(target.id);
         if (deliveryAccepted(results))
           app.announce(
             value === "clear"
@@ -235,7 +292,7 @@ export function judgmentControl(
       } catch (error) {
         app.announce(describe(error));
       } finally {
-        endorse.disabled = oppose.disabled = !app.session.storageAvailable;
+        setBusy(target.id, false);
         void applyOwn();
       }
     });
@@ -243,6 +300,48 @@ export function judgmentControl(
   endorse.addEventListener("click", act("bless"));
   oppose.addEventListener("click", act("curse"));
   return wrapper;
+}
+/**
+ * A judgment control and its score details, placed in a parent. The score
+ * details can wait, for a render whose scores are not known yet. An update
+ * shows new scores in the same control and adds the details, or relabels
+ * closed details in place; open details stay as the reader has them.
+ */
+export interface ScoreSlot {
+  update(
+    patch: Pick<JudgmentOptions, "score" | "unavailable" | "calculation">,
+  ): void;
+}
+export function scoreSlot(
+  app: App,
+  target: JudgmentTarget,
+  options: JudgmentOptions,
+  parent: HTMLElement,
+  deferDetails = false,
+): ScoreSlot {
+  const control = judgmentControl(app, target, options);
+  parent.append(control);
+  let details: HTMLDetailsElement | null = deferDetails
+    ? null
+    : scoreDetails(app, target, options);
+  if (details) parent.append(details);
+  return {
+    update(patch) {
+      options.score = patch.score;
+      options.unavailable = patch.unavailable;
+      options.calculation = patch.calculation;
+      updateJudgmentControl(control, options);
+      // Open details stay as the reader has them. Closed details keep their
+      // node, so a focused summary keeps focus; only the label changes, and
+      // the next opening draws the new score.
+      if (details) {
+        if (!details.open) detailsPainters.get(details)?.();
+        return;
+      }
+      details = scoreDetails(app, target, options);
+      control.after(details);
+    },
+  };
 }
 /** The explanation of an unavailable personal score, for one reason. */
 export function personalReasonText(reason: string | undefined): string {
@@ -253,29 +352,34 @@ export function scoreDetails(
   app: App,
   target: JudgmentTarget,
   options: JudgmentOptions,
-): HTMLElement {
-  const score = options.unavailable ? null : options.score;
-  const summaryText =
-    score && score.direct_reviewers > 0
-      ? plural(score.direct_reviewers, "reviewer")
-      : "Score details";
+): HTMLDetailsElement {
+  // The summary and the body read the options when they are drawn, so an
+  // update can change a closed disclosure without rebuilding it.
+  const current = () => (options.unavailable ? null : options.score);
+  const summaryLabel = el("span");
+  const paintSummary = () => {
+    const score = current();
+    summaryLabel.textContent =
+      score && score.direct_reviewers > 0
+        ? plural(score.direct_reviewers, "reviewer")
+        : "Score details";
+  };
+  paintSummary();
   const details = el("details", { class: "judgment-details" });
-  const summary = el(
-    "summary",
-    {},
-    el("span", { text: summaryText }),
-    icon("chevron", "chev", 14),
-  );
+  detailsPainters.set(details, paintSummary);
+  const summary = el("summary", {}, summaryLabel, icon("chevron", "chev", 14));
   const body = el("div", { class: "body", style: "padding:4px 0 8px" });
   details.append(summary, body);
   details.addEventListener("toggle", async () => {
+    paintSummary();
     if (!details.open) return;
+    const score = current();
     body.replaceChildren();
-    const ownActions = el("div");
+    // The container joins the page before the history read, so its
+    // subscriptions end when the body is redrawn or the page goes.
+    const ownActions = el("div", { class: "small" });
     body.append(ownActions);
-    void renderOwnActions(app, target, options).then((node) =>
-      ownActions.replaceChildren(node),
-    );
+    renderOwnActions(app, target, options, ownActions);
     if (options.personal && !score) {
       const reason = p(personalReasonText(options.reason), "small");
       // A page that follows the calculation status updates this text in
@@ -562,69 +666,124 @@ async function conflictBranches(
   }
   return list;
 }
-async function renderOwnActions(
+/**
+ * Draws the reader's own actions for a target into `slot`, a container
+ * that is already in the page. The subscriptions start before the first
+ * history read and end when the container leaves the page.
+ */
+function renderOwnActions(
   app: App,
   target: JudgmentTarget,
   options: JudgmentOptions,
-): Promise<HTMLElement> {
-  const slot = el("div", { class: "small" });
-  const own = await app.own.registers();
-  const state = own?.judgments.get(target.id);
-  if (!state?.known) return slot;
-  if (state.conflicted) {
-    slot.append(
-      p(
-        "Your judgment conflicts between devices. Choose Endorse, Oppose, or Clear to resolve both records.",
-      ),
-      await conflictBranches(app, state.events),
+  slot: HTMLElement,
+) {
+  let released = false;
+  // These buttons share the page-wide in-flight set with the judgment
+  // controls, so one target never has two judgment actions in flight.
+  // They also describe the judgment that one history read found. After any
+  // judgment action for the target succeeds, in any control or disclosure,
+  // they stay disabled, and a fresh history read draws new ones.
+  let buttons: HTMLButtonElement[] = [];
+  let generation = settled.get(target.id) ?? 0;
+  const retired = () => (settled.get(target.id) ?? 0) !== generation;
+  const syncDisabled = () => {
+    for (const node of buttons)
+      node.disabled =
+        retired() || !app.session.storageAvailable || busy.has(target.id);
+  };
+  const choose = (label: string, value: JudgmentValue) =>
+    button(
+      label,
+      () => {
+        if (retired() || busy.has(target.id)) return;
+        return app.session.requireUnlocked(target.describe(value), async () => {
+          if (!(await app.session.firstSignatureDisclosure())) return;
+          if (retired() || busy.has(target.id)) return;
+          setBusy(target.id, true);
+          try {
+            const results = await app.signer.publish([
+              {
+                action: { kind: "judgment.set", target: target.id, value },
+                body: null,
+                label: target.spelling ? { subject: target.spelling } : undefined,
+              },
+            ]);
+            app.own.invalidate();
+            app.announce(
+              deliveryAccepted(results)
+                ? value === "clear"
+                  ? "Your judgment is cleared. The earlier public record stays in history."
+                  : value === "bless"
+                    ? "Your endorsement is published."
+                    : "Your opposition is published."
+                : "Your judgment is signed and saved here. Delivery is not finished. See Not delivered.",
+            );
+            // This set and every other one for the target retire and read
+            // the history again.
+            retireActions(target.id);
+            options.onChange?.();
+          } catch (error) {
+            app.announce(describe(error));
+          } finally {
+            setBusy(target.id, false);
+          }
+        });
+      },
+      { class: "btn btn-quiet" },
     );
-  }
-  if (!state.conflicted && (!state.value || state.value === "clear"))
-    return slot;
-  const actions = el("div", { class: "actions", style: "margin-top:8px" });
-  const choices: [string, JudgmentValue][] = state.conflicted
-    ? [
-        ["Endorse", "bless"],
-        ["Oppose", "curse"],
-        ["Clear my judgment", "clear"],
-      ]
-    : [["Clear my judgment", "clear"]];
-  for (const [label, value] of choices)
-    actions.append(
-      button(
-        label,
-        () =>
-          app.session.requireUnlocked(target.describe(value), async () => {
-            if (!(await app.session.firstSignatureDisclosure())) return;
-            try {
-              const results = await app.signer.publish([
-                {
-                  action: { kind: "judgment.set", target: target.id, value },
-                  body: null,
-                  label: target.spelling ? { subject: target.spelling } : undefined,
-                },
-              ]);
-              app.own.invalidate();
-              app.announce(
-                deliveryAccepted(results)
-                  ? value === "clear"
-                    ? "Your judgment is cleared. The earlier public record stays in history."
-                    : value === "bless"
-                      ? "Your endorsement is published."
-                      : "Your opposition is published."
-                  : "Your judgment is signed and saved here. Delivery is not finished. See Not delivered.",
-              );
-              options.onChange?.();
-              slot.replaceChildren(
-                await renderOwnActions(app, target, options),
-              );
-            } catch (error) {
-              app.announce(describe(error));
-            }
-          }),
-        { class: "btn btn-quiet" },
-      ),
-    );
-  slot.append(actions);
-  return slot;
+  let reads = 0;
+  /** Reads the history and draws what it offers. A newer read wins. */
+  const draw = async () => {
+    const read = ++reads;
+    const before = settled.get(target.id) ?? 0;
+    const own = await app.own.registers();
+    const state = own?.judgments.get(target.id);
+    const nodes: Node[] = [];
+    const drawn: HTMLButtonElement[] = [];
+    if (state?.known && state.conflicted)
+      nodes.push(
+        p(
+          "Your judgment conflicts between devices. Choose Endorse, Oppose, or Clear to resolve both records.",
+        ),
+        await conflictBranches(app, state.events),
+      );
+    if (
+      state?.known &&
+      (state.conflicted || (state.value && state.value !== "clear"))
+    ) {
+      const choices: [string, JudgmentValue][] = state.conflicted
+        ? [
+            ["Endorse", "bless"],
+            ["Oppose", "curse"],
+            ["Clear my judgment", "clear"],
+          ]
+        : [["Clear my judgment", "clear"]];
+      for (const [label, value] of choices) drawn.push(choose(label, value));
+      nodes.push(
+        el("div", { class: "actions", style: "margin-top:8px" }, ...drawn),
+      );
+    }
+    if (read !== reads || released) return;
+    generation = before;
+    buttons = drawn;
+    syncDisabled();
+    slot.replaceChildren(...nodes);
+  };
+  const onRetire = (retiredTarget: string) => {
+    if (retiredTarget !== target.id) return;
+    syncDisabled();
+    draw().catch((error) => app.announce(describe(error)));
+  };
+  busyListeners.add(syncDisabled);
+  retireListeners.add(onRetire);
+  onDisconnect(
+    slot,
+    () => {
+      released = true;
+      busyListeners.delete(syncDisabled);
+      retireListeners.delete(onRetire);
+    },
+    options.signal,
+  );
+  void draw();
 }

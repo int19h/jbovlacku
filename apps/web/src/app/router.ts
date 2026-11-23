@@ -85,6 +85,32 @@ function allowed(target: string): boolean | Promise<boolean> {
     return false;
   }
 }
+/**
+ * Counts navigation requests, history moves included. A caller compares two
+ * counts to learn whether something asked for another page in between.
+ */
+export function navigationCount(): number {
+  return navigation;
+}
+/**
+ * The same-origin path of a page to return to, or null. Only a path that
+ * starts with one "/" is accepted: "//host" and "/\host" name another host,
+ * and a scheme names another page entirely.
+ */
+export function returnPath(value: string): string | null {
+  if (!value.startsWith("/") || /^\/[/\\]/.test(value)) return null;
+  let url: URL;
+  try {
+    url = new URL(value, location.origin);
+  } catch {
+    return null;
+  }
+  if (url.origin !== location.origin) return null;
+  // Dot segments can collapse "/a/..//host" into "//host", so the rule
+  // applies again to the normalized path.
+  if (/^\/[/\\]/.test(url.pathname)) return null;
+  return url.pathname + url.search + url.hash;
+}
 export function onNavigate(listener: Listener) {
   listeners.add(listener);
   return () => listeners.delete(listener);

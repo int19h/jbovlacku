@@ -461,7 +461,7 @@ test("word pages show tied layers, deprecated and unavailable definitions, and n
   // The tied layer keeps the server's order and says that the order is unresolved.
   await expect(
     page.getByText(
-      "2 alternatives with unresolved order. Presentation order follows event IDs.",
+      "2 alternatives with unresolved order. The pairwise comparisons do not put the definitions in this group in one order. Every score in this group is zero. Presentation order follows event IDs.",
     ),
   ).toBeVisible();
   expect(

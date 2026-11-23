@@ -23,7 +23,7 @@ import type {
   WordResponse,
 } from "../model/types.ts";
 import { attribution, identityLink } from "./attribution.ts";
-import { judgmentControl, scoreDetails } from "./judgment.ts";
+import { scoreSlot, type ScoreSlot } from "./judgment.ts";
 import type { App } from "../app/context.ts";
 import { routes } from "../app/router.ts";
 import { getIdentity } from "../data/api.ts";
@@ -45,6 +45,8 @@ export interface DefinitionBlockOptions {
   onChange?: () => void;
   /** Preview mode hides judgment and tools. */
   preview?: boolean;
+  /** Omits the score-details disclosure until scores are known; an update adds it. */
+  deferScoreDetails?: boolean;
   placeAnchorPrefix?: string;
 }
 export function placeGloss(place: Place, language: string): string | null {
@@ -274,6 +276,18 @@ export function historyBody(
   );
   return nodes;
 }
+/** The score slot of each definition block, for a page that updates scores in place. */
+const slots = new WeakMap<HTMLElement, ScoreSlot>();
+/**
+ * Shows new scores in a definition block that is already on the page. The
+ * block, its content, and its disclosures stay; only the score changes.
+ */
+export function updateDefinitionScore(
+  block: HTMLElement,
+  patch: Parameters<ScoreSlot["update"]>[0],
+) {
+  slots.get(block)?.update(patch);
+}
 export function definitionBlock(
   app: App,
   record: LoadedRecord<DefinitionBody>,
@@ -356,9 +370,15 @@ export function definitionBlock(
       large: true,
       onChange: options.onChange,
     };
-    byline.append(
-      judgmentControl(app, target, judgmentOptions),
-      scoreDetails(app, target, judgmentOptions),
+    slots.set(
+      article,
+      scoreSlot(
+        app,
+        target,
+        judgmentOptions,
+        byline,
+        options.deferScoreDetails,
+      ),
     );
   }
   article.append(byline);
