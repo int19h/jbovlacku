@@ -10,6 +10,7 @@ import {
 import type { App } from "../app/context.ts";
 import { calculationPanel } from "../components/localview.ts";
 import { onDisconnect } from "../lib/lifetime.ts";
+import { pressTracker } from "../lib/press.ts";
 import { getManifest, loadRecord } from "../data/api.ts";
 import { loadSiteView } from "../data/view.ts";
 import { eventId, type ViewBody } from "../model/types.ts";
@@ -296,21 +297,29 @@ interface RuleRow {
  * rules again after an action. `followCalculation` updates the private rule
  * reasons for the calculation that is loaded now. Both update the existing
  * rows in place and move a row between sections when its section changes, so
- * the rest of the page, the reader's focus, and the scroll position stay.
+ * the rest of the page, the reader's focus, and the scroll position stay. A
+ * change waits while the reader presses a control, so the control does not
+ * move before its click.
  */
 function trustRules(app: App, context: RenderContext) {
   const node = el("div");
   const source = p("", "meta");
   source.hidden = true;
-  const section = (title: string) => {
+  const section = (title: string, empty = title) => {
     const heading = el("h2", { class: "section", text: title, tabindex: -1 });
     const list = el("div");
-    return { heading, list };
+    return { heading, list, title, empty };
   };
   const trusted = section("People I trust");
   const ignored = section("People I ignore");
-  const conflicted = section("Conflicting public choices");
-  const inactive = section("Private rules that need attention");
+  const conflicted = section(
+    "Conflicting public choices",
+    "No public choices conflict.",
+  );
+  const inactive = section(
+    "Private rules that need attention",
+    "No private rules need attention.",
+  );
   // These two headings show only while their section holds a rule, so they
   // stay hidden until the first read finds one.
   conflicted.heading.hidden = true;
@@ -585,12 +594,17 @@ function trustRules(app: App, context: RenderContext) {
       });
     if (focused && focused.isConnected && document.activeElement !== focused)
       focused.focus({ preventScroll: true });
-    // A heading that holds focus stays until focus leaves it, so a
+    // A heading that holds focus stays until the next update, so a
     // calculation that empties its section never drops the reader's focus.
-    for (const entry of [conflicted, inactive])
-      entry.heading.hidden =
-        !wanted.get(entry.list)!.length &&
-        document.activeElement !== entry.heading;
+    // It then says that the section is empty.
+    for (const entry of [conflicted, inactive]) {
+      const filled = wanted.get(entry.list)!.length > 0;
+      const kept = !filled && document.activeElement === entry.heading;
+      entry.heading.hidden = !filled && !kept;
+      const title = kept ? entry.empty : entry.title;
+      if (entry.heading.textContent !== title)
+        entry.heading.textContent = title;
+    }
     if (lostFrom) {
       // Focus goes to the heading of the section that lost the row. When
       // that section is now empty and its heading hides, focus goes to the
@@ -635,6 +649,19 @@ function trustRules(app: App, context: RenderContext) {
     if (wanted.get(ignored.list)!.length) nobodyIgnored.remove();
     else if (!nobodyIgnored.isConnected) ignored.list.append(nobodyIgnored);
   };
+  // An update while the reader presses a control runs after the release.
+  // Waiting updates run once, with the latest rules and calculation.
+  const press = pressTracker(context.signal);
+  let waiting = false;
+  const update = () => {
+    if (!press.pressed) return place();
+    if (waiting) return;
+    waiting = true;
+    void press.finished().then(() => {
+      waiting = false;
+      if (context.live()) place();
+    });
+  };
   return {
     node,
     /** Reads the saved rules again. A read that a later read replaced writes nothing. */
@@ -656,11 +683,11 @@ function trustRules(app: App, context: RenderContext) {
           : null;
       if (!context.live() || current !== request) return;
       data = { overlay, registers, history, identity: identity ?? null };
-      place();
+      update();
     },
     /** Updates the private rule reasons when the loaded calculation changed. */
     followCalculation() {
-      if (data && continuityKey() !== shownContinuity) place();
+      if (data && continuityKey() !== shownContinuity) update();
     },
   };
 }

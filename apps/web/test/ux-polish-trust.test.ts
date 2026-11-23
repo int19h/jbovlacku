@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
   corePath,
@@ -90,6 +90,20 @@ test("a finished personal calculation is not shown in the warning style", async 
     return { panel: style.backgroundColor, notice };
   });
   expect(colors.panel).not.toBe(colors.notice);
+  // Both styles have the same box, so a change of state does not move the
+  // controls in the panel or below it.
+  const box = () =>
+    panel.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return [
+        style.borderTopWidth,
+        style.borderBottomWidth,
+        style.paddingTop,
+        style.paddingBottom,
+        style.fontSize,
+      ];
+    });
+  const quiet = await box();
   // A failure keeps the warning style.
   await page.route("**/api/v1/inventory?*", (route) =>
     route.fulfill({ status: 500, body: "broken" }),
@@ -97,6 +111,7 @@ test("a finished personal calculation is not shown in the warning style", async 
   await panel.getByRole("button", { name: "Recompute from records" }).click();
   await expect(panel).toContainText("Request failed (500).");
   await expect(panel).toHaveClass(/\bnotice\b/);
+  expect(await box()).toEqual(quiet);
 });
 
 test("the unavailable note follows a failure, a lost connection, and a cancel", async ({
@@ -1089,4 +1104,204 @@ test("Remove of the only rule that needs attention moves focus to a heading that
   await expect(
     page.getByRole("heading", { name: "People I ignore", exact: true }),
   ).toBeFocused();
+});
+
+/** Whether the point is on the control. */
+const under = (control: Locator, point: { x: number; y: number }) =>
+  control.evaluate(
+    (node, { x, y }) => node.contains(document.elementFromPoint(x, y)),
+    point,
+  );
+
+/**
+ * Opens the Trust page in the personal view with a calculation that holds its
+ * final result until `window.releaseResult()` runs. The rule saved under the
+ * predecessor key waits in "Private rules that need attention", and the
+ * result moves it to "People I trust".
+ */
+async function heldHandoverResult(page: Page) {
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await handoverRule(page);
+  await choosePersonal(page);
+  await page.evaluate(async () => {
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const proto = PersonalCalculator.prototype;
+    const request = proto.request;
+    const held = window as unknown as {
+      held?: boolean;
+      releaseResult?: () => void;
+    };
+    const gate = new Promise<void>((resolve) => (held.releaseResult = resolve));
+    proto.request = async function (...args: unknown[]) {
+      const result = await request.apply(this, args as never);
+      if (
+        args.some(
+          (arg) => (arg as { type?: string } | null)?.type === "overlay",
+        )
+      ) {
+        held.held = true;
+        await gate;
+      }
+      return result;
+    };
+  });
+  const panel = page.getByRole("region", { name: "Local calculation" });
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await page.waitForFunction(
+    () => (window as unknown as { held?: boolean }).held === true,
+  );
+  // The run started on the earlier visit, as in a reader's own navigation.
+  await returnToTrust(page);
+  await expect(
+    page.getByRole("textbox", { name: "Signed view event ID" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", {
+      name: "Private rules that need attention",
+      exact: true,
+    }),
+  ).toBeVisible();
+  return panel;
+}
+
+test("a calculation that ends during a press on Make public opens the preview on the first click", async ({
+  page,
+}) => {
+  const panel = await heldHandoverResult(page);
+  const makePublic = page.getByRole("button", {
+    name: "Make public",
+    exact: true,
+  });
+  await makePublic.scrollIntoViewIfNeeded();
+  const centre = () =>
+    makePublic.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    });
+  const before = await centre();
+  await page.mouse.move(before.x, before.y);
+  await page.mouse.down();
+  // The calculation finishes while the button is pressed.
+  await page.evaluate(() =>
+    (window as unknown as { releaseResult: () => void }).releaseResult(),
+  );
+  await expect(panel).toContainText("Personal view calculated");
+  await frames(page);
+  // The panel text can wrap onto another line, as on main, but the button
+  // stays under the pointer.
+  expect(await under(makePublic, before)).toBe(true);
+  await page.mouse.up();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  // After the click, the rule moves to the section that it now belongs to.
+  await expect(
+    page.locator("main h2:text-is('People I trust') + div .row", {
+      hasText: "all judgments",
+    }),
+  ).toHaveCount(1);
+  await expect(
+    page.getByRole("heading", {
+      name: "Private rules that need attention",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+});
+
+test("a focused rule heading that loses its last rule says that the section is empty", async ({
+  page,
+}) => {
+  const panel = await heldHandoverResult(page);
+  const old = page.getByRole("heading", {
+    name: "Private rules that need attention",
+    exact: true,
+  });
+  await old.click();
+  await expect(old).toBeFocused();
+  await page.evaluate(() =>
+    (window as unknown as { releaseResult: () => void }).releaseResult(),
+  );
+  await expect(panel).toContainText("Personal view calculated");
+  const empty = page.getByRole("heading", {
+    name: "No private rules need attention.",
+    exact: true,
+  });
+  await expect(empty).toBeFocused();
+  await expect(old).toHaveCount(0);
+  await page.keyboard.press("Tab");
+  await expect(empty).not.toBeFocused();
+  await expect(old).toHaveCount(0);
+});
+
+test("a calculation that ends during a press on Manage keeps the link in place until the click", async ({
+  page,
+}) => {
+  const subject = await handoverRule(page);
+  await choosePersonal(page);
+  await page.evaluate(async () => {
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const proto = PersonalCalculator.prototype;
+    const request = proto.request;
+    const ensure = proto.ensure;
+    const held = window as unknown as {
+      held?: boolean;
+      seenReady?: string;
+      releaseResult?: () => void;
+    };
+    const gate = new Promise<void>((resolve) => (held.releaseResult = resolve));
+    proto.request = async function (...args: unknown[]) {
+      const result = await request.apply(this, args as never);
+      if (
+        args.some(
+          (arg) => (arg as { type?: string } | null)?.type === "overlay",
+        )
+      ) {
+        held.held = true;
+        await gate;
+      }
+      return result;
+    };
+    proto.ensure = function (...args: unknown[]) {
+      const result = ensure.apply(this, args as never);
+      void result.then((status: { state: string }) => {
+        held.seenReady = status.state;
+      });
+      return result;
+    };
+  });
+  const panel = page.getByRole("region", { name: "Local calculation" });
+  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await page.waitForFunction(
+    () => (window as unknown as { held?: boolean }).held === true,
+  );
+  await page.evaluate(
+    async (subject) =>
+      (await import(String("/src/app/router.ts"))).navigate(
+        `/identity/${encodeURIComponent(subject)}`,
+      ),
+    subject,
+  );
+  const line = page.locator("main p", { hasText: "Manage on the Trust page" });
+  await expect(line).toContainText("Private rules saved under another key");
+  const manage = page.getByRole("link", { name: "Manage on the Trust page" });
+  const centre = () =>
+    manage.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    });
+  const before = await centre();
+  await page.mouse.move(before.x, before.y);
+  await page.mouse.down();
+  await page.evaluate(() =>
+    (window as unknown as { releaseResult: () => void }).releaseResult(),
+  );
+  await page.waitForFunction(
+    () => (window as unknown as { seenReady?: string }).seenReady === "ready",
+  );
+  await frames(page);
+  expect(await under(manage, before)).toBe(true);
+  await page.mouse.up();
+  await expect(page).toHaveURL(/\/trust$/);
 });

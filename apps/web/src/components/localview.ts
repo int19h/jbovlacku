@@ -141,9 +141,10 @@ export function calculationPanel(
   ),
 ): HTMLElement {
   // Amber marks only a failure or scores that are unavailable. Progress and
-  // a finished calculation use the quiet surface.
+  // a finished calculation use the quiet surface. Both have the same box, so
+  // a change of state does not move the controls.
   const region = el("div", {
-    class: "sunk",
+    class: "calc-panel sunk",
     role: "region",
     "aria-label": options.label,
     style: "margin-top:12px",

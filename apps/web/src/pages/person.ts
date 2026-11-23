@@ -24,6 +24,7 @@ import {
 import { countNodes, renderRichText } from "../model/richtext.ts";
 import { routes, type RenderContext, type Route } from "../app/router.ts";
 import { onDisconnect } from "../lib/lifetime.ts";
+import { pressTracker } from "../lib/press.ts";
 import type { App } from "../app/context.ts";
 import {
   identityId,
@@ -354,10 +355,14 @@ export async function personPage(
   );
   choices.hidden = true;
   let choicesRequest = 0;
-  const showChoices = async () => {
+  // A new text can move the link. An update that the reader did not start
+  // waits while the reader presses a control.
+  const press = pressTracker(context.signal);
+  const showChoices = async (background = false) => {
     const request = ++choicesRequest;
     const overlay = await app.store.overlay().catch(() => null);
     const registers = await app.own.registers();
+    if (background) await press.finished();
     if (!context.live() || request !== choicesRequest) return;
     const own = registers
       ? [...registers.trust.entries()].filter(
@@ -451,7 +456,7 @@ export async function personPage(
       const key = continuityKey();
       if (key === shownContinuity) return;
       shownContinuity = key;
-      void showChoices();
+      void showChoices(true);
     }),
     context.signal,
   );
