@@ -123,6 +123,80 @@ test("clearing Add a part empties Matching words", async ({ page }) => {
   await expect(matching.locator("li")).toHaveCount(0);
 });
 
+test("the consent invitation is hidden while a consented lookup runs", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/v1/search", async (route) => {
+    await gate;
+    await route.continue();
+  });
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto("/new/meaning");
+  await page
+    .getByLabel("Meaning", { exact: true })
+    .fill("book private committee");
+  await expect(
+    page.getByText("or allow a search on this server."),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await expect(page.getByText("searching this server")).toBeVisible();
+  await expect(page.getByText("or allow a search on this server.")).toHaveCount(
+    0,
+  );
+  release();
+  await expect(page.locator("ol.similar")).toContainText("cukta");
+});
+
+test("a previous error is hidden while the next consented lookup runs", async ({
+  page,
+}) => {
+  let mode: "fail" | "hold" = "fail";
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/v1/search", async (route) => {
+    if (mode === "fail") {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "unavailable",
+          message: "First lookup unavailable.",
+          event: null,
+          field: null,
+        }),
+      });
+      return;
+    }
+    await gate;
+    await route.continue();
+  });
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto("/new/meaning");
+  const meaning = page.getByLabel("Meaning", { exact: true });
+  await meaning.fill("book");
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await expect(page.locator("main")).toContainText("First lookup unavailable.");
+  mode = "hold";
+  await meaning.fill("song other");
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await expect(page.getByText("searching this server")).toBeVisible();
+  await expect(page.getByText("First lookup unavailable.")).toHaveCount(0);
+  release();
+  await page.waitForTimeout(500);
+});
+
 test("after consent, searching this server is plain text, not a button", async ({
   page,
 }) => {

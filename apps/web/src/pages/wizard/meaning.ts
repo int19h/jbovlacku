@@ -845,6 +845,10 @@ export async function meaningPage(
         showSettingsNote();
         return;
       }
+      // A consented lookup replaces the old note; the mode label already
+      // says that a search is running.
+      settingsNoteShown = false;
+      note.textContent = "";
       const result = await remoteDraftSearch(remoteQuery(), language, 10, {
         signal: context.signal,
       });
