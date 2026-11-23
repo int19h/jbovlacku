@@ -50,30 +50,24 @@ test("the trust page keeps the long explanation in a closed disclosure", async (
   ).toBeVisible();
 });
 
-test("the trust page panel follows the chosen view and says when the calculation starts", async ({
+test("the trust page panel says when the calculation starts in both views", async ({
   page,
 }) => {
   await page.goto("/trust");
   const panel = page.getByRole("region", { name: "Local calculation" });
-  // The site view needs no local calculation, so it shows no panel.
+  const idle =
+    "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records. Pages in the site view show this server's scores and need no local calculation.";
   await expect(
     page.getByRole("radio", { name: "Site view only" }),
   ).toBeChecked();
-  await expect(panel).toHaveCount(0);
-  await expect(
-    page.getByText("It needs no calculation in this browser."),
-  ).toBeVisible();
+  await expect(panel).toContainText(idle);
   await page
     .getByRole("radio", { name: "Mine: site view + my choices" })
     .check();
-  await expect(panel).toContainText(
-    "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records.",
-  );
   await expect(
-    panel.getByRole("button", { name: "Use the site view" }),
+    page.getByRole("link", { name: "Trust: personal view" }),
   ).toBeVisible();
-  await page.getByRole("radio", { name: "Site view only" }).check();
-  await expect(panel).toHaveCount(0);
+  await expect(panel).toContainText(idle);
 });
 
 test("a finished personal calculation is not shown in the warning style", async ({
@@ -399,39 +393,6 @@ test("a long status message uses the phone width and the footer clears it", asyn
   }
 });
 
-test("a running download keeps its panel and Cancel after a switch to the site view", async ({
-  page,
-}) => {
-  await choosePersonal(page);
-  const panel = page.getByRole("region", { name: "Local calculation" });
-  const siteNote = page.getByText("It needs no calculation in this browser.");
-  await page.route("**/api/v1/records?*", () => new Promise(() => {}));
-  await panel.getByRole("button", { name: "Recompute from records" }).click();
-  await expect(panel).toContainText("Downloading records");
-  await page.getByRole("radio", { name: "Site view only" }).check();
-  await expect(
-    page.getByRole("link", { name: "Trust: site view" }),
-  ).toBeVisible();
-  await expect(panel).toContainText("Downloading records");
-  await expect(siteNote).toHaveCount(0);
-  await panel.getByRole("button", { name: "Cancel" }).click();
-  await expect(panel).toHaveCount(0);
-  await expect(siteNote).toBeVisible();
-  // The same holds for Use the site view in the panel.
-  await page
-    .getByRole("radio", { name: "Mine: site view + my choices" })
-    .check();
-  await panel.getByRole("button", { name: "Recompute from records" }).click();
-  await expect(panel).toContainText("Downloading records");
-  await panel.getByRole("button", { name: "Use the site view" }).click();
-  await expect(
-    page.getByRole("link", { name: "Trust: site view" }),
-  ).toBeVisible();
-  await expect(panel).toContainText("Downloading records");
-  await expect(panel.getByRole("button", { name: "Cancel" })).toBeVisible();
-  await expect(siteNote).toHaveCount(0);
-});
-
 test("the unlock request keeps a profile name in its own direction", async ({
   page,
 }) => {
@@ -500,28 +461,6 @@ test("focus inside a dialog does not scroll the page behind it", async ({
   expect(await page.evaluate(() => window.scrollY)).toBe(before);
 });
 
-test("the busy panel in the site view offers Cancel and no switch to the site view", async ({
-  page,
-}) => {
-  await choosePersonal(page);
-  const panel = page.getByRole("region", { name: "Local calculation" });
-  await page.route("**/api/v1/records?*", () => new Promise(() => {}));
-  await panel.getByRole("button", { name: "Recompute from records" }).click();
-  await expect(panel).toContainText("Downloading records");
-  await expect(
-    panel.getByRole("button", { name: "Use the site view" }),
-  ).toBeVisible();
-  await page.getByRole("radio", { name: "Site view only" }).check();
-  await expect(
-    page.getByRole("link", { name: "Trust: site view" }),
-  ).toBeVisible();
-  await expect(panel).toContainText("Downloading records");
-  await expect(panel.getByRole("button")).toHaveText([
-    "Cancel",
-    "Recompute from records",
-  ]);
-});
-
 /** Saves a private Trust rule for all judgments under another issuer key. */
 async function saveForeignRule(page: Page, issuer: string, subject: string) {
   await page.evaluate(
@@ -582,20 +521,17 @@ test("a calculation that ends after a view switch updates the private rule reaso
   await expect(
     page.getByText(/^Private rule labels use personal calculation snapshot/),
   ).toHaveCount(1);
-  // The page renders again, and focus stays on the chosen view.
+  // Focus stays on the chosen view.
   await expect(personal).toBeFocused();
 });
 
-test("a view change in another tab updates the radio and the panel", async ({
+test("a view change in another tab updates the radio", async ({
   page,
   context,
 }) => {
   const other = await context.newPage();
   await page.goto("/trust");
   await other.goto("/trust");
-  const panel = page.getByRole("region", { name: "Local calculation" });
-  const siteNote = page.getByText("It needs no calculation in this browser.");
-  await expect(siteNote).toBeVisible();
   await other
     .getByRole("radio", { name: "Mine: site view + my choices" })
     .check();
@@ -605,10 +541,6 @@ test("a view change in another tab updates the radio and the panel", async ({
   await expect(
     page.getByRole("radio", { name: "Mine: site view + my choices" }),
   ).toBeChecked();
-  await expect(
-    panel.getByRole("button", { name: "Recompute from records" }),
-  ).toBeVisible();
-  await expect(siteNote).toHaveCount(0);
   await other.getByRole("radio", { name: "Site view only" }).check();
   await expect(
     page.getByRole("link", { name: "Trust: site view" }),
@@ -616,8 +548,11 @@ test("a view change in another tab updates the radio and the panel", async ({
   await expect(
     page.getByRole("radio", { name: "Site view only" }),
   ).toBeChecked();
-  await expect(panel).toHaveCount(0);
-  await expect(siteNote).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", { name: "Local calculation" })
+      .getByRole("button", { name: "Recompute from records" }),
+  ).toBeVisible();
   await other.close();
 });
 
@@ -800,7 +735,7 @@ async function returnToTrust(page: Page) {
     .click();
 }
 
-test("a calculation that ends keeps the reader's entry, focus, disclosure and place at 360x640", async ({
+test("a calculation that ends keeps the reader's entry, focus and disclosure at 360x640", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 360, height: 640 });
@@ -831,7 +766,6 @@ test("a calculation that ends keeps the reader's entry, focus, disclosure and pl
         open: [
           ...document.querySelectorAll("main details[open] > summary"),
         ].map((node) => node.textContent),
-        top: Math.round(field?.getBoundingClientRect().top ?? -1),
       };
     });
   const before = await capture();
@@ -1067,10 +1001,6 @@ test("a cancel that clears the loaded calculation updates the rule reasons at on
     page.getByText(/No personal calculation is loaded/),
   ).toBeVisible();
   await expect(source).toBeHidden();
-  // Focus on Cancel moves to Recompute when Cancel hides.
-  await expect(
-    panel.getByRole("button", { name: "Recompute from records" }),
-  ).toBeFocused();
   finish();
 });
 
@@ -1106,30 +1036,57 @@ test("a rule saved before this browser had a key is described as such", async ({
   );
 });
 
-test("a run that ends in the site view keeps focus in its panel until the reader leaves it", async ({
+test("the optional rule headings stay hidden while the history loads", async ({
   page,
 }) => {
-  await choosePersonal(page);
-  const panel = page.getByRole("region", { name: "Local calculation" });
-  const siteNote = page.getByText("It needs no calculation in this browser.");
-  const release = await holdRecords(page);
-  await panel.getByRole("button", { name: "Recompute from records" }).click();
-  await expect(panel).toContainText("Downloading records");
-  await page.getByRole("radio", { name: "Site view only" }).check();
-  await expect(
-    page.getByRole("link", { name: "Trust: site view" }),
-  ).toBeVisible();
-  await panel.getByRole("button", { name: "Cancel" }).focus();
-  release();
-  const recompute = panel.getByRole("button", {
-    name: "Recompute from records",
+  await createIdentity(page);
+  let reads = 0;
+  let history!: () => void;
+  const gate = new Promise<void>((resolve) => (history = resolve));
+  await page.route("**/identity-heads/**", async (route) => {
+    reads++;
+    await gate;
+    await route.continue();
   });
-  await expect(recompute).toBeFocused();
-  await expect(panel).toContainText("Personal view calculated");
-  await page.keyboard.press("Shift+Tab");
+  await page.goto("/trust");
   await expect(
-    page.getByRole("radio", { name: "Site view only" }),
+    page.getByRole("heading", { name: "People I trust", exact: true }),
+  ).toBeVisible();
+  await expect.poll(() => reads).toBeGreaterThan(0);
+  await frames(page);
+  const optional = page.getByRole("heading", {
+    name: /^(Conflicting public choices|Private rules that need attention)$/,
+  });
+  await expect(optional).toHaveCount(0);
+  history();
+  await expect(
+    page.getByText(
+      "Nobody yet. Open an identity page and choose Trust their judgments.",
+    ),
+  ).toBeVisible();
+  await expect(optional).toHaveCount(0);
+});
+
+test("Remove of the only rule that needs attention moves focus to a heading that stays", async ({
+  page,
+}) => {
+  const f = fixture();
+  await createIdentity(page);
+  await saveForeignRule(page, f.identities.rootB, f.identities.delegate);
+  await page.goto("/trust");
+  const attention = page.getByRole("heading", {
+    name: "Private rules that need attention",
+    exact: true,
+  });
+  await expect(attention).toBeVisible();
+  const rule = page.locator("main .row", {
+    hasText: "No personal calculation is loaded.",
+  });
+  await rule.getByRole("button", { name: "Remove", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(rule).toHaveCount(0);
+  await expect(attention).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "People I ignore", exact: true }),
   ).toBeFocused();
-  await expect(panel).toHaveCount(0);
-  await expect(siteNote).toBeVisible();
 });

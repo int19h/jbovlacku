@@ -49,15 +49,14 @@ export async function trustPage(
     "aria-label": "Active view",
   });
   let modeRequest = 0;
-  // The radios and the panel follow the saved preference, also after a
-  // change in another tab.
-  const syncMode = (byReader: boolean) => {
+  // The radios follow the saved preference, also after a change in another
+  // tab. Only the checked state changes, so focus and the page stay.
+  const syncMode = () => {
     const saved = app.session.preferences.viewMode;
     for (const radio of seg.querySelectorAll("input"))
       radio.checked = radio.value === saved;
     for (const l of seg.querySelectorAll("label"))
       l.classList.toggle("on", l.querySelector("input")!.checked);
-    showMode(byReader);
   };
   let modeSaving = 0;
   for (const [value, label] of [
@@ -82,7 +81,7 @@ export async function trustPage(
         modeSaving--;
       }
       if (!live() || request !== modeRequest) return;
-      syncMode(true);
+      syncMode();
     });
     seg.append(wrapper);
   }
@@ -94,53 +93,17 @@ export async function trustPage(
       seg,
     ),
   );
-  // The calculation panel belongs to the personal view. The site view uses
-  // the server's scores and needs no local calculation, but a download that
-  // is still running keeps its panel and Cancel until it ends.
-  const modeSlot = el("div");
-  let shown: "personal" | "busy" | "site" | null = null;
-  let busy = false;
-  // `byReader` marks a swap that the reader's own action caused: a radio
-  // change or Cancel. A swap that another tab or the end of a run causes
-  // never takes the reader's focus away. While focus is in the panel, such a
-  // swap waits until focus leaves it.
-  const showMode = (byReader: boolean) => {
-    const want =
-      app.session.preferences.viewMode === "personal"
-        ? "personal"
-        : busy
-          ? "busy"
-          : "site";
-    if (want === shown) return;
-    const focused = document.activeElement;
-    const focusInside = Boolean(focused && modeSlot.contains(focused));
-    if (focusInside && !byReader) return;
-    shown = want;
-    modeSlot.replaceChildren(
-      want !== "site"
-        ? calculationPanel(app, {
-            mode: "personal",
-            context,
-            label: "Local calculation",
-            idleText:
-              "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records.",
-          })
-        : p(
-            "The site view shows this server's scores. It needs no calculation in this browser.",
-            "small",
-          ),
-    );
-    // The reader's own swap removed the focused control, so focus goes to
-    // the view choice that now decides this part of the page.
-    if (focusInside)
-      seg.querySelector<HTMLInputElement>("input:checked")?.focus();
-  };
-  modeSlot.addEventListener("focusout", (event) => {
-    if (!modeSlot.contains(event.relatedTarget as Node | null))
-      queueMicrotask(() => showMode(false));
+  // The panel stays in both views. In the site view, Recompute from records
+  // still calculates the personal view in this browser.
+  const panel = calculationPanel(app, {
+    mode: "personal",
+    context,
+    label: "Local calculation",
+    idleText:
+      "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records. Pages in the site view show this server's scores and need no local calculation.",
   });
   main.append(
-    modeSlot,
+    panel,
     disclosure("How the two views work", () => [
       p(
         "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 only if its continuity group has no allocation or private root change. A zero allocation or removal also prevents that addition.",
@@ -163,44 +126,21 @@ export async function trustPage(
   const rules = trustRules(app, context);
   main.append(rules.node);
   refreshOpenTrustPage = () => (live() ? rules.refresh() : Promise.resolve());
-  // A background update changes the panel and the rules in place. When such
-  // an area is above the viewport, the content that the reader sees stays
-  // where it is: the page scrolls by the height change. The check runs after
-  // every listener of the change, and a browser that already kept the place
-  // measures no change.
-  const keepPlace = () => {
-    const above = [rules.node, modeSlot].find(
-      (area) => area.isConnected && area.getBoundingClientRect().bottom <= 0,
-    );
-    const below = above?.nextElementSibling;
-    if (!below) return;
-    const top = below.getBoundingClientRect().top;
-    queueMicrotask(() => {
-      if (!below.isConnected) return;
-      const moved = below.getBoundingClientRect().top - top;
-      if (Math.abs(moved) >= 0.5)
-        window.scrollBy({ top: moved, behavior: "instant" });
-    });
-  };
   // The private rule reasons name the loaded calculation. When a calculation
   // ends, is cancelled, or fails, they follow it in place, whichever panel
   // started it.
   onDisconnect(
-    modeSlot,
+    panel,
     app.personal.subscribe((status) => {
-      keepPlace();
-      busy = status.state === "downloading" || status.state === "evaluating";
-      // Only the panel's Cancel button cancels a calculation.
-      showMode(status.state === "failed" && status.kind === "cancelled");
-      if (!busy) rules.followCalculation();
+      if (status.state !== "downloading" && status.state !== "evaluating")
+        rules.followCalculation();
     }),
     context.signal,
   );
   onDisconnect(
-    modeSlot,
+    panel,
     app.session.subscribe(() => {
-      keepPlace();
-      if (!modeSaving) syncMode(false);
+      if (!modeSaving) syncMode();
     }),
     context.signal,
   );
@@ -371,6 +311,10 @@ function trustRules(app: App, context: RenderContext) {
   const ignored = section("People I ignore");
   const conflicted = section("Conflicting public choices");
   const inactive = section("Private rules that need attention");
+  // These two headings show only while their section holds a rule, so they
+  // stay hidden until the first read finds one.
+  conflicted.heading.hidden = true;
+  inactive.heading.hidden = true;
   // The text in an empty list. It is in the list only while the list has no rows.
   let nobodyTrusted: HTMLElement | null = null;
   const nobodyIgnored = p("Nobody.", "small");
@@ -641,10 +585,22 @@ function trustRules(app: App, context: RenderContext) {
       });
     if (focused && focused.isConnected && document.activeElement !== focused)
       focused.focus({ preventScroll: true });
+    // A heading that holds focus stays until focus leaves it, so a
+    // calculation that empties its section never drops the reader's focus.
+    for (const entry of [conflicted, inactive])
+      entry.heading.hidden =
+        !wanted.get(entry.list)!.length &&
+        document.activeElement !== entry.heading;
     if (lostFrom) {
-      const heading = [trusted, ignored, conflicted, inactive].find(
-        (entry) => entry.list === lostFrom,
-      )?.heading;
+      // Focus goes to the heading of the section that lost the row. When
+      // that section is now empty and its heading hides, focus goes to the
+      // nearest earlier heading that stays.
+      const sections = [trusted, ignored, conflicted, inactive];
+      const index = sections.findIndex((entry) => entry.list === lostFrom);
+      const heading = sections
+        .slice(0, index + 1)
+        .reverse()
+        .find((entry) => !entry.heading.hidden)?.heading;
       heading?.focus({ preventScroll: true });
     }
     source.hidden = !(
@@ -678,8 +634,6 @@ function trustRules(app: App, context: RenderContext) {
     }
     if (wanted.get(ignored.list)!.length) nobodyIgnored.remove();
     else if (!nobodyIgnored.isConnected) ignored.list.append(nobodyIgnored);
-    for (const entry of [conflicted, inactive])
-      entry.heading.hidden = !entry.list.childElementCount;
   };
   return {
     node,

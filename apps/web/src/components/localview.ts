@@ -191,13 +191,7 @@ export function calculationPanel(
     { class: "btn" },
   );
   actions.append(cancel, retry);
-  // A panel that stays while a run ends in the site view offers no switch
-  // to the view that is already in use.
-  if (
-    options.mode === "personal" &&
-    app.session.preferences.viewMode === "personal"
-  )
-    actions.append(useSite);
+  if (options.mode === "personal") actions.append(useSite);
   region.append(line, actions);
   const update = (status: PersonalStatus) => {
     // One state for the whole page: a calculation that is ready for another
@@ -223,12 +217,8 @@ export function calculationPanel(
           : statusText(status, options.includeSnapshot);
     const busy =
       status.state === "downloading" || status.state === "evaluating";
-    // Focus on Cancel moves to Recompute when the run ends, so the end of a
-    // run never drops the reader's focus.
-    const cancelFocused = document.activeElement === cancel;
     cancel.hidden = !busy;
     retry.disabled = busy;
-    if (cancelFocused && !busy) retry.focus();
     const warning =
       status.state === "failed" ||
       Boolean(differs) ||
