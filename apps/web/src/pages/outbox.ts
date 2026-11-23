@@ -155,6 +155,38 @@ export async function outboxPage(
         dependencies.set(identity, null);
       }
     }
+    // Parse each retained record once, then walk predecessor links from the
+    // visible records, visiting each ancestor once. A delivered record in
+    // the middle still connects the rows at both ends.
+    const previousById = new Map<string, string[]>();
+    for (const entry of items) {
+      try {
+        const previous = (JSON.parse(entry.transport) as { envelope: Envelope }).envelope.header.previous;
+        previousById.set(entry.id, Array.isArray(previous) ? previous.filter((x): x is string => typeof x === "string") : []);
+      } catch {
+        previousById.set(entry.id, []);
+      }
+    }
+    const needsExplanation = new Set<string>();
+    {
+      const visited = new Set<string>();
+      const queue: string[] = [];
+      for (const entry of active)
+        for (const parent of previousById.get(entry.id) ?? [])
+          if (!visited.has(parent)) {
+            visited.add(parent);
+            queue.push(parent);
+          }
+      while (queue.length) {
+        const current = queue.shift()!;
+        needsExplanation.add(current);
+        for (const parent of previousById.get(current) ?? [])
+          if (!visited.has(parent)) {
+            visited.add(parent);
+            queue.push(parent);
+          }
+      }
+    }
     for (const item of active) {
       const dependents = dependencies.get(item.identity);
       let discardState: "lifecycle" | "leaf" | "dependent" | "unavailable" =
@@ -170,7 +202,7 @@ export async function outboxPage(
       } catch {
         /* Keep unreadable local records available for export. */
       }
-      list.append(row(app, item, discardState, items, active.filter((other) => other.id !== item.id && !isFinished(other) && dependsOn(other, item.id, active))));
+      list.append(row(app, item, discardState, items, needsExplanation.has(item.id)));
     }
     empty.textContent = active.length ? "" : "No unfinished records.";
     exportLine.hidden = active.length === 0;
@@ -235,27 +267,6 @@ export async function outboxPage(
   const unsubscribe = app.delivery.subscribe(render);
   context.signal.addEventListener("abort", () => unsubscribe());
 }
-/** True when the record reaches the given ID through its predecessor links. */
-function dependsOn(item: OutboxItem, id: string, items: OutboxItem[]): boolean {
-  const previousOf = (entry: OutboxItem): string[] => {
-    try {
-      const previous = (JSON.parse(entry.transport) as { envelope: Envelope }).envelope.header.previous;
-      return Array.isArray(previous) ? previous.filter((x): x is string => typeof x === "string") : [];
-    } catch { return []; }
-  };
-  const byId = new Map(items.map((entry) => [entry.id, entry]));
-  const seen = new Set<string>();
-  const queue = previousOf(item);
-  while (queue.length) {
-    const current = queue.shift()!;
-    if (current === id) return true;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    const parent = byId.get(current);
-    if (parent) queue.push(...previousOf(parent));
-  }
-  return false;
-}
 function row(
   app: App,
   item: OutboxItem,
@@ -265,7 +276,7 @@ function row(
     | "dependent"
     | "unavailable" = "unavailable",
   allItems: OutboxItem[] = [item],
-  dependents: OutboxItem[] = [],
+  hasDependents = false,
 ): HTMLElement {
   const label = resolvedLabel(item, allItems);
   const li = el("li", { class: "row", "data-outbox-record": item.id });
@@ -422,7 +433,7 @@ function row(
     async () => {
       await app.delivery.stop(item.id);
       app.announce(
-        dependents.length
+        hasDependents
           ? "Stopped. The signed record and its receipts stay in this browser. Stop leaves the records that depend on this record unchanged; use the controls on each of those rows to change them. This does not retract a public record or cancel a request already in flight."
           : "Stopped. The signed record and its receipts stay in this browser. This does not retract a public record or cancel a request already in flight.",
       );

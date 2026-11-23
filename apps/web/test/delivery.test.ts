@@ -288,8 +288,7 @@ test("a permanent refusal pauses retries, Retry-After schedules the next try, an
     }),
   );
   const attemptAt = new Date();
-  await page.clock.install({ time: attemptAt });
-  await page.clock.pauseAt(attemptAt);
+  await page.clock.setFixedTime(attemptAt);
   await page.getByRole("button", { name: "Try now" }).click();
   await expect(page.getByRole("status")).toContainText("Still not delivered.");
   await page.clock.setFixedTime(new Date(attemptAt.getTime() + 30000));
@@ -308,7 +307,7 @@ test("a permanent refusal pauses retries, Retry-After schedules the next try, an
   const stopped = await outboxItems(page);
   expect(stopped[0].stopped).toBe(true);
   expect(stopped[0].transport).toBe(items[0].transport);
-  await page.clock.resume();
+  await page.clock.setSystemTime(new Date());
   await page.unroute("**/api/v1/events");
   await page.reload();
   await expect(page.getByText("Stopped", { exact: true })).toBeVisible();

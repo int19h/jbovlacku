@@ -42,8 +42,7 @@ async function stoppedFlags(page: import("@playwright/test").Page) {
 }
 
 test("U13/U29/U63/U64: outbox shows the word, the missing connection, exact seconds, and stop stays per-record", async ({ page }) => {
-  await page.clock.install();
-  await page.clock.pauseAt(new Date());
+  await page.clock.setFixedTime(new Date());
   await seed(page);
   const endorsementRow = page.locator(`[data-outbox-record="${END_ID}"]`);
   await expect(endorsementRow).toContainText("cuntrix");
@@ -155,6 +154,65 @@ test("U64: stopping a record whose dependent is in another signing group still g
   await definitionRow.getByRole("button", { name: "Stop retrying" }).click();
   await expect(page.getByRole("status")).toContainText("Stop leaves the records that depend on this record unchanged");
   expect(await stoppedFlags(page)).toEqual({ 0: true, 1: false });
+});
+
+const MID_ID = "jve1:55e54ef8b71d56fe4a7ae6839f9165a019a13a47095dd4fbe043cbda36ead07d";
+
+test("U64: a delivered record in the middle still connects a dependent in Not delivered", async ({ page }) => {
+  await page.goto("/outbox");
+  await expect(page.locator("main h1")).toHaveText("Not delivered");
+  await page.evaluate(async ([aId, bId, cId]) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { freshPeer } = await import(String("/src/data/delivery.ts"));
+    const store = new LocalStore();
+    const waiting = () => ({ ...freshPeer(), state: "unknown", failure: "offline", attempts: 1, lastAttempt: Date.now(), nextAttempt: Date.now() + 90000, error: "No connection to the server." });
+    const record = (id: string, order: number, previous: string[], target: string | null, peer: unknown, stopped = false) => ({
+      id, identity: "test", group: "g1", order, stopped, signedAt: Date.now(),
+      transport: JSON.stringify({ envelope: { id, header: { issuer: "test", previous, action: target ? { kind: "judgment.set", target, value: "bless" } : { kind: "definition.publish" } } }, body: null }),
+      label: { subject: target ?? "cuntrix", action: target ? "endorsement" : "new definition", href: "/" },
+      peers: { self: peer },
+    });
+    await store.queueGroup([
+      record(aId, 0, [], null, waiting()) as never,
+      record(bId, 1, [aId], aId, { ...freshPeer(), state: "accepted" }) as never,
+      record(cId, 2, [bId], bId, waiting()) as never,
+    ]);
+  }, [DEF_ID, MID_ID, END_ID]);
+  await page.reload();
+  const aRow = page.locator(`[data-outbox-record="${DEF_ID}"]`);
+  await aRow.getByRole("button", { name: "Stop retrying" }).click();
+  await expect(page.getByRole("status")).toContainText("Stop leaves the records that depend on this record unchanged");
+  await expect(page.locator(`[data-outbox-record="${END_ID}"]`).getByRole("button", { name: "Stop retrying" })).toBeVisible();
+});
+
+test("U64: a chain of 192 records renders within the time bound", async ({ page }) => {
+  test.setTimeout(120000);
+  await page.goto("/outbox");
+  await expect(page.locator("main h1")).toHaveText("Not delivered");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { freshPeer } = await import(String("/src/data/delivery.ts"));
+    const store = new LocalStore();
+    const records = [];
+    let previous: string[] = [];
+    for (let i = 0; i < 192; i++) {
+      const id = `jve1:${i.toString(16).padStart(64, "0")}`;
+      records.push({
+        id, identity: "test", group: "chain", order: i, stopped: false, signedAt: Date.now(),
+        transport: JSON.stringify({ envelope: { id, header: { issuer: "test", previous, action: { kind: "definition.publish" } } }, body: { word: { spelling: `word${i}` } } }),
+        label: { subject: `word${i}`, action: "new definition", href: "/" },
+        peers: { self: { ...freshPeer(), state: "refused", failure: "refused", attempts: 1, lastAttempt: Date.now(), nextAttempt: null, error: "The server refused this record." } },
+      });
+      previous = [id];
+    }
+    await store.queueGroup(records as never[]);
+  });
+  const started = Date.now();
+  await page.reload();
+  await expect(page.locator("[data-outbox-record]")).toHaveCount(192);
+  const elapsed = Date.now() - started;
+  console.log(`192-chain render: ${elapsed}ms`);
+  expect(elapsed).toBeLessThan(2000);
 });
 
 test("U13: a standalone endorsement from the word page shows the word in Not delivered", async ({ page }) => {
