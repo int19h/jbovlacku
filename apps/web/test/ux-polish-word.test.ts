@@ -1902,3 +1902,134 @@ test("a selection in the Source and scores line survives the scores", async ({
   await expect(line).toContainText("personal view calculated in this browser");
   expect(await page.evaluate(() => getSelection()!.toString())).toBe(selected);
 });
+
+for (const path of ["reopened Score details", "the Endorse arrow"] as const)
+  test(`after a clear through ${path}, Score details offers no second clear`, async ({
+    page,
+  }) => {
+    const target = fixture().definitions.cukta1;
+    await createIdentity(page);
+    await openWord(page, "cukta");
+    const entry = block(page, target);
+    const endorse = entry.getByRole("button", { name: "Endorse" });
+    const summary = entry.locator("details.judgment-details > summary");
+    const clear = entry.getByRole("button", { name: "Clear my judgment" });
+    await endorse.click();
+    await acceptFirstSignature(page);
+    await expect(endorse).toHaveAttribute("aria-pressed", "true", {
+      timeout: 20000,
+    });
+    await summary.click();
+    await expect(clear).toBeEnabled();
+    // Every signed clear for the target is counted. In the reopened case,
+    // the first delivery waits until the disclosure is open again.
+    const signed = new Set<string>();
+    let releaseDelivery!: () => void;
+    const deliveryHeld = new Promise<void>(
+      (resolve) => (releaseDelivery = resolve),
+    );
+    await page.route("**/api/v1/events", async (route) => {
+      if (route.request().method() === "POST") {
+        const envelope = route.request().postDataJSON().envelope;
+        if (
+          envelope.header.action.kind === "judgment.set" &&
+          envelope.header.action.target === target
+        ) {
+          signed.add(envelope.id);
+          if (signed.size === 1 && path === "reopened Score details")
+            await deliveryHeld;
+        }
+      }
+      await route.continue();
+    });
+    try {
+      if (path === "reopened Score details") {
+        await clear.click();
+        await expect.poll(() => signed.size).toBe(1);
+        await summary.click();
+        await summary.click();
+        await expect(clear).toBeVisible();
+        releaseDelivery();
+      } else {
+        await endorse.click();
+        await expect.poll(() => signed.size).toBe(1);
+      }
+      await expect(page.getByRole("status")).toContainText(
+        "Your judgment is cleared.",
+      );
+      await expect(endorse).toHaveAttribute("aria-pressed", "false", {
+        timeout: 20000,
+      });
+      // Give the history read time to finish, then press any Clear that is
+      // still offered, as a reader would.
+      await page.waitForTimeout(1000);
+      if ((await clear.count()) && (await clear.isEnabled()))
+        await clear.click();
+      await page.waitForTimeout(2000);
+    } finally {
+      releaseDelivery();
+    }
+    expect(signed.size).toBe(1);
+    // The fresh history read finds no judgment to clear.
+    await expect(clear).toHaveCount(0);
+  });
+
+test("a focused note says at once that matching personal scores arrived", async ({
+  page,
+}) => {
+  await page.goto("/trust");
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await expect(
+    page.getByRole("link", { name: "Trust: personal view" }),
+  ).toBeVisible();
+  // The word's ranking first reports a ready calculation for another
+  // snapshot, which shows the recompute button, and then waits. When the
+  // test lets it go on, the status is ready for this snapshot again.
+  await page.evaluate(async () => {
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const rank = PersonalCalculator.prototype.rankWord;
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => (release = resolve));
+    (window as any).finishRank = release;
+    PersonalCalculator.prototype.rankWord = async function (
+      this: any,
+      ...args: any[]
+    ) {
+      const result = await rank.apply(this, args);
+      const ready = this.status;
+      this.set({ ...ready, snapshot: "jvsnap:" + "1".repeat(64) });
+      await turn;
+      this.set(ready);
+      return result;
+    };
+  });
+  // An in-app link keeps the patched calculator.
+  await page.evaluate(() => {
+    const anchor = document.createElement("a");
+    anchor.href = "/word/cukta";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  });
+  const recompute = page.getByRole("button", {
+    name: "Recompute for this snapshot",
+  });
+  await expect(recompute).toBeVisible();
+  await recompute.focus();
+  const note = recompute.locator("..");
+  await expect(note).toContainText("Personal scores are unavailable:");
+  await page.evaluate(() => (window as any).finishRank());
+  await scored(page);
+  await expect(recompute).toBeFocused();
+  await expect(note).toContainText(
+    "Personal scores for this snapshot are shown.",
+  );
+  await expect(note).not.toContainText("Personal scores are unavailable");
+  // The note leaves when focus does.
+  await page.keyboard.press("Tab");
+  await expect(recompute).toHaveCount(0);
+});

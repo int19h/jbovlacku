@@ -532,6 +532,8 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   };
   let note: HTMLElement | null = null;
   let showNote: ((reason: string, stale: boolean) => void) | null = null;
+  /** Says that scores are shown, for a note that stays while it has focus. */
+  let noteShown: (() => void) | null = null;
   if (view.personal && view.reason) {
     const shown = p("", "small");
     note = shown;
@@ -561,6 +563,10 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       }
     };
     showNote(view.stale ? staleNote : view.reason, view.stale);
+    noteShown = () => {
+      showNote = null;
+      noteText.textContent = "Personal scores for this snapshot are shown.";
+    };
     part.append(shown);
     // Every place that states the reason follows the current status: the
     // note, the "Source and scores" line, and the score titles and details.
@@ -570,7 +576,8 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
     onDisconnect(
       shown,
       app.personal.subscribe((status) => {
-        if (!context.live()) return;
+        // A note kept for focus after the scores arrived follows no status.
+        if (!context.live() || !showNote) return;
         const current = statusReason(status);
         // A ready calculation for this snapshot: the page's own read gives
         // its reason, which can be specific to this word. The settled read
@@ -995,11 +1002,13 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         // A reader who has focus in it keeps the note until focus leaves.
         const done = note;
         note = null;
-        if (done?.contains(document.activeElement))
+        // Its text says at once that the scores are shown.
+        if (done?.contains(document.activeElement)) {
+          noteShown?.();
           done.addEventListener("focusout", () => done.remove(), {
             once: true,
           });
-        else done?.remove();
+        } else done?.remove();
       }
       // The line changes in place. Its leading parts keep their nodes
       // while their text is the same, so a selection in them stays.

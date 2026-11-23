@@ -106,6 +106,18 @@ function setBusy(target: string, value: boolean) {
   else busy.delete(target);
   for (const listener of busyListeners) listener();
 }
+/**
+ * Per target, the number of judgment actions that succeeded on this page.
+ * Actions in Score details are drawn from a history read. Once another
+ * action for the target succeeds, every set drawn before it is retired: its
+ * buttons stay disabled until a fresh history read draws what to offer.
+ */
+const settled = new Map<string, number>();
+const retireListeners = new Set<(target: string) => void>();
+function retireActions(target: string) {
+  settled.set(target, (settled.get(target) ?? 0) + 1);
+  for (const listener of [...retireListeners]) listener(target);
+}
 const controls = new WeakMap<HTMLElement, (options: JudgmentOptions) => void>();
 const detailsPainters = new WeakMap<HTMLDetailsElement, () => void>();
 /**
@@ -260,6 +272,7 @@ export function judgmentControl(
           },
         ]);
         app.own.invalidate();
+        retireActions(target.id);
         if (deliveryAccepted(results))
           app.announce(
             value === "clear"
@@ -656,98 +669,111 @@ async function renderOwnActions(
   options: JudgmentOptions,
 ): Promise<HTMLElement> {
   const slot = el("div", { class: "small" });
-  const own = await app.own.registers();
-  const state = own?.judgments.get(target.id);
-  if (!state?.known) return slot;
-  if (state.conflicted) {
-    slot.append(
-      p(
-        "Your judgment conflicts between devices. Choose Endorse, Oppose, or Clear to resolve both records.",
-      ),
-      await conflictBranches(app, state.events),
-    );
-  }
-  if (!state.conflicted && (!state.value || state.value === "clear"))
-    return slot;
-  const actions = el("div", { class: "actions", style: "margin-top:8px" });
-  const choices: [string, JudgmentValue][] = state.conflicted
-    ? [
-        ["Endorse", "bless"],
-        ["Oppose", "curse"],
-        ["Clear my judgment", "clear"],
-      ]
-    : [["Clear my judgment", "clear"]];
   // These buttons share the page-wide in-flight set with the judgment
   // controls, so one target never has two judgment actions in flight.
-  // After one action succeeds, these buttons describe a state that is no
-  // longer current. They stay disabled until the history read draws new ones.
-  let retired = false;
-  const buttons: HTMLButtonElement[] = [];
+  // They also describe the judgment that one history read found. After any
+  // judgment action for the target succeeds, in any control or disclosure,
+  // they stay disabled, and a fresh history read draws new ones.
+  let buttons: HTMLButtonElement[] = [];
+  let generation = settled.get(target.id) ?? 0;
+  const retired = () => (settled.get(target.id) ?? 0) !== generation;
   const syncDisabled = () => {
     for (const node of buttons)
       node.disabled =
-        retired || !app.session.storageAvailable || busy.has(target.id);
+        retired() || !app.session.storageAvailable || busy.has(target.id);
   };
-  for (const [label, value] of choices)
-    buttons.push(
-      button(
-        label,
-        () => {
-          if (retired || busy.has(target.id)) return;
-          return app.session.requireUnlocked(
-            target.describe(value),
-            async () => {
-              if (!(await app.session.firstSignatureDisclosure())) return;
-              if (retired || busy.has(target.id)) return;
-              setBusy(target.id, true);
-              let done = false;
-              try {
-                const results = await app.signer.publish([
-                  {
-                    action: { kind: "judgment.set", target: target.id, value },
-                    body: null,
-                  },
-                ]);
-                app.own.invalidate();
-                app.announce(
-                  deliveryAccepted(results)
-                    ? value === "clear"
-                      ? "Your judgment is cleared. The earlier public record stays in history."
-                      : value === "bless"
-                        ? "Your endorsement is published."
-                        : "Your opposition is published."
-                    : "Your judgment is signed and saved here. Delivery is not finished. See Not delivered.",
-                );
-                retired = true;
-                options.onChange?.();
-                done = true;
-              } catch (error) {
-                app.announce(describe(error));
-              } finally {
-                setBusy(target.id, false);
-              }
-              if (!done) return;
-              try {
-                slot.replaceChildren(
-                  await renderOwnActions(app, target, options),
-                );
-              } catch (error) {
-                app.announce(describe(error));
-              }
-            },
-          );
-        },
-        { class: "btn btn-quiet" },
-      ),
+  const choose = (label: string, value: JudgmentValue) =>
+    button(
+      label,
+      () => {
+        if (retired() || busy.has(target.id)) return;
+        return app.session.requireUnlocked(target.describe(value), async () => {
+          if (!(await app.session.firstSignatureDisclosure())) return;
+          if (retired() || busy.has(target.id)) return;
+          setBusy(target.id, true);
+          try {
+            const results = await app.signer.publish([
+              {
+                action: { kind: "judgment.set", target: target.id, value },
+                body: null,
+              },
+            ]);
+            app.own.invalidate();
+            app.announce(
+              deliveryAccepted(results)
+                ? value === "clear"
+                  ? "Your judgment is cleared. The earlier public record stays in history."
+                  : value === "bless"
+                    ? "Your endorsement is published."
+                    : "Your opposition is published."
+                : "Your judgment is signed and saved here. Delivery is not finished. See Not delivered.",
+            );
+            // This set and every other one for the target retire and read
+            // the history again.
+            retireActions(target.id);
+            options.onChange?.();
+          } catch (error) {
+            app.announce(describe(error));
+          } finally {
+            setBusy(target.id, false);
+          }
+        });
+      },
+      { class: "btn btn-quiet" },
     );
-  syncDisabled();
+  let reads = 0;
+  /** Reads the history and draws what it offers. A newer read wins. */
+  const draw = async () => {
+    const read = ++reads;
+    const before = settled.get(target.id) ?? 0;
+    const own = await app.own.registers();
+    const state = own?.judgments.get(target.id);
+    const nodes: Node[] = [];
+    const drawn: HTMLButtonElement[] = [];
+    if (state?.known && state.conflicted)
+      nodes.push(
+        p(
+          "Your judgment conflicts between devices. Choose Endorse, Oppose, or Clear to resolve both records.",
+        ),
+        await conflictBranches(app, state.events),
+      );
+    if (
+      state?.known &&
+      (state.conflicted || (state.value && state.value !== "clear"))
+    ) {
+      const choices: [string, JudgmentValue][] = state.conflicted
+        ? [
+            ["Endorse", "bless"],
+            ["Oppose", "curse"],
+            ["Clear my judgment", "clear"],
+          ]
+        : [["Clear my judgment", "clear"]];
+      for (const [label, value] of choices) drawn.push(choose(label, value));
+      nodes.push(
+        el("div", { class: "actions", style: "margin-top:8px" }, ...drawn),
+      );
+    }
+    if (read !== reads) return;
+    generation = before;
+    buttons = drawn;
+    syncDisabled();
+    slot.replaceChildren(...nodes);
+  };
+  await draw();
+  const onRetire = (retiredTarget: string) => {
+    if (retiredTarget !== target.id) return;
+    syncDisabled();
+    draw().catch((error) => app.announce(describe(error)));
+  };
   busyListeners.add(syncDisabled);
+  retireListeners.add(onRetire);
   onDisconnect(
-    actions,
-    () => busyListeners.delete(syncDisabled),
+    slot,
+    () => {
+      busyListeners.delete(syncDisabled);
+      retireListeners.delete(onRetire);
+    },
     options.signal,
   );
-  actions.append(...buttons);
-  slot.append(actions);
   return slot;
 }
