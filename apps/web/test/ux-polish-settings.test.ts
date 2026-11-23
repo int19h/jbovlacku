@@ -76,10 +76,95 @@ test("a failed package download keeps its error next to the list", async ({
     .selectOption("en");
   await page.getByRole("button", { name: "Download", exact: true }).click();
   const note = page.locator("[data-package-note=en]");
-  await expect(note).toHaveText("No connection to the server.");
+  const failed =
+    "The English package was not downloaded: No connection to the server.";
+  await expect(note).toHaveText(failed);
   await expect(note).toHaveClass("notice");
   await expect(toast(page)).toHaveText("", { timeout: 15000 });
-  await expect(note).toHaveText("No connection to the server.");
+  await expect(note).toHaveText(failed);
+});
+
+/** Offers these languages in the manifest, all with the English package's metadata. */
+async function offerLanguages(page: Page, languages: string[]) {
+  await page.route("**/api/v1/manifest*", async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    const en =
+      json.packages.find(
+        (pkg: { language: string }) => pkg.language === "en",
+      ) ?? json.packages[0];
+    json.packages = languages.map((language) => ({ ...en, language }));
+    await route.fulfill({ response, json });
+  });
+}
+
+test("failed download lines name their package after the connection returns", async ({
+  page,
+}) => {
+  await offerLanguages(page, ["en", "fr", "de"]);
+  await page.route("**/api/v1/packages/fr**", (route) => route.abort());
+  await page.route("**/api/v1/packages/de**", (route) => route.abort());
+  await settings(page);
+  const picker = page.getByLabel("Download a package", { exact: true });
+  const go = page.getByRole("button", { name: "Download", exact: true });
+  await picker.selectOption("fr");
+  await go.click();
+  await expect(page.locator("[data-package-note=fr]")).toHaveClass("notice");
+  await picker.selectOption("de");
+  await go.click();
+  await expect(page.locator("[data-package-note=de]")).toHaveClass("notice");
+  // The connection returns, and another download succeeds.
+  await page.unroute("**/api/v1/packages/fr**");
+  await page.unroute("**/api/v1/packages/de**");
+  await picker.selectOption("en");
+  await go.click();
+  await expect(page.locator("[data-package-note=en]")).toHaveText(
+    "The English search package is saved in this browser.",
+  );
+  await expect(toast(page)).toHaveText("", { timeout: 15000 });
+  await expect(page.locator("[data-package-notes] > p")).toHaveText([
+    "The French package was not downloaded: No connection to the server.",
+    "The German package was not downloaded: No connection to the server.",
+    "The English search package is saved in this browser.",
+  ]);
+});
+
+test("a failed refresh says that the saved package is unchanged", async ({
+  page,
+}) => {
+  await settings(page);
+  await page
+    .getByLabel("Download a package", { exact: true })
+    .selectOption("en");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  const note = page.locator("[data-package-note=en]");
+  await expect(note).toHaveText(
+    "The English search package is saved in this browser.",
+  );
+  // The server now gives a damaged index for both versions.
+  await page.route("**/api/v1/packages/en?**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: "{}",
+    }),
+  );
+  await page
+    .getByRole("button", { name: "Refresh English", exact: true })
+    .click();
+  await expect(note).toHaveClass("notice");
+  await expect(note).toHaveText(
+    "The English package was not refreshed. The saved package is unchanged: The search package hash did not match.",
+  );
+  await expect(note).not.toContainText("download another package");
+  const stored = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { savedPackage } = await import(String("/src/data/saved-package.ts"));
+    const store = new LocalStore();
+    const pkg = savedPackage(await store.get("packages", "en"));
+    return { keys: await store.keys("packages"), usable: pkg !== null };
+  });
+  expect(stored).toEqual({ keys: ["en"], usable: true });
 });
 
 test("a failed settings save stays in place under its control", async ({
@@ -126,6 +211,32 @@ test("the persistent storage outcome stays under its button", async ({
   );
   await expect(toast(page)).toHaveText("", { timeout: 15000 });
   await expect(note).toBeVisible();
+});
+
+test("a failed persistent storage request names the request", async ({
+  page,
+}) => {
+  await settings(page);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.storage, "persist", {
+      configurable: true,
+      value: async () => {
+        throw new Error("Test persist failure.");
+      },
+    });
+  });
+  await page
+    .getByRole("button", { name: "Request persistent storage", exact: true })
+    .click();
+  const note = page
+    .locator(".actions", {
+      has: page.getByRole("button", { name: "Request persistent storage" }),
+    })
+    .locator("xpath=following-sibling::p[1]");
+  await expect(note).toHaveText(
+    "The request for persistent storage failed: Test persist failure.",
+  );
+  await expect(note).toHaveClass("notice");
 });
 
 test("the remote search disclosure stays under the search mode control", async ({

@@ -754,7 +754,13 @@ async function preferencesBody(context: RenderContext, app: App) {
             ]);
           } catch (error) {
             // A full store reports its own message instead of a raw quota error.
-            packageNote(language, describe(reportPackageError(error)), "error");
+            // The line stays after the state changes, so it names the
+            // package and the attempt in the past tense before the cause.
+            packageNote(
+              language,
+              `The ${languageName(language)} package was not downloaded: ${describe(reportPackageError(error))}`,
+              "error",
+            );
           } finally {
             endRun(language, token);
             // A failure changed no storage, so the list stays as it is,
@@ -866,7 +872,13 @@ async function preferencesBody(context: RenderContext, app: App) {
               ]);
             } catch (error) {
               // A full store reports its own message instead of a raw quota error.
-              packageNote(key, describe(reportPackageError(error)), "error");
+              // The saved package stays usable, so the line gives only the
+              // cause, without the recovery instruction of a failed download.
+              packageNote(
+                key,
+                `The ${languageName(key)} package was not refreshed. The saved package is unchanged: ${packageCause(describe(reportPackageError(error)))}`,
+                "error",
+              );
             } finally {
               endRun(key, token);
               // A failure changed no storage, so the list stays as it is.
@@ -953,7 +965,10 @@ async function preferencesBody(context: RenderContext, app: App) {
               false,
             );
           } catch (error) {
-            persistOutcome(describe(error), true);
+            persistOutcome(
+              `The request for persistent storage failed: ${describe(error)}`,
+              true,
+            );
           }
           await describeStorage();
         },
