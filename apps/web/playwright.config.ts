@@ -69,6 +69,11 @@ export default defineConfig({
       use: { browserName: "firefox" },
     },
     {
+      name: "firefox-ux-polish-settings",
+      testMatch: /ux-polish-settings\.test\.ts/,
+      use: { browserName: "firefox" },
+    },
+    {
       name: "firefox-ux-trust",
       testMatch: /ux-polish-trust\.test\.ts/,
       use: { browserName: "firefox" },

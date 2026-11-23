@@ -556,9 +556,12 @@ details.disclosure > .body {
   font-weight: 680;
   letter-spacing: -0.025em;
 }
+/* Crisa glyphs are small for their font size, so the zbalermorna spelling
+   takes the headword size and the secondary ink to read as a word. */
 .word-head .zbalermorna {
-  font-size: 30px;
-  color: var(--ink3);
+  font-size: 44px;
+  line-height: 1.1;
+  color: var(--ink2);
 }
 .tabs {
   margin-top: 22px;

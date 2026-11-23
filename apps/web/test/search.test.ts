@@ -1784,7 +1784,7 @@ test("an invalid version 2 package falls back to version 1 with a recorded reaso
   await page.getByRole("button", { name: "Download", exact: true }).click();
   const status = page.locator("#app > [role=status]");
   await expect(status).toContainText(
-    "The English search package is saved in this browser as version 1.",
+    "This download saved version 1 because version 2 failed:",
   );
   await expect(status).toContainText("invalid");
   await expect(page.locator("main")).toContainText(
