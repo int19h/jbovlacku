@@ -355,15 +355,19 @@ export async function personPage(
   );
   choices.hidden = true;
   let choicesRequest = 0;
-  // A new text can move the link. An update that the reader did not start
-  // waits while the reader presses a control.
+  // A new text can move the link and the controls below it. Every change
+  // after the reads waits while the reader presses a control, whatever
+  // started the reads.
   const press = pressTracker(context.signal);
-  const showChoices = async (background = false) => {
+  const showChoices = async () => {
     const request = ++choicesRequest;
     const overlay = await app.store.overlay().catch(() => null);
     const registers = await app.own.registers();
-    if (background) await press.finished();
+    // The first read runs before the line joins the page.
+    if (choices.isConnected) await press.finished();
     if (!context.live() || request !== choicesRequest) return;
+    // A failed read leaves its choices unknown, not absent.
+    const unread = !overlay || Boolean(app.session.identity && !registers);
     const own = registers
       ? [...registers.trust.entries()].filter(
           ([key, state]) =>
@@ -392,7 +396,7 @@ export async function personPage(
     const blocks = (overlay?.blocked ?? []).filter(
       (b) => b.identity === identity,
     );
-    if (!own.length && !privateRules.length && !blocks.length) {
+    if (!own.length && !privateRules.length && !blocks.length && !unread) {
       // A line that holds focus stays, with only its link.
       if (choices.contains(document.activeElement))
         choicesText.textContent = "";
@@ -438,6 +442,12 @@ export async function personPage(
       sentences.push(
         `Private rules with no valid issuer: ${noIssuer.join("; ")}. They do not apply. Remove them on the Trust page.`,
       );
+    if (unread)
+      sentences.push(
+        sentences.length
+          ? "Some of your choices could not be read."
+          : "Your choices could not be read.",
+      );
     choicesText.textContent = `${sentences.join(" ")} `;
     choices.hidden = false;
   };
@@ -456,7 +466,7 @@ export async function personPage(
       const key = continuityKey();
       if (key === shownContinuity) return;
       shownContinuity = key;
-      void showChoices(true);
+      void showChoices();
     }),
     context.signal,
   );
@@ -472,11 +482,14 @@ export async function personPage(
           subject: identity,
           name: name ?? shortIdentity(identity),
           mode,
-          onDone: () => {
-            slot.replaceChildren();
-            trustButton.focus();
-            void showChoices();
-          },
+          // A save can end while the reader presses another control.
+          onDone: () =>
+            void press.finished().then(() => {
+              if (!context.live()) return;
+              slot.replaceChildren();
+              trustButton.focus();
+              void showChoices();
+            }),
         }),
       );
       trustButton.setAttribute("aria-expanded", String(mode === "trust"));

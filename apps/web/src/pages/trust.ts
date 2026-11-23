@@ -305,20 +305,22 @@ function trustRules(app: App, context: RenderContext) {
   const node = el("div");
   const source = p("", "meta");
   source.hidden = true;
-  const section = (title: string, empty = title) => {
+  const section = (title: string, empty = title, unread = title) => {
     const heading = el("h2", { class: "section", text: title, tabindex: -1 });
     const list = el("div");
-    return { heading, list, title, empty };
+    return { heading, list, title, empty, unread };
   };
   const trusted = section("People I trust");
   const ignored = section("People I ignore");
   const conflicted = section(
     "Conflicting public choices",
     "No public choices conflict.",
+    "Your public choices could not be read.",
   );
   const inactive = section(
     "Private rules that need attention",
     "No private rules need attention.",
+    "Your private rules could not be read.",
   );
   // These two headings show only while their section holds a rule, so they
   // stay hidden until the first read finds one.
@@ -327,8 +329,13 @@ function trustRules(app: App, context: RenderContext) {
   // The text in an empty list. It is in the list only while the list has no rows.
   let nobodyTrusted: HTMLElement | null = null;
   const nobodyIgnored = p("Nobody.", "small");
+  // Names the rules that the last read could not read. Their rows are not
+  // shown, and an empty list does not mean that there are none.
+  const unread = p("", "notice");
+  unread.hidden = true;
   node.append(
     source,
+    unread,
     trusted.heading,
     trusted.list,
     ignored.heading,
@@ -429,6 +436,9 @@ function trustRules(app: App, context: RenderContext) {
   const place = () => {
     if (!data) return;
     const { overlay, registers, history, identity } = data;
+    // A failed read leaves its rules unknown, not empty.
+    const publicUnread = Boolean(identity) && !registers;
+    const privateUnread = !overlay;
     const continuity = app.personal.loadedContinuity;
     shownContinuity = continuityKey();
     const actor = (key: string) => continuity?.actors[key] ?? key;
@@ -596,12 +606,16 @@ function trustRules(app: App, context: RenderContext) {
       focused.focus({ preventScroll: true });
     // A heading that holds focus stays until the next update, so a
     // calculation that empties its section never drops the reader's focus.
-    // It then says that the section is empty.
-    for (const entry of [conflicted, inactive]) {
+    // It then says that the section is empty, or that it could not be read.
+    // It says that the section is empty only when the read showed that.
+    for (const [entry, unknown] of [
+      [conflicted, publicUnread],
+      [inactive, privateUnread],
+    ] as const) {
       const filled = wanted.get(entry.list)!.length > 0;
       const kept = !filled && document.activeElement === entry.heading;
       entry.heading.hidden = !filled && !kept;
-      const title = kept ? entry.empty : entry.title;
+      const title = !kept ? entry.title : unknown ? entry.unread : entry.empty;
       if (entry.heading.textContent !== title)
         entry.heading.textContent = title;
     }
@@ -622,13 +636,27 @@ function trustRules(app: App, context: RenderContext) {
     );
     if (continuity)
       source.textContent = `Private rule labels use personal calculation snapshot ${continuity.snapshot} and view ${continuity.view}.`;
+    const unreadText = [
+      publicUnread
+        ? "Your public choices are unknown because your history could not be read."
+        : "",
+      privateUnread
+        ? "Your private rules are unknown because this browser's storage could not be read."
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    unread.hidden = !unreadText;
+    if (unread.textContent !== unreadText) unread.textContent = unreadText;
+    // An empty list says "nobody" only when every read that fills it worked.
+    const listUnread = publicUnread || privateUnread;
     if (wanted.get(trusted.list)!.length) nobodyTrusted?.remove();
     else {
       const empty = identity
         ? p(
-            registers
-              ? "Nobody yet. Open an identity page and choose Trust their judgments."
-              : "Your public choices are unknown because your history could not be read.",
+            listUnread
+              ? "Nobody that this page could read."
+              : "Nobody yet. Open an identity page and choose Trust their judgments.",
             "small",
           )
         : el(
@@ -646,6 +674,11 @@ function trustRules(app: App, context: RenderContext) {
         trusted.list.append(empty);
       }
     }
+    const ignoredText = listUnread
+      ? "Nobody that this page could read."
+      : "Nobody.";
+    if (nobodyIgnored.textContent !== ignoredText)
+      nobodyIgnored.textContent = ignoredText;
     if (wanted.get(ignored.list)!.length) nobodyIgnored.remove();
     else if (!nobodyIgnored.isConnected) ignored.list.append(nobodyIgnored);
   };

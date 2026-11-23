@@ -1305,3 +1305,263 @@ test("a calculation that ends during a press on Manage keeps the link in place u
   await page.mouse.up();
   await expect(page).toHaveURL(/\/trust$/);
 });
+
+test("a focused conflict heading says that public choices could not be read after a failed read", async ({
+  page,
+}) => {
+  const key = await createIdentity(page);
+  const { curator, delegate } = fixture().identities;
+  // A public conflict about the curator and a public Trust for the delegate.
+  await page.evaluate(
+    async ({ key, curator, delegate, passphrase, corePath }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const { unlockKey } = await import(String("/src/data/keys.ts"));
+      const { signWith } = await import(String("/src/data/lifecycle.ts"));
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const working = await unlockKey(key, passphrase);
+      const events = [];
+      for (const [subject, value] of [
+        [curator, "heed"],
+        [curator, "shun"],
+        [delegate, "heed"],
+      ]) {
+        const signed = await signWith(working, key.identity, [], {
+          kind: "trust.set",
+          subject,
+          scope: { kind: "*", word: "*", language: "*" },
+          value,
+        });
+        events.push(signed.envelope);
+      }
+      await new LocalStore().recordBranch(key.identity, events);
+      (await import(String("/src/app/router.ts"))).navigate("/trust");
+    },
+    { key, curator, delegate, passphrase: PASSPHRASE, corePath },
+  );
+  const heading = page.getByRole("heading", {
+    name: "Conflicting public choices",
+    exact: true,
+  });
+  await expect(heading).toBeVisible();
+  await expect(
+    page.getByRole("textbox", { name: "Signed view event ID" }),
+  ).toBeVisible();
+  // The history read after the Undo waits, then fails.
+  let finish!: () => void;
+  const held = new Promise<void>((resolve) => (finish = resolve));
+  let reads = 0;
+  await page.route("**/identity-heads/**", async (route) => {
+    if ((await statusRegion(page).textContent())?.includes("Signed a clear")) {
+      reads++;
+      await held;
+      await route.fulfill({ status: 503, body: "Service unavailable" });
+    } else await route.continue();
+  });
+  await page
+    .locator("main h2:text-is('People I trust') + div")
+    .getByRole("button", { name: "Undo", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  await expect.poll(() => reads).toBeGreaterThan(0);
+  const original = await heading.elementHandle();
+  await heading.click();
+  finish();
+  await expect(
+    page.getByText(
+      "Your public choices are unknown because your history could not be read.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  const state = () =>
+    original!.evaluate((node) => ({
+      text: node.textContent,
+      focused: document.activeElement === node,
+    }));
+  expect(await state()).toEqual({
+    text: "Your public choices could not be read.",
+    focused: true,
+  });
+  await expect(
+    page.getByRole("heading", { name: "No public choices conflict." }),
+  ).toHaveCount(0);
+});
+
+test("a focused private heading says that private rules could not be read after a failed read", async ({
+  page,
+}) => {
+  const f = fixture();
+  await createIdentity(page);
+  await saveForeignRule(page, f.identities.rootB, f.identities.curator);
+  await saveForeignRule(page, f.identities.rootB, f.identities.delegate);
+  await page.goto("/trust");
+  const heading = page.getByRole("heading", {
+    name: "Private rules that need attention",
+    exact: true,
+  });
+  await expect(heading).toBeVisible();
+  await expect(
+    page.getByRole("textbox", { name: "Signed view event ID" }),
+  ).toBeVisible();
+  // The read after the Remove waits, then fails.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const proto = LocalStore.prototype;
+    const overlay = proto.overlay;
+    const held = window as unknown as {
+      readHeld?: boolean;
+      failRead?: () => void;
+    };
+    const gate = new Promise<void>((resolve) => (held.failRead = resolve));
+    proto.overlay = async function () {
+      proto.overlay = overlay;
+      held.readHeld = true;
+      await gate;
+      throw new DOMException("Storage transaction aborted.", "AbortError");
+    };
+  });
+  await page
+    .getByRole("button", { name: "Remove", exact: true })
+    .first()
+    .click();
+  await page.waitForFunction(
+    () => (window as unknown as { readHeld?: boolean }).readHeld === true,
+  );
+  const original = await heading.elementHandle();
+  await heading.click();
+  await page.evaluate(() =>
+    (window as unknown as { failRead: () => void }).failRead(),
+  );
+  // The heading changes when the failed read is placed.
+  await expect
+    .poll(() => original!.evaluate((node) => node.textContent))
+    .not.toBe("Private rules that need attention");
+  expect(
+    await original!.evaluate((node) => ({
+      text: node.textContent,
+      focused: document.activeElement === node,
+    })),
+  ).toEqual({ text: "Your private rules could not be read.", focused: true });
+  await expect(
+    page.getByText(
+      "Your private rules are unknown because this browser's storage could not be read.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "No private rules need attention." }),
+  ).toHaveCount(0);
+  // The remaining rule is still saved.
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Remove", exact: true }),
+  ).toHaveCount(1);
+});
+
+test("the choices refresh after a public save keeps Manage in place during a press", async ({
+  page,
+}) => {
+  const own = await createIdentity(page);
+  const subject = fixture().identities.author;
+  await saveForeignRule(page, own.identity, subject);
+  // Inside the app, so the key stays unlocked.
+  await page.evaluate(
+    async (subject) =>
+      (await import(String("/src/app/router.ts"))).navigate(
+        `/identity/${encodeURIComponent(subject)}`,
+      ),
+    subject,
+  );
+  const manage = page.getByRole("link", { name: "Manage on the Trust page" });
+  await expect(manage).toBeVisible();
+  // The history read after the save waits until the press starts.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let held = 0;
+  let served = 0;
+  await page.route("**/identity-heads/**", async (route) => {
+    if (
+      (await statusRegion(page).textContent())?.includes(
+        "Your personal view includes it",
+      )
+    ) {
+      held++;
+      await gate;
+      await route.continue();
+      served++;
+    } else await route.continue();
+  });
+  const opener = page.getByRole("button", { name: "Trust their judgments" });
+  await opener.click();
+  const panel = page.getByRole("region", { name: /^Trust / });
+  await panel.getByRole("radio", { name: /Publicly/ }).check();
+  await panel.getByRole("button", { name: "Trust", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Trust", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(opener).toBeFocused();
+  await expect.poll(() => held).toBeGreaterThan(0);
+  await manage.scrollIntoViewIfNeeded();
+  const point = await manage.evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  });
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  release();
+  await expect.poll(() => served).toBeGreaterThan(0);
+  await frames(page);
+  await frames(page);
+  expect(await under(manage, point)).toBe(true);
+  await page.mouse.up();
+  await expect(page).toHaveURL(/\/trust$/);
+});
+
+test("a calculation that ends during a middle press on a person link opens the new tab", async ({
+  page,
+  context,
+}) => {
+  const panel = await heldHandoverResult(page);
+  const row = page.locator("main .row").filter({
+    has: page.getByRole("button", { name: "Make public", exact: true }),
+  });
+  const person = row.getByRole("link").first();
+  await person.scrollIntoViewIfNeeded();
+  const point = await person.evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  });
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down({ button: "middle" });
+  await page.evaluate(() =>
+    (window as unknown as { releaseResult: () => void }).releaseResult(),
+  );
+  await expect(panel).toContainText("Personal view calculated");
+  await frames(page);
+  expect(await under(person, point)).toBe(true);
+  const opened = context.waitForEvent("page", { timeout: 5000 });
+  await page.mouse.up({ button: "middle" });
+  const tab = await opened;
+  await tab.waitForURL(/\/identity\//);
+});
+
+test("the person page says that the choices could not be read after a failed read", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  const subject = fixture().identities.author;
+  await page.evaluate(async (subject) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    LocalStore.prototype.overlay = async () => {
+      throw new DOMException("Storage transaction aborted.", "AbortError");
+    };
+    (await import(String("/src/app/router.ts"))).navigate(
+      `/identity/${encodeURIComponent(subject)}`,
+    );
+  }, subject);
+  await expect(
+    page.locator("main p", { hasText: "Manage on the Trust page" }),
+  ).toHaveText("Your choices could not be read. Manage on the Trust page");
+});

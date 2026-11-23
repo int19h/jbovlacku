@@ -1,10 +1,10 @@
 /**
  * A primary-button press in progress. A background update that moves, hides
  * or rebuilds content waits for its release, so the layout under the pointer
- * does not change before the click completes. Only a primary press can start
- * a click. A press can also end without a release on the page: a context
- * menu, or a switch to another window or tab. Each of those ends the press
- * too.
+ * does not change before the click completes. A primary press can start a
+ * click, and a middle press can open a link in a new tab, so both count. A
+ * press can also end without a release on the page: a context menu, or a
+ * switch to another window or tab. Each of those ends the press too.
  */
 export function pressTracker(signal: AbortSignal) {
   let pressed = false;
@@ -12,7 +12,7 @@ export function pressTracker(signal: AbortSignal) {
   window.addEventListener(
     "pointerdown",
     (event) => {
-      if (event.button === 0) pressed = true;
+      if (event.button === 0 || event.button === 1) pressed = true;
     },
     { capture: true, signal },
   );
