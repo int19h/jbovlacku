@@ -9,36 +9,30 @@ import {
 } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import { calculationPanel } from "../components/localview.ts";
-import { onDisconnect } from "../lib/lifetime.ts";
-import { pressTracker } from "../lib/press.ts";
 import { getManifest, loadRecord } from "../data/api.ts";
 import { loadSiteView } from "../data/view.ts";
 import { eventId, type ViewBody } from "../model/types.ts";
 import { identityLink } from "../components/attribution.ts";
 import { loadOwnHistory, scopeKey } from "../data/history.ts";
-import type { Overlay } from "../data/store.ts";
 import { renderRichText } from "../model/richtext.ts";
 import { describeScope } from "../components/trustpanel.ts";
 import { scopeError } from "../data/scope.ts";
 import { describeProfile } from "../model/profiles.ts";
 
 export { loadSiteView };
-/**
- * Reads the rules again on the Trust page that is open now, if any. A signed
- * or removed choice refreshes the page that the reader is on, also when the
- * action started on an earlier visit.
- */
-let refreshOpenTrustPage: (() => Promise<void>) | null = null;
-const refreshTrust = () => refreshOpenTrustPage?.();
 export async function trustPage(
   _route: Route,
   context: RenderContext,
   app: App,
 ) {
   const { main } = context;
-  const live = () => context.live();
   context.title("Trust");
   main.className = "";
+  const rerender = () => {
+    if (!context.live()) return;
+    main.replaceChildren();
+    void trustPage(_route, context, app);
+  };
   main.append(
     el("h1", { class: "page", text: "Trust" }),
     p("Whose judgments order the definitions you see.", "muted"),
@@ -50,16 +44,6 @@ export async function trustPage(
     "aria-label": "Active view",
   });
   let modeRequest = 0;
-  // The radios follow the saved preference, also after a change in another
-  // tab. Only the checked state changes, so focus and the page stay.
-  const syncMode = () => {
-    const saved = app.session.preferences.viewMode;
-    for (const radio of seg.querySelectorAll("input"))
-      radio.checked = radio.value === saved;
-    for (const l of seg.querySelectorAll("label"))
-      l.classList.toggle("on", l.querySelector("input")!.checked);
-  };
-  let modeSaving = 0;
   for (const [value, label] of [
     ["personal", "Mine: site view + my choices"],
     ["site", "Site view only"],
@@ -74,15 +58,15 @@ export async function trustPage(
     );
     input.addEventListener("change", async () => {
       const request = ++modeRequest;
-      modeSaving++;
       try {
         await app.session.setPreferences({ viewMode: value });
-      } catch {
-      } finally {
-        modeSaving--;
-      }
-      if (!live() || request !== modeRequest) return;
-      syncMode();
+      } catch {}
+      if (!context.live() || request !== modeRequest) return;
+      const saved = app.session.preferences.viewMode;
+      for (const radio of seg.querySelectorAll("input"))
+        radio.checked = radio.value === saved;
+      for (const l of seg.querySelectorAll("label"))
+        l.classList.toggle("on", l.querySelector("input")!.checked);
     });
     seg.append(wrapper);
   }
@@ -94,17 +78,15 @@ export async function trustPage(
       seg,
     ),
   );
-  // The panel stays in both views. In the site view, Recompute from records
-  // still calculates the personal view in this browser.
-  const panel = calculationPanel(app, {
-    mode: "personal",
-    context,
-    label: "Local calculation",
-    idleText:
-      "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records. Pages in the site view show this server's scores and need no local calculation.",
-  });
   main.append(
-    panel,
+    calculationPanel(app, {
+      mode: "personal",
+      context,
+      label: "Local calculation",
+      idleText:
+        "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records. Pages in the site view show this server's scores and need no local calculation.",
+      onRefresh: rerender,
+    }),
     disclosure("How the two views work", () => [
       p(
         "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 only if its continuity group has no allocation or private root change. A zero allocation or removal also prevents that addition.",
@@ -124,33 +106,300 @@ export async function trustPage(
       ),
     ]),
   );
-  const rules = trustRules(app, context);
-  main.append(rules.node);
-  refreshOpenTrustPage = () => (live() ? rules.refresh() : Promise.resolve());
-  // The private rule reasons name the loaded calculation. When a calculation
-  // ends, is cancelled, or fails, they follow it in place, whichever panel
-  // started it.
-  onDisconnect(
-    panel,
-    app.personal.subscribe((status) => {
-      if (status.state !== "downloading" && status.state !== "evaluating")
-        rules.followCalculation();
-    }),
-    context.signal,
+  const overlay = await app.store.overlay().catch(() => null);
+  const registers = await app.own.registers();
+  if (!context.live()) return;
+  const continuity = app.personal.loadedContinuity;
+  const actor = (key: string) => continuity?.actors[key] ?? key;
+  if (continuity && overlay?.trust.some((rule) => rule.value !== "clear"))
+    main.append(
+      p(
+        `Private rule labels use personal calculation snapshot ${continuity.snapshot} and view ${continuity.view}.`,
+        "meta",
+      ),
+    );
+  // People I trust.
+  main.append(el("h2", { class: "section", text: "People I trust" }));
+  const trusted = el("div");
+  const ignored = el("div");
+  const conflicted = el("div");
+  const inactive = el("div");
+  const publicRows = registers
+    ? [...registers.trust.entries()].filter(
+        ([, state]) =>
+          state.known &&
+          !state.conflicted &&
+          state.value &&
+          state.value !== "clear",
+      )
+    : [];
+  const conflicts = registers
+    ? [...registers.trust.entries()].filter(
+        ([, state]) => state.known && state.conflicted,
+      )
+    : [];
+  const parseKey = (key: string) => {
+    const [subject, kind, word, language] = key.split("|");
+    return {
+      subject,
+      scope: { kind: kind as "definition" | "rafsi" | "*", word, language },
+    };
+  };
+  const undoPublic = (
+    subject: string,
+    scope: ReturnType<typeof parseKey>["scope"],
+  ) =>
+    button(
+      "Undo",
+      () =>
+        app.session.requireUnlocked(
+          `Clearing public trust for ${subject.slice(8, 16)}`,
+          async () => {
+            if (!(await app.session.firstSignatureDisclosure())) return;
+            try {
+              const results = await app.signer.publish([
+                {
+                  action: { kind: "trust.set", subject, scope, value: "clear" },
+                  body: null,
+                },
+              ]);
+              app.own.invalidate();
+              const { publicClearOutcome } =
+                await import("../components/trustpanel.ts");
+              app.announce(publicClearOutcome(results));
+              rerender();
+            } catch (error) {
+              app.announce(describe(error));
+            }
+          },
+        ),
+      { class: "btn btn-quiet" },
+    );
+  for (const [key, state] of publicRows) {
+    const { subject, scope } = parseKey(key);
+    if (!state.known || state.conflicted) continue;
+    const row = el("div", { class: "row" });
+    row.append(
+      el("span", { class: "k", text: "public" }),
+      el(
+        "span",
+        { class: "t" },
+        el(
+          "span",
+          {},
+          identityLink(subject),
+          text(` ${describeScope(scope)}`, "meta"),
+        ),
+      ),
+      undoPublic(subject, scope),
+    );
+    (state.value === "heed" ? trusted : ignored).append(row);
+  }
+  const conflictHistory =
+    conflicts.length && app.session.identity
+      ? await loadOwnHistory(app.store, app.session.identity, {
+          offline: app.offlineSigning.value,
+        }).catch(() => null)
+      : null;
+  for (const [key, state] of conflicts) {
+    if (!state.known) continue;
+    const values = state.events.map((id) =>
+      String(conflictHistory?.events.get(id)?.header.action.value ?? "unknown"),
+    );
+    const { subject, scope } = parseKey(key);
+    const row = el("div", { class: "row" });
+    row.append(
+      el("span", { class: "k", text: "conflict" }),
+      el(
+        "span",
+        { class: "t" },
+        el(
+          "span",
+          {},
+          identityLink(subject),
+          text(
+            ` ${describeScope(scope)} · your devices disagree. Values: ${values.join(", ")}. ${values.includes("shun") ? "Under simple-routes-shun-v1, a conflict that contains shun refuses this issuer route. " : ""}State the value again to resolve it.`,
+            "meta",
+          ),
+        ),
+      ),
+      undoPublic(subject, scope),
+    );
+    conflicted.append(row);
+  }
+  for (const rule of overlay?.trust ?? []) {
+    if (rule.value === "clear") continue;
+    const invalid = scopeError(rule.scope);
+    const sameActor = Boolean(
+      app.session.identity &&
+      actor(rule.issuer) === actor(app.session.identity),
+    );
+    const ineffective =
+      !/^ed25519:[0-9a-f]{64}$/.test(rule.issuer) || !sameActor;
+    const effect = ineffective
+      ? rule.issuer === "local"
+        ? "This rule was saved before this browser had a key. It moves to your key when you create or restore one."
+        : !/^ed25519:[0-9a-f]{64}$/.test(rule.issuer)
+          ? "This rule has no valid issuer. Remove it or save a rule with your current key."
+          : continuity
+            ? "This rule does not apply in the loaded personal calculation. Its snapshot does not connect the issuer to your key."
+            : "No personal calculation is loaded. This rule depends on accepted continuity in the next calculation snapshot."
+      : "";
+    const row = el("div", { class: "row" });
+    row.append(
+      el("span", { class: "k", text: invalid ? "invalid" : "private" }),
+      el(
+        "span",
+        { class: "t" },
+        el(
+          "span",
+          {},
+          identityLink(rule.subject),
+          text(
+            ` ${describeScope(rule.scope)}${rule.weight ? ` · weight ${fractionText(rule.weight)}` : ""}${invalid ? ` · Invalid saved scope. ${invalid} Remove this rule to repair the personal view.` : effect ? ` · ${effect}` : ""}`,
+            "meta",
+          ),
+        ),
+      ),
+      button(
+        "Make public",
+        () =>
+          makePublic(
+            app,
+            rule.subject,
+            rule.scope,
+            rule.value === "heed" ? "heed" : "shun",
+            rerender,
+          ),
+        { class: "btn btn-quiet" },
+      ),
+      button(
+        "Remove",
+        async () => {
+          try {
+            await app.store.updateOverlay((current) => {
+              current.trust = current.trust.filter(
+                (r) =>
+                  !(
+                    r.issuer === rule.issuer &&
+                    r.subject === rule.subject &&
+                    scopeKey(r.scope) === scopeKey(rule.scope)
+                  ),
+              );
+            });
+            rerender();
+          } catch (error) {
+            app.announce(describe(error));
+          }
+        },
+        { class: "btn btn-quiet" },
+      ),
+    );
+    (invalid || ineffective
+      ? inactive
+      : rule.value === "heed"
+        ? trusted
+        : ignored
+    ).append(row);
+  }
+  for (const blocked of overlay?.blocked ?? []) {
+    const row = el("div", { class: "row" });
+    row.append(
+      el("span", { class: "k", text: "private" }),
+      el(
+        "span",
+        { class: "t" },
+        el(
+          "span",
+          {},
+          identityLink(blocked.identity),
+          text(
+            ` ${describeScope(blocked.scope)} · also blocks trust that passes through them`,
+            "meta",
+          ),
+        ),
+        blocked.reason ? el("small", { text: blocked.reason }) : null,
+      ),
+      button(
+        "Make public",
+        () =>
+          makePublic(app, blocked.identity, blocked.scope, "shun", rerender),
+        { class: "btn btn-quiet" },
+      ),
+      button(
+        "Remove",
+        async () => {
+          try {
+            await app.store.updateOverlay((current) => {
+              current.blocked = current.blocked.filter(
+                (b) =>
+                  !(
+                    b.identity === blocked.identity &&
+                    scopeKey(b.scope) === scopeKey(blocked.scope)
+                  ),
+              );
+            });
+            rerender();
+          } catch (error) {
+            app.announce(describe(error));
+          }
+        },
+        { class: "btn btn-quiet" },
+      ),
+    );
+    const invalid = scopeError(blocked.scope);
+    if (invalid)
+      row.append(
+        p(
+          `Invalid saved scope. ${invalid} Remove this block to repair the personal view.`,
+          "notice",
+        ),
+      );
+    (invalid ? inactive : ignored).append(row);
+  }
+  if (!trusted.childElementCount) {
+    if (app.session.identity)
+      trusted.append(
+        p(
+          registers
+            ? "Nobody yet. Open an identity page and choose Trust their judgments."
+            : "Your public choices are unknown because your history could not be read.",
+          "small",
+        ),
+      );
+    else
+      trusted.append(
+        el(
+          "p",
+          { class: "notice" },
+          text("Private trust needs a key. "),
+          link("Create or restore your key", routes.localIdentity),
+        ),
+      );
+  }
+  main.append(trusted, el("h2", { class: "section", text: "People I ignore" }));
+  if (!ignored.childElementCount) ignored.append(p("Nobody.", "small"));
+  main.append(
+    ignored,
+    p(
+      "Public choices are signed and stay in history after you undo them. Ignoring someone is not an accusation.",
+      "meta",
+    ),
   );
-  onDisconnect(
-    panel,
-    app.session.subscribe(() => {
-      if (!modeSaving) syncMode();
-    }),
-    context.signal,
-  );
-  await rules.refresh();
-  if (!live()) return;
+  if (conflicted.childElementCount)
+    main.append(
+      el("h2", { class: "section", text: "Conflicting public choices" }),
+      conflicted,
+    );
+  if (inactive.childElementCount)
+    main.append(
+      el("h2", { class: "section", text: "Private rules that need attention" }),
+      inactive,
+    );
   // Site view.
   main.append(el("h2", { class: "section", text: "Site view" }));
   const view = await loadSiteView(context.signal);
-  if (!live()) return;
+  if (!context.live()) return;
   main.append(viewChooser(app, view.id, context));
   if (!view.body) {
     main.append(
@@ -282,453 +531,12 @@ export async function trustPage(
   );
   void eventId;
 }
-type TrustScope = {
-  kind: "definition" | "rafsi" | "*";
-  word: string;
-  language: string;
-};
-/** One listed rule: its node stays while the rule stays, and only its text changes. */
-interface RuleRow {
-  node: HTMLElement;
-  detail: HTMLElement;
-}
-/**
- * The public and private rules of the Trust page. `refresh` reads the saved
- * rules again after an action. `followCalculation` updates the private rule
- * reasons for the calculation that is loaded now. Both update the existing
- * rows in place and move a row between sections when its section changes, so
- * the rest of the page, the reader's focus, and the scroll position stay. A
- * change waits while the reader presses a control, so the control does not
- * move before its click.
- */
-function trustRules(app: App, context: RenderContext) {
-  const node = el("div");
-  const source = p("", "meta");
-  source.hidden = true;
-  const section = (title: string, empty = title, unread = title) => {
-    const heading = el("h2", { class: "section", text: title, tabindex: -1 });
-    const list = el("div");
-    return { heading, list, title, empty, unread };
-  };
-  const trusted = section("People I trust");
-  const ignored = section("People I ignore");
-  const conflicted = section(
-    "Conflicting public choices",
-    "No public choices conflict.",
-    "Your public choices could not be read.",
-  );
-  const inactive = section(
-    "Private rules that need attention",
-    "No private rules need attention.",
-    "Your private rules could not be read.",
-  );
-  // These two headings show only while their section holds a rule, so they
-  // stay hidden until the first read finds one.
-  conflicted.heading.hidden = true;
-  inactive.heading.hidden = true;
-  // The text in an empty list. It is in the list only while the list has no rows.
-  let nobodyTrusted: HTMLElement | null = null;
-  const nobodyIgnored = p("Nobody.", "small");
-  // Names the rules that the last read could not read. Their rows are not
-  // shown, and an empty list does not mean that there are none.
-  const unread = p("", "notice");
-  unread.hidden = true;
-  node.append(
-    source,
-    unread,
-    trusted.heading,
-    trusted.list,
-    ignored.heading,
-    ignored.list,
-    p(
-      "Public choices are signed and stay in history after you undo them. Ignoring someone is not an accusation.",
-      "meta",
-    ),
-    conflicted.heading,
-    conflicted.list,
-    inactive.heading,
-    inactive.list,
-  );
-  const rows = new Map<string, RuleRow>();
-  let data: {
-    overlay: Awaited<ReturnType<App["store"]["overlay"]>> | null;
-    registers: Awaited<ReturnType<App["own"]["registers"]>>;
-    history: Awaited<ReturnType<typeof loadOwnHistory>> | null;
-    identity: string | null;
-  } | null = null;
-  let request = 0;
-  let shownContinuity: string | null | undefined;
-  const continuityKey = () => {
-    const loaded = app.personal.loadedContinuity;
-    return loaded
-      ? JSON.stringify([loaded.snapshot, loaded.view, loaded.actors])
-      : null;
-  };
-  const row = (
-    key: string,
-    build: () => {
-      kind: string;
-      subject: string;
-      extra?: HTMLElement | null;
-      actions: HTMLElement[];
-    },
-  ): RuleRow => {
-    const existing = rows.get(key);
-    if (existing) return existing;
-    const parts = build();
-    const detail = text("", "meta");
-    const node = el("div", { class: "row" });
-    node.append(
-      el("span", { class: "k", text: parts.kind }),
-      el(
-        "span",
-        { class: "t" },
-        el("span", {}, identityLink(parts.subject), detail),
-        parts.extra ?? null,
-      ),
-      ...parts.actions,
-    );
-    const created = { node, detail };
-    rows.set(key, created);
-    return created;
-  };
-  const undoPublic = (subject: string, scope: TrustScope) =>
-    button(
-      "Undo",
-      () =>
-        app.session.requireUnlocked(
-          `Clearing public trust for ${subject.slice(8, 16)}`,
-          async () => {
-            if (!(await app.session.firstSignatureDisclosure())) return;
-            try {
-              const results = await app.signer.publish([
-                {
-                  action: { kind: "trust.set", subject, scope, value: "clear" },
-                  body: null,
-                },
-              ]);
-              app.own.invalidate();
-              const { publicClearOutcome } =
-                await import("../components/trustpanel.ts");
-              app.announce(publicClearOutcome(results));
-              await refreshTrust();
-            } catch (error) {
-              app.announce(describe(error));
-            }
-          },
-        ),
-      { class: "btn btn-quiet" },
-    );
-  const removeButton = (change: (overlay: Overlay) => void) =>
-    button(
-      "Remove",
-      async () => {
-        try {
-          await app.store.updateOverlay(change);
-          await refreshTrust();
-        } catch (error) {
-          app.announce(describe(error));
-        }
-      },
-      { class: "btn btn-quiet" },
-    );
-  /** Builds the wanted rows from the read rules and the loaded calculation, then places them. */
-  const place = () => {
-    if (!data) return;
-    const { overlay, registers, history, identity } = data;
-    // A failed read leaves its rules unknown, not empty.
-    const publicUnread = Boolean(identity) && !registers;
-    const privateUnread = !overlay;
-    const continuity = app.personal.loadedContinuity;
-    shownContinuity = continuityKey();
-    const actor = (key: string) => continuity?.actors[key] ?? key;
-    const wanted = new Map<HTMLElement, HTMLElement[]>([
-      [trusted.list, []],
-      [ignored.list, []],
-      [conflicted.list, []],
-      [inactive.list, []],
-    ]);
-    const put = (list: HTMLElement, entry: RuleRow, detail: string) => {
-      if (entry.detail.textContent !== detail)
-        entry.detail.textContent = detail;
-      wanted.get(list)!.push(entry.node);
-    };
-    const parseKey = (key: string) => {
-      const [subject, kind, word, language] = key.split("|");
-      return {
-        subject,
-        scope: { kind: kind as TrustScope["kind"], word, language },
-      };
-    };
-    for (const [key, state] of registers?.trust.entries() ?? []) {
-      if (!state.known) continue;
-      const { subject, scope } = parseKey(key);
-      if (state.conflicted) {
-        const values = state.events.map((id) =>
-          String(history?.events.get(id)?.header.action.value ?? "unknown"),
-        );
-        put(
-          conflicted.list,
-          row(`conflict|${key}`, () => ({
-            kind: "conflict",
-            subject,
-            actions: [undoPublic(subject, scope)],
-          })),
-          ` ${describeScope(scope)} · your devices disagree. Values: ${values.join(", ")}. ${values.includes("shun") ? "Under simple-routes-shun-v1, a conflict that contains shun refuses this issuer route. " : ""}State the value again to resolve it.`,
-        );
-      } else if (state.value && state.value !== "clear")
-        put(
-          state.value === "heed" ? trusted.list : ignored.list,
-          row(`public|${key}|${state.value}`, () => ({
-            kind: "public",
-            subject,
-            actions: [undoPublic(subject, scope)],
-          })),
-          ` ${describeScope(scope)}`,
-        );
-    }
-    for (const rule of overlay?.trust ?? []) {
-      if (rule.value === "clear") continue;
-      const invalid = scopeError(rule.scope);
-      const validIssuer = /^ed25519:[0-9a-f]{64}$/.test(rule.issuer);
-      const sameActor = Boolean(
-        identity && actor(rule.issuer) === actor(identity),
-      );
-      const ineffective = !validIssuer || !sameActor;
-      const effect = !ineffective
-        ? ""
-        : rule.issuer === "local"
-          ? "This rule was saved before this browser had a key. It moves to your key when you create or restore one."
-          : !validIssuer
-            ? "This rule has no valid issuer. Remove it or save a rule with your current key."
-            : continuity
-              ? "This rule does not apply in the loaded personal calculation. Its snapshot does not connect the issuer to your key."
-              : "No personal calculation is loaded. This rule depends on accepted continuity in the next calculation snapshot.";
-      const scope = scopeKey(rule.scope);
-      put(
-        invalid || ineffective
-          ? inactive.list
-          : rule.value === "heed"
-            ? trusted.list
-            : ignored.list,
-        row(
-          `private|${JSON.stringify([rule.issuer, rule.subject, scope, rule.value, rule.weight])}`,
-          () => ({
-            kind: invalid ? "invalid" : "private",
-            subject: rule.subject,
-            actions: [
-              button(
-                "Make public",
-                () =>
-                  makePublic(
-                    app,
-                    rule.subject,
-                    rule.scope,
-                    rule.value === "heed" ? "heed" : "shun",
-                  ),
-                { class: "btn btn-quiet" },
-              ),
-              removeButton((current) => {
-                current.trust = current.trust.filter(
-                  (r) =>
-                    !(
-                      r.issuer === rule.issuer &&
-                      r.subject === rule.subject &&
-                      scopeKey(r.scope) === scope
-                    ),
-                );
-              }),
-            ],
-          }),
-        ),
-        ` ${describeScope(rule.scope)}${rule.weight ? ` · weight ${fractionText(rule.weight)}` : ""}${invalid ? ` · Invalid saved scope. ${invalid} Remove this rule to repair the personal view.` : effect ? ` · ${effect}` : ""}`,
-      );
-    }
-    for (const blocked of overlay?.blocked ?? []) {
-      const invalid = scopeError(blocked.scope);
-      const scope = scopeKey(blocked.scope);
-      const entry = row(
-        `blocked|${JSON.stringify([blocked.identity, scope, blocked.reason ?? null])}`,
-        () => ({
-          kind: "private",
-          subject: blocked.identity,
-          extra: blocked.reason ? el("small", { text: blocked.reason }) : null,
-          actions: [
-            button(
-              "Make public",
-              () => makePublic(app, blocked.identity, blocked.scope, "shun"),
-              { class: "btn btn-quiet" },
-            ),
-            removeButton((current) => {
-              current.blocked = current.blocked.filter(
-                (b) =>
-                  !(
-                    b.identity === blocked.identity &&
-                    scopeKey(b.scope) === scope
-                  ),
-              );
-            }),
-            ...(invalid
-              ? [
-                  p(
-                    `Invalid saved scope. ${invalid} Remove this block to repair the personal view.`,
-                    "notice",
-                  ),
-                ]
-              : []),
-          ],
-        }),
-      );
-      put(
-        invalid ? inactive.list : ignored.list,
-        entry,
-        ` ${describeScope(blocked.scope)} · also blocks trust that passes through them`,
-      );
-    }
-    // Place the rows. A row that keeps its place is not touched. A moved row
-    // keeps the reader's focus. A removed row hands focus to its section.
-    const focused = document.activeElement as HTMLElement | null;
-    const focusedRow = focused?.closest<HTMLElement>(".row") ?? null;
-    let lostFrom: HTMLElement | null = null;
-    const keep = new Set([...wanted.values()].flat());
-    for (const [key, entry] of rows)
-      if (!keep.has(entry.node)) {
-        if (entry.node === focusedRow) lostFrom = entry.node.parentElement;
-        entry.node.remove();
-        rows.delete(key);
-      }
-    for (const [list, nodes] of wanted)
-      nodes.forEach((child, index) => {
-        if (list.children[index] !== child)
-          list.insertBefore(child, list.children[index] ?? null);
-      });
-    if (focused && focused.isConnected && document.activeElement !== focused)
-      focused.focus({ preventScroll: true });
-    // A heading that holds focus stays until the next update, so a
-    // calculation that empties its section never drops the reader's focus.
-    // It then says that the section is empty, or that it could not be read.
-    // It says that the section is empty only when the read showed that.
-    for (const [entry, unknown] of [
-      [conflicted, publicUnread],
-      [inactive, privateUnread],
-    ] as const) {
-      const filled = wanted.get(entry.list)!.length > 0;
-      const kept = !filled && document.activeElement === entry.heading;
-      entry.heading.hidden = !filled && !kept;
-      const title = !kept ? entry.title : unknown ? entry.unread : entry.empty;
-      if (entry.heading.textContent !== title)
-        entry.heading.textContent = title;
-    }
-    if (lostFrom) {
-      // Focus goes to the heading of the section that lost the row. When
-      // that section is now empty and its heading hides, focus goes to the
-      // nearest earlier heading that stays.
-      const sections = [trusted, ignored, conflicted, inactive];
-      const index = sections.findIndex((entry) => entry.list === lostFrom);
-      const heading = sections
-        .slice(0, index + 1)
-        .reverse()
-        .find((entry) => !entry.heading.hidden)?.heading;
-      heading?.focus({ preventScroll: true });
-    }
-    source.hidden = !(
-      continuity && overlay?.trust.some((rule) => rule.value !== "clear")
-    );
-    if (continuity)
-      source.textContent = `Private rule labels use personal calculation snapshot ${continuity.snapshot} and view ${continuity.view}.`;
-    const unreadText = [
-      publicUnread
-        ? "Your public choices are unknown because your history could not be read."
-        : "",
-      privateUnread
-        ? "Your private rules are unknown because this browser's storage could not be read."
-        : "",
-    ]
-      .filter(Boolean)
-      .join(" ");
-    unread.hidden = !unreadText;
-    if (unread.textContent !== unreadText) unread.textContent = unreadText;
-    // An empty list says "nobody" only when every read that fills it worked.
-    const listUnread = publicUnread || privateUnread;
-    if (wanted.get(trusted.list)!.length) nobodyTrusted?.remove();
-    else {
-      const empty = identity
-        ? p(
-            listUnread
-              ? "Nobody that this page could read."
-              : "Nobody yet. Open an identity page and choose Trust their judgments.",
-            "small",
-          )
-        : el(
-            "p",
-            { class: "notice" },
-            text("Private trust needs a key. "),
-            link("Create or restore your key", routes.localIdentity),
-          );
-      if (
-        !nobodyTrusted?.isConnected ||
-        nobodyTrusted.textContent !== empty.textContent
-      ) {
-        nobodyTrusted?.remove();
-        nobodyTrusted = empty;
-        trusted.list.append(empty);
-      }
-    }
-    const ignoredText = listUnread
-      ? "Nobody that this page could read."
-      : "Nobody.";
-    if (nobodyIgnored.textContent !== ignoredText)
-      nobodyIgnored.textContent = ignoredText;
-    if (wanted.get(ignored.list)!.length) nobodyIgnored.remove();
-    else if (!nobodyIgnored.isConnected) ignored.list.append(nobodyIgnored);
-  };
-  // An update while the reader presses a control runs after the release.
-  // Waiting updates run once, with the latest rules and calculation.
-  const press = pressTracker(context.signal);
-  let waiting = false;
-  const update = () => {
-    if (!press.pressed) return place();
-    if (waiting) return;
-    waiting = true;
-    void press.finished().then(() => {
-      waiting = false;
-      if (context.live()) place();
-    });
-  };
-  return {
-    node,
-    /** Reads the saved rules again. A read that a later read replaced writes nothing. */
-    async refresh() {
-      const current = ++request;
-      const overlay = await app.store.overlay().catch(() => null);
-      const registers = await app.own.registers();
-      const identity = app.session.identity;
-      const conflicts =
-        registers &&
-        [...registers.trust.values()].some(
-          (state) => state.known && state.conflicted,
-        );
-      const history =
-        conflicts && identity
-          ? await loadOwnHistory(app.store, identity, {
-              offline: app.offlineSigning.value,
-            }).catch(() => null)
-          : null;
-      if (!context.live() || current !== request) return;
-      data = { overlay, registers, history, identity: identity ?? null };
-      update();
-    },
-    /** Updates the private rule reasons when the loaded calculation changed. */
-    followCalculation() {
-      if (data && continuityKey() !== shownContinuity) update();
-    },
-  };
-}
 async function makePublic(
   app: App,
   subject: string,
   scope: { kind: "definition" | "rafsi" | "*"; word: string; language: string },
   value: "heed" | "shun",
+  done: () => void,
 ) {
   const { confirmPublicTrust, previewProfile, publicTrustOutcome } =
     await import("../components/trustpanel.ts");
@@ -757,7 +565,7 @@ async function makePublic(
         ]);
         app.own.invalidate();
         app.announce(publicTrustOutcome(results));
-        await refreshTrust();
+        done();
       } catch (error) {
         app.announce(describe(error));
       }

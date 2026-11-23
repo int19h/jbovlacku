@@ -482,14 +482,11 @@ export async function personPage(
           subject: identity,
           name: name ?? shortIdentity(identity),
           mode,
-          // A save can end while the reader presses another control.
-          onDone: () =>
-            void press.finished().then(() => {
-              if (!context.live()) return;
-              slot.replaceChildren();
-              trustButton.focus();
-              void showChoices();
-            }),
+          onDone: () => {
+            slot.replaceChildren();
+            trustButton.focus();
+            void showChoices();
+          },
         }),
       );
       trustButton.setAttribute("aria-expanded", String(mode === "trust"));

@@ -234,11 +234,7 @@ for (const mode of ["trust", "ignore"] as const)
             },
             {
               store,
-              session: {
-                identity,
-                preferences: defaultPreferences,
-                subscribe: () => () => {},
-              },
+              session: { identity, preferences: defaultPreferences },
               own: { registers: async () => null },
               personal: { loadedContinuity: null, subscribe: () => () => {} },
               announce: (value: string) => announced.push(value),
