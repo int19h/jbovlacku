@@ -659,6 +659,7 @@ export async function meaningPage(
   let cached: CachedPackage | null = null;
   // Consent covers one exact query and its definition language.
   let remoteConsent: string | null = null;
+  let remoteSearching = false;
   const nearbyQuery = () => meaningQueries(meaning.input.value).join(" ");
   const remoteQuery = () => nearbyQuery().split(" ")[0];
   const consentKey = () => JSON.stringify([remoteQuery(), draft.language]);
@@ -668,7 +669,9 @@ export async function meaningPage(
     else {
       modeLabel.append(text("no local package · "));
       if (remoteConsent === consentKey())
-        modeLabel.append(text("searching this server"));
+        modeLabel.append(
+          text(remoteSearching ? "searching this server" : "searched this server"),
+        );
       else
         modeLabel.append(
           button(
@@ -789,17 +792,21 @@ export async function meaningPage(
     const value = meaning.input.value;
     const language = draft.language;
     const terms = nearbyTerms(value);
-    // A consented lookup replaces the old note at once, before the local
-    // package read below. A focused Settings link moves to the Meaning
-    // input first, so clearing the note never drops focus to the body.
+    // A consented lookup replaces the old rows and note at once, before
+    // the local package read below. A focused control in either moves to
+    // the Meaning input first, so clearing never drops focus to the body.
     if (terms.length && remoteConsent === consentKey()) {
+      remoteSearching = true;
+      renderMode();
       if (
         document.activeElement instanceof Node &&
-        note.contains(document.activeElement)
+        (note.contains(document.activeElement) ||
+          list.contains(document.activeElement))
       )
         meaning.input.focus({ preventScroll: true });
       settingsNoteShown = false;
       note.textContent = "";
+      list.replaceChildren();
     }
     const current = () =>
       context.live() &&
@@ -864,11 +871,17 @@ export async function meaningPage(
       const result = await remoteDraftSearch(remoteQuery(), language, 10, {
         signal: context.signal,
       });
-      if (current()) renderHits(result.hits, "remote");
+      if (current()) {
+        renderHits(result.hits, "remote");
+        remoteSearching = false;
+        renderMode();
+      }
     } catch (error) {
       if (current()) {
         settingsNoteShown = false;
         note.textContent = describe(error);
+        remoteSearching = false;
+        renderMode();
       }
     }
   };

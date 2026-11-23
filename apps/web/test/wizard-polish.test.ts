@@ -12,6 +12,52 @@ async function downloadPackage(page: Page) {
   );
 }
 
+/** Holds the local package read with a second IndexedDB connection. */
+async function holdPackageRead(page: Page): Promise<() => Promise<void>> {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        const request = indexedDB.open("jbovlacku-browser-v1", 6);
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction("packages", "readwrite");
+          const store = tx.objectStore("packages");
+          const hold = window as unknown as {
+            __hold?: { db: IDBDatabase; tx: IDBTransaction };
+            __holdStop?: boolean;
+          };
+          hold.__hold = { db, tx };
+          hold.__holdStop = false;
+          // Chain requests so the transaction never goes inactive.
+          const spin = () => {
+            if (hold.__holdStop) return;
+            const next = store.get("en");
+            next.onsuccess = () => spin();
+            next.onerror = () => spin();
+          };
+          spin();
+          resolve();
+        };
+        request.onerror = () => resolve();
+      }),
+  );
+  return async () => {
+    await page.evaluate(() => {
+      const hold = window as unknown as {
+        __hold?: { db: IDBDatabase; tx: IDBTransaction };
+        __holdStop?: boolean;
+      };
+      hold.__holdStop = true;
+      try {
+        hold.__hold?.tx.abort();
+      } catch {
+        // The held transaction may already have finished on its own.
+      }
+      hold.__hold?.db.close();
+    });
+  };
+}
+
 async function startLujvo(page: Page) {
   await page.goto("/new/meaning");
   await page
@@ -208,33 +254,7 @@ test("the consent invitation clears at acceptance while the package read waits",
   await expect(
     page.getByText("or allow a search on this server."),
   ).toBeVisible();
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) => {
-        const request = indexedDB.open("jbovlacku-browser-v1", 6);
-        request.onsuccess = () => {
-          const db = request.result;
-          const tx = db.transaction("packages", "readwrite");
-          const store = tx.objectStore("packages");
-          const hold = window as unknown as {
-            __hold?: { db: IDBDatabase; tx: IDBTransaction };
-            __holdStop?: boolean;
-          };
-          hold.__hold = { db, tx };
-          hold.__holdStop = false;
-          // Chain requests so the transaction never goes inactive.
-          const spin = () => {
-            if (hold.__holdStop) return;
-            const next = store.get("en");
-            next.onsuccess = () => spin();
-            next.onerror = () => spin();
-          };
-          spin();
-          resolve();
-        };
-        request.onerror = () => resolve();
-      }),
-  );
+  const releaseHold = await holdPackageRead(page);
   await page
     .getByRole("button", { name: "search this server", exact: true })
     .click();
@@ -242,20 +262,57 @@ test("the consent invitation clears at acceptance while the package read waits",
   await expect(page.getByText("or allow a search on this server.")).toHaveCount(
     0,
   );
-  await page.evaluate(() => {
-    const hold = window as unknown as {
-      __hold?: { db: IDBDatabase; tx: IDBTransaction };
-      __holdStop?: boolean;
-    };
-    hold.__holdStop = true;
-    try {
-      hold.__hold?.tx.abort();
-    } catch {
-      // The held transaction may already have finished on its own.
-    }
-    hold.__hold?.db.close();
-  });
+  await releaseHold();
   await expect(page.locator("ol.similar")).toContainText("cukta");
+});
+
+test("old result rows clear when a new consented lookup starts", async ({
+  page,
+}) => {
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto("/new/meaning");
+  const meaning = page.getByLabel("Meaning", { exact: true });
+  await meaning.fill("book private committee");
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await expect(page.locator("ol.similar")).toContainText("cukta");
+  const releaseHold = await holdPackageRead(page);
+  await meaning.fill("book private committee.");
+  await page
+    .getByRole("button", { name: "Add a definition", exact: true })
+    .focus();
+  await page.waitForTimeout(700);
+  await expect(
+    page.locator("ol.similar").getByRole("link", { name: "cukta" }),
+  ).toHaveCount(0);
+  await expect(meaning).toBeFocused();
+  await releaseHold();
+  await expect(page.locator("ol.similar")).toContainText("cukta");
+});
+
+test("the searching label settles after an HTTP error", async ({ page }) => {
+  await page.route("**/api/v1/search", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        code: "unavailable",
+        message: "First lookup unavailable.",
+        event: null,
+        field: null,
+      }),
+    }),
+  );
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.goto("/new/meaning");
+  await page.getByLabel("Meaning", { exact: true }).fill("book");
+  await page
+    .getByRole("button", { name: "search this server", exact: true })
+    .click();
+  await expect(page.locator("main")).toContainText("First lookup unavailable.");
+  await expect(page.getByText("searched this server")).toBeVisible();
+  await expect(page.getByText("searching this server")).toHaveCount(0);
 });
 
 test("after consent, searching this server is plain text, not a button", async ({
@@ -280,7 +337,8 @@ test("after consent, searching this server is plain text, not a button", async (
   await expect(
     page.getByRole("button", { name: "searching this server" }),
   ).toHaveCount(0);
-  await expect(page.getByText("searching this server")).toBeVisible();
+  await expect(page.getByText("searching this server")).toHaveCount(0);
+  await expect(page.getByText("searched this server")).toBeVisible();
 });
 
 test("a gismu stem offered as a chip is not also reported as not offered", async ({
