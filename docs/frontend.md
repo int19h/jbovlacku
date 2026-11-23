@@ -378,7 +378,7 @@ The page applies the score order by itself only while the reader has not focused
 After reader input, the order stays, and the page offers “Show in score order”. That button applies the order and moves focus to the first definition. The definition shows a visible focus ring after a pointer or keyboard activation, until focus leaves it.
 While a judgment for a target is being signed or delivered, every control that can sign a judgment for that target stays disabled. This includes Endorse and Oppose, and the actions in Score details.
 After any judgment action for a target succeeds, every action in Score details for that target stays disabled, in each open disclosure and in each one opened later, until the page has read the new judgment from the signer's history. Only that read can offer another action.
-When scores arrive while focus is in the note about unavailable personal scores, the note stays until focus leaves it. Its text changes at once to “Personal scores for this snapshot are shown.”
+When scores arrive while focus is in the note about unavailable personal scores, the note stays until focus leaves it. Its text changes at once to “Personal scores for this snapshot are shown.” When the page then displays no score, for example because no definition loaded, the text is “The personal calculation for this snapshot finished.”
 Typo suggestions and rafsi decomposition are labeled suggestions, not silent spelling corrections.
 
 Each result uses a dense row with three content lines and a thin separator.

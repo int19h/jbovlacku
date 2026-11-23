@@ -372,11 +372,11 @@ export function scoreDetails(
     if (!details.open) return;
     const score = current();
     body.replaceChildren();
-    const ownActions = el("div");
+    // The container joins the page before the history read, so its
+    // subscriptions end when the body is redrawn or the page goes.
+    const ownActions = el("div", { class: "small" });
     body.append(ownActions);
-    void renderOwnActions(app, target, options).then((node) =>
-      ownActions.replaceChildren(node),
-    );
+    renderOwnActions(app, target, options, ownActions);
     if (options.personal && !score) {
       const reason = p(personalReasonText(options.reason), "small");
       // A page that follows the calculation status updates this text in
@@ -663,12 +663,18 @@ async function conflictBranches(
   }
   return list;
 }
-async function renderOwnActions(
+/**
+ * Draws the reader's own actions for a target into `slot`, a container
+ * that is already in the page. The subscriptions start before the first
+ * history read and end when the container leaves the page.
+ */
+function renderOwnActions(
   app: App,
   target: JudgmentTarget,
   options: JudgmentOptions,
-): Promise<HTMLElement> {
-  const slot = el("div", { class: "small" });
+  slot: HTMLElement,
+) {
+  let released = false;
   // These buttons share the page-wide in-flight set with the judgment
   // controls, so one target never has two judgment actions in flight.
   // They also describe the judgment that one history read found. After any
@@ -753,13 +759,12 @@ async function renderOwnActions(
         el("div", { class: "actions", style: "margin-top:8px" }, ...drawn),
       );
     }
-    if (read !== reads) return;
+    if (read !== reads || released) return;
     generation = before;
     buttons = drawn;
     syncDisabled();
     slot.replaceChildren(...nodes);
   };
-  await draw();
   const onRetire = (retiredTarget: string) => {
     if (retiredTarget !== target.id) return;
     syncDisabled();
@@ -770,10 +775,11 @@ async function renderOwnActions(
   onDisconnect(
     slot,
     () => {
+      released = true;
       busyListeners.delete(syncDisabled);
       retireListeners.delete(onRetire);
     },
     options.signal,
   );
-  return slot;
+  void draw();
 }

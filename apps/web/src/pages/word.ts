@@ -532,8 +532,12 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   };
   let note: HTMLElement | null = null;
   let showNote: ((reason: string, stale: boolean) => void) | null = null;
-  /** Says that scores are shown, for a note that stays while it has focus. */
-  let noteShown: (() => void) | null = null;
+  /**
+   * Says that the calculation settled, for a note that stays while it has
+   * focus: that scores are shown, or, when the page displays no score, that
+   * the calculation finished.
+   */
+  let noteShown: ((scoresShown: boolean) => void) | null = null;
   if (view.personal && view.reason) {
     const shown = p("", "small");
     note = shown;
@@ -563,9 +567,11 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       }
     };
     showNote(view.stale ? staleNote : view.reason, view.stale);
-    noteShown = () => {
+    noteShown = (scoresShown) => {
       showNote = null;
-      noteText.textContent = "Personal scores for this snapshot are shown.";
+      noteText.textContent = scoresShown
+        ? "Personal scores for this snapshot are shown."
+        : "The personal calculation for this snapshot finished.";
     };
     part.append(shown);
     // Every place that states the reason follows the current status: the
@@ -982,6 +988,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
       await pressFinished();
       if (!context.live() || !part.isConnected) return;
       view = settled;
+      let keptNote = false;
       // A read that ended without scores can be older than the status: a
       // retry may have failed differently since. The status then gives the
       // reason, as the note's listener does.
@@ -1002,9 +1009,9 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
         // A reader who has focus in it keeps the note until focus leaves.
         const done = note;
         note = null;
-        // Its text says at once that the scores are shown.
+        // Its text changes at once, after the scores below are drawn.
         if (done?.contains(document.activeElement)) {
-          noteShown?.();
+          keptNote = true;
           done.addEventListener("focusout", () => done.remove(), {
             once: true,
           });
@@ -1040,6 +1047,10 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
           unavailable: !eligible || scored.unavailable,
         });
       }
+      if (keptNote)
+        noteShown?.(
+          part.querySelector(".judgment .score:not(.unavailable)") !== null,
+        );
       const order = orderOf(settled).ordered.map((o) => o.id);
       const same = order.join(" ") === currentOrder().join(" ");
       if (same || !readerStarted()) {

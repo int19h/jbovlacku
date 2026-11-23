@@ -2033,3 +2033,151 @@ test("a focused note says at once that matching personal scores arrived", async 
   await page.keyboard.press("Tab");
   await expect(recompute).toHaveCount(0);
 });
+
+test("Score details opened and closed during a history read stop redrawing after the reader leaves", async ({
+  page,
+}) => {
+  const { cukta1, cukta2 } = fixture().definitions;
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  const other = block(page, cukta2).getByRole("button", { name: "Endorse" });
+  await other.click();
+  await acceptFirstSignature(page);
+  await expect(other).toHaveAttribute("aria-pressed", "true", {
+    timeout: 20000,
+  });
+  // After the next clear of cukta2, the first read of the signer's history
+  // waits, so each opening of cukta1's Score details waits on it.
+  let cleared = false;
+  let held = false;
+  let returned = false;
+  let releaseHistory!: () => void;
+  const historyHeld = new Promise<void>(
+    (resolve) => (releaseHistory = resolve),
+  );
+  await page.route("**/api/v1/events", async (route) => {
+    if (
+      route.request().method() === "POST" &&
+      route.request().postDataJSON().envelope.header.action.target === cukta2
+    )
+      cleared = true;
+    await route.continue();
+  });
+  await page.route("**/api/v1/identity-heads/**", async (route) => {
+    if (!cleared || held) return route.continue();
+    held = true;
+    const response = await route.fetch();
+    await historyHeld;
+    await route.fulfill({ response });
+    returned = true;
+  });
+  try {
+    await other.click();
+    await expect(page.getByRole("status")).toContainText(
+      "Your judgment is cleared.",
+    );
+    await expect.poll(() => held).toBe(true);
+    const summary = block(page, cukta1).locator(
+      "details.judgment-details > summary",
+    );
+    for (let i = 0; i < 4; i++) {
+      await summary.click();
+      await page.waitForTimeout(75);
+      await summary.click();
+      await page.waitForTimeout(75);
+    }
+    await page.getByRole("link", { name: /^Trust:/ }).click();
+    releaseHistory();
+    await expect.poll(() => returned).toBe(true);
+    await page.waitForTimeout(400);
+  } finally {
+    releaseHistory();
+  }
+  await openWord(page, "cukta");
+  const endorse = block(page, cukta1).getByRole("button", { name: "Endorse" });
+  await expect(endorse).toHaveAttribute("aria-pressed", "false");
+  // Count every redraw of a Score details action container that is not
+  // in the page.
+  await page.evaluate(() => {
+    const original = Element.prototype.replaceChildren;
+    (window as any).detachedDraws = 0;
+    Element.prototype.replaceChildren = function (...nodes) {
+      if (
+        !this.isConnected &&
+        String(new Error().stack).includes("components/judgment.ts")
+      )
+        (window as any).detachedDraws += 1;
+      return original.apply(this, nodes);
+    };
+  });
+  await endorse.click();
+  await expect(endorse).toHaveAttribute("aria-pressed", "true");
+  await endorse.click();
+  await expect(endorse).toHaveAttribute("aria-pressed", "false");
+  await page.waitForTimeout(1000);
+  expect(await page.evaluate(() => (window as any).detachedDraws)).toBe(0);
+});
+
+test("a focused note on a page with no score says that the calculation finished", async ({
+  page,
+}) => {
+  await page.goto("/trust");
+  await page
+    .getByRole("radio", { name: "Mine: site view + my choices" })
+    .check();
+  await expect(
+    page.getByRole("link", { name: "Trust: personal view" }),
+  ).toBeVisible();
+  // As in the test above: a ready status for another snapshot first, then
+  // the real result for this one.
+  await page.evaluate(async () => {
+    const { PersonalCalculator } = await import(
+      String("/src/data/personal.ts")
+    );
+    const rank = PersonalCalculator.prototype.rankWord;
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => (release = resolve));
+    (window as any).finishRank = release;
+    PersonalCalculator.prototype.rankWord = async function (
+      this: any,
+      ...args: any[]
+    ) {
+      const result = await rank.apply(this, args);
+      const ready = this.status;
+      this.set({ ...ready, snapshot: "jvsnap:" + "1".repeat(64) });
+      await turn;
+      this.set(ready);
+      return result;
+    };
+  });
+  // The only definition of ckusro fails to load, so the page has no score.
+  await page.route(
+    `**/api/v1/events/${encodeURIComponent(fixture().definitions.imported)}*`,
+    (route) =>
+      route.fulfill({
+        status: 404,
+        json: { code: "missing", message: "Record unavailable" },
+      }),
+  );
+  await page.evaluate(() => {
+    const anchor = document.createElement("a");
+    anchor.href = "/word/ckusro";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  });
+  await expect(page.locator(".definition .notice").first()).toBeVisible();
+  const recompute = page.getByRole("button", {
+    name: "Recompute for this snapshot",
+  });
+  await expect(recompute).toBeVisible();
+  await recompute.focus();
+  const note = recompute.locator("..");
+  await page.evaluate(() => (window as any).finishRank());
+  await expect(note).toContainText(
+    "The personal calculation for this snapshot finished.",
+  );
+  await expect(recompute).toBeFocused();
+  await expect(note).not.toContainText("are shown");
+  expect(await page.locator("main .judgment .score").count()).toBe(0);
+});
