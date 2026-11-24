@@ -19,10 +19,9 @@
  * rule uses the worker's own test (`validateCachedPackage` and
  * `validateEntry`). The worker still validates every package that a page
  * sends to it, and also checks what no page reads first: exact field sets,
- * the row order, the attribution, and that each row's language is the
- * package language. The core checks each spelling where a page derives the
- * word ID. The rule accepts every package that the worker accepts, with one
- * exception: a rafsi with a lone surrogate. The worker accepts any rafsi
+ * the row order, and the attribution. The core checks each spelling where a
+ * page derives the word ID. A rafsi with a lone surrogate passes the worker
+ * check and fails the row check. The worker accepts any rafsi
  * string, but the core cannot serialize such a rafsi into a pair ID.
  *
  * This module has no server or browser-storage dependency, so models and
@@ -116,9 +115,9 @@ export function savedPackage(value: unknown): CachedPackage | null {
 const V2_ONLY = ["issuer", "notes", "rafsi", "rafsi_complete", "attribution"];
 
 /**
- * One saved row of a package of the given version, checked with the
- * worker's tests (`validateEntry`) for each field that main-thread readers
- * use: the event, language, word, plain text, body, glosses and
+ * Check a saved row against the package language and version. Use the
+ * worker's tests (`validateEntry`) for fields that pages read:
+ * the event, language, word, plain text, body, glosses and
  * classification, and for a version 2 row the issuer, notes and rafsi
  * list. A version 1 row must carry no version 2 field, and a version 2 row
  * must carry the issuer and the rafsi list. The rule is stricter than the
@@ -128,11 +127,13 @@ const V2_ONLY = ["issuer", "notes", "rafsi", "rafsi_complete", "attribution"];
 export function savedRow(
   entry: unknown,
   version: 1 | 2 | undefined,
+  language: string,
 ): PackageEntry {
   if (!isRecord(entry)) throw new PackageValidationError();
   const { word, classification, glosses } = entry;
   let usable =
     eventId(entry.event) &&
+    entry.language === language &&
     languageTag(entry.language) &&
     fields(word, ["language", "spelling"]) &&
     word.language === "jbo" &&

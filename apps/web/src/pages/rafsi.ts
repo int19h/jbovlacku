@@ -26,7 +26,7 @@ import {
   savedWordId,
 } from "../data/saved-package.ts";
 import { getWord, loadRecord } from "../data/api.ts";
-import type { PackageEntryV2, RafsiBody } from "../model/types.ts";
+import type { RafsiBody } from "../model/types.ts";
 import { identityLink } from "../components/attribution.ts";
 import { viewScores } from "../components/localview.ts";
 import { judgmentControl, scoreDetails } from "../components/judgment.ts";
@@ -130,7 +130,7 @@ export async function wordsWithRafsi(
       // that the core cannot read.
       let incomplete = false;
       for (const row of pkg.entries) {
-        const entry = savedRow(row, pkg.version);
+        const entry = savedRow(row, pkg.version, language);
         if (isV2(entry) && entry.rafsi_complete === false) incomplete = true;
       }
       result = await searchPackage(pkg, language, [rafsi], {
@@ -641,7 +641,7 @@ async function resolvePair(
   app: App,
   pair: string,
   signal: AbortSignal,
-): Promise<{ spelling: string; language: string; rafsi: string } | null> {
+): Promise<RafsiWord | null> {
   const languages = new Set<string>([
     app.session.preferences.definitionLanguage,
   ]);
@@ -655,15 +655,21 @@ async function resolvePair(
     try {
       const pkg = await packageFor(app, language, signal);
       if (!pkg) continue;
+      let found: RafsiWord | undefined;
       for (const row of pkg.entries) {
-        const entry = savedRow(row, pkg.version);
+        const entry = savedRow(row, pkg.version, language);
         if (!isV2(entry)) continue;
         const id = savedWordId(entry.word);
-        for (const rafsi of (entry as PackageEntryV2).rafsi)
+        // A match still needs the rest of the package to pass the row checks.
+        if (found) continue;
+        for (const rafsi of entry.rafsi)
           // An empty array slot is no rafsi, as in the worker's checks.
-          if (rafsi !== undefined && rafsiPairId(id, rafsi) === pair)
-            return { spelling: entry.word.spelling, language, rafsi };
+          if (rafsi !== undefined && rafsiPairId(id, rafsi) === pair) {
+            found = { spelling: entry.word.spelling, language, rafsi };
+            break;
+          }
       }
+      if (found) return found;
     } catch (error) {
       if (!(error instanceof PackageValidationError)) throw error;
       invalid ??= error;

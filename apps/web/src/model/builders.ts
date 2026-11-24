@@ -16,17 +16,19 @@ import {
   type RafsiInventoryClaim,
 } from "../../../../packages/core/src/browser.ts";
 import type { CachedPackage } from "../data/search.ts";
+import type { LocalStore } from "../data/store.ts";
 import {
   PackageValidationError,
   savedPackage,
   savedRow,
   savedWordId,
 } from "../data/saved-package.ts";
-import type {
-  Compound,
-  Formation,
-  FormationSource,
-  RichText,
+import {
+  languageTag,
+  type Compound,
+  type Formation,
+  type FormationSource,
+  type RichText,
 } from "./types.ts";
 import { textToRichText } from "./richtext.ts";
 
@@ -387,37 +389,45 @@ export interface PackageInventory {
 }
 /** The saved packages that the wizard pages can read. */
 export interface SavedPackages {
-  /** Usable packages, best first: version 2 before version 1, then the most entries. */
-  packages: CachedPackage[];
-  /** True when a saved package is unusable. Such a package is left out of `packages`. */
+  /** Packages whose headers passed, sorted by version and then by number of rows. */
+  packages: SavedLanguagePackage[];
+  /** True when a saved package failed its header check. */
   invalid: boolean;
 }
+interface SavedLanguagePackage {
+  language: string;
+  pkg: CachedPackage;
+}
 /**
- * Every saved package, read as on main and checked by `savedPackage`. A
- * package that fails is left out, so it does not hide a usable package of
- * another language. A store that cannot be read counts as no package.
+ * Read each package with its language key. A store that cannot be read
+ * counts as no package.
  */
-export async function savedPackages(store: {
-  list<T>(name: string): Promise<T[]>;
-}): Promise<SavedPackages> {
-  let all: unknown[];
+export async function savedPackages(
+  store: Pick<LocalStore, "listPackages">,
+): Promise<SavedPackages> {
+  let all: [IDBValidKey, unknown][];
   try {
-    all = await store.list<unknown>("packages");
+    all = await store.listPackages();
   } catch {
     return { packages: [], invalid: false };
   }
-  const packages: CachedPackage[] = [];
+  const packages: SavedLanguagePackage[] = [];
   let invalid = false;
-  for (const value of all)
+  for (const [language, value] of all) {
+    if (!languageTag(language)) {
+      invalid = true;
+      continue;
+    }
     try {
       const pkg = savedPackage(value);
-      if (pkg) packages.push(pkg);
+      if (pkg) packages.push({ language, pkg });
     } catch (error) {
       if (!(error instanceof PackageValidationError)) throw error;
       invalid = true;
     }
+  }
   packages.sort(
-    (a, b) =>
+    ({ pkg: a }, { pkg: b }) =>
       (b.version ?? 1) - (a.version ?? 1) ||
       b.entries.length - a.entries.length,
   );
@@ -425,9 +435,9 @@ export async function savedPackages(store: {
 }
 /** The package that the wizard pages use, with its conflict inventory. */
 export interface SavedInventory {
-  pkg: CachedPackage | null;
+  selected: SavedLanguagePackage | null;
   inventory: PackageInventory;
-  /** True when a saved package is unusable. `pkg` is then the best usable one, or null. */
+  /** True when any package failed the header or inventory check. */
   invalid: boolean;
 }
 /**
@@ -436,14 +446,14 @@ export interface SavedInventory {
  */
 export function savedInventory(saved: SavedPackages): SavedInventory {
   let invalid = saved.invalid;
-  for (const pkg of saved.packages)
+  for (const selected of saved.packages)
     try {
-      return { pkg, inventory: inventoryFromPackage(pkg), invalid };
+      return { selected, inventory: inventoryFromPackage(selected), invalid };
     } catch (error) {
       if (!(error instanceof PackageValidationError)) throw error;
       invalid = true;
     }
-  return { pkg: null, inventory: inventoryFromPackage(null), invalid };
+  return { selected: null, inventory: inventoryFromPackage(null), invalid };
 }
 /**
  * The conflict inventory from the local package, which must pass
@@ -451,9 +461,9 @@ export function savedInventory(saved: SavedPackages): SavedInventory {
  * so an unusable row raises `PackageValidationError`.
  */
 export function inventoryFromPackage(
-  cached: CachedPackage | null,
+  saved: SavedLanguagePackage | null,
 ): PackageInventory {
-  if (!cached)
+  if (!saved)
     return {
       snapshot: null,
       claims: [],
@@ -462,12 +472,13 @@ export function inventoryFromPackage(
       incompleteWords: [],
       complete: true,
     };
+  const { language, pkg } = saved;
   const claims = new Map<string, RafsiInventoryClaim>();
   const gismu = new Map<string, string>();
   const incomplete = new Map<string, string>();
   let hasClaims = false;
-  for (const row of cached.entries) {
-    const entry = savedRow(row, cached.version);
+  for (const row of pkg.entries) {
+    const entry = savedRow(row, pkg.version, language);
     const id = savedWordId({ language: "jbo", spelling: entry.word.spelling });
     const kind = (entry.classification as { kind?: string } | null)?.kind;
     if (kind === "gismu") gismu.set(id, entry.word.spelling);
@@ -489,7 +500,7 @@ export function inventoryFromPackage(
     }
   }
   return {
-    snapshot: cached.snapshot,
+    snapshot: pkg.snapshot,
     claims: [...claims.values()],
     gismu: [...gismu.entries()].map(([word, spelling]) => ({ spelling, word })),
     hasClaims,

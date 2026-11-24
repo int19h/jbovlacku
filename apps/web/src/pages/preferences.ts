@@ -627,11 +627,7 @@ async function preferencesBody(context: RenderContext, app: App) {
         text: invalid
           ? INVALID_PACKAGE_MESSAGE
           : cached
-            ? `${plural(cached.entries.length, "definition")} · snapshot ${cached.snapshot.slice(7, 19)}… · version ${cached.version ?? 1}${
-                cached.downgrade
-                  ? `. Version 1 was saved instead of version 2: ${packageCause(cached.downgrade)}`
-                  : ""
-              }`
+            ? "Checking saved package…"
             : "unreadable",
       });
       const row = el("div", { class: "row" });
@@ -659,15 +655,17 @@ async function preferencesBody(context: RenderContext, app: App) {
         ),
       );
       list.append(row);
-      // This page reads no rows, so it checks them in a task of its own
-      // after the row is shown: `renderPackages` runs the checks of a list
-      // after it publishes that list. A valid package keeps its count, and
-      // an unusable one shows the message in its place.
+      // Show the Remove control first. Give the count after the row checks pass.
       const pkg = cached;
       if (pkg)
         checks.push(() => {
           try {
-            for (const entry of pkg.entries) savedRow(entry, pkg.version);
+            for (const entry of pkg.entries) savedRow(entry, pkg.version, key);
+            detail.textContent = `${plural(pkg.entries.length, "definition")} · snapshot ${pkg.snapshot.slice(7, 19)}… · version ${pkg.version ?? 1}${
+              pkg.downgrade
+                ? `. Version 1 was saved instead of version 2: ${packageCause(pkg.downgrade)}`
+                : ""
+            }`;
           } catch (error) {
             if (!(error instanceof PackageValidationError)) throw error;
             detail.textContent = INVALID_PACKAGE_MESSAGE;

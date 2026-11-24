@@ -55,7 +55,8 @@ const pkg = (entries: unknown[], over: Record<string, unknown> = {}) => ({
 /** What a page that reads every row checks: the package, then each row. */
 const readAll = (value: unknown) => {
   const pkg = saved.savedPackage(value);
-  for (const entry of pkg?.entries ?? []) saved.savedRow(entry, pkg!.version);
+  for (const entry of pkg?.entries ?? [])
+    saved.savedRow(entry, pkg!.version, "en");
   return pkg;
 };
 const rejects = (value: unknown) =>
@@ -128,9 +129,6 @@ test("the rule and the worker agree on every field a page reads", () => {
   // field must be one of the listed differences: fields that no page reads
   // before the worker's verdict, or checks that pages make when they read.
   const workerOnly = new Set([
-    // The row language must equal the package language. The wizard pages
-    // list packages without their keys, so the rule cannot compare them.
-    "row.language",
     // Only the search page reads attribution, after the worker's verdict.
     "row.attribution",
     // The core checks the spelling where a page derives the word ID.
@@ -291,14 +289,14 @@ test("a word that the core rejects is unusable", () => {
   assert.equal(readAll(value), value);
   assert.equal(workerAccepts(value), false);
   assert.throws(
-    () => builders.inventoryFromPackage(value as never),
+    () =>
+      builders.inventoryFromPackage({ language: "en", pkg: value as never }),
     saved.PackageValidationError,
   );
 });
 
-/** The pages call `list` on the real store, so this store has only `list`. */
-const listStore = (values: unknown[]) => ({
-  list: async <T>() => values as T[],
+const listStore = (values: [string, unknown][]) => ({
+  listPackages: async () => values,
 });
 
 test("an unusable package does not hide a usable one on the wizard pages", async () => {
@@ -306,10 +304,22 @@ test("an unusable package does not hide a usable one on the wizard pages", async
   const malformed = pkg([null, null]);
   // A stored null fails at once. The malformed package ranks first (same
   // version, more rows) and fails when its inventory reads the rows.
-  const read = await builders.savedPackages(listStore([null, malformed, good]));
-  assert.deepEqual(read, { packages: [malformed, good], invalid: true });
+  const read = await builders.savedPackages(
+    listStore([
+      ["de", null],
+      ["fr", malformed],
+      ["en", good],
+    ]),
+  );
+  assert.deepEqual(read, {
+    packages: [
+      { language: "fr", pkg: malformed },
+      { language: "en", pkg: good },
+    ],
+    invalid: true,
+  });
   const inventory = builders.savedInventory(read);
-  assert.equal(inventory.pkg, good);
+  assert.equal(inventory.selected?.pkg, good);
   assert.equal(inventory.invalid, true);
   assert.deepEqual(
     inventory.inventory.claims.map((claim) => claim.spelling),
@@ -323,11 +333,19 @@ test("a package with a word that the core rejects gives way to the next one", as
     v2Row({ event: "jve1:" + "2".repeat(64) }),
   ]);
   const good = pkg([v2Row()]);
-  const read = await builders.savedPackages(listStore([bad, good]));
-  assert.deepEqual(read.packages, [bad, good]);
+  const read = await builders.savedPackages(
+    listStore([
+      ["en", bad],
+      ["en", good],
+    ]),
+  );
+  assert.deepEqual(
+    read.packages.map(({ pkg }) => pkg),
+    [bad, good],
+  );
   assert.equal(read.invalid, false);
   const inventory = builders.savedInventory(read);
-  assert.equal(inventory.pkg, good);
+  assert.equal(inventory.selected?.pkg, good);
   assert.equal(inventory.invalid, true);
 });
 
@@ -335,18 +353,28 @@ test("the best usable package is chosen as on main", async () => {
   const v1 = pkg([v1Row(), v1Row()], { version: 1 });
   const small = pkg([v2Row()]);
   const large = pkg([v2Row(), v2Row()]);
-  const read = await builders.savedPackages(listStore([v1, small, large]));
-  assert.deepEqual(read, { packages: [large, small, v1], invalid: false });
+  const read = await builders.savedPackages(
+    listStore([
+      ["en", v1],
+      ["en", small],
+      ["en", large],
+    ]),
+  );
+  assert.deepEqual(
+    read.packages.map(({ pkg }) => pkg),
+    [large, small, v1],
+  );
+  assert.equal(read.invalid, false);
   assert.deepEqual(
     await builders.savedPackages({
-      list: async () => {
+      listPackages: async () => {
         throw new Error("storage failed");
       },
     }),
     { packages: [], invalid: false },
   );
   assert.deepEqual(builders.savedInventory({ packages: [], invalid: false }), {
-    pkg: null,
+    selected: null,
     inventory: builders.inventoryFromPackage(null),
     invalid: false,
   });
@@ -356,10 +384,36 @@ test("the word index counts rows that fail the row check", async () => {
   const index = search.createPackageWordIndex();
   const value = pkg([v2Row(), null, v2Row({ glosses: null })]) as never;
   assert.equal(
-    index(value, wordId({ language: "jbo", spelling: "cukta" })).length,
+    index(value, "en", wordId({ language: "jbo", spelling: "cukta" })).length,
     1,
   );
-  assert.equal(index.invalidEntryCount(value), 2);
+  assert.equal(index.invalidEntryCount(value, "en"), 2);
+});
+
+test("the word index checks the language even if it saw the package object before", () => {
+  const index = search.createPackageWordIndex();
+  const value = pkg([v2Row()]) as never;
+  const id = wordId({ language: "jbo", spelling: "cukta" });
+  assert.equal(index(value, "en", id).length, 1);
+  assert.equal(index(value, "fr", id).length, 0);
+  assert.equal(index.invalidEntryCount(value, "fr"), 1);
+});
+
+test("wizard inventory skips a package whose rows disagree with its key", async () => {
+  const wrongLanguage = pkg([
+    v2Row(),
+    v2Row({ event: "jve1:" + "2".repeat(64) }),
+  ]);
+  const good = pkg([v2Row()]);
+  const read = await builders.savedPackages(
+    listStore([
+      ["fr", wrongLanguage],
+      ["en", good],
+    ]),
+  );
+  const inventory = builders.savedInventory(read);
+  assert.equal(inventory.invalid, true);
+  assert.deepEqual(inventory.selected, { language: "en", pkg: good });
 });
 
 test("a rafsi with a lone surrogate is unusable, though the worker accepts it", () => {

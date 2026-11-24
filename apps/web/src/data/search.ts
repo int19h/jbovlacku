@@ -52,28 +52,34 @@ import {
 
 /**
  * Package objects are immutable snapshots. Reuse their identity index across
- * renders. A row that fails `savedRow`, or whose word the core rejects, is
- * left out of the index and counted by `invalidEntryCount`.
+ * renders in the same language. The index leaves out rows that fail `savedRow`
+ * or have a word that the core rejects. `invalidEntryCount` counts them.
  */
 export function createPackageWordIndex(identify: typeof wordId = wordId) {
   const indexes = new WeakMap<
     CachedPackage,
-    { words: Map<string, PackageEntry[]>; invalidEntries: number }
+    {
+      language: string;
+      words: Map<string, PackageEntry[]>;
+      invalidEntries: number;
+    }
   >();
-  const indexFor = (pkg: CachedPackage) => {
+  const indexFor = (pkg: CachedPackage, language: string) => {
     let index = indexes.get(pkg);
-    if (!index) {
-      index = { words: new Map(), invalidEntries: 0 };
+    if (index?.language !== language) {
+      index = { language, words: new Map(), invalidEntries: 0 };
       for (const entry of pkg.entries) {
+        let row;
         let id;
         try {
-          id = identify(savedRow(entry, pkg.version).word);
+          row = savedRow(entry, pkg.version, language);
+          id = identify(row.word);
         } catch {
           index.invalidEntries++;
           continue;
         }
         const rows = index.words.get(id) ?? [];
-        rows.push(entry);
+        rows.push(row);
         index.words.set(id, rows);
       }
       indexes.set(pkg, index);
@@ -81,9 +87,15 @@ export function createPackageWordIndex(identify: typeof wordId = wordId) {
     return index;
   };
   return Object.assign(
-    (pkg: CachedPackage, identity: string): readonly PackageEntry[] =>
-      indexFor(pkg).words.get(identity) ?? [],
-    { invalidEntryCount: (pkg: CachedPackage) => indexFor(pkg).invalidEntries },
+    (
+      pkg: CachedPackage,
+      language: string,
+      identity: string,
+    ): readonly PackageEntry[] => indexFor(pkg, language).words.get(identity) ?? [],
+    {
+      invalidEntryCount: (pkg: CachedPackage, language: string) =>
+        indexFor(pkg, language).invalidEntries,
+    },
   );
 }
 export const packageWordEntries = createPackageWordIndex();

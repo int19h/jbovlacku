@@ -115,10 +115,11 @@ export async function lujvoPage(
   // The inventory walks every row of the chosen package through the core,
   // so the source lookups below read only words that the core accepts.
   const {
-    pkg: cached,
+    selected,
     inventory,
     invalid: packageInvalid,
   } = savedInventory(saved);
+  const cached = selected?.pkg ?? null;
   let state;
   try {
     state = prepareLujvoBuilder(draft, cached);
@@ -355,11 +356,11 @@ export async function lujvoPage(
     let hits: LocalHit[] = [];
     let lookupUnavailable = false;
     try {
-      if (cached)
+      if (selected)
         hits = (
           await searchPackage(
-            cached,
-            cached.entries[0]?.language ?? draft.language,
+            selected.pkg,
+            selected.language,
             [query],
             { limit: 6, signal: context.signal },
           )
@@ -1004,8 +1005,8 @@ export async function lujvoPage(
       language: "jbo",
       spelling: candidate.spelling.normalize("NFC"),
     });
-    const taken = cached
-      ? packageWordEntries(cached, candidateId).length > 0
+    const taken = selected
+      ? packageWordEntries(selected.pkg, selected.language, candidateId).length > 0
       : false;
     availability.textContent = cached
       ? taken

@@ -185,7 +185,10 @@ test("zei definition links survive draft reload and signed-body restoration with
   selectLujvoCandidate(draft, result, result.candidates[0], true);
   assert.equal(draft.compound!.components[0].definition, definition);
   assert.deepEqual(
-    currentCompoundConflicts(draft.compound!, inventoryFromPackage(cached)),
+    currentCompoundConflicts(
+      draft.compound!,
+      inventoryFromPackage({ language: "en", pkg: cached }),
+    ),
     [],
   );
   const publication = draftToBody(draft);

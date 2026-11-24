@@ -501,8 +501,13 @@ export async function meaningPage(
     // The word index reads every row through the shared row check and the
     // core. A row that fails either makes the package unusable, as on the
     // other pages.
-    const entries = packageData ? packageWordEntries(packageData, id) : [];
-    if (packageData && packageWordEntries.invalidEntryCount(packageData) > 0) {
+    const entries = packageData
+      ? packageWordEntries(packageData, draft.language, id)
+      : [];
+    if (
+      packageData &&
+      packageWordEntries.invalidEntryCount(packageData, draft.language) > 0
+    ) {
       packageInvalid = true;
       packageData = null;
     }

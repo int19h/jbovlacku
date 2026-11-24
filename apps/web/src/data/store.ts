@@ -488,6 +488,16 @@ export class LocalStore {
       request.onerror = () => reject(request.error);
     });
   }
+  /** Read keys and packages in the same transaction so the pairs stay aligned. */
+  async listPackages(): Promise<[IDBValidKey, unknown][]> {
+    const db = await this.database;
+    const store = db.transaction("packages").objectStore("packages");
+    const [keys, values] = await Promise.all([
+      idbRequest(store.getAllKeys()),
+      idbRequest(store.getAll()),
+    ]);
+    return keys.map((key, index) => [key, values[index]]);
+  }
   async keys(store: string): Promise<string[]> {
     const db = await this.database;
     return new Promise((resolve, reject) => {

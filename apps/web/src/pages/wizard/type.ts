@@ -180,7 +180,7 @@ export async function typePage(
     rootWarnings.replaceChildren();
     if (!spelling || draft.kind !== "gismu") return;
     found ??= savedInventory(saved);
-    const packageData = found.pkg;
+    const packageData = found.selected?.pkg;
     // An unusable package shows its message, and the check goes on with
     // the best usable package.
     if (found.invalid)
