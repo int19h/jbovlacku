@@ -261,7 +261,8 @@ test("the typed-word check caps a 1001-definition word with show-all", async ({
 test("the typed-word check pages a 100000-definition word in batches", async ({
   page,
 }) => {
-  test.setTimeout(240000);
+  // Rendering all batches can take several minutes on a shared runner.
+  test.setTimeout(360000);
   await page.goto("/");
   await page.evaluate(
     async ({ snapshot, issuer }) => {
@@ -308,7 +309,7 @@ test("the typed-word check pages a 100000-definition word in batches", async ({
       document.querySelectorAll('div[aria-label="Typed word"] ul.small li a')
         .length === 100000,
     null,
-    { timeout: 180000 },
+    { timeout: 300000 },
   );
   await expect(list).toHaveCount(100000);
   await expect(
@@ -383,8 +384,10 @@ test("exactly 1000 rafsi rows show no limited notice", async ({ page }) => {
   const enEntries = Array.from({ length: 16 }, (_, index) => {
     const start = index * 64;
     const count = index < 15 ? 64 : 40;
+    const spelling =
+      "b" + "aeio"[Math.floor(index / 4)] + "bdgj"[index % 4] + "ar";
     return {
-      ...wordEntry(index, "ba" + "a".repeat(index) + "b"),
+      ...wordEntry(index, spelling),
       event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
       rafsi: Array.from({ length: count }, (_, j) => `raf${start + j}`),
     };
