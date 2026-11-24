@@ -494,7 +494,7 @@ for (const language of ["en", "fr"])
         );
         return packageSearchStats()?.metrics.queryWords;
       });
-    expect(await queryWordCount()).toBe(0);
+    await expect.poll(queryWordCount).toBe(0);
     await page.evaluate(async (language) => {
       const { LocalStore } = await import(String("/src/data/store.ts"));
       const { newDraft } = await import(String("/src/model/draft.ts"));
