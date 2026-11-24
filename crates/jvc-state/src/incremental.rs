@@ -321,7 +321,7 @@ impl EvaluatedState {
             ));
         }
         let mut writer = BudgetWriter {
-            hash: jvc_core::HashWriter::new(b"jvc-ranking-state-v1\n", max_bytes),
+            hash: jvc_core::HashWriter::new(b"jvc-ranking-state-v2\n", max_bytes),
             check: &mut within_deadline,
             remaining: 256 * 1024,
         };
@@ -332,7 +332,7 @@ impl EvaluatedState {
                 &saved_options,
                 self.prepared.nodes.as_ref(),
                 self.prepared.event_limit_exceeded,
-                &self.evaluation,
+                export::RankingSourceEvaluation(&self.evaluation),
             ),
         )
         .map_err(|e| jvc_core::Error::new("resource_unavailable", e.to_string()))?;
@@ -6055,7 +6055,7 @@ mod rebuild_tests {
         assert!(advanced.ranking_index.borrow().is_none());
     }
     #[test]
-    fn source_stream_pins_sorted_value_maps_and_matches_previous_bytes() {
+    fn source_stream_pins_sorted_value_maps_and_normalized_bytes() {
         // Do not enable serde_json/preserve_order without changing the binding contract.
         let value: Value = serde_json::from_str(r#"{"z":0,"é":{"z":1,"a":2},"a":3}"#).unwrap();
         assert_eq!(
@@ -6067,14 +6067,14 @@ mod rebuild_tests {
             &state.prepared.options,
             state.prepared.nodes.as_ref(),
             state.prepared.event_limit_exceeded,
-            &state.evaluation,
+            export::RankingSourceEvaluation(&state.evaluation),
         ))
         .unwrap();
         let (binding, count) = state.ranking_source_binding(bytes.len()).unwrap();
         assert_eq!(count, bytes.len());
         assert_eq!(
             binding,
-            jvc_core::hash_id("sha256:", b"jvc-ranking-state-v1\n", &bytes)
+            jvc_core::hash_id("sha256:", b"jvc-ranking-state-v2\n", &bytes)
         );
         assert_eq!(
             state

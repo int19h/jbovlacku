@@ -31,6 +31,7 @@ const emptyWord = {
   rafsi: [],
   assignments: [],
   scores: [],
+  status_version: 2,
   statuses: [],
   layers: [],
   unavailable_scores: [],
@@ -166,9 +167,7 @@ test("patterns use normalized dictionary order and remove combining acute litera
   expect(result.acute).toEqual(["djan"]);
   expect(result.unicode).toBe(3);
 });
-test("question punctuation shows an ordinary-search note", async ({
-  page,
-}) => {
+test("question punctuation shows an ordinary-search note", async ({ page }) => {
   await page.goto("/");
   await page.evaluate(
     async (pkg) => {

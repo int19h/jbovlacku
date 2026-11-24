@@ -417,7 +417,7 @@ test("judgment delta exports share immutable state without trusting caller chang
   const target = Object.values(parent.state.publications)[0];
   const original = structuredClone(parent.state);
   assert.throws(() => {
-    parent.state.publications[target.id].status = "forged";
+    parent.state.publications[target.id].status = "deprecated";
   }, TypeError);
   assert.throws(() => {
     (parent as any).state = { ...parent.state, available: false };
@@ -443,6 +443,9 @@ test("judgment delta exports share immutable state without trusting caller chang
     assert.equal(child.updateStatistics().rebuilt, false);
     assert.equal(child.updateStatistics().incremental_records, 1);
     assert.deepEqual(child.state, full.state);
+    assert.equal(child.state.state_export_version, 2);
+    assert.equal(child.state.accounts, parent.state.accounts);
+    assert.equal(child.state.account_controls, parent.state.account_controls);
     assert.deepEqual(parent.state, original);
     assert.equal(child.state.publications, parent.state.publications);
     assert.equal(
@@ -528,6 +531,9 @@ test("a child state stays readable after its parent is freed", async () => {
     assert.equal(child.updateStatistics().rebuilt, false);
     assert.equal(child.updateStatistics().incremental_records, 1);
     assert.deepEqual(child.state, full.state);
+    assert.equal(child.state.state_export_version, 2);
+    assert.equal(child.state.accounts, parent.state.accounts);
+    assert.equal(child.state.account_controls, parent.state.account_controls);
   } finally {
     child.free();
     full.free();

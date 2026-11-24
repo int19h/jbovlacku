@@ -338,60 +338,7 @@ fn evaluation_input_with_verifier(
         limits: wire.limits.into(),
     })
 }
-#[derive(Serialize)]
-struct StateOutput<'a> {
-    #[serde(flatten)]
-    evaluation: &'a jvc_state::Evaluation,
-    publication_statuses: PublicationStatuses<'a>,
-    account_controls: AccountControls<'a>,
-}
-impl<'a> StateOutput<'a> {
-    fn new(evaluation: &'a jvc_state::Evaluation) -> Self {
-        Self {
-            evaluation,
-            publication_statuses: PublicationStatuses(evaluation),
-            account_controls: AccountControls(evaluation),
-        }
-    }
-}
-struct PublicationStatuses<'a>(&'a jvc_state::Evaluation);
-impl Serialize for PublicationStatuses<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(self.0.publications.len()))?;
-        for id in self.0.publications.keys() {
-            if let Some(status) = jvc_state::publication_status_ref(self.0, id) {
-                map.serialize_entry(id, &status)?;
-            }
-        }
-        map.end()
-    }
-}
-struct AccountControls<'a>(&'a jvc_state::Evaluation);
-impl Serialize for AccountControls<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(self.0.accounts.len()))?;
-        for (key, account) in &self.0.accounts {
-            map.serialize_entry(
-                key,
-                &jvc_state::account_control(
-                    self.0,
-                    "",
-                    &account.account.origin,
-                    account.account.account,
-                ),
-            )?;
-        }
-        map.end()
-    }
-}
+use jvc_state::{STATE_EXPORT_VERSION, StateExport};
 
 const STATE_DELTA_LIMIT: usize = 1024 * 1024;
 struct LimitedOutput(Vec<u8>);
@@ -463,12 +410,17 @@ fn session_identity() -> String {
 
 pub fn evaluate_bytes(bytes: &[u8]) -> Result<Value> {
     let evaluation = jvc_state::evaluate(&evaluation_input(bytes)?);
-    Ok(serde_json::to_value(StateOutput::new(&evaluation)).unwrap())
+    Ok(serde_json::to_value(StateExport::new(&evaluation)).unwrap())
+}
+pub fn write_evaluation(bytes: &[u8], writer: impl std::io::Write) -> Result<()> {
+    let evaluation = jvc_state::evaluate(&evaluation_input(bytes)?);
+    serde_json::to_writer(writer, &StateExport::new(&evaluation))
+        .map_err(|error| Error::new("state_export", error.to_string()))
 }
 #[wasm_bindgen]
 pub fn evaluate_records(bytes: &[u8]) -> std::result::Result<String, JsValue> {
     let evaluation = jvc_state::evaluate(&evaluation_input(bytes).map_err(fail)?);
-    output(StateOutput::new(&evaluation))
+    output(StateExport::new(&evaluation))
 }
 #[wasm_bindgen]
 pub fn sign_record(seed: &[u8], bytes: &[u8]) -> std::result::Result<String, JsValue> {
@@ -1783,7 +1735,7 @@ impl EvaluationSession {
             groups: G,
         }
         bounded_delta(Delta {
-            version: 1,
+            version: STATE_EXPORT_VERSION,
             base_session: base,
             receipts,
             registers,
@@ -1792,7 +1744,7 @@ impl EvaluationSession {
         })
     }
     pub fn state(&self) -> std::result::Result<String, JsValue> {
-        output(StateOutput::new(self.state.evaluation()))
+        output(StateExport::new(self.state.evaluation()))
     }
     pub fn rank(&self, word: &str) -> std::result::Result<String, JsValue> {
         output(rank_word_state(self.state.evaluation(), word, None).map_err(fail)?)
@@ -2013,11 +1965,28 @@ mod state_output_tests {
     }
 
     #[test]
-    fn borrowed_state_output_matches_the_previous_value_shape() {
+    fn borrowed_state_output_keeps_unavailable_fields() {
         let evaluation = jvc_state::evaluate(
             &evaluation_input(include_bytes!("../tests/invalid-overlay.json")).unwrap(),
         );
         let mut previous = serde_json::to_value(&evaluation).unwrap();
+        previous["state_export_version"] = json!(2);
+        for publication in previous["publications"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            let row = publication.as_object_mut().unwrap();
+            for field in [
+                "observations",
+                "controller_candidates",
+                "witness_contributions",
+            ] {
+                row.remove(field);
+            }
+            row.insert("account_control".into(), Value::Null);
+            row.insert("account_authority_applied".into(), json!(false));
+        }
         previous["publication_statuses"] = json!(
             evaluation
                 .publications
@@ -2043,7 +2012,7 @@ mod state_output_tests {
                 .collect::<BTreeMap<_, _>>()
         );
         assert_eq!(
-            serde_json::to_value(StateOutput::new(&evaluation)).unwrap(),
+            serde_json::to_value(StateExport::new(&evaluation)).unwrap(),
             previous
         );
     }

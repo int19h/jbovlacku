@@ -135,7 +135,7 @@ export async function definitionPage(
         !inWord ||
         word.unavailable_scores.includes(id) ||
         !score,
-      status: word?.statuses.find((s) => s?.event === id)?.state,
+      status: word?.statuses.find((s) => s.event === id)?.state,
       calculation: word?.calculation,
       revisions: siblings,
       word,

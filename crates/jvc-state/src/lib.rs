@@ -4,6 +4,8 @@ mod accounts;
 mod ancestors;
 mod api;
 mod arena;
+mod export;
+pub use export::{STATE_EXPORT_VERSION, StateExport};
 mod graph;
 mod incremental;
 mod policy;
@@ -503,7 +505,7 @@ impl Serialize for Evaluation {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        self.serialize_as(serializer, false)
+        self.serialize_as(serializer, EvaluationEncoding::Expanded)
     }
 }
 /// The evaluation as a checkpoint stores it: every publication without
@@ -516,7 +518,8 @@ impl Serialize for CheckpointEvaluation<'_> {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        self.0.serialize_as(serializer, true)
+        self.0
+            .serialize_as(serializer, EvaluationEncoding::Checkpoint)
     }
 }
 struct CheckpointPublications<'a>(&'a BTreeMap<String, Publication>);
@@ -617,11 +620,18 @@ impl<'a> From<&'a Publication> for CheckpointPublication<'a> {
         }
     }
 }
+#[derive(Clone, Copy)]
+enum EvaluationEncoding {
+    Expanded,
+    Checkpoint,
+    Export,
+    RankingSource,
+}
 impl Evaluation {
     fn serialize_as<S: serde::Serializer>(
         &self,
         serializer: S,
-        checkpoint: bool,
+        encoding: EvaluationEncoding,
     ) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(15))?;
@@ -630,12 +640,22 @@ impl Evaluation {
         map.serialize_entry("reasons", &self.reasons)?;
         map.serialize_entry("receipts", &self.receipts)?;
         map.serialize_entry("lifecycle", &self.lifecycle)?;
-        if checkpoint {
-            map.serialize_entry("publications", &CheckpointPublications(&self.publications))?;
-        } else {
-            map.serialize_entry("publications", &self.publications)?;
+        match encoding {
+            EvaluationEncoding::Checkpoint => {
+                map.serialize_entry("publications", &CheckpointPublications(&self.publications))?;
+            }
+            EvaluationEncoding::Expanded => {
+                map.serialize_entry("publications", &self.publications)?;
+            }
+            EvaluationEncoding::Export | EvaluationEncoding::RankingSource => {
+                map.serialize_entry("publications", &export::ExportPublications(self))?;
+            }
         }
-        map.serialize_entry("accounts", &self.accounts)?;
+        if matches!(encoding, EvaluationEncoding::Export) {
+            map.serialize_entry("accounts", &export::ExportAccounts(&self.accounts))?;
+        } else {
+            map.serialize_entry("accounts", &self.accounts)?;
+        }
         map.serialize_entry("registers", &self.registers)?;
         map.serialize_entry("judgments", &self.judgments)?;
         map.serialize_entry("policy", &self.policy)?;

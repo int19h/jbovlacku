@@ -1,3 +1,10 @@
+import {
+  applyStateDelta,
+  freezeState,
+  parseStateExport,
+  STATE_EXPORT_VERSION,
+  type StateDelta,
+} from "../../../packages/core/src/state-export.ts";
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import type {
@@ -19,6 +26,7 @@ interface Options {
   workerFactory?: (data: EvaluationWorkerData) => Worker;
 }
 interface SerializedState {
+  state_export_version: number;
   kind: "state" | "delta";
   bytes: Uint8Array;
 }
@@ -26,44 +34,6 @@ interface SessionBasis {
   identity: string;
   state: Evaluation;
 }
-interface StateDelta {
-  version: number;
-  base_session: string;
-  receipts: Evaluation["receipts"];
-  registers: Record<string, unknown>;
-  judgments: Record<string, Record<string, unknown>>;
-  lifecycle: {
-    key_actor: Record<string, string>;
-    groups: Record<string, string[]>;
-  };
-}
-function freezeState<T>(value: T): T {
-  if (value && typeof value === "object" && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const child of Object.values(value)) freezeState(child);
-  }
-  return value;
-}
-/** Version 1 patches change only judgments, their receipts, and actor entries. */
-function applyStateDelta(parent: Evaluation, delta: StateDelta): Evaluation {
-  const oldJudgments = parent.judgments as StateDelta["judgments"];
-  const judgments = { ...oldJudgments };
-  for (const [target, actors] of Object.entries(delta.judgments))
-    judgments[target] = { ...oldJudgments[target], ...actors };
-  const lifecycle = parent.lifecycle as StateDelta["lifecycle"];
-  return {
-    ...parent,
-    receipts: { ...parent.receipts, ...delta.receipts },
-    registers: { ...(parent.registers as object), ...delta.registers },
-    judgments,
-    lifecycle: {
-      ...lifecycle,
-      key_actor: { ...lifecycle.key_actor, ...delta.lifecycle.key_actor },
-      groups: { ...lifecycle.groups, ...delta.lifecycle.groups },
-    },
-  };
-}
-
 class Connection {
   private sequence = 0;
   private pending = new Map<
@@ -279,24 +249,23 @@ export class NodeEvaluationRuntime implements EvaluationRuntime {
     value: SerializedState,
     parent?: SessionBasis,
   ): Promise<EvaluationSession> {
-    const parsed = JSON.parse(new TextDecoder().decode(value.bytes));
+    const text = new TextDecoder().decode(value.bytes);
     if (value.kind === "delta") {
-      const delta = parsed as StateDelta;
-      if (
-        parent &&
-        delta.version === 1 &&
-        delta.base_session === parent.identity
-      )
-        return this.session(
-          connection,
-          freezeState(applyStateDelta(parent.state, delta)),
-        );
+      const patched =
+        parent && value.state_export_version === STATE_EXPORT_VERSION
+          ? applyStateDelta(
+              parent.state,
+              parent.identity,
+              JSON.parse(text) as StateDelta,
+            )
+          : undefined;
+      if (patched) return this.session(connection, freezeState(patched));
       return this.readSession(
         connection,
         await connection.request<SerializedState>("state"),
       );
     }
-    return this.session(connection, freezeState(parsed as Evaluation));
+    return this.session(connection, freezeState(parseStateExport(text)));
   }
   private session(
     connection: Connection,

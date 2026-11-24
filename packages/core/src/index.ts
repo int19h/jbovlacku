@@ -1,3 +1,19 @@
+import {
+  applyStateDelta,
+  freezeState,
+  parseStateExport,
+  STATE_EXPORT_VERSION,
+  type Evaluation,
+  type StateDelta,
+} from "./state-export.ts";
+export {
+  STATE_EXPORT_VERSION,
+  type Evaluation,
+  type Publication,
+  type PublicationStatus,
+  type AccountControl,
+  type AccountKey,
+} from "./state-export.ts";
 import type { WordResultPolicy } from "./word-policy.ts";
 export {
   wordResultPolicyBinding,
@@ -32,36 +48,6 @@ export interface PreparedAdmission {
   body: string | null;
   body_status: "none" | "present" | "missing" | "invalid";
   action_valid: boolean;
-}
-export interface Publication {
-  id: string;
-  issuer: string;
-  kind: string;
-  word: string;
-  language: string | null;
-  assignment: string | null;
-  imported: boolean;
-  content_available: boolean;
-  eligible: string;
-  status: string;
-  reasons: string[];
-}
-export interface Evaluation {
-  selected_view: string;
-  available: boolean;
-  reasons: string[];
-  receipts: Record<
-    string,
-    { interpretation: string; body: string; reasons: string[] }
-  >;
-  publications: Record<string, Publication>;
-  accounts: Record<string, unknown>;
-  publication_statuses: Record<string, Record<string, unknown>>;
-  account_controls: Record<string, Record<string, unknown>>;
-  policy: unknown;
-  lifecycle: unknown;
-  registers: unknown;
-  judgments: unknown;
 }
 export const canonicalize = (bytes: Uint8Array): string =>
   wasm.runtime_canonicalize(bytes);
@@ -141,7 +127,7 @@ export const evaluate = (input: {
   overlay?: unknown;
   limits?: { events?: number; traversal?: number; claim_depth?: number };
 }): Evaluation =>
-  JSON.parse(wasm.evaluate_records(encodeEvaluationRequest(input)));
+  parseStateExport(wasm.evaluate_records(encodeEvaluationRequest(input)));
 export const signHeader = (seed: Uint8Array, header: Header) =>
   JSON.parse(wasm.sign_record(seed, utf8(JSON.stringify(header))));
 export const identityFromSeed = (seed: Uint8Array): string =>
@@ -387,46 +373,6 @@ interface SessionBasis {
   identity: string;
   closed: () => boolean;
 }
-interface StateDelta {
-  version: 1;
-  base_session: string;
-  receipts: Evaluation["receipts"];
-  registers: Record<string, unknown>;
-  judgments: Record<string, Record<string, unknown>>;
-  lifecycle: {
-    key_actor: Record<string, string>;
-    groups: Record<string, string[]>;
-  };
-}
-function freezeState<T>(value: T): T {
-  if (value && typeof value === "object" && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const child of Object.values(value)) freezeState(child);
-  }
-  return value;
-}
-function applyStateDelta(parent: Evaluation, delta: StateDelta): Evaluation {
-  const oldJudgments = parent.judgments as StateDelta["judgments"];
-  const judgments = { ...oldJudgments };
-  for (const [target, actors] of Object.entries(delta.judgments))
-    judgments[target] = { ...oldJudgments[target], ...actors };
-  const lifecycle = parent.lifecycle as StateDelta["lifecycle"] &
-    Record<string, unknown>;
-  return {
-    ...parent,
-    receipts: { ...parent.receipts, ...delta.receipts },
-    registers: {
-      ...(parent.registers as Record<string, unknown>),
-      ...delta.registers,
-    },
-    judgments,
-    lifecycle: {
-      ...lifecycle,
-      key_actor: { ...lifecycle.key_actor, ...delta.lifecycle.key_actor },
-      groups: { ...lifecycle.groups, ...delta.lifecycle.groups },
-    },
-  };
-}
 /** Host-only projections never establish browser trust. */
 export interface HostVerifiedRecord {
   version: number;
@@ -517,15 +463,17 @@ function wrapEvaluationSession(
   }
   const readState = () => {
     if (state) return state;
-    const delta =
-      parent && !parent.closed()
-        ? (JSON.parse(session.state_delta()) as StateDelta | null)
-        : null;
-    state = freezeState(
-      delta?.version === 1 && delta.base_session === parent?.identity
-        ? applyStateDelta(parent.state(), delta)
-        : (JSON.parse(session.state()) as Evaluation),
-    );
+    let patched: Evaluation | undefined;
+    if (parent && !parent.closed()) {
+      const delta = JSON.parse(session.state_delta()) as StateDelta | null;
+      if (
+        delta?.version === STATE_EXPORT_VERSION &&
+        delta.base_session === parent.identity
+      ) {
+        patched = applyStateDelta(parent.state(), parent.identity, delta);
+      }
+    }
+    state = freezeState(patched ?? parseStateExport(session.state()));
     return state;
   };
   return {

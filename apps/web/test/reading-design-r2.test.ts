@@ -1,3 +1,4 @@
+import { statusFixture } from "./status-fixture.ts";
 import { test, expect } from "@playwright/test";
 import { corePath, fixture } from "./helpers.ts";
 
@@ -218,7 +219,8 @@ test("reading language lists show names and hide the test tag", async ({
           layers: [],
           calculation: null,
           unavailable_scores: ids,
-          statuses: ids.map((event: string) => ({ event, state: "active" })),
+          status_version: 2,
+          statuses: ids.map((event: string) => statusFixture(event)),
         },
       }),
   );

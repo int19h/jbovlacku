@@ -379,9 +379,7 @@ test("a padded rafsi pattern at the cap still finds its word", async ({
   await expect(
     page.getByRole("link", { name: "cukta", exact: true }).first(),
   ).toBeVisible();
-  await expect(page.getByText("The search query is too long.")).toHaveCount(
-    0,
-  );
+  await expect(page.getByText("The search query is too long.")).toHaveCount(0);
 });
 
 test("an over-long rafsi spelling is refused before any lookup", async ({
@@ -628,6 +626,7 @@ const emptyRafsiWord = () => ({
   rafsi: [],
   assignments: [],
   scores: [],
+  status_version: 2,
   statuses: [],
   layers: [],
   unavailable_scores: [],
@@ -948,7 +947,9 @@ for (const compact of [false, true])
       });
     }, compact);
     await page.goto("/search?q=kla*&lang=en");
-    await expect(page.getByRole("heading", { level: 2 })).toHaveText(["Lojban words"]);
+    await expect(page.getByRole("heading", { level: 2 })).toHaveText([
+      "Lojban words",
+    ]);
     await expect(page.locator("article.hit .hw")).toHaveText(["klama"]);
     await expect(
       page

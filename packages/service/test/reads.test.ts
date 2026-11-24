@@ -1110,3 +1110,152 @@ test("equivalent defaults keep separate publications and judgments, and a sparse
   );
   assert.deepEqual(parent.notes, [["A note."]]);
 });
+
+test("word status references the pinned account evidence once", async () => {
+  const { service } = await fixture();
+  const { buildFixture } = await import("../../../apps/web/test/seed.ts");
+  const imported = await buildFixture("http://localhost");
+  const origin = "https://lensisku.invalid";
+  const account = 8;
+  const witness = identityFromSeed(reviewer);
+  const claim = createEvent(
+    author,
+    [],
+    "81".repeat(16),
+    {
+      kind: "account.set",
+      origin,
+      account,
+      value: "claim",
+      previous: null,
+      carry: [],
+    },
+    null,
+  );
+  const observed = [0, 1].map((n) =>
+    createEvent(
+      reviewer,
+      [],
+      `8${2 + n}`.repeat(16),
+      {
+        kind: "account.observe",
+        origin,
+        account,
+        claim: claim.envelope.id,
+        result: "present",
+      },
+      {
+        origin,
+        account,
+        username: "arj",
+        field_hash: "sha256:" + "b".repeat(64),
+        markers: [claim.envelope.id],
+        method: "lensisku-public-profile-v1",
+        observed_at: "2026-10-11T00:00:00Z",
+      },
+    ),
+  );
+  const view = createEvent(
+    reviewer,
+    [],
+    "84".repeat(16),
+    {
+      kind: "view.publish",
+      parents: [],
+    },
+    {
+      ...(imported.view.body as Record<string, unknown>),
+      account_authority: false,
+      account_witnesses: [witness],
+    },
+  );
+  const selection = await service.fetch(
+    new Request("http://localhost/api/v1/import-selections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: imported.selection,
+    }),
+  );
+  assert.equal(selection.ok, true, await selection.text());
+  for (const record of [...imported.events, claim, ...observed, view]) {
+    const response = await service.fetch(request("/events", record));
+    assert.ok(response.ok, await response.text());
+  }
+  const wordResponse = await service.fetch(
+    request(`/words/${imported.fixture.words.ckusro}?view=${view.envelope.id}`),
+  );
+  assert.equal(wordResponse.status, 200);
+  const word = await read(wordResponse);
+  assert.equal(word.status_version, 2);
+  assert.equal(word.account_controls, undefined);
+  assert.equal(word.statuses.length, 1);
+  const [status] = word.statuses;
+  assert.deepEqual(status.account_control, { origin, account });
+  assert.equal(status.account_authority_applied, false);
+  for (const key of [
+    "witness_contributions",
+    "controller_candidates",
+    "observations",
+  ])
+    assert.equal(Object.hasOwn(status, key), false);
+  const query = new URLSearchParams({
+    origin,
+    account: String(account),
+    view: word.view,
+    snapshot: word.snapshot,
+  });
+  const control = await read(
+    await service.fetch(request(`/account-control?${query}`)),
+  );
+  assert.deepEqual(
+    [control.origin, control.account, control.view, control.snapshot],
+    [origin, account, word.view, word.snapshot],
+  );
+  const ids = observed.map((record) => record.envelope.id).sort();
+  assert.deepEqual(control.contributions, [
+    { witness, claims: [claim.envelope.id], observations: ids },
+  ]);
+  assert.deepEqual(control.current_observations, [ids[0]]);
+  assert.deepEqual(control.certificates[0].observations, [ids[0]]);
+  query.set("account", "99");
+  const unclaimed = await read(
+    await service.fetch(request(`/account-control?${query}`)),
+  );
+  assert.equal(unclaimed.state, "unclaimed");
+  assert.deepEqual(unclaimed.current_observations, []);
+  query.set("snapshot", "sha256:" + "0".repeat(64));
+  const expired = await service.fetch(request(`/account-control?${query}`));
+  assert.equal(expired.status, 410);
+  assert.equal((await read(expired)).code, "snapshot_expired");
+});
+
+test("account control allows 16 MiB and refuses a larger UTF-8 response", async () => {
+  const { service, view } = await fixture();
+  const origin = "https://source.example";
+  const path = `/account-control?origin=${encodeURIComponent(origin)}&account=41&view=${view.envelope.id}`;
+  const absent = await read(await service.fetch(request(path)));
+  const summary = { ...absent, snapshot: "", reasons: [""] };
+  const fullResponse = { ...summary, snapshot: absent.snapshot };
+  const remaining =
+    16 * 1024 * 1024 - utf8(JSON.stringify(fullResponse)).length;
+  summary.reasons = [
+    "é".repeat(Math.floor(remaining / 2)) + "x".repeat(remaining % 2),
+  ];
+  const serviceForTest = service as unknown as {
+    evaluation(
+      ...args: unknown[]
+    ): Promise<{ account_controls: Record<string, unknown> }>;
+  };
+  const evaluate = serviceForTest.evaluation.bind(service);
+  serviceForTest.evaluation = async (...args) => {
+    const result = await evaluate(...args);
+    return { ...result, account_controls: { [`${origin}#41`]: summary } };
+  };
+  const atLimit = await service.fetch(request(path));
+  assert.equal(atLimit.status, 200);
+  assert.equal((await atLimit.arrayBuffer()).byteLength, 16 * 1024 * 1024);
+  summary.reasons[0] += "x";
+  const overLimit = await service.fetch(request(path));
+  assert.equal(overLimit.status, 503);
+  assert.equal((await read(overLimit)).code, "resource_unavailable");
+});

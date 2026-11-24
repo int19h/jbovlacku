@@ -4,6 +4,7 @@
  */
 import { describeProfile } from "../model/profiles.ts";
 import {
+  STATE_EXPORT_VERSION,
   canonicalize,
   contentHash,
   inspectBody,
@@ -26,6 +27,9 @@ import {
   languageTag,
   matchKinds,
   wordIdValid,
+  type AccountControl,
+  type AccountKey,
+  type PublicationStatus,
   type ActivityResponse,
   type Capabilities,
   type DefinitionBody,
@@ -549,6 +553,53 @@ const rational = (value: unknown) =>
   String(value.denominator) !== "0";
 const interval = (value: unknown) =>
   Array.isArray(value) && value.length === 2 && value.every(rational);
+function accountKey(value: unknown): value is AccountKey {
+  if (
+    !isObject(value) ||
+    typeof value.origin !== "string" ||
+    typeof value.account !== "number" ||
+    !Number.isSafeInteger(value.account) ||
+    value.account <= 0
+  )
+    return false;
+  try {
+    const url = new URL(value.origin);
+    return url.protocol === "https:" && url.origin === value.origin;
+  } catch {
+    return false;
+  }
+}
+const sortedIds = (value: unknown) =>
+  Array.isArray(value) &&
+  value.every((id, i) => eventId(id) && (i === 0 || value[i - 1] < id));
+const codes = (value: unknown) =>
+  Array.isArray(value) && value.every((code) => typeof code === "string");
+const nullableEvent = (value: unknown) => value === null || eventId(value);
+function publicationStatus(value: unknown): value is PublicationStatus {
+  return (
+    isObject(value) &&
+    Object.keys(value).length === 10 &&
+    eventId(value.event) &&
+    typeof value.state === "string" &&
+    ["active", "deprecated", "conflicted", "uncertain", "unavailable"].includes(
+      String(value.state),
+    ) &&
+    sortedIds(value.frontier) &&
+    codes(value.reasons) &&
+    nullableEvent(value.deciding_claim) &&
+    typeof value.authority === "string" &&
+    ["native", "source-account", "none", "uncertain"].includes(
+      String(value.authority),
+    ) &&
+    (value.controller === null || identityId(value.controller)) &&
+    nullableEvent(value.claim) &&
+    typeof value.account_authority_applied === "boolean" &&
+    (value.account_control === null
+      ? !value.account_authority_applied
+      : accountKey(value.account_control) &&
+        Object.keys(value.account_control).length === 2)
+  );
+}
 export function validateWord(value: unknown, id: string): WordResponse {
   const invalid = () =>
     new Error("The server returned an invalid word response.");
@@ -556,6 +607,7 @@ export function validateWord(value: unknown, id: string): WordResponse {
     !isObject(value) ||
     !hashId(value.snapshot) ||
     !eventId(value.view) ||
+    value.status_version !== STATE_EXPORT_VERSION ||
     !(
       value.word === null ||
       (isObject(value.word) &&
@@ -569,6 +621,7 @@ export function validateWord(value: unknown, id: string): WordResponse {
     !Array.isArray(value.assignments) ||
     !Array.isArray(value.scores) ||
     !Array.isArray(value.statuses) ||
+    !value.statuses.every(publicationStatus) ||
     !Array.isArray(value.layers) ||
     !Array.isArray(value.unavailable_scores) ||
     !(value.calculation === null || isObject(value.calculation))
@@ -686,6 +739,114 @@ export function getWord(
     setTimeout(() => wordCache.delete(key), 15000);
   }
   return pending;
+}
+type EvidencePin = Pick<WordResponse, "snapshot" | "view">;
+
+export function validateAccountControl(
+  value: unknown,
+  account: AccountKey,
+  pin: EvidencePin,
+): AccountControl {
+  if (
+    !isObject(value) ||
+    Object.keys(value).length !== 11 ||
+    value.snapshot !== pin.snapshot ||
+    value.view !== pin.view ||
+    value.origin !== account.origin ||
+    value.account !== account.account ||
+    typeof value.state !== "string" ||
+    !["unclaimed", "controlled", "disputed", "unavailable"].includes(
+      String(value.state),
+    ) ||
+    !sortedIds(value.controller_candidates) ||
+    !sortedIds(value.current_observations) ||
+    !sortedIds(value.chain) ||
+    !codes(value.reasons) ||
+    !Array.isArray(value.contributions) ||
+    !value.contributions.every(
+      (row, i, rows) =>
+        isObject(row) &&
+        Object.keys(row).length === 3 &&
+        identityId(row.witness) &&
+        (i === 0 || rows[i - 1].witness < row.witness) &&
+        sortedIds(row.claims) &&
+        sortedIds(row.observations),
+    ) ||
+    !Array.isArray(value.certificates) ||
+    !value.certificates.every(
+      (row, i, rows) =>
+        isObject(row) &&
+        Object.keys(row).length === 3 &&
+        eventId(row.policy) &&
+        eventId(row.claim) &&
+        sortedIds(row.observations) &&
+        (i === 0 ||
+          rows[i - 1].policy < row.policy ||
+          (rows[i - 1].policy === row.policy && rows[i - 1].claim < row.claim)),
+    )
+  )
+    throw new Error("The server returned invalid account evidence.");
+  return value as unknown as AccountControl;
+}
+
+const accountControlCache = new Map<string, Promise<AccountControl>>();
+
+export function getAccountControl(
+  account: AccountKey,
+  pin: EvidencePin,
+  options: RequestOptions = {},
+): Promise<AccountControl> {
+  if (!accountKey(account) || !hashId(pin.snapshot) || !eventId(pin.view)) {
+    return Promise.reject(new Error("The account evidence link is invalid."));
+  }
+  const query = new URLSearchParams({
+    origin: account.origin,
+    account: String(account.account),
+    snapshot: pin.snapshot,
+    view: pin.view,
+  });
+  const peer = options.peer ?? selfPeer;
+  const key = JSON.stringify([peer.id, peer.base, query.toString()]);
+  const load = () =>
+    api<unknown>(`/account-control?${query}`, options).then((value) =>
+      validateAccountControl(value, account, pin),
+    );
+  if (options.signal) return load();
+  let pending = accountControlCache.get(key);
+  if (!pending) {
+    pending = load();
+    accountControlCache.set(key, pending);
+    if (accountControlCache.size > 128) {
+      const oldest = accountControlCache.keys().next().value;
+      if (oldest !== undefined) accountControlCache.delete(oldest);
+    }
+    const clear = () => {
+      if (accountControlCache.get(key) === pending)
+        accountControlCache.delete(key);
+    };
+    pending.catch(clear);
+    setTimeout(clear, 15000);
+  }
+  return pending;
+}
+
+export async function getPublicationEvidence(
+  status: PublicationStatus,
+  pin: EvidencePin,
+  options: RequestOptions = {},
+) {
+  const account = status.account_control
+    ? await getAccountControl(status.account_control, pin, options)
+    : null;
+  return {
+    witness_contributions: account?.contributions ?? [],
+    controller_candidates: status.account_authority_applied
+      ? (account?.controller_candidates ?? [])
+      : [],
+    observations: status.account_authority_applied
+      ? (account?.current_observations ?? [])
+      : [],
+  };
 }
 export function forgetWord(id: string) {
   for (const key of [...wordCache.keys()])

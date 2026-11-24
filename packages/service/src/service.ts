@@ -69,6 +69,8 @@ import {
   inspectHostStoredBody,
   interpretDefinition,
   stripAcuteAccents,
+  STATE_EXPORT_VERSION,
+  type AccountControl,
   type Evaluation,
   type EvaluationRequest,
 } from "../../core/src/index.ts";
@@ -108,12 +110,12 @@ export class ApiError extends Error {
     super(message);
   }
 }
-const json = (
-  value: unknown,
+const jsonResponse = (
+  body: string | Uint8Array<ArrayBuffer>,
   status = 200,
   headers: HeadersInit = {},
 ): Response =>
-  new Response(JSON.stringify(value), {
+  new Response(body, {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
@@ -121,6 +123,12 @@ const json = (
       ...headers,
     },
   });
+const json = (
+  value: unknown,
+  status = 200,
+  headers: HeadersInit = {},
+): Response => jsonResponse(JSON.stringify(value), status, headers);
+const ACCOUNT_CONTROL_RESPONSE_BYTES = 16 * 1024 * 1024;
 const sorted = (values: string[]) => [...values].sort();
 const compareBytes = (a: number[], b: number[]): number => {
   for (let i = 0; i < Math.min(a.length, b.length); i++) {
@@ -2803,6 +2811,7 @@ export class DictionaryService {
         scores: scores.filter((score) =>
           visibleTargets.has(String(score.target)),
         ),
+        status_version: STATE_EXPORT_VERSION,
         statuses: definitions.map(
           (event) => evaluation.publication_statuses[event],
         ),
@@ -3089,19 +3098,29 @@ export class DictionaryService {
           "Selected view cannot be evaluated.",
         );
       const summary = evaluation.account_controls[origin + "#" + accountText];
-      if (summary) return json({ ...summary, snapshot: snapshot.snapshot });
-      return json({
-        snapshot: snapshot.snapshot,
-        view,
-        origin,
-        account: Number(accountText),
-        state: "unclaimed",
-        controller_candidates: [],
-        contributions: [],
-        certificates: [],
-        chain: [],
-        reasons: [],
-      });
+      const response: AccountControl = summary
+        ? { ...summary, snapshot: snapshot.snapshot }
+        : {
+            snapshot: snapshot.snapshot,
+            view,
+            origin,
+            account: Number(accountText),
+            state: "unclaimed",
+            controller_candidates: [],
+            contributions: [],
+            certificates: [],
+            chain: [],
+            current_observations: [],
+            reasons: [],
+          };
+      const bytes = utf8(JSON.stringify(response));
+      if (bytes.byteLength > ACCOUNT_CONTROL_RESPONSE_BYTES)
+        throw new ApiError(
+          503,
+          "resource_unavailable",
+          "Account control response exceeds the byte limit.",
+        );
+      return jsonResponse(bytes);
     }
     throw new ApiError(404, "missing", "API route is unavailable.");
   }

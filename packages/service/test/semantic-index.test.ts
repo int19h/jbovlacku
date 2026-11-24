@@ -780,7 +780,7 @@ test("private source paging uses evaluator eligibility and exact record bindings
   for (const field of ["retired", "not_selected", "ineffective", "missing"]) {
     const changed = structuredClone(evaluation);
     if (field === "retired")
-      changed.publications[publication.id].status = "retired";
+      changed.publications[publication.id].status = "deprecated";
     if (field === "not_selected")
       changed.publications[publication.id].eligible = "not_selected";
     if (field === "ineffective")
