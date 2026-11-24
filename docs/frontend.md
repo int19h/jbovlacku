@@ -2063,7 +2063,8 @@ Assignment status is `eligible`, `inactive`, or `unknown`, with distinct pair sc
 Statuses contains one entry for each returned signed definition, sorted by event ID. It uses the response's exact snapshot and view.
 Frontier lists the deciding maximal status actions, or their union during a controller dispute. Event-ID arrays are sorted and duplicate-free.
 
-Deciding_claim names the period that supplies the value. It is null for a default, dispute, or unavailable selection.
+Deciding_claim names the period that supplies the account decision. It is null for a default, dispute, or unavailable account decision.
+A conflict between import selections can make the publication unavailable and leave this claim visible.
 Reasons uses stable codes, including controller_dispute, binding_unavailable, witness_history_incomplete, policy_history_unavailable, carry_history_pending, current_authority_lost, and claim_pending.
 Authority describes permission for a new command independently of the displayed state. A dispute or lost controller authority disables commands.
 
@@ -2081,7 +2082,7 @@ Read contributions from the account row whenever a reference exists. Read contro
 Elsewhere those lists are empty. A null reference gives empty lists. A missing referenced row makes the export inconsistent.
 Each candidate claim links to its signed previous and carry fields through the ordinary event API.
 
-The current observations and certificates both list event IDs in sorted order without duplicates. Certificates can refer to older witness policies.
+The current observation list and each certificate's observation list contain sorted, distinct event IDs. Certificates can refer to older witness policies.
 Choose a causally maximal matching present observation for each group. If several agree, use the smallest event ID for representation only.
 The choice of equivalent evidence never orders claims or status values.
 
