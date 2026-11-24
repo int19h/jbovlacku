@@ -28,6 +28,9 @@ The toolchain file selects the minimal profile, which does not include these com
 The generated parity corpus contains 353 inputs from all 97 test names. It includes every handover case and the large history tests.
 Native expected outputs equal the Chromium WebAssembly outputs for all 353 inputs. The parity runner finishes in 12.810 seconds on the development machine.
 The comparison includes the complete evaluator result, publication status fields, and account certificate fields.
+Parity uses state export version 2. Each account control row owns the witness evidence that its publications reference.
+The concentrated fixtures cover 250, 500, and 1,000 imports that share one account.
+
 The corpus comes from the same native fixture builders. It contains no separate implementation of expected state rules.
 
 The parity runner writes `_wasm-report.json` into the selected corpus directory.

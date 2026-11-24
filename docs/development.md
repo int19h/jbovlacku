@@ -354,6 +354,9 @@ The shared raw Wasm artifact still contains host exports. The facade and source 
 No API route exports the private compact records as verification evidence.
 The server reconstructs exact canonical envelope text from each stored header, event ID, and decoded SSHSIG blob.
 Admission requires canonical base64, so this reconstruction preserves every signature variant and snapshot hash.
+The full state export uses state_export_version 2. Each publication refers to account evidence in account_controls. The raw account rows omit copies of that evidence.
+Judgment patches use the same version. A reader requests full state if the patch does not match its parent.
+
 Cold evaluation and checkpoint restore fill the envelope cache from these private fields.
 The first admission after a restart needs no retained envelope reads.
 

@@ -64,3 +64,8 @@ The fixture places at most one judged target in the requested context.
 Process CPU and peak memory include fixture construction.
 The resolver timer excludes it.
 These synthetic results do not establish HTTP latency or live dictionary capacity.
+
+## State export
+
+State export version 2 stores each account's contributions in account_controls. Publications carry account references for the same snapshot and view.
+The export preserves selected current observations separately from historical certificates. Checkpoints keep their own format.
