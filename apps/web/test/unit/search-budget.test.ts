@@ -335,9 +335,19 @@ test("worker crash messages keep both engines' wording", () => {
 });
 
 test("cached-package validation charges the request budget", () => {
+  let listVisits = 0;
+  const entries = new Proxy(
+    [packageEntry(0), packageEntry(1), packageEntry(2)],
+    {
+      ownKeys(target) {
+        listVisits++;
+        return Reflect.ownKeys(target);
+      },
+    },
+  );
   const pkg = {
     snapshot: "sha256:" + "a".repeat(64),
-    entries: [packageEntry(0), packageEntry(1), packageEntry(2)],
+    entries,
   };
   const metrics = searchMetrics();
   const shared = new SearchRequestBudget(metrics, {
@@ -351,6 +361,7 @@ test("cached-package validation charges the request budget", () => {
       error.constructor.name === "SearchBudgetError" &&
       (error as unknown as { phase: string }).phase === "prepare",
   );
+  assert.equal(listVisits, 0);
   // Without a budget the same package validates.
   assert.doesNotThrow(() => validateCachedPackage(pkg, "en"));
 });

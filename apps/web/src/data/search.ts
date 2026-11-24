@@ -360,6 +360,7 @@ export function validateCachedPackage(
     )
   )
     throw invalidPackage();
+  if (value.entries.length) budget?.ensure(1, "prepare");
   requireDenseList(value.entries);
   const version = value.version === 2 ? 2 : 1;
   const countRafsi = savedRafsiUnion();

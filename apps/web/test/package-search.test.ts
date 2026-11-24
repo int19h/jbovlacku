@@ -314,7 +314,7 @@ test("download, saved cache, and search worker retain the package view once", as
   expect(result.downgrade).toBeNull();
 });
 
-test("a zero-unit transfer walks no attribution dates", async ({ page }) => {
+test("a zero-unit transfer walks no rows or attribution dates", async ({ page }) => {
   // The review input: 100 valid version-2 entries with 128 attribution
   // dates each. A request with workLimit 0 must refuse before walking any
   // date map on the page thread, while the default budget still returns
@@ -350,6 +350,12 @@ test("a zero-unit transfer walks no attribution dates", async ({ page }) => {
     );
     let visits = 0;
     let pairs = 0;
+    let listVisits = 0;
+    const ownKeys = Reflect.ownKeys;
+    Reflect.ownKeys = (value) => {
+      if (value === entries) listVisits++;
+      return ownKeys(value);
+    };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const original: any = Object.entries;
     const hooked = function (obj: object): [string, unknown][] {
@@ -364,23 +370,26 @@ test("a zero-unit transfer walks no attribution dates", async ({ page }) => {
     try {
       try {
         await searchPackage(pkg as never, "en", ["book"], { workLimit: 0 });
-        return { refused: false, visits, pairs };
+        return { refused: false, visits, pairs, listVisits };
       } catch (error) {
         return {
           refused: true,
           constructor: (error as Error).constructor.name,
           visits,
           pairs,
+          listVisits,
         };
       }
     } finally {
       Object.entries = original;
+      Reflect.ownKeys = ownKeys;
     }
   });
   expect(result.refused).toBe(true);
   expect(result.constructor).toBe("SearchBudgetError");
   expect(result.visits).toBe(0);
   expect(result.pairs).toBe(0);
+  expect(result.listVisits).toBe(0);
   const control = await page.evaluate(async () => {
     const { searchPackage } = await import(
       String("/src/data/package-search.ts")

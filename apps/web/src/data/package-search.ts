@@ -431,6 +431,8 @@ export async function searchPackage(
         // remaining package; the per-entry measurement itself checks the
         // allowance inside large date maps.
         if (prepare) {
+          if (Array.isArray(pkg.entries) && pkg.entries.length)
+            clientBudget.ensure(1, "prepare");
           requireDenseList(pkg.entries);
           for (const entry of pkg.entries) {
             clientBudget.ensure(1, "prepare");
