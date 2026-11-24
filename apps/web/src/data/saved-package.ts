@@ -62,11 +62,11 @@ export function fields(
   value: unknown,
   names: string[],
 ): value is Record<string, any> {
-  return (
-    isRecord(value) &&
-    Object.keys(value).length === names.length &&
-    names.every((name) => Object.hasOwn(value, name))
-  );
+  if (!isRecord(value) || Object.keys(value).length !== names.length)
+    return false;
+  for (const name of names)
+    if (!Object.hasOwn(value, name)) return false;
+  return true;
 }
 
 /**
@@ -76,7 +76,7 @@ export function fields(
  * cannot replace it.
  */
 const anyItem = (list: unknown[], test: (item: unknown) => boolean) =>
-  Array.prototype.some.call(list, test);
+  list.length > 0 && Array.prototype.some.call(list, test);
 
 /** Rafsi spellings per version 2 entry. The server applies the same bound. */
 export const PACKAGE_RAFSI_LIMIT = 64;
@@ -113,6 +113,9 @@ export function savedPackage(value: unknown): CachedPackage | null {
 
 /** The fields that only a version 2 row carries. */
 const V2_ONLY = ["issuer", "notes", "rafsi", "rafsi_complete", "attribution"];
+const WORD_FIELDS = ["language", "spelling"];
+const CLASSIFICATION_FIELDS = ["kind", "selmaho"];
+const GLOSS_FIELDS = ["language", "text", "sense"];
 
 /**
  * Check a saved row against the package language and version. Use the
@@ -135,14 +138,14 @@ export function savedRow(
     eventId(entry.event) &&
     entry.language === language &&
     languageTag(entry.language) &&
-    fields(word, ["language", "spelling"]) &&
+    fields(word, WORD_FIELDS) &&
     word.language === "jbo" &&
     typeof word.spelling === "string" &&
     typeof entry.plain_text === "string" &&
     (entry.body === null || hashId(entry.body)) &&
     Array.isArray(glosses) &&
     glosses.length <= 8192 &&
-    fields(classification, ["kind", "selmaho"]) &&
+    fields(classification, CLASSIFICATION_FIELDS) &&
     lexicalKinds.includes(classification.kind) &&
     Array.isArray(classification.selmaho);
   if (usable)
@@ -154,7 +157,7 @@ export function savedRow(
     usable = !anyItem(
       glosses as unknown[],
       (gloss) =>
-        !fields(gloss, ["language", "text", "sense"]) ||
+        !fields(gloss, GLOSS_FIELDS) ||
         !languageTag(gloss.language) ||
         typeof gloss.text !== "string" ||
         !(gloss.sense === null || typeof gloss.sense === "string"),

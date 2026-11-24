@@ -748,7 +748,7 @@ export async function rafsiPairPage(
         class: "touch-link",
       }),
     ),
-    await pairCard(app, context, found, found.rafsi),
-    el("p", { class: "fingerprint", text: pair }),
   );
+  const card = await pairCard(app, context, found, found.rafsi);
+  if (context.live()) main.append(card, el("p", { class: "fingerprint", text: pair }));
 }
