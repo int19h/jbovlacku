@@ -412,7 +412,7 @@ The rebuilt evaluation and work budget match full evaluation. Diagnostic statist
 An unavailable base reports `base_unavailable`.
 
 Forks share immutable ancestor payloads. After 64 appended records, a rebuild incorporates the new IDs into the ancestor layout.
-If the fast path reaches that limit, the evaluator reports `ancestry_rebase`.
+After 64 successful local appends, the next eligible append rebuilds and reports `ancestry_rebase`.
 It reports `layout_split` if the parents do not cover the history of the issuer or the insertion would split a stored range.
 It reports `work_budget` when the fast path cannot fit its work within the budget.
 

@@ -182,11 +182,10 @@ fn add_preparation_bounds(
         core_binding: format!("sha256:{}", "a".repeat(64)),
         limits: Default::default(),
     };
-    let baseline_descriptor = session.ranking_descriptor_native(&baseline_policy).unwrap();
-    if baseline_descriptor
-        .reasons
-        .contains("unsupported_calculation")
-    {
+    let Ok(baseline_descriptor) = session.ranking_descriptor_native(&baseline_policy) else {
+        return;
+    };
+    if !baseline_descriptor.available {
         return;
     }
     let baseline_request = jvc_runtime::RankingPreparationRequest {
@@ -194,7 +193,9 @@ fn add_preparation_bounds(
         descriptor_binding: baseline_descriptor.binding,
         word: word.into(),
     };
-    let baseline_preparation = session.prepare_ranking_native(&baseline_request).unwrap();
+    let Ok(baseline_preparation) = session.prepare_ranking_native(&baseline_request) else {
+        return;
+    };
     let context_bounds = baseline_preparation
         .contexts
         .iter()
@@ -269,7 +270,7 @@ fn main() {
         .values()
         .map(|publication| publication["word"].as_str().unwrap().to_owned())
         .collect::<BTreeSet<_>>();
-    let first_word = words.first().unwrap().clone();
+    let first_word = words.first();
     let float_profile =
         state_json["policy"]["calculation"].as_str() == Some(jvc_rank::approximate::ALGORITHM);
     if !bounds_only {
@@ -368,7 +369,9 @@ fn main() {
         "ranking_work_accept": null,
         "ranking_work_refuse": null,
     });
-    add_preparation_bounds(&mut bounds, &restored, &bounds_state, &first_word);
+    if let Some(word) = first_word {
+        add_preparation_bounds(&mut bounds, &restored, &bounds_state, word);
+    }
     write_json(format!("{output}/bounds.json"), bounds);
     if counts_only {
         return;
