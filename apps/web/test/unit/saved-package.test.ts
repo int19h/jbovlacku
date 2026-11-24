@@ -55,8 +55,10 @@ const pkg = (entries: unknown[], over: Record<string, unknown> = {}) => ({
 /** What a page that reads every row checks: the package, then each row. */
 const readAll = (value: unknown) => {
   const pkg = saved.savedPackage(value);
-  for (const entry of pkg?.entries ?? [])
-    saved.savedRow(entry, pkg!.version, "en");
+  if (pkg) {
+    saved.requireDenseList(pkg.entries);
+    for (const entry of pkg.entries) saved.savedRow(entry, pkg.version, "en");
+  }
   return pkg;
 };
 const rejects = (value: unknown) =>
@@ -385,7 +387,7 @@ test("the word index counts rows that fail the row check", async () => {
   const value = pkg([v2Row(), null, v2Row({ glosses: null })]) as never;
   assert.equal(
     index(value, "en", wordId({ language: "jbo", spelling: "cukta" })).length,
-    1,
+    0,
   );
   assert.equal(index.invalidEntryCount(value, "en"), 2);
 });
@@ -416,12 +418,10 @@ test("wizard inventory skips a package whose rows disagree with its key", async 
   assert.deepEqual(inventory.selected, { language: "en", pkg: good });
 });
 
-test("a rafsi with a lone surrogate is unusable, though the worker accepts it", () => {
+test("a rafsi with a lone surrogate fails in both readers", () => {
   const lone = pkg([v2Row({ rafsi: ["\ud800"] })]);
   rejects(lone);
-  // The one known case where the rule is stricter than the worker: the
-  // core cannot serialize this rafsi when a page derives its pair ID.
-  assert.equal(workerAccepts(lone), true);
+  assert.equal(workerAccepts(lone), false);
   // A surrogate pair is well-formed and stays usable.
   const paired = pkg([v2Row({ rafsi: ["😀"] })]);
   assert.equal(readAll(paired), paired);
@@ -435,31 +435,79 @@ test("an event or row language with a lone surrogate is unusable", () => {
   }
 });
 
-test("empty array slots are read as the worker reads them", () => {
-  // IndexedDB keeps empty slots. The worker's `.some` skips them, so the
-  // rule must skip them too.
-  const selmaho = new Array(1);
-  const glosses = [v1Row().glosses[0]];
-  glosses.length = 2;
-  const rafsi = ["cuk"];
-  rafsi.length = 2;
-  for (const row of [
-    v2Row({ classification: { kind: "gismu", selmaho } }),
-    v2Row({ glosses }),
-    v2Row({ rafsi }),
+test("dense lists reject missing indices and extra keys in both readers", () => {
+  const gloss = v1Row().glosses[0];
+  for (const value of [
+    pkg(Object.assign([v2Row()], { entries: 0 })),
+    pkg(Object.assign([v2Row()], { "01": 0 })),
+    pkg(new Array(0xffffffff)),
+    pkg([v2Row({ glosses: [, gloss] })]),
+    pkg([v2Row({ rafsi: ["cuk", , "cku"] })]),
+    pkg([
+      v2Row({ rafsi: Object.assign(new Array(2), { 0: "cuk", foo: true }) }),
+    ]),
+    pkg([v2Row({ glosses: Object.assign([gloss], { map: false }) })]),
+    pkg([v2Row({ rafsi: Object.assign(["cuk"], { includes: 1 }) })]),
+    pkg([v2Row({ rafsi: ["cuk", undefined] })]),
+    pkg([
+      v2Row({
+        classification: {
+          kind: "gismu",
+          selmaho: Object.assign([], { join: 2 }),
+        },
+      }),
+    ]),
+    pkg([
+      v2Row({
+        attribution: { source: "test", author: null, account: null, dates: [] },
+      }),
+    ]),
   ]) {
-    const value = pkg([row]);
-    assert.ok(workerAccepts(value));
-    assert.equal(readAll(value), value);
+    rejects(value);
+    assert.equal(workerAccepts(value), false);
   }
 });
 
-test("an own some property on a stored array does not replace the rule's test", () => {
-  // The worker calls the array's own `some` and rejects the package when it
-  // is not a function. The rule uses `Array.prototype.some`, so it accepts
-  // this one listed difference without throwing a raw error.
-  const glosses = Object.assign([v1Row().glosses[0]], { some: false });
-  const value = pkg([v2Row({ glosses })]);
-  assert.equal(workerAccepts(value), false);
-  assert.equal(readAll(value), value);
+test("both readers enforce the UTF-8 rafsi boundary", () => {
+  const boundary = "é".repeat(64);
+  const accepted = pkg([v2Row({ rafsi: [boundary] })]);
+  assert.equal(readAll(accepted), accepted);
+  assert.equal(workerAccepts(accepted), true);
+  const oversized = pkg([v2Row({ rafsi: [boundary + "a"] })]);
+  rejects(oversized);
+  assert.equal(workerAccepts(oversized), false);
+});
+
+test("the worker and wizard inventory count the union by canonical word ID", () => {
+  const claims = (start: number, count: number) =>
+    Array.from({ length: count }, (_, i) => `r${start + i}`);
+  const row = (index: number, spelling: string, rafsi: string[]) =>
+    v2Row({
+      event: "jve1:" + String(index).repeat(64),
+      word: { language: "jbo", spelling },
+      rafsi,
+    });
+  const inventory = (value: ReturnType<typeof pkg>) =>
+    builders.inventoryFromPackage({ pkg: value as never, language: "en" });
+  const overlap = pkg([
+    row(1, "djan", claims(0, 64)),
+    row(2, "dján", claims(0, 40)),
+  ]);
+  assert.equal(workerAccepts(overlap), true);
+  assert.equal(inventory(overlap).claims.length, 64);
+  for (const value of [
+    pkg([row(1, "djan", claims(0, 40)), row(2, "djan", claims(40, 40))]),
+    pkg([
+      row(1, "djan", claims(0, 64)),
+      row(2, "cukta", ["cuk"]),
+      row(3, "dján", ["r64"]),
+    ]),
+  ]) {
+    assert.equal(workerAccepts(value), false);
+    assert.throws(() => inventory(value), saved.PackageValidationError);
+    const index = search.createPackageWordIndex();
+    const id = wordId({ language: "jbo", spelling: "djan" });
+    assert.equal(index(value as never, "en", id).length, 0);
+    assert.equal(index.invalidEntryCount(value as never, "en"), 1);
+  }
 });

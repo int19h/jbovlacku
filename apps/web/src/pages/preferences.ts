@@ -26,7 +26,10 @@ import {
   INVALID_PACKAGE_MESSAGE,
   PackageValidationError,
   savedPackage,
+  savedRafsiUnion,
+  requireDenseList,
   savedRow,
+  savedWordId,
 } from "../data/saved-package.ts";
 import type { Preferences } from "../data/store.ts";
 
@@ -660,7 +663,13 @@ async function preferencesBody(context: RenderContext, app: App) {
       if (pkg)
         checks.push(() => {
           try {
-            for (const entry of pkg.entries) savedRow(entry, pkg.version, key);
+            requireDenseList(pkg.entries);
+            const countRafsi = savedRafsiUnion();
+            for (const value of pkg.entries) {
+              const entry = savedRow(value, pkg.version, key);
+              if ("issuer" in entry)
+                countRafsi(savedWordId(entry.word), entry);
+            }
             detail.textContent = `${plural(pkg.entries.length, "definition")} · snapshot ${pkg.snapshot.slice(7, 19)}… · version ${pkg.version ?? 1}${
               pkg.downgrade
                 ? `. Version 1 was saved instead of version 2: ${packageCause(pkg.downgrade)}`

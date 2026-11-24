@@ -372,7 +372,7 @@ test("wizard rafsi accents block publication without changing the draft", () => 
   }
 });
 
-test("the word index skips and counts invalid cached entries once", async () => {
+test("the word index counts invalid rows once and discards its results", async () => {
   const { createPackageWordIndex } = await import("../../src/data/search.ts");
   let calls = 0;
   const lookup = createPackageWordIndex((word) => {
@@ -390,14 +390,11 @@ test("the word index skips and counts invalid cached entries once", async () => 
     ],
   };
   const id = wordId({ language: "jbo", spelling: "djan" });
-  assert.deepEqual(lookup(cached, "en", id), [
-    cached.entries[0],
-    cached.entries[2],
-  ]);
+  assert.deepEqual(lookup(cached, "en", id), []);
   assert.equal(lookup.invalidEntryCount(cached, "en"), 2);
   assert.deepEqual(
     lookup(cached, "en", wordId({ language: "jbo", spelling: "blanu" })),
-    [cached.entries[4]],
+    [],
   );
   assert.deepEqual(
     lookup(cached, "en", wordId({ language: "jbo", spelling: "klama" })),

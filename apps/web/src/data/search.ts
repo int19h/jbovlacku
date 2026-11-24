@@ -28,9 +28,15 @@ export {
 } from "../../../../packages/search/src/index.ts";
 import {
   fields,
-  INVALID_PACKAGE_MESSAGE,
   PACKAGE_RAFSI_LIMIT,
+  isRecord,
+  PackageValidationError,
+  requireDenseList,
+  requireSavedRowLists,
+  savedRafsiUnion,
   savedRow,
+  savedWordId,
+  validPackageRafsi,
 } from "./saved-package.ts";
 import {
   getManifest,
@@ -52,8 +58,8 @@ import {
 
 /**
  * Package objects are immutable snapshots. Reuse their identity index across
- * renders in the same language. The index leaves out rows that fail `savedRow`
- * or have a word that the core rejects. `invalidEntryCount` counts them.
+ * renders in the same language. Any invalid row or claim union discards
+ * the whole index. The package keeps the failure for later reads.
  */
 export function createPackageWordIndex(identify: typeof wordId = wordId) {
   const indexes = new WeakMap<
@@ -68,6 +74,15 @@ export function createPackageWordIndex(identify: typeof wordId = wordId) {
     let index = indexes.get(pkg);
     if (index?.language !== language) {
       index = { language, words: new Map(), invalidEntries: 0 };
+      try {
+        requireDenseList(pkg.entries);
+      } catch (error) {
+        if (!(error instanceof PackageValidationError)) throw error;
+        index.invalidEntries = 1;
+        indexes.set(pkg, index);
+        return index;
+      }
+      const countRafsi = savedRafsiUnion();
       for (const entry of pkg.entries) {
         let row;
         let id;
@@ -78,10 +93,18 @@ export function createPackageWordIndex(identify: typeof wordId = wordId) {
           index.invalidEntries++;
           continue;
         }
+        try {
+          countRafsi(id, row);
+        } catch (error) {
+          if (!(error instanceof PackageValidationError)) throw error;
+          index.invalidEntries++;
+          break;
+        }
         const rows = index.words.get(id) ?? [];
         rows.push(row);
         index.words.set(id, rows);
       }
+      if (index.invalidEntries) index.words.clear();
       indexes.set(pkg, index);
     }
     return index;
@@ -139,7 +162,7 @@ const count = (value: unknown, maximum: number): value is number =>
  * (storage full, out of memory) reports PackageStorageError instead, and a
  * configured quota reports PackageQuotaError.
  */
-export const invalidPackage = () => new Error(INVALID_PACKAGE_MESSAGE);
+export const invalidPackage = () => new PackageValidationError();
 /** A package download or save that the device cannot fit. */
 export class PackageStorageError extends Error {
   constructor(
@@ -204,6 +227,18 @@ export function validateEntry(
   language: string,
   version: 1 | 2 = 1,
   packageView?: string,
+  budget?: SearchRequestBudget,
+): string {
+  requireSavedRowLists(value);
+  budget?.reserve(1 + entryContentUnits(value, budget, "prepare"), "prepare");
+  return validateEntryFields(value, language, version, packageView);
+}
+
+function validateEntryFields(
+  value: unknown,
+  language: string,
+  version: 1 | 2,
+  packageView?: string,
 ): string {
   if (
     version === 2 &&
@@ -221,7 +256,7 @@ export function validateEntry(
           !["active", "retired", "ineligible"].includes(search_status.status)
     )
       throw invalidPackage();
-    return validateEntry(base, language, version);
+    return validateEntryFields(base, language, version);
   }
   if (version === 2) {
     if (
@@ -230,7 +265,7 @@ export function validateEntry(
       typeof value.notes !== "boolean" ||
       !Array.isArray(value.rafsi) ||
       value.rafsi.length > PACKAGE_RAFSI_LIMIT ||
-      value.rafsi.some((r: unknown) => typeof r !== "string") ||
+      !value.rafsi.every(validPackageRafsi) ||
       !(
         value.rafsi_complete === undefined ||
         typeof value.rafsi_complete === "boolean"
@@ -245,8 +280,7 @@ export function validateEntry(
             (fields(value.attribution.account, ["origin", "account"]) &&
               typeof value.attribution.account.origin === "string" &&
               Number.isSafeInteger(value.attribution.account.account))) &&
-          value.attribution.dates !== null &&
-          typeof value.attribution.dates === "object" &&
+          isRecord(value.attribution.dates) &&
           Object.values(value.attribution.dates).every(
             (d) => typeof d === "string",
           ))
@@ -260,7 +294,7 @@ export function validateEntry(
     void rafsi;
     void rafsi_complete;
     void attribution;
-    return validateEntry(base, language, 1);
+    return validateEntryFields(base, language, 1);
   }
   if (
     !fields(value, V1_FIELDS) ||
@@ -289,11 +323,7 @@ export function validateEntry(
     )
   )
     throw invalidPackage();
-  try {
-    return wordId({ language: "jbo", spelling: value.word.spelling });
-  } catch {
-    throw invalidPackage();
-  }
+  return savedWordId({ language: "jbo", spelling: value.word.spelling });
 }
 export function validateCachedPackage(
   value: unknown,
@@ -330,15 +360,17 @@ export function validateCachedPackage(
     )
   )
     throw invalidPackage();
+  requireDenseList(value.entries);
   const version = value.version === 2 ? 2 : 1;
+  const countRafsi = savedRafsiUnion();
   let previous = "";
-  for (const entry of value.entries) {
+  for (const entry of value.entries as PackageEntry[]) {
     // One validated entry costs one unit plus its content, charged before
     // the entry is read so a bloated package refuses up front. The unit is
     // ensured before measuring, so an exhausted budget walks nothing.
     budget?.ensure(1, "prepare");
-    budget?.reserve(1 + entryContentUnits(entry, budget, "prepare"), "prepare");
-    validateEntry(entry, language, version, value.search_view);
+    const id = validateEntry(entry, language, version, value.search_view, budget);
+    countRafsi(id, entry);
     if (value.search_view && typeof entry.search_status !== "string")
       throw invalidPackage();
     if (entry.event <= previous) throw invalidPackage();
@@ -522,6 +554,7 @@ async function downloadEntries(
       throw quotaMessage("entries", totalEntries, quota.entries);
   }
   const entries: PackageEntry[] = [];
+  const countRafsi = savedRafsiUnion();
   let previous = "";
   const progress: PackageProgress = {
     parts: 0,
@@ -546,6 +579,7 @@ async function downloadEntries(
         throw invalidPackage();
       for (const entry of data) {
         const id = validateEntry(entry, language, version, pkg.search_view);
+        countRafsi(id, entry);
         if (pkg.search_view && typeof entry.search_status !== "string")
           throw invalidPackage();
         if (entry.event <= previous) throw invalidPackage();

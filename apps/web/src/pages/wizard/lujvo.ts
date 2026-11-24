@@ -49,7 +49,13 @@ import type { App } from "../../app/context.ts";
 import { getWord, RequestError } from "../../data/api.ts";
 import type { Draft } from "../../model/draft.ts";
 import type { CachedPackage, LocalHit } from "../../data/search.ts";
-import { INVALID_PACKAGE_MESSAGE } from "../../data/saved-package.ts";
+import {
+  fitsComponentSpelling,
+  fitsSavedComponent,
+  INVALID_PACKAGE_MESSAGE,
+  PACKAGE_RAFSI_LIMIT,
+  validPackageRafsi,
+} from "../../data/saved-package.ts";
 import {
   cappedHitEntries,
   distinctHitRafsi,
@@ -120,6 +126,23 @@ export async function lujvoPage(
     invalid: packageInvalid,
   } = savedInventory(saved);
   const cached = selected?.pkg ?? null;
+  let restoredInvalid = false;
+  for (const row of draft.lujvo?.components ?? []) {
+    if (fitsSavedComponent(row)) continue;
+    restoredInvalid = true;
+    const locked =
+      row.locked && fitsComponentSpelling(row.locked) ? row.locked : null;
+    Object.assign(row, {
+      spelling: "",
+      kind: "other",
+      definition: null,
+      definitions: [],
+      gloss: "",
+      claims: [],
+      locked,
+      unresolvedSource: "Link a source word if you know it.",
+    });
+  }
   let state;
   try {
     state = prepareLujvoBuilder(draft, cached);
@@ -168,6 +191,10 @@ export async function lujvoPage(
     el("h1", { id: "h1", class: "page", text: "Build the lujvo" }),
   );
   if (packageInvalid) section.append(p(INVALID_PACKAGE_MESSAGE, "notice"));
+  if (restoredInvalid)
+    section.append(
+      p("A saved source exceeded the builder limits. Choose the source again.", "notice"),
+    );
   section.append(
     el(
       "p",
@@ -373,6 +400,7 @@ export async function lujvoPage(
     if (!current()) return;
     for (const hit of hits) {
       const entry = hit.entries[0];
+      const fits = fitsComponentSpelling(hit.word.spelling);
       const kind =
         (entry.classification as { kind?: string } | null)?.kind ?? "other";
       // The request bounds hits, not the entries inside each hit: one word
@@ -386,8 +414,17 @@ export async function lujvoPage(
       // so concurrent Adds keep their click order and the component
       // survives immediate navigation. Nothing is silently truncated.
       const pushPart = () => {
-        const id = wordId({ language: "jbo", spelling: hit.word.spelling });
+        const id = hit.word_id;
         const claims = distinctHitRafsi(hit.entries);
+        if (
+          claims.length > PACKAGE_RAFSI_LIMIT ||
+          !claims.every(validPackageRafsi)
+        ) {
+          addResults.replaceChildren(
+            el("li", { class: "notice", text: INVALID_PACKAGE_MESSAGE }),
+          );
+          return;
+        }
         editLujvoRows(state, (rows) =>
           rows.push({
             id: componentId(),
@@ -417,7 +454,6 @@ export async function lujvoPage(
         text(
           ` · ${
             entry.glosses
-              .filter(() => true)
               .map((g) => g.text)
               .join(", ") || entry.plain_text.slice(0, 60)
           }`,
@@ -429,16 +465,12 @@ export async function lujvoPage(
         ...(hidden > 0
           ? [text(` · also: ${plural(hidden, "other matching definition")}`, "meta")]
           : []),
-        button(
-          "Add",
-          () => {
-            pushPart();
-          },
-          {
-            class: "btn btn-quiet",
-            "aria-label": `Add ${hit.word.spelling}`,
-          },
-        ),
+        fits
+          ? button("Add", pushPart, {
+              class: "btn btn-quiet",
+              "aria-label": `Add ${hit.word.spelling}`,
+            })
+          : p("This spelling exceeds the builder limit of 128 bytes.", "meta"),
       );
       addResults.append(item);
     }
@@ -476,6 +508,12 @@ export async function lujvoPage(
                 : analysis.kind === "cmevla"
                   ? "cmevla"
                   : "other";
+      if (!fitsComponentSpelling(enteredSpelling)) {
+        addResults.append(
+          p("This spelling exceeds the builder limit of 128 bytes.", "notice"),
+        );
+        return;
+      }
       item.append(
         el("span", { class: "hw", lang: "jbo", text: enteredSpelling }),
         text(

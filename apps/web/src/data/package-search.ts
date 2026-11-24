@@ -1,5 +1,9 @@
 import { packageStorageKey } from "./store.ts";
-import { PackageValidationError } from "./saved-package.ts";
+import {
+  PackageValidationError,
+  requireDenseList,
+  requireSavedRowLists,
+} from "./saved-package.ts";
 export { PackageValidationError };
 import {
   invalidPackage,
@@ -427,8 +431,10 @@ export async function searchPackage(
         // remaining package; the per-entry measurement itself checks the
         // allowance inside large date maps.
         if (prepare) {
+          requireDenseList(pkg.entries);
           for (const entry of pkg.entries) {
             clientBudget.ensure(1, "prepare");
+            requireSavedRowLists(entry);
             clientBudget.reserve(
               1 + entryContentUnits(entry, clientBudget, "prepare"),
               "prepare",
@@ -554,9 +560,7 @@ export function summarizeHitEntries(
   return entries.map((entry) => ({
     event: entry.event,
     summary:
-      // filter drops empty array slots, which the worker's checks skip.
       entry.glosses
-        .filter(() => true)
         .map((gloss) => gloss.text)
         .join(", ") ||
       // The first 60 code points occupy at most 120 UTF-16 units, so reading

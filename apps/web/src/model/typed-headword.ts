@@ -1,3 +1,10 @@
+import {
+  fitsComponentSpelling,
+  fitsSavedComponent,
+  PACKAGE_RAFSI_LIMIT,
+  PackageValidationError,
+  validPackageRafsi,
+} from "../data/saved-package.ts";
 /**
  * Production transitions for headword and builder state.
  * See docs/typed-headword-state.md for fields, events, and invariants.
@@ -668,6 +675,7 @@ export function sourceOptions(
   const words = new Map<string, LujvoComponentState>();
   for (const entry of cached?.entries ?? []) {
     const spelling = entry.word.spelling;
+    if (!fitsComponentSpelling(spelling)) continue;
     const listed =
       !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
     const plain = stripAcuteAccents(spelling);
@@ -701,17 +709,13 @@ export function sourceOptions(
       summary: entry.plain_text,
     });
     for (const rafsi of listed)
-      // An empty array slot is no rafsi, as in the worker's checks.
-      if (
-        rafsi !== undefined &&
-        !component.claims.some((claim) => claim.rafsi === rafsi)
-      )
-        component.claims.push({
-          rafsi,
-          pair: rafsiPairId(wordId(entry.word), rafsi),
-        });
+      if (!component.claims.some((claim) => claim.rafsi === rafsi)) {
+        if (component.claims.length === PACKAGE_RAFSI_LIMIT || !validPackageRafsi(rafsi))
+          throw new PackageValidationError();
+        component.claims.push({ rafsi, pair: rafsiPairId(identity, rafsi) });
+      }
   }
-  return [...words.values()].sort((a, b) =>
+  return [...words.values()].filter(fitsSavedComponent).sort((a, b) =>
     a.spelling.localeCompare(b.spelling),
   );
 }
@@ -751,6 +755,7 @@ export function typedLujvoState(
       const display = displayed?.[index]?.trim().normalize("NFC");
       if (choices.length === 1)
         return display &&
+          fitsComponentSpelling(display) &&
           stripAcuteAccents(display) !== display &&
           stripAcuteAccents(display) === stripAcuteAccents(choices[0].spelling)
           ? { ...choices[0], spelling: display }

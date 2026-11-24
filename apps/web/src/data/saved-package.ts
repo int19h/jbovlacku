@@ -1,32 +1,4 @@
-/**
- * The rule for a saved search package that pages read on the main thread.
- *
- * Pages read a saved package as it comes from the store, and read its rows
- * through these accessors as they go:
- *
- * - `savedPackage` checks the stored value and its package fields.
- * - `savedRow` checks one row's fields that main-thread readers use.
- * - `savedWordId` derives a row's word ID through the core.
- *
- * A saved package is unusable when any of these fails on it. Each failure
- * raises `PackageValidationError` with the documented invalid-package
- * message, so every page shows the same message instead of a raw error.
- * The checks run inside the loops that already read each row, so a valid
- * package costs no extra pass and no worker round trip. Settings is the
- * exception: it reads no rows, so it checks them in a pass of its own.
- *
- * For each field that a page reads before the search worker's verdict, the
- * rule uses the worker's own test (`validateCachedPackage` and
- * `validateEntry`). The worker still validates every package that a page
- * sends to it, and also checks what no page reads first: exact field sets,
- * the row order, and the attribution. The core checks each spelling where a
- * page derives the word ID. A rafsi with a lone surrogate passes the worker
- * check and fails the row check. The worker accepts any rafsi
- * string, but the core cannot serialize such a rafsi into a pair ID.
- *
- * This module has no server or browser-storage dependency, so models and
- * Node unit tests can load it.
- */
+/** The shared read rules for saved search packages. */
 import { wordId } from "../../../../packages/core/src/browser.ts";
 import type { CachedPackage } from "./search.ts";
 import {
@@ -36,6 +8,7 @@ import {
   languageTag,
   lexicalKinds,
   type PackageEntry,
+  type PackageEntryV2,
 } from "../model/types.ts";
 
 export const INVALID_PACKAGE_MESSAGE =
@@ -48,13 +21,10 @@ export class PackageValidationError extends Error {
   }
 }
 
-/**
- * Matches an unpaired surrogate. The core cannot serialize such a rafsi into
- * a pair ID, although the worker accepts any rafsi string.
- */
+/** The core rejects a lone surrogate in a spelling. */
 const LONE_SURROGATE = /\p{Cs}/u;
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** Whether a value is an object with exactly these own fields. The worker uses the same test. */
@@ -64,22 +34,110 @@ export function fields(
 ): value is Record<string, any> {
   if (!isRecord(value) || Object.keys(value).length !== names.length)
     return false;
-  for (const name of names)
-    if (!Object.hasOwn(value, name)) return false;
+  for (const name of names) if (!Object.hasOwn(value, name)) return false;
   return true;
 }
 
-/**
- * Whether any element of a list fails, visited as the worker's `.some`
- * visits it: empty slots, which IndexedDB keeps, are skipped. The method is
- * taken from `Array.prototype`, so an own `some` property on a stored array
- * cannot replace it.
- */
-const anyItem = (list: unknown[], test: (item: unknown) => boolean) =>
-  list.length > 0 && Array.prototype.some.call(list, test);
+function isDateMap(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
 
-/** Rafsi spellings per version 2 entry. The server applies the same bound. */
+/** A stored array must have only its own elements and its intrinsic length. */
+export function requireDenseList(value: unknown): asserts value is unknown[] {
+  if (!isDenseList(value)) throw new PackageValidationError();
+}
+
+function isDenseList(value: unknown): value is unknown[] {
+  if (!Array.isArray(value)) return false;
+  // Inspect supplied keys. A sparse list can claim a much larger length.
+  const keys = Reflect.ownKeys(value);
+  // An array lists its indices first. Its intrinsic length precedes all
+  // other string and symbol keys. Every array index is below its length.
+  return keys.length === value.length + 1 && keys[value.length] === "length";
+}
+
+/** Check list shape before reading element content or calling array methods. */
+export function requireSavedRowLists(
+  value: unknown,
+): asserts value is Record<string, unknown> {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.word) ||
+    !isRecord(value.classification)
+  )
+    throw new PackageValidationError();
+  if (!Array.isArray(value.glosses) || value.glosses.length > 8192)
+    throw new PackageValidationError();
+  requireDenseList(value.glosses);
+  requireDenseList(value.classification.selmaho);
+  if (Object.hasOwn(value, "rafsi")) {
+    if (!Array.isArray(value.rafsi) || value.rafsi.length > PACKAGE_RAFSI_LIMIT)
+      throw new PackageValidationError();
+    requireDenseList(value.rafsi);
+  }
+  if (
+    value.attribution != null &&
+    (!isRecord(value.attribution) ||
+      !isDateMap(value.attribution.dates) ||
+      (value.attribution.account != null &&
+        !isRecord(value.attribution.account)))
+  )
+    throw new PackageValidationError();
+}
+
 export const PACKAGE_RAFSI_LIMIT = 64;
+const COMPONENT_BYTE_LIMIT = 128;
+const encoder = new TextEncoder();
+
+export function fitsComponentSpelling(spelling: string): boolean {
+  return (
+    spelling.length <= COMPONENT_BYTE_LIMIT &&
+    (!/[^\x00-\x7f]/.test(spelling) ||
+      (!LONE_SURROGATE.test(spelling) &&
+        encoder.encode(spelling).length <= COMPONENT_BYTE_LIMIT))
+  );
+}
+
+export function validPackageRafsi(value: unknown): value is string {
+  return typeof value === "string" && fitsComponentSpelling(value);
+}
+
+/** Count exact claims for an entire language package. */
+export function savedRafsiUnion() {
+  const words = new Map<string, Set<string>>();
+  return (id: string, entry: PackageEntry) => {
+    if (!("issuer" in entry)) return;
+    const { rafsi } = entry as PackageEntryV2;
+    if (!rafsi.length) return;
+    let claims = words.get(id);
+    if (!claims) {
+      claims = new Set();
+      words.set(id, claims);
+    }
+    for (const claim of rafsi) {
+      if (claims.size === PACKAGE_RAFSI_LIMIT && !claims.has(claim))
+        throw new PackageValidationError();
+      claims.add(claim);
+    }
+  };
+}
+
+/** Whether a package component fits the limits that the builder enforces. */
+export function fitsSavedComponent(component: {
+  spelling: string;
+  claims: readonly { rafsi: string }[];
+  locked?: string | null;
+}): boolean {
+  return (
+    fitsComponentSpelling(component.spelling) &&
+    (component.locked == null || fitsComponentSpelling(component.locked)) &&
+    component.claims.length <= PACKAGE_RAFSI_LIMIT &&
+    isDenseList(component.claims) &&
+    component.claims.every((claim) => validPackageRafsi(claim?.rafsi))
+  );
+}
 
 /**
  * A stored value as a saved package. `undefined` means that nothing is
@@ -123,16 +181,15 @@ const GLOSS_FIELDS = ["language", "text", "sense"];
  * the event, language, word, plain text, body, glosses and
  * classification, and for a version 2 row the issuer, notes and rafsi
  * list. A version 1 row must carry no version 2 field, and a version 2 row
- * must carry the issuer and the rafsi list. The rule is stricter than the
- * worker in one case: a rafsi with a lone surrogate. A row that fails
- * raises `PackageValidationError`.
+ * must carry the issuer and the rafsi list. A row that fails raises
+ * `PackageValidationError`.
  */
 export function savedRow(
   entry: unknown,
   version: 1 | 2 | undefined,
   language: string,
 ): PackageEntry {
-  if (!isRecord(entry)) throw new PackageValidationError();
+  requireSavedRowLists(entry);
   const { word, classification, glosses } = entry;
   let usable =
     eventId(entry.event) &&
@@ -149,18 +206,16 @@ export function savedRow(
     lexicalKinds.includes(classification.kind) &&
     Array.isArray(classification.selmaho);
   if (usable)
-    usable = !anyItem(
-      (classification as { selmaho: unknown[] }).selmaho,
-      (item) => typeof item !== "string",
+    usable = (classification as { selmaho: unknown[] }).selmaho.every(
+      (item) => typeof item === "string",
     );
   if (usable)
-    usable = !anyItem(
-      glosses as unknown[],
+    usable = (glosses as unknown[]).every(
       (gloss) =>
-        !fields(gloss, GLOSS_FIELDS) ||
-        !languageTag(gloss.language) ||
-        typeof gloss.text !== "string" ||
-        !(gloss.sense === null || typeof gloss.sense === "string"),
+        fields(gloss, GLOSS_FIELDS) &&
+        languageTag(gloss.language) &&
+        typeof gloss.text === "string" &&
+        (gloss.sense === null || typeof gloss.sense === "string"),
     );
   if (usable && version === 2) {
     const rafsi = entry.rafsi;
@@ -172,10 +227,14 @@ export function savedRow(
       (entry.rafsi_complete === undefined ||
         typeof entry.rafsi_complete === "boolean");
     if (usable)
-      usable = !anyItem(
-        rafsi as unknown[],
-        (item) => typeof item !== "string" || LONE_SURROGATE.test(item),
-      );
+      usable =
+        (rafsi as unknown[]).every(validPackageRafsi) &&
+        (entry.attribution == null ||
+          (isRecord(entry.attribution) &&
+            isRecord(entry.attribution.dates) &&
+            Object.values(entry.attribution.dates).every(
+              (date) => typeof date === "string",
+            )));
   } else if (usable)
     for (const name of V2_ONLY) if (Object.hasOwn(entry, name)) usable = false;
   if (!usable) throw new PackageValidationError();

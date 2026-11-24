@@ -28,6 +28,8 @@ import {
   INVALID_PACKAGE_MESSAGE,
   PackageValidationError,
   savedPackage,
+  savedRafsiUnion,
+  requireDenseList,
   savedRow,
   savedWordId,
 } from "../data/saved-package.ts";
@@ -137,6 +139,7 @@ export async function wordsWithRafsi(
       // first incomplete one: the page derives pair IDs from the rafsi of
       // any row that the search returns, and the worker accepts some rafsi
       // that the core cannot read.
+      requireDenseList(pkg.entries);
       let incomplete = false;
       for (const row of pkg.entries) {
         const entry = savedRow(row, pkg.version, language);
@@ -668,7 +671,7 @@ async function resolvePair(
       const match = (entry: PackageEntryV2, id: string) => {
         if (found) return;
         for (const rafsi of entry.rafsi)
-          if (rafsi !== undefined && rafsiPairId(id, rafsi) === pair) {
+          if (rafsiPairId(id, rafsi) === pair) {
             found = { spelling: entry.word.spelling, language, rafsi };
             break;
           }
@@ -678,11 +681,15 @@ async function resolvePair(
       if (!loaded.fresh) {
         // A failed download can leave a candidate from a checked prefix.
         found = undefined;
+        requireDenseList(loaded.pkg.entries);
+        const countRafsi = savedRafsiUnion();
         for (const row of loaded.pkg.entries) {
           const entry = savedRow(row, loaded.pkg.version, language);
-          if (isV2(entry) && !found && entry.rafsi.length)
-            match(entry, savedWordId(entry.word));
-          else checkSavedWord(entry.word);
+          if (isV2(entry) && entry.rafsi.length) {
+            const id = savedWordId(entry.word);
+            countRafsi(id, entry);
+            match(entry, id);
+          } else checkSavedWord(entry.word);
         }
       }
       if (found) return found;

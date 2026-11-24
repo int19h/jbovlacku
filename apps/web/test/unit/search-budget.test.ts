@@ -583,3 +583,50 @@ test("a prepared rafsi query completes after lowercasing expands it", () => {
   );
   assert.equal(selected.segmentation, "complete");
 });
+
+test("malformed lists fail before content measurement reads an element", () => {
+  const row = packageEntry(0);
+  let touches = 0;
+  const selmaho = Object.assign(["BAI"], { join: 0 });
+  Object.defineProperty(selmaho, 0, {
+    get() {
+      touches++;
+      return "BAI";
+    },
+  });
+  const pkg = {
+    snapshot: "sha256:" + "a".repeat(64),
+    entries: [{ ...row, classification: { ...row.classification, selmaho } }],
+  };
+  const budget = new SearchRequestBudget(searchMetrics());
+  assert.throws(
+    () => validateCachedPackage(pkg, "en", budget),
+    (error) =>
+      error instanceof Error &&
+      error.constructor.name === "PackageValidationError",
+  );
+  assert.equal(touches, 0);
+  assert.equal(budget.snapshot().spent, 0);
+});
+
+test("validation work remains reserved for dense lists", () => {
+  const row = packageEntry(0);
+  const pkg = {
+    snapshot: "sha256:" + "a".repeat(64),
+    entries: [
+      {
+        ...row,
+        classification: {
+          ...row.classification,
+          selmaho: Array(100).fill("BAI"),
+        },
+      },
+    ],
+  };
+  const budget = new SearchRequestBudget(searchMetrics(), { workLimit: 50 });
+  assert.throws(
+    () => validateCachedPackage(pkg, "en", budget),
+    (error) =>
+      error instanceof Error && error.constructor.name === "SearchBudgetError",
+  );
+});

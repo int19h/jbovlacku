@@ -852,7 +852,7 @@ async function seedBuilt(
 }
 
 for (const shape of ["selmaho-hole", "gloss-hole", "rafsi-hole"] as const)
-  test(`a package with an empty array slot (${shape}) stays usable, as the worker reads it`, async ({
+  test(`a package with an empty array slot (${shape}) is invalid in the wizard and Settings`, async ({
     page,
   }) => {
     await seedBuilt(page, shape, {
@@ -863,15 +863,13 @@ for (const shape of ["selmaho-hole", "gloss-hole", "rafsi-hole"] as const)
     });
     await page.goto("/new/type");
     const closeness = page.getByRole("region", { name: "Gismu closeness" });
-    await expect(closeness).toContainText("Last vowel differs from cukta");
-    await expect(closeness).not.toContainText(INVALID);
+    await expect(closeness).toContainText(INVALID);
+    await expect(closeness).not.toContainText("Last vowel differs from cukta");
     await page.goto("/preferences");
+    await expectInvalidOnly(page);
     await expect(
-      page.getByText(/1 definition · snapshot aaaaaaaaaaaa/),
+      page.getByRole("button", { name: "Remove", exact: true }),
     ).toBeVisible();
-    // Settings checks the rows in a later task; give it time to run.
-    await page.waitForTimeout(500);
-    await expect(page.getByText(INVALID)).toHaveCount(0);
   });
 
 test("search and meaning show the documented message for a gloss list with an own some property", async ({
@@ -923,7 +921,7 @@ test("an obsolete nearby lookup does not clear the current language's package", 
   };
   await seed(
     page,
-    { ...empty, entries: [null] },
+    { ...empty, entries: [{ ...validRow, event: "bad event" }] },
     { meaning: "book", language: "en", step: 1 },
     { fr: empty },
   );
@@ -939,7 +937,9 @@ test("an obsolete nearby lookup does not clear the current language's package", 
   const panel = page.getByRole("region", { name: "Close in meaning" });
   await expect(panel).not.toContainText("from the downloaded package");
   await page.evaluate(() => (window as unknown as { held: () => void }).held());
-  await page.getByRole("textbox", { name: "Meaning", exact: true }).fill("livre");
+  await page
+    .getByRole("textbox", { name: "Meaning", exact: true })
+    .fill("livre");
   await expect(panel).toContainText("from the downloaded package");
   await expect(panel).not.toContainText("saved package is invalid");
 });
@@ -987,7 +987,7 @@ async function seedRafsiHole(page: Page, draft?: Record<string, unknown>) {
   );
 }
 
-test("an empty rafsi slot is no rafsi on the lujvo builder, and its draft holds only real claims", async ({
+test("an empty rafsi slot makes the lujvo builder use the other language", async ({
   page,
 }) => {
   await seedRafsiHole(page, lujvoDraft);
@@ -995,10 +995,9 @@ test("an empty rafsi slot is no rafsi on the lujvo builder, and its draft holds 
   await expect(page.getByRole("button", { name: "Use ckuzba" })).toBeVisible();
   const main = page.locator("main");
   await expect(main).not.toContainText("The builder stopped");
-  await expect(main).not.toContainText(INVALID);
-  // The English package stays in use: the worker accepts it.
+  await expect(main).toContainText(INVALID);
   await expect(page.getByRole("region", { name: "Result" })).toContainText(
-    "aaaaaaaaaaaa",
+    "ffffffffffff",
   );
   await expectSavedBuilderDraft(page);
   const claims = await page.evaluate(async () => {
@@ -1014,7 +1013,9 @@ test("an empty rafsi slot is no rafsi on the lujvo builder, and its draft holds 
   expect(claims.every((type) => type === "string")).toBe(true);
 });
 
-test("an empty rafsi slot is no rafsi on the gismu page", async ({ page }) => {
+test("an empty rafsi slot makes the gismu page use the other language", async ({
+  page,
+}) => {
   await seedRafsiHole(page, {
     meaning: "book",
     kind: "gismu",
@@ -1047,41 +1048,368 @@ test("an empty rafsi slot is no rafsi on the gismu page", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Make a gismu" }),
   ).toBeVisible();
-  await expect(page.locator("main")).toContainText("aaaaaaaaaaaa");
   const main = page.locator("main");
+  await expect(main).toContainText("ffffffffffff");
   await expect(main).not.toContainText("The generator stopped");
-  await expect(main).not.toContainText(INVALID);
+  await expect(main).toContainText(INVALID);
 });
 
-test("an empty rafsi slot is no rafsi in a pattern search", async ({
+test("an empty rafsi slot keeps the server fallback in search", async ({
   page,
 }) => {
   await seedRafsiHole(page);
-  await page.goto("/search?q=zba*&lang=en");
+  await page.goto("/search?q=cukta&lang=en");
+  await expect(page.locator("div.status[role=status]")).toContainText(INVALID);
   await expect(
-    page
-      .getByRole("region", { name: "Search results" })
-      .getByRole("link", { name: "zbasu", exact: true }),
+    page.getByRole("link", { name: "cukta", exact: true }).first(),
   ).toBeVisible();
-  expect(await page.locator("body").innerText()).not.toMatch(RAW_ERROR);
 });
 
-test("an empty rafsi slot is no rafsi on the rafsi pair page", async ({
+test("an empty rafsi slot makes the rafsi pair use the other language", async ({
   page,
 }) => {
   await seedRafsiHole(page);
   await blockDownloads(page);
-  const [real, empty] = await page.evaluate(async (corePath) => {
+  const real = await page.evaluate(async (corePath) => {
     const core = await import(corePath);
     await core.initializeCore();
     const id = core.wordId({ language: "jbo", spelling: "cukta" });
-    return [core.rafsiPairId(id, "cku"), core.rafsiPairId(id, undefined)];
+    return core.rafsiPairId(id, "cku");
   }, corePath);
   await page.goto(`/rafsi-pair/${real}`);
   await expect(page.getByRole("heading", { name: "cku" })).toBeVisible();
-  await page.goto(`/rafsi-pair/${empty}`);
   await expect(
-    page.getByRole("heading", { name: "Rafsi pair unavailable" }),
+    page.locator('main a[href="/word/cukta?lang=fr"]').first(),
   ).toBeVisible();
-  expect(await page.locator("main").innerText()).not.toContain("undefined");
+});
+
+async function savedWorkerVerdict(page: Page) {
+  return page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const pkg = await new LocalStore().get("packages", "en");
+    const worker = new Worker("/src/data/package-search-worker.ts", {
+      type: "module",
+    });
+    try {
+      return await new Promise<{ code?: string; error?: string }>(
+        (resolve, reject) => {
+          worker.onmessage = ({ data }) =>
+            resolve({ code: data.code, error: data.error });
+          worker.onerror = (error) => reject(new Error(error.message));
+          worker.postMessage({
+            request: 1,
+            key: "fixture",
+            pkg,
+            language: "en",
+            queries: [],
+          });
+        },
+      );
+    } finally {
+      worker.terminate();
+    }
+  });
+}
+
+for (const [list, damage] of [
+  ["entries", "entries"],
+  ["entries", "01"],
+  ["glosses", "map"],
+  ["glosses", "leading hole"],
+  ["selmaho", "join"],
+  ["selmaho", "large sparse list"],
+  ["rafsi", "includes"],
+  ["rafsi", "interior hole"],
+  ["rafsi", "trailing hole"],
+  ["rafsi", "hole and extra key"],
+  ["rafsi", "extra key"],
+  ["dates", "array"],
+] as const)
+  test("saved shapes rejects " + list + " with " + damage, async ({ page }) => {
+    await seed(page, validPackage);
+    const persisted = await page.evaluate(
+      async ({ list, damage }) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const store = new LocalStore();
+        const pkg = await store.get<any>("packages", "en");
+        const row = pkg.entries[0];
+        if (list === "dates")
+          row.attribution = {
+            source: "test",
+            author: null,
+            account: null,
+            dates: ["2020-01-01"],
+          };
+        if (list === "selmaho") row.classification.selmaho = ["BAI"];
+        const select = (data: any) =>
+          list === "entries"
+            ? data.entries
+            : list === "selmaho"
+              ? data.entries[0].classification.selmaho
+              : list === "dates"
+                ? data.entries[0].attribution.dates
+                : data.entries[0][list];
+        const value = select(pkg);
+        if (damage === "leading hole") {
+          value[1] = value[0];
+          delete value[0];
+        } else if (damage === "interior hole") {
+          value[2] = "cku";
+        } else if (damage === "large sparse list") {
+          value.length = 10_000_000;
+        } else if (
+          damage === "trailing hole" ||
+          damage === "hole and extra key"
+        ) {
+          value.length++;
+          if (damage === "hole and extra key") value.extra = 0;
+        } else if (damage !== "array") value[damage] = 0;
+        await store.put("packages", "en", pkg);
+        const saved = select(await new LocalStore().get("packages", "en"));
+        if (!Array.isArray(saved)) return false;
+        switch (damage) {
+          case "leading hole":
+            return !Object.hasOwn(saved, 0) && Object.hasOwn(saved, 1);
+          case "interior hole":
+            return !Object.hasOwn(saved, 1) && saved[2] === "cku";
+          case "large sparse list":
+            return (
+              saved.length === 10_000_000 && Reflect.ownKeys(saved).length === 2
+            );
+          case "trailing hole":
+            return saved.length === 2 && !Object.hasOwn(saved, 1);
+          case "hole and extra key":
+            return !Object.hasOwn(saved, 1) && Object.hasOwn(saved, "extra");
+          case "array":
+            return true;
+          default:
+            return Object.hasOwn(saved, damage);
+        }
+      },
+      { list, damage },
+    );
+    expect(persisted).toBe(true);
+    expect(await savedWorkerVerdict(page)).toEqual({
+      code: "invalid-package",
+      error: INVALID,
+    });
+    await page.goto("/search?q=cukta&lang=en");
+    await expect(page.locator("div.status[role=status]")).toContainText(
+      INVALID,
+    );
+    await expect(
+      page.getByRole("link", { name: "cukta", exact: true }).first(),
+    ).toBeVisible();
+    expect(await page.locator("body").innerText()).not.toMatch(RAW_ERROR);
+  });
+
+const claimList = (first: number, count: number) =>
+  Array.from({ length: count }, (_, i) => "r" + (first + i));
+const disjointPackage = {
+  ...validPackage,
+  entries: [
+    { ...validRow, rafsi: ["cku", ...claimList(0, 39)] },
+    zbasuRow,
+    { ...validRow, event: "jve1:" + "3".repeat(64), rafsi: claimList(39, 40) },
+  ],
+};
+
+test("saved shapes reconstructs typed parts from the usable language", async ({
+  page,
+}) => {
+  const french = {
+    ...frPackage,
+    entries: [
+      { ...frPackage.entries[0], rafsi: ["cku"] },
+      {
+        ...zbasuRow,
+        language: "fr",
+        glosses: [{ language: "fr", text: "faire", sense: null }],
+      },
+    ],
+  };
+  await seed(page, disjointPackage, lujvoDraft, { fr: french });
+  expect(await savedWorkerVerdict(page)).toEqual({
+    code: "invalid-package",
+    error: INVALID,
+  });
+  await page.goto("/new/lujvo");
+  await expectInvalidOnly(page);
+  await expect(page.getByRole("button", { name: "Use ckuzba" })).toBeVisible();
+  await expectSavedBuilderDraft(page);
+  await page.goto("/new/meaning");
+  const draft = JSON.parse(await savedDraftText(page));
+  expect(
+    draft.lujvo.components.map((row: any) => [
+      row.spelling,
+      row.locked,
+      row.gloss,
+    ]),
+  ).toEqual([
+    ["cukta", "cku", "livre"],
+    ["zbasu", "zba", "faire"],
+  ]);
+  expect(
+    draft.lujvo.components[0].claims.map((claim: any) => claim.rafsi),
+  ).toEqual(["cku"]);
+});
+
+test("saved shapes ordinary Add falls back to manual entry when the only package fails", async ({
+  page,
+}) => {
+  await seed(page, disjointPackage, {
+    kind: "lujvo",
+    meaning: "keep this draft",
+    step: 3,
+  });
+  await page.goto("/new/lujvo");
+  await expectInvalidOnly(page);
+  await page.getByLabel("Add a part").fill("cukta");
+  await page.getByRole("button", { name: "Add cukta as entered" }).click();
+  await expectSavedBuilderDraft(page);
+  await page.goto("/new/meaning");
+  const draft = JSON.parse(await savedDraftText(page));
+  expect(draft.meaning).toBe("keep this draft");
+  expect(
+    draft.lujvo.components.map((row: any) => [row.spelling, row.claims]),
+  ).toEqual([["cukta", []]]);
+});
+
+test("saved shapes checks a later row before the rafsi pair selects a language", async ({
+  page,
+}) => {
+  await seed(page, disjointPackage, undefined, {
+    fr: {
+      ...frPackage,
+      entries: [{ ...frPackage.entries[0], rafsi: ["cku"] }],
+    },
+  });
+  await blockDownloads(page);
+  await page.goto("/rafsi-pair/" + fixture().pair);
+  await expect(
+    page.locator('main a[href="/word/cukta?lang=fr"]').first(),
+  ).toBeVisible();
+});
+
+test("saved shapes bounds UTF-8 bytes and permits duplicate claims across word aliases", async ({
+  page,
+}) => {
+  const boundary = "é".repeat(64);
+  const alias = { ...validRow, word: { language: "jbo", spelling: "dján" } };
+  const first = {
+    ...alias,
+    word: { language: "jbo", spelling: "djan" },
+    rafsi: [...claimList(0, 63), boundary],
+  };
+  const last = { ...alias, event: "jve1:" + "3".repeat(64), rafsi: [boundary] };
+  await seed(page, { ...validPackage, entries: [first, zbasuRow, last] });
+  expect((await savedWorkerVerdict(page)).error).toBeUndefined();
+  await seed(page, {
+    ...validPackage,
+    entries: [first, zbasuRow, { ...last, rafsi: ["r63"] }],
+  });
+  expect(await savedWorkerVerdict(page)).toEqual({
+    code: "invalid-package",
+    error: INVALID,
+  });
+  await seed(page, {
+    ...validPackage,
+    entries: [{ ...first, rafsi: [boundary + "a"] }],
+  });
+  expect(await savedWorkerVerdict(page)).toEqual({
+    code: "invalid-package",
+    error: INVALID,
+  });
+});
+
+test("saved shapes leaves a long dictionary spelling searchable without adding it to a draft", async ({
+  page,
+}) => {
+  const spelling = "ban".repeat(43);
+  await seed(
+    page,
+    {
+      ...validPackage,
+      entries: [
+        { ...validRow, word: { language: "jbo", spelling }, rafsi: [] },
+      ],
+    },
+    { kind: "lujvo", meaning: "keep this draft", step: 3 },
+  );
+  await page.goto("/search?q=" + spelling + "&lang=en");
+  await expect(
+    page.getByRole("link", { name: spelling, exact: true }).first(),
+  ).toBeVisible();
+  await page.goto("/new/lujvo");
+  await page.getByLabel("Add a part").fill(spelling);
+  const results = page.getByRole("list", { name: "Matching words" });
+  await expect(results).toContainText(
+    "This spelling exceeds the builder limit of 128 bytes.",
+  );
+  await expect(results.getByRole("button", { name: /^Add/ })).toHaveCount(0);
+});
+
+test("saved shapes rejects a bad nested list after the rafsi pair match", async ({
+  page,
+}) => {
+  await seed(
+    page,
+    { ...validPackage, entries: [validRow, zbasuRow] },
+    undefined,
+    { fr: frPackage },
+  );
+  const damaged = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const pkg = await store.get<any>("packages", "en");
+    pkg.entries[1].glosses.length++;
+    await store.put("packages", "en", pkg);
+    const saved = await new LocalStore().get<any>("packages", "en");
+    return (
+      saved.entries[1].glosses.length === 2 &&
+      !Object.hasOwn(saved.entries[1].glosses, 1)
+    );
+  });
+  expect(damaged).toBe(true);
+  await blockDownloads(page);
+  const pair = await page.evaluate(async (path) => {
+    const core = await import(path);
+    await core.initializeCore();
+    return core.rafsiPairId(
+      core.wordId({ language: "jbo", spelling: "cukta" }),
+      "cuk",
+    );
+  }, corePath);
+  await page.goto("/rafsi-pair/" + pair);
+  await expect(
+    page.locator('main a[href="/word/cukta?lang=fr"]').first(),
+  ).toBeVisible();
+});
+
+test("saved shapes ordinary Add keeps the source from the usable language", async ({
+  page,
+}) => {
+  await seed(
+    page,
+    disjointPackage,
+    { kind: "lujvo", meaning: "keep this draft", step: 3 },
+    {
+      fr: {
+        ...frPackage,
+        entries: [{ ...frPackage.entries[0], rafsi: ["cku"] }],
+      },
+    },
+  );
+  await page.goto("/new/lujvo");
+  await expectInvalidOnly(page);
+  await page.getByLabel("Add a part").fill("cukta");
+  await page.getByRole("button", { name: "Add cukta", exact: true }).click();
+  await expectSavedBuilderDraft(page);
+  await page.goto("/new/meaning");
+  const draft = JSON.parse(await savedDraftText(page));
+  expect(draft.meaning).toBe("keep this draft");
+  const row = draft.lujvo.components[0];
+  expect(row.spelling).toBe("cukta");
+  expect(row.gloss).toBe("livre");
+  expect(row.claims.map((claim: any) => claim.rafsi)).toEqual(["cku"]);
 });

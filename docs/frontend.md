@@ -315,6 +315,19 @@ A package save reads the revision before its download starts. It writes only whe
 A Refresh acts only on a package that is still saved when the Refresh starts. When the package is gone, the Refresh downloads nothing and says that the package is no longer saved. Download is the way to add it again.
 A rafsi lookup downloads the current package for each of its languages. When browser storage is available, it saves a version 2 package under the same revision check. It does not save a package that the reader removed. A later Download saves it again.
 
+A saved package list must have a value at every index and no extra properties.
+This rule covers entries, glosses, selma'o names, and rafsi.
+Attribution dates form a map from names to strings.
+The app checks list shape before it measures or uses list content.
+It rejects the entire package if a row or list fails a check.
+
+In a version 2 package, all rows for one canonical word ID can list up to 64 distinct rafsi.
+Each rafsi can use up to 128 UTF-8 bytes and must have no lone surrogate.
+The app counts the exact strings during row validation.
+The lujvo builder also checks the 128-byte component spelling limit before it saves a source.
+A longer dictionary spelling remains eligible for search.
+An unusable source leaves the draft available for manual editing.
+
 One static module worker validates and searches saved packages outside the main thread.
 Download hashing and entry checks retain their existing download path.
 It retains two prepared packages, keyed by database name, language, and durable revision. Separate connections can reuse the same prepared revision.

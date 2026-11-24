@@ -20,6 +20,8 @@ import type { LocalStore } from "../data/store.ts";
 import {
   PackageValidationError,
   savedPackage,
+  savedRafsiUnion,
+  requireDenseList,
   savedRow,
   savedWordId,
 } from "../data/saved-package.ts";
@@ -477,9 +479,12 @@ export function inventoryFromPackage(
   const gismu = new Map<string, string>();
   const incomplete = new Map<string, string>();
   let hasClaims = false;
+  requireDenseList(pkg.entries);
+  const countRafsi = savedRafsiUnion();
   for (const row of pkg.entries) {
     const entry = savedRow(row, pkg.version, language);
-    const id = savedWordId({ language: "jbo", spelling: entry.word.spelling });
+    const id = savedWordId(entry.word);
+    countRafsi(id, entry);
     const kind = (entry.classification as { kind?: string } | null)?.kind;
     if (kind === "gismu") gismu.set(id, entry.word.spelling);
     if ("rafsi" in entry && Array.isArray(entry.rafsi)) {
@@ -487,8 +492,6 @@ export function inventoryFromPackage(
       if ((entry as { rafsi_complete?: boolean }).rafsi_complete === false)
         incomplete.set(id, entry.word.spelling);
       for (const rafsi of entry.rafsi) {
-        // An empty array slot is no rafsi, as in the worker's checks.
-        if (rafsi === undefined) continue;
         const pair = rafsiPairId(id, rafsi);
         claims.set(pair, {
           rafsi,

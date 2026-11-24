@@ -354,6 +354,10 @@ A combination above 128 bytes leaves shorter candidates available.
 The bounded rejected list shows parse failures before examples of overlong spellings.
 If several parts share the same competing rafsi claim, the builder shows one acknowledgment for that claim.
 A word entered on Meaning gets local form detection and an exact identity lookup in the selected language package.
+Saved package readers reject lists with empty slots or extra properties.
+They also reject packages with more than 64 distinct rafsi for one word ID or a rafsi longer than 128 UTF-8 bytes.
+The lujvo builder checks its source limits before it saves component evidence.
+
 Headword analysis lowercases author input, so capitals do not mark stress. Authors must write word breaks explicitly.
 Acute accents mark cmevla display stress on vowels or consonants, as in `dján`, `ĺénan`, and `ḿa'an`.
 Definitions and imported source records keep their accented spelling. Identity, search, matching, and morphology ignore those marks.

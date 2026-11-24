@@ -18,7 +18,7 @@ The browser app covers reading, contributing, and personal ranking:
 - A guided authoring wizard and a full editor with accessible rich-text fields, a lujvo builder, and a gismu generator.
 - A personal view that verifies the snapshot records in a Web Worker and ranks words locally with the reader's private trust choices.
 
-The app checks every saved row before it uses a package for results or names it as a search source. A row with a different definition language makes the package invalid.
+The app checks every saved row before it uses a package for results or names it as a search source. A row with a different definition language, a malformed list, or claims beyond the saved package limits makes the package invalid.
 
 The importer turns pinned Lensisku JSON captures and SQL snapshots into signed proposals and keeps their source evidence. Optional AI assistance suggests types, components, places, glosses, and existing words, and it can run meaning search over embeddings. It is off by default, the server operator controls it, and the browser asks for consent before it sends draft text.
 
