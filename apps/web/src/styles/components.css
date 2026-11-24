@@ -1055,12 +1055,11 @@ dialog.sheet h2 {
   flex-direction: column;
 }
 @media (max-width: 640px) {
-  .place-row {
+  .wizard-places .place-row {
     flex-wrap: wrap;
   }
   .place-grid {
     grid-template-columns: minmax(0, 1fr);
-    flex: 1 1 calc(100% - 3.5rem);
   }
   .wizard-places .place-row > .place-grid {
     order: 1;

@@ -331,6 +331,56 @@ test("place tools stay top-right with a full-width grid on phones", async ({
   }
 });
 
+test("full editor place tools stay a column at the top right on phones", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  for (const frameMode of ["fixed", "variadic"]) {
+    await page.goto("/");
+    await page.evaluate(async (mode) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { newDraft, newPlace } = await import(
+        String("/src/model/draft.ts")
+      );
+      const draft = newDraft({
+        spelling: "brodu",
+        kind: "gismu",
+        meaning: "A disposable test meaning.",
+        text: [["A disposable test definition."]],
+        frameMode: mode,
+        places: [1, 2].map((index) => newPlace(index)),
+        tail:
+          mode === "variadic"
+            ? { description: [], kind: "unspecified", hint: null }
+            : null,
+        frameRole: "predicate",
+        operands: [],
+        step: 4,
+      });
+      await new LocalStore().put("drafts", "current", draft);
+    }, frameMode);
+    await page.goto("/new/editor");
+    const up = page.getByRole("button", { name: "Move place 1 up" });
+    await expect(up).toBeVisible();
+    const boxes = await up.evaluate((button) => {
+      const tools = button.parentElement!;
+      const row = tools.closest("li.place-row")!;
+      const grid = row.querySelector(".place-grid")!;
+      const box = (e: Element) => {
+        const r = e.getBoundingClientRect();
+        return { x: r.x, y: r.y, w: r.width, h: r.height };
+      };
+      return { row: box(row), grid: box(grid), tools: box(tools) };
+    });
+    // One line, as on main: tools beside the grid, in a column, top right.
+    expect(Math.abs(boxes.tools.y - boxes.grid.y)).toBeLessThan(24);
+    expect(
+      Math.abs(boxes.tools.x + boxes.tools.w - (boxes.row.x + boxes.row.w)),
+    ).toBeLessThan(24);
+    expect(boxes.tools.h).toBeGreaterThan(boxes.tools.w);
+  }
+});
+
 test("wizard touch targets: the enclosing labels meet 44px", async ({
   page,
 }) => {
