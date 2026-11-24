@@ -22,7 +22,7 @@ async function seedPublishDraft(page: Page) {
       "drafts",
       "current",
       newDraft({
-        spelling: "cukta",
+        spelling: "zelpu",
         kind: "gismu",
         meaning: "A disposable meaning.",
         text: "A disposable meaning.",
@@ -219,7 +219,7 @@ test("first-signature dialog names the rafsi assignment endorsement", async ({
         "drafts",
         "current",
         newDraft({
-          spelling: "cukta",
+          spelling: "zelpu",
           kind: "gismu",
           meaning: "A disposable meaning.",
           text: "A disposable meaning.",
@@ -274,12 +274,12 @@ test("first-signature dialog mentions the definition being published", async ({
   });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText(
-    "signs your definition of cukta and your endorsement of it",
+    "signs your definition of zelpu and your endorsement of it",
   );
   await expect(dialog).not.toContainText("its endorsements");
   await expect(dialog).not.toContainText("undo does not erase them");
   await dialog.getByRole("button", { name: "Continue" }).click();
-  await expect(page).toHaveURL(/\/word\/cukta/);
+  await expect(page).toHaveURL(/\/word\/zelpu/);
 });
 
 test("wizard touch targets: the enclosing labels meet 44px", async ({
