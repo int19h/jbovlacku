@@ -470,7 +470,7 @@ Reading language lists show names instead of raw tags, including Lojban, Klingon
 Language tabs show counts. Each block includes a permanent revision link, reviewer disclosure, place strip, and “Revise” action.
 A proposed revision includes a notice and “Compare.” A place strip without descriptions offers “Add descriptions.”
 After the definitions, offer “Add a definition,” “Add a translation,” and related word links.
-A closed Source and scores disclosure follows the word content. It contains snapshot and view IDs and “Check the scores locally”.
+A closed Source and scores disclosure follows the word content. It contains snapshot and view IDs. In the site view it also contains “Check the scores locally”, whose “Recompute from records” action compares a local site-view calculation with the server scores. The personal view has no such comparison, because its scores already come from the local calculation.
 Personal calculation controls and score-availability warnings remain visible without opaque identifiers. Detailed identifiers remain in the disclosure.
 Source disclosures retain original text, Lensisku attribution, numeric account evidence when known, and the importer signer.
 No “official” badge appears. Organizations use ordinary identities and endorsements.

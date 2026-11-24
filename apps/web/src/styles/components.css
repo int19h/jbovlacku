@@ -294,6 +294,11 @@ main.surface-publish {
   border-radius: 10px;
   padding: 12px 14px;
 }
+/* The calculation panel keeps the box of .notice in its quiet state. */
+.calc-panel.sunk {
+  border: 1px solid transparent;
+  font-size: 14px;
+}
 h1.page {
   font-size: 28px;
   font-weight: 660;

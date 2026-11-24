@@ -20,18 +20,32 @@ import { scopeError } from "../data/scope.ts";
 import { describeProfile } from "../model/profiles.ts";
 
 export { loadSiteView };
+/** What a Trust page visit keeps across its rerenders. */
+interface Visit {
+  explanationOpen: boolean;
+  /** The explanation on the page now. */
+  explanation: HTMLDetailsElement | null;
+}
 export async function trustPage(
   _route: Route,
   context: RenderContext,
   app: App,
+  // What the reader opened on this visit. A rerender keeps it.
+  visit: Visit = { explanationOpen: false, explanation: null },
 ) {
   const { main } = context;
   context.title("Trust");
   main.className = "";
+  // The explanation of the two views. A rerender reads the open state of
+  // the one on the page at that moment, because the toggle event comes later
+  // than the change. A rerender from an earlier render reads the current one.
+  const explained = explanation(visit);
+  visit.explanation = explained;
   const rerender = () => {
     if (!context.live()) return;
+    visit.explanationOpen = visit.explanation?.open ?? false;
     main.replaceChildren();
-    void trustPage(_route, context, app);
+    void trustPage(_route, context, app, visit);
   };
   main.append(
     el("h1", { class: "page", text: "Trust" }),
@@ -79,20 +93,15 @@ export async function trustPage(
     ),
   );
   main.append(
-    p(
-      "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 only if its continuity group has no allocation or private root change. A zero allocation or removal also prevents that addition. The personal view applies your own effective public shuns as local blocks, as the format specifies: the core resolves their scopes and identity continuity in the calculation's snapshot, so a narrower public heed or a public clear can lift such a block. A private Trust rule does not cancel that block. A private Ignore stays until you remove it, also after a public clear. When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
-      "meta",
-    ),
-    p(
-      "A private Ignore or a personal block removes that person and every route through them in your view only. A public shun is a signed declaration. Its effect on routes follows the calculation profile of the signed view, shown below, and it does not remove every influence of that person in every reader's view.",
-      "meta",
-    ),
     calculationPanel(app, {
       mode: "personal",
       context,
       label: "Local calculation",
+      idleText:
+        "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records. Pages in the site view show this server's scores and need no local calculation.",
       onRefresh: rerender,
     }),
+    explained,
   );
   const overlay = await app.store.overlay().catch(() => null);
   const registers = await app.own.registers();
@@ -225,11 +234,13 @@ export async function trustPage(
     const ineffective =
       !/^ed25519:[0-9a-f]{64}$/.test(rule.issuer) || !sameActor;
     const effect = ineffective
-      ? !/^ed25519:[0-9a-f]{64}$/.test(rule.issuer)
-        ? "This rule has no valid issuer. Remove it or save a rule with your current key."
-        : continuity
-          ? "This rule does not apply in the loaded personal calculation. Its snapshot does not connect the issuer to your key."
-          : "No personal calculation is loaded. This rule depends on accepted continuity in the next calculation snapshot."
+      ? rule.issuer === "local"
+        ? "This rule was saved before this browser had a key. It moves to your key when you create or restore one, unless your key already has a rule for the same person and scope. That rule then takes priority."
+        : !/^ed25519:[0-9a-f]{64}$/.test(rule.issuer)
+          ? "This rule has no valid issuer. Remove it or save a rule with your current key."
+          : continuity
+            ? "This rule does not apply in the loaded personal calculation. Its snapshot does not connect the issuer to your key."
+            : "No personal calculation is loaded. This rule depends on accepted continuity in the next calculation snapshot."
       : "";
     const row = el("div", { class: "row" });
     row.append(
@@ -517,6 +528,38 @@ export async function trustPage(
   );
   void eventId;
 }
+/**
+ * The closed explanation of the two views. A page rerender builds it again,
+ * open with its text when it was open just before, so the rows below it do
+ * not move.
+ */
+function explanation(visit: Visit) {
+  const paragraphs = () => [
+    p(
+      "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 only if its continuity group has no allocation or private root change. A zero allocation or removal also prevents that addition.",
+      "small",
+    ),
+    p(
+      "The personal view applies your own effective public shuns as local blocks, as the format specifies: the core resolves their scopes and identity continuity in the calculation's snapshot, so a narrower public heed or a public clear can lift such a block. A private Trust rule does not cancel that block. A private Ignore stays until you remove it, also after a public clear.",
+      "small",
+    ),
+    p(
+      "When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
+      "small",
+    ),
+    p(
+      "A private Ignore or a personal block removes that person and every route through them in your view only. A public shun is a signed declaration. Its effect on routes follows the calculation profile of the signed view, shown below, and it does not remove every influence of that person in every reader's view.",
+      "small",
+    ),
+  ];
+  const details = disclosure("How the two views work", paragraphs);
+  if (visit.explanationOpen) {
+    details.querySelector(".body")!.append(...paragraphs());
+    details.open = true;
+  }
+  return details;
+}
+
 async function makePublic(
   app: App,
   subject: string,

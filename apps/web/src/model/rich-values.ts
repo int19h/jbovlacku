@@ -21,6 +21,23 @@ export function richHasContent(value: RichText): boolean {
   );
 }
 
+/**
+ * Whether a reader sees any text. An inline code span or a word whose text
+ * is only whitespace shows nothing, so it does not count. This only reads
+ * the value and never changes it.
+ */
+export function richHasVisibleText(value: RichText): boolean {
+  return value.some((paragraph) =>
+    paragraph.some((node) => {
+      if (typeof node === "string") return node.trim().length > 0;
+      if (typeof node === "number" || "operand" in node || "url" in node)
+        return true;
+      if ("code" in node) return String(node.code).trim().length > 0;
+      return String(node.label ?? node.word?.spelling ?? "").trim().length > 0;
+    }),
+  );
+}
+
 /** Edited fields omit blank paragraphs. Nonblank nodes stay exact. */
 export function canonicalRich(value: RichText): RichText {
   const paragraphs = value.filter((paragraph) => richHasContent([paragraph]));

@@ -133,13 +133,18 @@ export function calculationPanel(
      * as unavailable for this content, never as the content's calculation.
      */
     expected?: { snapshot: string; view: string };
+    /** The text for a page where no calculation has started yet. */
+    idleText?: string;
   } & (
     | { mode: "personal"; context: RenderContext }
     | { mode: "site"; context?: RenderContext }
   ),
 ): HTMLElement {
+  // Amber marks only a failure or scores that are unavailable. Progress and
+  // a finished calculation use the quiet surface. Both have the same box, so
+  // a change of state does not move the controls.
   const region = el("div", {
-    class: "notice",
+    class: "calc-panel sunk",
     role: "region",
     "aria-label": options.label,
     style: "margin-top:12px",
@@ -208,11 +213,19 @@ export function calculationPanel(
     line.textContent =
       status.state === "ready" && differs
         ? `${status.mode === "personal" ? "Personal" : "Site"} view calculated in this browser from ${plural(status.events, "verified record")} for another ${differs}. Personal scores are unavailable for this ${differs}.`
-        : statusText(status, options.includeSnapshot);
+        : status.state === "idle" && options.idleText
+          ? options.idleText
+          : statusText(status, options.includeSnapshot);
     const busy =
       status.state === "downloading" || status.state === "evaluating";
     cancel.hidden = !busy;
     retry.disabled = busy;
+    const warning =
+      status.state === "failed" ||
+      Boolean(differs) ||
+      (status.state === "ready" && !status.available);
+    region.classList.toggle("notice", warning);
+    region.classList.toggle("sunk", !warning);
     region.classList.toggle(
       "error",
       status.state === "failed" && status.kind !== "cancelled",

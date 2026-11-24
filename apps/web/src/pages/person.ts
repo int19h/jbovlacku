@@ -1,4 +1,4 @@
-import { richHasContent } from "../model/rich-values.ts";
+import { richHasContent, richHasVisibleText } from "../model/rich-values.ts";
 import { editorLoadError } from "../components/editor-load-error.ts";
 /** Public identity: fingerprint, profile when known, trust actions, and this server's evidence. */
 import { deliveryAccepted } from "../data/delivery.ts";
@@ -28,10 +28,10 @@ import {
   identityId,
   type ProfileBody,
   type IdentityResponse,
+  type TrustScope,
 } from "../model/types.ts";
-import { trustPanel } from "../components/trustpanel.ts";
+import { describeScope, trustPanel } from "../components/trustpanel.ts";
 import { loadSiteView } from "./trust.ts";
-import { scopeKey } from "../data/history.ts";
 
 export async function personPage(
   route: Route,
@@ -341,6 +341,7 @@ export async function personPage(
         ),
       );
   }
+  // Your choices about this identity, as they are when the page loads.
   const overlay = await app.store.overlay().catch(() => null);
   const registers = await app.own.registers();
   if (!context.live()) return;
@@ -357,25 +358,64 @@ export async function personPage(
   const privateRules = (overlay?.trust ?? []).filter(
     (r) => r.subject === identity && r.value !== "clear",
   );
+  // A private rule is the reader's own when its issuer is the reader's key
+  // or a key that the loaded calculation connects to it by a handover, as
+  // in the personal calculation. Other saved rules do not apply.
+  const continuity = app.personal.loadedContinuity;
+  const actor = (key: string) => continuity?.actors[key] ?? key;
+  const reader = app.session.identity;
+  const ownRule = (issuer: string) =>
+    Boolean(
+      reader &&
+      /^ed25519:[0-9a-f]{64}$/.test(issuer) &&
+      actor(issuer) === actor(reader),
+    );
   const blocks = (overlay?.blocked ?? []).filter(
     (b) => b.identity === identity,
   );
   if (own.length || privateRules.length || blocks.length) {
-    const status = el("p", { class: "small" });
     const parts: string[] = [];
     for (const [key, state] of own)
       if (state.known && !state.conflicted)
         parts.push(
-          `${state.value === "heed" ? "Trusted" : "Ignored"} publicly (${describeKey(key)})`,
+          `${state.value === "heed" ? "Trusted" : "Ignored"} publicly for ${describeKey(key)}`,
         );
+    // A rule saved before this browser had a key has the issuer `local`. It
+    // names no key and moves to the reader's key when one is created or
+    // restored.
+    const others: string[] = [];
+    const beforeKey: string[] = [];
+    const noIssuer: string[] = [];
     for (const rule of privateRules)
-      parts.push(
-        `${rule.value === "heed" ? "Trusted" : "Ignored"} privately (${scopeKey(rule.scope)})`,
+      (ownRule(rule.issuer)
+        ? parts
+        : rule.issuer === "local"
+          ? beforeKey
+          : /^ed25519:[0-9a-f]{64}$/.test(rule.issuer)
+            ? others
+            : noIssuer
+      ).push(
+        `${rule.value === "heed" ? "Trusted" : "Ignored"} privately for ${describeScope(rule.scope)}`,
       );
     for (const block of blocks)
-      parts.push(`Ignored privately (${scopeKey(block.scope)})`);
+      parts.push(`Ignored privately for ${describeScope(block.scope)}`);
+    const sentences: string[] = [];
+    if (parts.length) sentences.push(`Your choices: ${parts.join("; ")}.`);
+    if (others.length)
+      sentences.push(
+        `Private rules saved under another key: ${others.join("; ")}. They apply only when the personal calculation connects that key to yours.`,
+      );
+    if (beforeKey.length)
+      sentences.push(
+        `Private rules saved before this browser had a key: ${beforeKey.join("; ")}. They move to your key when you create or restore one, unless your key already has a rule for the same person and scope. That rule then takes priority.`,
+      );
+    if (noIssuer.length)
+      sentences.push(
+        `Private rules with no valid issuer: ${noIssuer.join("; ")}. They do not apply. Remove them on the Trust page.`,
+      );
+    const status = el("p", { class: "small" });
     status.append(
-      text(`Your choices: ${parts.join("; ")}. `),
+      text(`${sentences.join(" ")} `),
       link("Manage on the Trust page", routes.trust, { class: "touch-link" }),
     );
     main.append(status);
@@ -387,7 +427,7 @@ export async function personPage(
       slot.replaceChildren(
         trustPanel(app, {
           subject: identity,
-          name: null,
+          name: name ?? shortIdentity(identity),
           mode,
           onDone: () => {
             slot.replaceChildren();
@@ -784,14 +824,11 @@ async function profileEditor(
 }
 function describeKey(key: string) {
   const [, kind, word, language] = key.split("|");
-  if (kind === "*" && word === "*" && language === "*") return "all judgments";
-  return [
-    kind !== "*" ? kind : null,
-    word !== "*" ? `word ${word.slice(0, 13)}…` : null,
-    language !== "*" ? language : null,
-  ]
-    .filter(Boolean)
-    .join(", ");
+  return describeScope({
+    kind: kind as TrustScope["kind"],
+    word,
+    language,
+  });
 }
 async function reportDialog(app: App, subject: string, opener: HTMLElement) {
   const { richField } = await import("../components/rich-field.ts");
@@ -815,6 +852,22 @@ async function reportDialog(app: App, subject: string, opener: HTMLElement) {
   for (const [value, label] of categories)
     category.append(el("option", { value, text: label }));
   const reason = richField("Explanation", { value: [], local: false, rows: 4 });
+  const reasonError = el("p", {
+    id: "report-reason-error",
+    class: "notice",
+    role: "alert",
+    text: "Write an explanation before the preview. A report needs one.",
+  });
+  reasonError.hidden = true;
+  // While the alert shows, the field's description includes it, so a
+  // screen reader also hears the reason on the field.
+  const reasonHint = reason.input.getAttribute("aria-describedby");
+  const describeReason = (withError: boolean) => {
+    const ids = [reasonHint, withError ? reasonError.id : null].filter(Boolean);
+    if (ids.length)
+      reason.input.setAttribute("aria-describedby", ids.join(" "));
+    else reason.input.removeAttribute("aria-describedby");
+  };
   const submit = el("button", {
     type: "submit",
     class: "btn btn-primary",
@@ -840,12 +893,26 @@ async function reportDialog(app: App, subject: string, opener: HTMLElement) {
       category,
     ),
     reason.wrapper,
+    reasonError,
     el("div", { class: "actions" }, submit, cancel),
   );
+  reason.input.addEventListener("input", () => {
+    if (reasonError.hidden || !richHasVisibleText(reason.input.value)) return;
+    reasonError.hidden = true;
+    reason.input.removeAttribute("aria-invalid");
+    describeReason(false);
+  });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const explanation = reason.input.value;
-    if (!richHasContent(explanation)) return;
+    if (!richHasVisibleText(explanation)) {
+      // The preview needs an explanation. Say so beside the field.
+      reasonError.hidden = false;
+      reason.input.setAttribute("aria-invalid", "true");
+      describeReason(true);
+      reason.input.focus();
+      return;
+    }
     const preview = el(
       "div",
       { class: "stack small", style: "margin-top:12px" },
