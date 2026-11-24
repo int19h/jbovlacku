@@ -23,7 +23,6 @@ import {
 } from "../components/attribution.ts";
 import { countNodes, renderRichText } from "../model/richtext.ts";
 import { routes, type RenderContext, type Route } from "../app/router.ts";
-import { onDisconnect } from "../lib/lifetime.ts";
 import type { App } from "../app/context.ts";
 import {
   identityId,
@@ -342,62 +341,39 @@ export async function personPage(
         ),
       );
   }
-  // Your choices about this identity. A save in the trust panel below
-  // renders the description again, so it lists every current choice.
-  // The Manage link comes first, on its own line, so a description of
-  // another length never moves it, and a refresh keeps focus on it. Only
-  // the description after it changes.
-  const choices = el("p", { class: "small" });
-  const choicesText = el("span");
-  choices.append(
-    link("Manage on the Trust page", routes.trust, { class: "touch-link" }),
-    el("br"),
-    choicesText,
+  // Your choices about this identity, as they are when the page loads.
+  const overlay = await app.store.overlay().catch(() => null);
+  const registers = await app.own.registers();
+  if (!context.live()) return;
+  const own = registers
+    ? [...registers.trust.entries()].filter(
+        ([key, state]) =>
+          key.startsWith(`${identity}|`) &&
+          state.known &&
+          !state.conflicted &&
+          state.value &&
+          state.value !== "clear",
+      )
+    : [];
+  const privateRules = (overlay?.trust ?? []).filter(
+    (r) => r.subject === identity && r.value !== "clear",
   );
-  choices.hidden = true;
-  let choicesRequest = 0;
-  const showChoices = async () => {
-    const request = ++choicesRequest;
-    const overlay = await app.store.overlay().catch(() => null);
-    const registers = await app.own.registers();
-    if (!context.live() || request !== choicesRequest) return;
-    // A failed read leaves its choices unknown, not absent.
-    const unread = !overlay || Boolean(app.session.identity && !registers);
-    const own = registers
-      ? [...registers.trust.entries()].filter(
-          ([key, state]) =>
-            key.startsWith(`${identity}|`) &&
-            state.known &&
-            !state.conflicted &&
-            state.value &&
-            state.value !== "clear",
-        )
-      : [];
-    const privateRules = (overlay?.trust ?? []).filter(
-      (r) => r.subject === identity && r.value !== "clear",
+  // A private rule is the reader's own when its issuer is the reader's key
+  // or a key that the loaded calculation connects to it by a handover, as
+  // in the personal calculation. Other saved rules do not apply.
+  const continuity = app.personal.loadedContinuity;
+  const actor = (key: string) => continuity?.actors[key] ?? key;
+  const reader = app.session.identity;
+  const ownRule = (issuer: string) =>
+    Boolean(
+      reader &&
+      /^ed25519:[0-9a-f]{64}$/.test(issuer) &&
+      actor(issuer) === actor(reader),
     );
-    // A private rule is the reader's own when its issuer is the reader's key
-    // or a key that the loaded calculation connects to it by a handover, as
-    // in the personal calculation. Other saved rules do not apply.
-    const continuity = app.personal.loadedContinuity;
-    const actor = (key: string) => continuity?.actors[key] ?? key;
-    const reader = app.session.identity;
-    const ownRule = (issuer: string) =>
-      Boolean(
-        reader &&
-        /^ed25519:[0-9a-f]{64}$/.test(issuer) &&
-        actor(issuer) === actor(reader),
-      );
-    const blocks = (overlay?.blocked ?? []).filter(
-      (b) => b.identity === identity,
-    );
-    if (!own.length && !privateRules.length && !blocks.length && !unread) {
-      // A line that holds focus stays, with only its link.
-      if (choices.contains(document.activeElement))
-        choicesText.textContent = "";
-      else choices.hidden = true;
-      return;
-    }
+  const blocks = (overlay?.blocked ?? []).filter(
+    (b) => b.identity === identity,
+  );
+  if (own.length || privateRules.length || blocks.length) {
     const parts: string[] = [];
     for (const [key, state] of own)
       if (state.known && !state.conflicted)
@@ -437,37 +413,13 @@ export async function personPage(
       sentences.push(
         `Private rules with no valid issuer: ${noIssuer.join("; ")}. They do not apply. Remove them on the Trust page.`,
       );
-    if (unread)
-      sentences.push(
-        sentences.length
-          ? "Some of your choices could not be read."
-          : "Your choices could not be read.",
-      );
-    choicesText.textContent = sentences.join(" ");
-    choices.hidden = false;
-  };
-  // The line names the loaded calculation's handovers, so it follows a
-  // calculation that ends while the page is open. Only the text changes.
-  const continuityKey = () => {
-    const loaded = app.personal.loadedContinuity;
-    return loaded ? JSON.stringify([loaded.snapshot, loaded.actors]) : null;
-  };
-  let shownContinuity = continuityKey();
-  onDisconnect(
-    choices,
-    app.personal.subscribe((status) => {
-      if (status.state === "downloading" || status.state === "evaluating")
-        return;
-      const key = continuityKey();
-      if (key === shownContinuity) return;
-      shownContinuity = key;
-      void showChoices();
-    }),
-    context.signal,
-  );
-  await showChoices();
-  if (!context.live()) return;
-  main.append(choices);
+    const status = el("p", { class: "small" });
+    status.append(
+      text(`${sentences.join(" ")} `),
+      link("Manage on the Trust page", routes.trust, { class: "touch-link" }),
+    );
+    main.append(status);
+  }
   if (!isSelf) {
     const actions = el("div", { class: "actions", style: "margin-top:20px" });
     const slot = el("div");
@@ -480,7 +432,6 @@ export async function personPage(
           onDone: () => {
             slot.replaceChildren();
             trustButton.focus();
-            void showChoices();
           },
         }),
       );

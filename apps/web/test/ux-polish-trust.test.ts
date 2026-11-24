@@ -1,11 +1,8 @@
-import { test, expect, type Locator, type Page } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import {
-  acceptFirstSignature,
-  corePath,
   createIdentity,
   fixture,
   openWord,
-  PASSPHRASE,
   transferFixture,
 } from "./helpers.ts";
 
@@ -163,21 +160,19 @@ test("the trust panel names the person as the page heading does", async ({
   ).toHaveText(`Trust ${heading}`);
 });
 
-test("the person page names each choice in plain words and follows a new choice", async ({
-  page,
-}) => {
+test("the person page names each choice in plain words", async ({ page }) => {
   const f = fixture();
   await createIdentity(page);
   await page.goto(`/identity/${encodeURIComponent(f.identities.author)}`);
-  const choices = choicesText(page);
-  await expect(choices).toBeHidden();
+  const choices = choicesLine(page);
+  await expect(choices).toHaveCount(0);
   await choosePrivately(page, "Trust");
-  await expect(choices).toHaveText(
-    "Your choices: Trusted privately for all judgments.",
-  );
   await choosePrivately(page, "Ignore");
+  // The line is built when the page loads.
+  await openPerson(page, f.identities.curator);
+  await openPerson(page, f.identities.author);
   await expect(choices).toHaveText(
-    "Your choices: Trusted privately for all judgments; Ignored privately for all judgments.",
+    "Your choices: Trusted privately for all judgments; Ignored privately for all judgments. Manage on the Trust page",
   );
   await expect(choices).not.toContainText("*");
 });
@@ -243,20 +238,19 @@ test("an empty report explanation says why the preview did not open", async ({
   ).toContainText("Many fake keys.");
 });
 
-const statusRegion = (page: Page) => page.locator("#app > [role=status]");
-/** The description of the reader's choices on a person page, after its Manage link. */
-const choicesText = (page: Page) =>
-  page
-    .locator("main p", { hasText: "Manage on the Trust page" })
-    .locator(":scope > span");
-/** Waits two frames, so a scroll that follows focus has happened. */
-const frames = (page: Page) =>
+/** The line with the reader's choices on a person page, built when it loads. */
+const choicesLine = (page: Page) =>
+  page.locator("main p", { hasText: "Manage on the Trust page" });
+/** Opens a person page inside the app, so the key stays unlocked. */
+const openPerson = (page: Page, subject: string) =>
   page.evaluate(
-    () =>
-      new Promise((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    async (subject) =>
+      (await import(String("/src/app/router.ts"))).navigate(
+        `/identity/${encodeURIComponent(subject)}`,
       ),
+    subject,
   );
+
 // A name with a right-to-left override, a name that closes an isolate early
 // and then reverses the text after it, a name of only an override, and a
 // name of only a zero-width space. The unlock sentence names the person by
@@ -392,66 +386,6 @@ test("a view change in another tab keeps Recompute in the panel", async ({
   await other.close();
 });
 
-test("a refresh of the choices keeps focus on the Manage link", async ({
-  page,
-}) => {
-  const f = fixture();
-  const own = await createIdentity(page);
-  await page.evaluate(
-    async ({ own, subject }) => {
-      const { LocalStore } = await import(String("/src/data/store.ts"));
-      const store = new LocalStore();
-      const overlay = await store.overlay();
-      overlay.trust.push({
-        issuer: own,
-        subject,
-        value: "heed",
-        scope: { kind: "*", word: "*", language: "*" },
-        weight: null,
-      });
-      await store.setOverlay(overlay);
-      (await import(String("/src/app/router.ts"))).navigate(
-        `/identity/${encodeURIComponent(subject)}`,
-      );
-    },
-    {
-      own: (own as { identity: string }).identity,
-      subject: f.identities.author,
-    },
-  );
-  const manage = page.getByRole("link", { name: "Manage on the Trust page" });
-  await expect(manage).toBeVisible();
-  // Hold the history read that follows the public save.
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => (release = resolve));
-  let held = 0;
-  await page.route("**/identity-heads/**", async (route) => {
-    const status = await page.locator("#app > [role=status]").textContent();
-    if (status?.includes("Your personal view includes it")) {
-      held++;
-      await gate;
-    }
-    await route.continue();
-  });
-  const opener = page.getByRole("button", { name: "Trust their judgments" });
-  await opener.click();
-  const panel = page.getByRole("region", { name: /^Trust / });
-  await panel.getByRole("radio", { name: /Publicly/ }).check();
-  await panel.getByRole("button", { name: "Trust", exact: true }).click();
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "Trust", exact: true })
-    .click();
-  await acceptFirstSignature(page);
-  await expect(opener).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
-  await expect(manage).toBeFocused();
-  await expect.poll(() => held).toBeGreaterThan(0);
-  release();
-  await expect(choicesText(page)).toContainText("Trusted publicly");
-  await expect(manage).toBeFocused();
-});
-
 test("an empty code span does not count as a report explanation", async ({
   page,
 }) => {
@@ -494,26 +428,18 @@ test("a private rule from another key is not listed as the reader's choice", asy
   await createIdentity(page);
   await saveForeignRule(page, f.identities.rootB, f.identities.delegate);
   await page.goto(`/identity/${encodeURIComponent(f.identities.delegate)}`);
-  const line = choicesText(page);
+  const line = choicesLine(page);
   await expect(line).toHaveText(
-    "Private rules saved under another key: Trusted privately for all judgments. They apply only when the personal calculation connects that key to yours.",
+    "Private rules saved under another key: Trusted privately for all judgments. They apply only when the personal calculation connects that key to yours. Manage on the Trust page",
   );
   await choosePrivately(page, "Ignore");
+  await openPerson(page, f.identities.curator);
+  await openPerson(page, f.identities.delegate);
   await expect(line).toHaveText(
-    "Your choices: Ignored privately for all judgments. Private rules saved under another key: Trusted privately for all judgments. They apply only when the personal calculation connects that key to yours.",
+    "Your choices: Ignored privately for all judgments. Private rules saved under another key: Trusted privately for all judgments. They apply only when the personal calculation connects that key to yours. Manage on the Trust page",
   );
 });
 
-/** Holds every records download until the returned function runs. */
-async function holdRecords(page: Page) {
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => (release = resolve));
-  await page.route("**/api/v1/records?*", async (route) => {
-    await gate;
-    await route.continue();
-  });
-  return release;
-}
 /**
  * Selects a successor key and saves a private Trust rule for the delegate
  * under its predecessor. The snapshot holds the signed handover.
@@ -541,48 +467,18 @@ async function handoverRule(page: Page) {
   return subject;
 }
 
-test("the person page moves a rule to Your choices when a calculation confirms its handover", async ({
+test("the person page counts a rule as the reader's own when the loaded calculation confirms its handover", async ({
   page,
 }) => {
   const subject = await handoverRule(page);
   await choosePersonal(page);
   const panel = page.getByRole("region", { name: "Local calculation" });
-  const release = await holdRecords(page);
-  await page.evaluate(async () => {
-    // Records when the calculation that the panel starts is ready.
-    const { PersonalCalculator } = await import(
-      String("/src/data/personal.ts")
-    );
-    const ensure = PersonalCalculator.prototype.ensure;
-    PersonalCalculator.prototype.ensure = function (...args: unknown[]) {
-      const result = ensure.apply(this, args as never);
-      void result.then((status: { state: string }) => {
-        (window as unknown as { seenReady: string }).seenReady = status.state;
-      });
-      return result;
-    };
-  });
   await panel.getByRole("button", { name: "Recompute from records" }).click();
-  await expect(panel).toContainText("Downloading records");
-  await page.evaluate(
-    async (subject) =>
-      (await import(String("/src/app/router.ts"))).navigate(
-        `/identity/${encodeURIComponent(subject)}`,
-      ),
-    subject,
+  await expect(panel).toContainText("Personal view calculated");
+  await openPerson(page, subject);
+  await expect(choicesLine(page)).toHaveText(
+    "Your choices: Trusted privately for all judgments. Manage on the Trust page",
   );
-  const line = choicesText(page);
-  await expect(line).toContainText("Private rules saved under another key");
-  const manage = page.getByRole("link", { name: "Manage on the Trust page" });
-  await manage.focus();
-  release();
-  await page.waitForFunction(
-    () => (window as unknown as { seenReady?: string }).seenReady === "ready",
-  );
-  await expect(line).toHaveText(
-    "Your choices: Trusted privately for all judgments.",
-  );
-  await expect(manage).toBeFocused();
 });
 
 test("a rule saved before this browser had a key is described as such", async ({
@@ -604,8 +500,8 @@ test("a rule saved before this browser had a key is described as such", async ({
     await store.setOverlay(overlay);
   }, subject);
   await page.goto(`/identity/${encodeURIComponent(subject)}`);
-  await expect(choicesText(page)).toHaveText(
-    "Private rules saved before this browser had a key: Trusted privately for all judgments. They move to your key when you create or restore one, unless your key already has a rule for the same person and scope. That rule then takes priority.",
+  await expect(choicesLine(page)).toHaveText(
+    "Private rules saved before this browser had a key: Trusted privately for all judgments. They move to your key when you create or restore one, unless your key already has a rule for the same person and scope. That rule then takes priority. Manage on the Trust page",
   );
   await page.goto("/trust");
   await expect(
@@ -613,164 +509,4 @@ test("a rule saved before this browser had a key is described as such", async ({
   ).toContainText(
     "This rule was saved before this browser had a key. It moves to your key when you create or restore one, unless your key already has a rule for the same person and scope. That rule then takes priority.",
   );
-});
-
-/**
- * Opens the person page for a rule saved under the predecessor key, while a
- * calculation that the Trust page started holds its result. The choices
- * text is long until the result confirms the handover, then short. A later
- * Cancel clears the loaded calculation and makes it long again.
- */
-async function personWithHeldHandover(page: Page) {
-  const subject = await handoverRule(page);
-  await choosePersonal(page);
-  await page.evaluate(async () => {
-    const { PersonalCalculator } = await import(
-      String("/src/data/personal.ts")
-    );
-    const proto = PersonalCalculator.prototype;
-    const request = proto.request;
-    const ensure = proto.ensure;
-    const held = window as unknown as {
-      calculator?: unknown;
-      gate?: Promise<void> | null;
-      held?: boolean;
-      seen?: string;
-      releaseResult?: () => void;
-      holdNext?: () => void;
-    };
-    held.holdNext = () => {
-      held.held = false;
-      held.gate = new Promise<void>(
-        (resolve) => (held.releaseResult = resolve),
-      );
-    };
-    held.holdNext();
-    proto.request = async function (...args: unknown[]) {
-      const result = await request.apply(this, args as never);
-      if (
-        held.gate &&
-        args.some(
-          (arg) => (arg as { type?: string } | null)?.type === "overlay",
-        )
-      ) {
-        held.held = true;
-        await held.gate;
-      }
-      return result;
-    };
-    proto.ensure = function (...args: unknown[]) {
-      held.calculator = this;
-      const result = ensure.apply(this, args as never);
-      void result.then((status: { state: string }) => {
-        held.seen = status.state;
-      });
-      return result;
-    };
-  });
-  await page
-    .getByRole("region", { name: "Local calculation" })
-    .getByRole("button", { name: "Recompute from records" })
-    .click();
-  await page.waitForFunction(
-    () => (window as unknown as { held?: boolean }).held === true,
-  );
-  await page.evaluate(
-    async (subject) =>
-      (await import(String("/src/app/router.ts"))).navigate(
-        `/identity/${encodeURIComponent(subject)}`,
-      ),
-    subject,
-  );
-  const long =
-    "Private rules saved under another key: Trusted privately for all judgments. They apply only when the personal calculation connects that key to yours.";
-  const short = "Your choices: Trusted privately for all judgments.";
-  await expect(choicesText(page)).toHaveText(long);
-  return { long, short };
-}
-const box = (control: Locator) =>
-  control.evaluate((node) => {
-    const rect = node.getBoundingClientRect();
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-  });
-const centreOf = (rect: {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}) => ({
-  x: rect.x + rect.width / 2,
-  y: rect.y + rect.height / 2,
-});
-
-for (const pointer of ["mouse", "touch"] as const)
-  test.describe(() => {
-    test.use({ hasTouch: pointer === "touch" });
-    test(`Manage stays in place while the choices text changes during a ${pointer} press`, async ({
-      page,
-      browserName,
-    }) => {
-      const { long, short } = await personWithHeldHandover(page);
-      const line = choicesText(page);
-      const manage = page.getByRole("link", {
-        name: "Manage on the Trust page",
-      });
-      const start = await box(manage);
-      // Long to short: the result confirms the handover.
-      await page.evaluate(() =>
-        (window as unknown as { releaseResult: () => void }).releaseResult(),
-      );
-      await expect(line).toHaveText(short);
-      await frames(page);
-      expect(await box(manage)).toEqual(start);
-      // Short to long during the press: a Cancel clears the loaded
-      // calculation.
-      const point = centreOf(start);
-      const cdp =
-        pointer === "touch" && browserName === "chromium"
-          ? await page.context().newCDPSession(page)
-          : null;
-      if (pointer === "mouse") {
-        await page.mouse.move(point.x, point.y);
-        await page.mouse.down();
-      } else if (cdp)
-        await cdp.send("Input.dispatchTouchEvent", {
-          type: "touchStart",
-          touchPoints: [{ x: point.x, y: point.y }],
-        });
-      await page.evaluate(() =>
-        (
-          window as unknown as { calculator: { cancel: () => void } }
-        ).calculator.cancel(),
-      );
-      await expect(line).toHaveText(long);
-      await frames(page);
-      expect(await box(manage)).toEqual(start);
-      if (pointer === "mouse") await page.mouse.up();
-      else if (cdp)
-        await cdp.send("Input.dispatchTouchEvent", {
-          type: "touchEnd",
-          touchPoints: [],
-        });
-      // Firefox has no held touch input here, so it taps after the change.
-      else await page.touchscreen.tap(point.x, point.y);
-      await expect(page).toHaveURL(/\/trust$/);
-    });
-  });
-
-test("the person page says that the choices could not be read after a failed read", async ({
-  page,
-}) => {
-  await createIdentity(page);
-  const subject = fixture().identities.author;
-  await page.evaluate(async (subject) => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    LocalStore.prototype.overlay = async () => {
-      throw new DOMException("Storage transaction aborted.", "AbortError");
-    };
-    (await import(String("/src/app/router.ts"))).navigate(
-      `/identity/${encodeURIComponent(subject)}`,
-    );
-  }, subject);
-  await expect(choicesText(page)).toHaveText("Your choices could not be read.");
 });
