@@ -130,9 +130,10 @@ fn concentrated_account_export_sizes_grow_with_records() {
         previous = Some(size);
         if let Ok(directory) = std::env::var("JVC_STATE_PARITY_DIR") {
             std::fs::create_dir_all(&directory).unwrap();
+            let name = format!("account-export-{n}");
             std::fs::write(
-                std::path::Path::new(&directory).join(format!("account-export-{n}.json")),
-                serde_json::to_vec(&json!({"input":request,"expected":state})).unwrap(),
+                std::path::Path::new(&directory).join(format!("{name}.json")),
+                serde_json::to_vec(&json!({"name":name,"input":request,"expected":state})).unwrap(),
             )
             .unwrap();
         }
