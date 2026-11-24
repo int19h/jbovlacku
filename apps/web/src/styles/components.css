@@ -1051,13 +1051,21 @@ dialog.sheet h2 {
 .place-grid .field-group {
   margin: 0;
 }
+.place-tools {
+  flex-direction: column;
+}
 @media (max-width: 640px) {
   .place-row {
     flex-wrap: wrap;
   }
-  .place-grid {
+  .place-row > .place-grid {
     grid-template-columns: minmax(0, 1fr);
-    flex: 1 1 calc(100% - 3.5rem);
+    order: 1;
+    flex: 1 1 100%;
+  }
+  .place-tools {
+    margin-left: auto;
+    flex-direction: row;
   }
   .place-grid .span-3 {
     grid-column: span 1;

@@ -282,6 +282,55 @@ test("first-signature dialog mentions the definition being published", async ({
   await expect(page).toHaveURL(/\/word\/zelpu/);
 });
 
+test("place tools stay top-right with a full-width grid on phones", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  for (const frameMode of ["fixed", "variadic"]) {
+    await page.goto("/");
+    await page.evaluate(async (mode) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { newDraft, newPlace } = await import(
+        String("/src/model/draft.ts")
+      );
+      const draft = newDraft({
+        spelling: "brodu",
+        kind: "gismu",
+        meaning: "A disposable test meaning.",
+        text: [["A disposable test definition."]],
+        frameMode: mode,
+        places: [1, 2].map((index) => newPlace(index)),
+        tail:
+          mode === "variadic"
+            ? { description: [], kind: "unspecified", hint: null }
+            : null,
+        frameRole: "predicate",
+        operands: [],
+        step: 4,
+      });
+      await new LocalStore().put("drafts", "current", draft);
+    }, frameMode);
+    await page.goto("/new/places");
+    const up = page.getByRole("button", { name: "Move place 1 up" });
+    await expect(up).toBeVisible();
+    const boxes = await up.evaluate((button) => {
+      const tools = button.parentElement!;
+      const row = tools.closest("li.place-row")!;
+      const grid = row.querySelector(".place-grid")!;
+      const box = (e: Element) => {
+        const r = e.getBoundingClientRect();
+        return { x: r.x, y: r.y, w: r.width };
+      };
+      return { row: box(row), grid: box(grid), tools: box(tools) };
+    });
+    expect(boxes.tools.y).toBeLessThan(boxes.grid.y);
+    expect(
+      Math.abs(boxes.tools.x + boxes.tools.w - (boxes.row.x + boxes.row.w)),
+    ).toBeLessThan(24);
+    expect(boxes.grid.w).toBeGreaterThan(boxes.row.w - 24);
+  }
+});
+
 test("wizard touch targets: the enclosing labels meet 44px", async ({
   page,
 }) => {

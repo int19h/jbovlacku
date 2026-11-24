@@ -1152,7 +1152,8 @@ export async function placesPage(
       grid.append(reason);
     }
     const tools = el("div", {
-      style: "display:flex;flex-direction:column;gap:2px;flex:none",
+      class: "place-tools",
+      style: "display:flex;gap:2px;flex:none",
     });
     tools.append(
       button(
