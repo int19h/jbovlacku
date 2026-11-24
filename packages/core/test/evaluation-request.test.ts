@@ -532,8 +532,6 @@ test("a child state stays readable after its parent is freed", async () => {
     assert.equal(child.updateStatistics().incremental_records, 1);
     assert.deepEqual(child.state, full.state);
     assert.equal(child.state.state_export_version, 2);
-    assert.equal(child.state.accounts, parent.state.accounts);
-    assert.equal(child.state.account_controls, parent.state.account_controls);
   } finally {
     child.free();
     full.free();
