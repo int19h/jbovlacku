@@ -360,7 +360,8 @@ The first admission after a restart needs no retained envelope reads.
 An extraction format or body-validation change requires another projection of existing data.
 Compact extraction version 8 and semantic extraction version 5 also admit the signed float calculation profile.
 They retain the current acute-accent word identity and body rules.
-Evaluation checkpoint version 2 rejects state derived under the earlier profile schema.
+Restore requires the current checkpoint format for the saved state.
+The evaluator defines the full and results format versions in [incremental.rs](../crates/jvc-state/src/incremental.rs).
 Earlier derived rows require backfill before reuse. Original signed records remain unchanged.
 Missing or older compact records trigger a parse-only backfill from private original bytes.
 Backfill does not repeat signature checks, body hashing, or canonical JSON checks.
@@ -410,8 +411,10 @@ An unavailable restored base also constructs ancestry once.
 The rebuilt evaluation and work budget match full evaluation. Diagnostic statistics omit discarded incremental work.
 An unavailable base reports `base_unavailable`.
 
-Forks share immutable ancestor payloads. After 64 appended records, a rebuild incorporates the new IDs into the ancestor universe.
-The evaluator retains the full logical work charge. Uncertain work at an ancestor-width boundary forces a rebuild.
+Forks share immutable ancestor payloads. After 64 appended records, a rebuild incorporates the new IDs into the ancestor layout.
+If the fast path reaches that limit, the evaluator reports `ancestry_rebase`.
+It reports `layout_split` if the parents do not cover the history of the issuer or the insertion would split a stored range.
+It reports `work_budget` when the fast path cannot fit its work within the budget.
 
 Judgment updates can return a patch of at most 1 MiB for the exact parent session.
 The facade applies that patch to immutable result maps. Other changes return the full result.
