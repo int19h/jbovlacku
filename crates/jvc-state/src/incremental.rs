@@ -898,10 +898,9 @@ impl EvaluatedState {
         // The fast-path invariant: the new record goes last in its
         // issuer block in a fresh layout. Then every existing closure
         // is unchanged, the new closures are exactly what a fresh
-        // build computes, and the price below (the full build's own
-        // charge formula for one record) makes the totals equal a
-        // full evaluation for an unshared state. A fork can also
-        // pay to copy shared structures before it writes them.
+        // build computes. The price below adds the same work as a fresh
+        // build, plus any copies this append makes of shared structures.
+        // The retained work total also includes copies from earlier appends.
         //
         // Last in block is shown by coverage: the parents' combined
         // own-closure holds every record of the issuer, positioned
