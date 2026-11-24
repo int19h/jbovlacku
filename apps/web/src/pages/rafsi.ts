@@ -653,16 +653,11 @@ async function resolvePair(
   pair: string,
   signal: AbortSignal,
 ): Promise<RafsiWord | null> {
-  const languages = new Set<string>([
-    app.session.preferences.definitionLanguage,
-  ]);
-  if (app.session.storageAvailable)
-    for (const key of await app.store.keys("packages").catch(() => []))
-      languages.add(key);
+  const preferred = app.session.preferences.definitionLanguage;
   // An unusable package does not hide a usable package of another
   // language. Its error is raised only when no package names the pair.
   let invalid: PackageValidationError | null = null;
-  for (const language of languages)
+  async function pick(language: string): Promise<RafsiWord | null> {
     try {
       let found: RafsiWord | undefined;
       const match = (entry: PackageEntryV2, id: string) => {
@@ -674,7 +669,7 @@ async function resolvePair(
           }
       };
       const loaded = await packageFor(app, language, signal, match);
-      if (!loaded || loaded.pkg.version !== 2) continue;
+      if (!loaded || loaded.pkg.version !== 2) return null;
       if (!loaded.fresh) {
         // A failed download can leave a candidate from a checked prefix.
         found = undefined;
@@ -685,10 +680,20 @@ async function resolvePair(
           else checkSavedWord(entry.word);
         }
       }
-      if (found) return found;
+      return found ?? null;
     } catch (error) {
       if (!(error instanceof PackageValidationError)) throw error;
       invalid ??= error;
+      return null;
+    }
+  }
+  const first = await pick(preferred);
+  if (first) return first;
+  if (app.session.storageAvailable)
+    for (const key of await app.store.keys("packages").catch(() => [])) {
+      if (key === preferred) continue;
+      const other = await pick(key);
+      if (other) return other;
     }
   if (invalid) throw invalid;
   return null;
