@@ -1084,9 +1084,23 @@ dialog.sheet h2 {
 .place-grid .field-group {
   margin: 0;
 }
+.place-tools {
+  flex-direction: column;
+}
 @media (max-width: 640px) {
+  .wizard-places .place-row {
+    flex-wrap: wrap;
+  }
   .place-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .wizard-places .place-row > .place-grid {
+    order: 1;
+    flex: 1 1 100%;
+  }
+  .wizard-places .place-tools {
+    margin-left: auto;
+    flex-direction: row;
   }
   .place-grid .span-3 {
     grid-column: span 1;

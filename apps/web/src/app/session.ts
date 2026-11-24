@@ -511,7 +511,7 @@ export class Session {
     });
   }
   /** The one-time explanation before the first public signature. */
-  async firstSignatureDisclosure(): Promise<boolean> {
+  async firstSignatureDisclosure(detail?: string): Promise<boolean> {
     if (this.preferences.firstSignatureAcknowledged) return true;
     return new Promise((resolve) => {
       const opener = document.activeElement as HTMLElement | null;
@@ -568,6 +568,7 @@ export class Session {
           p(
             "Judgments and public trust choices are signed public records. Other servers can copy them.",
           ),
+          ...(detail ? [p(detail)] : []),
           p("Undo adds a record. It does not erase the earlier public record."),
           p("Keep a backup. Losing this key can make this identity unusable."),
           p(

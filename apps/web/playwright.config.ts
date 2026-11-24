@@ -39,7 +39,8 @@ export default defineConfig({
     },
     {
       name: "firefox-wizard",
-      testMatch: /(?:wizard-explanations|place-numbering)\.test\.ts/,
+      testMatch:
+        /(?:wizard-explanations|place-numbering|wizard-polish)\.test\.ts/,
       use: { browserName: "firefox" },
     },
     {

@@ -62,6 +62,10 @@ import type {
   SearchHit,
 } from "../../model/types.ts";
 
+/** Short snapshot label used across the wizard: `6bcfa3cf6336…`. */
+function shortSnapshot(snapshot: string): string {
+  return `${snapshot.slice(7, 19)}…`;
+}
 function highlightPlaceholders(meaning: string): HTMLElement {
   const node = el("p", { style: "margin-top:4px" });
   for (const part of meaning.split(/(_{2,})/)) {
@@ -414,7 +418,11 @@ export async function meaningPage(
             routes.definition(entry.event),
           ),
         );
-      const definitionsList = el("ul", { class: "small" });
+      const definitionsList = el("ul", {
+        class: "small",
+        style:
+          "display:flex;flex-direction:column;gap:6px;margin:8px 0;padding-left:1.2em",
+      });
       let shown = 0;
       for (const entry of entries.slice(0, MAX_SHOWN_DEFINITIONS)) {
         definitionsList.append(toRow(entry));
@@ -475,13 +483,17 @@ export async function meaningPage(
       }
       typedStatus.append(
         definitionsList,
-        button(
-          "Add a definition",
-          async () => {
-            continueWithWord(draft);
-            if (await saver.flush()) navigate("/new/type");
-          },
-          { class: "btn" },
+        el(
+          "div",
+          { style: "margin-top:10px" },
+          button(
+            "Add a definition",
+            async () => {
+              continueWithWord(draft);
+              if (await saver.flush()) navigate("/new/type");
+            },
+            { class: "btn" },
+          ),
         ),
       );
       return definitionsList;
@@ -499,12 +511,12 @@ export async function meaningPage(
       if (entries.length)
         showExisting(
           entries,
-          `Local package for ${draft.language}, snapshot ${packageData.snapshot}.`,
+          `Local package for ${draft.language}, snapshot ${shortSnapshot(packageData.snapshot)}.`,
         );
       else
         typedStatus.append(
           p(
-            `No definition of this word is in the local package for ${draft.language}, snapshot ${packageData.snapshot}. Other languages and servers are unknown.`,
+            `No definition of this word is in the local package for ${draft.language}, snapshot ${shortSnapshot(packageData.snapshot)}. Other languages and servers are unknown.`,
             "meta",
           ),
         );
@@ -541,7 +553,7 @@ export async function meaningPage(
       if (!result.definitions.length) {
         typedStatus.append(
           p(
-            `This server has no definition of this word in snapshot ${result.snapshot}. Other inventories are unknown.`,
+            `This server has no definition of this word in snapshot ${shortSnapshot(result.snapshot)}. Other inventories are unknown.`,
             "meta",
           ),
         );
@@ -549,7 +561,7 @@ export async function meaningPage(
       }
       const definitionList = showExisting(
         [],
-        `This server, snapshot ${result.snapshot}. The list shows definitions in ${draft.language}.${result.definitions.length > 100 ? ` Only the first 100 of ${result.definitions.length} records are inspected. Open the word for the rest.` : ""}`,
+        `This server, snapshot ${shortSnapshot(result.snapshot)}. The list shows definitions in ${draft.language}.${result.definitions.length > 100 ? ` Only the first 100 of ${result.definitions.length} records are inspected. Open the word for the rest.` : ""}`,
       );
       const records = await Promise.all(
         result.definitions.slice(0, 100).map(async (event) => {

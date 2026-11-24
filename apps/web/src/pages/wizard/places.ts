@@ -430,7 +430,7 @@ export async function placesPage(
   const { main } = context;
   const full = route.path === "/new/editor";
   context.title(full ? "Full editor" : "Add a word: Places");
-  main.className = "surface-wizard";
+  main.className = full ? "surface-wizard" : "surface-wizard wizard-places";
   if (!app.session.storageAvailable) {
     main.append(
       el("h1", { class: "page", text: "Add a word" }),
@@ -1152,7 +1152,8 @@ export async function placesPage(
       grid.append(reason);
     }
     const tools = el("div", {
-      style: "display:flex;flex-direction:column;gap:2px;flex:none",
+      class: "place-tools",
+      style: "display:flex;gap:2px;flex:none",
     });
     tools.append(
       button(

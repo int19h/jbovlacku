@@ -557,7 +557,7 @@ export async function lujvoPage(
       const item = el("li", {
         class: "card part",
         style:
-          "padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center",
+          "position:relative;padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center",
       });
       if (fixedParts) {
         const part = {
@@ -678,7 +678,9 @@ export async function lujvoPage(
           disabled: index === state.components.length - 1 ? true : undefined,
         }),
       );
-      const name = el("span", { style: "flex:1 1 160px;min-width:0" });
+      const name = el("span", {
+        style: "flex:1 1 160px;min-width:0;padding-right:52px",
+      });
       name.append(
         el("strong", {
           lang: "jbo",
@@ -722,7 +724,7 @@ export async function lujvoPage(
         name.append(text(" · exact definition chosen", "meta"));
       const chips = el("fieldset", {
         style:
-          "border:0;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:8px",
+          "border:0;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:8px;flex:1 1 100%",
       });
       chips.append(
         el("legend", { class: "sr", text: `Rafsi for ${component.spelling}` }),
@@ -835,6 +837,9 @@ export async function lujvoPage(
           "aria-label": `Remove ${component.spelling}`,
         },
       );
+      remove.style.position = "absolute";
+      remove.style.top = "14px";
+      remove.style.right = "16px";
       item.append(moves, name, chips, known.wrapper, remove);
       if (row?.diagnostics.length)
         item.append(
@@ -976,13 +981,15 @@ export async function lujvoPage(
         }),
       );
     resultCard.append(headline);
+    const scoreLine = p(
+      zei
+        ? "Zei links these whole words. No rafsi or construction score applies."
+        : `Construction score ${candidate.score} under ${state.profile === "cll" ? "CLL 4.12" : "the extended scorer"}. A lower score reads more easily. It says nothing about who endorses a rafsi.`,
+      "meta",
+    );
+    scoreLine.style.marginTop = "10px";
     resultCard.append(
-      p(
-        zei
-          ? "Zei links these whole words. No rafsi or construction score applies."
-          : `Construction score ${candidate.score} under ${state.profile === "cll" ? "CLL 4.12" : "the extended scorer"}. A lower score reads more easily. It says nothing about who endorses a rafsi.`,
-        "meta",
-      ),
+      scoreLine,
       p(
         zei
           ? `Component words: ${candidate.recovered.map((part) => part.text).join(" · ")}.`
