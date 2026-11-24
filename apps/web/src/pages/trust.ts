@@ -24,6 +24,8 @@ export async function trustPage(
   _route: Route,
   context: RenderContext,
   app: App,
+  // What the reader opened on this visit. A rerender keeps it.
+  visit: { explanationOpen: boolean } = { explanationOpen: false },
 ) {
   const { main } = context;
   context.title("Trust");
@@ -31,7 +33,7 @@ export async function trustPage(
   const rerender = () => {
     if (!context.live()) return;
     main.replaceChildren();
-    void trustPage(_route, context, app);
+    void trustPage(_route, context, app, visit);
   };
   main.append(
     el("h1", { class: "page", text: "Trust" }),
@@ -87,24 +89,7 @@ export async function trustPage(
         "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records. Pages in the site view show this server's scores and need no local calculation.",
       onRefresh: rerender,
     }),
-    disclosure("How the two views work", () => [
-      p(
-        "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 only if its continuity group has no allocation or private root change. A zero allocation or removal also prevents that addition.",
-        "small",
-      ),
-      p(
-        "The personal view applies your own effective public shuns as local blocks, as the format specifies: the core resolves their scopes and identity continuity in the calculation's snapshot, so a narrower public heed or a public clear can lift such a block. A private Trust rule does not cancel that block. A private Ignore stays until you remove it, also after a public clear.",
-        "small",
-      ),
-      p(
-        "When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
-        "small",
-      ),
-      p(
-        "A private Ignore or a personal block removes that person and every route through them in your view only. A public shun is a signed declaration. Its effect on routes follows the calculation profile of the signed view, shown below, and it does not remove every influence of that person in every reader's view.",
-        "small",
-      ),
-    ]),
+    explanation(visit),
   );
   const overlay = await app.store.overlay().catch(() => null);
   const registers = await app.own.registers();
@@ -531,6 +516,41 @@ export async function trustPage(
   );
   void eventId;
 }
+/**
+ * The closed explanation of the two views. A page rerender builds it again,
+ * open with its text when the reader had opened it on this visit, so the
+ * rows below it do not move.
+ */
+function explanation(visit: { explanationOpen: boolean }) {
+  const paragraphs = () => [
+    p(
+      "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 only if its continuity group has no allocation or private root change. A zero allocation or removal also prevents that addition.",
+      "small",
+    ),
+    p(
+      "The personal view applies your own effective public shuns as local blocks, as the format specifies: the core resolves their scopes and identity continuity in the calculation's snapshot, so a narrower public heed or a public clear can lift such a block. A private Trust rule does not cancel that block. A private Ignore stays until you remove it, also after a public clear.",
+      "small",
+    ),
+    p(
+      "When the local calculation cannot finish, word and search pages show unavailable scores instead of substituting site scores.",
+      "small",
+    ),
+    p(
+      "A private Ignore or a personal block removes that person and every route through them in your view only. A public shun is a signed declaration. Its effect on routes follows the calculation profile of the signed view, shown below, and it does not remove every influence of that person in every reader's view.",
+      "small",
+    ),
+  ];
+  const details = disclosure("How the two views work", paragraphs);
+  if (visit.explanationOpen) {
+    details.querySelector(".body")!.append(...paragraphs());
+    details.open = true;
+  }
+  details.addEventListener("toggle", () => {
+    visit.explanationOpen = details.open;
+  });
+  return details;
+}
+
 async function makePublic(
   app: App,
   subject: string,

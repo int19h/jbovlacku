@@ -844,11 +844,21 @@ async function reportDialog(app: App, subject: string, opener: HTMLElement) {
     category.append(el("option", { value, text: label }));
   const reason = richField("Explanation", { value: [], local: false, rows: 4 });
   const reasonError = el("p", {
+    id: "report-reason-error",
     class: "notice",
     role: "alert",
     text: "Write an explanation before the preview. A report needs one.",
   });
   reasonError.hidden = true;
+  // While the alert shows, the field's description includes it, so a
+  // screen reader also hears the reason on the field.
+  const reasonHint = reason.input.getAttribute("aria-describedby");
+  const describeReason = (withError: boolean) => {
+    const ids = [reasonHint, withError ? reasonError.id : null].filter(Boolean);
+    if (ids.length)
+      reason.input.setAttribute("aria-describedby", ids.join(" "));
+    else reason.input.removeAttribute("aria-describedby");
+  };
   const submit = el("button", {
     type: "submit",
     class: "btn btn-primary",
@@ -881,6 +891,7 @@ async function reportDialog(app: App, subject: string, opener: HTMLElement) {
     if (reasonError.hidden || !richHasVisibleText(reason.input.value)) return;
     reasonError.hidden = true;
     reason.input.removeAttribute("aria-invalid");
+    describeReason(false);
   });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -889,6 +900,7 @@ async function reportDialog(app: App, subject: string, opener: HTMLElement) {
       // The preview needs an explanation. Say so beside the field.
       reasonError.hidden = false;
       reason.input.setAttribute("aria-invalid", "true");
+      describeReason(true);
       reason.input.focus();
       return;
     }

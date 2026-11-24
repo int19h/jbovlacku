@@ -228,8 +228,15 @@ test("an empty report explanation says why the preview did not open", async ({
   const explanation = dialog.getByRole("textbox", { name: "Explanation" });
   await expect(explanation).toBeFocused();
   await expect(explanation).toHaveAttribute("aria-invalid", "true");
+  // The field's description includes the reason.
+  await expect(explanation).toHaveAccessibleDescription(
+    /Write an explanation before the preview\. A report needs one\./,
+  );
   await explanation.pressSequentially("Many fake keys.");
   await expect(alert).toBeHidden();
+  await expect(explanation).not.toHaveAccessibleDescription(
+    /Write an explanation before the preview/,
+  );
   await dialog
     .getByRole("button", { name: "Preview the public report" })
     .click();
@@ -322,6 +329,39 @@ async function saveForeignRule(page: Page, issuer: string, subject: string) {
     { issuer, subject },
   );
 }
+
+test("an open explanation stays open when a Remove renders the Trust page again", async ({
+  page,
+}) => {
+  const f = fixture();
+  await page.setViewportSize({ width: 360, height: 640 });
+  await createIdentity(page);
+  await saveForeignRule(page, f.identities.rootB, f.identities.curator);
+  await saveForeignRule(page, f.identities.rootB, f.identities.delegate);
+  await page.goto("/trust");
+  const remove = page.getByRole("button", { name: "Remove", exact: true });
+  await expect(remove).toHaveCount(2);
+  await page.getByText("How the two views work", { exact: true }).click();
+  const explanation = page.getByText(
+    /The personal view downloads the snapshot's records/,
+  );
+  await expect(explanation).toBeVisible();
+  // The first rule stays. Its place must not change when the page renders
+  // again after the second rule is removed.
+  const kept = page.locator("main .row").first();
+  const top = () =>
+    kept.evaluate((node) => node.getBoundingClientRect().top + window.scrollY);
+  const before = await top();
+  await remove.last().click();
+  await expect(remove).toHaveCount(1);
+  await expect(explanation).toBeVisible();
+  await expect(page.locator("main details.disclosure").first()).toHaveAttribute(
+    "open",
+    "",
+  );
+  // Within half a pixel: Firefox rounds layout positions differently.
+  expect(await top()).toBeCloseTo(before, 0);
+});
 
 test("a calculation that ends after a view switch updates the private rule reasons", async ({
   page,
