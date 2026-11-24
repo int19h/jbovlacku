@@ -172,6 +172,61 @@ fn preparation_boundary(session: &jvc_runtime::EvaluationSession, word: &str, un
     }
 }
 
+fn add_preparation_bounds(
+    bounds: &mut Value,
+    session: &jvc_runtime::EvaluationSession,
+    state: &EvaluatedState,
+    word: &str,
+) {
+    let baseline_policy = jvc_runtime::RankingPreparationPolicy {
+        core_binding: format!("sha256:{}", "a".repeat(64)),
+        limits: Default::default(),
+    };
+    let baseline_descriptor = session.ranking_descriptor_native(&baseline_policy).unwrap();
+    if baseline_descriptor
+        .reasons
+        .contains("unsupported_calculation")
+    {
+        return;
+    }
+    let baseline_request = jvc_runtime::RankingPreparationRequest {
+        owner_session: baseline_descriptor.owner_session,
+        descriptor_binding: baseline_descriptor.binding,
+        word: word.into(),
+    };
+    let baseline_preparation = session.prepare_ranking_native(&baseline_request).unwrap();
+    let context_bounds = baseline_preparation
+        .contexts
+        .iter()
+        .map(|prepared| {
+            let bound = state.ranking_context_bound(&prepared.context).unwrap();
+            json!({
+                "context": prepared.context,
+                "bound": {
+                    "actors": bound.actors,
+                    "edges": bound.edges,
+                    "refusals": bound.refusals,
+                    "judgments": bound.judgments,
+                    "targets": bound.targets,
+                    "trust_rules": bound.trust_rules,
+                    "public_rules": bound.public_rules,
+                    "roots": bound.roots,
+                    "exclusions": bound.exclusions,
+                    "suspensions": bound.suspensions,
+                    "overlay_entries": bound.overlay_entries,
+                    "pairs_squared": bound.pairs_squared,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let charged_units = baseline_preparation.usage.charged_units;
+    assert!(charged_units > 0);
+    bounds["approximate_context_bounds"] = json!(context_bounds);
+    bounds["ranking_preparation_baseline"] = summary_json(&baseline_preparation);
+    bounds["ranking_work_accept"] = preparation_boundary(session, word, charged_units);
+    bounds["ranking_work_refuse"] = preparation_boundary(session, word, charged_units - 1);
+}
+
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() < 3 || args.len() > 5 {
@@ -298,70 +353,18 @@ fn main() {
     let source_records = bounds_state.ranking_source_records().unwrap();
     bounds_state.ensure_ranking_index().unwrap();
     let index_counts = bounds_state.ranking_index_counts().unwrap();
-    let mut approximate_checkpoint: Value = serde_json::from_slice(&checkpoint).unwrap();
-    approximate_checkpoint["evaluation"]["policy"]["calculation"] =
-        json!(jvc_rank::approximate::ALGORITHM);
-    let preparation_session = jvc_runtime::EvaluationSession::restore_host_checkpoint(
-        &serde_json::to_vec(&approximate_checkpoint).unwrap(),
-        "record-arena-golden",
-    )
-    .unwrap();
-    let baseline_policy = jvc_runtime::RankingPreparationPolicy {
-        core_binding: format!("sha256:{}", "a".repeat(64)),
-        limits: Default::default(),
-    };
-    let baseline_descriptor = preparation_session
-        .ranking_descriptor_native(&baseline_policy)
-        .unwrap();
-    let baseline_request = jvc_runtime::RankingPreparationRequest {
-        owner_session: baseline_descriptor.owner_session,
-        descriptor_binding: baseline_descriptor.binding,
-        word: first_word.clone(),
-    };
-    let baseline_preparation = preparation_session
-        .prepare_ranking_native(&baseline_request)
-        .unwrap();
-    let context_bounds = baseline_preparation
-        .contexts
-        .iter()
-        .map(|prepared| {
-            let bound = bounds_state
-                .ranking_context_bound(&prepared.context)
-                .unwrap();
-            json!({
-                "context": prepared.context,
-                "bound": {
-                    "actors": bound.actors,
-                    "edges": bound.edges,
-                    "refusals": bound.refusals,
-                    "judgments": bound.judgments,
-                    "targets": bound.targets,
-                    "trust_rules": bound.trust_rules,
-                    "public_rules": bound.public_rules,
-                    "roots": bound.roots,
-                    "exclusions": bound.exclusions,
-                    "suspensions": bound.suspensions,
-                    "overlay_entries": bound.overlay_entries,
-                    "pairs_squared": bound.pairs_squared,
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    let charged_units = baseline_preparation.usage.charged_units;
-    assert!(charged_units > 0);
-    write_json(
-        format!("{output}/bounds.json"),
-        json!({
-            "word": first_word,
-            "ranking_index_bound": ranking_bound,
-            "ranking_source_records": source_records,
-            "ranking_index_counts": index_counts,
-            "approximate_context_bounds": context_bounds,
-            "ranking_preparation_baseline": summary_json(&baseline_preparation),
-            "ranking_work_accept": preparation_boundary(&preparation_session, &first_word, charged_units),
-            "ranking_work_refuse": preparation_boundary(&preparation_session, &first_word, charged_units - 1),
-        }),
-    );
+    let mut bounds = json!({
+        "word": first_word,
+        "ranking_index_bound": ranking_bound,
+        "ranking_source_records": source_records,
+        "ranking_index_counts": index_counts,
+        "approximate_context_bounds": [],
+        "ranking_preparation_baseline": null,
+        "ranking_work_accept": null,
+        "ranking_work_refuse": null,
+    });
+    add_preparation_bounds(&mut bounds, &restored, &bounds_state, &first_word);
+    write_json(format!("{output}/bounds.json"), bounds);
     if counts_only {
         return;
     }
