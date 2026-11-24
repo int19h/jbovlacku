@@ -247,21 +247,25 @@ export async function searchPage(
   if (punctuationNote) main.append(p(punctuationNote, "meta"));
   // Search source: the downloaded package in local mode, otherwise this server.
   let cached: CachedPackage | undefined;
+  let packageProblem: "unavailable" | "invalid" | undefined =
+    app.session.storageAvailable ? undefined : "unavailable";
   let initialLocal: PackageSearchResult | undefined;
   if (
     app.session.preferences.searchMode === "local" &&
     app.session.storageAvailable
   ) {
-    // An unusable saved package, a stored null included, is announced and
-    // then treated as no package, as the worker's verdict is below.
     try {
       cached =
         savedPackage(
-          await app.store.get("packages", language).catch(() => undefined),
+          await app.store.get("packages", language).catch(() => {
+            packageProblem = "unavailable";
+            return undefined;
+          }),
         ) ?? undefined;
     } catch (error) {
       if (!(error instanceof PackageValidationError)) throw error;
       if (!context.live()) return;
+      packageProblem = "invalid";
       app.announce(describe(error));
     }
   }
@@ -289,6 +293,7 @@ export async function searchPage(
       if (!context.live()) return;
       if (error instanceof PackageValidationError) {
         cached = undefined;
+        packageProblem = "invalid";
         app.announce(describe(error));
       } else {
         searching.remove();
@@ -358,7 +363,11 @@ export async function searchPage(
     count.textContent = "Type a word or a meaning to search.";
     if (app.session.preferences.searchMode === "local" && !cached) {
       const note = p(
-        `No downloaded search package for ${languageName(language)}. Searches use this server until one is downloaded in Settings.`,
+        packageProblem === "invalid"
+          ? `The saved search package for ${languageName(language)} is invalid. Searches use this server.`
+          : packageProblem === "unavailable"
+            ? "Browser storage is unavailable. Searches use this server."
+            : `No downloaded search package for ${languageName(language)}. Searches use this server until one is downloaded in Settings.`,
         "small",
       );
       results.append(note);

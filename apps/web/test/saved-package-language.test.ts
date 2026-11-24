@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { corePath } from "./helpers.ts";
+import { corePath, fixture } from "./helpers.ts";
 
 const englishRow = {
   event: "jve1:" + "1".repeat(64),
@@ -26,19 +26,30 @@ const frenchRow = {
 async function savePackages(
   page: Page,
   entriesByLanguage: Record<string, unknown[]>,
+  draft?: Record<string, unknown>,
 ) {
   await page.goto("/");
-  await page.evaluate(async (packages) => {
-    const { LocalStore } = await import(String("/src/data/store.ts"));
-    const store = new LocalStore();
-    await store.setPreferences({ definitionLanguage: "en" });
-    for (const [language, entries] of Object.entries(packages))
-      await store.put("packages", language, {
-        version: 2,
-        snapshot: "sha256:" + "a".repeat(64),
-        entries,
+  await page.evaluate(
+    async ({ packages, draft }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      await store.setPreferences({
+        definitionLanguage: "en",
+        searchMode: "local",
       });
-  }, entriesByLanguage);
+      for (const [language, entries] of Object.entries(packages))
+        await store.put("packages", language, {
+          version: 2,
+          snapshot: "sha256:" + "a".repeat(64),
+          entries,
+        });
+      if (draft) {
+        const { newDraft } = await import(String("/src/model/draft.ts"));
+        await store.put("drafts", "current", newDraft(draft as never));
+      }
+    },
+    { packages: entriesByLanguage, draft },
+  );
 }
 
 test("a rafsi pair skips a matching package with a bad later row", async ({
@@ -78,3 +89,184 @@ test("Meaning rejects a French row saved in the English package", async ({
     typed.getByRole("link", { name: frenchRow.plain_text, exact: true }),
   ).toBeVisible();
 });
+
+async function countWordIds(page: Page) {
+  await page.route("**/jvc_runtime.js*", async (route) => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const marker = "function runtime_word_identifier(bytes) {";
+    expect(source).toContain(marker);
+    await route.fulfill({
+      response,
+      body: source.replace(
+        marker,
+        marker + "globalThis.wordIdCalls = (globalThis.wordIdCalls ?? 0) + 1;",
+      ),
+    });
+  });
+  await page.route("**/api/v1/words/**", (route) => route.abort());
+}
+
+test("a saved pair uses word IDs only for matching and complex spellings", async ({
+  page,
+}) => {
+  const rows = Array.from({ length: 12 }, (_, i) => ({
+    ...englishRow,
+    event: "jve1:" + (i + 2).toString(16).padStart(64, "0"),
+    word: { language: "jbo", spelling: "bajra" },
+    rafsi: [],
+  }));
+  await savePackages(page, { en: [englishRow, ...rows] });
+  const pair = await page.evaluate(async (path) => {
+    const core = await import(path);
+    await core.initializeCore();
+    return core.rafsiPairId(
+      core.wordId({ language: "jbo", spelling: "cukta" }),
+      "cuk",
+    );
+  }, corePath);
+  await countWordIds(page);
+  await page.route("**/api/v1/manifest", (route) => route.abort());
+  await page.goto(`/rafsi-pair/${pair}`);
+  await expect(
+    page.locator('main a[href="/word/cukta?lang=en"]').first(),
+  ).toBeVisible();
+  expect(await page.evaluate(() => (globalThis as any).wordIdCalls)).toBe(2);
+});
+
+test("a downloaded pair uses the word IDs from download validation", async ({
+  page,
+}) => {
+  await countWordIds(page);
+  await page.goto(`/rafsi-pair/${fixture().pair}`);
+  await expect(
+    page.locator('main a[href="/word/cukta?lang=en"]').first(),
+  ).toBeVisible();
+  const calls = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const pkg = (await new LocalStore().get("packages", "en")) as {
+      entries: unknown[];
+    };
+    return {
+      actual: (globalThis as any).wordIdCalls,
+      expected: pkg.entries.length + 1,
+    };
+  });
+  expect(calls.actual).toBe(calls.expected);
+});
+
+test("nearby defers its package label until the current language passes", async ({
+  page,
+}) => {
+  await savePackages(page, { en: [frenchRow], fr: [frenchRow] });
+  await page.goto("/new/meaning?lang=en");
+  await page.getByLabel("Lojban word").fill("cukta");
+  await expect(page.getByRole("region", { name: "Typed word" })).toContainText(
+    "The search package is invalid.",
+  );
+  const nearby = page.getByRole("region", { name: "Close in meaning" });
+  await expect(nearby).not.toContainText("from the downloaded package");
+  await expect(
+    nearby.getByRole("button", { name: "search this server" }),
+  ).toBeVisible();
+  await page
+    .getByRole("textbox", { name: "Meaning", exact: true })
+    .fill("livre");
+  await expect(nearby).toContainText("saved package is invalid");
+  await page.getByLabel("Language", { exact: true }).selectOption("fr");
+  await expect(nearby).toContainText("from the downloaded package");
+});
+
+for (const [path, draft, copy] of [
+  [
+    "/new/lujvo",
+    {
+      kind: "lujvo",
+      meaning: "A disposable meaning.",
+      step: 3,
+      lujvo: {
+        profile: "cll",
+        components: [
+          {
+            id: "sance",
+            spelling: "sance",
+            kind: "gismu",
+            claims: [],
+            locked: null,
+            definition: null,
+            gloss: "",
+          },
+          {
+            id: "cmalu",
+            spelling: "cmalu",
+            kind: "gismu",
+            claims: [],
+            locked: null,
+            definition: null,
+            gloss: "",
+          },
+        ],
+      },
+    },
+    "Availability is unknown because there is no usable local package.",
+  ],
+  [
+    "/new/gismu",
+    {
+      kind: "gismu",
+      spelling: "cukte",
+      meaning: "A disposable meaning.",
+      step: 3,
+      gismu: {
+        preset: null,
+        rows: [
+          {
+            id: "r1",
+            language: "en",
+            name: "English",
+            weight: { numerator: "1", denominator: "1" },
+            word: "book",
+            input: "cukte",
+            sense: "",
+            note: "",
+          },
+        ],
+        candidates: "source-letters",
+        window: 12,
+        manual: "cukte",
+        selected: "cukte",
+        acknowledged: [],
+        reason: "",
+      },
+    },
+    "Conflict coverage is unknown.",
+  ],
+  [
+    "/new/publish",
+    {
+      kind: "gismu",
+      spelling: "zelpu",
+      meaning: "A disposable meaning.",
+      text: "A disposable meaning.",
+      step: 5,
+      rafsiClaims: [{ rafsi: "zel" }],
+    },
+    "No usable local package is available. Conflict coverage is unknown.",
+  ],
+  [
+    "/search?lang=en",
+    undefined,
+    "The saved search package for English is invalid. Searches use this server.",
+  ],
+] as const)
+  test(`a rejected package keeps its fallback message on ${path}`, async ({
+    page,
+  }) => {
+    await savePackages(page, { en: [frenchRow] }, draft);
+    await page.goto(path);
+    const main = page.locator("main");
+    await expect(main).toContainText(copy);
+    await expect(main).not.toContainText(
+      /no (local package is downloaded|downloaded search package|package is downloaded)/i,
+    );
+  });

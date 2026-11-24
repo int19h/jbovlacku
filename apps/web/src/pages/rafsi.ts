@@ -17,8 +17,14 @@ import {
   type Route,
 } from "../app/router.ts";
 import type { App } from "../app/context.ts";
-import { downloadPackage, isV2, type CachedPackage } from "../data/search.ts";
 import {
+  downloadPackage,
+  isV2,
+  type CachedPackage,
+  type PackageDownloadOptions,
+} from "../data/search.ts";
+import {
+  checkSavedWord,
   INVALID_PACKAGE_MESSAGE,
   PackageValidationError,
   savedPackage,
@@ -26,7 +32,7 @@ import {
   savedWordId,
 } from "../data/saved-package.ts";
 import { getWord, loadRecord } from "../data/api.ts";
-import type { RafsiBody } from "../model/types.ts";
+import type { PackageEntryV2, RafsiBody } from "../model/types.ts";
 import { identityLink } from "../components/attribution.ts";
 import { viewScores } from "../components/localview.ts";
 import { judgmentControl, scoreDetails } from "../components/judgment.ts";
@@ -47,7 +53,8 @@ async function packageFor(
   app: App,
   language: string,
   signal: AbortSignal,
-): Promise<CachedPackage | null> {
+  onVersion2Entry?: PackageDownloadOptions["onVersion2Entry"],
+): Promise<{ pkg: CachedPackage; fresh: boolean } | null> {
   let fallback: CachedPackage | null = null;
   // The package state when this visit started. A package that the user
   // removed keeps a revision but no package, so a visit must not save it
@@ -66,23 +73,25 @@ async function packageFor(
   }
   // Prefer the server's current package so new claims appear. Fall back to the cache.
   try {
-    const fresh = await downloadPackage(language, { signal });
+    const fresh = await downloadPackage(language, { signal, onVersion2Entry });
     fallback = fresh;
     if (fresh.version === 2) {
       if (app.session.storageAvailable && !removed)
         await app.store
           .put("packages", language, fresh, expected ?? null)
           .catch(() => {});
-      return fresh;
+      return { pkg: fresh, fresh: true };
     }
   } catch {}
-  if (!app.session.storageAvailable) return fallback;
+  if (!app.session.storageAvailable)
+    return fallback && { pkg: fallback, fresh: true };
   // A storage failure counts as no saved package. An unusable saved
   // package raises PackageValidationError.
   const cached = savedPackage(
     await app.store.get("packages", language).catch(() => undefined),
   );
-  return cached?.version === 2 ? cached : fallback;
+  if (cached?.version === 2) return { pkg: cached, fresh: false };
+  return fallback && { pkg: fallback, fresh: true };
 }
 interface RafsiWord {
   spelling: string;
@@ -119,7 +128,7 @@ export async function wordsWithRafsi(
     // a language has no package.
     let result;
     try {
-      const pkg = await packageFor(app, language, signal);
+      const pkg = (await packageFor(app, language, signal))?.pkg;
       if (!pkg || pkg.version !== 2) {
         limited = true;
         continue;
@@ -315,7 +324,9 @@ export async function rafsiPage(
   if (words.unavailable) {
     main.append(
       p(
-        "Rafsi lookup needs a version 2 search package. This server and the saved packages supply no rafsi data.",
+        words.invalid
+          ? "Rafsi lookup needs a usable version 2 search package."
+          : "Rafsi lookup needs a version 2 search package. This server and the saved packages supply no rafsi data.",
         "notice",
       ),
     );
@@ -535,7 +546,7 @@ export async function claimPage(
       } else if (lookup.unavailable)
         competition.append(
           p(
-            "Rafsi conflict lookup is unavailable. Version 2 package data is missing. Review the claim with that coverage limit.",
+            "Rafsi conflict lookup is unavailable without a usable version 2 search package. Review the claim with that coverage limit.",
             "notice",
           ),
         );
@@ -653,21 +664,26 @@ async function resolvePair(
   let invalid: PackageValidationError | null = null;
   for (const language of languages)
     try {
-      const pkg = await packageFor(app, language, signal);
-      if (!pkg) continue;
       let found: RafsiWord | undefined;
-      for (const row of pkg.entries) {
-        const entry = savedRow(row, pkg.version, language);
-        if (!isV2(entry)) continue;
-        const id = savedWordId(entry.word);
-        // A match still needs the rest of the package to pass the row checks.
-        if (found) continue;
+      const match = (entry: PackageEntryV2, id: string) => {
+        if (found) return;
         for (const rafsi of entry.rafsi)
-          // An empty array slot is no rafsi, as in the worker's checks.
           if (rafsi !== undefined && rafsiPairId(id, rafsi) === pair) {
             found = { spelling: entry.word.spelling, language, rafsi };
             break;
           }
+      };
+      const loaded = await packageFor(app, language, signal, match);
+      if (!loaded || loaded.pkg.version !== 2) continue;
+      if (!loaded.fresh) {
+        // A failed download can leave a candidate from a checked prefix.
+        found = undefined;
+        for (const row of loaded.pkg.entries) {
+          const entry = savedRow(row, loaded.pkg.version, language);
+          if (isV2(entry) && !found && entry.rafsi.length)
+            match(entry, savedWordId(entry.word));
+          else checkSavedWord(entry.word);
+        }
       }
       if (found) return found;
     } catch (error) {

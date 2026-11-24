@@ -936,30 +936,12 @@ test("an obsolete nearby lookup does not clear the current language's package", 
   await page.waitForFunction(
     () => (window as unknown as { frenchRead?: boolean }).frenchRead === true,
   );
-  const mode = () =>
-    page.evaluate(
-      () =>
-        document
-          .querySelector("#similar-h")
-          ?.parentElement?.querySelector("span.meta")?.textContent ?? "",
-    );
-  expect(await mode()).toContain("from the downloaded package");
+  const panel = page.getByRole("region", { name: "Close in meaning" });
+  await expect(panel).not.toContainText("from the downloaded package");
   await page.evaluate(() => (window as unknown as { held: () => void }).held());
-  // Let the released reply settle, then type: the input handler shows the
-  // source from the page's state at once, before the next lookup runs.
-  await page.waitForTimeout(100);
-  const afterInput = await page.evaluate(() => {
-    const input = document.querySelector("textarea")!;
-    input.value = "livre";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    return (
-      document
-        .querySelector("#similar-h")
-        ?.parentElement?.querySelector("span.meta")?.textContent ?? ""
-    );
-  });
-  expect(afterInput).toContain("from the downloaded package");
-  expect(afterInput).not.toContain("no local package");
+  await page.getByRole("textbox", { name: "Meaning", exact: true }).fill("livre");
+  await expect(panel).toContainText("from the downloaded package");
+  await expect(panel).not.toContainText("saved package is invalid");
 });
 
 /**

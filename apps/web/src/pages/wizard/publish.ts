@@ -334,9 +334,8 @@ export async function publishPage(
   conflicts.append(rootLine);
   if (draft.kind === "gismu" && body) {
     if (!inventory.snapshot)
-      rootLine.textContent = packageInvalid
-        ? "Root conflicts were not checked again: no usable local package is downloaded. Coverage is unknown."
-        : "Root conflicts were not checked again: no local package is downloaded. Coverage is unknown.";
+      rootLine.textContent =
+        "Root conflict coverage is unknown because there is no usable local package.";
     else
       try {
         foundRoots = currentRootConflicts(body.word.spelling, inventory);
@@ -383,7 +382,7 @@ export async function publishPage(
       p(
         isZeiCompound(draft.compound)
           ? "Zei links whole component words. No rafsi assignment applies."
-          : `Component rafsi: ${inventoryCoverage(inventory)}${componentConflicts.length ? "" : " No competing claim is known in that coverage."}`,
+          : `Component rafsi: ${inventoryCoverage(inventory)}${componentConflicts.length || !inventory.snapshot ? "" : " No competing claim is known in that coverage."}`,
         "meta",
       ),
     );

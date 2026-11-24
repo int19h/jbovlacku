@@ -250,6 +250,8 @@ test("an empty nearby meaning still reads the current package mode", async ({
   await expect(
     page.getByLabel("Other language tag", { exact: true }),
   ).toBeHidden();
+  await expect(panel).not.toContainText("from the downloaded package");
+  await page.getByRole("textbox", { name: "Meaning", exact: true }).fill("travel");
   await expect(panel).toContainText("from the downloaded package");
 });
 
@@ -271,7 +273,7 @@ for (const [label, corrupt] of [
       "search package is invalid",
     );
     await expect(page.locator("main")).toContainText(
-      "No downloaded search package",
+      "The saved search package for English is invalid.",
     );
     await expect(page.locator("main")).not.toContainText(
       "Local search package from snapshot",

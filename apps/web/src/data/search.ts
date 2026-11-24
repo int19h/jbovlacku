@@ -184,6 +184,8 @@ export interface PackageDownloadOptions extends RequestOptions {
   packageQuota?: PackageQuota;
   /** Called after the package index and after each part that passed its checks. */
   onProgress?: (progress: PackageProgress) => void;
+  /** Inspect a checked version 2 row during download. Use it only after download succeeds. */
+  onVersion2Entry?: (entry: PackageEntryV2, id: string) => void;
 }
 const V1_FIELDS = [
   "event",
@@ -202,7 +204,7 @@ export function validateEntry(
   language: string,
   version: 1 | 2 = 1,
   packageView?: string,
-): asserts value is PackageEntry {
+): string {
   if (
     version === 2 &&
     value &&
@@ -219,8 +221,7 @@ export function validateEntry(
           !["active", "retired", "ineligible"].includes(search_status.status)
     )
       throw invalidPackage();
-    validateEntry(base, language, version);
-    return;
+    return validateEntry(base, language, version);
   }
   if (version === 2) {
     if (
@@ -259,8 +260,7 @@ export function validateEntry(
     void rafsi;
     void rafsi_complete;
     void attribution;
-    validateEntry(base, language, 1);
-    return;
+    return validateEntry(base, language, 1);
   }
   if (
     !fields(value, V1_FIELDS) ||
@@ -290,7 +290,7 @@ export function validateEntry(
   )
     throw invalidPackage();
   try {
-    wordId({ language: "jbo", spelling: value.word.spelling });
+    return wordId({ language: "jbo", spelling: value.word.spelling });
   } catch {
     throw invalidPackage();
   }
@@ -545,11 +545,12 @@ async function downloadEntries(
       if (!Array.isArray(data) || data.length !== part.count)
         throw invalidPackage();
       for (const entry of data) {
-        validateEntry(entry, language, version, pkg.search_view);
+        const id = validateEntry(entry, language, version, pkg.search_view);
         if (pkg.search_view && typeof entry.search_status !== "string")
           throw invalidPackage();
         if (entry.event <= previous) throw invalidPackage();
         previous = entry.event;
+        if (version === 2) options.onVersion2Entry?.(entry, id);
         entries.push(entry);
       }
       progress.parts++;

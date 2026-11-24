@@ -519,7 +519,7 @@ export async function lujvoPage(
           class: "meta",
           text: packageInvalid
             ? "The saved search package is invalid, so word search is unavailable here. Download another package on the Settings page, or add a form as entered."
-            : "No local package is downloaded, so word search is unavailable here. Download one on the Settings page, or add a form as entered.",
+            : "No usable local package is available for word search here. Download one on the Settings page, or add a form as entered.",
         }),
       );
   };
@@ -1012,7 +1012,7 @@ export async function lujvoPage(
       ? taken
         ? `Taken: ${candidate.spelling} is defined in the local package of snapshot ${cached.snapshot.slice(7, 19)}….`
         : `Not in the local package of snapshot ${cached.snapshot.slice(7, 19)}…. The package covers retained definitions in its language only.`
-      : "Availability in the local package is unknown: no package is downloaded.";
+      : "Availability is unknown because there is no usable local package.";
     resultCard.append(availability);
     const checked = candidate.spelling;
     if (!state.typed)

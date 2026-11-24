@@ -528,7 +528,7 @@ export async function meaningPage(
     } else if (!packageInvalid)
       typedStatus.append(
         p(
-          "The word could not be checked. No local package is downloaded for this language.",
+          "The word could not be checked. No usable local package is available for this language.",
           "small",
         ),
       );
@@ -650,7 +650,8 @@ export async function meaningPage(
   const list = el("ol", { class: "similar" });
   const note = el("p", { class: "meta" });
   right.append(list, note);
-  let cached: CachedPackage | null = null;
+  let nearbySource: "pending" | "local" | "missing" | "invalid" | "unavailable" =
+    "pending";
   // Consent covers one exact query and its definition language.
   let remoteConsent: string | null = null;
   const nearbyQuery = () => meaningQueries(meaning.input.value).join(" ");
@@ -658,9 +659,18 @@ export async function meaningPage(
   const consentKey = () => JSON.stringify([remoteQuery(), draft.language]);
   const renderMode = () => {
     modeLabel.replaceChildren();
-    if (cached) modeLabel.append(text("by words, from the downloaded package"));
+    if (nearbySource === "local")
+      modeLabel.append(text("by words, from the downloaded package"));
     else {
-      modeLabel.append(text("no local package · "));
+      const label =
+        nearbySource === "invalid"
+          ? "saved package is invalid"
+          : nearbySource === "missing"
+            ? "no local package"
+            : nearbySource === "unavailable"
+              ? "local package unavailable"
+              : "by words";
+      modeLabel.append(text(label + " · "));
       modeLabel.append(
         button(
           remoteConsent === consentKey()
@@ -708,6 +718,9 @@ export async function meaningPage(
   const scheduleNearby = () => {
     nearbyRequest++;
     if (remoteConsent !== consentKey()) remoteConsent = null;
+    nearbySource = "pending";
+    list.replaceChildren();
+    note.textContent = "";
     renderMode();
     clearTimeout(timer);
     timer = setTimeout(() => void nearby(), 400);
@@ -786,35 +799,35 @@ export async function meaningPage(
       request === nearbyRequest &&
       value === meaning.input.value &&
       language === draft.language;
-    // An unusable package, by this page's read or by the worker's verdict,
-    // is announced once per page and then treated as no local package, so
-    // the consent and server branch below still runs.
-    const unusable = (error: unknown) => {
+    const invalid = (error: unknown) => {
       if (!(error instanceof PackageValidationError)) throw error;
-      if (current() && !invalidAnnounced) {
+      if (!invalidAnnounced) {
         invalidAnnounced = true;
         app.announce(error.message);
       }
-      return null;
+      nearbySource = "invalid";
     };
     try {
-      let pkg: CachedPackage | null;
+      let pkg: CachedPackage | null = null;
+      let read = true;
       try {
-        pkg = savedPackage(await app.store.get("packages", language));
+        const stored = await app.store.get("packages", language).catch(() => {
+          read = false;
+          return undefined;
+        });
+        if (!current()) return;
+        pkg = savedPackage(stored);
+        nearbySource = pkg ? "pending" : read ? "missing" : "unavailable";
       } catch (error) {
-        pkg = unusable(error);
+        invalid(error);
       }
-      if (!current()) return;
-      cached = pkg;
+      // With no query, defer the verdict for a saved package.
       renderMode();
       if (!terms.length) {
         renderHits([], "local");
         return;
       }
       if (pkg) {
-        // Rank all query lists in the worker before selecting six nearby rows.
-        // Each word goes in its typed spelling, so the local length limit
-        // reads what the reader typed; the worker lowercases it afterwards.
         try {
           const found = await searchPackage(pkg, language, terms, {
             patterns: false,
@@ -822,13 +835,15 @@ export async function meaningPage(
             limit: 6,
             signal: context.signal,
           });
-          if (current()) renderHits(found.hits[0], "local");
+          if (current()) {
+            nearbySource = "local";
+            renderMode();
+            renderHits(found.hits[0], "local");
+          }
           return;
         } catch (error) {
-          // An obsolete request changes nothing: it returns before it
-          // touches the page's state.
           if (!current()) return;
-          cached = unusable(error);
+          invalid(error);
           renderMode();
         }
       }

@@ -189,7 +189,7 @@ export async function typePage(
       if (!found.invalid)
         rootWarnings.append(
           p(
-            "Gismu closeness could not be checked. No local package is downloaded.",
+            "Gismu closeness is unknown because there is no usable local package.",
             "small",
           ),
         );

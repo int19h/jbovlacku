@@ -227,7 +227,7 @@ test("the extended profile joins whole-word parts that CLL rules reject", async 
   await expect(result).toContainText("Recovered parts: fult + y' + ismu");
   // Without a package, availability is unknown and says so. The server still answers.
   await expect(result).toContainText(
-    "Availability in the local package is unknown: no package is downloaded.",
+    "Availability is unknown because there is no usable local package.",
   );
   await expect(result).toContainText(
     /The server has no definition of fulty'ismu (now|in snapshot [0-9a-f]{12}…)\./,

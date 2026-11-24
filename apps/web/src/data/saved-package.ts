@@ -190,3 +190,16 @@ export function savedWordId(word: {
     throw new PackageValidationError();
   }
 }
+
+/** Use the core for spellings that need normalization or other checks. */
+export function checkSavedWord(word: {
+  language: "jbo";
+  spelling: string;
+}): void {
+  // Short lowercase ASCII spellings already satisfy the core checks for
+  // byte length, NFC, controls, accents, and edge whitespace.
+  const { spelling } = word;
+  if (spelling.length > 0 && spelling.length <= 256 && !/[^a-z]/.test(spelling))
+    return;
+  savedWordId(word);
+}

@@ -514,7 +514,7 @@ export function inventoryFromPackage(
 /** The limits of the downloaded rafsi inventory, shared by builders and Publish. */
 export function inventoryCoverage(inventory: PackageInventory): string {
   if (!inventory.snapshot)
-    return "No local package is downloaded, so conflict coverage is unknown.";
+    return "No usable local package is available. Conflict coverage is unknown.";
   if (!inventory.hasClaims)
     return "The local package carries no rafsi claims, so rafsi conflict coverage is unknown.";
   return `Competing claims come from the local package of snapshot ${inventory.snapshot.slice(7, 19)}…. They cover retained claims in that package only.${

@@ -310,7 +310,7 @@ async function preferencesBody(context: RenderContext, app: App) {
       { value: "remote", label: "Remote" },
     ],
     value: prefs.searchMode,
-    hint: `Local uses downloaded packages for word and definition searches. Without a downloaded package for a language, local mode asks the server. Remote sends each query to ${selfPeer.label}. Meaning search sends queries to the server and provider after consent.`,
+    hint: `Local uses downloaded packages for word and definition searches. If no usable package is available for a language, local mode asks the server. Remote sends each query to ${selfPeer.label}. Meaning search sends queries to the server and provider after consent.`,
   });
   // The remote search disclosure stays in place under the control.
   const modeDisclosure = p("", "small");
