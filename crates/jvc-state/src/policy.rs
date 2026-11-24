@@ -1651,7 +1651,25 @@ fn valid_rational(v: &Value, positive: bool) -> bool {
     let r = Rational::new(BigInt::from(n), BigInt::from(d));
     r.numer() == &BigInt::from(n) && r.denom() == &BigInt::from(d)
 }
-pub(crate) fn valid_overlay(v: &Value, base: &str) -> bool {
+pub(crate) fn overlay_refusal(
+    overlay: Option<&Value>,
+    base: &str,
+    suspended: impl Fn(&str) -> bool,
+) -> Option<&'static str> {
+    let overlay = overlay?;
+    if !valid_overlay(overlay, base) {
+        Some("invalid_overlay")
+    } else if overlay["public_shun_issuer"]
+        .as_str()
+        .is_some_and(suspended)
+    {
+        Some("public_shun_issuer_unavailable")
+    } else {
+        None
+    }
+}
+
+fn valid_overlay(v: &Value, base: &str) -> bool {
     let fields: &[&str] = match v["version"].as_u64() {
         Some(1) => &[
             "version",

@@ -740,23 +740,11 @@ pub(crate) fn overlay_units(overlay: Option<&Value>) -> usize {
     })
 }
 fn apply_overlay(result: &mut Evaluation, suspended: &impl Fn(&str) -> bool) {
-    if result
-        .overlay
-        .as_ref()
-        .is_some_and(|overlay| !policy::valid_overlay(overlay, &result.selected_view))
+    if let Some(reason) =
+        policy::overlay_refusal(result.overlay.as_deref(), &result.selected_view, suspended)
     {
         result.available = false;
-        result.reasons.insert("invalid_overlay".into());
-    } else if result
-        .overlay
-        .as_ref()
-        .and_then(|overlay| overlay["public_shun_issuer"].as_str())
-        .is_some_and(suspended)
-    {
-        result.available = false;
-        result
-            .reasons
-            .insert("public_shun_issuer_unavailable".into());
+        result.reasons.insert(reason.into());
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
