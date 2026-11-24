@@ -89,7 +89,7 @@ test("an admitted float view gives no synchronous exact score", async () => {
     const result = JSON.parse(
       new TextDecoder().decode(session.checkpoint("f64-contract", true)),
     );
-    assert.equal(result.version, "jvc-evaluation-results-v12");
+    assert.equal(result.version, "jvc-evaluation-results-v13");
     result.version = "jvc-evaluation-results-v1";
     const compact = extractHostVerifiedRecord(
       utf8(row.envelope),

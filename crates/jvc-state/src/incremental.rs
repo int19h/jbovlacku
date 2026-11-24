@@ -2,7 +2,7 @@ use super::*;
 use graph::{Graph, Node};
 
 pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v12";
-const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v12";
+const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v13";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
 
@@ -1291,6 +1291,7 @@ impl EvaluatedState {
             options: SavedOptions<'a>,
             evaluation: CheckpointEvaluation<'a>,
             record_count: usize,
+            records_digest: String,
             event_limit_exceeded: bool,
             consumed_work: usize,
             remaining_work: usize,
@@ -1331,6 +1332,7 @@ impl EvaluatedState {
                 options: saved_options,
                 evaluation: CheckpointEvaluation(&self.evaluation),
                 record_count: self.prepared.nodes.len(),
+                records_digest: checkpoint_records_digest(&self.prepared.nodes)?,
                 event_limit_exceeded: self.prepared.event_limit_exceeded,
                 consumed_work,
                 remaining_work: self.remaining_work,
@@ -1412,6 +1414,7 @@ impl EvaluatedState {
                     options: full.options,
                     evaluation: full.evaluation,
                     record_count: full.record_count,
+                    records_digest: None,
                     event_limit_exceeded: full.event_limit_exceeded,
                     consumed_work: full.consumed_work,
                     remaining_work: full.remaining_work,
@@ -1438,6 +1441,14 @@ impl EvaluatedState {
             return Err(jvc_core::Error::new(
                 "checkpoint",
                 "checkpoint version or binding does not match",
+            ));
+        }
+        if expected_version == RESULTS_CHECKPOINT_VERSION
+            && saved.records_digest.as_deref() != Some(&checkpoint_records_digest(&nodes)?)
+        {
+            return Err(jvc_core::Error::new(
+                "checkpoint",
+                "checkpoint records do not match",
             ));
         }
         let mut saved = saved;
@@ -1564,6 +1575,7 @@ struct SavedResultsCheckpoint {
     options: EvaluationOptions,
     evaluation: Evaluation,
     record_count: usize,
+    records_digest: Option<String>,
     event_limit_exceeded: bool,
     consumed_work: usize,
     remaining_work: usize,
@@ -1574,6 +1586,13 @@ struct SavedResultsCheckpoint {
     account_contribution_digests: Vec<String>,
     #[allow(dead_code)]
     digest: String,
+}
+
+fn checkpoint_records_digest(nodes: &BTreeMap<String, Node>) -> jvc_core::Result<String> {
+    let mut writer = jvc_core::HashWriter::new(b"jvc-checkpoint-records-v1\n", usize::MAX);
+    serde_json::to_writer(&mut writer, nodes)
+        .map_err(|error| jvc_core::Error::new("checkpoint", error.to_string()))?;
+    Ok(writer.finish("sha256:").0)
 }
 
 fn fits_json_depth(value: &Value, remaining: usize) -> bool {
@@ -1785,12 +1804,6 @@ fn saved_actor<'a>(lifecycle: &'a Lifecycle, key: &'a str) -> &'a str {
     lifecycle.key_actor.get(key).map_or(key, String::as_str)
 }
 
-fn compact_value_digest(value: &CompactValue) -> Result<String, &'static str> {
-    let mut writer = jvc_core::HashWriter::new(b"", usize::MAX);
-    serde_json::to_writer(&mut writer, value).map_err(|_| "policy_digest")?;
-    Ok(writer.finish("sha256:").0)
-}
-
 fn register_key_for_node(node: &Node, lifecycle: &Lifecycle) -> Option<String> {
     if !node.semantic {
         return None;
@@ -1843,15 +1856,88 @@ fn register_value_for_node(node: &Node) -> String {
     }
 }
 
-fn import_account_fields_empty(publication: &Publication) -> bool {
-    publication.authority == Authority::None
-        && publication.controller.is_none()
-        && publication.claim.is_none()
+// One bit per record is enough to check own-history completeness. The
+// queue visits each same-issuer predecessor edge once. Missing, foreign,
+// and cyclic predecessors never enter the queue.
+fn complete_own_histories(nodes: &BTreeMap<String, Node>) -> std::collections::HashSet<&str> {
+    use std::collections::{HashMap, HashSet};
+    let mut pending = HashMap::with_capacity(nodes.len());
+    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut ready = Vec::new();
+    for (id, node) in nodes {
+        if node.previous.is_empty() {
+            ready.push(id.as_str());
+        } else {
+            pending.insert(id.as_str(), node.previous.len());
+            for predecessor in &node.previous {
+                if nodes
+                    .get(predecessor)
+                    .is_some_and(|prev| prev.issuer == node.issuer)
+                {
+                    dependents.entry(predecessor).or_default().push(id);
+                }
+            }
+        }
+    }
+    let mut complete = HashSet::with_capacity(nodes.len());
+    while let Some(id) = ready.pop() {
+        complete.insert(id);
+        for child in dependents.get(id).into_iter().flatten() {
+            let left = pending.get_mut(child).unwrap();
+            *left -= 1;
+            if *left == 0 {
+                ready.push(child);
+            }
+        }
+    }
+    complete
+}
+
+fn keys_reaching<'a>(
+    successor: &'a BTreeMap<String, String>,
+    seed: impl Iterator<Item = &'a str>,
+) -> std::collections::HashSet<&'a str> {
+    use std::collections::{HashMap, HashSet};
+    let mut predecessors: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (key, next) in successor {
+        predecessors.entry(next).or_default().push(key);
+    }
+    let mut ready: Vec<_> = seed.collect();
+    let mut visited = HashSet::new();
+    while let Some(key) = ready.pop() {
+        if visited.insert(key) {
+            ready.extend(predecessors.get(key).into_iter().flatten().copied());
+        }
+    }
+    visited
+}
+
+fn live_native_keys(lifecycle: &Lifecycle) -> std::collections::HashSet<&str> {
+    keys_reaching(
+        &lifecycle.successor,
+        lifecycle
+            .key_actor
+            .keys()
+            .map(String::as_str)
+            .filter(|key| {
+                !lifecycle.retired.contains(*key) && !lifecycle.compromised.contains(*key)
+            }),
+    )
+}
+
+fn publication_has_no_account_effects(publication: &Publication) -> bool {
+    publication.claim.is_none()
         && publication.observations.is_empty()
-        && publication.status_frontier.is_empty()
         && publication.deciding_claim.is_none()
         && publication.controller_candidates.is_empty()
         && publication.missing.is_empty()
+}
+
+fn import_account_fields_empty(publication: &Publication) -> bool {
+    publication.authority == Authority::None
+        && publication.controller.is_none()
+        && publication.status_frontier.is_empty()
+        && publication_has_no_account_effects(publication)
 }
 
 fn valid_saved_state(
@@ -1992,6 +2078,17 @@ fn check_saved_state(
         }
     }
 
+    if let Some(bytes) = saved.ancestry_bytes {
+        if bytes > super::ancestors::ancestry_cap(nodes.len()) || bytes % 8 != 0 {
+            return Err("ancestry_bytes_invalid");
+        }
+    }
+    // The whole refusal carries no derived rows.
+    if resource_refused {
+        return Ok(());
+    }
+    let complete = complete_own_histories(nodes);
+
     // Receipts must match nodes.
     if !resource_refused && saved.evaluation.receipts.len() != nodes.len() {
         return Err("receipts_len");
@@ -2025,8 +2122,23 @@ fn check_saved_state(
                 return Err("receipt_reason");
             }
         }
-        if !resource_refused && receipt.reasons.contains("invalid_action") != !node.semantic {
-            return Err("receipt_invalid_action");
+        if receipt.reasons.contains("invalid_action") != !node.semantic
+            || receipt.reasons.contains("own_history_pending")
+                != (node.semantic && !complete.contains(id.as_str()))
+            || receipt.reasons.contains("body_unavailable")
+                != (node.semantic
+                    && node.body.is_none()
+                    && matches!(
+                        node.kind.as_str(),
+                        "definition.publish"
+                            | "rafsi.publish"
+                            | "view.publish"
+                            | "identity.profile"
+                            | "account.observe"
+                    ))
+            || (!node.semantic && receipt.interpretation != Interpretation::Inert)
+        {
+            return Err("receipt_record_fields");
         }
         if !resource_refused
             && node.semantic
@@ -2069,62 +2181,49 @@ fn check_saved_state(
             return Err("policy_history_selected");
         }
     }
-    if saved.evaluation.policies.len() != saved.evaluation.policy_history.len() {
-        return Err("policies_len");
-    }
-    let mut history_digests: BTreeMap<String, usize> = BTreeMap::new();
+    let mut policy_ids = vec![saved.options.selected_view.clone()];
+    let mut visited = std::collections::HashSet::new();
+    let mut policies = saved.evaluation.policies.iter();
+    let mut policy_count = 0;
     let mut missing_policy_parent = false;
-    for (vid, pol) in &saved.evaluation.policy_history {
-        let Some(view_node) = nodes
-            .get(vid)
+    while let Some(id) = policy_ids.pop() {
+        if !visited.insert(id.clone()) {
+            continue;
+        }
+        let Some(node) = nodes
+            .get(&id)
             .filter(|n| n.semantic && n.kind == "view.publish")
         else {
-            return Err("policy_history_entry");
+            missing_policy_parent |= id != saved.options.selected_view;
+            continue;
         };
-        if view_node.body.as_ref() != Some(pol) {
+        let Some(body) = node.body.as_ref() else {
+            missing_policy_parent |= id != saved.options.selected_view;
+            continue;
+        };
+        if policies.next() != Some(body) || saved.evaluation.policy_history.get(&id) != Some(body) {
             return Err("policy_history_entry");
         }
-        for parent_view in view_node
-            .action
-            .view()
-            .index("parents")
-            .as_array()
-            .into_iter()
-            .flatten()
-        {
-            let Some(parent_id) = parent_view.as_str() else {
-                missing_policy_parent = true;
-                continue;
-            };
-            if !saved.evaluation.policy_history.contains_key(parent_id) {
-                missing_policy_parent = true;
-            }
-        }
-        let digest = compact_value_digest(pol)?;
-        *history_digests.entry(digest).or_insert(0) += 1;
+        policy_count += 1;
+        policy_ids.extend(
+            node.action
+                .view()
+                .index("parents")
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|parent| parent.as_str().map(str::to_owned)),
+        );
     }
-    if !resource_refused
-        && saved.evaluation.policy.is_some()
-        && saved
+    if policies.next().is_some()
+        || policy_count != saved.evaluation.policy_history.len()
+        || saved
             .evaluation
             .reasons
             .contains("policy_ancestry_unavailable")
             != missing_policy_parent
     {
-        return Err("policy_parent_missing");
-    }
-    for pol in &saved.evaluation.policies {
-        let digest = compact_value_digest(pol)?;
-        let Some(count) = history_digests.get_mut(&digest) else {
-            return Err("policies_entry");
-        };
-        if *count == 0 {
-            return Err("policies_entry");
-        }
-        *count -= 1;
-    }
-    if history_digests.values().any(|&count| count != 0) {
-        return Err("policies_entry");
+        return Err("policy_history");
     }
     if !resource_refused {
         if let Some(pol) = &saved.evaluation.policy {
@@ -2209,16 +2308,35 @@ fn check_saved_state(
     }
 
     // Lifecycle cross-checks.
-    let mut transfer_issuers = BTreeSet::new();
-    let mut compromise_issuers = BTreeSet::new();
-    let mut transfer_edges: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
-    let mut accept_edges: BTreeSet<(String, String)> = BTreeSet::new();
+    let lifecycle = &saved.evaluation.lifecycle;
+    let mut complete_transfers: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
+    let mut root_nodes: std::collections::HashMap<&str, Vec<&Node>> =
+        std::collections::HashMap::new();
+    let mut issuers = std::collections::HashSet::new();
+    let mut required_compromises = std::collections::HashSet::new();
+    let mut possible_compromises = std::collections::HashSet::new();
+    let mut required_pending_cutoffs = std::collections::HashSet::new();
+    let mut possible_pending_cutoffs = std::collections::HashSet::new();
     let mut register_node_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut observed_claims_by_account: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut account_sets_by_key = std::collections::HashMap::new();
+    let mut incomplete_issuers = std::collections::HashSet::new();
     let mut expected_accounts = std::collections::HashSet::new();
+    let mut status_record_counts = std::collections::HashMap::new();
+    let mut same_issuer_status = std::collections::HashMap::new();
     let has_policy = saved.evaluation.policy.is_some();
     let mut all_nodes_root_no_accept = true;
     for node in nodes.values() {
+        issuers.insert(node.issuer.as_str());
+        if !complete.contains(node.id.as_str()) {
+            incomplete_issuers.insert(node.issuer.as_str());
+        }
+        if node.previous.is_empty() {
+            root_nodes
+                .entry(node.issuer.as_str())
+                .or_default()
+                .push(node);
+        }
         if !node.previous.is_empty() || (node.semantic && node.kind == "identity.accept") {
             all_nodes_root_no_accept = false;
         }
@@ -2230,23 +2348,67 @@ fn check_saved_state(
                 expected_accounts.insert(account.token());
             }
             match node.kind.as_str() {
-                "identity.transfer" => {
-                    transfer_issuers.insert(node.issuer.as_str());
-                    let succ_view = node.action.view().index("successor");
-                    if let Some(succ) = succ_view.as_str() {
-                        transfer_edges
-                            .entry((node.issuer.clone(), succ.to_owned()))
-                            .or_default()
-                            .push(node.id.clone());
-                    }
+                "identity.transfer" if complete.contains(node.id.as_str()) => {
+                    complete_transfers
+                        .entry(node.issuer.as_str())
+                        .or_default()
+                        .push(node);
                 }
                 "identity.compromise" => {
-                    compromise_issuers.insert(node.issuer.as_str());
+                    let mut definitely_valid = true;
+                    let mut possible = true;
+                    let mut pending = !complete.contains(node.id.as_str());
+                    for safe in node
+                        .action
+                        .view()
+                        .index("safe")
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                    {
+                        let Some(safe) = safe.as_str() else { continue };
+                        pending |= !complete.contains(safe);
+                        if let Some(prior) = nodes.get(safe) {
+                            if prior.issuer != node.issuer || prior.id == node.id {
+                                possible = false;
+                                break;
+                            }
+                            // A direct predecessor is in the own closure.
+                            // Other local IDs require a reachability test.
+                            definitely_valid &= complete.contains(node.id.as_str())
+                                && node.previous.binary_search(&prior.id).is_ok();
+                        }
+                    }
+                    if possible {
+                        possible_compromises.insert(node.issuer.as_str());
+                        if definitely_valid {
+                            required_compromises.insert(node.issuer.as_str());
+                        }
+                        if pending {
+                            possible_pending_cutoffs.insert(node.issuer.as_str());
+                            if definitely_valid {
+                                required_pending_cutoffs.insert(node.issuer.as_str());
+                            }
+                        }
+                    }
                 }
-                "identity.accept" if node.previous.is_empty() => {
-                    let tid_view = node.action.view().index("transfer");
-                    if let Some(tid) = tid_view.as_str() {
-                        accept_edges.insert((node.issuer.clone(), tid.to_owned()));
+                "status.set" => {
+                    if let Some(target) = node.action.view().index("target").as_str()
+                        && let Some(publication) = nodes.get(target)
+                    {
+                        *status_record_counts
+                            .entry(publication.id.as_str())
+                            .or_insert(0usize) += 1;
+                        if publication.issuer == node.issuer {
+                            same_issuer_status.insert(publication.id.as_str(), node.id.as_str());
+                        }
+                    }
+                }
+                "account.set" if has_policy => {
+                    if let Some(account) = accounts::account(node) {
+                        *account_sets_by_key
+                            .entry((account.token(), node.issuer.as_str()))
+                            .or_insert(0usize) += 1;
                     }
                 }
                 "account.observe" => {
@@ -2271,49 +2433,94 @@ fn check_saved_state(
             }
         }
     }
-    if !resource_refused || !saved.evaluation.lifecycle.key_actor.is_empty() {
-        for node in nodes.values() {
-            if !saved
-                .evaluation
-                .lifecycle
-                .key_actor
-                .contains_key(&node.issuer)
-            {
-                return Err("lifecycle_issuer_actor");
-            }
-            if node.previous.iter().any(|p| !nodes.contains_key(p)) {
-                let Some(actor) = saved.evaluation.lifecycle.key_actor.get(&node.issuer) else {
-                    return Err("lifecycle_suspended_actor");
-                };
-                if !saved
-                    .evaluation
-                    .lifecycle
-                    .suspended
-                    .get(actor)
-                    .is_some_and(|set| set.contains(&node.id))
-                {
-                    return Err("lifecycle_suspended_missing");
-                }
-            }
-        }
+    if lifecycle.key_actor.len() != issuers.len()
+        || issuers
+            .iter()
+            .any(|key| !lifecycle.key_actor.contains_key(*key))
+    {
+        return Err("lifecycle_issuer_keys");
     }
-    for key in &saved.evaluation.lifecycle.retired {
-        if !transfer_issuers.contains(key.as_str()) {
-            return Err("lifecycle_retired");
-        }
-    }
-    for key in &saved.evaluation.lifecycle.compromised {
-        if !compromise_issuers.contains(key.as_str()) {
-            return Err("lifecycle_compromised");
-        }
-    }
-    for (key, actor) in &saved.evaluation.lifecycle.key_actor {
-        if !saved
-            .evaluation
-            .lifecycle
-            .groups
+    for node in nodes.values() {
+        let actor = &lifecycle.key_actor[&node.issuer];
+        let suspended = lifecycle
+            .suspended
             .get(actor)
-            .is_some_and(|g| g.contains(key))
+            .is_some_and(|set| set.contains(&node.id));
+        let incomplete = !complete.contains(node.id.as_str());
+        if ((incomplete || required_pending_cutoffs.contains(node.issuer.as_str())) && !suspended)
+            || (suspended
+                && !incomplete
+                && !possible_pending_cutoffs.contains(node.issuer.as_str()))
+        {
+            return Err("lifecycle_suspended_history");
+        }
+    }
+    if lifecycle.retired.len() != complete_transfers.len()
+        || lifecycle
+            .retired
+            .iter()
+            .any(|key| !complete_transfers.contains_key(key.as_str()))
+    {
+        return Err("lifecycle_retired");
+    }
+    if lifecycle
+        .compromised
+        .iter()
+        .any(|key| !possible_compromises.contains(key.as_str()))
+        || required_compromises
+            .iter()
+            .any(|key| !lifecycle.compromised.contains(*key))
+    {
+        return Err("lifecycle_compromised");
+    }
+    let mut successors = BTreeMap::new();
+    for (&key, transfers) in &complete_transfers {
+        let [transfer] = transfers.as_slice() else {
+            continue;
+        };
+        if lifecycle.compromised.contains(key) {
+            continue;
+        }
+        let successor = transfer.action.view().index("successor");
+        let successor = successor.as_str().unwrap_or_default();
+        if successor != key
+            && let Some([acceptance]) = root_nodes.get(successor).map(Vec::as_slice)
+            && acceptance.semantic
+            && acceptance.kind == "identity.accept"
+            && acceptance.action.view().index("transfer") == transfer.id.as_str()
+        {
+            successors.insert(key.to_owned(), successor.to_owned());
+        }
+    }
+    let terminals = issuers
+        .iter()
+        .copied()
+        .filter(|key| !successors.contains_key(*key));
+    let acyclic = keys_reaching(&successors, terminals);
+    if lifecycle.successor.len()
+        != successors
+            .keys()
+            .filter(|key| acyclic.contains(key.as_str()))
+            .count()
+        || successors.iter().any(|(key, next)| {
+            lifecycle.successor.get(key) != acyclic.contains(key.as_str()).then_some(next)
+        })
+    {
+        return Err("lifecycle_successor");
+    }
+    let predecessors: std::collections::HashSet<_> =
+        lifecycle.successor.values().map(String::as_str).collect();
+    for (key, actor) in &lifecycle.key_actor {
+        let root = !predecessors.contains(key.as_str());
+        if (root && key != actor)
+            || lifecycle
+                .successor
+                .get(key)
+                .is_some_and(|next| lifecycle.key_actor.get(next) != Some(actor))
+            || !lifecycle
+                .groups
+                .get(actor)
+                .is_some_and(|group| group.contains(key))
         {
             return Err("lifecycle_key_in_group");
         }
@@ -2337,21 +2544,6 @@ fn check_saved_state(
     {
         return Err("lifecycle_group_totals");
     }
-    for (old_key, new_key) in &saved.evaluation.lifecycle.successor {
-        if saved.evaluation.lifecycle.key_actor.get(old_key)
-            != saved.evaluation.lifecycle.key_actor.get(new_key)
-            || !saved.evaluation.lifecycle.retired.contains(old_key)
-            || saved.evaluation.lifecycle.compromised.contains(old_key)
-            || !transfer_edges
-                .get(&(old_key.clone(), new_key.clone()))
-                .is_some_and(|tids| {
-                    tids.iter()
-                        .any(|tid| accept_edges.contains(&(new_key.clone(), tid.clone())))
-                })
-        {
-            return Err("lifecycle_successor_actor");
-        }
-    }
     for (actor, missing) in &saved.evaluation.lifecycle.suspended {
         if missing.is_empty() || !saved.evaluation.lifecycle.groups.contains_key(actor) {
             return Err("lifecycle_suspended_entry");
@@ -2367,7 +2559,6 @@ fn check_saved_state(
     }
 
     // Publications cross-checks.
-    let lifecycle = &saved.evaluation.lifecycle;
     let status_authority = saved
         .evaluation
         .policy
@@ -2379,6 +2570,33 @@ fn check_saved_state(
         .count();
     if !resource_refused && saved.evaluation.publications.len() != expected_pub_count {
         return Err("publications_len");
+    }
+    let live_native = live_native_keys(lifecycle);
+    let imports = saved
+        .evaluation
+        .policy
+        .as_ref()
+        .map(|policy| ImportEntries::new(policy, &saved.evaluation.selections));
+    let mut expected_eligibility = BTreeMap::new();
+    let mut publication_reasons = BTreeMap::new();
+    for (id, p) in &saved.evaluation.publications {
+        let node = nodes
+            .get(id)
+            .filter(|_| p.id == *id)
+            .ok_or("publication_node")?;
+        let (eligible, reasons) =
+            publication_eligibility(node, p.imported, p.source.as_deref(), imports.as_ref());
+        publication_reasons.insert(id.as_str(), reasons);
+        expected_eligibility.insert(id.clone(), eligible);
+    }
+    let source_conflicts: std::collections::HashSet<_> = conflicting_selections(
+        &saved.evaluation,
+        |p| &expected_eligibility[&p.id],
+        |issuer| saved_actor(lifecycle, issuer).to_owned(),
+    )
+    .collect();
+    for id in &source_conflicts {
+        expected_eligibility.insert(id.clone(), Eligibility::Unknown);
     }
     for (id, p) in &saved.evaluation.publications {
         // Checkpoints leave the contributions out, and restore sets
@@ -2403,37 +2621,16 @@ fn check_saved_state(
         {
             return Err("publication_fields");
         }
-        for reason in &p.reasons {
-            if !matches!(
-                reason.as_str(),
-                "resource_unavailable"
-                    | "view_unavailable"
-                    | "body_unavailable"
-                    | "own_history_pending"
-                    | "cutoff_pending"
-                    | "outside_retained_history"
-                    | "incomplete_group"
-                    | "source_attribution_pending"
-                    | "source_attribution_unavailable"
-                    | "import_selection_unavailable"
-                    | "source_selection_conflict"
-                    | "claim_pending"
-                    | "binding_unavailable"
-                    | "observation_pending"
-                    | "observation_body_invalid"
-                    | "historical_guard"
-                    | "policy_history_unavailable"
-                    | "witness_history_incomplete"
-                    | "policy_ancestry_unavailable"
-                    | "controller_dispute"
-                    | "current_authority_lost"
-                    | "carry_history_pending"
-                    | "carry_or_authority_pending"
-                    | "controller_authority_uncertain"
-                    | "contested_status_authority"
-            ) {
-                return Err("publication_reason");
-            }
+        let source_conflict = source_conflicts.contains(id);
+        let mut expected_reasons = publication_reasons.remove(id.as_str()).unwrap();
+        if source_conflict {
+            expected_reasons.insert("source_selection_conflict".into());
+        }
+        if p.imported && node.body.is_none() {
+            expected_reasons.insert("source_attribution_unavailable".into());
+        }
+        if p.imported && p.kind == "definition.publish" && !has_policy {
+            expected_reasons.insert("view_unavailable".into());
         }
         let actor = saved_actor(lifecycle, &p.issuer);
         let mut same_actor = true;
@@ -2501,27 +2698,47 @@ fn check_saved_state(
             {
                 return Err("publication_native_import_fields");
             }
-            let expected_native_controller = if p.authority == Authority::Native {
-                saved
-                    .evaluation
-                    .lifecycle
-                    .key_actor
-                    .get(&p.issuer)
-                    .map(String::as_str)
-            } else {
-                None
-            };
-            if p.controller.as_deref() != expected_native_controller {
-                return Err("publication_native_controller");
+            if !publication_has_no_account_effects(p) {
+                return Err("publication_native_account_fields");
             }
             let suspended = lifecycle.suspended.contains_key(actor);
-            let expected_status = if suspended || !same_actor {
+            let contested = !suspended && !same_actor;
+            let expected_authority = if suspended || contested {
+                Authority::Uncertain
+            } else if live_native.contains(p.issuer.as_str()) {
+                Authority::Native
+            } else {
+                Authority::None
+            };
+            let expected_controller = (expected_authority == Authority::Native).then_some(actor);
+            if p.authority != expected_authority || p.controller.as_deref() != expected_controller {
+                return Err("publication_native_authority");
+            }
+            if suspended {
+                expected_reasons.insert("incomplete_group".into());
+            }
+            if contested {
+                expected_reasons.insert("contested_status_authority".into());
+            }
+            let expected_status = if suspended || contested {
                 Status::Uncertain
             } else {
                 frontier_status
             };
             if p.status != expected_status || (suspended && !p.status_frontier.is_empty()) {
                 return Err("publication_native_status");
+            }
+            // With no local cutoff, an unsuspended same-issuer command
+            // always enters the frontier's candidate set.
+            if !suspended
+                && !complete_transfers.contains_key(p.issuer.as_str())
+                && !lifecycle.compromised.contains(p.issuer.as_str())
+                && let Some(&command) = same_issuer_status.get(id.as_str())
+                && (p.status_frontier.is_empty()
+                    || (status_record_counts[id.as_str()] == 1
+                        && !p.status_frontier.contains(command)))
+            {
+                return Err("publication_native_frontier");
             }
         } else if node.body.is_none() {
             // A fresh evaluation reads the source and the account from
@@ -2571,7 +2788,6 @@ fn check_saved_state(
                 None
             };
             let controls_status = status_authority && p.kind == "definition.publish";
-            let source_conflict = p.reasons.contains("source_selection_conflict");
             if let Some(state) = account.filter(|_| controls_status) {
                 if p.claim != state.controller
                     || p.controller != state.controller_identity
@@ -2580,33 +2796,114 @@ fn check_saved_state(
                 {
                     return Err("publication_account_fields");
                 }
-                let expected_deciding = if p.controller_candidates.len() == 1 {
-                    p.status_frontier
-                        .iter()
-                        .next()
-                        .and_then(|fid| nodes.get(fid))
-                        .and_then(|n| n.action.view().index("claim").as_str().map(str::to_owned))
+                let pending = p.reasons.contains("carry_or_authority_pending");
+                let uncertain = p.reasons.contains("controller_authority_uncertain");
+                let authority = if uncertain {
+                    Authority::Uncertain
+                } else if state.commands {
+                    Authority::SourceAccount
+                } else {
+                    Authority::None
+                };
+                if p.authority != authority
+                    || (pending && uncertain)
+                    || (state.unavailable
+                        && (pending
+                            || uncertain
+                            || !p.status_frontier.is_empty()
+                            || p.missing != state.missing))
+                    || (!state.unavailable
+                        && ((!pending && !p.missing.is_empty())
+                            || !p.missing.is_subset(&state.missing)))
+                {
+                    return Err("publication_account_effects");
+                }
+                if state.unavailable {
+                    expected_reasons.extend(state.reasons.iter().cloned());
+                }
+                if !state.commands && state.controller.is_some() {
+                    expected_reasons.insert("current_authority_lost".into());
+                }
+                if state.disputed {
+                    expected_reasons.insert("controller_dispute".into());
+                }
+                if pending {
+                    expected_reasons.insert("carry_history_pending".into());
+                    expected_reasons.insert("carry_or_authority_pending".into());
+                }
+                if uncertain {
+                    expected_reasons.insert("controller_authority_uncertain".into());
+                }
+                let mut deciding_periods = std::collections::HashSet::new();
+                let mut direct_uncertainty = false;
+                for fid in &p.status_frontier {
+                    let frontier_node = &nodes[fid];
+                    let claim = frontier_node.action.view().index("claim");
+                    let claim = claim.as_str().ok_or("publication_frontier_claim")?;
+                    if !state.chain.contains(claim) {
+                        return Err("publication_frontier_claim");
+                    }
+                    let (claim_id, claim_node) = nodes
+                        .get_key_value(claim)
+                        .ok_or("publication_frontier_claim")?;
+                    deciding_periods.insert(claim_id.as_str());
+                    direct_uncertainty |= claim_node.issuer != frontier_node.issuer;
+                }
+                let expected_deciding = if !pending && p.controller_candidates.len() == 1 {
+                    if deciding_periods.len() > 1 {
+                        return Err("publication_deciding_claim");
+                    }
+                    deciding_periods.iter().next().copied()
                 } else {
                     None
                 };
-                if p.deciding_claim != expected_deciding {
+                if p.deciding_claim.as_deref() != expected_deciding {
                     return Err("publication_deciding_claim");
                 }
-                let expected_status = if source_conflict
-                    || state.unavailable
-                    || p.reasons.contains("carry_or_authority_pending")
+                let standalone = !state.unavailable
+                    && state.candidates.iter().all(|claim| {
+                        nodes
+                            .get(claim)
+                            .is_some_and(|node| node.action.view().index("previous").is_null())
+                    });
+                if standalone
+                    && !deciding_periods
+                        .iter()
+                        .all(|claim| state.candidates.contains(*claim))
                 {
+                    return Err("publication_frontier_candidates");
+                }
+                // For a claim with no carry and no local cutoff, a deciding
+                // command from another key makes that claim uncertain.
+                let simple_claims = standalone
+                    && state.candidates.iter().all(|claim| {
+                        let key = nodes[claim].issuer.as_str();
+                        !complete_transfers.contains_key(key)
+                            && !lifecycle.compromised.contains(key)
+                            && !lifecycle
+                                .suspended
+                                .contains_key(saved_actor(lifecycle, key))
+                    });
+                if simple_claims && (pending || uncertain != direct_uncertainty) {
+                    return Err("publication_account_decision_reasons");
+                }
+                let expected_status = if source_conflict || state.unavailable || pending {
                     Status::Unavailable
-                } else if p.reasons.contains("controller_authority_uncertain") {
+                } else if uncertain {
                     Status::Uncertain
+                } else if standalone
+                    && frontier_status == Status::Deprecated
+                    && deciding_periods.len() < state.candidates.len()
+                {
+                    // A standalone candidate with no frontier decides Active.
+                    Status::Conflicted
                 } else {
                     frontier_status
                 };
-                // A candidate with no command contributes Active. With
-                // several candidates, the union of their frontiers omits
-                // those empty decisions.
-                let can_be_conflicted =
-                    expected_status == Status::Deprecated && p.controller_candidates.len() > 1;
+                // A carried frontier can belong to multiple candidates.
+                let can_be_conflicted = !standalone
+                    && expected_status == Status::Deprecated
+                    && p.controller_candidates.len() > 1;
                 if p.status != expected_status
                     && !(can_be_conflicted && p.status == Status::Conflicted)
                 {
@@ -2627,6 +2924,143 @@ fn check_saved_state(
                 }
             }
         }
+        if p.reasons != expected_reasons {
+            return Err("publication_reasons");
+        }
+    }
+
+    for (id, node) in nodes {
+        if !node.semantic || register_key_for_node(node, lifecycle).is_some() {
+            continue;
+        }
+        let receipt = &saved.evaluation.receipts[id];
+        let own_pending = !complete.contains(id.as_str());
+        let publication = saved.evaluation.publications.get(id);
+        let group_suspended = lifecycle
+            .suspended
+            .contains_key(saved_actor(lifecycle, &node.issuer));
+        let outside = receipt.reasons.contains("outside_retained_history");
+        let cutoff_pending = receipt.reasons.contains("cutoff_pending");
+        let incomplete_group =
+            !own_pending && group_suspended && publication.is_none() && node.kind != "view.publish";
+        if receipt.reasons.contains("incomplete_group") != incomplete_group
+            || (outside
+                && (own_pending
+                    || (publication.is_none()
+                        && (incomplete_group || node.kind.starts_with("identity.")))
+                    || !(lifecycle.retired.contains(&node.issuer)
+                        || lifecycle.compromised.contains(&node.issuer))))
+            || (cutoff_pending
+                && (publication.is_none()
+                    || own_pending
+                    || outside
+                    || !possible_pending_cutoffs.contains(node.issuer.as_str())))
+            || (publication.is_some()
+                && !outside
+                && !own_pending
+                && !cutoff_pending
+                && required_pending_cutoffs.contains(node.issuer.as_str()))
+        {
+            return Err("receipt_history");
+        }
+        let mut reasons = BTreeSet::new();
+        let mut interpretation = if own_pending {
+            reasons.insert("own_history_pending".to_owned());
+            Interpretation::Pending
+        } else if incomplete_group {
+            reasons.insert("incomplete_group".into());
+            Interpretation::Suspended
+        } else if outside {
+            reasons.insert("outside_retained_history".into());
+            Interpretation::Inert
+        } else if cutoff_pending {
+            reasons.insert("cutoff_pending".into());
+            Interpretation::Suspended
+        } else {
+            Interpretation::Effective
+        };
+        if receipt.reasons.contains("body_unavailable") {
+            reasons.insert("body_unavailable".into());
+            interpretation = Interpretation::Unavailable;
+        }
+        if let Some(publication) = publication {
+            for state in publication
+                .lineage
+                .values()
+                .filter(|state| state.as_str() != "resolved")
+            {
+                reasons.insert(format!("lineage_{state}"));
+            }
+        }
+        if matches!(node.kind.as_str(), "status.set" | "import.status") {
+            let action = node.action.view();
+            let target = action.index("target");
+            let target = target.as_str().unwrap_or_default();
+            if node.kind == "import.status" {
+                if !has_policy {
+                    reasons.insert("view_unavailable".into());
+                    interpretation = Interpretation::Unavailable;
+                } else if !status_authority {
+                    reasons.insert("account_authority_disabled".into());
+                    interpretation = Interpretation::Inert;
+                } else {
+                    let claim = action.index("claim");
+                    let account = claim
+                        .as_str()
+                        .and_then(|id| nodes.get(id))
+                        .and_then(accounts::account);
+                    let plausible = account.is_some()
+                        && saved.evaluation.publications.get(target).is_some_and(|p| {
+                            p.imported && p.kind == "definition.publish" && p.account == account
+                        });
+                    // Full authorization needs the command's structural past.
+                    if !plausible || receipt.reasons.contains("unauthorized_import_status") {
+                        reasons.insert("unauthorized_import_status".into());
+                        interpretation = Interpretation::Inert;
+                    }
+                }
+            }
+            match nodes.get(target) {
+                None => {
+                    reasons.insert("target_pending".into());
+                    interpretation = Interpretation::Pending;
+                }
+                Some(target) => {
+                    let invalid = if node.kind == "import.status" {
+                        !target.semantic
+                            || target.kind != "definition.publish"
+                            || target.action.view().index("origin") != "import"
+                    } else {
+                        !target.semantic
+                            || !matches!(target.kind.as_str(), "definition.publish" | "rafsi.publish")
+                            || target.action.view().index("origin") != "native"
+                            // Cross-issuer connectivity needs structural ancestry.
+                            || (target.issuer != node.issuer && receipt.reasons.contains("invalid_target"))
+                    };
+                    if invalid {
+                        reasons.insert("invalid_target".into());
+                        interpretation = Interpretation::Inert;
+                    }
+                }
+            }
+        }
+        if receipt.reasons != reasons || receipt.interpretation != interpretation {
+            return Err("receipt_interpretation");
+        }
+    }
+
+    for (id, eligibility) in
+        rafsi_eligibilities(&saved.evaluation, |p| &expected_eligibility[&p.id])
+    {
+        expected_eligibility.insert(id, eligibility);
+    }
+    if saved
+        .evaluation
+        .publications
+        .iter()
+        .any(|(id, p)| p.eligible != expected_eligibility[id])
+    {
+        return Err("publication_eligibility");
     }
 
     // Accounts cross-checks.
@@ -2766,13 +3200,17 @@ fn check_saved_state(
         {
             return Err("account_controller_in_chain");
         }
+        let mut previous_certificate = None;
         for cert in &state.certificates {
-            if !saved.evaluation.policy_history.contains_key(&cert.policy)
+            let key = (&cert.policy, &cert.claim);
+            if previous_certificate.is_some_and(|previous| previous >= key)
+                || !saved.evaluation.policy_history.contains_key(&cert.policy)
                 || !state.historical.contains(&cert.claim)
                 || cert.observations.is_empty()
             {
                 return Err("account_certificate");
             }
+            previous_certificate = Some(key);
             for oid in &cert.observations {
                 let Some(onode) = nodes.get(oid) else {
                     return Err("account_certificate_obs");
@@ -2780,6 +3218,9 @@ fn check_saved_state(
                 let oa = onode.action.view();
                 if !onode.semantic
                     || onode.kind != "account.observe"
+                    || onode.body.is_none()
+                    || !complete.contains(oid.as_str())
+                    || oa.index("result") != "present"
                     || oa.index("origin").as_str() != Some(state.account.origin.as_str())
                     || oa.index("account").as_u64() != Some(state.account.account)
                     || oa.index("claim").as_str() != Some(cert.claim.as_str())
@@ -2803,6 +3244,54 @@ fn check_saved_state(
         if state.commands && state.controller.is_none() {
             return Err("account_commands_without_controller");
         }
+        if let Some(controller) = &state.controller {
+            let claim = nodes.get(controller).ok_or("account_controller_node")?;
+            let issuer = claim.issuer.as_str();
+            if state.commands
+                && (!live_native.contains(issuer) || !complete.contains(controller.as_str()))
+            {
+                return Err("account_commands_history");
+            }
+            if !lifecycle.retired.contains(issuer) && !lifecycle.compromised.contains(issuer) {
+                let incomplete = incomplete_issuers.contains(issuer);
+                let only_claim = account_sets_by_key.get(&(token.clone(), issuer)) == Some(&1);
+                if (incomplete && state.commands) || (!incomplete && only_claim && !state.commands)
+                {
+                    return Err("account_commands");
+                }
+            }
+        }
+        let expected_observations: BTreeSet<_> = state
+            .controller
+            .iter()
+            .flat_map(|_| {
+                state
+                    .observation_evidence
+                    .values()
+                    .filter_map(|ids| ids.first())
+            })
+            .collect();
+        if !state.current_observations.iter().eq(expected_observations)
+            || state.current_observations.iter().any(|id| {
+                nodes.get(id).is_none_or(|node| {
+                    node.body.is_none()
+                        || !complete.contains(id.as_str())
+                        || lifecycle
+                            .suspended
+                            .contains_key(saved_actor(lifecycle, &node.issuer))
+                })
+            })
+        {
+            return Err("account_current_observations");
+        }
+        if state
+            .missing
+            .iter()
+            .any(|id| nodes.get(id).is_some_and(|node| node.body.is_some()))
+            || state.reasons.contains("controller_dispute") != state.disputed
+        {
+            return Err("account_reason_or_missing");
+        }
         let expected_identity = if state.commands {
             state
                 .controller
@@ -2817,10 +3306,134 @@ fn check_saved_state(
         }
     }
 
+    let evaluation = &saved.evaluation;
+    let mut assignments = None;
+    let mut bridge_sources = None;
+    let mut eligible_register_nodes = std::collections::HashSet::new();
+    let mut expected_register_keys = std::collections::HashSet::new();
+    for (id, node) in nodes {
+        let Some(key) = register_key_for_node(node, lifecycle) else {
+            continue;
+        };
+        let receipt = &evaluation.receipts[id];
+        let suspended = lifecycle
+            .suspended
+            .contains_key(saved_actor(lifecycle, &node.issuer));
+        let history_complete = complete.contains(id.as_str());
+        let local_cutoff = lifecycle.retired.contains(&node.issuer)
+            || lifecycle.compromised.contains(&node.issuer);
+        let outside = receipt.reasons.contains("outside_retained_history");
+        if receipt.reasons.contains("incomplete_group") != (history_complete && suspended)
+            || (outside
+                && (!history_complete
+                    || suspended
+                    || !local_cutoff
+                    || node.kind == "identity.profile"))
+        {
+            return Err("receipt_register_history");
+        }
+        let action = node.action.view();
+        let target = action.index("target");
+        let target = target.as_str().unwrap_or_default();
+        let target_reason = match node.kind.as_str() {
+            "judgment.set" if target.starts_with("jvr1:") => {
+                let index =
+                    assignments.get_or_insert_with(|| assignment_index(&evaluation.publications));
+                (!index.contains_key(target)).then_some("target_pending")
+            }
+            "judgment.set" | "bridge.set" => match nodes.get(target) {
+                None => Some("target_pending"),
+                Some(n)
+                    if !n.semantic
+                        || !matches!(n.kind.as_str(), "definition.publish" | "rafsi.publish") =>
+                {
+                    Some("invalid_target")
+                }
+                Some(n) if node.kind == "bridge.set" => {
+                    let n_action = n.action.view();
+                    let actor = saved_actor(lifecycle, &node.issuer);
+                    if n.kind != "definition.publish"
+                        || n_action.index("origin") != "native"
+                        || actor != saved_actor(lifecycle, &n.issuer)
+                    {
+                        Some("invalid_target")
+                    } else if action.index("value") == "managed" {
+                        let index = bridge_sources.get_or_insert_with(|| {
+                            bridge_source_index(evaluation, |issuer| {
+                                saved_actor(lifecycle, issuer).into()
+                            })
+                        });
+                        let key = BridgeKey {
+                            source_record: action.index("source_definition").as_u64(),
+                            word: n_action.index("word").as_str().unwrap_or_default().into(),
+                            language: n_action.index("language").as_str().map(str::to_owned),
+                            origin: action.index("origin").as_str().unwrap_or_default().into(),
+                            actor: actor.into(),
+                        };
+                        (!index.contains_key(&key)).then_some("account_binding_unavailable")
+                    } else {
+                        None
+                    }
+                }
+                Some(_) => None,
+            },
+            _ => None,
+        };
+        for reason in [
+            "target_pending",
+            "invalid_target",
+            "account_binding_unavailable",
+        ] {
+            if receipt.reasons.contains(reason) != (target_reason == Some(reason)) {
+                return Err("receipt_register_target");
+            }
+        }
+        let initial_interpretation = if !history_complete {
+            Interpretation::Pending
+        } else if suspended {
+            Interpretation::Suspended
+        } else if outside {
+            Interpretation::Inert
+        } else {
+            Interpretation::Effective
+        };
+        let interpretation = match target_reason {
+            Some("invalid_target") => Interpretation::Inert,
+            Some(_) => Interpretation::Pending,
+            None if receipt.reasons.contains("body_unavailable") => Interpretation::Unavailable,
+            None => initial_interpretation,
+        };
+        let expected_reason_count = usize::from(!history_complete)
+            + usize::from(history_complete && suspended)
+            + usize::from(outside)
+            + usize::from(target_reason.is_some())
+            + usize::from(receipt.reasons.contains("body_unavailable"));
+        if receipt.interpretation != interpretation
+            || receipt.reasons.len() != expected_reason_count
+        {
+            return Err("receipt_register_interpretation");
+        }
+        if history_complete && !suspended && !outside && target_reason.is_none() {
+            eligible_register_nodes.insert(id.as_str());
+            // Profile receipts do not record retention. A cutoff can exclude
+            // an otherwise effective profile without leaving a receipt reason.
+            if node.kind != "identity.profile" || !local_cutoff {
+                expected_register_keys.insert(key);
+            }
+        }
+    }
+    if !expected_register_keys
+        .iter()
+        .all(|key| evaluation.registers.contains_key(key))
+    {
+        return Err("register_keys");
+    }
+
     // Registers, judgments, trust, and register counter cross-checks.
     let mut judgment_registers = 0usize;
     let mut trust_registers = 0usize;
     let mut total_maxima_work = 0usize;
+    let mut register_heads = 0;
     for ((key, reg), (&work, &member_work)) in saved.evaluation.registers.iter().zip(
         saved
             .register_maxima_work
@@ -2842,6 +3455,9 @@ fn check_saved_state(
         }
         let mut expected_values = BTreeSet::new();
         for head_id in &reg.heads {
+            if !eligible_register_nodes.contains(head_id.as_str()) {
+                return Err("register_head_excluded");
+            }
             let Some(hn) = nodes.get(head_id) else {
                 return Err("register_head_missing");
             };
@@ -2852,6 +3468,7 @@ fn check_saved_state(
             }
             expected_values.insert(register_value_for_node(hn));
         }
+        register_heads += reg.heads.len();
         if reg.values != expected_values {
             return Err("register_values");
         }
@@ -2897,18 +3514,19 @@ fn check_saved_state(
             trust_registers += 1;
         }
     }
-    let ancestry_cap = super::ancestors::ancestry_cap(nodes.len());
+    if all_nodes_root_no_accept
+        && lifecycle.retired.is_empty()
+        && lifecycle.compromised.is_empty()
+        && register_heads != eligible_register_nodes.len()
+    {
+        return Err("register_root_heads");
+    }
     if !resource_refused
         && total_maxima_work
             .checked_add(nodes.len().saturating_mul(2))
             .is_none_or(|min_work| min_work > saved.consumed_work)
     {
         return Err("register_work_exceeds_consumed");
-    }
-    if let Some(bytes) = saved.ancestry_bytes {
-        if bytes > ancestry_cap || bytes % 8 != 0 {
-            return Err("ancestry_bytes_invalid");
-        }
     }
     if saved.evaluation.judgments.values().any(BTreeMap::is_empty)
         || saved
@@ -2922,6 +3540,7 @@ fn check_saved_state(
     {
         return Err("registers_totals");
     }
+    let mut previous_trust_key = None;
     for rule in &saved.evaluation.trust {
         let Ok(scope) = serde_json::to_value(&rule.scope) else {
             return Err("trust_scope_json");
@@ -2938,9 +3557,14 @@ fn check_saved_state(
         let Some(reg) = saved.evaluation.registers.get(&trust_key) else {
             return Err("trust_register_missing");
         };
-        if reg.values != rule.values {
+        if reg.values != rule.values
+            || previous_trust_key
+                .as_ref()
+                .is_some_and(|previous| previous >= &trust_key)
+        {
             return Err("trust_register_values");
         }
+        previous_trust_key = Some(trust_key);
     }
 
     Ok(())
@@ -3454,6 +4078,10 @@ mod rebuild_tests {
     }
 
     const RESTORE_GAPS_BINDING: &str = "restore-gaps";
+
+    mod restore_review {
+        include!("incremental_restore_tests.rs");
+    }
 
     fn restore_gap_checkpoints(
         input: PreparedEvaluationInput,
@@ -7447,7 +8075,7 @@ mod rebuild_tests {
             format!("jve1:{:064x}", 500_006usize)
         );
 
-        let bridges = crate::bridge_source_index(graph, result);
+        let bridges = crate::bridge_source_index(result, |issuer| graph.actor(issuer));
         // Records 1 and 2 in English, and record 1 in French.
         assert_eq!(bridges.len(), 3);
         let mut ties = 0;
@@ -7614,7 +8242,7 @@ mod rebuild_tests {
         let full_json: Value = serde_json::from_slice(&full_bytes).unwrap();
         let result_json: Value = serde_json::from_slice(&result_bytes).unwrap();
         assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v12"));
-        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v12"));
+        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v13"));
         assert_eq!(full_json["record_count"], json!(1));
         assert_eq!(result_json["record_count"], json!(1));
         assert!(result_json.get("nodes").is_none());
