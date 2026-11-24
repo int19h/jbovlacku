@@ -51,6 +51,28 @@ struct SavedOptions<'a> {
     limits: &'a Limits,
 }
 
+// Checkpoints require every field. Evaluation inputs can use defaults.
+#[derive(Deserialize)]
+#[serde(remote = "EvaluationOptions", deny_unknown_fields)]
+struct CheckpointOptions {
+    selected_view: String,
+    import_selections: BTreeMap<String, Vec<String>>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    overlay: Option<std::rc::Rc<Value>>,
+    #[serde(deserialize_with = "CheckpointLimits::deserialize")]
+    limits: Limits,
+}
+
+#[derive(Deserialize)]
+#[serde(remote = "Limits", deny_unknown_fields)]
+struct CheckpointLimits {
+    #[serde(deserialize_with = "Option::deserialize")]
+    events: Option<usize>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    traversal: Option<usize>,
+    claim_depth: usize,
+}
+
 /// Retained authenticated input and its evaluated state.
 /// A fork owns its result and shares the record projection and immutable ancestor payloads.
 pub struct EvaluatedState {
@@ -878,7 +900,8 @@ impl EvaluatedState {
         // is unchanged, the new closures are exactly what a fresh
         // build computes, and the price below (the full build's own
         // charge formula for one record) makes the totals equal a
-        // full evaluation exactly.
+        // full evaluation for an unshared state. A fork can also
+        // pay to copy shared structures before it writes them.
         //
         // Last in block is shown by coverage: the parents' combined
         // own-closure holds every record of the issuer, positioned
@@ -1074,7 +1097,7 @@ impl EvaluatedState {
         // charges. The scoped evaluation updates below run the same
         // code a full evaluation runs for this record, and their own
         // charges (closure unions for the new record) come out of the
-        // same budget, so the total equals a full evaluation.
+        // same budget. The charge also covers any copies of shared data.
         self.predecessor_edges += node.previous.len();
         if self.prepared.options.limits.traversal.is_none() {
             self.remaining_work = self.remaining_work.saturating_add(record_allowance(&node));
@@ -1502,6 +1525,7 @@ impl EvaluatedState {
 struct SavedFullCheckpoint {
     version: String,
     binding: String,
+    #[serde(deserialize_with = "CheckpointOptions::deserialize")]
     options: EvaluationOptions,
     nodes: BTreeMap<String, Node>,
     evaluation: Evaluation,
@@ -1522,6 +1546,7 @@ struct SavedFullCheckpoint {
 struct SavedResultsCheckpoint {
     version: String,
     binding: String,
+    #[serde(deserialize_with = "CheckpointOptions::deserialize")]
     options: EvaluationOptions,
     evaluation: Evaluation,
     event_limit_exceeded: bool,
@@ -7228,7 +7253,7 @@ mod rebuild_tests {
     }
 
     #[test]
-    fn checkpoint_without_limits_traversal_is_rejected_on_restore_and_options_parse() {
+    fn checkpoint_requires_every_limit_field() {
         let word = jvc_core::word_id(&json!({"language":"jbo","spelling":"banli"})).unwrap();
         let new_issuer = identity_from_seed(&[9u8; 32]);
         let new_pub = host_missing_body(
@@ -7305,11 +7330,10 @@ mod rebuild_tests {
                     _ => unreachable!(),
                 }
                 if mutation.starts_with("delete_") {
-                    let parsed_opts =
-                        serde_json::from_value::<EvaluationOptions>(value["options"].clone());
+                    let parsed_opts = CheckpointOptions::deserialize(&value["options"]);
                     if parsed_opts.is_ok() {
                         failures.push(format!(
-                            "EvaluationOptions::deserialize accepted {mutation} (is_results={is_results})"
+                            "CheckpointOptions::deserialize accepted {mutation} (is_results={is_results})"
                         ));
                     }
                 }

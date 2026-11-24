@@ -338,19 +338,10 @@ pub(crate) struct Graph {
     pub appended: usize,
 }
 impl Graph {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new(nodes: impl Into<Rc<BTreeMap<String, Node>>>, limits: &Limits) -> Self {
         let nodes = nodes.into();
         let budget = limits.traversal_budget(nodes.len(), crate::predecessor_edges(&nodes));
-        Self::new_with_budget(nodes, budget)
-    }
-    #[allow(dead_code)]
-    pub fn new_with_options(
-        nodes: impl Into<Rc<BTreeMap<String, Node>>>,
-        options: &EvaluationOptions,
-    ) -> Self {
-        let nodes = nodes.into();
-        let budget = options.traversal_budget_for_nodes(&nodes);
         Self::new_with_budget(nodes, budget)
     }
     pub(crate) fn new_with_budget(nodes: Rc<BTreeMap<String, Node>>, budget: usize) -> Self {
@@ -445,8 +436,9 @@ impl Graph {
         } else {
             graph.accepted = Rc::new(graph.build_cache(2));
         }
-        if graph.ancestry.failed() {
+        if graph.resource.get() || graph.ancestry.failed() {
             graph.resource.set(true);
+            return graph;
         }
         graph.boundary = Shared::new(BoundaryCrossings::with_len(graph.space.len()));
         let mut seen: Vec<usize> = Vec::new();
@@ -2184,9 +2176,31 @@ mod tests {
         let graph = Graph::new(interleaved_with_acceptance(3_600), &limits);
         assert!(graph.ancestry.failed());
         assert!(graph.resource.get());
+        assert_eq!(graph.boundary.len(), 0);
         let graph = Graph::new(interleaved_with_acceptance(2_000), &limits);
         assert!(!graph.ancestry.failed());
         assert!(!graph.resource.get());
+    }
+
+    #[test]
+    fn work_exhaustion_in_the_accepted_cache_skips_the_boundary_index() {
+        let open = Limits {
+            traversal: Some(10_000),
+            ..Limits::default()
+        };
+        for history in [nodes(2, true), interleaved_with_acceptance(4)] {
+            let graph = Graph::new(history.clone(), &open);
+            assert!(!graph.resource.get());
+            assert!(graph.boundary.len() > 0);
+            let work = open.traversal.unwrap() - graph.budget.get();
+            let tight = Limits {
+                traversal: Some(work - 1),
+                ..Limits::default()
+            };
+            let graph = Graph::new(history, &tight);
+            assert!(graph.resource.get());
+            assert_eq!(graph.boundary.len(), 0);
+        }
     }
 
     #[test]

@@ -53,8 +53,9 @@ pub struct EvaluationOptions {
     pub selected_view: String,
     pub import_selections: BTreeMap<String, Vec<String>>,
     /// Shared, so that cloning options or a state copies one pointer.
-    #[serde(deserialize_with = "Option::deserialize")]
+    #[serde(default)]
     pub overlay: Option<std::rc::Rc<Value>>,
+    #[serde(default)]
     pub limits: Limits,
 }
 /// The default budget before selections: `base` plus the record and
@@ -67,19 +68,6 @@ pub(crate) fn default_input_budget(base: usize, records: usize, predecessors: us
 /// The number of `previous` IDs over all records, for the default budget.
 pub(crate) fn predecessor_edges(nodes: &BTreeMap<String, graph::Node>) -> usize {
     nodes.values().map(|node| node.previous.len()).sum()
-}
-impl EvaluationOptions {
-    pub(crate) fn traversal_budget_for_nodes(
-        &self,
-        nodes: &BTreeMap<String, graph::Node>,
-    ) -> usize {
-        let resolved = policy::resolve_referenced_selections(self, nodes);
-        self.limits.traversal_budget_with_selections(
-            nodes.len(),
-            predecessor_edges(nodes),
-            resolved.allowance,
-        )
-    }
 }
 /// An opaque projection held only in the trusted host's private storage.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -261,11 +249,9 @@ pub const DEFAULT_TRAVERSAL_PER_RECORD: usize = 256;
 pub const DEFAULT_TRAVERSAL_PER_PREDECESSOR: usize = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct Limits {
-    #[serde(deserialize_with = "Option::deserialize")]
     pub events: Option<usize>,
-    #[serde(deserialize_with = "Option::deserialize")]
     pub traversal: Option<usize>,
     pub claim_depth: usize,
 }

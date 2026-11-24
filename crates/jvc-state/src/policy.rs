@@ -39,14 +39,6 @@ pub(crate) struct ResolvedSelections<'a> {
     pub invalid: BTreeSet<String>,
 }
 
-pub(crate) fn resolve_referenced_selections<'a>(
-    input: &'a EvaluationOptions,
-    nodes: &BTreeMap<String, graph::Node>,
-) -> ResolvedSelections<'a> {
-    let mut cache = BTreeMap::new();
-    resolve_referenced_selections_cached(input, &input.import_selections, nodes, &mut cache)
-}
-
 pub(crate) fn resolve_referenced_selections_cached<'a>(
     input: &EvaluationOptions,
     import_selections: &'a BTreeMap<String, Vec<String>>,
