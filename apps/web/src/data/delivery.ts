@@ -238,7 +238,7 @@ export function describePeer(peer: PeerDelivery): string {
         : "Waiting to send again.";
     case "unknown":
       if (peer.failure === "offline")
-        return "No connection. The client asks whether the record arrived before it sends the same bytes again.";
+        return "No connection to the server. The client asks whether the record arrived before it sends the same bytes again.";
       if (peer.failure === "timeout")
         return "The server did not answer. The client asks whether the record arrived before it sends the same bytes again.";
       return `${peer.error ?? "The outcome is unknown."} The client asks whether the record arrived before it sends the same bytes again.`;
