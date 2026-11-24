@@ -171,7 +171,7 @@ export function clockTime(date: Date): string {
 export function inDuration(milliseconds: number): string {
   if (milliseconds <= 1000) return "now";
   const seconds = Math.round(milliseconds / 1000);
-  if (seconds < 60) return `in ${seconds} second${seconds === 1 ? "" : "s"}`;
+  if (seconds < 120) return `in ${seconds} second${seconds === 1 ? "" : "s"}`;
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) return `in ${minutes} minute${minutes === 1 ? "" : "s"}`;
   const hours = Math.round(minutes / 60);

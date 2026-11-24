@@ -14,7 +14,7 @@ import {
   inlineProse,
 } from "../lib/dom.ts";
 import { fingerprintText, plural, shortIdentity } from "../lib/format.ts";
-import { getActivity } from "../data/api.ts";
+import { getActivity, loadRecord } from "../data/api.ts";
 import {
   identityProfile,
   profileName,
@@ -507,6 +507,21 @@ function activityRow(
   else if (kind === "judgment.set") {
     const value = String(action.value);
     const target = String(action.target);
+    const targetLink = link(
+      target,
+      target.startsWith("jve1:")
+        ? routes.definition(target)
+        : `/rafsi-pair/${encodeURIComponent(target)}`,
+      { class: "fingerprint" },
+    );
+    if (target.startsWith("jve1:"))
+      void loadRecord(target)
+        .then((record) => {
+          const spelling = (record.body as { word?: { spelling?: string } } | null)?.word?.spelling;
+          // The row may have left the page while the record loaded.
+          if (spelling && targetLink.isConnected) targetLink.textContent = spelling;
+        })
+        .catch(() => {});
     node.append(
       text(
         value === "bless"
@@ -515,13 +530,7 @@ function activityRow(
             ? "Opposed "
             : "Cleared a judgment on ",
       ),
-      link(
-        target,
-        target.startsWith("jve1:")
-          ? routes.definition(target)
-          : `/rafsi-pair/${encodeURIComponent(target)}`,
-        { class: "fingerprint" },
-      ),
+      targetLink,
     );
   } else if (kind === "trust.set") {
     const value = String(action.value);

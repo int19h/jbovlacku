@@ -1118,9 +1118,9 @@ PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" JVC_TEST_ROOT="$PWD/.cache/bro
 ```
 
 The default run tests the full app in Chromium.
-Firefox runs the rich-editor, wizard explanation, and place-numbering tests, plus two authoring smoke cases, the offline publish tests, the UX fix tests, the word-page UX tests, the search and settings polish tests, and the identity polish tests.
+Firefox runs the rich-editor, wizard explanation, and place-numbering tests, plus two authoring smoke cases, the offline publish tests, the UX fix tests, the word-page UX tests, the search and settings polish tests, the identity polish tests, and the publish polish tests.
 Use `npm run test:web -- --project chromium` for Chromium alone.
-Use `npm run test:web -- --project firefox-editor --project firefox-authoring --project firefox-wizard --project firefox-offline --project firefox-ux --project firefox-ux-word --project firefox-ux-polish --project firefox-ux-polish-settings --project firefox-identity` for Firefox alone.
+Use `npm run test:web -- --project firefox-editor --project firefox-authoring --project firefox-wizard --project firefox-offline --project firefox-ux --project firefox-ux-word --project firefox-ux-polish --project firefox-ux-polish-settings --project firefox-identity --project firefox-publish` for Firefox alone.
 The native composition case uses Chromium's debugging protocol. Firefox keeps the portable composition cases.
 
 GitHub Actions runs native validation, Chromium, Firefox, and the container tests in independent jobs in [the test workflow](../.github/workflows/test.yml).
@@ -1131,7 +1131,7 @@ The `typescript-and-applications` job runs the TypeScript check, the core, morph
 The parity and TypeScript jobs each build the shared WebAssembly, and the parity job installs Chromium for the parity scripts.
 The `chromium-browser` job runs the unchanged `Test browser behavior` step with `--project chromium` and one worker.
 It follows the Firefox setup pattern, installs Chromium only, and builds the shared WebAssembly and browser assets.
-The `firefox-editing-and-authoring` job keeps the `firefox-editor`, `firefox-authoring`, `firefox-wizard`, `firefox-offline`, `firefox-ux`, `firefox-ux-word`, `firefox-ux-polish`, `firefox-ux-polish-settings`, and `firefox-identity` projects with their existing test selection.
+The `firefox-editing-and-authoring` job keeps the `firefox-editor`, `firefox-authoring`, `firefox-wizard`, `firefox-offline`, `firefox-ux`, `firefox-ux-word`, `firefox-ux-polish`, `firefox-ux-polish-settings`, `firefox-identity`, and `firefox-publish` projects with their existing test selection.
 The `standalone-image` job continues to build and test the container separately.
 Put a new step in the job that matches its work. Rust-only checks go in `rust-native`.
 A step that reads the native corpora or compares native code with WebAssembly goes in `wasm-and-browser-parity`.

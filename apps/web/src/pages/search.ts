@@ -1044,6 +1044,7 @@ function hitRow(
   const target = {
     id: previewId,
     word: hit.word_id,
+    spelling: hit.word.spelling,
     describe: (value: string) =>
       `${value === "bless" ? "Endorsing" : value === "curse" ? "Opposing" : "Clearing your judgment on"} ${hit.word.spelling}`,
   };
