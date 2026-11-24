@@ -363,6 +363,73 @@ test("an open explanation stays open when a Remove renders the Trust page again"
   expect(await top()).toBeCloseTo(before, 0);
 });
 
+// The reader opens or closes the explanation while a Remove is saving. The
+// save finishes after the open state changed and before the toggle event.
+for (const startOpen of [false, true])
+  test(`a Remove that finishes right after the reader ${startOpen ? "closes" : "opens"} the explanation keeps that choice`, async ({
+    page,
+  }) => {
+    const f = fixture();
+    await page.setViewportSize({ width: 360, height: 640 });
+    await createIdentity(page);
+    await saveForeignRule(page, f.identities.rootB, f.identities.curator);
+    await saveForeignRule(page, f.identities.rootB, f.identities.delegate);
+    await page.goto("/trust");
+    const remove = page.getByRole("button", { name: "Remove", exact: true });
+    const summary = page.locator("summary", {
+      hasText: "How the two views work",
+    });
+    const details = page.locator("details").filter({ has: summary });
+    await expect(remove).toHaveCount(2);
+    if (startOpen) {
+      await summary.click();
+      await expect(details.locator(".body p")).toHaveCount(4);
+    }
+    // The saved Remove waits until the open state of the current
+    // explanation changes, then finishes before its toggle event.
+    await page.evaluate(async (startOpen) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const update = LocalStore.prototype.updateOverlay;
+      const old = [...document.querySelectorAll("main details")].find((node) =>
+        node
+          .querySelector("summary")
+          ?.textContent?.includes("How the two views work"),
+      ) as HTMLDetailsElement;
+      const race = window as unknown as { saved?: boolean; old?: Element };
+      race.old = old;
+      const changed = new Promise<void>((resolve) => {
+        const observer = new MutationObserver(() => {
+          if (old.open === startOpen) return;
+          observer.disconnect();
+          resolve();
+        });
+        observer.observe(old, { attributes: true, attributeFilter: ["open"] });
+      });
+      LocalStore.prototype.updateOverlay = async function (...args: unknown[]) {
+        const result = await update.apply(this, args as never);
+        race.saved = true;
+        await changed;
+        return result;
+      };
+    }, startOpen);
+    await remove.last().click();
+    await page.waitForFunction(
+      () => (window as unknown as { saved?: boolean }).saved === true,
+    );
+    await summary.click();
+    await expect(remove).toHaveCount(1);
+    const result = await details.evaluate((node) => ({
+      rebuilt: node !== (window as unknown as { old: Element }).old,
+      open: (node as HTMLDetailsElement).open,
+      paragraphs: node.querySelectorAll(".body p").length,
+    }));
+    expect(result).toEqual({
+      rebuilt: true,
+      open: !startOpen,
+      paragraphs: startOpen ? 0 : 4,
+    });
+  });
+
 test("a calculation that ends after a view switch updates the private rule reasons", async ({
   page,
 }) => {

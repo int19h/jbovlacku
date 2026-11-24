@@ -20,18 +20,30 @@ import { scopeError } from "../data/scope.ts";
 import { describeProfile } from "../model/profiles.ts";
 
 export { loadSiteView };
+/** What a Trust page visit keeps across its rerenders. */
+interface Visit {
+  explanationOpen: boolean;
+  /** The explanation on the page now. */
+  explanation: HTMLDetailsElement | null;
+}
 export async function trustPage(
   _route: Route,
   context: RenderContext,
   app: App,
   // What the reader opened on this visit. A rerender keeps it.
-  visit: { explanationOpen: boolean } = { explanationOpen: false },
+  visit: Visit = { explanationOpen: false, explanation: null },
 ) {
   const { main } = context;
   context.title("Trust");
   main.className = "";
+  // The explanation of the two views. A rerender reads the open state of
+  // the one on the page at that moment, because the toggle event comes later
+  // than the change. A rerender from an earlier render reads the current one.
+  const explained = explanation(visit);
+  visit.explanation = explained;
   const rerender = () => {
     if (!context.live()) return;
+    visit.explanationOpen = visit.explanation?.open ?? false;
     main.replaceChildren();
     void trustPage(_route, context, app, visit);
   };
@@ -89,7 +101,7 @@ export async function trustPage(
         "No local calculation yet. It starts when a page needs personal scores, or now with Recompute from records. Pages in the site view show this server's scores and need no local calculation.",
       onRefresh: rerender,
     }),
-    explanation(visit),
+    explained,
   );
   const overlay = await app.store.overlay().catch(() => null);
   const registers = await app.own.registers();
@@ -518,10 +530,10 @@ export async function trustPage(
 }
 /**
  * The closed explanation of the two views. A page rerender builds it again,
- * open with its text when the reader had opened it on this visit, so the
- * rows below it do not move.
+ * open with its text when it was open just before, so the rows below it do
+ * not move.
  */
-function explanation(visit: { explanationOpen: boolean }) {
+function explanation(visit: Visit) {
   const paragraphs = () => [
     p(
       "The site view shows this server's scores for the signed view below. The personal view downloads the snapshot's records, verifies them in this browser, and applies your private choices from this browser. It adds your identity as a root with allocation 1 only if its continuity group has no allocation or private root change. A zero allocation or removal also prevents that addition.",
@@ -545,9 +557,6 @@ function explanation(visit: { explanationOpen: boolean }) {
     details.querySelector(".body")!.append(...paragraphs());
     details.open = true;
   }
-  details.addEventListener("toggle", () => {
-    visit.explanationOpen = details.open;
-  });
   return details;
 }
 
