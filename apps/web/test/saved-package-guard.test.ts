@@ -1349,6 +1349,67 @@ test("saved shapes leaves a long dictionary spelling searchable without adding i
   await expect(results.getByRole("button", { name: /^Add/ })).toHaveCount(0);
 });
 
+test("saved shapes clears an oversized restored source and keeps the other draft edits", async ({
+  page,
+}) => {
+  const claim = (rafsi: string) => ({
+    rafsi,
+    pair: "jvr1:" + "a".repeat(64),
+  });
+  await seed(page, validPackage, {
+    kind: "lujvo",
+    meaning: "keep this draft",
+    step: 3,
+    lujvo: {
+      profile: "extended-v4",
+      selected: null,
+      acknowledged: [],
+      components: [
+        {
+          id: "saved-cukta",
+          spelling: "cukta",
+          kind: "gismu",
+          definition: validRow.event,
+          gloss: "book",
+          locked: "cku",
+          claims: claimList(0, 65).map(claim),
+        },
+        {
+          id: "saved-zbasu",
+          spelling: "zbasu",
+          kind: "gismu",
+          definition: zbasuRow.event,
+          gloss: "make",
+          locked: "zba",
+          claims: [claim("zba")],
+        },
+      ],
+    },
+  });
+  await page.goto("/new/lujvo");
+  await expect(
+    page.getByText("A saved source exceeded the builder limits."),
+  ).toBeVisible();
+  await expectSavedBuilderDraft(page);
+  await page.goto("/new/meaning");
+  const draft = JSON.parse(await savedDraftText(page));
+  expect(draft.meaning).toBe("keep this draft");
+  expect(draft.lujvo.components[0]).toMatchObject({
+    id: "saved-cukta",
+    spelling: "",
+    definition: null,
+    locked: "cku",
+    claims: [],
+  });
+  expect(draft.lujvo.components[1]).toMatchObject({
+    id: "saved-zbasu",
+    spelling: "zbasu",
+    definition: zbasuRow.event,
+    locked: "zba",
+    claims: [claim("zba")],
+  });
+});
+
 test("saved shapes rejects a bad nested list after the rafsi pair match", async ({
   page,
 }) => {
