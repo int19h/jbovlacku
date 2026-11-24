@@ -471,7 +471,7 @@ test("the search mode options are short and the hint explains them", async ({
   await expect(
     page.locator(".field-group", { has: mode }).locator(".hint"),
   ).toContainText(
-    `Local uses downloaded packages for word and definition searches. Without a downloaded package for a language, local mode asks the server. Remote sends each query to ${host}.`,
+    `Local uses downloaded packages for word and definition searches. If no usable package is available for a language, local mode asks the server. Remote sends each query to ${host}.`,
   );
   // The closed select shows its whole label.
   const fits = await mode.evaluate((select: HTMLSelectElement) => {

@@ -32,9 +32,11 @@ export function fields(
   value: unknown,
   names: string[],
 ): value is Record<string, any> {
-  if (!isRecord(value) || Object.keys(value).length !== names.length)
-    return false;
-  for (const name of names) if (!Object.hasOwn(value, name)) return false;
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== names.length) return false;
+  for (let i = 0; i < names.length; i++)
+    if (keys[i] !== names[i] && !Object.hasOwn(value, names[i])) return false;
   return true;
 }
 
