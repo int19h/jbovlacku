@@ -24,7 +24,6 @@ import {
 import { countNodes, renderRichText } from "../model/richtext.ts";
 import { routes, type RenderContext, type Route } from "../app/router.ts";
 import { onDisconnect } from "../lib/lifetime.ts";
-import { pressTracker } from "../lib/press.ts";
 import type { App } from "../app/context.ts";
 import {
   identityId,
@@ -344,27 +343,23 @@ export async function personPage(
       );
   }
   // Your choices about this identity. A save in the trust panel below
-  // renders the line again, so it lists every current choice.
-  // The line and its link stay in place, so a refresh keeps focus on the
-  // link. Only the description changes.
+  // renders the description again, so it lists every current choice.
+  // The Manage link comes first, on its own line, so a description of
+  // another length never moves it, and a refresh keeps focus on it. Only
+  // the description after it changes.
   const choices = el("p", { class: "small" });
   const choicesText = el("span");
   choices.append(
-    choicesText,
     link("Manage on the Trust page", routes.trust, { class: "touch-link" }),
+    el("br"),
+    choicesText,
   );
   choices.hidden = true;
   let choicesRequest = 0;
-  // A new text can move the link and the controls below it. Every change
-  // after the reads waits while the reader presses a control, whatever
-  // started the reads.
-  const press = pressTracker(context.signal);
   const showChoices = async () => {
     const request = ++choicesRequest;
     const overlay = await app.store.overlay().catch(() => null);
     const registers = await app.own.registers();
-    // The first read runs before the line joins the page.
-    if (choices.isConnected) await press.finished();
     if (!context.live() || request !== choicesRequest) return;
     // A failed read leaves its choices unknown, not absent.
     const unread = !overlay || Boolean(app.session.identity && !registers);
@@ -448,7 +443,7 @@ export async function personPage(
           ? "Some of your choices could not be read."
           : "Your choices could not be read.",
       );
-    choicesText.textContent = `${sentences.join(" ")} `;
+    choicesText.textContent = sentences.join(" ");
     choices.hidden = false;
   };
   // The line names the loaded calculation's handovers, so it follows a

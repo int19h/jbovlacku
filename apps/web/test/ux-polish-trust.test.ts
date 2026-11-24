@@ -169,15 +169,15 @@ test("the person page names each choice in plain words and follows a new choice"
   const f = fixture();
   await createIdentity(page);
   await page.goto(`/identity/${encodeURIComponent(f.identities.author)}`);
-  const choices = page.locator("main p", { hasText: /^Your choices:/ });
-  await expect(choices).toHaveCount(0);
+  const choices = choicesText(page);
+  await expect(choices).toBeHidden();
   await choosePrivately(page, "Trust");
   await expect(choices).toHaveText(
-    "Your choices: Trusted privately for all judgments. Manage on the Trust page",
+    "Your choices: Trusted privately for all judgments.",
   );
   await choosePrivately(page, "Ignore");
   await expect(choices).toHaveText(
-    "Your choices: Trusted privately for all judgments; Ignored privately for all judgments. Manage on the Trust page",
+    "Your choices: Trusted privately for all judgments; Ignored privately for all judgments.",
   );
   await expect(choices).not.toContainText("*");
 });
@@ -244,6 +244,11 @@ test("an empty report explanation says why the preview did not open", async ({
 });
 
 const statusRegion = (page: Page) => page.locator("#app > [role=status]");
+/** The description of the reader's choices on a person page, after its Manage link. */
+const choicesText = (page: Page) =>
+  page
+    .locator("main p", { hasText: "Manage on the Trust page" })
+    .locator(":scope > span");
 /** Waits two frames, so a scroll that follows focus has happened. */
 const frames = (page: Page) =>
   page.evaluate(
@@ -443,9 +448,7 @@ test("a refresh of the choices keeps focus on the Manage link", async ({
   await expect(manage).toBeFocused();
   await expect.poll(() => held).toBeGreaterThan(0);
   release();
-  await expect(
-    page.locator("main p", { hasText: /^Your choices:/ }),
-  ).toContainText("Trusted publicly");
+  await expect(choicesText(page)).toContainText("Trusted publicly");
   await expect(manage).toBeFocused();
 });
 
@@ -491,13 +494,13 @@ test("a private rule from another key is not listed as the reader's choice", asy
   await createIdentity(page);
   await saveForeignRule(page, f.identities.rootB, f.identities.delegate);
   await page.goto(`/identity/${encodeURIComponent(f.identities.delegate)}`);
-  const line = page.locator("main p", { hasText: "Manage on the Trust page" });
+  const line = choicesText(page);
   await expect(line).toHaveText(
-    "Private rules saved under another key: Trusted privately for all judgments. They apply only when the personal calculation connects that key to yours. Manage on the Trust page",
+    "Private rules saved under another key: Trusted privately for all judgments. They apply only when the personal calculation connects that key to yours.",
   );
   await choosePrivately(page, "Ignore");
   await expect(line).toHaveText(
-    "Your choices: Ignored privately for all judgments. Private rules saved under another key: Trusted privately for all judgments. They apply only when the personal calculation connects that key to yours. Manage on the Trust page",
+    "Your choices: Ignored privately for all judgments. Private rules saved under another key: Trusted privately for all judgments. They apply only when the personal calculation connects that key to yours.",
   );
 });
 
@@ -568,7 +571,7 @@ test("the person page moves a rule to Your choices when a calculation confirms i
       ),
     subject,
   );
-  const line = page.locator("main p", { hasText: "Manage on the Trust page" });
+  const line = choicesText(page);
   await expect(line).toContainText("Private rules saved under another key");
   const manage = page.getByRole("link", { name: "Manage on the Trust page" });
   await manage.focus();
@@ -577,7 +580,7 @@ test("the person page moves a rule to Your choices when a calculation confirms i
     () => (window as unknown as { seenReady?: string }).seenReady === "ready",
   );
   await expect(line).toHaveText(
-    "Your choices: Trusted privately for all judgments. Manage on the Trust page",
+    "Your choices: Trusted privately for all judgments.",
   );
   await expect(manage).toBeFocused();
 });
@@ -601,10 +604,8 @@ test("a rule saved before this browser had a key is described as such", async ({
     await store.setOverlay(overlay);
   }, subject);
   await page.goto(`/identity/${encodeURIComponent(subject)}`);
-  await expect(
-    page.locator("main p", { hasText: "Manage on the Trust page" }),
-  ).toHaveText(
-    "Private rules saved before this browser had a key: Trusted privately for all judgments. They move to your key when you create or restore one, unless your key already has a rule for the same person and scope. That rule then takes priority. Manage on the Trust page",
+  await expect(choicesText(page)).toHaveText(
+    "Private rules saved before this browser had a key: Trusted privately for all judgments. They move to your key when you create or restore one, unless your key already has a rule for the same person and scope. That rule then takes priority.",
   );
   await page.goto("/trust");
   await expect(
@@ -614,16 +615,13 @@ test("a rule saved before this browser had a key is described as such", async ({
   );
 });
 
-/** Whether the point is on the control. */
-const under = (control: Locator, point: { x: number; y: number }) =>
-  control.evaluate(
-    (node, { x, y }) => node.contains(document.elementFromPoint(x, y)),
-    point,
-  );
-
-test("a calculation that ends during a press on Manage keeps the link in place until the click", async ({
-  page,
-}) => {
+/**
+ * Opens the person page for a rule saved under the predecessor key, while a
+ * calculation that the Trust page started holds its result. The choices
+ * text is long until the result confirms the handover, then short. A later
+ * Cancel clears the loaded calculation and makes it long again.
+ */
+async function personWithHeldHandover(page: Page) {
   const subject = await handoverRule(page);
   await choosePersonal(page);
   await page.evaluate(async () => {
@@ -634,33 +632,46 @@ test("a calculation that ends during a press on Manage keeps the link in place u
     const request = proto.request;
     const ensure = proto.ensure;
     const held = window as unknown as {
+      calculator?: unknown;
+      gate?: Promise<void> | null;
       held?: boolean;
-      seenReady?: string;
+      seen?: string;
       releaseResult?: () => void;
+      holdNext?: () => void;
     };
-    const gate = new Promise<void>((resolve) => (held.releaseResult = resolve));
+    held.holdNext = () => {
+      held.held = false;
+      held.gate = new Promise<void>(
+        (resolve) => (held.releaseResult = resolve),
+      );
+    };
+    held.holdNext();
     proto.request = async function (...args: unknown[]) {
       const result = await request.apply(this, args as never);
       if (
+        held.gate &&
         args.some(
           (arg) => (arg as { type?: string } | null)?.type === "overlay",
         )
       ) {
         held.held = true;
-        await gate;
+        await held.gate;
       }
       return result;
     };
     proto.ensure = function (...args: unknown[]) {
+      held.calculator = this;
       const result = ensure.apply(this, args as never);
       void result.then((status: { state: string }) => {
-        held.seenReady = status.state;
+        held.seen = status.state;
       });
       return result;
     };
   });
-  const panel = page.getByRole("region", { name: "Local calculation" });
-  await panel.getByRole("button", { name: "Recompute from records" }).click();
+  await page
+    .getByRole("region", { name: "Local calculation" })
+    .getByRole("button", { name: "Recompute from records" })
+    .click();
   await page.waitForFunction(
     () => (window as unknown as { held?: boolean }).held === true,
   );
@@ -671,108 +682,80 @@ test("a calculation that ends during a press on Manage keeps the link in place u
       ),
     subject,
   );
-  const line = page.locator("main p", { hasText: "Manage on the Trust page" });
-  await expect(line).toContainText("Private rules saved under another key");
-  const manage = page.getByRole("link", { name: "Manage on the Trust page" });
-  const centre = () =>
-    manage.evaluate((node) => {
-      const box = node.getBoundingClientRect();
-      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-    });
-  const before = await centre();
-  await page.mouse.move(before.x, before.y);
-  await page.mouse.down();
-  await page.evaluate(() =>
-    (window as unknown as { releaseResult: () => void }).releaseResult(),
-  );
-  await page.waitForFunction(
-    () => (window as unknown as { seenReady?: string }).seenReady === "ready",
-  );
-  await frames(page);
-  expect(await under(manage, before)).toBe(true);
-  await page.mouse.up();
-  await expect(page).toHaveURL(/\/trust$/);
+  const long =
+    "Private rules saved under another key: Trusted privately for all judgments. They apply only when the personal calculation connects that key to yours.";
+  const short = "Your choices: Trusted privately for all judgments.";
+  await expect(choicesText(page)).toHaveText(long);
+  return { long, short };
+}
+const box = (control: Locator) =>
+  control.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  });
+const centreOf = (rect: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}) => ({
+  x: rect.x + rect.width / 2,
+  y: rect.y + rect.height / 2,
 });
 
-// Another pointer: none, a touch that is released, or a context menu from a
-// touch.
-for (const other of ["", "released", "contextmenu"] as const)
-  test(`the choices refresh after a public save keeps Manage in place during a press${other === "released" ? " when another pointer is released" : other === "contextmenu" ? " when another pointer opens a context menu" : ""}`, async ({
-    page,
-  }) => {
-    const own = await createIdentity(page);
-    const subject = fixture().identities.author;
-    await saveForeignRule(page, own.identity, subject);
-    // Inside the app, so the key stays unlocked.
-    await page.evaluate(
-      async (subject) =>
-        (await import(String("/src/app/router.ts"))).navigate(
-          `/identity/${encodeURIComponent(subject)}`,
-        ),
-      subject,
-    );
-    const manage = page.getByRole("link", { name: "Manage on the Trust page" });
-    await expect(manage).toBeVisible();
-    // The history read after the save waits until the press starts.
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    let held = 0;
-    let served = 0;
-    await page.route("**/identity-heads/**", async (route) => {
-      if (
-        (await statusRegion(page).textContent())?.includes(
-          "Your personal view includes it",
-        )
-      ) {
-        held++;
-        await gate;
-        await route.continue();
-        served++;
-      } else await route.continue();
+for (const pointer of ["mouse", "touch"] as const)
+  test.describe(() => {
+    test.use({ hasTouch: pointer === "touch" });
+    test(`Manage stays in place while the choices text changes during a ${pointer} press`, async ({
+      page,
+      browserName,
+    }) => {
+      const { long, short } = await personWithHeldHandover(page);
+      const line = choicesText(page);
+      const manage = page.getByRole("link", {
+        name: "Manage on the Trust page",
+      });
+      const start = await box(manage);
+      // Long to short: the result confirms the handover.
+      await page.evaluate(() =>
+        (window as unknown as { releaseResult: () => void }).releaseResult(),
+      );
+      await expect(line).toHaveText(short);
+      await frames(page);
+      expect(await box(manage)).toEqual(start);
+      // Short to long during the press: a Cancel clears the loaded
+      // calculation.
+      const point = centreOf(start);
+      const cdp =
+        pointer === "touch" && browserName === "chromium"
+          ? await page.context().newCDPSession(page)
+          : null;
+      if (pointer === "mouse") {
+        await page.mouse.move(point.x, point.y);
+        await page.mouse.down();
+      } else if (cdp)
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x: point.x, y: point.y }],
+        });
+      await page.evaluate(() =>
+        (
+          window as unknown as { calculator: { cancel: () => void } }
+        ).calculator.cancel(),
+      );
+      await expect(line).toHaveText(long);
+      await frames(page);
+      expect(await box(manage)).toEqual(start);
+      if (pointer === "mouse") await page.mouse.up();
+      else if (cdp)
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchEnd",
+          touchPoints: [],
+        });
+      // Firefox has no held touch input here, so it taps after the change.
+      else await page.touchscreen.tap(point.x, point.y);
+      await expect(page).toHaveURL(/\/trust$/);
     });
-    const opener = page.getByRole("button", { name: "Trust their judgments" });
-    await opener.click();
-    const panel = page.getByRole("region", { name: /^Trust / });
-    await panel.getByRole("radio", { name: /Publicly/ }).check();
-    await panel.getByRole("button", { name: "Trust", exact: true }).click();
-    await page
-      .getByRole("dialog")
-      .getByRole("button", { name: "Trust", exact: true })
-      .click();
-    await acceptFirstSignature(page);
-    await expect(opener).toBeFocused();
-    await expect.poll(() => held).toBeGreaterThan(0);
-    await manage.scrollIntoViewIfNeeded();
-    const point = await manage.evaluate((node) => {
-      const box = node.getBoundingClientRect();
-      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-    });
-    await page.mouse.move(point.x, point.y);
-    await page.mouse.down();
-    if (other)
-      // A touch elsewhere while the mouse stays down. It does not end the
-      // mouse press.
-      await page.evaluate((other) => {
-        for (const type of other === "released"
-          ? ["pointerdown", "pointerup"]
-          : ["contextmenu"])
-          document.body.dispatchEvent(
-            new PointerEvent(type, {
-              bubbles: true,
-              pointerId: 77,
-              pointerType: "touch",
-              button: 0,
-              isPrimary: false,
-            }),
-          );
-      }, other);
-    release();
-    await expect.poll(() => served).toBeGreaterThan(0);
-    await frames(page);
-    await frames(page);
-    expect(await under(manage, point)).toBe(true);
-    await page.mouse.up();
-    await expect(page).toHaveURL(/\/trust$/);
   });
 
 test("the person page says that the choices could not be read after a failed read", async ({
@@ -789,7 +772,5 @@ test("the person page says that the choices could not be read after a failed rea
       `/identity/${encodeURIComponent(subject)}`,
     );
   }, subject);
-  await expect(
-    page.locator("main p", { hasText: "Manage on the Trust page" }),
-  ).toHaveText("Your choices could not be read. Manage on the Trust page");
+  await expect(choicesText(page)).toHaveText("Your choices could not be read.");
 });
