@@ -1131,7 +1131,7 @@ for (const [list, damage] of [
       async ({ list, damage }) => {
         const { LocalStore } = await import(String("/src/data/store.ts"));
         const store = new LocalStore();
-        const pkg = await store.get<any>("packages", "en");
+        const pkg = await store.get("packages", "en");
         const row = pkg.entries[0];
         if (list === "dates")
           row.attribution = {
@@ -1361,10 +1361,10 @@ test("saved shapes rejects a bad nested list after the rafsi pair match", async 
   const damaged = await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const store = new LocalStore();
-    const pkg = await store.get<any>("packages", "en");
+    const pkg = await store.get("packages", "en");
     pkg.entries[1].glosses.length++;
     await store.put("packages", "en", pkg);
-    const saved = await new LocalStore().get<any>("packages", "en");
+    const saved = await new LocalStore().get("packages", "en");
     return (
       saved.entries[1].glosses.length === 2 &&
       !Object.hasOwn(saved.entries[1].glosses, 1)
