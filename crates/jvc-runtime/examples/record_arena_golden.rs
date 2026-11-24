@@ -270,16 +270,21 @@ fn main() {
         .map(|publication| publication["word"].as_str().unwrap().to_owned())
         .collect::<BTreeSet<_>>();
     let first_word = words.first().unwrap().clone();
+    let float_profile =
+        state_json["policy"]["calculation"].as_str() == Some(jvc_rank::approximate::ALGORITHM);
     if !bounds_only {
         let mut rankings = std::io::BufWriter::new(
             std::fs::File::create(format!("{output}/rankings.ndjson")).unwrap(),
         );
-        for word in &words {
-            let result = session.rank(word).unwrap();
-            rankings.write_all(word.as_bytes()).unwrap();
-            rankings.write_all(b"\t").unwrap();
-            rankings.write_all(result.as_bytes()).unwrap();
-            rankings.write_all(b"\n").unwrap();
+        // The rank endpoint serves exact profiles. Float views use preparation below.
+        if !float_profile {
+            for word in &words {
+                let result = session.rank(word).unwrap();
+                rankings.write_all(word.as_bytes()).unwrap();
+                rankings.write_all(b"\t").unwrap();
+                rankings.write_all(result.as_bytes()).unwrap();
+                rankings.write_all(b"\n").unwrap();
+            }
         }
         rankings.flush().unwrap();
     }
