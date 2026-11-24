@@ -252,7 +252,7 @@ test("first-signature dialog names the rafsi assignment endorsement", async ({
   const dialog2 = await seedClaims(["cku", "kuk"]);
   await expect(dialog2).toBeVisible();
   await expect(dialog2).toContainText(
-    "2 rafsi claims (cku, kuk), and an endorsement of those rafsi assignments",
+    "2 rafsi claims (cku, kuk), and an endorsement of each rafsi assignment",
   );
   await dialog2.getByRole("button", { name: "Not now" }).click();
 });
