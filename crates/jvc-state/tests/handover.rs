@@ -1130,10 +1130,12 @@ fn exact_status_and_account_api_expose_committed_evidence() {
         selected["current_observations"],
         json!(result.publications[&f.d].observations)
     );
-    assert_ne!(
-        selected["certificates"].as_array().unwrap().len(),
-        selected["current_observations"].as_array().unwrap().len()
-    );
+    let historical = account
+        .certificates
+        .iter()
+        .find(|certificate| certificate.claim == f.ca)
+        .unwrap();
+    assert_ne!(historical.observations, account.current_observations);
 
     assert_eq!(account.state, "controlled");
     assert!(account.chain.contains(&f.ca));
