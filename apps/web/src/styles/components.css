@@ -1058,12 +1058,15 @@ dialog.sheet h2 {
   .place-row {
     flex-wrap: wrap;
   }
-  .place-row > .place-grid {
+  .place-grid {
     grid-template-columns: minmax(0, 1fr);
+    flex: 1 1 calc(100% - 3.5rem);
+  }
+  .wizard-places .place-row > .place-grid {
     order: 1;
     flex: 1 1 100%;
   }
-  .place-tools {
+  .wizard-places .place-tools {
     margin-left: auto;
     flex-direction: row;
   }
