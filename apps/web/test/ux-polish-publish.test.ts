@@ -5,10 +5,10 @@ const DEF_ID = "jve1:94b463e3b71d56fe4a7ae6839f9165a019a13a47095dd4fbe043cbda36e
 const END_ID = "jve1:44e54ef8b71d56fe4a7ae6839f9165a019a13a47095dd4fbe043cbda36ead07c";
 
 /** Seeds a definition and its dependent endorsement, as stored before the fix. */
-async function seed(page: import("@playwright/test").Page) {
+async function seed(page: import("@playwright/test").Page, dependent: "waiting" | "stopped" | "refused" = "waiting") {
   await page.goto("/outbox");
   await expect(page.locator("main h1")).toHaveText("Not delivered");
-  await page.evaluate(async ([defId, endId]) => {
+  await page.evaluate(async ([defId, endId, mode]) => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const { freshPeer } = await import(String("/src/data/delivery.ts"));
     const store = new LocalStore();
@@ -19,14 +19,17 @@ async function seed(page: import("@playwright/test").Page) {
       label: { subject: "cuntrix", action: "new definition", href: "/" },
       peers: { self: peer() },
     };
+    const endorsementPeer = mode === "refused"
+      ? { ...freshPeer(), state: "refused", failure: "refused", attempts: 1, lastAttempt: Date.now(), nextAttempt: null, error: "The server refused this record." }
+      : peer();
     const endorsement = {
-      id: endId, identity: "test", group: "g1", order: 1, stopped: false, signedAt: Date.now(),
+      id: endId, identity: "test", group: "g1", order: 1, stopped: mode === "stopped", signedAt: Date.now(),
       transport: JSON.stringify({ envelope: { id: endId, header: { issuer: "test", previous: [defId], action: { kind: "judgment.set", target: defId, value: "bless" } } }, body: null }),
       label: { subject: defId, action: "endorsement", href: "/" },
-      peers: { self: peer() },
+      peers: { self: endorsementPeer },
     };
     await store.queueGroup([definition as never, endorsement as never]);
-  }, [DEF_ID, END_ID]);
+  }, [DEF_ID, END_ID, dependent]);
   await page.reload();
 }
 
@@ -58,6 +61,32 @@ test("U13/U29/U63/U64: outbox shows the word, the missing connection, exact seco
   await definitionRow.getByRole("button", { name: "Resume" }).click();
   await expect.poll(async () => (await stoppedFlags(page))[0]).toBe(false);
   expect((await stoppedFlags(page))[1]).toBe(false);
+});
+
+test("U64: stopping a record with an already stopped dependent leaves both stopped", async ({ page }) => {
+  await seed(page, "stopped");
+  const endorsementRow = page.locator(`[data-outbox-record="${END_ID}"]`);
+  await expect(endorsementRow.getByText("Stopped", { exact: true })).toBeVisible();
+  const definitionRow = page.locator(`[data-outbox-record="${DEF_ID}"]`);
+  await definitionRow.getByRole("button", { name: "Stop retrying" }).click();
+  await expect(page.getByRole("status")).toContainText("Stop affects only this record.");
+  await expect(page.getByRole("status")).toContainText("Records that depend on it keep their own state; use the controls on their rows.");
+  expect(await stoppedFlags(page)).toEqual({ 0: true, 1: true });
+});
+
+test("U64: stopping a record with a refused dependent leaves it refused and unstopped", async ({ page }) => {
+  await seed(page, "refused");
+  const definitionRow = page.locator(`[data-outbox-record="${DEF_ID}"]`);
+  await definitionRow.getByRole("button", { name: "Stop retrying" }).click();
+  await expect(page.getByRole("status")).toContainText("Stop affects only this record.");
+  await expect(page.getByRole("status")).toContainText("Records that depend on it keep their own state; use the controls on their rows.");
+  expect(await stoppedFlags(page)).toEqual({ 0: true, 1: false });
+  const endorsement = await page.evaluate(async (endId) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const item = await new LocalStore().get("outbox", endId);
+    return item.peers.self.state;
+  }, END_ID);
+  expect(endorsement).toBe("refused");
 });
 
 test("U13: the publish panel shows the target word for an endorsement", async ({ page }) => {
