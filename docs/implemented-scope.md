@@ -193,8 +193,9 @@ If authenticated server history later includes a discarded record, the browser r
 The app tells the author once that the record reached a server. The notice stays through navigation until dismissed.
 Delivery supports receipt lookup before an identical retry and honors representable Retry-After values. Stop retrying pauses automatic attempts.
 If an outcome save fails, the open app delays that record while other due records continue. Records that depend on it wait.
-When the browser reports online, it checks an unsaved receipt again for active delivery. A refusal still pauses automatic sends.
-A failed receipt lookup saves no send mark. If a POST started, a failed outcome save keeps its existing mark and signed bytes.
+The tab retries an unsaved receipt while it stays open, the browser reports online, and delivery stays active. A refusal still pauses automatic sends.
+A receipt-only attempt creates no send mark. If a POST started, a failed outcome save keeps its existing mark and signed bytes.
+After reload, the browser schedules retries from saved outcomes and send marks.
 If an envelope read fails during receipt verification, the next attempt checks the receipt and envelope again. A verified missing body still permits an identical retry.
 The saved publication page shows an unconfirmed outcome when the send ends and the receipt still needs a check.
 When the server history read fails at the network level, times out, or answers 502, 503 or 504, the prototype signs from the history saved in the browser, provided it already holds an own event for the key and computes a non-empty parent list from it. A large error body keeps the 502, 503 or 504 status for this rule. The explicit setting “Sign from history saved in this browser only” has the same conditions. A key with no own event in the browser does not sign then; the page says that publishing needs a connection the first time this key publishes in this browser.
