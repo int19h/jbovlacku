@@ -17,12 +17,11 @@
  *
  * For each field that a page reads before the search worker's verdict, the
  * rule uses the worker's own test (`validateCachedPackage` and
- * `validateEntry`). The worker still validates every package that a page
- * sends to it, and also checks what no page reads first: exact field sets,
- * the row order, and the attribution. The core checks each spelling where a
- * page derives the word ID. A rafsi with a lone surrogate passes the worker
- * check and fails the row check. The worker accepts any rafsi
- * string, but the core cannot serialize such a rafsi into a pair ID.
+ * `validateEntry`). The worker enforces every page rule (including lone
+ * surrogate checks on `rafsi` and storage-key language tags) and also checks
+ * what no page reads first: exact field sets, strictly ascending event order,
+ * version 2 attribution, and `search_status` and `search_view` pairing. The
+ * core checks each spelling where a page derives the word ID.
  *
  * This module has no server or browser-storage dependency, so models and
  * Node unit tests can load it.
@@ -54,9 +53,9 @@ export class PackageValidationError extends Error {
 
 /**
  * Matches an unpaired surrogate. The core cannot serialize such a rafsi into
- * a pair ID, although the worker accepts any rafsi string.
+ * a pair ID, so both page readers and the worker reject it.
  */
-const LONE_SURROGATE = /\p{Cs}/u;
+export const LONE_SURROGATE = /\p{Cs}/u;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -93,9 +92,13 @@ export const PACKAGE_RAFSI_LIMIT = 64;
  * `PackageValidationError`. The rows are not checked here: readers check
  * each row with `savedRow`.
  */
-export function savedPackage(value: unknown): CachedPackage | null {
+export function savedPackage(
+  value: unknown,
+  language?: string,
+): CachedPackage | null {
   if (value === undefined) return null;
   if (
+    (language !== undefined && !languageTag(language)) ||
     !isRecord(value) ||
     !hashId(value.snapshot) ||
     !Array.isArray(value.entries) ||
@@ -128,9 +131,8 @@ const GLOSS_FIELDS = ["language", "text", "sense"];
  * the event, language, word, plain text, body, glosses and
  * classification, and for a version 2 row the issuer, notes and rafsi
  * list. A version 1 row must carry no version 2 field, and a version 2 row
- * must carry the issuer and the rafsi list. The rule is stricter than the
- * worker in one case: a rafsi with a lone surrogate. A row that fails
- * raises `PackageValidationError`.
+ * must carry the issuer and the rafsi list (with no lone surrogates). A row
+ * that fails raises `PackageValidationError`.
  */
 export function savedRow(
   entry: unknown,

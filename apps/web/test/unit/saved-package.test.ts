@@ -416,15 +416,14 @@ test("wizard inventory skips a package whose rows disagree with its key", async 
   assert.deepEqual(inventory.selected, { language: "en", pkg: good });
 });
 
-test("a rafsi with a lone surrogate is unusable, though the worker accepts it", () => {
+test("a rafsi with a lone surrogate is unusable in both readers", () => {
   const lone = pkg([v2Row({ rafsi: ["\ud800"] })]);
   rejects(lone);
-  // The one known case where the rule is stricter than the worker: the
-  // core cannot serialize this rafsi when a page derives its pair ID.
-  assert.equal(workerAccepts(lone), true);
+  assert.equal(workerAccepts(lone), false);
   // A surrogate pair is well-formed and stays usable.
   const paired = pkg([v2Row({ rafsi: ["😀"] })]);
   assert.equal(readAll(paired), paired);
+  assert.equal(workerAccepts(paired), true);
 });
 
 test("an event or row language with a lone surrogate is unusable", () => {
@@ -570,4 +569,92 @@ test("samePackageStructure detects holes, extra array keys, order changes, and s
       ),
     SearchBudgetError,
   );
+});
+
+test("validateCachedPackage and createPackageWordIndex reject lone-surrogate rafsi and invalid empty-package language keys", () => {
+  const loneSurrogate = pkg([v2Row({ rafsi: ["\ud800"] })]);
+  assert.throws(
+    () => search.validateCachedPackage(loneSurrogate, "en"),
+    { message: saved.INVALID_PACKAGE_MESSAGE },
+  );
+
+  const empty = pkg([]);
+  assert.throws(
+    () => saved.savedPackage(empty, "EN"),
+    saved.PackageValidationError,
+  );
+  assert.throws(
+    () => search.validateCachedPackage(empty, "EN"),
+    { message: saved.INVALID_PACKAGE_MESSAGE },
+  );
+  assert.equal(
+    search.createPackageWordIndex().invalidEntryCount(empty as never, "EN"),
+    1,
+  );
+});
+
+test("samePackageStructure compares own array property values, empty-array own properties, and object prototypes", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const budget = () => new SearchRequestBudget(searchMetrics());
+
+  const nonEmptyOne = pkg([
+    v2Row({ rafsi: Object.assign(["cuk"], { tag: "one" }) }),
+  ]) as never;
+  const nonEmptyTwo = pkg([
+    v2Row({ rafsi: Object.assign(["cuk"], { tag: "two" }) }),
+  ]);
+  assert.equal(samePackageStructure(nonEmptyTwo, nonEmptyOne, budget()), false);
+
+  const emptyWithKey = pkg([
+    v2Row({ rafsi: Object.assign([], { tag: "one" }) }),
+  ]) as never;
+  assert.equal(
+    samePackageStructure(structuredClone(emptyWithKey), emptyWithKey, budget()),
+    true,
+  );
+
+  const baseDates = pkg([
+    v2Row({
+      attribution: {
+        source: "jbovlaste",
+        author: "alice",
+        account: null,
+        dates: {},
+      },
+    }),
+  ]) as never;
+  const nullProtoDates = pkg([
+    v2Row({
+      attribution: {
+        source: "jbovlaste",
+        author: "alice",
+        account: null,
+        dates: Object.create(null),
+      },
+    }),
+  ]);
+  assert.equal(samePackageStructure(nullProtoDates, baseDates, budget()), true);
+  for (const badDates of [
+    new Date(0),
+    new Map([["created", 123]]),
+    new Set(["x"]),
+    new ArrayBuffer(8),
+  ]) {
+    const corrupted = pkg([
+      v2Row({
+        attribution: {
+          source: "jbovlaste",
+          author: "alice",
+          account: null,
+          dates: badDates,
+        },
+      }),
+    ]);
+    assert.equal(samePackageStructure(corrupted, baseDates, budget()), false);
+  }
 });

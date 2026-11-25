@@ -315,7 +315,8 @@ A database version change clears the cache and closes the connection.
 Later reads in that page fail until the page reloads.
 `LocalStore.listPackages` reads all stored packages without revision markers and supplies no reuse evidence.
 A missing legacy revision supplies no reuse evidence.
-A page uses a freshly read package only after all of its rows pass validation for that language. No whole-package verdict is persisted in storage.
+A page uses a freshly read package only after the package header, storage-key language tag, and every row pass validation for that language. No whole-package verdict is persisted in storage.
+Main-thread page readers enforce the shared package and row rules (including spelling checks and lone-surrogate rafsi rejection), and the search worker enforces those same rules plus exact package and row field sets, strictly ascending event order, version 2 attribution shapes, and `search_status` and `search_view` pairing.
 A failed download leaves the saved package and revision unchanged.
 
 A package save reads the revision before its download starts. It writes only when that revision is still the current one, and the check and the write are one transaction. So a save never overwrites a Remove or another save that finished after it started. A Remove always wins over a save that started earlier.

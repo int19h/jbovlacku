@@ -619,7 +619,7 @@ async function preferencesBody(context: RenderContext, app: App) {
       let cached: CachedPackage | null = null;
       let invalid = false;
       try {
-        cached = savedPackage(await app.store.get("packages", key));
+        cached = savedPackage(await app.store.get("packages", key), key);
       } catch (error) {
         if (!(error instanceof PackageValidationError)) throw error;
         invalid = true;

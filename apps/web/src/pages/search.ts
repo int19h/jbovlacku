@@ -262,7 +262,7 @@ export async function searchPage(
     }
     if (packageProblem === undefined) {
       try {
-        cached = savedPackage(stored) ?? undefined;
+        cached = savedPackage(stored, language) ?? undefined;
       } catch (error) {
         if (!(error instanceof PackageValidationError)) throw error;
         if (!context.live()) return;

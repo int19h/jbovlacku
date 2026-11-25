@@ -29,6 +29,7 @@ export {
 import {
   fields,
   INVALID_PACKAGE_MESSAGE,
+  LONE_SURROGATE,
   PACKAGE_RAFSI_LIMIT,
   savedRow,
 } from "./saved-package.ts";
@@ -68,6 +69,11 @@ export function createPackageWordIndex(identify: typeof wordId = wordId) {
     let index = indexes.get(pkg);
     if (index?.language !== language) {
       index = { language, words: new Map(), invalidEntries: 0 };
+      if (!languageTag(language)) {
+        index.invalidEntries = 1;
+        indexes.set(pkg, index);
+        return index;
+      }
       for (const entry of pkg.entries) {
         let row;
         let id;
@@ -230,7 +236,9 @@ export function validateEntry(
       typeof value.notes !== "boolean" ||
       !Array.isArray(value.rafsi) ||
       value.rafsi.length > PACKAGE_RAFSI_LIMIT ||
-      value.rafsi.some((r: unknown) => typeof r !== "string") ||
+      value.rafsi.some(
+        (r: unknown) => typeof r !== "string" || LONE_SURROGATE.test(r),
+      ) ||
       !(
         value.rafsi_complete === undefined ||
         typeof value.rafsi_complete === "boolean"
@@ -301,6 +309,7 @@ export function validateCachedPackage(
   budget?: SearchRequestBudget,
 ): asserts value is CachedPackage {
   if (
+    !languageTag(language) ||
     !(
       fields(value, ["snapshot", "entries"]) ||
       fields(value, ["snapshot", "version", "entries"]) ||

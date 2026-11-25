@@ -468,6 +468,7 @@ export class LocalStore {
                 request.result,
                 JSON.stringify([db.name, id, rev]),
               );
+              this.packageCache.delete(id);
               this.packageCache.set(id, {
                 revision: rev,
                 value: request.result,
