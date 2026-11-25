@@ -7,7 +7,7 @@ This repository holds an early local prototype, and it is not ready for public u
 ## What the prototype does
 
 A shared Rust core implements canonical records, SSHSIG signatures, causal state, identity continuity, imported account controls, and exact ranking bounds. It builds both natively and to WebAssembly, so the server, the browser, and the native `jvc` command apply the same format rules.
-The state export stores witness evidence once per account. Publications refer to that evidence for their snapshot and view.
+The state export stores witness evidence once per account. An attributed publication refers to that evidence if the evaluation has a row for its account. The reference applies only to the snapshot and view of that evaluation.
 
 The Node.js server stores records in local object files and SQLite. It admits signed records, issues receipts, evaluates snapshots, builds search packages, and serves the dictionary API. The `jvc` command reads, writes, validates, and merges dictionary carriers.
 
