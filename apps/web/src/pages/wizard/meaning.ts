@@ -1,4 +1,8 @@
 import { CIRCLED, circledPlace } from "../../model/place-glyphs.ts";
+import {
+  SearchBudgetError,
+  SearchQueryTooLongError,
+} from "../../../../../packages/search/src/index.ts";
 import { searchPackage } from "../../data/package-search.ts";
 import { kindLabel } from "../../model/types.ts";
 import {
@@ -854,8 +858,19 @@ export async function meaningPage(
           return;
         } catch (error) {
           if (!current()) return;
-          localFailure(error);
-          renderMode();
+          if (error instanceof PackageValidationError) {
+            localFailure(error);
+            renderMode();
+          } else {
+            if (
+              error instanceof SearchQueryTooLongError ||
+              (error instanceof SearchBudgetError && error.phase === "search")
+            ) {
+              nearbySource = "local";
+              renderMode();
+            }
+            throw error;
+          }
         }
       }
       if (remoteConsent !== consentKey()) {

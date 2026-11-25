@@ -508,3 +508,44 @@ for (const [path, draft, copy] of [
       /no (local package is downloaded|downloaded search package|package is downloaded)/i,
     );
   });
+
+test("Meaning nearby reports a query-length error without marking a valid local package unavailable", async ({
+  page,
+}) => {
+  await savePackages(page, { en: [englishRow] });
+  await page.goto("/new/meaning?lang=en");
+  const nearby = page.getByRole("region", { name: "Close in meaning" });
+  await page
+    .getByRole("textbox", { name: "Meaning", exact: true })
+    .fill("a".repeat(5000));
+  await expect(nearby).toContainText("The search query is too long.");
+  await expect(nearby).toContainText("by words, from the downloaded package");
+  await expect(nearby).not.toContainText("local package unavailable");
+  await expect(nearby).not.toContainText(
+    "Download a search package in Settings",
+  );
+});
+
+test("Search does not claim browser storage is unavailable when one package read fails", async ({
+  page,
+}) => {
+  await savePackages(page, { en: [englishRow] });
+  await page.addInitScript(() => {
+    const original = IDBObjectStore.prototype.get;
+    IDBObjectStore.prototype.get = function (
+      this: IDBObjectStore,
+      key: IDBValidKey | IDBKeyRange,
+    ) {
+      if (this.name === "packages") {
+        this.transaction.abort();
+      }
+      return original.call(this, key);
+    };
+  });
+  await page.goto("/search?lang=en");
+  const main = page.locator("main");
+  await expect(main).toContainText(
+    "The saved search package for English could not be read. Searches use this server.",
+  );
+  await expect(main).not.toContainText("Browser storage is unavailable");
+});

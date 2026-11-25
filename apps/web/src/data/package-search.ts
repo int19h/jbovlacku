@@ -210,6 +210,8 @@ interface Client {
     number,
     { pkg: CachedPackage; language: string; storageHint?: string }
   >;
+  /** Fresh clones already verified equal to a retained snapshot. */
+  aliases: WeakMap<CachedPackage, { key: number; language: string }>;
   pending: Map<
     number,
     {
@@ -350,6 +352,7 @@ function searchWorker(): Client {
     preparing: new Map(),
     preparingKeys: new Map(),
     snapshots: new Map(),
+    aliases: new WeakMap(),
   };
   worker.onmessage = ({ data }) => {
     // Cache acknowledgments also matter after that request's consumer aborts.
@@ -454,6 +457,21 @@ export async function searchPackage(
         break;
       }
     }
+    // Fresh clone already verified structurally equal to a retained snapshot.
+    if (matchedKey === undefined) {
+      const alias = client.aliases.get(pkg);
+      if (
+        alias &&
+        alias.language === language &&
+        (client.retained.has(alias.key) || client.preparingKeys.has(alias.key))
+      ) {
+        const trusted = client.snapshots.get(alias.key);
+        if (trusted) {
+          matchedKey = alias.key;
+          resolvedPkg = trusted.pkg;
+        }
+      }
+    }
     // Fresh clone with the same durable storage revision: reuse only after
     // exact structural equality against the validated snapshot.
     if (matchedKey === undefined && storageHint !== undefined) {
@@ -466,6 +484,7 @@ export async function searchPackage(
         ) {
           matchedKey = candidateKey;
           resolvedPkg = entry.pkg;
+          client.aliases.set(pkg, { key: candidateKey, language });
           break;
         }
       }
