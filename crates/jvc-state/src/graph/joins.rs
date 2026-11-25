@@ -431,20 +431,32 @@ mod tests {
     }
 
     fn oracle(graph: &Graph, records: &[Record<'_>], scopes: &[Vec<Operand>], gap: u32) -> bool {
-        if gap == 0 || gap as usize == graph.space.len() {
-            return false;
-        }
-        let left = graph.space.id_at_ref(gap - 1);
-        let right = graph.space.id_at_ref(gap);
+        // Insert one nonmember into the full layout, then count each
+        // union from scratch. This oracle needs no range endpoints.
+        let positioned: Vec<_> = (0..graph.space.len() as u32)
+            .map(|position| Some(graph.space.id_at_ref(position)))
+            .collect();
+        let mut fresh = positioned.clone();
+        fresh.insert(gap as usize, None);
         scopes.iter().any(|scope| {
-            [left, right].into_iter().all(|id| {
-                scope.iter().any(|operand| {
-                    records[operand.record]
-                        .closure(operand.mode)
-                        .ids
-                        .contains(id)
-                })
-            })
+            let count = |layout: &[Option<&str>]| {
+                let mut previous = false;
+                let mut runs = 0;
+                for id in layout {
+                    let included = id.is_some_and(|id| {
+                        scope.iter().any(|operand| {
+                            records[operand.record]
+                                .closure(operand.mode)
+                                .ids
+                                .contains(id)
+                        })
+                    });
+                    runs += usize::from(included && !previous);
+                    previous = included;
+                }
+                runs
+            };
+            count(&fresh) > count(&positioned)
         })
     }
 
