@@ -302,7 +302,7 @@ for (const [label, saved] of savedPackages) {
     await seed(page, saved, { meaning: "book", step: 1 });
     page.on("dialog", (dialog) => void dialog.accept());
     await page.goto("/new/meaning");
-    await page.getByRole("button", { name: "search this server" }).click();
+    await page.getByRole("button", { name: "allow server search" }).click();
     await expect(page.locator("ol.similar")).toContainText("cukta");
     const body = await page.locator("body").innerText();
     expect(body).not.toMatch(RAW_ERROR);

@@ -324,9 +324,7 @@ export async function rafsiPage(
   if (words.unavailable) {
     main.append(
       p(
-        words.invalid
-          ? "Rafsi lookup needs a usable version 2 search package."
-          : "Rafsi lookup needs a version 2 search package. This server and the saved packages supply no rafsi data.",
+        "Rafsi lookup needs a usable version 2 search package. Rafsi coverage is unknown.",
         "notice",
       ),
     );
@@ -342,7 +340,7 @@ export async function rafsiPage(
   if (!words.length) {
     main.append(
       p(
-        `No retained claim assigns ${rafsi} to a word in this server's search packages. Coverage is limited to retained claim bodies.`,
+        `No retained claim assigns ${rafsi} to a word in the packages checked for this lookup. Coverage is limited to the retained claim bodies in those packages.`,
         "small",
       ),
     );
@@ -448,9 +446,7 @@ export async function claimPage(
   // Only the core's spelling refusal names no word. Any other failure
   // from the core is rethrown and reported as itself.
   const id = spelling
-    ? nullOnSpellingRefusal(() =>
-        deriveWordId({ language: "jbo", spelling }),
-      )
+    ? nullOnSpellingRefusal(() => deriveWordId({ language: "jbo", spelling }))
     : null;
   if (id === null) {
     main.append(p("This link names no word.", "notice"));
@@ -553,7 +549,7 @@ export async function claimPage(
       else
         competition.append(
           p(
-            `No retained claim of ${value} for another word in this server's packages. Coverage is limited to retained claim bodies.`,
+            `No retained claim of ${value} for another word in the packages checked for this lookup. Coverage is limited to the retained claim bodies in those packages.`,
             "small",
           ),
         );
@@ -721,7 +717,7 @@ export async function rafsiPairPage(
     main.append(
       el("h1", { class: "page", text: "Rafsi pair unavailable" }),
       p(
-        "A pair ID names a word and a rafsi, but the ID alone does not spell them. No retained claim in this server's search packages matches this pair, so the word and the rafsi are unknown here. Coverage is limited to retained claim bodies.",
+        "A pair ID names a word and a rafsi. Lookup did not resolve this pair, so its word and rafsi are unknown here.",
         "notice",
       ),
       el("p", { class: "fingerprint", text: pair }),
@@ -755,5 +751,6 @@ export async function rafsiPairPage(
     ),
   );
   const card = await pairCard(app, context, found, found.rafsi);
-  if (context.live()) main.append(card, el("p", { class: "fingerprint", text: pair }));
+  if (context.live())
+    main.append(card, el("p", { class: "fingerprint", text: pair }));
 }

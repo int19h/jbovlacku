@@ -185,6 +185,8 @@ export function createEvent(
 }
 export const wordId = (word: { language: "jbo"; spelling: string }): string =>
   wasm.runtime_word_identifier(utf8(JSON.stringify(word)));
+export const validWordIdSpelling = (spelling: string): boolean =>
+  wasm.valid_word_id_spelling(spelling);
 /** The rafsi pair ID of a word ID and NFC rafsi spelling, per the format specification. */
 export const rafsiPairId = (word: string, rafsi: string): string =>
   "jvr1:" +

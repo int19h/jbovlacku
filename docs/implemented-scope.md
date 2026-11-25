@@ -134,6 +134,8 @@ One work budget (200,000,000 work units) and one deadline (300,000 milliseconds)
 Saved-package validation and search run in a static module worker. Search pages, nearby lookup, and lujvo part lookup share two prepared package revisions.
 Local search transfers references for 20 results per group initially. Show all fetches only the remaining results through the 1,000-word browser limit. Displays cap what they render: part lookup shows at most 1,000 entries of one hit and names how many more the hit carries, the rafsi page shows at most 1,000 matching pairs, and the typed-word check shows the first 100 definitions with a Show all action that renders the rest in batches of 50. Actions use the whole set: lujvo Add records every definition and claim of the hit in one synchronous step, and the typed-word Show all renders every remaining definition.
 Nearby lookup ignores late results after meaning or language edits and recovers when the current language package returns.
+Consent allows nearby lookup to use the server when local lookup cannot answer.
+The panel reports a server search while that request is in progress.
 
 The server prepares lexical indexes during package materialization, before completed snapshots become readable.
 Storage reads check durable revision markers, so same-snapshot changes and another tab's writes invalidate retained data.

@@ -354,19 +354,18 @@ export async function lujvoPage(
       request === partSearch &&
       addField.input.value.trim() === query;
     let hits: LocalHit[] = [];
-    let lookupUnavailable = false;
+    let answered = false;
     try {
-      if (selected)
+      if (selected) {
         hits = (
-          await searchPackage(
-            selected.pkg,
-            selected.language,
-            [query],
-            { limit: 6, signal: context.signal },
-          )
+          await searchPackage(selected.pkg, selected.language, [query], {
+            limit: 6,
+            signal: context.signal,
+          })
         ).hits[0];
+        answered = true;
+      }
     } catch (error) {
-      lookupUnavailable = true;
       if (current())
         addResults.append(el("li", { class: "notice", text: describe(error) }));
     }
@@ -427,7 +426,12 @@ export async function lujvoPage(
           ? text(` · rafsi ${displayRafsi.join(", ")}`, "meta")
           : text(" · no listed rafsi", "meta"),
         ...(hidden > 0
-          ? [text(` · also: ${plural(hidden, "other matching definition")}`, "meta")]
+          ? [
+              text(
+                ` · also: ${plural(hidden, "other matching definition")}`,
+                "meta",
+              ),
+            ]
           : []),
         button(
           "Add",
@@ -476,12 +480,16 @@ export async function lujvoPage(
                 : analysis.kind === "cmevla"
                   ? "cmevla"
                   : "other";
+      const lookup =
+        !answered || !selected
+          ? "local dictionary lookup is unavailable"
+          : packageWordEntries(selected.pkg, selected.language, queryIdentity)
+                .length
+            ? "no exact match in these results"
+            : "not in the local package";
       item.append(
         el("span", { class: "hw", lang: "jbo", text: enteredSpelling }),
-        text(
-          ` ${kindLabel(kind)}, ${lookupUnavailable ? "local dictionary lookup is unavailable" : "not in the local package"}`,
-          "meta",
-        ),
+        text(` ${kindLabel(kind)}, ${lookup}`, "meta"),
         analysis.diagnostics.length
           ? text(` · ${analysis.diagnostics[0]}`, "meta")
           : text(""),
@@ -1006,7 +1014,8 @@ export async function lujvoPage(
       spelling: candidate.spelling.normalize("NFC"),
     });
     const taken = selected
-      ? packageWordEntries(selected.pkg, selected.language, candidateId).length > 0
+      ? packageWordEntries(selected.pkg, selected.language, candidateId)
+          .length > 0
       : false;
     availability.textContent = cached
       ? taken
@@ -1033,12 +1042,14 @@ export async function lujvoPage(
           availability.textContent +=
             error instanceof RequestError && error.status === 404
               ? ` The server has no definition of ${checked} now.`
-              : ` The server could not be asked: ${describe(error)}.`;
+              : ` Server availability is unknown: ${describe(error)}.`;
         });
     if (candidate.unlisted.length)
       resultCard.append(
         p(
-          `Rafsi ${candidate.unlisted.join(", ")} are not listed in the local package${inventory.snapshot ? ` of snapshot ${inventory.snapshot.slice(7, 19)}…` : ""}. They are claims you entered or claims the package does not carry.`,
+          inventory.snapshot && inventory.hasClaims
+            ? `Rafsi ${candidate.unlisted.join(", ")} are not listed in the local package of snapshot ${inventory.snapshot.slice(7, 19)}….`
+            : `Local claim coverage is unknown for rafsi ${candidate.unlisted.join(", ")}.`,
           "small",
         ),
       );

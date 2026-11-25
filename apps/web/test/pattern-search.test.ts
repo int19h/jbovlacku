@@ -332,7 +332,7 @@ test("rafsi lookup reports version 1 metadata as unavailable", async ({
   await page.goto("/rafsi/b*");
   await expect(
     page.getByText(
-      "Rafsi lookup needs a version 2 search package. This server and the saved packages supply no rafsi data.",
+      "Rafsi lookup needs a usable version 2 search package. Rafsi coverage is unknown.",
     ),
   ).toBeVisible();
   await expect(page.getByText(/No retained claim assigns/)).toHaveCount(0);

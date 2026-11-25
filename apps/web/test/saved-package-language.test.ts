@@ -107,13 +107,14 @@ async function countWordIds(page: Page) {
   await page.route("**/api/v1/words/**", (route) => route.abort());
 }
 
-test("a saved pair uses word IDs only for matching and complex spellings", async ({
+test("a saved pair uses word IDs only when it needs an identity", async ({
   page,
 }) => {
+  const spellings = ["bajra", "ba'a", "Ba’a", "máik", "水", ".djan.", "ba a"];
   const rows = Array.from({ length: 12 }, (_, i) => ({
     ...englishRow,
     event: "jve1:" + (i + 2).toString(16).padStart(64, "0"),
-    word: { language: "jbo", spelling: "bajra" },
+    word: { language: "jbo", spelling: spellings[i % spellings.length] },
     rafsi: [],
   }));
   await savePackages(page, { en: [englishRow, ...rows] });
@@ -132,6 +133,28 @@ test("a saved pair uses word IDs only for matching and complex spellings", async
     page.locator('main a[href="/word/cukta?lang=en"]').first(),
   ).toBeVisible();
   expect(await page.evaluate(() => (globalThis as any).wordIdCalls)).toBe(2);
+});
+
+test("a saved pair still rejects an invalid spelling after a match", async ({
+  page,
+}) => {
+  for (const spelling of [
+    " cukta",
+    "c\u0000ukta",
+    "c\u0301ukta",
+    "q́",
+    "\ud800",
+  ]) {
+    await savePackages(page, {
+      en: [englishRow, { ...englishRow, word: { language: "jbo", spelling } }],
+      fr: [frenchRow],
+    });
+    await page.route("**/api/v1/manifest", (route) => route.abort());
+    await page.goto(`/rafsi-pair/${fixture().pair}`);
+    await expect(
+      page.locator('main a[href^="/word/cukta?"]').first(),
+    ).toHaveAttribute("href", "/word/cukta?lang=fr");
+  }
 });
 
 test("a downloaded pair uses the word IDs from download validation", async ({
@@ -167,7 +190,7 @@ test("nearby defers its package label until the current language passes", async 
   const nearby = page.getByRole("region", { name: "Close in meaning" });
   await expect(nearby).not.toContainText("from the downloaded package");
   await expect(
-    nearby.getByRole("button", { name: "search this server" }),
+    nearby.getByRole("button", { name: "allow server search" }),
   ).toBeVisible();
   await page
     .getByRole("textbox", { name: "Meaning", exact: true })
@@ -175,6 +198,141 @@ test("nearby defers its package label until the current language passes", async 
   await expect(nearby).toContainText("saved package is invalid");
   await page.getByLabel("Language", { exact: true }).selectOption("fr");
   await expect(nearby).toContainText("from the downloaded package");
+});
+
+test("nearby consent does not announce a server search during local validation", async ({
+  page,
+}) => {
+  await savePackages(page, { en: [englishRow] });
+  await page.addInitScript(() => {
+    const held: (() => void)[] = [];
+    Object.assign(globalThis, { heldNearby: held });
+    const NativeWorker = globalThis.Worker;
+    globalThis.Worker = class extends NativeWorker {
+      postMessage(
+        message: { options?: { nearby?: boolean } },
+        options?: StructuredSerializeOptions,
+      ) {
+        if (message.options?.nearby)
+          held.push(() => super.postMessage(message, options));
+        else super.postMessage(message, options);
+      }
+    };
+  });
+  let requests = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/v1/search"))
+      requests++;
+  });
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.goto("/new/meaning?lang=en");
+  const nearby = page.getByRole("region", { name: "Close in meaning" });
+  await page
+    .getByRole("textbox", { name: "Meaning", exact: true })
+    .fill("book");
+  await page.waitForFunction(() => (globalThis as any).heldNearby.length > 0);
+  await nearby
+    .getByRole("button", { name: /^(allow server search|search this server)$/ })
+    .click();
+  await page.waitForFunction(() => (globalThis as any).heldNearby.length >= 2);
+  await expect(nearby).not.toContainText("searching this server");
+  await page.evaluate(() => {
+    const held = (globalThis as any).heldNearby as (() => void)[];
+    held.splice(0).forEach((release) => release());
+  });
+  await expect(nearby).toContainText("from the downloaded package");
+  await expect(nearby.getByRole("link", { name: "cukta" })).toBeVisible();
+  expect(requests).toBe(0);
+});
+
+test("nearby announces server search only while its request is pending", async ({
+  page,
+}) => {
+  await savePackages(page, {});
+  let release!: () => void;
+  const untilReleased = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/v1/search", async (route) => {
+    await untilReleased;
+    await route.fulfill({
+      json: {
+        snapshot: "sha256:" + "a".repeat(64),
+        view: "jve1:" + "b".repeat(64),
+        hits: [],
+        next: null,
+      },
+    });
+  });
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.goto("/new/meaning?lang=en");
+  const nearby = page.getByRole("region", { name: "Close in meaning" });
+  await page
+    .getByRole("textbox", { name: "Meaning", exact: true })
+    .fill("book");
+  const request = page.waitForRequest(
+    (req) => req.method() === "POST" && req.url().endsWith("/api/v1/search"),
+  );
+  await nearby.getByRole("button", { name: "allow server search" }).click();
+  try {
+    await request;
+    await expect(nearby).toContainText("searching this server");
+  } finally {
+    release();
+  }
+  await expect(nearby).toContainText("No close definitions found on");
+  await expect(nearby).not.toContainText("searching this server");
+});
+
+test("a rejected package leaves Lujvo part availability unknown", async ({
+  page,
+}) => {
+  await savePackages(
+    page,
+    { en: [frenchRow] },
+    {
+      kind: "lujvo",
+      meaning: "A disposable meaning.",
+      step: 3,
+    },
+  );
+  await page.goto("/new/lujvo");
+  await page.getByLabel("Add a part").fill("cukta");
+  const add = page.getByRole("button", { name: "Add cukta as entered" });
+  await expect(add).toBeVisible();
+  const row = add.locator("..");
+  await expect(row).toContainText("local dictionary lookup is unavailable");
+  await expect(row).not.toContainText("not in the local package");
+});
+
+test("unavailable rafsi packages leave server coverage unknown", async ({
+  page,
+}) => {
+  await savePackages(page, {});
+  await page.route("**/api/v1/manifest", (route) => route.abort());
+  await page.goto("/rafsi/cuk");
+  const main = page.locator("main");
+  await expect(main).toContainText("Rafsi coverage is unknown.");
+  await expect(main).not.toContainText(
+    "This server and the saved packages supply no rafsi data.",
+  );
+  await page.goto(`/rafsi-pair/${fixture().pair}`);
+  await expect(main).toContainText("Lookup did not resolve this pair");
+  await expect(main).not.toContainText("No retained claim in this server");
+});
+
+test("Settings withholds the count for a package with an invalid spelling", async ({
+  page,
+}) => {
+  await savePackages(page, {
+    en: [{ ...englishRow, word: { language: "jbo", spelling: " cukta" } }],
+  });
+  await page.goto("/preferences");
+  const row = page
+    .locator('[data-package-control="remove"][data-package-language="en"]')
+    .locator("..");
+  await expect(row).toContainText("The search package is invalid.");
+  await expect(row).not.toContainText("1 definition");
 });
 
 for (const [path, draft, copy] of [

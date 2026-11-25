@@ -198,13 +198,25 @@ pub fn event_message(header: &Header) -> Result<Vec<u8>> {
 pub fn word_id(word: &Value) -> Result<String> {
     schema::validate_word(word)?;
     let mut identity = word.clone();
-    identity["spelling"] = Value::String(strip_acute_accents(word["spelling"].as_str().unwrap()));
-    validate_spelling(identity["spelling"].as_str().unwrap(), 256)?;
+    identity["spelling"] = Value::String(identity_spelling(word["spelling"].as_str().unwrap())?);
     Ok(hash_id(
         "jvw1:",
         b"jbovlacku-word-v1\n",
         &canonical_value(&identity)?,
     ))
+}
+pub(crate) fn validate_word_spelling(spelling: &str) -> Result<()> {
+    validate_spelling(spelling, 256)?;
+    validate_acute_accents(spelling)
+}
+fn identity_spelling(spelling: &str) -> Result<String> {
+    let identity = strip_acute_accents(spelling);
+    validate_spelling(&identity, 256)?;
+    Ok(identity)
+}
+/// Check both forms of a word spelling without computing its ID.
+pub fn valid_word_id_spelling(spelling: &str) -> bool {
+    validate_word_spelling(spelling).is_ok() && identity_spelling(spelling).is_ok()
 }
 /// Acute stress marks affect display only. Keep every other diacritic.
 pub fn strip_acute_accents(spelling: &str) -> String {
