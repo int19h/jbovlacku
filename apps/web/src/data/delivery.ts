@@ -125,6 +125,8 @@ export type Classified = {
   state: PeerState;
   error: string | null;
   verifyReceipt?: true;
+  /** A Retry-After from a failed envelope read. */
+  retryAfterMs?: number | null;
 };
 /**
  * Interprets a receipt for an item. Delivery completes only when the receipt
@@ -162,11 +164,12 @@ export async function classifyReceipt(
     let bytes: Uint8Array;
     try {
       bytes = await fetchVariant(item.id);
-    } catch {
+    } catch (error) {
       return {
         state: "unknown",
         error: "The browser could not read the envelope named by the receipt.",
         verifyReceipt: true,
+        retryAfterMs: error instanceof RequestError ? error.retryAfterMs : null,
       };
     }
     if (!isEquivalentVariant(transport.envelope, receipt.envelope_hash, bytes))
@@ -225,6 +228,22 @@ function isEquivalentVariant(
     return false;
   }
 }
+/** Receipt verification stays open. It keeps the server's Retry-After. */
+class VerificationPendingError extends Error {
+  constructor(
+    message: string,
+    public retryAfterMs: number | null,
+  ) {
+    super(message);
+  }
+}
+/** The Retry-After that an attempt error carries, if any. */
+function retryAfterOf(error: unknown): number | null {
+  return error instanceof RequestError ||
+    error instanceof VerificationPendingError
+    ? error.retryAfterMs
+    : null;
+}
 export function backoff(attempts: number, retryAfterMs: number | null): number {
   const exponential = Math.min(
     BASE_DELAY * 2 ** Math.max(0, attempts - 1),
@@ -262,6 +281,9 @@ export function describePeer(peer: PeerDelivery): string {
       return `${peer.error ?? "The server refused this record."} Retries are paused until you try again.`;
   }
 }
+/** Text for a recipient whose next attempt looks up the receipt first. */
+export const UNCONFIRMED_TEXT =
+  "The result is unconfirmed. The browser will check the receipt again when online.";
 export type DeliveryListener = (items: OutboxItem[]) => void;
 /** The peer saved with the record for one recipient, or null without saved address evidence. */
 export function savedPeer(item: OutboxItem, peerId: string): Peer | null {
@@ -343,6 +365,10 @@ export class DeliveryEngine {
   private scheduleGeneration = 0;
   private listRetryAt = 0;
   private recordRetryAt = new Map<string, number>();
+  /** Per recipient, so one recipient's error never shortens another's wait. */
+  private peerRetryAt = new Map<string, Map<string, number>>();
+  /** The earliest recipient retry of a record whose attempt just failed. */
+  private failedRetryAt = new Map<string, number>();
   private unsavedOutcomes = new Map<string, Map<string, UnsavedOutcome>>();
   private listeners = new Set<DeliveryListener>();
   private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
@@ -694,6 +720,12 @@ export class DeliveryEngine {
           !this.isDelivering(item.id)))
     );
   }
+  /** Page text for one recipient. An unconfirmed outcome replaces the stored state. */
+  describe(item: OutboxItem, peerId: string): string {
+    return this.needsReceipt(item, peerId)
+      ? UNCONFIRMED_TEXT
+      : describePeer(item.peers[peerId]);
+  }
   isNotDelivered(item: OutboxItem): boolean {
     return (
       isNotDelivered(item) ||
@@ -752,6 +784,8 @@ export class DeliveryEngine {
         }
         for (const id of this.recordRetryAt.keys())
           if (!present.has(id)) this.recordRetryAt.delete(id);
+        for (const id of this.peerRetryAt.keys())
+          if (!present.has(id)) this.peerRetryAt.delete(id);
         for (const id of this.unsavedOutcomes.keys())
           if (!present.has(id)) this.unsavedOutcomes.delete(id);
         const due = Math.max(next, this.listRetryAt);
@@ -771,7 +805,10 @@ export class DeliveryEngine {
   private dueAt(id: string, peerId: string, peer: PeerDelivery): number {
     if (peer.state === "accepted" || peer.failure === "unresolved")
       return Infinity;
-    const delayed = this.recordRetryAt.get(id) ?? 0;
+    const delayed = Math.max(
+      this.recordRetryAt.get(id) ?? 0,
+      this.peerRetryAt.get(id)?.get(peerId) ?? 0,
+    );
     const unsaved = this.unsavedOutcome(id, peerId, peer)?.outcome;
     if (unsaved)
       return Math.max(
@@ -831,14 +868,24 @@ export class DeliveryEngine {
     const running = this.inFlight.get(id);
     if (running) return running;
     this.recordRetryAt.delete(id);
+    if (explicit) {
+      // Try now and Resume retry a refused record. An unsaved refusal
+      // gives way to them in the same way as a saved one. An unsaved
+      // acceptance or open verification stays, so the record is never
+      // sent again after the server took it.
+      const unsaved = this.unsavedOutcomes.get(id);
+      for (const [peerId, entry] of unsaved ?? [])
+        if (entry.outcome.state === "refused") unsaved!.delete(peerId);
+      if (unsaved?.size === 0) this.unsavedOutcomes.delete(id);
+    }
     const work = this.deliverNow(id, explicit)
       .catch((error) => {
         this.scheduleGeneration++;
-        const delay = backoff(
-          1,
-          error instanceof RequestError ? error.retryAfterMs : null,
-        );
-        this.recordRetryAt.set(id, Date.now() + delay);
+        const at =
+          this.failedRetryAt.get(id) ??
+          Date.now() + backoff(1, retryAfterOf(error));
+        this.failedRetryAt.delete(id);
+        this.recordRetryAt.set(id, at);
         throw error;
       })
       .finally(() => {
@@ -876,6 +923,7 @@ export class DeliveryEngine {
     item = (await this.fresh(id)) ?? item;
     const now = Date.now();
     let failure: { error: unknown } | undefined;
+    let earliest = Infinity;
     for (const peerId of Object.keys(item.peers)) {
       const current = await this.fresh(id);
       if (!current) return undefined;
@@ -884,6 +932,7 @@ export class DeliveryEngine {
       if (!explicit && (current.stopped || this.dueAt(id, peerId, peer) > now))
         continue;
       const started = Date.now();
+      this.peerRetryAt.get(id)?.delete(peerId);
       // Random, so two attempts that start in the same millisecond differ.
       const attemptId = crypto.randomUUID();
       try {
@@ -900,9 +949,17 @@ export class DeliveryEngine {
       } catch (error) {
         // Other recipients of this record can still have work due.
         failure ??= { error };
+        const at = Date.now() + backoff(1, retryAfterOf(error));
+        let peers = this.peerRetryAt.get(id);
+        if (!peers) this.peerRetryAt.set(id, (peers = new Map()));
+        peers.set(peerId, at);
+        earliest = Math.min(earliest, at);
       }
     }
-    if (failure) throw failure.error;
+    if (failure) {
+      this.failedRetryAt.set(id, earliest);
+      throw failure.error;
+    }
     return this.fresh(id);
   }
   private async saveOutcome(
@@ -978,12 +1035,12 @@ export class DeliveryEngine {
       objectBytes(`/events/${encodeURIComponent(id)}`, 20480, {
         peer: target,
       });
+    // The Retry-After of the latest failed envelope read.
+    let classifiedRetryAfter: number | null = null;
     const settle = async (receipt: Receipt): Promise<PeerDelivery> => {
-      const { state, error, verifyReceipt } = await classifyReceipt(
-        item,
-        receipt,
-        fetchVariant,
-      );
+      const { state, error, verifyReceipt, retryAfterMs } =
+        await classifyReceipt(item, receipt, fetchVariant);
+      classifiedRetryAfter = retryAfterMs ?? null;
       if (state === "accepted") rememberAcceptedReceipt(receipt, target);
       return {
         state,
@@ -992,7 +1049,7 @@ export class DeliveryEngine {
         nextAttempt:
           state === "accepted" || state === "refused"
             ? null
-            : started + backoff(attempts, null),
+            : started + backoff(attempts, retryAfterMs ?? null),
         error,
         failure:
           state === "refused"
@@ -1055,8 +1112,9 @@ export class DeliveryEngine {
           // identical retry below.
           if (settled.verifyReceipt) {
             if (pending)
-              throw new Error(
+              throw new VerificationPendingError(
                 settled.error ?? "Receipt verification is pending.",
+                classifiedRetryAfter,
               );
             return settled;
           }

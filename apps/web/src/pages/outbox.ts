@@ -3,7 +3,12 @@ import { el, p, link, text, button, describe, download } from "../lib/dom.ts";
 import { clockTime, dayMonth, inDuration } from "../lib/format.ts";
 import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
-import { describePeer, isFinished, recipientLabel } from "../data/delivery.ts";
+import {
+  describePeer,
+  isFinished,
+  recipientLabel,
+  UNCONFIRMED_TEXT,
+} from "../data/delivery.ts";
 import {
   ownGraph,
   dependentIds,
@@ -105,8 +110,12 @@ export async function outboxPage(
     const stopped = active.filter((item) => item.stopped);
     const kinds = new Set(
       waiting.flatMap((item) =>
-        Object.values(item.peers).map((peer) =>
-          peer.failure === "unresolved" ? "unresolved" : peer.state,
+        Object.entries(item.peers).map(([peerId, peer]) =>
+          peer.failure === "unresolved"
+            ? "unresolved"
+            : app.delivery.needsReceipt(item, peerId)
+              ? "unconfirmed"
+              : peer.state,
         ),
       ),
     );
@@ -132,6 +141,10 @@ export async function outboxPage(
         )
           ? "Some delivery outcomes are unknown. No connection to the server was reported for some records. The client asks for receipts before it sends the same bytes again."
           : "Some delivery outcomes are unknown. The client asks for receipts before it sends the same bytes again.",
+      );
+    if (kinds.has("unconfirmed"))
+      reasons.push(
+        "Some delivery outcomes are unconfirmed. The browser checks their receipts again when online.",
       );
     if (kinds.has("queued"))
       reasons.push(
@@ -300,7 +313,7 @@ function row(
     const receiptPending = app.delivery.needsReceipt(item, peerId);
     parts.push(
       receiptPending
-        ? "The result is unconfirmed. The browser will check the receipt again when online."
+        ? UNCONFIRMED_TEXT
         : // A timeout keeps its own text. The browser's offline report does
           // not show that a request that timed out was never sent.
           !navigator.onLine &&

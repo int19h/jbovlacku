@@ -972,8 +972,7 @@ export function renderExisting(
     // elsewhere during the read keeps that choice. The kind of element that
     // had focus decides which replacement gets it back.
     const active = document.activeElement;
-    const focusKind =
-      active && box.contains(active) ? active.tagName : null;
+    const focusKind = active && box.contains(active) ? active.tagName : null;
     box.replaceChildren();
     const line =
       state.transferDone && state.acceptDone
@@ -1001,7 +1000,8 @@ export function renderExisting(
       return p(
         `${name}: ${Object.entries(item.peers)
           .map(
-            ([id, peer]) => `${savedPeer(item, id)?.label ?? id} ${peer.state}`,
+            ([id, peer]) =>
+              `${savedPeer(item, id)?.label ?? id} ${app.delivery.needsReceipt(item, id) ? "unconfirmed" : peer.state}`,
           )
           .join(", ")}.`,
         "meta",

@@ -6,6 +6,7 @@ import {
   acceptFirstSignature,
   corePath,
   createIdentity,
+  openWord,
   PASSPHRASE,
 } from "./helpers.ts";
 
@@ -729,4 +730,222 @@ test("the outbox shows a proved receipt mismatch after pending verification", as
   // The proved mismatch permits the identical retry.
   expect(posts).toEqual([item.transport, item.transport]);
   expect(saved.transport).toBe(item.transport);
+});
+
+/** Aborts the next `count` outbox writes in this page whose peer state is `state`. */
+async function abortOutboxWrites(page: Page, state: string, count = 1) {
+  await page.evaluate(
+    ({ state, count }) => {
+      let left = count;
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, key) {
+        const request = put.call(this, value, key);
+        if (
+          this.name === "outbox" &&
+          left > 0 &&
+          Object.values(
+            (value?.peers ?? {}) as Record<string, { state: string }>,
+          ).some((peer) => peer.state === state)
+        ) {
+          left--;
+          this.transaction.abort();
+        }
+        return request;
+      };
+    },
+    { state, count },
+  );
+}
+
+/** Queues one fresh signed profile in the app's own outbox. */
+async function queueProfile(page: Page, peer: Record<string, unknown> = {}) {
+  return page.evaluate(
+    async ({ corePath, peer }) => {
+      const core = await import(corePath);
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { outboxItem } = await import(String("/src/data/lifecycle.ts"));
+      await core.initializeCore();
+      const item: OutboxItem = outboxItem(
+        core.createEvent(
+          crypto.getRandomValues(new Uint8Array(32)),
+          [],
+          "1".repeat(32),
+          { kind: "identity.profile" },
+          { name: "Outbox view", bio: [], links: [] },
+        ),
+        "outbox-view",
+        0,
+        {
+          self: {
+            origin: location.origin,
+            base: "/api/v1",
+            label: "This server",
+          },
+        },
+      );
+      Object.assign(item.peers.self, peer);
+      await new LocalStore().queueGroup([item]);
+      return item;
+    },
+    { corePath, peer },
+  );
+}
+
+test("Stop and Resume on the outbox send again after an unsaved refusal", async ({
+  page,
+}) => {
+  await page.goto("/outbox");
+  await expect(page.getByText("No unfinished records.")).toBeVisible();
+  const { posts } = deliveryRequests(page);
+  let refuse = true;
+  await page.route("**/api/v1/events", (route) =>
+    refuse
+      ? route.fulfill({
+          status: 422,
+          json: {
+            code: "refused",
+            message: "Refused.",
+            event: null,
+            field: null,
+          },
+        })
+      : route.continue(),
+  );
+  await abortOutboxWrites(page, "refused");
+  const item = await queueProfile(page);
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect.poll(() => posts.length).toBe(1);
+  await expect(
+    page.getByText(
+      "The result is unconfirmed. The browser will check the receipt again when online.",
+    ),
+  ).toBeVisible();
+  expect((await readOutbox(page))[0].peers.self.state).toBe("queued");
+  refuse = false;
+  await page.getByRole("button", { name: "Stop retrying" }).click();
+  await page.getByRole("button", { name: "Resume" }).click();
+  await expect
+    .poll(async () => (await readOutbox(page))[0].peers.self.state)
+    .toBe("accepted");
+  expect(posts).toEqual([item.transport, item.transport]);
+});
+
+test("the outbox summary and saved publication lines show an unconfirmed outcome", async ({
+  page,
+}) => {
+  await page.goto("/outbox");
+  await expect(page.getByText("No unfinished records.")).toBeVisible();
+  const { posts } = deliveryRequests(page);
+  const stale = {
+    state: "missing-body",
+    attempts: 1,
+    nextAttempt: Date.now() + 3_600_000,
+    error:
+      "The server stored the signed header without its body. The complete record will be sent again.",
+    attempt: "older",
+  };
+  const item = await queueProfile(page, stale);
+  const receipt = await page.evaluate(async (transport) => {
+    const { storedEnvelopeHash } = await import(
+      String("/src/data/delivery.ts")
+    );
+    const parsed = JSON.parse(transport) as Transport;
+    return {
+      id: parsed.envelope.id,
+      admission: "accepted",
+      interpretation: "effective",
+      body_status: "present",
+      body_hash: parsed.envelope.header.content?.hash,
+      envelope_hash: storedEnvelopeHash(transport),
+      cursor: "x.1",
+      snapshot: null,
+      view: "jve1:" + "a".repeat(64),
+      reasons: [],
+    };
+  }, item.transport);
+  await page.route("**/api/v1/receipts/*", (route) =>
+    route.fulfill({ json: receipt }),
+  );
+  await page.reload();
+  await expect(
+    page.getByText(/A server stored a signed header without its required body/),
+  ).toBeVisible();
+  await abortOutboxWrites(page, "accepted");
+  await page.getByRole("button", { name: "Try now" }).click();
+  await expect(
+    page.getByText(
+      "The result is unconfirmed. The browser will check the receipt again when online.",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/Some delivery outcomes are unconfirmed/),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/A server stored a signed header without its required body/),
+  ).toHaveCount(0);
+  expect((await readOutbox(page))[0].peers.self.state).toBe("missing-body");
+  expect(posts).toEqual([]);
+
+  // The saved publication lines use the same rule in another engine.
+  const lines = await page.evaluate(async (stale) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
+    const { savedGroupState } = await import(
+      String("/src/pages/wizard/publish.ts")
+    );
+    const main = new LocalStore();
+    const [row] = (await main.list("outbox")) as OutboxItem[];
+    const store = new LocalStore("saved-lines");
+    await store.queueGroup([
+      { ...row, peers: { self: { ...row.peers.self, ...stale } } },
+    ]);
+    const put = IDBObjectStore.prototype.put;
+    let left = 1;
+    IDBObjectStore.prototype.put = function (value, key) {
+      const request = put.call(this, value, key);
+      if (
+        this.name === "outbox" &&
+        left > 0 &&
+        value?.peers?.self?.state === "accepted"
+      ) {
+        left--;
+        this.transaction.abort();
+      }
+      return request;
+    };
+    const engine = new DeliveryEngine(store);
+    await engine.tryNow(row.id).catch(() => {});
+    const items = (await store.list("outbox")) as OutboxItem[];
+    return {
+      state: items[0].peers.self.state,
+      lines: savedGroupState(items, engine).lines,
+    };
+  }, stale);
+  expect(lines.state).toBe("missing-body");
+  expect(lines.lines.join(" ")).toContain(
+    "The result is unconfirmed. The browser will check the receipt again when online.",
+  );
+  expect(lines.lines.join(" ")).not.toContain("will be sent again");
+});
+
+test("a judgment whose outcome save fails still reports a saved record", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  await abortOutboxWrites(page, "accepted");
+  const { posts } = deliveryRequests(page);
+  await page
+    .locator("article.definition")
+    .first()
+    .getByRole("button", { name: "Endorse" })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toContainText(
+    "Your judgment is signed and saved here. Delivery is not finished.",
+  );
+  await expect.poll(() => posts.length).toBe(1);
+  const rows = await readOutbox(page);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].transport).toBe(posts[0]);
 });

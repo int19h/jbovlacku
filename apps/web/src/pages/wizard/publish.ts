@@ -45,7 +45,6 @@ import {
 import { definitionBlock } from "../../components/definition.ts";
 import { identityProfile, profileName } from "../../components/attribution.ts";
 import { getWord, selfPeer } from "../../data/api.ts";
-import { describePeer } from "../../data/delivery.ts";
 import {
   PublicationConflictError,
   labelIndex,
@@ -937,7 +936,10 @@ export async function publishPage(
   }
 }
 /** The values that the saved group actually shows. Retry timestamps stay private to delivery. */
-function savedGroupState(items: OutboxItem[], delivery: App["delivery"]) {
+export function savedGroupState(
+  items: OutboxItem[],
+  delivery: App["delivery"],
+) {
   const unfinished = items.filter((item) =>
     Object.values(item.peers).some((peer) => peer.state !== "accepted"),
   );
@@ -972,7 +974,9 @@ function savedGroupState(items: OutboxItem[], delivery: App["delivery"]) {
           : `All ${items.length} signed records were accepted.`,
     lines: items.map((item) => {
       const label = resolvedLabel(item, labels);
-      return `${label.action} ${label.subject}: ${Object.values(item.peers).map(describePeer).join(" ")}`;
+      return `${label.action} ${label.subject}: ${Object.keys(item.peers)
+        .map((peerId) => delivery.describe(item, peerId))
+        .join(" ")}`;
     }),
   };
 }
