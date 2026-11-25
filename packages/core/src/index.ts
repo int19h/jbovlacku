@@ -197,6 +197,12 @@ export function validWordIdSpellings(spellings: string[]): boolean {
       wasm.valid_word_id_spellings(spellings.join("\0")))
   );
 }
+export function wordIdSpellings(spellings: string[]): string[] {
+  if (spellings.length === 0) return [];
+  if (spellings.some((spelling) => !spelling.length || /[\0\p{Cs}]/u.test(spelling)))
+    throw new Error("invalid word spelling");
+  return wasm.word_id_spellings(spellings.join("\0")).split("\0");
+}
 /** The rafsi pair ID of a word ID and NFC rafsi spelling, per the format specification. */
 export const rafsiPairId = (word: string, rafsi: string): string =>
   "jvr1:" +

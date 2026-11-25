@@ -2,6 +2,7 @@
 import {
   validWordIdSpellings,
   wordId,
+  wordIdSpellings,
   wordSpellingStatus,
 } from "../../../../packages/core/src/browser.ts";
 import type { SearchRequestBudget } from "../../../../packages/search/src/index.ts";
@@ -50,34 +51,17 @@ function isDateMap(value: unknown): value is Record<string, unknown> {
 }
 
 /** A stored array must have only its own elements and its intrinsic length. */
-export function requireDenseList(
-  value: unknown,
-  budget?: SearchRequestBudget,
-): asserts value is unknown[] {
-  if (!isDenseList(value, budget)) throw new PackageValidationError();
+export function requireDenseList(value: unknown): asserts value is unknown[] {
+  if (!isDenseList(value)) throw new PackageValidationError();
 }
 
-function isDenseList(
-  value: unknown,
-  budget?: SearchRequestBudget,
-): value is unknown[] {
+function isDenseList(value: unknown): value is unknown[] {
   if (!Array.isArray(value)) return false;
-  const len = value.length;
-  if (len > 0) {
-    // Probe boundary indices in O(1) before touching the request budget or
-    // enumerating keys, so huge sparse arrays fail as invalid input.
-    if (
-      !Object.hasOwn(value, 0) ||
-      !Object.hasOwn(value, len - 1) ||
-      (len > 2 && !Object.hasOwn(value, len >>> 1))
-    )
-      return false;
-    budget?.ensure(len, "prepare");
-  }
-  // Inspect supplied keys. An array lists its indices first, then its
-  // intrinsic length, then any extra string or symbol keys.
+  // Inspect actual own keys without charging a request budget or sampling indices:
+  // work scales with supplied keys, so sparse huge lengths always fail as invalid.
+  // An array lists its indices first, then its intrinsic length, then extra keys.
   const keys = Reflect.ownKeys(value);
-  return keys.length === len + 1 && keys[len] === "length";
+  return keys.length === value.length + 1 && keys[value.length] === "length";
 }
 
 const WORD_FIELDS = ["language", "spelling"];
@@ -103,7 +87,7 @@ export function requireSavedRowLists(
 
   if (!Array.isArray(glosses) || glosses.length > 8192)
     throw new PackageValidationError();
-  requireDenseList(glosses, budget);
+  requireDenseList(glosses);
   for (let i = 0; i < glosses.length; i++) {
     const gloss = glosses[i];
     if (
@@ -116,7 +100,7 @@ export function requireSavedRowLists(
   }
 
   const { selmaho } = classification;
-  requireDenseList(selmaho, budget);
+  requireDenseList(selmaho);
   for (let i = 0; i < selmaho.length; i++)
     if (typeof selmaho[i] !== "string") throw new PackageValidationError();
 
@@ -392,6 +376,54 @@ export function checkSavedWord(word: {
   if (status === "valid") return;
   if (status === "invalid" || !validWordIdSpellings([word.spelling]))
     throw new PackageValidationError();
+}
+
+/** Check rafsi claim unions by canonical core word ID in small core batches. */
+export function savedRafsiClaims() {
+  const countRafsi = savedRafsiUnion();
+  const ids = new Map<string, string>();
+  const pending: { spelling: string; entry: PackageEntryV2 }[] = [];
+  const needed: string[] = [];
+  const queued = new Set<string>();
+  const flush = () => {
+    if (!pending.length) return;
+    if (needed.length) {
+      let resolved: string[];
+      try {
+        resolved = wordIdSpellings(needed);
+      } catch {
+        throw new PackageValidationError();
+      }
+      for (let i = 0; i < needed.length; i++) ids.set(needed[i], resolved[i]);
+      needed.length = 0;
+      queued.clear();
+    }
+    for (let i = 0; i < pending.length; i++) {
+      const item = pending[i];
+      countRafsi(ids.get(item.spelling)!, item.entry);
+    }
+    pending.length = 0;
+  };
+  return {
+    add(entry: PackageEntryV2) {
+      if (!entry.rafsi.length) return;
+      const { spelling } = entry.word;
+      const known = ids.get(spelling);
+      if (known !== undefined) {
+        countRafsi(known, entry);
+        return;
+      }
+      if (wordSpellingStatus(spelling) === "invalid")
+        throw new PackageValidationError();
+      pending.push({ spelling, entry });
+      if (!queued.has(spelling)) {
+        queued.add(spelling);
+        needed.push(spelling);
+      }
+      if (needed.length === 128) flush();
+    },
+    finish: flush,
+  };
 }
 
 /** Check spellings in small batches during the row walk. Finish before using the package. */

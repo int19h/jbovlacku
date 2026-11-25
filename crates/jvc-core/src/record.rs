@@ -207,6 +207,17 @@ pub fn word_id(word: &Value) -> Result<String> {
         &canonical_value(&identity)?,
     ))
 }
+/// Canonical word ID for a Lojban spelling without parsing or allocating a JSON object.
+pub fn word_id_for_lojban_spelling(spelling: &str) -> Result<String> {
+    validate_word_spelling(spelling)?;
+    let identity = identity_spelling(spelling)?;
+    let encoded = canonical_value(&Value::String(identity))?;
+    let mut bytes = Vec::with_capacity(30 + encoded.len());
+    bytes.extend_from_slice(br#"{"language":"jbo","spelling":"#);
+    bytes.extend_from_slice(&encoded);
+    bytes.push(b'}');
+    Ok(hash_id("jvw1:", b"jbovlacku-word-v1\n", &bytes))
+}
 pub(crate) fn validate_word_spelling(spelling: &str) -> Result<()> {
     validate_spelling(spelling, 256)?;
     validate_acute_accents(spelling)
@@ -779,5 +790,18 @@ mod spelling_ranges_tests {
         let bad_258 = "水".repeat(86);
         assert_eq!(bad_258.len(), 258);
         assert!(!valid_word_id_spelling(&bad_258));
+
+        for sample in [
+            "cukta", "djan", "dján", "ba'a", "Ba’a", "a\"b\\c", "水", "𠮷", &ok_256,
+        ] {
+            assert_eq!(
+                word_id_for_lojban_spelling(sample).unwrap(),
+                word_id(&serde_json::json!({ "language": "jbo", "spelling": sample })).unwrap(),
+                "word_id_for_lojban_spelling mismatch for {sample:?}"
+            );
+        }
+        for invalid in ["", " ", " cukta", "\u{1100}\u{1161}", "e\u{0301}", &bad_258] {
+            assert!(word_id_for_lojban_spelling(invalid).is_err());
+        }
     }
 }

@@ -672,13 +672,12 @@ export function sourceOptions(
   cached: CachedPackage | null,
   wholeWord = false,
 ) {
-  const words = new Map<string, LujvoComponentState>();
-  for (const entry of cached?.entries ?? []) {
-    const spelling = entry.word.spelling;
-    if (!fitsComponentSpelling(spelling)) continue;
+  const entries = cached?.entries ?? [];
+  const matchedPlains = new Set<string>();
+  for (const entry of entries) {
     const listed =
       !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
-    const plain = stripAcuteAccents(spelling);
+    const plain = stripAcuteAccents(entry.word.spelling);
     if (wholeWord && plain !== part.text) continue;
     if (
       !wholeWord &&
@@ -689,6 +688,18 @@ export function sourceOptions(
       !listed.includes(part.text)
     )
       continue;
+    matchedPlains.add(plain);
+  }
+  if (!matchedPlains.size) return [];
+  // Group all rows that share a canonical word ID before enforcing the 128-byte
+  // component spelling limit, so an over-long alias does not drop its claims
+  // when another alias of the same word fits.
+  const words = new Map<string, LujvoComponentState>();
+  for (const entry of entries) {
+    const spelling = entry.word.spelling;
+    if (!matchedPlains.has(stripAcuteAccents(spelling))) continue;
+    const listed =
+      !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
     const identity = wordId(entry.word);
     let component = words.get(identity);
     if (!component) {
@@ -703,6 +714,11 @@ export function sourceOptions(
         claims: [],
       };
       words.set(identity, component);
+    } else if (
+      !fitsComponentSpelling(component.spelling) &&
+      fitsComponentSpelling(spelling)
+    ) {
+      component.spelling = spelling;
     }
     component.definitions!.push({
       event: entry.event,
@@ -710,7 +726,10 @@ export function sourceOptions(
     });
     for (const rafsi of listed)
       if (!component.claims.some((claim) => claim.rafsi === rafsi)) {
-        if (component.claims.length === PACKAGE_RAFSI_LIMIT || !validPackageRafsi(rafsi))
+        if (
+          component.claims.length === PACKAGE_RAFSI_LIMIT ||
+          !validPackageRafsi(rafsi)
+        )
           throw new PackageValidationError();
         component.claims.push({ rafsi, pair: rafsiPairId(identity, rafsi) });
       }
@@ -763,7 +782,8 @@ export function typedLujvoState(
       if (zei)
         return {
           id: componentId(),
-          spelling: display ?? part.text,
+          spelling:
+            display && fitsComponentSpelling(display) ? display : part.text,
           kind: detectWord(part.text, profile).kind,
           definition: null,
           definitions: [],

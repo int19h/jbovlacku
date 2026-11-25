@@ -27,6 +27,7 @@ import {
   INVALID_PACKAGE_MESSAGE,
   PackageValidationError,
   savedPackage,
+  savedRafsiClaims,
   savedRafsiUnion,
   requireDenseList,
   savedRowReader,
@@ -138,17 +139,16 @@ export async function wordsWithRafsi(
       // Read the coverage flag only from rows that pass the package rule.
       requireDenseList(pkg.entries);
       const readRow = savedRowReader(pkg, language);
-      const countRafsi = savedRafsiUnion();
-      const wordIdOf = savedWordIdCache();
+      const claims = savedRafsiClaims();
       const spellings = savedSpellingChecks();
       let incomplete = false;
       for (const row of pkg.entries) {
         const entry = readRow(row);
-        if (isV2(entry) && entry.rafsi.length)
-          countRafsi(wordIdOf(entry.word.spelling), entry);
+        if (isV2(entry) && entry.rafsi.length) claims.add(entry);
         else spellings.add(entry.word.spelling);
         if (isV2(entry) && entry.rafsi_complete === false) incomplete = true;
       }
+      claims.finish();
       spellings.finish();
       result = await searchPackage(pkg, language, [rafsi], {
         rafsiOnly: true,

@@ -27,11 +27,10 @@ import {
   INVALID_PACKAGE_MESSAGE,
   PackageValidationError,
   savedPackage,
-  savedRafsiUnion,
+  savedRafsiClaims,
   requireDenseList,
   savedRowReader,
   savedSpellingChecks,
-  savedWordIdCache,
 } from "../data/saved-package.ts";
 import type { Preferences } from "../data/store.ts";
 
@@ -667,15 +666,14 @@ async function preferencesBody(context: RenderContext, app: App) {
           try {
             requireDenseList(pkg.entries);
             const readRow = savedRowReader(pkg, key);
-            const countRafsi = savedRafsiUnion();
-            const wordIdOf = savedWordIdCache();
+            const claims = savedRafsiClaims();
             const spellings = savedSpellingChecks();
             for (const value of pkg.entries) {
               const entry = readRow(value);
-              if (isV2(entry) && entry.rafsi.length)
-                countRafsi(wordIdOf(entry.word.spelling), entry);
+              if (isV2(entry) && entry.rafsi.length) claims.add(entry);
               else spellings.add(entry.word.spelling);
             }
+            claims.finish();
             spellings.finish();
             detail.textContent = `${plural(pkg.entries.length, "definition")} · snapshot ${pkg.snapshot.slice(7, 19)}… · version ${pkg.version ?? 1}${
               pkg.downgrade

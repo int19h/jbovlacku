@@ -319,8 +319,9 @@ A rafsi lookup downloads the current package for each of its languages. When bro
 A saved package list must have a value at every index and no extra properties.
 This rule covers entries, glosses, selma'o names, and rafsi.
 Attribution dates form a map from names to strings.
-Direct readers and the search worker apply the same package and row rules, checking list and row shapes within the request budget before measuring or using content.
-The app rejects the entire package if a row or list fails a check.
+Direct readers, client transfer, and the search worker apply the same package, list, and row shape rules before any budget charge or content measurement.
+The list check inspects actual own keys rather than sampling indices, so any hole, extra own property, or sparse huge length rejects the entire package as invalid rather than reporting a budget failure.
+After the shape checks pass, the worker and client transfer charge content work to the request budget; direct readers apply the same package and row rules without a request budget.
 
 In a version 2 package, all rows for one canonical word ID can list up to 64 distinct rafsi.
 Each rafsi can use up to 128 UTF-8 bytes and must have no lone surrogate.

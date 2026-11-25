@@ -23,6 +23,7 @@ export {
   wordSpellingStatus,
   type WordSpellingStatus,
   validWordIdSpellings,
+  wordIdSpellings,
   rafsiPairId,
   validateAction,
   inspectBody,

@@ -33,12 +33,12 @@ import {
   PackageValidationError,
   requireDenseList,
   savedPackage,
+  savedRafsiClaims,
   savedRafsiUnion,
   savedRow,
   savedRowReader,
   savedSpellingChecks,
   savedWordId,
-  savedWordIdCache,
 } from "./saved-package.ts";
 import {
   getManifest,
@@ -226,11 +226,10 @@ export function validateCachedPackage(
 ): asserts value is CachedPackage {
   const pkg = savedPackage(value);
   if (!pkg) throw invalidPackage();
+  requireDenseList(pkg.entries);
   if (pkg.entries.length) budget?.ensure(1, "prepare");
-  requireDenseList(pkg.entries, budget);
   const readRow = savedRowReader(pkg, language, budget);
-  const countRafsi = savedRafsiUnion();
-  const wordIdOf = savedWordIdCache();
+  const claims = savedRafsiClaims();
   const spellings = savedSpellingChecks();
   for (const entry of pkg.entries) {
     // One validated entry costs one unit plus its content, charged before
@@ -239,10 +238,10 @@ export function validateCachedPackage(
     budget?.ensure(1, "prepare");
     const row = readRow(entry);
     budget?.reserve(1 + entryContentUnits(row, budget, "prepare"), "prepare");
-    if (isV2(row) && row.rafsi.length)
-      countRafsi(wordIdOf(row.word.spelling), row);
+    if (isV2(row) && row.rafsi.length) claims.add(row);
     else spellings.add(row.word.spelling);
   }
+  claims.finish();
   spellings.finish();
 }
 /**

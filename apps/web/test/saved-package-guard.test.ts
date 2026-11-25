@@ -1599,7 +1599,7 @@ test("a valid first English pair with an invalid last row selects valid French o
   }
 });
 
-test("an invalid attribution source rejects English in Settings and saves French evidence in lujvo", async ({
+test("saved shapes rejects an invalid attribution source in Settings and saves French evidence in lujvo", async ({
   page,
 }) => {
   const row = (
@@ -1683,13 +1683,21 @@ test("an invalid attribution source rejects English in Settings and saves French
   ).toBe(true);
 });
 
-test("client and worker enforce dense list budgets without key scans and reject invalid glosses or rafsi before content measurement", async ({
+test("saved shapes rejects probe-filled sparse lists as invalid before budgets, validates before content measurement, and keeps over-long alias claims", async ({
   page,
 }) => {
   await page.goto("/");
-  const report = await page.evaluate(async () => {
+  const report = await page.evaluate(async (coreUrl) => {
+    const core = await import(coreUrl);
+    await core.initializeCore();
     const { searchPackage, PackageValidationError } = await import(
       String("/src/data/package-search.ts")
+    );
+    const { inventoryFromPackage } = await import(
+      String("/src/model/builders.ts")
+    );
+    const { sourceOptions } = await import(
+      String("/src/model/typed-headword.ts")
     );
     const makeRow = (ordinal: number) => ({
       event: "jve1:" + (ordinal + 1).toString(16).padStart(64, "0"),
@@ -1706,15 +1714,12 @@ test("client and worker enforce dense list budgets without key scans and reject 
       attribution: null,
     });
     const stamp = { version: 2, snapshot: "sha256:" + "a".repeat(64) };
-    const visits: number[] = [];
-    const observe = (list: unknown[]) =>
-      new Proxy(list, {
-        ownKeys(target) {
-          const keys = Reflect.ownKeys(target);
-          visits.push(keys.length);
-          return keys;
-        },
-      });
+    const sparseWithProbes = (len: number, make: (i: number) => unknown) => {
+      const list: unknown[] = [];
+      list.length = len;
+      for (const index of [0, len >>> 1, len - 1]) list[index] = make(index);
+      return structuredClone(list);
+    };
     const classify = async (fn: () => Promise<unknown>) => {
       try {
         await fn();
@@ -1727,23 +1732,108 @@ test("client and worker enforce dense list budgets without key scans and reject 
         return String(error);
       }
     };
+    const classifySync = (fn: () => unknown) => {
+      try {
+        fn();
+        return "accepted";
+      } catch (error) {
+        if (error instanceof PackageValidationError)
+          return "PackageValidationError";
+        if (error instanceof Error && error.constructor?.name)
+          return error.constructor.name;
+        return String(error);
+      }
+    };
+    const askWorker = (pkg: unknown, workLimit?: number) =>
+      new Promise<{ code?: string }>((resolve, reject) => {
+        const worker = new Worker("/src/data/package-search-worker.ts", {
+          type: "module",
+        });
+        worker.onmessage = ({ data }) => {
+          worker.terminate();
+          resolve({ code: data.code });
+        };
+        worker.onerror = (error) => {
+          worker.terminate();
+          reject(new Error(error.message));
+        };
+        worker.postMessage({
+          request: 1,
+          key: 1,
+          pkg,
+          language: "en",
+          queries: [],
+          ...(workLimit !== undefined ? { options: { workLimit } } : {}),
+        });
+      });
 
-    const denseEntries = observe(
-      Array.from({ length: 100_000 }, (_, i) => makeRow(i)),
-    );
-    visits.length = 0;
+    // Sparse arrays whose boundary and midpoint probe indices are filled.
+    const outer300M = {
+      ...stamp,
+      entries: sparseWithProbes(300_000_000, makeRow),
+    };
+    const selmaho300M = {
+      ...stamp,
+      entries: [
+        {
+          ...makeRow(0),
+          classification: {
+            kind: "gismu",
+            selmaho: sparseWithProbes(300_000_000, () => "BAI"),
+          },
+        },
+      ],
+    };
+    const outer5Limit2 = {
+      ...stamp,
+      entries: sparseWithProbes(5, makeRow),
+    };
+    const sparseVerdicts = {
+      outer300M: {
+        client: await classify(() =>
+          searchPackage(outer300M as never, "en", ["cukta"]),
+        ),
+        worker: (await askWorker(outer300M)).code,
+        direct: classifySync(() =>
+          inventoryFromPackage({ language: "en", pkg: outer300M as never }),
+        ),
+      },
+      selmaho300M: {
+        client: await classify(() =>
+          searchPackage(selmaho300M as never, "en", ["cukta"]),
+        ),
+        worker: (await askWorker(selmaho300M)).code,
+        direct: classifySync(() =>
+          inventoryFromPackage({ language: "en", pkg: selmaho300M as never }),
+        ),
+      },
+      outer5Limit2: {
+        client: await classify(() =>
+          searchPackage(outer5Limit2 as never, "en", ["cukta"], {
+            workLimit: 2,
+          }),
+        ),
+        worker: (await askWorker(outer5Limit2, 2)).code,
+        direct: classifySync(() =>
+          inventoryFromPackage({ language: "en", pkg: outer5Limit2 as never }),
+        ),
+      },
+    };
+
+    // Valid dense lists still stop on the content budget.
     const denseOuterOutcome = await classify(() =>
-      searchPackage({ ...stamp, entries: denseEntries } as never, "en", ["cukta"], {
-        workLimit: 1,
-      }),
+      searchPackage(
+        {
+          ...stamp,
+          entries: Array.from({ length: 1000 }, (_, i) => makeRow(i)),
+        } as never,
+        "en",
+        ["cukta"],
+        { workLimit: 1 },
+      ),
     );
-    const denseOuterVisits = [...visits];
-
     const denseSelmahoRow = makeRow(0);
-    denseSelmahoRow.classification.selmaho = observe(
-      Array(100_000).fill("BAI"),
-    );
-    visits.length = 0;
+    denseSelmahoRow.classification.selmaho = Array(1000).fill("BAI");
     const denseSelmahoOutcome = await classify(() =>
       searchPackage(
         { ...stamp, entries: [denseSelmahoRow] } as never,
@@ -1752,8 +1842,8 @@ test("client and worker enforce dense list budgets without key scans and reject 
         { workLimit: 1 },
       ),
     );
-    const denseSelmahoVisits = [...visits];
 
+    // Invalid gloss slot and oversized rafsi reject before content measurement.
     let getterReads = 0;
     const wrongGloss = Object.assign([], { sense: null, language: "en" });
     Object.defineProperty(wrongGloss, "text", {
@@ -1775,7 +1865,6 @@ test("client and worker enforce dense list budgets without key scans and reject 
       ),
     );
     const wrongGlossReads = getterReads;
-
     const oversizedRafsiOutcome = await classify(() =>
       searchPackage(
         {
@@ -1787,30 +1876,6 @@ test("client and worker enforce dense list budgets without key scans and reject 
         { workLimit: 10 },
       ),
     );
-
-    const askWorker = (pkg: unknown, workLimit: number) =>
-      new Promise<{ code?: string }>((resolve, reject) => {
-        const worker = new Worker("/src/data/package-search-worker.ts", {
-          type: "module",
-        });
-        worker.onmessage = ({ data }) => {
-          worker.terminate();
-          resolve({ code: data.code });
-        };
-        worker.onerror = (error) => {
-          worker.terminate();
-          reject(new Error(error.message));
-        };
-        worker.postMessage({
-          request: 1,
-          key: 1,
-          pkg,
-          language: "en",
-          queries: [],
-          options: { workLimit },
-        });
-      });
-
     const workerWrongGloss = await askWorker(
       {
         ...stamp,
@@ -1837,28 +1902,84 @@ test("client and worker enforce dense list budgets without key scans and reject 
       10,
     );
 
+    // Over-long alias sharing a word ID with a fitting spelling keeps both claims.
+    const shortSpelling = "bab" + "a".repeat(67);
+    const longSpelling = "bab" + "á".repeat(67);
+    const aliasPkg = {
+      ...stamp,
+      entries: [
+        {
+          ...makeRow(0),
+          word: { language: "jbo", spelling: shortSpelling },
+          rafsi: ["bab"],
+        },
+        {
+          ...makeRow(1),
+          word: { language: "jbo", spelling: longSpelling },
+          rafsi: ["bax"],
+        },
+      ],
+    };
+    const aliasBab = sourceOptions(
+      { text: "bab", kind: "core", join_before: null },
+      aliasPkg as never,
+    );
+    const aliasBax = sourceOptions(
+      { text: "bax", kind: "core", join_before: null },
+      aliasPkg as never,
+    );
+
     return {
+      sparseVerdicts,
       denseOuterOutcome,
-      denseOuterVisits,
       denseSelmahoOutcome,
-      denseSelmahoVisits,
       wrongGlossOutcome,
       wrongGlossReads,
       oversizedRafsiOutcome,
       workerWrongGloss,
       workerOversizedRafsi,
+      aliasBab: aliasBab.map(
+        (o: { spelling: string; claims: { rafsi: string }[] }) => ({
+          spelling: o.spelling,
+          claims: o.claims.map((c) => c.rafsi).sort(),
+        }),
+      ),
+      aliasBax: aliasBax.map(
+        (o: { spelling: string; claims: { rafsi: string }[] }) => ({
+          spelling: o.spelling,
+          claims: o.claims.map((c) => c.rafsi).sort(),
+        }),
+      ),
     };
-  });
+  }, corePath);
 
+  const shortSpelling = "bab" + "a".repeat(67);
   expect(report).toEqual({
+    sparseVerdicts: {
+      outer300M: {
+        client: "PackageValidationError",
+        worker: "invalid-package",
+        direct: "PackageValidationError",
+      },
+      selmaho300M: {
+        client: "PackageValidationError",
+        worker: "invalid-package",
+        direct: "PackageValidationError",
+      },
+      outer5Limit2: {
+        client: "PackageValidationError",
+        worker: "invalid-package",
+        direct: "PackageValidationError",
+      },
+    },
     denseOuterOutcome: "SearchBudgetError",
-    denseOuterVisits: [],
     denseSelmahoOutcome: "SearchBudgetError",
-    denseSelmahoVisits: [],
     wrongGlossOutcome: "PackageValidationError",
     wrongGlossReads: 0,
     oversizedRafsiOutcome: "PackageValidationError",
     workerWrongGloss: { code: "invalid-package" },
     workerOversizedRafsi: { code: "invalid-package" },
+    aliasBab: [{ spelling: shortSpelling, claims: ["bab", "bax"] }],
+    aliasBax: [{ spelling: shortSpelling, claims: ["bab", "bax"] }],
   });
 });

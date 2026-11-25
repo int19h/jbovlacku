@@ -461,8 +461,11 @@ export function savedInventory(saved: SavedPackages): SavedInventory {
 }
 /**
  * The conflict inventory from the local package, which must pass
- * `savedPackage`. Each row is read through `savedRow` and `savedWordId`,
- * so an unusable row raises `PackageValidationError`.
+ * `savedPackage`. The entries list passes `requireDenseList`, each row passes
+ * `savedRowReader`, claims pass `savedRafsiUnion`, gismu, claim, and
+ * incomplete-rafsi rows derive canonical IDs through `savedWordIdCache`, and
+ * remaining rows pass `savedSpellingChecks`. Any failure raises
+ * `PackageValidationError`.
  */
 export function inventoryFromPackage(
   saved: SavedLanguagePackage | null,

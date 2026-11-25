@@ -654,19 +654,10 @@ test("wizard inventory skips a package with invalid attribution source and selec
   assert.equal(result.inventory.claims.length, 2);
 });
 
-test("dense list checks respect work budgets without scanning keys and keep sparse rejections", async () => {
+test("sparse lists always fail as invalid package before budget charges, and valid dense lists charge content work", async () => {
   const { SearchBudgetError, SearchRequestBudget, searchMetrics } =
     await import("../../../../packages/search/src/index.ts");
   const { searchPackage } = await import("../../src/data/package-search.ts");
-  const visits: number[] = [];
-  const observe = (list: unknown[]) =>
-    new Proxy(list, {
-      ownKeys(target) {
-        const keys = Reflect.ownKeys(target);
-        visits.push(keys.length);
-        return keys;
-      },
-    });
   const makeRow = (ordinal: number) =>
     v2Row({
       event: "jve1:" + (ordinal + 1).toString(16).padStart(64, "0"),
@@ -674,12 +665,11 @@ test("dense list checks respect work budgets without scanning keys and keep spar
       plain_text: "",
       rafsi: [],
     });
-  const denseEntries = observe(
-    Array.from({ length: 100_000 }, (_, i) => makeRow(i)),
-  );
-  const denseSelmahoRow = {
-    ...makeRow(0),
-    classification: { kind: "gismu", selmaho: observe(Array(100_000).fill("BAI")) },
+  const sparseWithProbes = (len: number, make: (i: number) => unknown) => {
+    const list: unknown[] = [];
+    list.length = len;
+    for (const index of [0, len >>> 1, len - 1]) list[index] = make(index);
+    return structuredClone(list);
   };
 
   let posted = 0;
@@ -692,52 +682,73 @@ test("dense list checks respect work budgets without scanning keys and keep spar
     terminate() {}
   };
   try {
-    // Worker validation refuses dense 100k arrays under workLimit 1 with zero ownKeys scans.
-    for (const entries of [denseEntries, [denseSelmahoRow]]) {
-      visits.length = 0;
+    // Sparse lists whose boundary and midpoint indices are populated must reject
+    // as PackageValidationError across client, worker validation, and direct
+    // inventory, even when claimed length exceeds the budget.
+    const sparseCases: [unknown[], number | undefined][] = [
+      [sparseWithProbes(300_000_000, makeRow), undefined],
+      [
+        [
+          {
+            ...makeRow(0),
+            classification: {
+              kind: "gismu",
+              selmaho: sparseWithProbes(300_000_000, () => "BAI"),
+            },
+          },
+        ],
+        undefined,
+      ],
+      [sparseWithProbes(5, makeRow), 2],
+    ];
+    for (const [entries, workLimit] of sparseCases) {
+      const value = pkg(entries);
       const budget = new SearchRequestBudget(searchMetrics(), {
-        workLimit: 1,
+        ...(workLimit !== undefined ? { workLimit } : {}),
         deadlineMs: Infinity,
       });
       assert.throws(
-        () => search.validateCachedPackage(pkg(entries), "en", budget),
-        SearchBudgetError,
+        () => search.validateCachedPackage(value, "en", budget),
+        saved.PackageValidationError,
       );
-      assert.deepEqual(visits, []);
-
-      visits.length = 0;
       await assert.rejects(
         () =>
-          searchPackage(pkg(entries) as never, "en", ["cukta"], {
-            workLimit: 1,
-          }),
-        SearchBudgetError,
+          searchPackage(
+            value as never,
+            "en",
+            ["cukta"],
+            workLimit !== undefined ? { workLimit } : {},
+          ),
+        saved.PackageValidationError,
       );
-      assert.deepEqual(visits, []);
-      assert.equal(posted, 0);
+      assert.throws(
+        () =>
+          builders.inventoryFromPackage({ language: "en", pkg: value as never }),
+        saved.PackageValidationError,
+      );
     }
 
-    // Huge sparse arrays still reject as PackageValidationError under tight budgets.
-    const sparseOuter = new Array(10_000_000);
-    const sparseSelmahoRow = {
+    // Valid dense lists pass the shape check and then hit the content budget.
+    const denseEntries = Array.from({ length: 100_000 }, (_, i) => makeRow(i));
+    const denseSelmahoRow = {
       ...makeRow(0),
-      classification: { kind: "gismu", selmaho: new Array(10_000_000) },
+      classification: { kind: "gismu", selmaho: Array(100_000).fill("BAI") },
     };
-    for (const entries of [sparseOuter, [sparseSelmahoRow]]) {
+    for (const entries of [denseEntries, [denseSelmahoRow]]) {
       const budget = new SearchRequestBudget(searchMetrics(), {
         workLimit: 1,
         deadlineMs: Infinity,
       });
       assert.throws(
         () => search.validateCachedPackage(pkg(entries), "en", budget),
-        saved.PackageValidationError,
+        SearchBudgetError,
       );
       await assert.rejects(
         () =>
           searchPackage(pkg(entries) as never, "en", ["cukta"], {
             workLimit: 1,
           }),
-        saved.PackageValidationError,
+        SearchBudgetError,
       );
     }
 
@@ -751,9 +762,7 @@ test("dense list checks respect work budgets without scanning keys and keep spar
       },
       enumerable: true,
     });
-    const wrongGlossPkg = pkg([
-      { ...makeRow(0), glosses: [wrongGloss] },
-    ]);
+    const wrongGlossPkg = pkg([{ ...makeRow(0), glosses: [wrongGloss] }]);
     assert.throws(
       () =>
         search.validateCachedPackage(
@@ -805,4 +814,75 @@ test("dense list checks respect work budgets without scanning keys and keep spar
       delete (globalThis as Record<string, unknown>).Worker;
     else (globalThis as Record<string, unknown>).Worker = previousWorker;
   }
+});
+
+test("typed reconstruction keeps claims from an over-long alias that shares a word ID with a fitting spelling", async () => {
+  const { sourceOptions } = await import("../../src/model/typed-headword.ts");
+  const shortSpelling = "bab" + "a".repeat(67);
+  const longSpelling = "bab" + "á".repeat(67);
+  assert.equal(
+    wordId({ language: "jbo", spelling: shortSpelling }),
+    wordId({ language: "jbo", spelling: longSpelling }),
+  );
+  const shortRow = v2Row({
+    event: "jve1:" + "1".repeat(64),
+    word: { language: "jbo", spelling: shortSpelling },
+    rafsi: ["bab"],
+  });
+  const longRow = v2Row({
+    event: "jve1:" + "2".repeat(64),
+    word: { language: "jbo", spelling: longSpelling },
+    rafsi: ["bax"],
+  });
+  for (const entries of [
+    [shortRow, longRow],
+    [
+      { ...longRow, event: "jve1:" + "1".repeat(64) },
+      { ...shortRow, event: "jve1:" + "2".repeat(64) },
+    ],
+  ]) {
+    const value = pkg(entries) as never;
+    for (const rafsi of ["bab", "bax"]) {
+      const options = sourceOptions(
+        { text: rafsi, kind: "core", join_before: null },
+        value,
+      );
+      assert.equal(options.length, 1);
+      assert.equal(options[0].spelling, shortSpelling);
+      assert.deepEqual(
+        options[0].claims.map((claim) => claim.rafsi).sort(),
+        ["bab", "bax"],
+      );
+      assert.equal(options[0].definitions?.length, 2);
+    }
+  }
+  // Without any fitting alias spelling, the over-long component is dropped.
+  const longOnly = pkg([longRow]) as never;
+  assert.deepEqual(
+    sourceOptions({ text: "bax", kind: "core", join_before: null }, longOnly),
+    [],
+  );
+});
+
+test("batched wordIdSpellings matches wordId across valid and invalid inputs", async () => {
+  const { wordIdSpellings } = await import(
+    "../../../../packages/core/src/index.ts"
+  );
+  const samples = [
+    "cukta",
+    "djan",
+    "dján",
+    "ba'a",
+    "Ba’a",
+    "a\"b\\c",
+    "水",
+    "𠮷",
+  ];
+  assert.deepEqual(
+    wordIdSpellings(samples),
+    samples.map((spelling) => wordId({ language: "jbo", spelling })),
+  );
+  assert.deepEqual(wordIdSpellings([]), []);
+  for (const invalid of ["", " cukta", "x\0y", "\ud800", "e\u0301"])
+    assert.throws(() => wordIdSpellings(["cukta", invalid]));
 });
