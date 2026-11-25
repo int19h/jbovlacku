@@ -247,26 +247,28 @@ export async function searchPage(
   if (punctuationNote) main.append(p(punctuationNote, "meta"));
   // Search source: the downloaded package in local mode, otherwise this server.
   let cached: CachedPackage | undefined;
-  let packageProblem: "unavailable" | "invalid" | undefined =
-    app.session.storageAvailable ? undefined : "unavailable";
+  let packageProblem: "storage" | "unreadable" | "invalid" | undefined =
+    app.session.storageAvailable ? undefined : "storage";
   let initialLocal: PackageSearchResult | undefined;
   if (
     app.session.preferences.searchMode === "local" &&
     app.session.storageAvailable
   ) {
+    let stored: unknown;
     try {
-      cached =
-        savedPackage(
-          await app.store.get("packages", language).catch(() => {
-            packageProblem = "unavailable";
-            return undefined;
-          }),
-        ) ?? undefined;
-    } catch (error) {
-      if (!(error instanceof PackageValidationError)) throw error;
-      if (!context.live()) return;
-      packageProblem = "invalid";
-      app.announce(describe(error));
+      stored = await app.store.get("packages", language);
+    } catch {
+      packageProblem = "unreadable";
+    }
+    if (packageProblem === undefined) {
+      try {
+        cached = savedPackage(stored) ?? undefined;
+      } catch (error) {
+        if (!(error instanceof PackageValidationError)) throw error;
+        if (!context.live()) return;
+        packageProblem = "invalid";
+        app.announce(describe(error));
+      }
     }
   }
   if (cached) {
@@ -365,9 +367,11 @@ export async function searchPage(
       const note = p(
         packageProblem === "invalid"
           ? `The saved search package for ${languageName(language)} is invalid. Searches use this server.`
-          : packageProblem === "unavailable"
-            ? "Browser storage is unavailable. Searches use this server."
-            : `No downloaded search package for ${languageName(language)}. Searches use this server until one is downloaded in Settings.`,
+          : packageProblem === "unreadable"
+            ? `The saved search package for ${languageName(language)} could not be read. Searches use this server.`
+            : packageProblem === "storage"
+              ? "Browser storage is unavailable. Searches use this server."
+              : `No downloaded search package for ${languageName(language)}. Searches use this server until one is downloaded in Settings.`,
         "small",
       );
       results.append(note);

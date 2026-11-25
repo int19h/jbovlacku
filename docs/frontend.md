@@ -307,7 +307,7 @@ Inline or historical reads that must construct a package still include that work
 The server's existing package and evaluation lifetimes bound those prepared indexes.
 
 Browser storage version 4 records a revision marker beside each language package in the same transaction as its write or deletion.
-Every package read acquires both the stored value and its revision marker in one readonly transaction.
+`LocalStore.get` checks the revision marker and reads the stored package in one readonly transaction. Once a page session acquires a package with a string revision, repeat `LocalStore.get` calls in that session reuse that in-memory snapshot while the stored revision is unchanged, and drop it on this tab's writes or deletions or when another tab writes a new revision. `LocalStore.listPackages` reads all stored packages without revision markers and supplies no reuse evidence.
 A missing legacy revision supplies no reuse evidence.
 A page uses a freshly read package only after all of its rows pass validation for that language. No whole-package verdict is persisted in storage.
 A failed download leaves the saved package and revision unchanged.
@@ -332,8 +332,8 @@ An unusable source leaves the draft available for manual editing.
 
 One static module worker validates and searches saved packages outside the main thread.
 Download hashing and entry checks retain their existing download path.
-It retains two prepared packages by distinct in-memory identity. Within one session, repeated queries on the same acquired snapshot reuse its prepared index directly. A fresh storage read with the same durable revision shares that preparation only after exact structural equality against the trusted snapshot succeeds within the request budget, including row order, own array keys, holes, and worker fields. Otherwise the incoming copy is validated and prepared under a new in-memory identity.
-Page reload closes that worker and its caches. The first search after reload reads, transfers, validates, and prepares the saved package again.
+It retains two prepared packages by distinct in-memory identity. Within one page session, repeated queries on the session's acquired snapshot reuse its prepared index directly with no new full IndexedDB read and no structural comparison. A distinct fresh clone with the same durable revision shares that preparation only after exact structural equality against the trusted snapshot succeeds within the request budget, including row order, own array keys, holes, and worker fields. Otherwise the incoming copy is validated and prepared under a new in-memory identity.
+Page reload closes that worker and clears the session package cache. The first search after reload reads, transfers, validates, and prepares the saved package again, catching any out-of-band storage edit made while an earlier page stayed open.
 
 Nearby lookup in the meaning step and part lookup in the lujvo builder use the same worker and prepared index.
 Each nearby call reads the package for its current language, including an empty meaning. A missing package never disables later local lookups.

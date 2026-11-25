@@ -214,6 +214,8 @@ interface Client {
     number,
     { pkg: CachedPackage; language: string; storageHint?: string }
   >;
+  /** Fresh clones already verified equal to a retained snapshot. */
+  aliases: WeakMap<CachedPackage, { key: number; language: string }>;
   pending: Map<
     number,
     {
@@ -354,6 +356,7 @@ function searchWorker(): Client {
     preparing: new Map(),
     preparingKeys: new Map(),
     snapshots: new Map(),
+    aliases: new WeakMap(),
   };
   worker.onmessage = ({ data }) => {
     // Cache acknowledgments also matter after that request's consumer aborts.
@@ -458,22 +461,44 @@ export async function searchPackage(
         break;
       }
     }
-    // Fresh clone with the same durable storage revision: reuse only after
-    // exact structural equality against the validated snapshot.
-    if (matchedKey === undefined && storageHint !== undefined) {
-      for (const [candidateKey, entry] of client.snapshots) {
-        if (
-          entry.language === language &&
-          entry.storageHint === storageHint &&
-          client.retained.has(candidateKey) &&
-          samePackageStructure(pkg, entry.pkg, clientBudget)
-        ) {
-          matchedKey = candidateKey;
-          resolvedPkg = entry.pkg;
-          break;
+    // Fresh clone already verified structurally equal to a retained snapshot.
+    if (matchedKey === undefined) {
+      const alias = client.aliases.get(pkg);
+      if (
+        alias &&
+        alias.language === language &&
+        (client.retained.has(alias.key) || client.preparingKeys.has(alias.key))
+      ) {
+        const trusted = client.snapshots.get(alias.key);
+        if (trusted) {
+          matchedKey = alias.key;
+          resolvedPkg = trusted.pkg;
         }
       }
     }
+    // Fresh clone with the same durable storage revision: validate top-level
+    // list shape before any budgeted equality work, then reuse only after
+    // exact structural equality against the validated snapshot.
+    if (matchedKey === undefined) {
+      requireDenseList(pkg.entries);
+      if (storageHint !== undefined) {
+        for (const [candidateKey, entry] of client.snapshots) {
+          if (
+            entry.language === language &&
+            entry.storageHint === storageHint &&
+            client.retained.has(candidateKey) &&
+            samePackageStructure(pkg, entry.pkg, clientBudget)
+          ) {
+            matchedKey = candidateKey;
+            resolvedPkg = entry.pkg;
+            client.aliases.set(pkg, { key: candidateKey, language });
+            break;
+          }
+        }
+      }
+    }
+  } else {
+    requireDenseList(pkg.entries);
   }
   const key = matchedKey ?? ++packageId;
   const send = (force = false) => {
@@ -556,7 +581,7 @@ export async function searchPackage(
         // remaining package; the per-entry measurement itself checks the
         // allowance inside large date maps.
         if (prepare) {
-          requireDenseList(resolvedPkg.entries);
+          if (force) requireDenseList(resolvedPkg.entries);
           if (resolvedPkg.entries.length) clientBudget.ensure(1, "prepare");
           for (const entry of resolvedPkg.entries) {
             clientBudget.ensure(1, "prepare");
