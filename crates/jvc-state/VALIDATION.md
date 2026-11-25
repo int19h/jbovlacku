@@ -18,8 +18,23 @@ A separate case with 401 accounts sharing witnesses finishes evaluation and expo
 These timings come from single runs on the development machine. They do not guarantee performance on another host.
 A separate 5,000-event history reaches an explicit smaller budget without recursive traversal.
 `Limits.events` is absent by default and serves as an optional event-count quota when configured.
-The default work budget is 10,000,000 units, plus 256 units per record, plus 16 units per `previous` ID of each record (present or absent), plus 1 unit per ID in each distinct valid import selection referenced by the selected view (`10,000,000 + 256 * records + 16 * predecessors + selection_ids`), unless an explicit `Limits.traversal` override is supplied. This is the budget whenever the selection scan completes, also when a later work-budget or range-cap check refuses the evaluation. Two kinds of refused state can report a smaller selection term: if the selection resolver stops early on invalid selections, the state counts only the valid selections that it reached before the stop; and if the event quota or a record arena error refuses the state, the state counts no selection. The budget counts records, dependency edges, propagated missing IDs, copied ranges, and evaluator inner-loop steps across registers, retention, accounts, certificates, and downstream passes. The range storage of the closures that the graph keeps (the ancestry caches and the compromise cutoffs), counted as in a fresh full build of the same records, is capped at 64 MiB plus 1,024 bytes per record (`67,108,864 + 1,024 * records`), and histories past the cap refuse at any budget.
-Super-linear history shapes reach the work budget sooner. Exhaustion makes the entire evaluation unavailable, including unrelated accounts and native results.
+The default work budget is `10,000,000 + 256 * records + 16 * predecessors + selection_ids`.
+The `predecessors` term counts each `previous` ID on each record, whether the named record is present or absent.
+If several records name the same missing record, each reference adds to the allowance.
+The `selection_ids` term counts the IDs in each distinct valid import selection that the selected view names.
+
+The full formula applies when the selection scan completes, even if the work budget or range cap later causes refusal.
+If invalid selections stop the scan early, the allowance includes only the valid selections that the scan reached.
+If the event quota or a record arena error prevents evaluation, the allowance includes no selection IDs.
+An explicit `Limits.traversal` value overrides the default.
+
+The evaluator charges records, dependency edges, copied ranges, and steps in its inner loops.
+It also charges distinct missing IDs in each set that it propagates.
+The separate cap covers the storage of ranges that the ancestry caches and compromise cutoffs keep.
+The evaluator counts those ranges as in a fresh build of the same records.
+The cap is 64 MiB plus 1,024 bytes per record (`67,108,864 + 1,024 * records`).
+A history past that cap refuses at any work budget.
+Exhaustion makes the entire evaluation unavailable, including unrelated accounts and native results.
 
 The crate passes native and standalone wasm32-unknown-unknown build checks.
 CI installs Rustfmt and Clippy on the pinned 1.99.0 toolchain.
@@ -69,3 +84,29 @@ A partial answer cannot admit an append.
 The signed carry, native status, and historical witness tests compare fresh evaluation, live append, and both restored appends.
 They use the exact fresh cost, one unit below it, and one unit above it.
 All paths refuse below the cost and agree on results, work, and ancestry bytes at the cost or above it.
+
+## Wide predecessor lists
+
+A native release probe used one signed selected view and 600,000 synthetic `identity.merge` records from a single other issuer.
+The evaluator received the merge records as host-verified inputs.
+Merge record `k` named the preceding `min(k, 64)` records, with `k` starting at zero.
+The probe used the default limits and supplied no padding, selections, transfers, or acceptances.
+
+| Records including view | Named predecessors | Work used | Default budget | Available |
+| ---: | ---: | ---: | ---: | --- |
+| 600,001 | 38,397,920 | 389,379,210 | 777,966,976 | Yes |
+
+The base and record terms supplied 163,600,256 units. The predecessor term supplied 614,366,720 units.
+After the first 64 merges, each additional merge needs 649 units in this shape and adds 1,280 units to the allowance.
+In the probe's fresh full layout, each predecessor has one contiguous range in each ancestry cache and no missing IDs.
+The cap counts zero bytes for those inline ranges.
+
+A history with the same predecessor count can need more work.
+Interleaved branches can split the ancestry of a record into many ranges.
+Missing records can also add distinct missing IDs to each set that the evaluator propagates.
+Other account, policy, or status work can exhaust the budget even if total work grows linearly.
+
+The server-size probe used 143.49 seconds of user CPU time and 8.72 seconds of system CPU time.
+Its peak resident memory was 12,959,648 KiB. This figure measures process memory, separate from the work units in the table.
+The probe skipped checkpoint serialization and did not measure stored ancestry bytes.
+These results give no memory bound for phones.
