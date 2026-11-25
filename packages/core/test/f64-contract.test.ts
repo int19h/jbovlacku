@@ -35,7 +35,7 @@ test("float schema admission invalidates old projection and checkpoint bindings"
   );
   assert.equal(hostRecordVersion(), 8);
   assert.equal(semanticProjectionVersion(), 5);
-  assert.equal(coreCheckpointVersion(), "jvc-evaluation-checkpoint-v11");
+  assert.equal(coreCheckpointVersion(), "jvc-evaluation-checkpoint-v13");
   for (const row of rows.filter((row) =>
     row.name.startsWith("f64-contract-"),
   )) {
@@ -82,15 +82,15 @@ test("an admitted float view gives no synchronous exact score", async () => {
     const saved = JSON.parse(
       new TextDecoder().decode(session.checkpoint("f64-contract")),
     );
-    saved.version = "jvc-evaluation-checkpoint-v1";
+    saved.version = "jvc-evaluation-checkpoint-v11";
     assert.throws(() =>
       restoreHostEvaluationSession(utf8(JSON.stringify(saved)), "f64-contract"),
     );
     const result = JSON.parse(
       new TextDecoder().decode(session.checkpoint("f64-contract", true)),
     );
-    assert.equal(result.version, "jvc-evaluation-results-v11");
-    result.version = "jvc-evaluation-results-v1";
+    assert.equal(result.version, "jvc-evaluation-results-v14");
+    result.version = "jvc-evaluation-results-v11";
     const compact = extractHostVerifiedRecord(
       utf8(row.envelope),
       utf8(row.body),

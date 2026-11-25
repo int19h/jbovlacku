@@ -29,7 +29,7 @@ pub(super) fn reset_union_cover_visits() {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Range {
+pub(crate) struct Range {
     first: u32,
     last: u32,
 }
@@ -156,13 +156,19 @@ impl AncestryBudget {
 /// exact-size `Rc` slice, so the storage of a kept closure is its
 /// range count times 8 bytes plus the `Rc` header.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Ranges {
+pub(crate) enum Ranges {
     Empty,
     One(Range),
     Many(Rc<[Range]>),
 }
 
 impl Ranges {
+    pub fn positions(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.as_slice()
+            .iter()
+            .map(|range| (range.first, range.last))
+    }
+
     fn as_slice(&self) -> &[Range] {
         match self {
             Ranges::Empty => &[],
@@ -245,7 +251,7 @@ impl Ranges {
         Ranges::from_sorted(merged)
     }
 
-    fn contains(&self, position: u32) -> bool {
+    pub fn contains(&self, position: u32) -> bool {
         let ranges = self.as_slice();
         let index = ranges.partition_point(|range| range.first <= position);
         index > 0 && position <= ranges[index - 1].last
@@ -338,6 +344,10 @@ impl Space {
         self.blocks.get(issuer).copied()
     }
 
+    pub fn block_starts(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
+        self.blocks.values().map(|&(first, _)| first)
+    }
+
     /// First layout position of any block after the given issuer.
     pub(crate) fn next_block_start(&self, issuer: &str) -> u32 {
         use std::ops::Bound;
@@ -357,7 +367,11 @@ impl Space {
     }
 
     pub(crate) fn id_at(&self, position: u32) -> String {
-        self.ids[position as usize].clone()
+        self.id_at_ref(position).to_owned()
+    }
+
+    pub(crate) fn id_at_ref(&self, position: u32) -> &str {
+        &self.ids[position as usize]
     }
 }
 
@@ -499,10 +513,12 @@ impl IdSet {
 
     /// Stored ranges as (first, last) position pairs, in layout order.
     pub fn ranges(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        self.ranges
-            .as_slice()
-            .iter()
-            .map(|range| (range.first, range.last))
+        self.ranges.positions()
+    }
+
+    /// Share a stored range list without visiting its ranges.
+    pub fn range_handle(&self) -> Ranges {
+        self.ranges.clone()
     }
 
     /// The stored range with the largest first position at or before

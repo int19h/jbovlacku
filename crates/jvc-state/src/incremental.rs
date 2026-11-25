@@ -1,8 +1,8 @@
 use super::*;
 use graph::{Graph, Node};
 
-pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v11";
-const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v11";
+pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v13";
+const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v14";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
 const APPENDS_BEFORE_REBASE: usize = MAX_INCREMENTAL_RECORDS;
 
@@ -914,14 +914,9 @@ impl EvaluatedState {
         // reads range bounds and borrowed layout IDs only; it clones
         // no ID. On the real 63,245-record chain the parent is the
         // chain tip, so coverage reads one stored range.
-        //
-        // The boundary crossing count also matters: a closure holding
-        // the block's last record and the next block's first would
-        // split when the new record inserts between them. The count
-        // is kept as closures are built and extended, so reading it
-        // here is one charged unit and a logarithmic prefix sum.
+
         let parents: Vec<&graph::Closure> = node.previous.iter().map(|id| &graph.own[id]).collect();
-        if let Some((first, last)) = graph.issuer_block(&node.issuer) {
+        let coordinate = if let Some((first, last)) = graph.issuer_block(&node.issuer) {
             let sweep_bound: usize = parents
                 .iter()
                 .map(|closure| closure.ids.range_count())
@@ -935,39 +930,27 @@ impl EvaluatedState {
             if !graph::IdSet::union_covers(&parent_sets, first, last) {
                 return Err("layout_split");
             }
-            for id in graph
-                .appended_ids
-                .iter()
-                .filter(|id| graph.nodes[id.as_str()].issuer == node.issuer)
-            {
-                if !parents.iter().any(|closure| closure.ids.contains(id)) {
-                    return Err("layout_split");
-                }
-            }
-            if !graph.charge(1) {
-                return Err("work_budget");
-            }
-            if graph.boundary_crossing(last + 1) > 0 {
-                return Err("layout_split");
-            }
+            last + 1
         } else {
-            // No positioned records for this issuer: any appended ones
-            // must still all be ancestors of the new record.
-            for id in graph
-                .appended_ids
-                .iter()
-                .filter(|id| graph.nodes[id.as_str()].issuer == node.issuer)
-            {
-                if !parents.iter().any(|closure| closure.ids.contains(id)) {
-                    return Err("layout_split");
-                }
-            }
-            if !graph.charge(1) {
-                return Err("work_budget");
-            }
-            if graph.boundary_crossing(graph.next_block_start(&node.issuer)) > 0 {
+            graph.next_block_start(&node.issuer)
+        };
+        for id in graph
+            .appended_ids
+            .iter()
+            .filter(|id| graph.nodes[id.as_str()].issuer == node.issuer)
+        {
+            if !parents.iter().any(|closure| closure.ids.contains(id)) {
                 return Err("layout_split");
             }
+        }
+        if !graph.charge(1) {
+            return Err("work_budget");
+        }
+        if graph
+            .splits_layout(coordinate, &node.issuer)
+            .ok_or("work_budget")?
+        {
+            return Err("layout_split");
         }
         // The full build's charge for one more record, per cache:
         // setup (one per record and predecessor) plus construction
@@ -980,7 +963,7 @@ impl EvaluatedState {
                 + (1 + node
                     .previous
                     .iter()
-                    .map(|id| 1 + cache[id].missing.len() + graph.fresh_range_count(&cache[id].ids))
+                    .map(|id| 1 + cache[id].missing.len() + cache[id].ids.fresh_ranges)
                     .sum::<usize>())
         };
         let shared = std::rc::Rc::ptr_eq(&graph.own, &graph.structural)
@@ -1067,9 +1050,7 @@ impl EvaluatedState {
         if new_issuer && graph.lifecycle.is_shared() {
             lifecycle_copy_units(&graph.lifecycle, &mut units)?;
         }
-        if !node.previous.is_empty() && graph.boundary.is_shared() {
-            units.add(graph.boundary.len())?;
-        }
+        units.add(graph.mixed_copy_units(node))?;
         // Evaluation results: every append adds a receipt.
         if Rc::strong_count(&self.evaluation.results) > 1 {
             results_copy_units(&self.evaluation.results, &mut units)?;
@@ -1090,8 +1071,6 @@ impl EvaluatedState {
         let prepared_nodes = std::mem::take(&mut self.prepared.nodes);
         debug_assert!(std::rc::Rc::ptr_eq(&graph.nodes, &prepared_nodes));
         drop(prepared_nodes);
-        graph.append_ordinary(node.clone());
-        self.prepared.nodes = graph.nodes.clone();
         // `work` already holds the graph-construction and history-scan
         // charges. The scoped evaluation updates below run the same
         // code a full evaluation runs for this record, and their own
@@ -1103,6 +1082,11 @@ impl EvaluatedState {
         }
         self.remaining_work -= work;
         graph.budget.set(self.remaining_work);
+        graph.append_ordinary(node.clone());
+        self.prepared.nodes = graph.nodes.clone();
+        if graph.resource.get() {
+            return false;
+        }
         if !self
             .evaluation
             .lifecycle
@@ -3503,6 +3487,16 @@ mod rebuild_tests {
         previous: Vec<String>,
         action: Value,
     ) -> (VerifiedEnvelope, Option<Vec<u8>>) {
+        signed_with_body(seed, nonce, previous, action, None)
+    }
+
+    fn signed_with_body(
+        seed: u8,
+        nonce: u32,
+        previous: Vec<String>,
+        action: Value,
+        body: Option<Vec<u8>>,
+    ) -> (VerifiedEnvelope, Option<Vec<u8>>) {
         let mut previous = previous;
         previous.sort();
         previous.dedup();
@@ -3514,13 +3508,13 @@ mod rebuild_tests {
                 previous,
                 nonce: format!("{nonce:032x}"),
                 action,
-                content: None,
+                content: body.as_deref().map(|bytes| body_descriptor(bytes).unwrap()),
             },
         )
         .unwrap();
         (
             verify_envelope(&signed.canonical_envelope().unwrap()).unwrap(),
-            None,
+            body,
         )
     }
 
@@ -4500,6 +4494,411 @@ mod rebuild_tests {
         assert_eq!(state.statistics().reason.as_deref(), Some("layout_split"));
     }
 
+    #[test]
+    fn status_join_rebuilds_even_when_no_stored_range_crosses() {
+        let mut prepared = base();
+        let (publication, body) = publication();
+        prepared.add_record(&publication, body.as_deref());
+
+        let source = identity_from_seed(&[1; 32]);
+        let mut keys: Vec<_> = (2..64u8)
+            .map(|seed| (identity_from_seed(&[seed; 32]), seed))
+            .filter(|(key, _)| key > &source)
+            .collect();
+        keys.sort();
+        let mut status_ids = Vec::new();
+        for (branch, index) in [0, 2, 3].into_iter().enumerate() {
+            let (key, seed) = &keys[index];
+            let (transfer, _) = signed(
+                1,
+                100 + branch as u32,
+                vec![publication.id().into()],
+                json!({"kind": "identity.transfer", "successor": key}),
+            );
+            let (accept, _) = signed(
+                *seed,
+                100,
+                vec![],
+                json!({"kind": "identity.accept", "transfer": transfer.id()}),
+            );
+            let candidates = (0..8).map(|nonce| {
+                signed(
+                    *seed, 200 + nonce, vec![accept.id().into()],
+                    json!({"kind": "status.set", "target": publication.id(), "value": "deprecated"}),
+                ).0
+            });
+            // Merge the two neighboring operands before the third.
+            let status = if branch == 2 {
+                candidates.max_by(|a, b| a.id().cmp(b.id())).unwrap()
+            } else {
+                candidates.min_by(|a, b| a.id().cmp(b.id())).unwrap()
+            };
+            status_ids.push(status.id().to_owned());
+            for record in [&transfer, &accept, &status] {
+                prepared.add_record(record, None);
+                assert!(prepared.nodes[record.id()].semantic);
+            }
+        }
+        assert!(status_ids[..2].iter().all(|id| id < &status_ids[2]));
+        let state = unshared(&prepared).into_state();
+        assert_eq!(
+            state.evaluation().publications[publication.id()]
+                .status_frontier
+                .len(),
+            3
+        );
+        assert_no_stored_crossing(&state, &keys[1].0);
+
+        let definitions = serde_json::from_str(include_str!(
+            "../../jvc-core/tests/fixtures/definition.json"
+        ))
+        .unwrap();
+        let actions = [
+            (
+                json!({"kind": "definition.publish", "word": jvc_core::word_id(&json!({"language":"jbo","spelling":"cukta"})).unwrap(), "language": "en", "parents": [], "origin": "native"}),
+                Some(definitions),
+            ),
+            (
+                json!({"kind": "judgment.set", "target": publication.id(), "value": "bless"}),
+                None,
+            ),
+        ];
+        for (action, body) in actions {
+            let (added, body) = event(keys[1].1, 42, action, body);
+            assert_priced_join(&prepared, &added, body.as_deref());
+        }
+    }
+
+    fn assert_no_stored_crossing(state: &EvaluatedState, issuer: &str) {
+        let graph = state.graph.as_ref().unwrap();
+        let gap = graph.next_block_start(issuer);
+        for cache in [&graph.own, &graph.structural, &graph.accepted] {
+            assert!(!cache.values().any(|closure| {
+                closure
+                    .ids
+                    .ranges()
+                    .any(|(first, last)| first < gap && gap <= last)
+            }));
+        }
+    }
+
+    fn assert_priced_join(
+        prepared: &PreparedEvaluationInput,
+        added: &VerifiedEnvelope,
+        body: Option<&[u8]>,
+    ) {
+        let mut full = unshared(prepared);
+        full.add_record(added, body);
+        let work = full.clone().into_state().consumed_work();
+        for limit in [None, Some(work - 1), Some(work), Some(work + 1)] {
+            let mut input = unshared(prepared);
+            input.options.limits.traversal = limit;
+            full.options.limits.traversal = limit;
+            let expected = full.clone().into_state();
+            assert_eq!(expected.evaluation().available, limit != Some(work - 1));
+            let base = unshared(&input).into_state();
+            let mut delta = PreparedEvaluationInput::new(input.options.clone());
+            delta.add_record(added, body);
+            let full_bytes = base.checkpoint("join").unwrap();
+            let result_bytes = base.result_checkpoint("join").unwrap();
+            let records = input
+                .nodes
+                .values()
+                .map(|n| HostVerifiedRecord { node: n.clone() })
+                .collect();
+            let full_restore =
+                EvaluatedState::restore_host_checkpoint(&full_bytes, "join").unwrap();
+            let results_restore =
+                EvaluatedState::restore_host_result_checkpoint(&result_bytes, "join", records)
+                    .unwrap();
+            for (name, path) in [
+                ("live", base),
+                ("full checkpoint", full_restore),
+                ("results checkpoint", results_restore),
+            ] {
+                let appended = path.advance(delta.clone(), &[]);
+                assert!(appended.statistics().rebuilt, "{name} limit={limit:?}");
+                match (limit, appended.statistics().reason.as_deref()) {
+                    (_, Some("layout_split")) | (Some(_), Some("work_budget")) => {}
+                    (_, reason) => panic!("{name} limit={limit:?} reason={reason:?}"),
+                }
+                assert_eq!(
+                    appended.evaluation(),
+                    expected.evaluation(),
+                    "{name} limit={limit:?}"
+                );
+                assert_eq!(appended.consumed_work(), expected.consumed_work());
+                assert_eq!(appended.remaining_work, expected.remaining_work);
+                assert_eq!(cap_bytes(&appended), cap_bytes(&expected));
+            }
+            println!(
+                "{} limit={limit:?} work={} available={} ancestry={}",
+                full.nodes[added.id()].kind,
+                expected.consumed_work(),
+                expected.evaluation().available,
+                cap_bytes(&expected)
+            );
+        }
+    }
+
+    #[test]
+    fn carry_join_matches_fresh_at_the_work_boundary() {
+        let mut prepared = witnessed_view();
+        let (target, target_body) = publication();
+        prepared.add_record(&target, target_body.as_deref());
+        let (first, _) = signed(
+            1,
+            900,
+            vec![],
+            json!({
+                "kind":"account.set","origin":"https://source.example","account":41,
+                "value":"claim","previous":null,"carry":[]
+            }),
+        );
+        prepared.add_record(&first, None);
+
+        let floor = [1, 10, 11]
+            .into_iter()
+            .map(|seed| identity_from_seed(&[seed; 32]))
+            .max()
+            .unwrap();
+        let mut keys = (2..=255u8)
+            .map(|seed| (identity_from_seed(&[seed; 32]), seed))
+            .filter(|(key, _)| key > &floor)
+            .collect::<Vec<_>>();
+        keys.sort();
+        let mut carry = Vec::new();
+        for (i, j) in [0, 2, 3].into_iter().enumerate() {
+            let (issuer, seed) = &keys[j];
+            let (transfer, _) = signed(
+                1,
+                910 + i as u32,
+                vec![first.id().into()],
+                json!({"kind":"identity.transfer","successor":issuer}),
+            );
+            let accept = (0..16).map(|n| {
+                signed(
+                    *seed,
+                    920 + n,
+                    vec![],
+                    json!({"kind":"identity.accept","transfer":transfer.id()}),
+                )
+                .0
+            });
+            let accept = if i < 2 {
+                accept.min_by(|a, b| a.id().cmp(b.id()))
+            } else {
+                accept.max_by(|a, b| a.id().cmp(b.id()))
+            }
+            .unwrap();
+            prepared.add_record(&transfer, None);
+            prepared.add_record(&accept, None);
+            carry.push(accept.id().to_owned());
+        }
+        assert!(carry[..2].iter().all(|id| id < &carry[2]));
+        carry.sort();
+        let (claim, _) = signed(
+            keys[4].1,
+            950,
+            vec![],
+            json!({
+                "kind":"account.set","origin":"https://source.example","account":41,
+                "value":"claim","previous":first.id(),"carry":carry
+            }),
+        );
+        prepared.add_record(&claim, None);
+        observe(&mut prepared, 10, 24, claim.id());
+        observe(&mut prepared, 11, 24, claim.id());
+        let (judgment, _) = signed(
+            keys[1].1,
+            999,
+            vec![],
+            json!({
+                "kind":"judgment.set","target":target.id(),"value":"bless"
+            }),
+        );
+
+        let base = unshared(&prepared).into_state();
+        assert!(base.evaluation().available);
+        assert!(
+            base.evaluation()
+                .accounts
+                .values()
+                .any(|account| !account.certificates.is_empty())
+        );
+        assert_no_stored_crossing(&base, &keys[1].0);
+        assert_priced_join(&prepared, &judgment, None);
+
+        let (safe, _) = signed(
+            keys[5].1,
+            1000,
+            vec![],
+            json!({
+                "kind":"judgment.set", "target":target.id(), "value":"bless"
+            }),
+        );
+        let mut full = unshared(&prepared);
+        full.add_record(&safe, None);
+        let allowed = full.clone().into_state();
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_record(&safe, None);
+        let fast = base.advance(delta, &[]);
+        assert_eq!(fast.statistics().incremental_records, 1);
+        assert_matches_full(&fast, &full);
+
+        // A safe outer append warms the guard without losing the old
+        // interior join. A fork takes the same split path.
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_record(&judgment, None);
+        let split = fast.clone().advance(delta, &[]);
+        let mut split_full = unshared(&full);
+        split_full.add_record(&judgment, None);
+        assert_eq!(split.statistics().reason.as_deref(), Some("layout_split"));
+        assert_matches_full(&split, &split_full);
+
+        // The first insertion broke the old adjacency. More records
+        // at the end of that issuer's new block can append in a batch.
+        let action = || json!({"kind":"judgment.set","target":target.id(),"value":"bless"});
+        let (first, _) = signed(keys[1].1, 1001, vec![judgment.id().into()], action());
+        let (second, _) = signed(keys[1].1, 1002, vec![first.id().into()], action());
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        for record in [&second, &first] {
+            delta.add_record(record, None);
+            split_full.add_record(record, None);
+        }
+        let batch = split.advance(delta, &[]);
+        assert_eq!(batch.statistics().incremental_records, 2);
+        assert_matches_full(&batch, &split_full);
+
+        let mut live = fast;
+        let mut canonical = unshared(&full);
+        let mut previous = safe.id().to_owned();
+        for step in 2..=65 {
+            let (record, _) = signed(keys[5].1, 1003 + step, vec![previous], action());
+            previous = record.id().to_owned();
+            let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+            delta.add_record(&record, None);
+            canonical.add_record(&record, None);
+            live = live.advance(delta, &[]);
+            assert_eq!(
+                live.statistics().reason.as_deref(),
+                (step == 65).then_some("ancestry_rebase"),
+                "append {step}"
+            );
+        }
+        assert_matches_full(&live, &canonical);
+
+        // The untouched layout has too little eligibility fuel to
+        // construct the guard. Full pricing still admits the update.
+        prepared.options.limits.traversal = Some(allowed.consumed_work());
+        full.options.limits = prepared.options.limits.clone();
+        let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
+        delta.add_record(&safe, None);
+        let tight = prepared.into_state().advance(delta, &[]);
+        assert_eq!(tight.statistics().reason.as_deref(), Some("work_budget"));
+        assert!(tight.evaluation().available);
+        assert_matches_full(&tight, &full);
+    }
+
+    #[test]
+    fn historical_observation_join_matches_fresh_at_the_work_boundary() {
+        let mut prepared = witnessed_view();
+        let (target, target_body) = publication();
+        prepared.add_record(&target, target_body.as_deref());
+        let (claim, _) = signed(
+            1,
+            2000,
+            vec![],
+            json!({
+                "kind":"account.set","origin":"https://source.example","account":41,
+                "value":"claim","previous":null,"carry":[]
+            }),
+        );
+        prepared.add_record(&claim, None);
+        let (witness, _) = signed(10, 2001, vec![], json!({"kind":"identity.merge"}));
+        prepared.add_record(&witness, None);
+
+        let floor = [1, 10, 11]
+            .into_iter()
+            .map(|seed| identity_from_seed(&[seed; 32]))
+            .max()
+            .unwrap();
+        let mut keys: Vec<_> = (2..=255u8)
+            .map(|seed| (identity_from_seed(&[seed; 32]), seed))
+            .filter(|(key, _)| key > &floor)
+            .collect();
+        keys.sort();
+        let mut observations = Vec::new();
+        for (branch, key_index) in [0, 2, 3].into_iter().enumerate() {
+            let (successor, seed) = &keys[key_index];
+            let (transfer, _) = signed(
+                10,
+                2100 + branch as u32,
+                vec![witness.id().into()],
+                json!({"kind":"identity.transfer","successor":successor}),
+            );
+            let (accept, _) = signed(
+                *seed,
+                2200,
+                vec![],
+                json!({"kind":"identity.accept","transfer":transfer.id()}),
+            );
+            let body = jvc_core::canonical_value(&json!({
+                "origin":"https://source.example","account":41,"username":"author",
+                "field_hash":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "markers":[claim.id()],"method":"lensisku-public-profile-v1",
+                "observed_at":"2026-10-11T00:00:00Z"
+            })).unwrap();
+            let candidates = (0..8).map(|nonce| {
+                signed_with_body(
+                    *seed,
+                    2300 + nonce,
+                    vec![accept.id().into()],
+                    json!({
+                        "kind":"account.observe","origin":"https://source.example","account":41,
+                        "claim":claim.id(),"result":"present"
+                    }),
+                    Some(body.clone()),
+                )
+            });
+            let (observation, body) = if branch < 2 {
+                candidates.min_by(|(a, _), (b, _)| a.id().cmp(b.id()))
+            } else {
+                candidates.max_by(|(a, _), (b, _)| a.id().cmp(b.id()))
+            }
+            .unwrap();
+            prepared.add_record(&transfer, None);
+            prepared.add_record(&accept, None);
+            prepared.add_record(&observation, body.as_deref());
+            observations.push(observation.id().to_owned());
+        }
+        assert!(observations[..2].iter().all(|id| id < &observations[2]));
+        observe(&mut prepared, 11, 25, claim.id());
+        let (judgment, _) = signed(
+            keys[1].1,
+            2400,
+            vec![],
+            json!({
+                "kind":"judgment.set","target":target.id(),"value":"bless"
+            }),
+        );
+        let base = unshared(&prepared).into_state();
+        assert!(
+            base.evaluation()
+                .accounts
+                .values()
+                .flat_map(|a| &a.certificates)
+                .any(|certificate| {
+                    certificate
+                        .observations
+                        .iter()
+                        .any(|id| observations.contains(id))
+                })
+        );
+        assert_no_stored_crossing(&base, &keys[1].0);
+        assert_priced_join(&prepared, &judgment, None);
+    }
+
     /// Appended-extra probe: three judgments on a two-record chain.
     /// The first covers the chain and appends. The second has the
     /// same parent but leaves out the first appended record, so it
@@ -5273,10 +5672,8 @@ mod rebuild_tests {
         );
     }
 
-    /// Checkpoints written before the register charges were stored
-    /// carry the old version and are rejected; the caller rebuilds
-    /// from the records, and the rebuilt state matches a full
-    /// evaluation.
+    /// Older checkpoints used a different work price for the layout.
+    /// A caller must rebuild from the records before it can append.
     #[test]
     fn old_version_checkpoint_is_rejected_and_rebuild_matches() {
         let mut prepared = base();
@@ -5292,11 +5689,39 @@ mod rebuild_tests {
             json!({"kind":"identity.merge"}),
         ));
         let state = prepared.clone().into_state();
-        let saved = state.checkpoint("host-checked").unwrap();
-        let mut value: Value = serde_json::from_slice(&saved).unwrap();
-        value["version"] = "jvc-evaluation-checkpoint-v2".into();
-        let old = serde_json::to_vec(&value).unwrap();
-        assert!(EvaluatedState::restore_host_checkpoint(&old, "host-checked").is_err());
+        let old_version = |bytes: &[u8], version: &str| {
+            let mut saved: Value = serde_json::from_slice(bytes).unwrap();
+            saved.as_object_mut().unwrap().remove("digest");
+            saved["version"] = version.into();
+            let mut bytes = serde_json::to_vec(&saved).unwrap();
+            let digest = jvc_core::hash_id("sha256:", b"", &bytes);
+            bytes.pop();
+            bytes.extend_from_slice(format!(r#","digest":"{digest}"}}"#).as_bytes());
+            assert!(verify_checkpoint_digest(&bytes));
+            bytes
+        };
+        let full = old_version(
+            &state.checkpoint("host-checked").unwrap(),
+            "jvc-evaluation-checkpoint-v11",
+        );
+        let results = old_version(
+            &state.result_checkpoint("host-checked").unwrap(),
+            "jvc-evaluation-results-v11",
+        );
+        let records = prepared
+            .nodes
+            .values()
+            .map(|n| HostVerifiedRecord { node: n.clone() })
+            .collect();
+        for outcome in [
+            EvaluatedState::restore_host_checkpoint(&full, "host-checked"),
+            EvaluatedState::restore_host_result_checkpoint(&results, "host-checked", records),
+        ] {
+            assert_eq!(
+                outcome.err().unwrap().message,
+                "checkpoint version or binding does not match"
+            );
+        }
         // Rebuild from the records and append: the result matches a
         // full evaluation.
         let judgment = host(
@@ -7048,8 +7473,8 @@ mod rebuild_tests {
 
         let full_json: Value = serde_json::from_slice(&full_bytes).unwrap();
         let result_json: Value = serde_json::from_slice(&result_bytes).unwrap();
-        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v11"));
-        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v11"));
+        assert_eq!(full_json["version"], json!("jvc-evaluation-checkpoint-v13"));
+        assert_eq!(result_json["version"], json!("jvc-evaluation-results-v14"));
         assert!(result_json.get("nodes").is_none());
         // The v8 publication scan counts are gone. A checkpoint that
         // still carries them, or names the v8 version, is refused.

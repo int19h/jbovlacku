@@ -1,5 +1,8 @@
+use super::ancestors::{Ranges, Space};
 use super::*;
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
+
+mod joins;
 use std::rc::Rc;
 
 thread_local! {
@@ -233,58 +236,113 @@ pub(crate) struct Closure {
     pub missing: Rc<BTreeSet<String>>,
     pub invalid: bool,
     pub resource: bool,
+    mixed: bool,
 }
 impl Closure {
     pub fn complete(&self) -> bool {
         self.missing.is_empty() && !self.invalid && !self.resource
     }
 }
-/// Count of stored closures whose ranges cross each layout boundary,
-/// kept as a difference array over insertion coordinates. A closure
-/// crosses the boundary at coordinate `p` when one of its ranges
-/// holds members on both sides (`first < p <= last`). The fast path
-/// reads one count per append: a crossing at its block boundary
-/// means its insertion would split that range, so it rebuilds.
-/// Building and extending cost one update per stored range; a query
-/// is a prefix sum, logarithmic in the layout size.
+/// Marks for ranges in stored mixed closures at original issuer gaps.
 #[derive(Clone, Default)]
-pub(crate) struct BoundaryCrossings {
-    tree: Vec<i64>,
+struct BoundaryCrossings {
+    has_mixed: bool,
+    stored: Option<Rc<[u32]>>,
 }
 
 impl BoundaryCrossings {
-    pub fn len(&self) -> usize {
-        self.tree.len()
+    fn crosses(&self, coordinate: u32) -> bool {
+        self.stored
+            .as_ref()
+            .is_some_and(|marks| marks.binary_search(&coordinate).is_ok())
+    }
+}
+
+#[derive(Default)]
+struct MixedRanges {
+    handles: Vec<Ranges>,
+    ranges: usize,
+}
+
+impl MixedRanges {
+    fn positions(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.handles.iter().flat_map(Ranges::positions)
     }
 
-    fn with_len(len: usize) -> Self {
-        Self {
-            tree: vec![0; len + 2],
+    fn marks(&self, space: &Space) -> Option<Rc<[u32]>> {
+        #[cfg(test)]
+        BOUNDARY_RANGE_VISITS.with(|visits| visits.set(visits.get() + self.ranges));
+        // Both sparse buffers fit in four bytes per record. If they
+        // do not, sweeping all positions visits fewer than 4R slots.
+        let interval_bytes = (self.ranges as u128).checked_mul(16);
+        let dense_bytes = (space.len() as u128).checked_mul(4);
+        let starts = space.block_starts().skip(1);
+        let mut greatest_end = 0;
+        let marks: Vec<_> = if interval_bytes.zip(dense_bytes).is_some_and(|(a, b)| a <= b) {
+            let mut intervals: Vec<_> = self.positions().collect();
+            sort_interval_starts(&mut intervals);
+            let mut intervals = intervals.into_iter().peekable();
+            starts
+                .filter(|&gap| {
+                    while let Some((_, end)) = intervals.next_if(|&(first, _)| first < gap) {
+                        greatest_end = greatest_end.max(end);
+                    }
+                    greatest_end >= gap
+                })
+                .collect()
+        } else {
+            let mut ends = vec![0; space.len()];
+            for (first, end) in self.positions() {
+                let slot = &mut ends[first as usize];
+                *slot = (*slot).max(end);
+            }
+            let mut swept = 0;
+            starts
+                .filter(|&gap| {
+                    while swept < gap as usize {
+                        greatest_end = greatest_end.max(ends[swept]);
+                        swept += 1;
+                    }
+                    greatest_end >= gap
+                })
+                .collect()
+        };
+        (!marks.is_empty()).then(|| Rc::from(marks))
+    }
+}
+
+fn mixed_range_units(ranges: usize) -> usize {
+    1usize.saturating_add(ranges.saturating_mul(2))
+}
+
+/// Four stable byte passes over unsigned interval starts.
+fn sort_interval_starts(intervals: &mut Vec<(u32, u32)>) {
+    let mut scratch = vec![(0, 0); intervals.len()];
+    for shift in [0, 8, 16, 24] {
+        let bucket = |first: u32| ((first >> shift) & 255) as usize;
+        let mut offsets = [0; 256];
+        for &(first, _) in intervals.iter() {
+            offsets[bucket(first)] += 1;
         }
-    }
-
-    fn add(&mut self, coordinate: u32, delta: i64) {
-        let mut index = coordinate as usize + 1;
-        while index < self.tree.len() {
-            self.tree[index] += delta;
-            index += index & index.wrapping_neg();
+        let mut next = 0;
+        for offset in &mut offsets {
+            let count = *offset;
+            *offset = next;
+            next += count;
         }
-    }
-
-    fn extend_range(&mut self, first: u32, last: u32) {
-        self.add(first + 1, 1);
-        self.add(last + 1, -1);
-    }
-
-    fn crossing(&self, coordinate: u32) -> i64 {
-        let mut index = coordinate as usize + 1;
-        let mut total = 0;
-        while index > 0 {
-            total += self.tree.get(index).copied().unwrap_or(0);
-            index -= index & index.wrapping_neg();
+        for &interval in intervals.iter() {
+            let offset = &mut offsets[bucket(interval.0)];
+            scratch[*offset] = interval;
+            *offset += 1;
         }
-        total
+        std::mem::swap(intervals, &mut scratch);
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static BOUNDARY_RANGE_VISITS: Cell<usize> = const { Cell::new(0) };
+    static BOUNDARY_UNITS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// The appended-rank index cached on a graph: the appended-record
@@ -308,7 +366,12 @@ pub(crate) struct Graph {
     pub pending_cutoffs: Shared<BTreeSet<String>>,
     pub space: Rc<super::ancestors::Space>,
     pub ancestry: super::ancestors::AncestryBudget,
-    pub boundary: Shared<BoundaryCrossings>,
+    boundary: BoundaryCrossings,
+    /// Built from the positioned graph before the first admitted append.
+    join_index: Option<Rc<OnceCell<joins::JoinIndex>>>,
+    has_carry: bool,
+    /// Cache handles for mixed closures stored since the layout was built.
+    appended_mixed: Option<Shared<Vec<(String, u8)>>>,
     /// Whether every record of an issuer is complete for
     /// `local_complete`, computed in one pass at lifecycle build and
     /// kept current by appends.
@@ -358,7 +421,10 @@ impl Graph {
             nodes,
             space: super::ancestors::Space::empty(),
             ancestry: super::ancestors::AncestryBudget::for_records(records),
-            boundary: Shared::default(),
+            boundary: BoundaryCrossings::default(),
+            join_index: None,
+            has_carry: false,
+            appended_mixed: None,
             issuer_complete: Shared::default(),
             rank_index: std::cell::RefCell::new(None),
             account_sets: Shared::default(),
@@ -388,26 +454,30 @@ impl Graph {
         }
         #[cfg(test)]
         LAYOUT_EDGE_READS.with(|count| count.set(count.get() + graph.nodes.len()));
+        let mut has_acceptance = false;
+        let mut has_carry = false;
         let edges = graph
             .nodes
             .values()
-            .map(|n| n.previous.len())
+            .map(|node| {
+                has_acceptance |= node.semantic && node.kind == "identity.accept";
+                has_carry |= joins::is_carry_candidate(node);
+                node.previous.len()
+            })
             .sum::<usize>();
         if !graph.charge(edges) {
             return graph;
         }
         graph.space = super::ancestors::Space::new(&graph.nodes);
         let before = graph.budget.get();
-        graph.own = Rc::new(graph.build_cache(0));
+        let mut mixed = MixedRanges::default();
+        graph.own = Rc::new(graph.build_cache(0, &mut mixed));
         if graph.resource.get() || graph.ancestry.failed() {
             graph.resource.set(true);
             return graph;
         }
         let own_work = before - graph.budget.get();
-        let same_links = !graph
-            .nodes
-            .values()
-            .any(|n| n.semantic && n.kind == "identity.accept");
+        let same_links = !has_acceptance;
         if same_links {
             // The three link modes are identical without acceptance events.
             // Charge the original work even when their storage is shared.
@@ -415,7 +485,7 @@ impl Graph {
                 graph.structural = graph.own.clone();
             }
         } else {
-            graph.structural = Rc::new(graph.build_cache(1));
+            graph.structural = Rc::new(graph.build_cache(1, &mut mixed));
         }
         if graph.resource.get() {
             return graph;
@@ -434,40 +504,104 @@ impl Graph {
                 graph.accepted = graph.own.clone();
             }
         } else {
-            graph.accepted = Rc::new(graph.build_cache(2));
+            graph.accepted = Rc::new(graph.build_cache(2, &mut mixed));
         }
         if graph.resource.get() || graph.ancestry.failed() {
             graph.resource.set(true);
             return graph;
         }
-        graph.boundary = Shared::new(BoundaryCrossings::with_len(graph.space.len()));
-        let mut seen: Vec<usize> = Vec::new();
-        for cache in [&graph.own, &graph.structural, &graph.accepted] {
-            let pointer = Rc::as_ptr(cache) as usize;
-            if seen.contains(&pointer) {
-                continue;
+        if !mixed.handles.is_empty() {
+            let setup = graph.space.block_starts().len().saturating_mul(2);
+            if !graph.charge(setup) {
+                return graph;
             }
-            seen.push(pointer);
-            for closure in cache.values() {
-                for (first, last) in closure.ids.ranges() {
-                    graph.boundary.extend_range(first, last);
-                }
-            }
+            #[cfg(test)]
+            BOUNDARY_UNITS.with(|units| units.set(units.get() + setup));
+            graph.boundary.has_mixed = true;
+            graph.boundary.stored = mixed.marks(&graph.space);
+        }
+        drop(mixed);
+        if has_acceptance || has_carry {
+            graph.join_index = Some(Rc::new(OnceCell::new()));
+            graph.has_carry = has_carry;
         }
         graph
     }
 
-    /// Stored closures whose ranges cross the given insertion
-    /// coordinate, across every distinct cache.
-    pub fn boundary_crossing(&self, coordinate: u32) -> i64 {
-        self.boundary.crossing(coordinate)
+    /// Tests an insertion after the issuer's current block.
+    pub fn splits_layout(&self, coordinate: u32, issuer: &str) -> Option<bool> {
+        if self.boundary.crosses(coordinate) {
+            return Some(true);
+        }
+        if let Some(index) = &self.join_index {
+            // The first admitted append, even at an outer end, must
+            // leave an index bound to the original positioned layout.
+            if index.get().is_none() {
+                let built = joins::JoinIndex::build(self)?;
+                let _ = index.set(built);
+            }
+            if index.get().unwrap().splits(self, coordinate)? {
+                return Some(true);
+            }
+        }
+        let Some(mixed) = &self.appended_mixed else {
+            return Some(false);
+        };
+        if !self.charge(self.appended_rank.len() + 2 * mixed.len()) {
+            return None;
+        }
+
+        let mut left = (coordinate > 0).then(|| self.space.id_at_ref(coordinate - 1));
+        let mut right =
+            ((coordinate as usize) < self.space.len()).then(|| self.space.id_at_ref(coordinate));
+        let mut left_rank = None;
+        let mut right_rank = None;
+        for (id, &(position, sub)) in &self.appended_rank {
+            if position != coordinate {
+                continue;
+            }
+            let rank = (self.nodes[id].issuer.as_str(), sub);
+            if rank.0 <= issuer && left_rank.is_none_or(|current| rank > current) {
+                left_rank = Some(rank);
+                left = Some(id);
+            } else if rank.0 > issuer && right_rank.is_none_or(|current| rank < current) {
+                right_rank = Some(rank);
+                right = Some(id);
+            }
+        }
+        Some(left.zip(right).is_some_and(|(left, right)| {
+            mixed.iter().any(|(id, mode)| {
+                let cache = if *mode == 1 {
+                    &self.structural
+                } else {
+                    &self.accepted
+                };
+                let ids = &cache[id].ids;
+                ids.contains(left) && ids.contains(right)
+            })
+        }))
     }
+
+    pub fn mixed_copy_units(&self, node: &Node) -> usize {
+        self.appended_mixed
+            .as_ref()
+            .filter(|list| {
+                list.is_shared()
+                    && node
+                        .previous
+                        .iter()
+                        .any(|id| self.structural[id].mixed || self.accepted[id].mixed)
+            })
+            .map_or(0, |list| list.len())
+    }
+
     fn empty_closure(&self) -> Closure {
         Closure {
             ids: IdSet::empty(self.space.clone()),
             missing: Rc::default(),
             invalid: false,
             resource: false,
+            mixed: false,
         }
     }
     /// Take `amount` units from the budget before the work runs. On
@@ -479,10 +613,8 @@ impl Graph {
     /// evaluation computed (`resource_unavailable` in `lib.rs`); the fast
     /// path rebuilds when `resource` is set after an append.
     ///
-    /// A new charge on a path that a `judgment.set` or native
-    /// `definition.publish` append takes must also be priced in
-    /// `EvaluatedState::fast_work`, which repeats the full build's
-    /// charge formula for one record.
+    /// Local appends must also pay new full-build charges when
+    /// their graph or evaluator updates perform the same work.
     #[must_use]
     pub(crate) fn charge(&self, amount: usize) -> bool {
         if amount > self.budget.get() {
@@ -494,10 +626,11 @@ impl Graph {
             true
         }
     }
-    fn dependencies(&self, node: &Node, mode: u8) -> (Vec<String>, BTreeSet<String>, bool) {
+    fn dependencies(&self, node: &Node, mode: u8) -> (Vec<String>, BTreeSet<String>, bool, bool) {
         let mut ids = Vec::new();
         let mut missing = BTreeSet::new();
         let mut invalid = false;
+        let mut foreign = false;
         for id in &node.previous {
             match self.nodes.get(id) {
                 None => {
@@ -521,23 +654,24 @@ impl Graph {
                 {
                     if mode == 1 || self.lifecycle.successor.get(&t.issuer) == Some(&node.issuer) {
                         ids.push(transfer.into());
+                        foreign = t.issuer != node.issuer;
                     }
                 }
                 _ => invalid = true,
             }
         }
-        (ids, missing, invalid)
+        (ids, missing, invalid, foreign)
     }
     /// Topological range unions keep ordinary linear histories compact.
     /// Charges are logical: one unit per record, per dependency edge, and
     /// per missing ID propagated, in every representation.
-    fn build_cache(&self, mode: u8) -> BTreeMap<String, Closure> {
+    fn build_cache(&self, mode: u8, mixed: &mut MixedRanges) -> BTreeMap<String, Closure> {
         let mut dependencies = BTreeMap::new();
         let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut waiting = BTreeMap::new();
         let mut ready = BTreeSet::new();
         for (id, node) in self.nodes.as_ref() {
-            let (deps, missing, invalid) = self.dependencies(node, mode);
+            let (deps, missing, invalid, foreign) = self.dependencies(node, mode);
             if !self.charge(1 + deps.len() + missing.len()) {
                 return BTreeMap::new();
             }
@@ -548,11 +682,11 @@ impl Graph {
             if deps.is_empty() {
                 ready.insert(id.clone());
             }
-            dependencies.insert(id.clone(), (deps, missing, invalid));
+            dependencies.insert(id.clone(), (deps, missing, invalid, foreign));
         }
         let mut cache: BTreeMap<String, Closure> = BTreeMap::new();
         while let Some(id) = ready.pop_first() {
-            let (deps, missing, invalid) = &dependencies[&id];
+            let (deps, missing, invalid, foreign) = &dependencies[&id];
             let mut work = 1 + missing.len();
             for dep in deps {
                 work += 1 + cache[dep].missing.len() + cache[dep].ids.range_count();
@@ -566,6 +700,7 @@ impl Graph {
                 missing: Rc::new(missing.clone()),
                 invalid: *invalid,
                 resource: false,
+                mixed: *foreign,
             };
             // The cache keeps this closure: charge its storage. Past
             // the cap the build stops, as it does past the work budget.
@@ -579,9 +714,18 @@ impl Graph {
                 }
                 c.invalid |= p.invalid;
                 c.resource |= p.resource;
+                c.mixed |= p.mixed;
             }
-            if self.ancestry.failed() {
-                c.resource = true;
+            if c.mixed {
+                let ranges = c.ids.range_count();
+                let units = mixed_range_units(ranges);
+                if !self.charge(units) {
+                    return cache;
+                }
+                #[cfg(test)]
+                BOUNDARY_UNITS.with(|total| total.set(total.get() + units));
+                mixed.ranges += ranges;
+                mixed.handles.push(c.ids.range_handle());
             }
             cache.insert(id.clone(), c);
             for child in children.get(&id).into_iter().flatten() {
@@ -1064,6 +1208,7 @@ impl Graph {
                 }
                 result.invalid |= prior.invalid;
                 result.resource |= prior.resource;
+                result.mixed |= prior.mixed;
             }
             result.ids.insert(&node.id);
             result
@@ -1136,13 +1281,31 @@ impl Graph {
                 closure.resource = true;
             }
         }
+        let extra_units = others
+            .iter()
+            .filter(|c| c.mixed)
+            .map(|c| mixed_range_units(c.ids.fresh_ranges))
+            .fold(0usize, usize::saturating_add)
+            .saturating_add(
+                if self.boundary.has_mixed && sub == 0 && self.issuer_block(&node.issuer).is_none()
+                {
+                    2
+                } else {
+                    0
+                },
+            );
+        if kept && self.charge(extra_units) {
+            for (mode, closure) in (1..).zip(&others) {
+                if closure.mixed {
+                    self.appended_mixed
+                        .get_or_insert_with(Shared::default)
+                        .push((node.id.clone(), mode));
+                }
+            }
+        }
         // Insert without splitting a shared cache afterwards: mutating
         // a cache that its siblings still point at would copy it and
         // silently unshare the three modes.
-        let mut new_ranges: Vec<(u32, u32)> = own.ids.ranges().collect();
-        for closure in &others {
-            new_ranges.extend(closure.ids.ranges());
-        }
         if shared {
             let empty = empty_closures();
             self.structural = empty.clone();
@@ -1156,9 +1319,6 @@ impl Graph {
             let mut others = others.into_iter();
             Rc::make_mut(&mut self.structural).insert(node.id.clone(), others.next().unwrap());
             Rc::make_mut(&mut self.accepted).insert(node.id.clone(), others.next().unwrap());
-        }
-        for (first, last) in new_ranges {
-            self.boundary.extend_range(first, last);
         }
         let complete =
             if self.lifecycle.successor.contains_key(&node.issuer) && !self.retained(&node.id) {
@@ -1828,7 +1988,7 @@ mod tests {
                 if done.contains_key(id) {
                     continue;
                 }
-                let (edges, missing, invalid) = deps(node);
+                let (edges, missing, invalid, _) = deps(node);
                 if edges.iter().all(|dep| done.contains_key(dep)) {
                     let mut ids = BTreeSet::from([id.clone()]);
                     let mut all_missing = missing;
@@ -2163,6 +2323,161 @@ mod tests {
     }
 
     #[test]
+    fn boundary_index_skips_local_ranges_even_with_an_acceptance() {
+        let mut history = two_interleaved_chains(128);
+        let mut accept = node("jve1:accept", "two", &[], "identity.accept");
+        accept.action = CompactValue::from(&json!({
+            "kind": "identity.accept", "transfer": "jve1:missing"
+        }));
+        history.insert(accept.id.clone(), accept);
+        let foreign = node("jve1:foreign", "two", &["jve1:root"], "identity.merge");
+        history.insert(foreign.id.clone(), foreign);
+        history.insert(
+            "jve1:root".into(),
+            node("jve1:root", "one", &[], "identity.merge"),
+        );
+
+        let visits = BOUNDARY_RANGE_VISITS.with(Cell::get);
+        let units = BOUNDARY_UNITS.with(Cell::get);
+        let graph = Graph::new(history, &Limits::default());
+        assert!(!graph.resource.get());
+        assert!(
+            graph.structural["jve1:accept"]
+                .missing
+                .contains("jve1:missing")
+        );
+        assert!(graph.structural["jve1:foreign"].invalid);
+        assert!(!graph.boundary.has_mixed);
+        assert!(graph.boundary.stored.is_none());
+        assert_eq!(BOUNDARY_RANGE_VISITS.with(Cell::get), visits);
+        assert_eq!(BOUNDARY_UNITS.with(Cell::get), units);
+    }
+
+    #[test]
+    fn boundary_index_charges_exact_mixed_ranges_and_block_count() {
+        // The same transfer exercises a dense sweep and a sparse sort.
+        for records in [2, 128] {
+            for separated in [false, true] {
+                let mut history = interleaved_with_acceptance(records);
+                if separated {
+                    history.insert(
+                        "jve1:gap".into(),
+                        node("jve1:gap", "orphan", &[], "identity.merge"),
+                    );
+                }
+                let visits = BOUNDARY_RANGE_VISITS.with(Cell::get);
+                let units = BOUNDARY_UNITS.with(Cell::get);
+                let open = 1_000_000;
+                let limits = Limits {
+                    traversal: Some(open),
+                    ..Limits::default()
+                };
+                let graph = Graph::new(history.clone(), &limits);
+                assert!(!graph.resource.get());
+                assert!(graph.boundary.has_mixed);
+                let ranges = if separated { 4 } else { 2 };
+                let blocks = if separated { 4 } else { 3 };
+                assert_eq!(BOUNDARY_RANGE_VISITS.with(Cell::get) - visits, ranges);
+                assert_eq!(
+                    BOUNDARY_UNITS.with(Cell::get) - units,
+                    2 + 2 * ranges + 2 * blocks
+                );
+                assert_eq!(graph.boundary.stored.is_none(), separated);
+                if !separated {
+                    assert_eq!(
+                        graph.boundary.stored.as_deref(),
+                        Some(&[graph.next_block_start("one")][..])
+                    );
+                }
+                let total = open - graph.budget.get();
+                let visits = BOUNDARY_RANGE_VISITS.with(Cell::get);
+                let short = Graph::new(
+                    history,
+                    &Limits {
+                        traversal: Some(total - 1),
+                        ..limits
+                    },
+                );
+                assert!(short.resource.get());
+                assert!(short.boundary.stored.is_none());
+                assert_eq!(BOUNDARY_RANGE_VISITS.with(Cell::get), visits);
+            }
+        }
+    }
+
+    #[test]
+    fn boundary_index_ignores_singletons_stored_for_structural_cycles() {
+        let a_transfer = "jve1:a-transfer";
+        let b_transfer = "jve1:b-transfer";
+        let mut history = BTreeMap::new();
+        for (issuer, other, accept, transfer, other_transfer) in [
+            ("one", "two", "jve1:a-accept", a_transfer, b_transfer),
+            ("two", "one", "jve1:b-accept", b_transfer, a_transfer),
+        ] {
+            let mut root = node(accept, issuer, &[], "identity.accept");
+            root.action =
+                CompactValue::from(&json!({"kind": "identity.accept", "transfer": other_transfer}));
+            history.insert(root.id.clone(), root);
+            let mut tail = node(transfer, issuer, &[accept], "identity.transfer");
+            tail.action =
+                CompactValue::from(&json!({"kind": "identity.transfer", "successor": other}));
+            history.insert(tail.id.clone(), tail);
+        }
+        let visits = BOUNDARY_RANGE_VISITS.with(Cell::get);
+        let graph = Graph::new(history, &Limits::default());
+        assert!(!graph.resource.get());
+        assert!(
+            graph
+                .structural
+                .values()
+                .all(|c| c.invalid && c.ids.range_count() == 1 && !c.mixed)
+        );
+        assert!(!graph.boundary.has_mixed);
+        assert_eq!(BOUNDARY_RANGE_VISITS.with(Cell::get), visits);
+    }
+
+    #[test]
+    fn boundary_index_uses_current_neighbors_of_appended_closures() {
+        let mut accept = node("jve1:accept", "a", &[], "identity.accept");
+        accept.action =
+            CompactValue::from(&json!({"kind": "identity.accept", "transfer": "jve1:transfer"}));
+        let mut transfer = node("jve1:transfer", "d", &[], "identity.transfer");
+        transfer.action =
+            CompactValue::from(&json!({"kind": "identity.transfer", "successor": "a"}));
+        let root = node("jve1:root", "a", &[], "identity.merge");
+        let history = [accept, transfer, root]
+            .into_iter()
+            .map(|n| (n.id.clone(), n))
+            .collect::<BTreeMap<_, _>>();
+        let left = node(
+            "jve1:left",
+            "a",
+            &["jve1:accept", "jve1:root"],
+            "identity.merge",
+        );
+        let limits = Limits::default();
+        let mut graph = Graph::new(history.clone(), &limits);
+        let gap = graph.next_block_start("a");
+        assert!(graph.boundary.has_mixed);
+        assert!(graph.boundary.stored.is_none());
+        assert_eq!(graph.splits_layout(gap, "b"), Some(false));
+        graph.append_ordinary(left.clone());
+        assert_eq!(graph.splits_layout(gap, "b"), Some(true));
+        assert_eq!(graph.splits_layout(0, "0"), Some(false));
+        assert_eq!(
+            graph.splits_layout(graph.space.len() as u32, "z"),
+            Some(false)
+        );
+
+        let mut graph = Graph::new(history, &limits);
+        assert_eq!(graph.splits_layout(gap, "c"), Some(false));
+        graph.append_ordinary(node("jve1:between", "c", &[], "identity.merge"));
+        graph.append_ordinary(left);
+        assert_eq!(graph.splits_layout(gap, "b"), Some(false));
+        assert_eq!(graph.splits_layout(gap, "c"), Some(false));
+    }
+
+    #[test]
     fn cap_failure_in_the_accepted_cache_is_a_resource_failure() {
         // Three real caches (an acceptance exists) keep three copies of
         // each fragmented closure. At this size the accepted cache
@@ -2176,7 +2491,7 @@ mod tests {
         let graph = Graph::new(interleaved_with_acceptance(3_600), &limits);
         assert!(graph.ancestry.failed());
         assert!(graph.resource.get());
-        assert_eq!(graph.boundary.len(), 0);
+        assert!(!graph.boundary.has_mixed);
         let graph = Graph::new(interleaved_with_acceptance(2_000), &limits);
         assert!(!graph.ancestry.failed());
         assert!(!graph.resource.get());
@@ -2191,15 +2506,23 @@ mod tests {
         for history in [nodes(2, true), interleaved_with_acceptance(4)] {
             let graph = Graph::new(history.clone(), &open);
             assert!(!graph.resource.get());
-            assert!(graph.boundary.len() > 0);
+            let acceptance = history.values().any(|n| n.kind == "identity.accept");
+            assert_eq!(graph.boundary.has_mixed, acceptance);
+            let setup = if acceptance {
+                2 * graph.space.block_starts().len()
+            } else {
+                0
+            };
             let work = open.traversal.unwrap() - graph.budget.get();
+            let visits = BOUNDARY_RANGE_VISITS.with(Cell::get);
             let tight = Limits {
-                traversal: Some(work - 1),
+                traversal: Some(work - setup - 1),
                 ..Limits::default()
             };
             let graph = Graph::new(history, &tight);
             assert!(graph.resource.get());
-            assert_eq!(graph.boundary.len(), 0);
+            assert!(!graph.boundary.has_mixed);
+            assert_eq!(BOUNDARY_RANGE_VISITS.with(Cell::get), visits);
         }
     }
 

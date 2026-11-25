@@ -8,7 +8,7 @@ enum Chain {
     Invalid,
     Resource,
 }
-fn account(node: &Node) -> Option<AccountKey> {
+pub(super) fn account(node: &Node) -> Option<AccountKey> {
     Some(AccountKey {
         origin: node.action.view().index("origin").as_str()?.into(),
         account: node.action.view().index("account").as_u64()?,
