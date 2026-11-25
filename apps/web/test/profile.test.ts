@@ -1098,7 +1098,7 @@ test("a rafsi pair link opens the pair's word, rafsi, and judgment, and an unkno
     page.getByRole("heading", { name: "Rafsi pair unavailable" }),
   ).toBeVisible();
   await expect(page.locator("main")).toContainText(
-    "the word and the rafsi are unknown here",
+    "its word and rafsi are unknown here",
   );
   await page.goto("/rafsi-pair/not-a-pair");
   await expect(page.locator("main")).toContainText(
