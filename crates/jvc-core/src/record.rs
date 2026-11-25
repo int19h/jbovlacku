@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::{UnicodeNormalization, is_nfc};
 
 pub const MAX_HEADER_BYTES: usize = 16 * 1024;
 pub const MAX_ENVELOPE_BYTES: usize = 20 * 1024;
@@ -216,7 +216,12 @@ fn identity_spelling(spelling: &str) -> Result<String> {
 }
 /// Check both forms of a word spelling without computing its ID.
 pub fn valid_word_id_spelling(spelling: &str) -> bool {
-    validate_word_spelling(spelling).is_ok() && identity_spelling(spelling).is_ok()
+    validate_spelling(spelling, 256).is_ok()
+        && match acute_accents(spelling) {
+            Ok(true) => identity_spelling(spelling).is_ok(),
+            Ok(false) => true,
+            Err(_) => false,
+        }
 }
 /// Acute stress marks affect display only. Keep every other diacritic.
 pub fn strip_acute_accents(spelling: &str) -> String {
@@ -224,17 +229,24 @@ pub fn strip_acute_accents(spelling: &str) -> String {
 }
 /// A stress mark must follow a Lojban vowel or consonant.
 pub fn validate_acute_accents(spelling: &str) -> Result<()> {
+    acute_accents(spelling).map(|_| ())
+}
+fn acute_accents(spelling: &str) -> Result<bool> {
     let mut letter = false;
+    let mut accented = false;
     for c in spelling.nfd() {
-        if c == '\u{301}' && !letter {
-            return Err(Error::new(
-                "spelling",
-                "An acute accent must follow a Lojban vowel or consonant.",
-            ));
+        if c == '\u{301}' {
+            if !letter {
+                return Err(Error::new(
+                    "spelling",
+                    "An acute accent must follow a Lojban vowel or consonant.",
+                ));
+            }
+            accented = true;
         }
         letter = "abcdefgijklmnoprstuvxyz".contains(c.to_ascii_lowercase());
     }
-    Ok(())
+    Ok(accented)
 }
 pub fn rafsi_pair_id(word: &str, rafsi: &str) -> Result<String> {
     if !valid_id(word, "jvw1:") {
@@ -252,7 +264,7 @@ pub fn validate_spelling(s: &str, max: usize) -> Result<()> {
         || s.len() > max
         || s.trim() != s
         || s.chars().any(char::is_control)
-        || s.nfc().collect::<String>() != s
+        || !is_nfc(s)
     {
         return Err(Error::new(
             "spelling",

@@ -20,7 +20,7 @@ export {
   identityFromSeed,
   createEvent,
   wordId,
-  validWordIdSpelling,
+  validWordIdSpellings,
   rafsiPairId,
   validateAction,
   inspectBody,

@@ -28,7 +28,7 @@
  * Node unit tests can load it.
  */
 import {
-  validWordIdSpelling,
+  validWordIdSpellings,
   wordId,
 } from "../../../../packages/core/src/browser.ts";
 import type { CachedPackage } from "./search.ts";
@@ -198,21 +198,41 @@ export function savedWordId(word: {
   }
 }
 
+function needsCoreSpellingCheck(spelling: string): boolean {
+  // Printable ASCII needs no Unicode normalization. Its byte count is
+  // its string length, and only a space can be edge whitespace.
+  if (!spelling.length || spelling.length > 256)
+    throw new PackageValidationError();
+  if (spelling[0] === " " || spelling[spelling.length - 1] === " ")
+    throw new PackageValidationError();
+  return /[^ -~]/.test(spelling);
+}
+
 /** Check a row's spelling when the caller does not need its ID. */
 export function checkSavedWord(word: {
   language: "jbo";
   spelling: string;
 }): void {
-  // Printable ASCII needs no Unicode normalization. Its byte count is
-  // its string length, and only a space can be edge whitespace.
-  const { spelling } = word;
-  if (!spelling.length || spelling.length > 256)
-    throw new PackageValidationError();
   if (
-    spelling[0] !== " " &&
-    spelling[spelling.length - 1] !== " " &&
-    !/[^ -~]/.test(spelling)
+    needsCoreSpellingCheck(word.spelling) &&
+    !validWordIdSpellings([word.spelling])
   )
-    return;
-  if (!validWordIdSpelling(spelling)) throw new PackageValidationError();
+    throw new PackageValidationError();
+}
+
+/** Check spellings in small batches during the row walk. Finish before using the package. */
+export function savedSpellingChecks() {
+  const spellings: string[] = [];
+  const finish = () => {
+    if (!validWordIdSpellings(spellings)) throw new PackageValidationError();
+    spellings.length = 0;
+  };
+  return {
+    add(spelling: string) {
+      if (!needsCoreSpellingCheck(spelling)) return;
+      spellings.push(spelling);
+      if (spellings.length === 128) finish();
+    },
+    finish,
+  };
 }

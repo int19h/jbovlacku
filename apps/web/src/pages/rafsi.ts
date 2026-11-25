@@ -24,11 +24,11 @@ import {
   type PackageDownloadOptions,
 } from "../data/search.ts";
 import {
-  checkSavedWord,
   INVALID_PACKAGE_MESSAGE,
   PackageValidationError,
   savedPackage,
   savedRow,
+  savedSpellingChecks,
   savedWordId,
 } from "../data/saved-package.ts";
 import { getWord, loadRecord } from "../data/api.ts";
@@ -669,12 +669,14 @@ async function resolvePair(
       if (!loaded.fresh) {
         // A failed download can leave a candidate from a checked prefix.
         found = undefined;
+        const spellings = savedSpellingChecks();
         for (const row of loaded.pkg.entries) {
           const entry = savedRow(row, loaded.pkg.version, language);
           if (isV2(entry) && !found && entry.rafsi.length)
             match(entry, savedWordId(entry.word));
-          else checkSavedWord(entry.word);
+          else spellings.add(entry.word.spelling);
         }
+        spellings.finish();
       }
       return found ?? null;
     } catch (error) {
