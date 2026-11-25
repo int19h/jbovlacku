@@ -214,8 +214,5 @@ export function checkSavedWord(word: {
     !/[^ -~]/.test(spelling)
   )
     return;
-  // Passing a lone surrogate through the WebAssembly string binding
-  // replaces it with U+FFFD. Reject it before that conversion.
-  if (LONE_SURROGATE.test(spelling) || !validWordIdSpelling(spelling))
-    throw new PackageValidationError();
+  if (!validWordIdSpelling(spelling)) throw new PackageValidationError();
 }

@@ -185,8 +185,9 @@ export function createEvent(
 }
 export const wordId = (word: { language: "jbo"; spelling: string }): string =>
   wasm.runtime_word_identifier(utf8(JSON.stringify(word)));
+// The WebAssembly string binding replaces lone surrogates with U+FFFD.
 export const validWordIdSpelling = (spelling: string): boolean =>
-  wasm.valid_word_id_spelling(spelling);
+  !/\p{Cs}/u.test(spelling) && wasm.valid_word_id_spelling(spelling);
 /** The rafsi pair ID of a word ID and NFC rafsi spelling, per the format specification. */
 export const rafsiPairId = (word: string, rafsi: string): string =>
   "jvr1:" +
