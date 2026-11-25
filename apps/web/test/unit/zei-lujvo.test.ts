@@ -57,7 +57,7 @@ const imports = JSON.parse(
     "utf8",
   ),
 );
-const definition = "jve1:" + "a".repeat(64);
+const definition = "jve1:" + "0".repeat(64);
 const cached = {
   snapshot: "sha256:" + "a".repeat(64),
   version: 2,

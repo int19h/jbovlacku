@@ -330,6 +330,7 @@ export async function publishPage(
     (!draft.formation?.generated ||
       draft.formation.generated ===
         detectWord(body?.word.spelling ?? "").normalized);
+  const hasRecordedFormation = draft.formation !== null;
   const rootLine = el("p", { class: "meta" });
   conflicts.append(rootLine);
   if (draft.kind === "gismu" && body) {
@@ -351,10 +352,13 @@ export async function publishPage(
                 known.snapshot === inventory.snapshot,
             ),
         );
-        rootLine.textContent = `Root conflicts were checked again against the local package of snapshot ${inventory.snapshot.slice(7, 19)}…: ${
+        const coverage = hasRecordedFormation
+          ? "Root conflicts were checked again against the local package"
+          : "Root conflicts in the local package";
+        rootLine.textContent = `${coverage} of snapshot ${inventory.snapshot.slice(7, 19)}…. ${
           foundRoots.length
-            ? `${foundRoots.length} known ${foundRoots.length === 1 ? "conflict" : "conflicts"}, ${newRoots.length} new since the recorded run.`
-            : "no root conflict."
+            ? `${foundRoots.length} known ${foundRoots.length === 1 ? "conflict" : "conflicts"}.${hasRecordedFormation ? ` ${newRoots.length} new since the recorded run.` : ""}`
+            : "No root conflict."
         }`;
         for (const c of foundRoots) {
           const line = el("p", { class: "warn" });
@@ -362,7 +366,7 @@ export async function publishPage(
             inlineProse(
               "The word link belongs to this root conflict sentence.",
               text(
-                `${newRoots.includes(c) ? "New since the recorded run: " : "Acknowledged in the recorded evidence: "}${c.rule} conflict with `,
+                `${hasRecordedFormation ? (newRoots.includes(c) ? "New since the recorded run: " : "Acknowledged in the recorded evidence: ") : ""}${c.rule} conflict with `,
               ),
               link(c.spelling, routes.word(c.spelling), { lang: "jbo" }),
               text("."),
@@ -371,7 +375,7 @@ export async function publishPage(
           conflicts.append(line);
         }
       } catch (error) {
-        rootLine.textContent = `Root conflicts were not checked again: ${describe(error)}. Coverage is unknown.`;
+        rootLine.textContent = `Root conflict coverage is unknown. ${describe(error)}`;
       }
   }
   const componentConflicts = draft.compound
@@ -616,13 +620,18 @@ export async function publishPage(
     }
     return before !== JSON.stringify(draft.formation);
   };
-  if (foundRoots.length)
+  if (foundRoots.length) {
+    const state = hasRecordedFormation && newRoots.length ? "new" : "known";
+    const collision =
+      foundRoots.length === 1
+        ? `a ${state} root conflict`
+        : `${state} root conflicts`;
     panel.append(
       el(
         "div",
         { class: "notice", style: "margin-top:12px" },
         checkbox(
-          `I publish ${body?.word.spelling ?? "this form"} although the refreshed package shows ${newRoots.length ? (foundRoots.length === 1 ? "a new root conflict" : "new root conflicts") : foundRoots.length === 1 ? "a known root conflict" : "known root conflicts"} with ${foundRoots.map((c) => c.spelling).join(", ")}.`,
+          `I publish ${body?.word.spelling ?? "this form"} although the local package shows ${collision} with ${foundRoots.map((c) => c.spelling).join(", ")}.`,
           rootAcknowledged,
           (value) => {
             rootAcknowledged = value;
@@ -640,6 +649,7 @@ export async function publishPage(
         ),
       ),
     );
+  }
   if (componentConflicts.length)
     panel.append(
       el(

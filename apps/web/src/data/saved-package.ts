@@ -1,5 +1,10 @@
 /** The shared read rules for saved search packages. */
-import { wordId } from "../../../../packages/core/src/browser.ts";
+import {
+  validWordIdSpellings,
+  wordId,
+  wordSpellingStatus,
+} from "../../../../packages/core/src/browser.ts";
+import type { SearchRequestBudget } from "../../../../packages/search/src/index.ts";
 import type { CachedPackage } from "./search.ts";
 import {
   eventId,
@@ -21,20 +26,18 @@ export class PackageValidationError extends Error {
   }
 }
 
-/** The core rejects a lone surrogate in a spelling. */
-const LONE_SURROGATE = /\p{Cs}/u;
-
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** Whether a value is an object with exactly these own fields. The worker uses the same test. */
 export function fields(
   value: unknown,
-  names: string[],
+  names: readonly string[],
+  extra = 0,
 ): value is Record<string, any> {
   if (!isRecord(value)) return false;
   const keys = Object.keys(value);
-  if (keys.length !== names.length) return false;
+  if (keys.length !== names.length + extra) return false;
   for (let i = 0; i < names.length; i++)
     if (keys[i] !== names[i] && !Object.hasOwn(value, names[i])) return false;
   return true;
@@ -47,59 +50,143 @@ function isDateMap(value: unknown): value is Record<string, unknown> {
 }
 
 /** A stored array must have only its own elements and its intrinsic length. */
-export function requireDenseList(value: unknown): asserts value is unknown[] {
-  if (!isDenseList(value)) throw new PackageValidationError();
+export function requireDenseList(
+  value: unknown,
+  budget?: SearchRequestBudget,
+): asserts value is unknown[] {
+  if (!isDenseList(value, budget)) throw new PackageValidationError();
 }
 
-function isDenseList(value: unknown): value is unknown[] {
+function isDenseList(
+  value: unknown,
+  budget?: SearchRequestBudget,
+): value is unknown[] {
   if (!Array.isArray(value)) return false;
-  // Inspect supplied keys. A sparse list can claim a much larger length.
+  const len = value.length;
+  if (len > 0) {
+    // Probe boundary indices in O(1) before touching the request budget or
+    // enumerating keys, so huge sparse arrays fail as invalid input.
+    if (
+      !Object.hasOwn(value, 0) ||
+      !Object.hasOwn(value, len - 1) ||
+      (len > 2 && !Object.hasOwn(value, len >>> 1))
+    )
+      return false;
+    budget?.ensure(len, "prepare");
+  }
+  // Inspect supplied keys. An array lists its indices first, then its
+  // intrinsic length, then any extra string or symbol keys.
   const keys = Reflect.ownKeys(value);
-  // An array lists its indices first. Its intrinsic length precedes all
-  // other string and symbol keys. Every array index is below its length.
-  return keys.length === value.length + 1 && keys[value.length] === "length";
+  return keys.length === len + 1 && keys[len] === "length";
 }
 
-/** Check list shape before reading element content or calling array methods. */
+const WORD_FIELDS = ["language", "spelling"];
+const CLASSIFICATION_FIELDS = ["kind", "selmaho"];
+const GLOSS_FIELDS = ["language", "text", "sense"];
+const ATTRIBUTION_FIELDS = ["source", "author", "account", "dates"];
+const ACCOUNT_FIELDS = ["origin", "account"];
+const LEGACY_STATUS_FIELDS = ["view", "status"];
+
+/** Check the shapes that content measurement reads before measuring content. */
 export function requireSavedRowLists(
   value: unknown,
+  budget?: SearchRequestBudget,
 ): asserts value is Record<string, unknown> {
+  if (!isRecord(value)) throw new PackageValidationError();
+  const { word, classification, glosses, rafsi, attribution } = value;
   if (
-    !isRecord(value) ||
-    !isRecord(value.word) ||
-    !isRecord(value.classification)
+    !fields(word, WORD_FIELDS) ||
+    typeof word.spelling !== "string" ||
+    !fields(classification, CLASSIFICATION_FIELDS)
   )
     throw new PackageValidationError();
-  if (!Array.isArray(value.glosses) || value.glosses.length > 8192)
+
+  if (!Array.isArray(glosses) || glosses.length > 8192)
     throw new PackageValidationError();
-  requireDenseList(value.glosses);
-  requireDenseList(value.classification.selmaho);
-  if (Object.hasOwn(value, "rafsi")) {
-    if (!Array.isArray(value.rafsi) || value.rafsi.length > PACKAGE_RAFSI_LIMIT)
+  requireDenseList(glosses, budget);
+  for (let i = 0; i < glosses.length; i++) {
+    const gloss = glosses[i];
+    if (
+      !fields(gloss, GLOSS_FIELDS) ||
+      !languageTag(gloss.language) ||
+      typeof gloss.text !== "string" ||
+      !(gloss.sense === null || typeof gloss.sense === "string")
+    )
       throw new PackageValidationError();
-    requireDenseList(value.rafsi);
   }
-  if (
-    value.attribution != null &&
-    (!isRecord(value.attribution) ||
-      !isDateMap(value.attribution.dates) ||
-      (value.attribution.account != null &&
-        !isRecord(value.attribution.account)))
-  )
-    throw new PackageValidationError();
+
+  const { selmaho } = classification;
+  requireDenseList(selmaho, budget);
+  for (let i = 0; i < selmaho.length; i++)
+    if (typeof selmaho[i] !== "string") throw new PackageValidationError();
+
+  if (Object.hasOwn(value, "rafsi")) {
+    if (!Array.isArray(rafsi) || rafsi.length > PACKAGE_RAFSI_LIMIT)
+      throw new PackageValidationError();
+    requireDenseList(rafsi);
+    for (let i = 0; i < rafsi.length; i++)
+      if (!validPackageRafsi(rafsi[i])) throw new PackageValidationError();
+  }
+
+  if (attribution != null) {
+    if (
+      !fields(attribution, ATTRIBUTION_FIELDS) ||
+      typeof attribution.source !== "string" ||
+      !(
+        attribution.author === null || typeof attribution.author === "string"
+      ) ||
+      !(
+        attribution.account === null ||
+        (fields(attribution.account, ACCOUNT_FIELDS) &&
+          typeof attribution.account.origin === "string" &&
+          Number.isSafeInteger(attribution.account.account))
+      ) ||
+      !isDateMap(attribution.dates) ||
+      Object.getOwnPropertySymbols(attribution.dates).length !== 0
+    )
+      throw new PackageValidationError();
+
+    let count = 0;
+    for (const key in attribution.dates) {
+      if (!Object.hasOwn(attribution.dates, key)) continue;
+      if (typeof attribution.dates[key] !== "string")
+        throw new PackageValidationError();
+      if (budget && ++count % 64 === 0) budget.ensure(1 + count, "prepare");
+    }
+  }
 }
 
 export const PACKAGE_RAFSI_LIMIT = 64;
 const COMPONENT_BYTE_LIMIT = 128;
-const encoder = new TextEncoder();
 
+export function isV2(entry: PackageEntry): entry is PackageEntryV2 {
+  return "issuer" in entry;
+}
+
+/** Whether a string fits within 128 UTF-8 bytes and contains no lone surrogate. */
 export function fitsComponentSpelling(spelling: string): boolean {
-  return (
-    spelling.length <= COMPONENT_BYTE_LIMIT &&
-    (!/[^\x00-\x7f]/.test(spelling) ||
-      (!LONE_SURROGATE.test(spelling) &&
-        encoder.encode(spelling).length <= COMPONENT_BYTE_LIMIT))
-  );
+  const len = spelling.length;
+  if (len > COMPONENT_BYTE_LIMIT) return false;
+  let bytes = 0;
+  for (let i = 0; i < len; i++) {
+    const code = spelling.charCodeAt(i);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      if (i + 1 >= len) return false;
+      const low = spelling.charCodeAt(++i);
+      if (low < 0xdc00 || low > 0xdfff) return false;
+      bytes += 4;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    } else {
+      bytes += 3;
+    }
+    if (bytes > COMPONENT_BYTE_LIMIT) return false;
+  }
+  return true;
 }
 
 export function validPackageRafsi(value: unknown): value is string {
@@ -108,14 +195,24 @@ export function validPackageRafsi(value: unknown): value is string {
 
 /** Count exact claims for an entire language package. */
 export function savedRafsiUnion() {
-  const words = new Map<string, Set<string>>();
+  const words = new Map<string, readonly string[] | Set<string>>();
   return (id: string, entry: PackageEntry) => {
     if (!("issuer" in entry)) return;
     const { rafsi } = entry as PackageEntryV2;
     if (!rafsi.length) return;
-    let claims = words.get(id);
-    if (!claims) {
-      claims = new Set();
+    const existing = words.get(id);
+    if (existing === undefined) {
+      if (rafsi.length > PACKAGE_RAFSI_LIMIT)
+        throw new PackageValidationError();
+      words.set(id, rafsi);
+      return;
+    }
+    let claims: Set<string>;
+    if (existing instanceof Set) {
+      claims = existing;
+    } else {
+      claims = new Set(existing);
+      if (claims.size > PACKAGE_RAFSI_LIMIT) throw new PackageValidationError();
       words.set(id, claims);
     }
     for (const claim of rafsi) {
@@ -141,17 +238,23 @@ export function fitsSavedComponent(component: {
   );
 }
 
-/**
- * A stored value as a saved package. `undefined` means that nothing is
- * saved, and gives `null`. Any other value whose package fields fail the
- * worker's tests for them, including a stored `null`, raises
- * `PackageValidationError`. The rows are not checked here: readers check
- * each row with `savedRow`.
- */
+const PACKAGE_FIELDS = ["snapshot", "entries"];
+const VERSIONED_PACKAGE_FIELDS = [...PACKAGE_FIELDS, "version"];
+
+/** Read a package header. An absent value gives null. */
 export function savedPackage(value: unknown): CachedPackage | null {
   if (value === undefined) return null;
+  if (!isRecord(value)) throw new PackageValidationError();
+  const versioned = Object.hasOwn(value, "version");
+  const hasView = Object.hasOwn(value, "search_view");
+  const hasDowngrade = Object.hasOwn(value, "downgrade");
   if (
-    !isRecord(value) ||
+    !fields(
+      value,
+      versioned ? VERSIONED_PACKAGE_FIELDS : PACKAGE_FIELDS,
+      Number(hasView) + Number(hasDowngrade),
+    ) ||
+    ((hasView || hasDowngrade) && !versioned) ||
     !hashId(value.snapshot) ||
     !Array.isArray(value.entries) ||
     !(
@@ -159,8 +262,7 @@ export function savedPackage(value: unknown): CachedPackage | null {
       value.version === 1 ||
       value.version === 2
     ) ||
-    (Object.hasOwn(value, "search_view") &&
-      (value.version !== 2 || !eventId(value.search_view))) ||
+    (hasView && (value.version !== 2 || !eventId(value.search_view))) ||
     !(
       value.downgrade === undefined ||
       value.downgrade === null ||
@@ -171,76 +273,83 @@ export function savedPackage(value: unknown): CachedPackage | null {
   return value as unknown as CachedPackage;
 }
 
-/** The fields that only a version 2 row carries. */
-const V2_ONLY = ["issuer", "notes", "rafsi", "rafsi_complete", "attribution"];
-const WORD_FIELDS = ["language", "spelling"];
-const CLASSIFICATION_FIELDS = ["kind", "selmaho"];
-const GLOSS_FIELDS = ["language", "text", "sense"];
+const V1_FIELDS = [
+  "event",
+  "word",
+  "language",
+  "glosses",
+  "plain_text",
+  "classification",
+  "body",
+];
+const V2_FIELDS = [...V1_FIELDS, "issuer", "notes", "rafsi", "attribution"];
+const STATUS = ["active", "retired", "ineligible"];
 
-/**
- * Check a saved row against the package language and version. Use the
- * worker's tests (`validateEntry`) for fields that pages read:
- * the event, language, word, plain text, body, glosses and
- * classification, and for a version 2 row the issuer, notes and rafsi
- * list. A version 1 row must carry no version 2 field, and a version 2 row
- * must carry the issuer and the rafsi list. A row that fails raises
- * `PackageValidationError`.
- */
+/** Check one package row. The worker and direct readers use the same rule. */
 export function savedRow(
   entry: unknown,
   version: 1 | 2 | undefined,
   language: string,
+  packageView?: string,
+  budget?: SearchRequestBudget,
 ): PackageEntry {
-  requireSavedRowLists(entry);
-  const { word, classification, glosses } = entry;
-  let usable =
-    eventId(entry.event) &&
-    entry.language === language &&
-    languageTag(entry.language) &&
-    fields(word, WORD_FIELDS) &&
-    word.language === "jbo" &&
-    typeof word.spelling === "string" &&
-    typeof entry.plain_text === "string" &&
-    (entry.body === null || hashId(entry.body)) &&
-    Array.isArray(glosses) &&
-    glosses.length <= 8192 &&
-    fields(classification, CLASSIFICATION_FIELDS) &&
-    lexicalKinds.includes(classification.kind) &&
-    Array.isArray(classification.selmaho);
-  if (usable)
-    usable = (classification as { selmaho: unknown[] }).selmaho.every(
-      (item) => typeof item === "string",
-    );
-  if (usable)
-    usable = (glosses as unknown[]).every(
-      (gloss) =>
-        fields(gloss, GLOSS_FIELDS) &&
-        languageTag(gloss.language) &&
-        typeof gloss.text === "string" &&
-        (gloss.sense === null || typeof gloss.sense === "string"),
-    );
-  if (usable && version === 2) {
-    const rafsi = entry.rafsi;
-    usable =
-      identityId(entry.issuer) &&
-      typeof entry.notes === "boolean" &&
-      Array.isArray(rafsi) &&
-      rafsi.length <= PACKAGE_RAFSI_LIMIT &&
-      (entry.rafsi_complete === undefined ||
-        typeof entry.rafsi_complete === "boolean");
-    if (usable)
-      usable =
-        (rafsi as unknown[]).every(validPackageRafsi) &&
-        (entry.attribution == null ||
-          (isRecord(entry.attribution) &&
-            isRecord(entry.attribution.dates) &&
-            Object.values(entry.attribution.dates).every(
-              (date) => typeof date === "string",
-            )));
-  } else if (usable)
-    for (const name of V2_ONLY) if (Object.hasOwn(entry, name)) usable = false;
-  if (!usable) throw new PackageValidationError();
+  requireSavedRowLists(entry, budget);
+  if (
+    !eventId(entry.event) ||
+    entry.language !== language ||
+    !languageTag(entry.language) ||
+    (entry.word as Record<string, unknown>).language !== "jbo" ||
+    typeof entry.plain_text !== "string" ||
+    !(entry.body === null || hashId(entry.body)) ||
+    !lexicalKinds.includes(
+      (entry.classification as PackageEntry["classification"]).kind,
+    )
+  )
+    throw new PackageValidationError();
+  if (version === 2) {
+    const hasStatus = Object.hasOwn(entry, "search_status");
+    const extra =
+      Number(hasStatus) + Number(Object.hasOwn(entry, "rafsi_complete"));
+    const status = entry.search_status;
+    if (
+      !fields(entry, V2_FIELDS, extra) ||
+      !identityId(entry.issuer) ||
+      typeof entry.notes !== "boolean" ||
+      !Array.isArray(entry.rafsi) ||
+      entry.attribution === undefined ||
+      !(
+        entry.rafsi_complete === undefined ||
+        typeof entry.rafsi_complete === "boolean"
+      ) ||
+      (packageView !== undefined
+        ? !hasStatus ||
+          !eventId(packageView) ||
+          !STATUS.includes(status as string)
+        : hasStatus &&
+          (!fields(status, LEGACY_STATUS_FIELDS) ||
+            !eventId(status.view) ||
+            !STATUS.includes(status.status)))
+    )
+      throw new PackageValidationError();
+  } else if (!fields(entry, V1_FIELDS) || packageView !== undefined) {
+    throw new PackageValidationError();
+  }
   return entry as unknown as PackageEntry;
+}
+
+/** Read rows in event order. Each package starts a new reader. */
+export function savedRowReader(
+  pkg: CachedPackage,
+  language: string,
+  budget?: SearchRequestBudget,
+) {
+  let previous = "";
+  return (value: unknown) => {
+    const row = savedRow(value, pkg.version, language, pkg.search_view, budget);
+    if (row.event <= previous) throw new PackageValidationError();
+    previous = row.event;
+    return row;
+  };
 }
 
 /** The word ID of a saved row's word. A word that the core rejects raises `PackageValidationError`. */
@@ -255,15 +364,52 @@ export function savedWordId(word: {
   }
 }
 
-/** Use the core for spellings that need normalization or other checks. */
+/** Reuse exact spelling-to-word-ID lookups within one package walk. */
+export function savedWordIdCache(
+  identify: typeof wordId = wordId,
+): (spelling: string) => string {
+  const ids = new Map<string, string>();
+  return (spelling: string) => {
+    let id = ids.get(spelling);
+    if (id === undefined) {
+      try {
+        id = identify({ language: "jbo", spelling });
+      } catch {
+        throw new PackageValidationError();
+      }
+      ids.set(spelling, id);
+    }
+    return id;
+  };
+}
+
+/** Check a row's spelling when the caller does not need its ID. */
 export function checkSavedWord(word: {
   language: "jbo";
   spelling: string;
 }): void {
-  // Short lowercase ASCII spellings already satisfy the core checks for
-  // byte length, NFC, controls, accents, and edge whitespace.
-  const { spelling } = word;
-  if (spelling.length > 0 && spelling.length <= 256 && !/[^a-z]/.test(spelling))
-    return;
-  savedWordId(word);
+  const status = wordSpellingStatus(word.spelling);
+  if (status === "valid") return;
+  if (status === "invalid" || !validWordIdSpellings([word.spelling]))
+    throw new PackageValidationError();
+}
+
+/** Check spellings in small batches during the row walk. Finish before using the package. */
+export function savedSpellingChecks() {
+  const spellings: string[] = [];
+  const finish = () => {
+    if (spellings.length && !validWordIdSpellings(spellings))
+      throw new PackageValidationError();
+    spellings.length = 0;
+  };
+  return {
+    add(spelling: string) {
+      const status = wordSpellingStatus(spelling);
+      if (status === "valid") return;
+      if (status === "invalid") throw new PackageValidationError();
+      spellings.push(spelling);
+      if (spellings.length === 128) finish();
+    },
+    finish,
+  };
 }

@@ -46,7 +46,7 @@ const entry = (spelling: string, digit: string): PackageEntry => ({
 });
 const cache = (): CachedPackage => ({
   snapshot: "sha256:" + "a".repeat(64),
-  entries: [entry("djan", "b"), entry("dján", "a")],
+  entries: [entry("dján", "a"), entry("djan", "b")],
 });
 
 test("typed name display survives authoring, core validation, and revision", () => {
@@ -155,7 +155,10 @@ test("zei sources match by plain name and retain entered display in compound evi
 });
 
 test("compound restoration retains exact-definition choices in either accent cache order", () => {
-  for (const entries of [cache().entries, cache().entries.reverse()]) {
+  for (const entries of [
+    [entry("dján", "a"), entry("djan", "b")],
+    [entry("djan", "a"), entry("dján", "b")],
+  ]) {
     const cached = { ...cache(), entries };
     const draft = newDraft({
       kind: "lujvo",
@@ -279,9 +282,10 @@ test("package identity work runs once per package object", async () => {
   });
   const cached = {
     ...cache(),
-    entries: Array.from({ length: 30_000 }, (_, index) =>
-      entry(index % 2 ? "djan" : "dján", "a"),
-    ),
+    entries: Array.from({ length: 30_000 }, (_, index) => ({
+      ...entry(index % 2 ? "djan" : "dján", "a"),
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+    })),
   };
   const id = wordId({ language: "jbo", spelling: "dján" });
   assert.equal(lookup(cached, "en", id).length, 30_000);

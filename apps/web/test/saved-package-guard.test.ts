@@ -302,7 +302,7 @@ for (const [label, saved] of savedPackages) {
     await seed(page, saved, { meaning: "book", step: 1 });
     page.on("dialog", (dialog) => void dialog.accept());
     await page.goto("/new/meaning");
-    await page.getByRole("button", { name: "search this server" }).click();
+    await page.getByRole("button", { name: "allow server search" }).click();
     await expect(page.locator("ol.similar")).toContainText("cukta");
     const body = await page.locator("body").innerText();
     expect(body).not.toMatch(RAW_ERROR);
@@ -1473,4 +1473,392 @@ test("saved shapes ordinary Add keeps the source from the usable language", asyn
   expect(row.spelling).toBe("cukta");
   expect(row.gloss).toBe("livre");
   expect(row.claims.map((claim: any) => claim.rafsi)).toEqual(["cku"]);
+});
+
+test("a valid first English pair with an invalid last row selects valid French or reports invalid across pair, Settings, and lujvo draft", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const pair = await page.evaluate(async (path) => {
+    const core = await import(path);
+    await core.initializeCore();
+    return core.rafsiPairId(
+      core.wordId({ language: "jbo", spelling: "cukta" }),
+      "cuk",
+    );
+  }, corePath);
+  const frenchRow = {
+    ...validRow,
+    language: "fr",
+    glosses: [{ language: "fr", text: "livre", sense: null }],
+    plain_text: "Un livre ② {place 3}.",
+  };
+  const frenchZbasu = {
+    ...zbasuRow,
+    language: "fr",
+    glosses: [{ language: "fr", text: "construire", sense: null }],
+    plain_text: "Construire.",
+  };
+  const fallbackFiller = Array.from({ length: 130 }, (_, i) => ({
+    ...validRow,
+    event: "jve1:" + (i + 2).toString(16).padStart(64, "0"),
+    word: { language: "jbo", spelling: `𠮷${i}` },
+    rafsi: [],
+  }));
+  const badVariants: [string, unknown[]][] = [
+    [
+      "wrong-language last row",
+      [
+        validRow,
+        zbasuRow,
+        {
+          ...frenchRow,
+          event: "jve1:" + "f".repeat(64),
+          rafsi: [],
+        },
+      ],
+    ],
+    [
+      "invalid spelling in final partial fallback batch",
+      [
+        validRow,
+        ...fallbackFiller,
+        {
+          ...validRow,
+          event: "jve1:" + "f".repeat(64),
+          word: { language: "jbo", spelling: "q\u0301" },
+          rafsi: [],
+        },
+      ],
+    ],
+  ];
+  for (const [, badEntries] of badVariants) {
+    // With valid French fallback: pair selects French, Settings withholds
+    // English count, and lujvo builder saves French evidence instead of English.
+    await seed(
+      page,
+      { version: 2, snapshot: "sha256:" + "a".repeat(64), entries: badEntries },
+      { ...lujvoDraft, spelling: "ckuzba" },
+      {
+        fr: {
+          version: 2,
+          snapshot: "sha256:" + "b".repeat(64),
+          entries: [frenchRow, frenchZbasu],
+        },
+      },
+    );
+    await blockDownloads(page);
+    await page.goto(`/rafsi-pair/${pair}`);
+    await expect(
+      page.locator('main a[href^="/word/cukta?"]').first(),
+    ).toHaveAttribute("href", "/word/cukta?lang=fr");
+
+    await page.goto("/preferences");
+    const enRow = page
+      .locator('[data-package-control="remove"][data-package-language="en"]')
+      .locator("..");
+    await expect(enRow).toContainText(INVALID);
+    await expect(enRow).not.toContainText("definition");
+    const frRow = page
+      .locator('[data-package-control="remove"][data-package-language="fr"]')
+      .locator("..");
+    await expect(frRow).toContainText("2 definitions");
+
+    await page.goto("/new/lujvo");
+    await expect(page.locator("main")).toContainText(INVALID);
+    await expect(page.getByRole("region", { name: "Result" })).toContainText(
+      "bbbbbbbbbbbb",
+    );
+    await expectSavedBuilderDraft(page);
+    const savedDraft = await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return (await new LocalStore().get("drafts", "current")) as {
+        lujvo?: { components: { gloss: string }[] };
+      };
+    });
+    expect(
+      savedDraft.lujvo?.components.every((c) => c.gloss !== "book"),
+    ).toBe(true);
+
+    // Without any usable alternative: pair reports invalid package and shows no English link.
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      await new LocalStore().delete("packages", "fr");
+    });
+    await seed(page, {
+      version: 2,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: badEntries,
+    });
+    await blockDownloads(page);
+    await page.goto(`/rafsi-pair/${pair}`);
+    await expectInvalidOnly(page);
+    await expect(
+      page.locator('main a[href="/word/cukta?lang=en"]'),
+    ).toHaveCount(0);
+  }
+});
+
+test("an invalid attribution source rejects English in Settings and saves French evidence in lujvo", async ({
+  page,
+}) => {
+  const row = (
+    ordinal: number,
+    spelling: string,
+    rafsi: string[],
+    language: string,
+    gloss: string,
+    over: Record<string, unknown> = {},
+  ) => ({
+    event: "jve1:" + ordinal.toString(16).padStart(64, "0"),
+    word: { language: "jbo", spelling },
+    language,
+    glosses: [{ language, text: gloss, sense: null }],
+    plain_text: gloss,
+    classification: { kind: "gismu", selmaho: [] },
+    body: null,
+    issuer: "ed25519:" + "a".repeat(64),
+    notes: false,
+    rafsi,
+    rafsi_complete: true,
+    attribution: null,
+    ...over,
+  });
+  const english = {
+    version: 2,
+    snapshot: "sha256:" + "a".repeat(64),
+    entries: [
+      row(1, "cukta", ["cku"], "en", "bad English source", {
+        attribution: { source: [], author: null, account: null, dates: {} },
+      }),
+      row(2, "zbasu", ["zba"], "en", "bad English make"),
+      row(3, "broda", [], "en", "bad English filler"),
+    ],
+  };
+  const french = {
+    version: 2,
+    snapshot: "sha256:" + "b".repeat(64),
+    entries: [
+      row(4, "cukta", ["cku"], "fr", "valid French source"),
+      row(5, "zbasu", ["zba"], "fr", "valid French make"),
+    ],
+  };
+  await seed(
+    page,
+    english,
+    { ...lujvoDraft, spelling: "ckuzba", typedSpelling: "ckuzba" },
+    { fr: french },
+  );
+  expect(await savedWorkerVerdict(page)).toEqual({
+    code: "invalid-package",
+    error: INVALID,
+  });
+
+  await page.goto("/preferences");
+  const enRow = page
+    .locator('[data-package-control="remove"][data-package-language="en"]')
+    .locator("..");
+  await expect(enRow).toContainText(INVALID);
+  await expect(enRow).not.toContainText("definition");
+  const frRow = page
+    .locator('[data-package-control="remove"][data-package-language="fr"]')
+    .locator("..");
+  await expect(frRow).toContainText("2 definitions");
+
+  await page.goto("/new/lujvo");
+  await expect(page.locator("main")).toContainText(INVALID);
+  await expect(page.getByRole("region", { name: "Result" })).toContainText(
+    "bbbbbbbbbbbb",
+  );
+  await expectSavedBuilderDraft(page);
+  const savedDraft = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    return (await new LocalStore().get("drafts", "current")) as {
+      lujvo?: { components: { gloss: string }[] };
+    };
+  });
+  expect(savedDraft.lujvo?.components[0]?.gloss).toBe("valid French source");
+  expect(
+    savedDraft.lujvo?.components.every((c) => !c.gloss.includes("bad English")),
+  ).toBe(true);
+});
+
+test("client and worker enforce dense list budgets without key scans and reject invalid glosses or rafsi before content measurement", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const report = await page.evaluate(async () => {
+    const { searchPackage, PackageValidationError } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const makeRow = (ordinal: number) => ({
+      event: "jve1:" + (ordinal + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "cukta" },
+      language: "en",
+      glosses: [] as unknown[],
+      plain_text: "",
+      classification: { kind: "gismu", selmaho: [] as unknown[] },
+      body: null,
+      issuer: "ed25519:" + "a".repeat(64),
+      notes: false,
+      rafsi: [] as unknown[],
+      rafsi_complete: true,
+      attribution: null,
+    });
+    const stamp = { version: 2, snapshot: "sha256:" + "a".repeat(64) };
+    const visits: number[] = [];
+    const observe = (list: unknown[]) =>
+      new Proxy(list, {
+        ownKeys(target) {
+          const keys = Reflect.ownKeys(target);
+          visits.push(keys.length);
+          return keys;
+        },
+      });
+    const classify = async (fn: () => Promise<unknown>) => {
+      try {
+        await fn();
+        return "accepted";
+      } catch (error) {
+        if (error instanceof PackageValidationError)
+          return "PackageValidationError";
+        if (error instanceof Error && error.constructor?.name)
+          return error.constructor.name;
+        return String(error);
+      }
+    };
+
+    const denseEntries = observe(
+      Array.from({ length: 100_000 }, (_, i) => makeRow(i)),
+    );
+    visits.length = 0;
+    const denseOuterOutcome = await classify(() =>
+      searchPackage({ ...stamp, entries: denseEntries } as never, "en", ["cukta"], {
+        workLimit: 1,
+      }),
+    );
+    const denseOuterVisits = [...visits];
+
+    const denseSelmahoRow = makeRow(0);
+    denseSelmahoRow.classification.selmaho = observe(
+      Array(100_000).fill("BAI"),
+    );
+    visits.length = 0;
+    const denseSelmahoOutcome = await classify(() =>
+      searchPackage(
+        { ...stamp, entries: [denseSelmahoRow] } as never,
+        "en",
+        ["cukta"],
+        { workLimit: 1 },
+      ),
+    );
+    const denseSelmahoVisits = [...visits];
+
+    let getterReads = 0;
+    const wrongGloss = Object.assign([], { sense: null, language: "en" });
+    Object.defineProperty(wrongGloss, "text", {
+      get() {
+        getterReads++;
+        return "b".repeat(10_000);
+      },
+      enumerable: true,
+    });
+    const wrongGlossOutcome = await classify(() =>
+      searchPackage(
+        {
+          ...stamp,
+          entries: [{ ...makeRow(0), glosses: [wrongGloss] }],
+        } as never,
+        "en",
+        ["cukta"],
+        { workLimit: 20 },
+      ),
+    );
+    const wrongGlossReads = getterReads;
+
+    const oversizedRafsiOutcome = await classify(() =>
+      searchPackage(
+        {
+          ...stamp,
+          entries: [{ ...makeRow(0), rafsi: ["a".repeat(1280)] }],
+        } as never,
+        "en",
+        ["cukta"],
+        { workLimit: 10 },
+      ),
+    );
+
+    const askWorker = (pkg: unknown, workLimit: number) =>
+      new Promise<{ code?: string }>((resolve, reject) => {
+        const worker = new Worker("/src/data/package-search-worker.ts", {
+          type: "module",
+        });
+        worker.onmessage = ({ data }) => {
+          worker.terminate();
+          resolve({ code: data.code });
+        };
+        worker.onerror = (error) => {
+          worker.terminate();
+          reject(new Error(error.message));
+        };
+        worker.postMessage({
+          request: 1,
+          key: 1,
+          pkg,
+          language: "en",
+          queries: [],
+          options: { workLimit },
+        });
+      });
+
+    const workerWrongGloss = await askWorker(
+      {
+        ...stamp,
+        entries: [
+          {
+            ...makeRow(0),
+            glosses: [
+              Object.assign([], {
+                language: "en",
+                text: "b".repeat(10_000),
+                sense: null,
+              }),
+            ],
+          },
+        ],
+      },
+      20,
+    );
+    const workerOversizedRafsi = await askWorker(
+      {
+        ...stamp,
+        entries: [{ ...makeRow(0), rafsi: ["a".repeat(1280)] }],
+      },
+      10,
+    );
+
+    return {
+      denseOuterOutcome,
+      denseOuterVisits,
+      denseSelmahoOutcome,
+      denseSelmahoVisits,
+      wrongGlossOutcome,
+      wrongGlossReads,
+      oversizedRafsiOutcome,
+      workerWrongGloss,
+      workerOversizedRafsi,
+    };
+  });
+
+  expect(report).toEqual({
+    denseOuterOutcome: "SearchBudgetError",
+    denseOuterVisits: [],
+    denseSelmahoOutcome: "SearchBudgetError",
+    denseSelmahoVisits: [],
+    wrongGlossOutcome: "PackageValidationError",
+    wrongGlossReads: 0,
+    oversizedRafsiOutcome: "PackageValidationError",
+    workerWrongGloss: { code: "invalid-package" },
+    workerOversizedRafsi: { code: "invalid-package" },
+  });
 });

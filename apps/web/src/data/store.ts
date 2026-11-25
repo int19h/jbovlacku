@@ -378,10 +378,6 @@ interface ProjectionSnapshotMeta {
 export class LocalStore {
   /** The open database. Lifecycle transactions span several stores. */
   readonly database: Promise<IDBDatabase>;
-  private readonly packageCache = new Map<
-    string,
-    { revision: unknown; value: unknown }
-  >();
   constructor(readonly name = "jbovlacku-browser-v1") {
     this.database = new Promise((resolve, reject) => {
       const request = indexedDB.open(name, 6);
@@ -419,7 +415,6 @@ export class LocalStore {
           return;
         }
         db.onversionchange = () => {
-          this.packageCache.clear();
           db.close();
         };
         resolve(db);
@@ -443,30 +438,23 @@ export class LocalStore {
       return new Promise((resolve, reject) => {
         const tx = db.transaction(["packages", "packageRevisions"]);
         const revision = tx.objectStore("packageRevisions").get(id);
-        revision.onsuccess = () => {
-          const old = this.packageCache.get(id);
-          if (old && old.revision === revision.result) {
-            this.packageCache.delete(id);
-            this.packageCache.set(id, old);
-            resolve(old.value as T | undefined);
-            return;
-          }
-          const request = tx.objectStore("packages").get(id);
-          request.onsuccess = () => {
-            if (request.result && typeof request.result === "object")
-              packageKeys.set(
-                request.result,
-                JSON.stringify([db.name, id, revision.result ?? null]),
-              );
-            this.packageCache.set(id, {
-              revision: revision.result,
-              value: request.result,
-            });
-            if (this.packageCache.size > 2)
-              this.packageCache.delete(this.packageCache.keys().next().value!);
-            resolve(request.result);
-          };
+        const request = tx.objectStore("packages").get(id);
+        let done = 0;
+        const finish = () => {
+          if (++done < 2) return;
+          if (
+            request.result &&
+            typeof request.result === "object" &&
+            typeof revision.result === "string"
+          )
+            packageKeys.set(
+              request.result,
+              JSON.stringify([db.name, id, revision.result]),
+            );
+          resolve(request.result);
         };
+        revision.onsuccess = finish;
+        request.onsuccess = finish;
         tx.onabort = () =>
           reject(
             tx.error ?? new Error("Local storage did not read this package."),
@@ -611,7 +599,6 @@ export class LocalStore {
         };
       } else save();
       tx.oncomplete = () => {
-        if (store === "packages" && saved) this.packageCache.delete(id);
         resolve(saved);
       };
       tx.onabort = () =>
@@ -1225,7 +1212,6 @@ export class LocalStore {
       if (store === "packages")
         tx.objectStore("packageRevisions").put(revision, id);
       tx.oncomplete = () => {
-        if (store === "packages") this.packageCache.delete(id);
         resolve();
       };
       tx.onabort = () =>

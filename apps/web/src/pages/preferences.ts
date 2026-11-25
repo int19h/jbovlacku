@@ -16,6 +16,7 @@ import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
 import {
   downloadPackage,
+  isV2,
   packageCause,
   reportPackageError,
   type CachedPackage,
@@ -28,8 +29,9 @@ import {
   savedPackage,
   savedRafsiUnion,
   requireDenseList,
-  savedRow,
-  savedWordId,
+  savedRowReader,
+  savedSpellingChecks,
+  savedWordIdCache,
 } from "../data/saved-package.ts";
 import type { Preferences } from "../data/store.ts";
 
@@ -664,12 +666,17 @@ async function preferencesBody(context: RenderContext, app: App) {
         checks.push(() => {
           try {
             requireDenseList(pkg.entries);
+            const readRow = savedRowReader(pkg, key);
             const countRafsi = savedRafsiUnion();
+            const wordIdOf = savedWordIdCache();
+            const spellings = savedSpellingChecks();
             for (const value of pkg.entries) {
-              const entry = savedRow(value, pkg.version, key);
-              if ("issuer" in entry)
-                countRafsi(savedWordId(entry.word), entry);
+              const entry = readRow(value);
+              if (isV2(entry) && entry.rafsi.length)
+                countRafsi(wordIdOf(entry.word.spelling), entry);
+              else spellings.add(entry.word.spelling);
             }
+            spellings.finish();
             detail.textContent = `${plural(pkg.entries.length, "definition")} · snapshot ${pkg.snapshot.slice(7, 19)}… · version ${pkg.version ?? 1}${
               pkg.downgrade
                 ? `. Version 1 was saved instead of version 2: ${packageCause(pkg.downgrade)}`

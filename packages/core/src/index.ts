@@ -183,8 +183,20 @@ export function createEvent(
     throw new Error("Draft does not satisfy version 1 action and body rules.");
   return { envelope, body };
 }
+export {
+  wordSpellingStatus,
+  type WordSpellingStatus,
+} from "./word-spelling.ts";
 export const wordId = (word: { language: "jbo"; spelling: string }): string =>
   wasm.runtime_word_identifier(utf8(JSON.stringify(word)));
+export function validWordIdSpellings(spellings: string[]): boolean {
+  // NUL separates spellings. The WebAssembly binding replaces lone surrogates.
+  return (
+    spellings.length === 0 ||
+    (!spellings.some((spelling) => /[\0\p{Cs}]/u.test(spelling)) &&
+      wasm.valid_word_id_spellings(spellings.join("\0")))
+  );
+}
 /** The rafsi pair ID of a word ID and NFC rafsi spelling, per the format specification. */
 export const rafsiPairId = (word: string, rafsi: string): string =>
   "jvr1:" +

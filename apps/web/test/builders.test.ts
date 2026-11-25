@@ -664,6 +664,7 @@ test("source Remove names stay unique for alternatives and empty language rows",
 test("the component picker shows fu'ivla and stores fuhivla", async ({
   page,
 }) => {
+  await downloadPackage(page);
   await startDraft(page, "lujvo");
   await page.getByLabel("Add a part").fill("leksiko");
   const matches = page.getByRole("list", { name: "Matching words" });

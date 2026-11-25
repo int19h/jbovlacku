@@ -24,14 +24,14 @@ import {
   type PackageDownloadOptions,
 } from "../data/search.ts";
 import {
-  checkSavedWord,
   INVALID_PACKAGE_MESSAGE,
   PackageValidationError,
   savedPackage,
   savedRafsiUnion,
   requireDenseList,
-  savedRow,
-  savedWordId,
+  savedRowReader,
+  savedSpellingChecks,
+  savedWordIdCache,
 } from "../data/saved-package.ts";
 import { getWord, loadRecord } from "../data/api.ts";
 import type { PackageEntryV2, RafsiBody } from "../model/types.ts";
@@ -135,16 +135,21 @@ export async function wordsWithRafsi(
         limited = true;
         continue;
       }
-      // Every row goes through the row check, not only the rows up to the
-      // first incomplete one: the page derives pair IDs from the rafsi of
-      // any row that the search returns, and the worker accepts some rafsi
-      // that the core cannot read.
+      // Read the coverage flag only from rows that pass the package rule.
       requireDenseList(pkg.entries);
+      const readRow = savedRowReader(pkg, language);
+      const countRafsi = savedRafsiUnion();
+      const wordIdOf = savedWordIdCache();
+      const spellings = savedSpellingChecks();
       let incomplete = false;
       for (const row of pkg.entries) {
-        const entry = savedRow(row, pkg.version, language);
+        const entry = readRow(row);
+        if (isV2(entry) && entry.rafsi.length)
+          countRafsi(wordIdOf(entry.word.spelling), entry);
+        else spellings.add(entry.word.spelling);
         if (isV2(entry) && entry.rafsi_complete === false) incomplete = true;
       }
+      spellings.finish();
       result = await searchPackage(pkg, language, [rafsi], {
         rafsiOnly: true,
         patterns: !options.literal,
@@ -327,9 +332,7 @@ export async function rafsiPage(
   if (words.unavailable) {
     main.append(
       p(
-        words.invalid
-          ? "Rafsi lookup needs a usable version 2 search package."
-          : "Rafsi lookup needs a version 2 search package. This server and the saved packages supply no rafsi data.",
+        "Rafsi lookup needs a usable version 2 search package. Rafsi coverage is unknown.",
         "notice",
       ),
     );
@@ -345,7 +348,7 @@ export async function rafsiPage(
   if (!words.length) {
     main.append(
       p(
-        `No retained claim assigns ${rafsi} to a word in this server's search packages. Coverage is limited to retained claim bodies.`,
+        `No retained claim assigns ${rafsi} to a word in the packages checked for this lookup. Coverage is limited to the retained claim bodies in those packages.`,
         "small",
       ),
     );
@@ -451,9 +454,7 @@ export async function claimPage(
   // Only the core's spelling refusal names no word. Any other failure
   // from the core is rethrown and reported as itself.
   const id = spelling
-    ? nullOnSpellingRefusal(() =>
-        deriveWordId({ language: "jbo", spelling }),
-      )
+    ? nullOnSpellingRefusal(() => deriveWordId({ language: "jbo", spelling }))
     : null;
   if (id === null) {
     main.append(p("This link names no word.", "notice"));
@@ -556,7 +557,7 @@ export async function claimPage(
       else
         competition.append(
           p(
-            `No retained claim of ${value} for another word in this server's packages. Coverage is limited to retained claim bodies.`,
+            `No retained claim of ${value} for another word in the packages checked for this lookup. Coverage is limited to the retained claim bodies in those packages.`,
             "small",
           ),
         );
@@ -677,15 +678,19 @@ async function resolvePair(
         // A failed download can leave a candidate from a checked prefix.
         found = undefined;
         requireDenseList(loaded.pkg.entries);
+        const readRow = savedRowReader(loaded.pkg, language);
         const countRafsi = savedRafsiUnion();
+        const wordIdOf = savedWordIdCache();
+        const spellings = savedSpellingChecks();
         for (const row of loaded.pkg.entries) {
-          const entry = savedRow(row, loaded.pkg.version, language);
+          const entry = readRow(row);
           if (isV2(entry) && entry.rafsi.length) {
-            const id = savedWordId(entry.word);
+            const id = wordIdOf(entry.word.spelling);
             countRafsi(id, entry);
             match(entry, id);
-          } else checkSavedWord(entry.word);
+          } else spellings.add(entry.word.spelling);
         }
+        spellings.finish();
       }
       return found ?? null;
     } catch (error) {
@@ -728,7 +733,7 @@ export async function rafsiPairPage(
     main.append(
       el("h1", { class: "page", text: "Rafsi pair unavailable" }),
       p(
-        "A pair ID names a word and a rafsi, but the ID alone does not spell them. No retained claim in this server's search packages matches this pair, so the word and the rafsi are unknown here. Coverage is limited to retained claim bodies.",
+        "A pair ID names a word and a rafsi. Lookup did not resolve this pair, so its word and rafsi are unknown here.",
         "notice",
       ),
       el("p", { class: "fingerprint", text: pair }),
@@ -762,5 +767,6 @@ export async function rafsiPairPage(
     ),
   );
   const card = await pairCard(app, context, found, found.rafsi);
-  if (context.live()) main.append(card, el("p", { class: "fingerprint", text: pair }));
+  if (context.live())
+    main.append(card, el("p", { class: "fingerprint", text: pair }));
 }

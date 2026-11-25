@@ -52,12 +52,13 @@ const pkg = (entries: unknown[], over: Record<string, unknown> = {}) => ({
   entries,
   ...over,
 });
-/** What a page that reads every row checks: the package, then each row. */
+/** What a page that reads every row checks: the package, then each row in order. */
 const readAll = (value: unknown) => {
   const pkg = saved.savedPackage(value);
   if (pkg) {
     saved.requireDenseList(pkg.entries);
-    for (const entry of pkg.entries) saved.savedRow(entry, pkg.version, "en");
+    const readRow = saved.savedRowReader(pkg, "en");
+    for (const entry of pkg.entries) readRow(entry);
   }
   return pkg;
 };
@@ -123,27 +124,11 @@ test("every package that the search worker accepts is usable", () => {
   }
 });
 
-test("the rule and the worker agree on every field a page reads", () => {
-  // Each case changes one field of a valid package. Whenever the shared
-  // rule calls the result unusable, the worker must agree, so a package
-  // that the search page can use is never unusable on another page. And
-  // whenever the worker rejects a case that the rule accepts, the changed
-  // field must be one of the listed differences: fields that no page reads
-  // before the worker's verdict, or checks that pages make when they read.
-  const workerOnly = new Set([
-    // Only the search page reads attribution, after the worker's verdict.
-    "row.attribution",
-    // The core checks the spelling where a page derives the word ID.
-    "word.spelling",
-    // A row's ordering status: only the worker reads it. A package with a
-    // bad status still reaches the lujvo builder, whose part lookup then
-    // reports that the local lookup is unavailable, as on main.
-    "row.search_status",
-    // Exact field sets and the row order: no page reads them.
-    "package.extra",
-    "row.extra",
-    "row.order",
-  ]);
+test("the rule and the worker agree on every field of a package and its rows", () => {
+  // Each case changes one field of a valid package. The shared row reader and
+  // the worker use the same shape and order rules, so the only case left to
+  // the caller's spelling or word-ID check is an invalid spelling string.
+  const workerOnly = new Set(["word.spelling"]);
   const odd = [
     undefined,
     null,
@@ -509,5 +494,315 @@ test("the worker and wizard inventory count the union by canonical word ID", () 
     const id = wordId({ language: "jbo", spelling: "djan" });
     assert.equal(index(value as never, "en", id).length, 0);
     assert.equal(index.invalidEntryCount(value as never, "en"), 1);
+  }
+});
+
+test("spelling checks and bounded batches agree with core wordId on composition and byte counterexamples", () => {
+  const validCases = [
+    "cukta",
+    "ba'a",
+    "Ba’a",
+    "bá",
+    "máik",
+    "slaka bu",
+    "a".repeat(256),
+    "水".repeat(85) + "a",
+    "𠮷".repeat(64),
+    "a\u00a0b",
+  ];
+  const invalidCases = [
+    "",
+    " ",
+    " cukta",
+    "cukta ",
+    "a".repeat(257),
+    "水".repeat(86),
+    "𠮷".repeat(65),
+    "\u1100\u1161",
+    "e\u0301",
+    "á\u0301",
+    "q\u0301",
+    "\u00a0a",
+    "x\0",
+    "\ud800",
+    "\u1e83",
+  ];
+  const batch = saved.savedSpellingChecks();
+  for (const spelling of validCases) {
+    assert.doesNotThrow(() =>
+      saved.checkSavedWord({ language: "jbo", spelling }),
+    );
+    assert.doesNotThrow(() => wordId({ language: "jbo", spelling }));
+    batch.add(spelling);
+  }
+  assert.doesNotThrow(() => batch.finish());
+  for (const spelling of invalidCases) {
+    assert.throws(() => wordId({ language: "jbo", spelling }));
+    assert.throws(
+      () => saved.checkSavedWord({ language: "jbo", spelling }),
+      saved.PackageValidationError,
+      JSON.stringify(spelling),
+    );
+    const badBatch = saved.savedSpellingChecks();
+    assert.throws(() => {
+      badBatch.add("𠮷");
+      badBatch.add(spelling);
+      badBatch.finish();
+    }, saved.PackageValidationError);
+  }
+});
+
+test("samePackageStructure detects holes, extra array keys, order changes, and stays within budget", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchBudgetError, SearchRequestBudget, searchMetrics } =
+    await import("../../../../packages/search/src/index.ts");
+  const base = pkg([
+    v2Row({ event: "jve1:" + "1".repeat(64) }),
+    v2Row({ event: "jve1:" + "2".repeat(64), plain_text: "volume" }),
+  ]) as never;
+  const equal = structuredClone(base);
+  const budget = () => new SearchRequestBudget(searchMetrics());
+  assert.equal(samePackageStructure(equal, base, budget()), true);
+
+  // Changed row order.
+  const swapped = pkg([
+    v2Row({ event: "jve1:" + "2".repeat(64), plain_text: "volume" }),
+    v2Row({ event: "jve1:" + "1".repeat(64) }),
+  ]);
+  assert.equal(samePackageStructure(swapped, base, budget()), false);
+
+  // Changed meaning in last row.
+  const edited = structuredClone(base) as { entries: { plain_text: string }[] };
+  edited.entries[1].plain_text = "changed";
+  assert.equal(samePackageStructure(edited, base, budget()), false);
+
+  // Own extra key on rafsi array (including numeric includes).
+  const extraKey = structuredClone(base) as {
+    entries: { rafsi: string[] }[];
+  };
+  Object.assign(extraKey.entries[0].rafsi, { includes: 1 });
+  assert.equal(samePackageStructure(extraKey, base, budget()), false);
+
+  // Hole plus extra key keeping the same own-key count.
+  const holePlusExtra = structuredClone(base) as {
+    entries: { rafsi: unknown[] }[];
+  };
+  delete holePlusExtra.entries[0].rafsi[0];
+  Object.assign(holePlusExtra.entries[0].rafsi, { includes: 1 });
+  assert.equal(samePackageStructure(holePlusExtra, base, budget()), false);
+
+  // Exhausted budget refuses before enumerating keys.
+  assert.throws(
+    () =>
+      samePackageStructure(
+        equal,
+        base,
+        new SearchRequestBudget(searchMetrics(), { workLimit: 1 }),
+      ),
+    SearchBudgetError,
+  );
+});
+
+test("wizard inventory skips a package with invalid attribution source and selects the valid fallback", async () => {
+  const english = pkg([
+    v2Row({
+      event: "jve1:" + "1".repeat(64),
+      word: { language: "jbo", spelling: "cukta" },
+      glosses: [{ language: "en", text: "bad English source", sense: null }],
+      rafsi: ["cku"],
+      attribution: { source: [], author: null, account: null, dates: {} },
+    }),
+    v2Row({
+      event: "jve1:" + "2".repeat(64),
+      word: { language: "jbo", spelling: "zbasu" },
+      rafsi: ["zba"],
+    }),
+    v2Row({
+      event: "jve1:" + "3".repeat(64),
+      word: { language: "jbo", spelling: "broda" },
+      rafsi: [],
+    }),
+  ]);
+  const french = pkg([
+    v2Row({
+      event: "jve1:" + "4".repeat(64),
+      word: { language: "jbo", spelling: "cukta" },
+      language: "fr",
+      glosses: [{ language: "fr", text: "valid French source", sense: null }],
+      rafsi: ["cku"],
+    }),
+    v2Row({
+      event: "jve1:" + "5".repeat(64),
+      word: { language: "jbo", spelling: "zbasu" },
+      language: "fr",
+      glosses: [{ language: "fr", text: "valid French source", sense: null }],
+      rafsi: ["zba"],
+    }),
+  ]);
+  assert.equal(workerAccepts(english), false);
+  const read = await builders.savedPackages(
+    listStore([
+      ["en", english],
+      ["fr", french],
+    ]),
+  );
+  const result = builders.savedInventory(read);
+  assert.equal(result.invalid, true);
+  assert.equal(result.selected?.language, "fr");
+  assert.equal(result.inventory.claims.length, 2);
+});
+
+test("dense list checks respect work budgets without scanning keys and keep sparse rejections", async () => {
+  const { SearchBudgetError, SearchRequestBudget, searchMetrics } =
+    await import("../../../../packages/search/src/index.ts");
+  const { searchPackage } = await import("../../src/data/package-search.ts");
+  const visits: number[] = [];
+  const observe = (list: unknown[]) =>
+    new Proxy(list, {
+      ownKeys(target) {
+        const keys = Reflect.ownKeys(target);
+        visits.push(keys.length);
+        return keys;
+      },
+    });
+  const makeRow = (ordinal: number) =>
+    v2Row({
+      event: "jve1:" + (ordinal + 1).toString(16).padStart(64, "0"),
+      glosses: [],
+      plain_text: "",
+      rafsi: [],
+    });
+  const denseEntries = observe(
+    Array.from({ length: 100_000 }, (_, i) => makeRow(i)),
+  );
+  const denseSelmahoRow = {
+    ...makeRow(0),
+    classification: { kind: "gismu", selmaho: observe(Array(100_000).fill("BAI")) },
+  };
+
+  let posted = 0;
+  const previousWorker = (globalThis as Record<string, unknown>).Worker;
+  (globalThis as Record<string, unknown>).Worker = class {
+    postMessage() {
+      posted++;
+      throw new Error("Unexpected worker message");
+    }
+    terminate() {}
+  };
+  try {
+    // Worker validation refuses dense 100k arrays under workLimit 1 with zero ownKeys scans.
+    for (const entries of [denseEntries, [denseSelmahoRow]]) {
+      visits.length = 0;
+      const budget = new SearchRequestBudget(searchMetrics(), {
+        workLimit: 1,
+        deadlineMs: Infinity,
+      });
+      assert.throws(
+        () => search.validateCachedPackage(pkg(entries), "en", budget),
+        SearchBudgetError,
+      );
+      assert.deepEqual(visits, []);
+
+      visits.length = 0;
+      await assert.rejects(
+        () =>
+          searchPackage(pkg(entries) as never, "en", ["cukta"], {
+            workLimit: 1,
+          }),
+        SearchBudgetError,
+      );
+      assert.deepEqual(visits, []);
+      assert.equal(posted, 0);
+    }
+
+    // Huge sparse arrays still reject as PackageValidationError under tight budgets.
+    const sparseOuter = new Array(10_000_000);
+    const sparseSelmahoRow = {
+      ...makeRow(0),
+      classification: { kind: "gismu", selmaho: new Array(10_000_000) },
+    };
+    for (const entries of [sparseOuter, [sparseSelmahoRow]]) {
+      const budget = new SearchRequestBudget(searchMetrics(), {
+        workLimit: 1,
+        deadlineMs: Infinity,
+      });
+      assert.throws(
+        () => search.validateCachedPackage(pkg(entries), "en", budget),
+        saved.PackageValidationError,
+      );
+      await assert.rejects(
+        () =>
+          searchPackage(pkg(entries) as never, "en", ["cukta"], {
+            workLimit: 1,
+          }),
+        saved.PackageValidationError,
+      );
+    }
+
+    // Invalid gloss slot and oversized rafsi fail validation before content measurement.
+    let reads = 0;
+    const wrongGloss = Object.assign([], { sense: null, language: "en" });
+    Object.defineProperty(wrongGloss, "text", {
+      get() {
+        reads++;
+        return "b".repeat(10_000);
+      },
+      enumerable: true,
+    });
+    const wrongGlossPkg = pkg([
+      { ...makeRow(0), glosses: [wrongGloss] },
+    ]);
+    assert.throws(
+      () =>
+        search.validateCachedPackage(
+          wrongGlossPkg,
+          "en",
+          new SearchRequestBudget(searchMetrics(), {
+            workLimit: 20,
+            deadlineMs: Infinity,
+          }),
+        ),
+      saved.PackageValidationError,
+    );
+    assert.equal(reads, 0);
+    await assert.rejects(
+      () =>
+        searchPackage(wrongGlossPkg as never, "en", ["cukta"], {
+          workLimit: 20,
+        }),
+      saved.PackageValidationError,
+    );
+    assert.equal(reads, 0);
+
+    for (const [rafsi, workLimit] of [
+      ["é".repeat(64) + "a", 6],
+      ["a".repeat(1280), 10],
+    ] as const) {
+      const badRafsiPkg = pkg([{ ...makeRow(0), rafsi: [rafsi] }]);
+      assert.throws(
+        () =>
+          search.validateCachedPackage(
+            badRafsiPkg,
+            "en",
+            new SearchRequestBudget(searchMetrics(), {
+              workLimit,
+              deadlineMs: Infinity,
+            }),
+          ),
+        saved.PackageValidationError,
+      );
+      await assert.rejects(
+        () =>
+          searchPackage(badRafsiPkg as never, "en", ["cukta"], { workLimit }),
+        saved.PackageValidationError,
+      );
+    }
+    assert.equal(posted, 0);
+  } finally {
+    if (previousWorker === undefined)
+      delete (globalThis as Record<string, unknown>).Worker;
+    else (globalThis as Record<string, unknown>).Worker = previousWorker;
   }
 });

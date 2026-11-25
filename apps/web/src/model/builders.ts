@@ -18,12 +18,14 @@ import {
 import type { CachedPackage } from "../data/search.ts";
 import type { LocalStore } from "../data/store.ts";
 import {
+  isV2,
   PackageValidationError,
   savedPackage,
   savedRafsiUnion,
   requireDenseList,
-  savedRow,
-  savedWordId,
+  savedRowReader,
+  savedSpellingChecks,
+  savedWordIdCache,
 } from "../data/saved-package.ts";
 import {
   languageTag,
@@ -480,18 +482,23 @@ export function inventoryFromPackage(
   const incomplete = new Map<string, string>();
   let hasClaims = false;
   requireDenseList(pkg.entries);
+  const readRow = savedRowReader(pkg, language);
   const countRafsi = savedRafsiUnion();
+  const wordIdOf = savedWordIdCache();
+  const spellings = savedSpellingChecks();
   for (const row of pkg.entries) {
-    const entry = savedRow(row, pkg.version, language);
-    const id = savedWordId(entry.word);
-    countRafsi(id, entry);
-    const kind = (entry.classification as { kind?: string } | null)?.kind;
-    if (kind === "gismu") gismu.set(id, entry.word.spelling);
-    if ("rafsi" in entry && Array.isArray(entry.rafsi)) {
-      hasClaims = true;
-      if ((entry as { rafsi_complete?: boolean }).rafsi_complete === false)
-        incomplete.set(id, entry.word.spelling);
-      for (const rafsi of entry.rafsi) {
+    const entry = readRow(row);
+    const kind = entry.classification.kind;
+    const isVersion2 = isV2(entry);
+    const rafsiList = isVersion2 ? entry.rafsi : [];
+    const isIncomplete = isVersion2 && entry.rafsi_complete === false;
+    if (isVersion2) hasClaims = true;
+    if (kind === "gismu" || rafsiList.length > 0 || isIncomplete) {
+      const id = wordIdOf(entry.word.spelling);
+      if (rafsiList.length > 0) countRafsi(id, entry);
+      if (kind === "gismu") gismu.set(id, entry.word.spelling);
+      if (isIncomplete) incomplete.set(id, entry.word.spelling);
+      for (const rafsi of rafsiList) {
         const pair = rafsiPairId(id, rafsi);
         claims.set(pair, {
           rafsi,
@@ -500,8 +507,11 @@ export function inventoryFromPackage(
           pair,
         });
       }
+    } else {
+      spellings.add(entry.word.spelling);
     }
   }
+  spellings.finish();
   return {
     snapshot: pkg.snapshot,
     claims: [...claims.values()],

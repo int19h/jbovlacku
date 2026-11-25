@@ -28,15 +28,17 @@ export {
 } from "../../../../packages/search/src/index.ts";
 import {
   fields,
+  isV2,
   PACKAGE_RAFSI_LIMIT,
-  isRecord,
   PackageValidationError,
   requireDenseList,
-  requireSavedRowLists,
+  savedPackage,
   savedRafsiUnion,
   savedRow,
+  savedRowReader,
+  savedSpellingChecks,
   savedWordId,
-  validPackageRafsi,
+  savedWordIdCache,
 } from "./saved-package.ts";
 import {
   getManifest,
@@ -49,8 +51,6 @@ import {
   eventId,
   hashId,
   languageTag,
-  lexicalKinds,
-  identityId,
   type PackageEntry,
   type PackageEntryV2,
   type SearchHit,
@@ -83,11 +83,12 @@ export function createPackageWordIndex(identify: typeof wordId = wordId) {
         return index;
       }
       const countRafsi = savedRafsiUnion();
+      const readRow = savedRowReader(pkg, language);
       for (const entry of pkg.entries) {
         let row;
         let id;
         try {
-          row = savedRow(entry, pkg.version, language);
+          row = readRow(entry);
           id = identify(row.word);
         } catch {
           index.invalidEntries++;
@@ -137,10 +138,7 @@ export interface CachedPackage {
    */
   downgrade?: string | null;
 }
-export { PACKAGE_RAFSI_LIMIT };
-export function isV2(entry: PackageEntry): entry is PackageEntryV2 {
-  return "issuer" in entry;
-}
+export { isV2, PACKAGE_RAFSI_LIMIT };
 /**
  * Per-artifact bounds (W07). A package manifest is one HTTP object of at most
  * 1 MiB. A part is one HTTP object of at most 4 MiB and 2,000 entries. There
@@ -210,18 +208,6 @@ export interface PackageDownloadOptions extends RequestOptions {
   /** Inspect a checked version 2 row during download. Use it only after download succeeds. */
   onVersion2Entry?: (entry: PackageEntryV2, id: string) => void;
 }
-const V1_FIELDS = [
-  "event",
-  "word",
-  "language",
-  "glosses",
-  "plain_text",
-  "classification",
-  "body",
-];
-const V2_FIELDS = [...V1_FIELDS, "issuer", "notes", "rafsi", "attribution"];
-/** A server that bounds the rafsi list also says whether it is complete. */
-const V2_BOUNDED_FIELDS = [...V2_FIELDS, "rafsi_complete"];
 export function validateEntry(
   value: unknown,
   language: string,
@@ -229,154 +215,35 @@ export function validateEntry(
   packageView?: string,
   budget?: SearchRequestBudget,
 ): string {
-  requireSavedRowLists(value);
-  budget?.reserve(1 + entryContentUnits(value, budget, "prepare"), "prepare");
-  return validateEntryFields(value, language, version, packageView);
-}
-
-function validateEntryFields(
-  value: unknown,
-  language: string,
-  version: 1 | 2,
-  packageView?: string,
-): string {
-  if (
-    version === 2 &&
-    value &&
-    typeof value === "object" &&
-    "search_status" in value
-  ) {
-    const { search_status, ...base } = value as Record<string, any>;
-    if (
-      packageView !== undefined
-        ? !eventId(packageView) ||
-          !["active", "retired", "ineligible"].includes(search_status)
-        : !fields(search_status, ["view", "status"]) ||
-          !eventId(search_status.view) ||
-          !["active", "retired", "ineligible"].includes(search_status.status)
-    )
-      throw invalidPackage();
-    return validateEntryFields(base, language, version);
-  }
-  if (version === 2) {
-    if (
-      !(fields(value, V2_FIELDS) || fields(value, V2_BOUNDED_FIELDS)) ||
-      !identityId(value.issuer) ||
-      typeof value.notes !== "boolean" ||
-      !Array.isArray(value.rafsi) ||
-      value.rafsi.length > PACKAGE_RAFSI_LIMIT ||
-      !value.rafsi.every(validPackageRafsi) ||
-      !(
-        value.rafsi_complete === undefined ||
-        typeof value.rafsi_complete === "boolean"
-      ) ||
-      !(
-        value.attribution === null ||
-        (fields(value.attribution, ["source", "author", "account", "dates"]) &&
-          typeof value.attribution.source === "string" &&
-          (value.attribution.author === null ||
-            typeof value.attribution.author === "string") &&
-          (value.attribution.account === null ||
-            (fields(value.attribution.account, ["origin", "account"]) &&
-              typeof value.attribution.account.origin === "string" &&
-              Number.isSafeInteger(value.attribution.account.account))) &&
-          isRecord(value.attribution.dates) &&
-          Object.values(value.attribution.dates).every(
-            (d) => typeof d === "string",
-          ))
-      )
-    )
-      throw invalidPackage();
-    const { issuer, notes, rafsi, rafsi_complete, attribution, ...base } =
-      value;
-    void issuer;
-    void notes;
-    void rafsi;
-    void rafsi_complete;
-    void attribution;
-    return validateEntryFields(base, language, 1);
-  }
-  if (
-    !fields(value, V1_FIELDS) ||
-    !eventId(value.event) ||
-    value.language !== language ||
-    !languageTag(value.language) ||
-    !fields(value.word, ["language", "spelling"]) ||
-    value.word.language !== "jbo" ||
-    typeof value.word.spelling !== "string" ||
-    typeof value.plain_text !== "string" ||
-    !(value.body === null || hashId(value.body)) ||
-    !Array.isArray(value.glosses) ||
-    value.glosses.length > 8192 ||
-    value.glosses.some(
-      (gloss: unknown) =>
-        !fields(gloss, ["language", "text", "sense"]) ||
-        !languageTag(gloss.language) ||
-        typeof gloss.text !== "string" ||
-        !(gloss.sense === null || typeof gloss.sense === "string"),
-    ) ||
-    !fields(value.classification, ["kind", "selmaho"]) ||
-    !lexicalKinds.includes(value.classification.kind) ||
-    !Array.isArray(value.classification.selmaho) ||
-    value.classification.selmaho.some(
-      (item: unknown) => typeof item !== "string",
-    )
-  )
-    throw invalidPackage();
-  return savedWordId({ language: "jbo", spelling: value.word.spelling });
+  const row = savedRow(value, version, language, packageView, budget);
+  budget?.reserve(1 + entryContentUnits(row, budget, "prepare"), "prepare");
+  return savedWordId(row.word);
 }
 export function validateCachedPackage(
   value: unknown,
   language: string,
   budget?: SearchRequestBudget,
 ): asserts value is CachedPackage {
-  if (
-    !(
-      fields(value, ["snapshot", "entries"]) ||
-      fields(value, ["snapshot", "version", "entries"]) ||
-      fields(value, ["snapshot", "version", "entries", "downgrade"]) ||
-      fields(value, ["snapshot", "version", "entries", "search_view"]) ||
-      fields(value, [
-        "snapshot",
-        "version",
-        "entries",
-        "search_view",
-        "downgrade",
-      ])
-    ) ||
-    !hashId(value.snapshot) ||
-    !Array.isArray(value.entries) ||
-    !(
-      value.version === undefined ||
-      value.version === 1 ||
-      value.version === 2
-    ) ||
-    (Object.hasOwn(value, "search_view") &&
-      (value.version !== 2 || !eventId(value.search_view))) ||
-    !(
-      value.downgrade === undefined ||
-      value.downgrade === null ||
-      typeof value.downgrade === "string"
-    )
-  )
-    throw invalidPackage();
-  if (value.entries.length) budget?.ensure(1, "prepare");
-  requireDenseList(value.entries);
-  const version = value.version === 2 ? 2 : 1;
+  const pkg = savedPackage(value);
+  if (!pkg) throw invalidPackage();
+  if (pkg.entries.length) budget?.ensure(1, "prepare");
+  requireDenseList(pkg.entries, budget);
+  const readRow = savedRowReader(pkg, language, budget);
   const countRafsi = savedRafsiUnion();
-  let previous = "";
-  for (const entry of value.entries as PackageEntry[]) {
+  const wordIdOf = savedWordIdCache();
+  const spellings = savedSpellingChecks();
+  for (const entry of pkg.entries) {
     // One validated entry costs one unit plus its content, charged before
-    // the entry is read so a bloated package refuses up front. The unit is
+    // the entry is indexed so a bloated package refuses up front. The unit is
     // ensured before measuring, so an exhausted budget walks nothing.
     budget?.ensure(1, "prepare");
-    const id = validateEntry(entry, language, version, value.search_view, budget);
-    countRafsi(id, entry);
-    if (value.search_view && typeof entry.search_status !== "string")
-      throw invalidPackage();
-    if (entry.event <= previous) throw invalidPackage();
-    previous = entry.event;
+    const row = readRow(entry);
+    budget?.reserve(1 + entryContentUnits(row, budget, "prepare"), "prepare");
+    if (isV2(row) && row.rafsi.length)
+      countRafsi(wordIdOf(row.word.spelling), row);
+    else spellings.add(row.word.spelling);
   }
+  spellings.finish();
 }
 /**
  * Downloads a search package. Version 2 is requested when the manifest offers it,

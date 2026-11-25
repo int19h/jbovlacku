@@ -631,10 +631,13 @@ test("manual root reviews stay private without a formation method claim", async 
   await expect(
     page.getByRole("region", { name: "Known conflicts" }),
   ).toContainText("identical conflict with cukta");
+  await expect(
+    page.getByRole("region", { name: "Known conflicts" }),
+  ).not.toContainText("since the recorded run");
   await expect(publish).toBeDisabled();
   await page
     .getByLabel(
-      /although the refreshed package shows a (?:new|known) root conflict with cukta/,
+      /although the local package shows a (?:new|known) root conflict with cukta/,
     )
     .check();
   await expect(publish).toBeEnabled();
@@ -643,7 +646,7 @@ test("manual root reviews stay private without a formation method claim", async 
   );
   await expect.poll(async () => (await stored(page)).formation).toBeNull();
   await page
-    .getByLabel(/I publish cukta although the refreshed package shows/)
+    .getByLabel(/I publish cukta although the local package shows/)
     .uncheck();
   await expect(publish).toBeDisabled();
   await expect
@@ -652,13 +655,13 @@ test("manual root reviews stay private without a formation method claim", async 
   expect((await stored(page)).formation).toBeNull();
   expect((await stored(page)).evidenceForm).toBeNull();
   await page
-    .getByLabel(/I publish cukta although the refreshed package shows/)
+    .getByLabel(/I publish cukta although the local package shows/)
     .check();
   await open(page, "/new/places");
   await open(page, "/new/publish");
   await expect(
     page.getByLabel(
-      /although the refreshed package shows a (?:new|known) root conflict with cukta/,
+      /although the local package shows a (?:new|known) root conflict with cukta/,
     ),
   ).toBeChecked();
   await expect
@@ -667,7 +670,7 @@ test("manual root reviews stay private without a formation method claim", async 
   await page.reload();
   await expect(
     page.getByLabel(
-      /although the refreshed package shows a (?:new|known) root conflict with cukta/,
+      /although the local package shows a (?:new|known) root conflict with cukta/,
     ),
   ).toBeChecked();
   await publish.click();
@@ -728,6 +731,7 @@ test("Publish reviews saved compound conflicts and rejects changed coverage", as
     const cached = await store.get("packages", "en");
     cached.entries.push({
       ...cached.entries.at(-1),
+      event: "jve1:" + "f".repeat(64),
       word: { language: "jbo", spelling: "spali" },
     });
     await store.put("packages", "en", cached);
@@ -939,7 +943,7 @@ test("Publish does not reuse conflicts of a different historical generated form"
   );
   await expect(publish).toBeDisabled();
   await page
-    .getByLabel(/I publish cukti although the refreshed package shows/)
+    .getByLabel(/I publish cukti although the local package shows/)
     .check();
   await expect(publish).toBeEnabled();
   await expect
@@ -981,7 +985,7 @@ test("a new current root acknowledgment appends to historical formation evidence
   }, corePath);
   await open(page, "/new/publish");
   await page
-    .getByLabel(/I publish cukti although the refreshed package shows/)
+    .getByLabel(/I publish cukti although the local package shows/)
     .check();
   await expect
     .poll(async () => (await stored(page)).formation.conflicts.length)

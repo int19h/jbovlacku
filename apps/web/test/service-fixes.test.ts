@@ -27,7 +27,7 @@ test("nearby draft search discloses the exact query and sends only a POST body",
     await dialog.accept();
   });
   await page
-    .getByRole("button", { name: "search this server", exact: true })
+    .getByRole("button", { name: "allow server search", exact: true })
     .click();
   await expect(
     page
@@ -50,7 +50,7 @@ test("nearby draft search discloses the exact query and sends only a POST body",
     .getByLabel("Meaning", { exact: true })
     .fill("another private phrase");
   await expect(
-    page.getByRole("button", { name: "search this server", exact: true }),
+    page.getByRole("button", { name: "allow server search", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText("Download a search package in Settings", { exact: false }),
@@ -61,7 +61,7 @@ test("nearby draft search discloses the exact query and sends only a POST body",
     await dialog.dismiss();
   });
   await page
-    .getByRole("button", { name: "search this server", exact: true })
+    .getByRole("button", { name: "allow server search", exact: true })
     .click();
   expect(disclosure).toContain('"another"');
   expect(searches).toHaveLength(1);
@@ -69,7 +69,7 @@ test("nearby draft search discloses the exact query and sends only a POST body",
     .getByLabel("Meaning", { exact: true })
     .fill("book private committee");
   await expect(
-    page.getByRole("button", { name: "search this server", exact: true }),
+    page.getByRole("button", { name: "allow server search", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText("Download a search package in Settings", { exact: false }),

@@ -197,15 +197,23 @@ export function workerErrorMessage(event: unknown): string | undefined {
 interface Client {
   worker: Worker;
   canceledPatterns: Set<number>;
-  retained: Set<string | number>;
+  retained: Set<number>;
   cacheRevision: number;
-  preparing: Map<number, string | number>;
+  preparing: Map<number, number>;
   /**
    * In-flight transfer counts by package key. A key with no count has no
    * pending transfer, so reuse is decided by lookup instead of copying
    * every pending key.
    */
-  preparingKeys: Map<string | number, number>;
+  preparingKeys: Map<number, number>;
+  /**
+   * Validated or preparing package snapshots paired with their worker key.
+   * Pruned to keys that the worker still retains or is preparing.
+   */
+  snapshots: Map<
+    number,
+    { pkg: CachedPackage; language: string; storageHint?: string }
+  >;
   pending: Map<
     number,
     {
@@ -225,12 +233,92 @@ export const packageSearchStats = () =>
 let client: Client | undefined;
 let requestId = 0,
   packageId = 0;
-const packageIds = new WeakMap<CachedPackage, number>();
+
+function sameStructuredValue(
+  incoming: unknown,
+  trusted: unknown,
+  budget: SearchRequestBudget,
+): boolean {
+  if (typeof incoming === "string" && typeof trusted === "string") {
+    if (incoming.length !== trusted.length) return false;
+    if (incoming.length > 64)
+      budget.reserve(Math.ceil(incoming.length / 64), "prepare");
+    return incoming === trusted;
+  }
+  if (Object.is(incoming, trusted)) return true;
+  if (
+    !incoming ||
+    !trusted ||
+    typeof incoming !== "object" ||
+    typeof trusted !== "object"
+  )
+    return false;
+  const isArray = Array.isArray(trusted);
+  if (Array.isArray(incoming) !== isArray) return false;
+  if (isArray) {
+    const left = incoming as unknown[];
+    const right = trusted as unknown[];
+    const len = right.length;
+    if (left.length !== len) return false;
+    if (len > 0) budget.reserve(len, "prepare");
+    const keysA = Reflect.ownKeys(left);
+    const keysB = Reflect.ownKeys(right);
+    if (keysA.length !== keysB.length) return false;
+    if (len === 0) return keysA.length === 1 && keysA[0] === "length" && keysB[0] === "length";
+    for (let i = 0; i < keysA.length; i++)
+      if (keysA[i] !== keysB[i] && !Object.hasOwn(right, keysA[i]))
+        return false;
+    for (let i = 0; i < len; i++) {
+      const hasLeft = Object.hasOwn(left, i);
+      const hasRight = Object.hasOwn(right, i);
+      if (hasLeft !== hasRight) return false;
+      if (hasRight && !sameStructuredValue(left[i], right[i], budget))
+        return false;
+    }
+    return true;
+  }
+  const keysA = Reflect.ownKeys(incoming);
+  const keysB = Reflect.ownKeys(trusted);
+  if (keysA.length !== keysB.length) return false;
+  if (keysB.length > 0) budget.reserve(keysB.length, "prepare");
+  const left = incoming as Record<PropertyKey, unknown>;
+  const right = trusted as Record<PropertyKey, unknown>;
+  for (let i = 0; i < keysB.length; i++) {
+    const key = keysB[i];
+    if (keysA[i] !== key && !Object.hasOwn(incoming, key)) return false;
+    if (!sameStructuredValue(left[key], right[key], budget)) return false;
+  }
+  return true;
+}
+
+/**
+ * Exact structural equality between a freshly read package clone and a
+ * trusted validated snapshot, charged to the request budget. Checks row
+ * order, actual own array keys, holes, and all worker fields.
+ */
+export function samePackageStructure(
+  incoming: unknown,
+  trusted: CachedPackage,
+  budget: SearchRequestBudget,
+): boolean {
+  if (incoming === trusted) return true;
+  if (!incoming || typeof incoming !== "object" || Array.isArray(incoming))
+    return false;
+  return sameStructuredValue(incoming, trusted, budget);
+}
+
+function pruneSnapshots(current: Client): void {
+  for (const key of current.snapshots.keys())
+    if (!current.retained.has(key) && !current.preparingKeys.has(key))
+      current.snapshots.delete(key);
+}
+
 function stopWorker(current: Client, error: Error) {
   current.worker.terminate();
   current.retained.clear();
   current.preparing.clear();
   current.preparingKeys.clear();
+  current.snapshots.clear();
   for (const waiting of current.pending.values()) waiting.reject(error);
   current.pending.clear();
   if (client === current) {
@@ -249,6 +337,7 @@ function forgetPreparing(current: Client, request: number): void {
   const left = (current.preparingKeys.get(key) ?? 1) - 1;
   if (left <= 0) current.preparingKeys.delete(key);
   else current.preparingKeys.set(key, left);
+  pruneSnapshots(current);
 }
 function searchWorker(): Client {
   if (client) return client;
@@ -264,6 +353,7 @@ function searchWorker(): Client {
     cacheRevision: -1,
     preparing: new Map(),
     preparingKeys: new Map(),
+    snapshots: new Map(),
   };
   worker.onmessage = ({ data }) => {
     // Cache acknowledgments also matter after that request's consumer aborts.
@@ -276,8 +366,10 @@ function searchWorker(): Client {
       !stale
     ) {
       current.retained.clear();
-      for (const key of data.retained) current.retained.add(key);
+      for (const key of data.retained)
+        if (typeof key === "number") current.retained.add(key);
       current.cacheRevision = data.cacheRevision;
+      pruneSnapshots(current);
     }
     if (!data.started) forgetPreparing(current, data.request);
     const waiting = current.pending.get(data.request);
@@ -314,7 +406,7 @@ function searchWorker(): Client {
   client = current;
   return current;
 }
-/** A package object comes from the store's revision-aware, bounded cache. */
+/** A package object comes from a fresh storage read or an acquired snapshot. */
 export async function searchPackage(
   pkg: CachedPackage,
   language: string,
@@ -343,19 +435,47 @@ export async function searchPackage(
   // fallback.
   const texts = tooLong ? [] : accepted;
   const { signal, ...workerOptions } = options;
-  let identity: string | number | undefined =
-    packageStorageKey(pkg) ?? packageIds.get(pkg);
-  if (identity === undefined) {
-    identity = ++packageId;
-    packageIds.set(pkg, identity);
-  }
-  const key = JSON.stringify([language, identity]);
-  // One client budget spans the transfer and the worker request below: the
-  // worker continues it from the posted state and the reply continues it back.
+  // One client budget spans equality checks, transfer, and the worker request
+  // below: the worker continues it from the posted state and the reply
+  // continues it back.
   const clientBudget = SearchRequestBudget.for(searchMetrics(), {
     workLimit: options.workLimit,
     deadlineMs: options.deadlineMs,
   });
+  const storageHint = packageStorageKey(pkg);
+  let matchedKey: number | undefined;
+  let resolvedPkg: CachedPackage = pkg;
+  if (client) {
+    // Same acquired snapshot used again in the same language.
+    for (const [candidateKey, entry] of client.snapshots) {
+      if (
+        entry.pkg === pkg &&
+        entry.language === language &&
+        (client.retained.has(candidateKey) ||
+          client.preparingKeys.has(candidateKey))
+      ) {
+        matchedKey = candidateKey;
+        break;
+      }
+    }
+    // Fresh clone with the same durable storage revision: reuse only after
+    // exact structural equality against the validated snapshot.
+    if (matchedKey === undefined && storageHint !== undefined) {
+      for (const [candidateKey, entry] of client.snapshots) {
+        if (
+          entry.language === language &&
+          entry.storageHint === storageHint &&
+          client.retained.has(candidateKey) &&
+          samePackageStructure(pkg, entry.pkg, clientBudget)
+        ) {
+          matchedKey = candidateKey;
+          resolvedPkg = entry.pkg;
+          break;
+        }
+      }
+    }
+  }
+  const key = matchedKey ?? ++packageId;
   const send = (force = false) => {
     signal?.throwIfAborted();
     const current = searchWorker();
@@ -365,6 +485,11 @@ export async function searchPackage(
     const request = ++requestId;
     // Announce a transfer without evicting any confirmed warm package.
     if (prepare) {
+      current.snapshots.set(key, {
+        pkg: resolvedPkg,
+        language,
+        storageHint,
+      });
       current.preparing.set(request, key);
       current.preparingKeys.set(
         key,
@@ -431,12 +556,15 @@ export async function searchPackage(
         // remaining package; the per-entry measurement itself checks the
         // allowance inside large date maps.
         if (prepare) {
-          if (Array.isArray(pkg.entries) && pkg.entries.length)
+          if (
+            Array.isArray(resolvedPkg.entries) &&
+            resolvedPkg.entries.length
+          )
             clientBudget.ensure(1, "prepare");
-          requireDenseList(pkg.entries);
-          for (const entry of pkg.entries) {
+          requireDenseList(resolvedPkg.entries, clientBudget);
+          for (const entry of resolvedPkg.entries) {
             clientBudget.ensure(1, "prepare");
-            requireSavedRowLists(entry);
+            requireSavedRowLists(entry, clientBudget);
             clientBudget.reserve(
               1 + entryContentUnits(entry, clientBudget, "prepare"),
               "prepare",
@@ -449,7 +577,7 @@ export async function searchPackage(
           language,
           queries: texts,
           options: workerOptions,
-          ...(prepare ? { pkg } : {}),
+          ...(prepare ? { pkg: resolvedPkg } : {}),
           budget: clientBudget.snapshot(),
         });
       } catch (error) {
@@ -485,7 +613,7 @@ export async function searchPackage(
   continued.check("search");
   return {
     ...result,
-    hits: resolvePackageHits(pkg, result.hits, continued),
+    hits: resolvePackageHits(resolvedPkg, result.hits, continued),
   };
 }
 /**

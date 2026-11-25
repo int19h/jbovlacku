@@ -118,9 +118,7 @@ fn bounded_string(v: &Value, max: usize) -> Result<()> {
 pub(crate) fn validate_word(v: &Value) -> Result<()> {
     fields(v, &["language", "spelling"])?;
     oneof(&v["language"], &["jbo"])?;
-    let spelling = string(&v["spelling"])?;
-    validate_spelling(spelling, 256)?;
-    crate::validate_acute_accents(spelling)
+    crate::validate_word_spelling(string(&v["spelling"])?)
 }
 pub fn validate_scope(v: &Value) -> Result<()> {
     fields(v, &["kind", "word", "language"])?;
