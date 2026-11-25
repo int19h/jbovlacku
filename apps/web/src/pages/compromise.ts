@@ -494,7 +494,7 @@ export async function compromisePage(
       );
       app.own.invalidate();
       await app.delivery.invalidate();
-      void app.delivery.deliver(transport.envelope.id, true);
+      void app.delivery.deliver(transport.envelope.id, true).catch(() => {});
       navigate("/identity");
       app.announce(
         "The compromise notice is saved and uploading. Ordinary actions from this key are disabled.",

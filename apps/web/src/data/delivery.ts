@@ -302,6 +302,8 @@ export class DeliveryEngine {
   private profileSkipped?: Set<string>;
   private profileWarnings?: Set<string>;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private scheduleGeneration = 0;
+  private retryNotBefore = 0;
   private listeners = new Set<DeliveryListener>();
   private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
   private inFlight = new Map<string, Promise<OutboxItem | undefined>>();
@@ -311,7 +313,7 @@ export class DeliveryEngine {
       void this.tick();
     });
     window.addEventListener("offline", () => {
-      clearTimeout(this.timer);
+      this.setTimer();
       void this.notify();
     });
     document.addEventListener("visibilitychange", () => {
@@ -615,31 +617,54 @@ export class DeliveryEngine {
   }
   /** Drops the cached list after an external write and tells listeners. */
   async invalidate() {
-    await this.notify();
-    void this.tick();
+    try {
+      await this.notify();
+    } finally {
+      void this.tick();
+    }
   }
   /** Starts the retry loop. Called after the app has storage. */
   start() {
     void this.tick();
   }
-  private schedule() {
+  private setTimer(delay?: number) {
+    this.scheduleGeneration++;
     clearTimeout(this.timer);
-    if (!navigator.onLine) return;
-    void this.items().then((items) => {
-      if (!navigator.onLine) return;
-      let next = Infinity;
-      for (const item of items) {
-        if (!isActive(item)) continue;
-        for (const peer of Object.values(item.peers))
-          if (this.automaticallyDue(peer, Infinity))
-            next = Math.min(next, peer.nextAttempt!);
-      }
-      if (next !== Infinity)
-        this.timer = setTimeout(
-          () => void this.tick(),
-          Math.max(250, next - Date.now()),
+    this.timer =
+      delay !== undefined && navigator.onLine
+        ? setTimeout(() => void this.tick(), delay)
+        : undefined;
+  }
+  /** Retry in this tab even when storage cannot supply a new retry time. */
+  private deferRetry() {
+    this.retryNotBefore = Date.now() + BASE_DELAY;
+    this.setTimer(BASE_DELAY);
+  }
+  private schedule() {
+    if (!navigator.onLine) {
+      this.setTimer();
+      return;
+    }
+    // A newer schedule or a storage failure can set a timer during this read.
+    const generation = ++this.scheduleGeneration;
+    void this.items()
+      .then((items) => {
+        if (generation !== this.scheduleGeneration) return;
+        let next = Infinity;
+        for (const item of items) {
+          if (!isActive(item)) continue;
+          for (const peer of Object.values(item.peers))
+            if (this.automaticallyDue(peer, Infinity))
+              next = Math.min(next, peer.nextAttempt!);
+        }
+        const due = Math.max(next, this.retryNotBefore);
+        this.setTimer(
+          due === Infinity ? undefined : Math.max(250, due - Date.now()),
         );
-    });
+      })
+      .catch(() => {
+        if (generation === this.scheduleGeneration) this.deferRetry();
+      });
   }
   /** Whether automatic delivery may attempt this peer at time `now`. */
   private automaticallyDue(peer: PeerDelivery, now: number): boolean {
@@ -654,18 +679,28 @@ export class DeliveryEngine {
   /** Sends every record with a due peer, in group order. */
   async tick() {
     if (!navigator.onLine) {
-      clearTimeout(this.timer);
+      this.setTimer();
       return;
     }
     const now = Date.now();
-    for (const item of await this.items()) {
-      if (!isActive(item)) continue;
-      if (
-        Object.values(item.peers).some((peer) =>
-          this.automaticallyDue(peer, now),
+    if (now < this.retryNotBefore) {
+      this.setTimer(this.retryNotBefore - now);
+      return;
+    }
+    try {
+      for (const item of await this.items()) {
+        if (!navigator.onLine || Date.now() < this.retryNotBefore) break;
+        if (!isActive(item)) continue;
+        if (
+          Object.values(item.peers).some((peer) =>
+            this.automaticallyDue(peer, now),
+          )
         )
-      )
-        await this.deliver(item.id, false);
+          await this.deliver(item.id, false);
+      }
+    } catch {
+      this.deferRetry();
+      return;
     }
     this.schedule();
   }
@@ -681,9 +716,12 @@ export class DeliveryEngine {
     // A second caller waits for the attempt in progress instead of racing it.
     const running = this.inFlight.get(id);
     if (running) return running;
-    const work = this.deliverNow(id, explicit).finally(() =>
-      this.inFlight.delete(id),
-    );
+    const work = this.deliverNow(id, explicit)
+      .catch((error) => {
+        this.deferRetry();
+        throw error;
+      })
+      .finally(() => this.inFlight.delete(id));
     this.inFlight.set(id, work);
     return work;
   }
@@ -950,8 +988,11 @@ export class DeliveryEngine {
     try {
       await this.store.discardOutbox(id);
     } finally {
-      await this.notify();
-      this.schedule();
+      try {
+        await this.notify();
+      } finally {
+        this.schedule();
+      }
     }
   }
   /** Resumes delivery with the same bytes and recipients, after a receipt lookup. */
@@ -985,9 +1026,12 @@ export class DeliveryEngine {
         ]),
       ),
     }));
-    await this.notify();
-    await this.deliver(id, true);
-    this.schedule();
+    try {
+      await this.notify();
+      await this.deliver(id, true);
+    } finally {
+      this.schedule();
+    }
   }
   /** Immediate explicit attempt. Follows the receipt lookup and immutable retry rules. */
   async tryNow(id: string) {
@@ -995,9 +1039,11 @@ export class DeliveryEngine {
     // for a receipt first. While the browser reports offline, a lookup that
     // fails at the network level keeps a refused record refused. With the
     // browser online, the same failure makes the outcome unknown.
-    const result = await this.deliver(id, true);
-    this.schedule();
-    return result;
+    try {
+      return await this.deliver(id, true);
+    } finally {
+      this.schedule();
+    }
   }
   /** Signed records and their bodies as JSON lines, for export. */
   async exportLines(items: OutboxItem[]): Promise<string> {

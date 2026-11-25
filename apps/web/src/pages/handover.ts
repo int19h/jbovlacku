@@ -725,7 +725,8 @@ export async function handoverPage(
         await app.delivery.invalidate();
         void app.delivery
           .deliver(record.transfer, true)
-          .then(() => app.delivery.deliver(record.accept, true));
+          .then(() => app.delivery.deliver(record.accept, true))
+          .catch(() => {});
         navigate("/identity");
         app.announce(
           "One recovery acceptance is saved and uploading. The old key stays retired.",
@@ -890,7 +891,8 @@ export async function handoverPage(
         await app.delivery.invalidate();
         void app.delivery
           .deliver(record.transfer, true)
-          .then(() => app.delivery.deliver(record.accept, true));
+          .then(() => app.delivery.deliver(record.accept, true))
+          .catch(() => {});
         navigate("/identity");
         app.announce("Old key retired. The handover is saved and uploading.");
       });
