@@ -32,6 +32,27 @@ One linear pass or copy per operation over state that the host already supplied 
 A fast-path append also charges each shared structure it copies before a write.
 This includes the map of publications.
 A fork can therefore consume more work than a fresh evaluation of the same records.
+Later appends keep those charges until a full rebuild.
+
+An issuer boundary is the gap between two issuer blocks.
+A mixed closure contains records from more than one issuer.
+The boundary index charges one unit per stored mixed closure and two per range in those closures.
+It counts shared caches once and counts ranges as in a fresh layout.
+If at least one mixed closure exists, the index also charges two units per issuer block.
+A graph with only local closures skips this index. A failed graph build skips it as well.
+
+An append keeps the base boundary marks.
+It also tests the current neighbors against mixed closures that earlier appends added.
+The evaluator rebuilds if the insertion splits a stored range.
+
+A merge scope contains the records that can contribute to one priced union.
+An append also rebuilds if it separates adjacent ranges from different operands in one scope.
+The guard covers status, carry, register, and account evidence merges.
+The evaluator builds this guard before the first eligible append to a fresh layout.
+It skips the guard if there are no semantic acceptances or claims with at least three carry entries.
+A live state and both checkpoint restores derive the guard from the positioned records.
+The guard uses the append eligibility budget. If this budget runs out, the evaluator tries a full rebuild.
+Temporary join marks add no work to the full evaluation price.
 
 When a full evaluation exceeds its work budget, it returns an empty `resource_unavailable` result.
 Some linear passes can still run after a charge fails.

@@ -51,3 +51,21 @@ Set `JVC_CHROMIUM` if the browser executable is outside Playwright's normal cach
 
 The pure evaluator performs no peer retrieval. Service code owns retrieval deadlines and transport admission.
 A complete supplied inventory cannot prove that no remote branch is hidden.
+
+## Issuer gaps
+
+A mixed closure contains records from more than one issuer.
+The stored range index charges one unit per mixed closure and two units per range in those closures.
+If any mixed closure exists, it also charges two units per issuer block.
+The index counts shared caches once. Local closures add no charge.
+A failed graph build stops before the index scans the ranges.
+
+A merge scope contains the records that can contribute to one priced union.
+A test compares both kinds of scope index with direct membership at every issuer gap.
+If repeated wide operands would make the direct scan too large, the index reads each distinct range list once.
+At a candidate gap, it tests both neighbors against the original scopes.
+A partial answer cannot admit an append.
+
+The signed carry, native status, and historical witness tests compare fresh evaluation, live append, and both restored appends.
+They use the exact fresh cost, one unit below it, and one unit above it.
+All paths refuse below the cost and agree on results, work, and ancestry bytes at the cost or above it.
