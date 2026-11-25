@@ -123,9 +123,13 @@ export interface RequestOptions extends RequestInit {
 }
 function parseRetryAfter(value: string | null): number | null {
   if (!value) return null;
-  if (/^\d+$/.test(value)) return Number(value) * 1000;
-  const date = Date.parse(value);
-  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
+  const now = Date.now();
+  const delay = /^\d+$/.test(value)
+    ? Number(value) * 1000
+    : Math.max(0, Date.parse(value) - now);
+  return Number.isSafeInteger(delay) && Number.isSafeInteger(now + delay)
+    ? delay
+    : null;
 }
 export async function objectBytes(
   path: string,

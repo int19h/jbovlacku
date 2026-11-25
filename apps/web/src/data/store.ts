@@ -105,6 +105,8 @@ export interface PeerDelivery {
   sendAttempt?: string;
   /** When the POST of `sendAttempt` started. */
   sendStarted?: number;
+  /** The receipt named an envelope that the browser could not read yet. */
+  verifyReceipt?: true;
 }
 /** The exact draft revision that a group publishes. */
 export interface Publication {
@@ -766,18 +768,27 @@ export class LocalStore {
       const outbox = tx.objectStore("outbox");
       const request = outbox.get(id);
       let result: OutboxItem | undefined;
+      let failure: unknown;
       request.onsuccess = () => {
         const current = request.result as OutboxItem | undefined;
         if (!current) return;
-        result = mutate(current);
-        // A mutation that returns the same object changes nothing, so
-        // nothing is written.
-        if (result !== current) outbox.put(result, id);
+        try {
+          result = mutate(current);
+          // The same object means that the transaction changes nothing.
+          if (result !== current) outbox.put(result, id);
+        } catch (error) {
+          failure = error;
+          try {
+            tx.abort();
+          } catch {
+            reject(error);
+          }
+        }
       };
       tx.oncomplete = () => resolve(result);
       tx.onabort = () =>
         reject(
-          tx.error ??
+          failure ?? tx.error ??
             new Error("Local storage did not save the delivery outcome."),
         );
       tx.onerror = () => {};

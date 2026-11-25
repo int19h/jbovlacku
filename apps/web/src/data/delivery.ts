@@ -37,6 +37,7 @@ import type { Envelope, Receipt, Transport } from "../model/types.ts";
 const REFUSAL_STATUSES = [400, 403, 404, 405, 409, 413, 422, 451];
 const BASE_DELAY = 15000;
 const MAX_DELAY = 30 * 60 * 1000;
+const MAX_TIMER_DELAY = 2 ** 31 - 1;
 
 /** Stop the page wait even when a storage operation stalls. */
 async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -120,7 +121,11 @@ export function storedEnvelopeHash(transport: string): string {
   const envelope = (JSON.parse(transport) as Transport).envelope;
   return contentHash(utf8(canonicalize(utf8(JSON.stringify(envelope)))));
 }
-export type Classified = { state: PeerState; error: string | null };
+export type Classified = {
+  state: PeerState;
+  error: string | null;
+  verifyReceipt?: true;
+};
 /**
  * Interprets a receipt for an item. Delivery completes only when the receipt
  * names the stored envelope, or an authenticated equivalent variant of it, and
@@ -154,12 +159,17 @@ export async function classifyReceipt(
   if (receipt.envelope_hash !== envelopeHash) {
     // The server can retain an equivalent valid signature variant. Fetch it and
     // require the same signed header before accepting the different hash.
-    const equivalent = await isEquivalentVariant(
-      transport.envelope,
-      receipt.envelope_hash,
-      fetchVariant,
-    );
-    if (!equivalent)
+    let bytes: Uint8Array;
+    try {
+      bytes = await fetchVariant(item.id);
+    } catch {
+      return {
+        state: "unknown",
+        error: "The browser could not read the envelope named by the receipt.",
+        verifyReceipt: true,
+      };
+    }
+    if (!isEquivalentVariant(transport.envelope, receipt.envelope_hash, bytes))
       return {
         state: "unknown",
         error:
@@ -199,13 +209,12 @@ export async function classifyReceipt(
     };
   return { state: "accepted", error: null };
 }
-async function isEquivalentVariant(
+function isEquivalentVariant(
   stored: Envelope,
   claimedHash: string,
-  fetchVariant: (id: string) => Promise<Uint8Array>,
-): Promise<boolean> {
+  bytes: Uint8Array,
+): boolean {
   try {
-    const bytes = await fetchVariant(stored.id);
     if (contentHash(utf8(canonicalize(bytes))) !== claimedHash) return false;
     verifyEnvelope(bytes);
     const variant = JSON.parse(canonicalize(bytes)) as Envelope;
@@ -221,12 +230,17 @@ export function backoff(attempts: number, retryAfterMs: number | null): number {
     BASE_DELAY * 2 ** Math.max(0, attempts - 1),
     MAX_DELAY,
   );
-  return Math.max(exponential, retryAfterMs ?? 0);
+  const delay = retryAfterMs ?? 0;
+  return Number.isSafeInteger(delay) && Number.isSafeInteger(Date.now() + delay)
+    ? Math.max(exponential, delay)
+    : exponential;
 }
 /** Plain description of a peer state for the Not delivered page. */
 export function describePeer(peer: PeerDelivery): string {
   if (peer.failure === "unresolved")
     return `${peer.error ?? "The recipient is not configured in this browser."} The signed bytes are kept here.`;
+  if (peer.verifyReceipt)
+    return "The result is unconfirmed. Receipt verification is pending.";
   switch (peer.state) {
     case "accepted":
       return "Delivered.";
@@ -297,24 +311,32 @@ export function mergePeer(
   return { ...stored, attempts };
 }
 
+type PendingReceipt = {
+  outcome: PeerDelivery;
+  seen: PeerDelivery;
+  attempt: string;
+};
+
 export class DeliveryEngine {
   private profileCompletions?: Set<string>;
   private profileSkipped?: Set<string>;
   private profileWarnings?: Set<string>;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private scheduleGeneration = 0;
-  private retryNotBefore = 0;
+  private listRetryAt = 0;
+  private recordRetryAt = new Map<string, number>();
+  private pendingReceipts = new Map<string, Map<string, PendingReceipt>>();
   private listeners = new Set<DeliveryListener>();
   private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
   private inFlight = new Map<string, Promise<OutboxItem | undefined>>();
   constructor(private store: LocalStore) {
     window.addEventListener("online", () => {
-      void this.notify();
+      void this.notify().catch(() => {});
       void this.tick();
     });
     window.addEventListener("offline", () => {
       this.setTimer();
-      void this.notify();
+      void this.notify().catch(() => {});
     });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") void this.tick();
@@ -326,27 +348,38 @@ export class DeliveryEngine {
   ) {
     this.listeners.add(listener);
     if (onReadError) this.readErrors.set(listener, onReadError);
-    void this.items().then(listener, (error) =>
-      onReadError ? onReadError(error) : listener([]),
-    );
+    void this.items()
+      .then(listener, (error) =>
+        onReadError ? onReadError(error) : listener([]),
+      )
+      .catch(() => {});
     return () => {
       this.listeners.delete(listener);
       this.readErrors.delete(listener);
     };
   }
   private async notify() {
-    let items: OutboxItem[];
+    let items: OutboxItem[] = [];
+    let readFailure: { error: unknown } | undefined;
     try {
       items = await this.items();
     } catch (error) {
-      for (const listener of this.listeners) {
-        const onReadError = this.readErrors.get(listener);
-        if (onReadError) onReadError(error);
-        else listener([]);
-      }
-      return;
+      readFailure = { error };
     }
-    for (const listener of this.listeners) listener(items);
+    let listenerFailure: { error: unknown } | undefined;
+    for (const listener of this.listeners) {
+      try {
+        const onReadError = this.readErrors.get(listener);
+        const result =
+          readFailure && onReadError
+            ? onReadError(readFailure.error)
+            : listener(items);
+        void Promise.resolve(result).catch(() => {});
+      } catch (error) {
+        listenerFailure ??= { error };
+      }
+    }
+    if (listenerFailure) throw listenerFailure.error;
   }
   /** Reads every record from storage. Other tabs can write at any time, so nothing is cached. */
   async items(): Promise<OutboxItem[]> {
@@ -627,17 +660,58 @@ export class DeliveryEngine {
   start() {
     void this.tick();
   }
+  isDelivering(id: string): boolean {
+    return this.inFlight.has(id);
+  }
+  needsReceipt(item: OutboxItem, peerId: string): boolean {
+    const peer = item.peers[peerId];
+    return (
+      !item.stopped &&
+      peer.state !== "accepted" &&
+      peer.failure !== "unresolved" &&
+      (peer.verifyReceipt === true ||
+        this.pendingReceipt(item.id, peerId, peer) !== undefined ||
+        (peer.state === "queued" &&
+          peer.sendStarted !== undefined &&
+          !this.isDelivering(item.id)))
+    );
+  }
+  isNotDelivered(item: OutboxItem): boolean {
+    return (
+      isNotDelivered(item) ||
+      (isActive(item) && this.recordRetryAt.has(item.id)) ||
+      Object.keys(item.peers).some((peerId) => this.needsReceipt(item, peerId))
+    );
+  }
+  nextTryAt(item: OutboxItem, peerId: string): number | null {
+    const due = Math.max(
+      this.listRetryAt,
+      this.dueAt(item.id, peerId, item.peers[peerId]),
+    );
+    return !item.stopped && !this.isDelivering(item.id) && Number.isFinite(due)
+      ? due
+      : null;
+  }
+  private pendingReceipt(id: string, peerId: string, peer: PeerDelivery) {
+    const pending = this.pendingReceipts.get(id)?.get(peerId);
+    if (
+      pending &&
+      (peer.sendAttempt === pending.attempt ||
+        unchangedSince(peer, pending.seen))
+    )
+      return pending;
+  }
   private setTimer(delay?: number) {
     this.scheduleGeneration++;
     clearTimeout(this.timer);
     this.timer =
       delay !== undefined && navigator.onLine
-        ? setTimeout(() => void this.tick(), delay)
+        ? setTimeout(() => void this.tick(), Math.min(delay, MAX_TIMER_DELAY))
         : undefined;
   }
   /** Retry in this tab even when storage cannot supply a new retry time. */
-  private deferRetry() {
-    this.retryNotBefore = Date.now() + BASE_DELAY;
+  private deferListRead() {
+    this.listRetryAt = Date.now() + BASE_DELAY;
     this.setTimer(BASE_DELAY);
   }
   private schedule() {
@@ -651,29 +725,36 @@ export class DeliveryEngine {
       .then((items) => {
         if (generation !== this.scheduleGeneration) return;
         let next = Infinity;
+        const present = new Set<string>();
         for (const item of items) {
+          if (!isFinished(item)) present.add(item.id);
           if (!isActive(item)) continue;
-          for (const peer of Object.values(item.peers))
-            if (this.automaticallyDue(peer, Infinity))
-              next = Math.min(next, peer.nextAttempt!);
+          for (const [peerId, peer] of Object.entries(item.peers))
+            next = Math.min(next, this.dueAt(item.id, peerId, peer));
         }
-        const due = Math.max(next, this.retryNotBefore);
+        for (const id of this.recordRetryAt.keys())
+          if (!present.has(id)) this.recordRetryAt.delete(id);
+        for (const id of this.pendingReceipts.keys())
+          if (!present.has(id)) this.pendingReceipts.delete(id);
+        const due = Math.max(next, this.listRetryAt);
         this.setTimer(
           due === Infinity ? undefined : Math.max(250, due - Date.now()),
         );
       })
       .catch(() => {
-        if (generation === this.scheduleGeneration) this.deferRetry();
+        if (generation === this.scheduleGeneration) this.deferListRead();
       });
   }
-  /** Whether automatic delivery may attempt this peer at time `now`. */
-  private automaticallyDue(peer: PeerDelivery, now: number): boolean {
-    return (
-      peer.state !== "accepted" &&
-      peer.state !== "refused" &&
-      peer.failure !== "unresolved" &&
-      peer.nextAttempt !== null &&
-      peer.nextAttempt <= now
+  /** The next automatic attempt. A pending receipt permits a read only. */
+  private dueAt(id: string, peerId: string, peer: PeerDelivery): number {
+    if (peer.state === "accepted" || peer.failure === "unresolved")
+      return Infinity;
+    const delayed = this.recordRetryAt.get(id) ?? 0;
+    if (this.pendingReceipt(id, peerId, peer)) return delayed;
+    if (peer.state === "refused" || peer.nextAttempt === null) return Infinity;
+    return Math.max(
+      delayed,
+      Number.isFinite(peer.nextAttempt) ? peer.nextAttempt : 0,
     );
   }
   /** Sends every record with a due peer, in group order. */
@@ -683,31 +764,35 @@ export class DeliveryEngine {
       return;
     }
     const now = Date.now();
-    if (now < this.retryNotBefore) {
-      this.setTimer(this.retryNotBefore - now);
+    if (now < this.listRetryAt) {
+      this.setTimer(this.listRetryAt - now);
       return;
     }
+    let items: OutboxItem[];
     try {
-      for (const item of await this.items()) {
-        if (!navigator.onLine || Date.now() < this.retryNotBefore) break;
-        if (!isActive(item)) continue;
-        if (
-          Object.values(item.peers).some((peer) =>
-            this.automaticallyDue(peer, now),
-          )
-        )
-          await this.deliver(item.id, false);
-      }
+      items = await this.items();
     } catch {
-      this.deferRetry();
+      this.deferListRead();
       return;
+    }
+    for (const item of items) {
+      if (!navigator.onLine) break;
+      if (
+        isActive(item) &&
+        Object.entries(item.peers).some(
+          ([peerId, peer]) => this.dueAt(item.id, peerId, peer) <= now,
+        )
+      ) {
+        // A failed record delays its own group. The other groups stay due.
+        await this.deliver(item.id, false).catch(() => {});
+      }
     }
     this.schedule();
   }
   /**
    * Delivers one record. Automatic delivery follows each peer's own schedule
-   * and skips stopped records and refused or unresolved peers. An explicit
-   * attempt retries every unfinished peer now.
+   * and skips stopped records and unresolved peers. Refused peers allow
+   * only pending receipt lookups. An explicit attempt runs now.
    */
   async deliver(
     id: string,
@@ -716,12 +801,22 @@ export class DeliveryEngine {
     // A second caller waits for the attempt in progress instead of racing it.
     const running = this.inFlight.get(id);
     if (running) return running;
+    this.recordRetryAt.delete(id);
     const work = this.deliverNow(id, explicit)
       .catch((error) => {
-        this.deferRetry();
+        this.scheduleGeneration++;
+        const delay = backoff(
+          1,
+          error instanceof RequestError ? error.retryAfterMs : null,
+        );
+        this.recordRetryAt.set(id, Date.now() + delay);
         throw error;
       })
-      .finally(() => this.inFlight.delete(id));
+      .finally(() => {
+        this.inFlight.delete(id);
+        if (explicit) this.schedule();
+        if (this.listeners.size) void this.notify().catch(() => {});
+      });
     this.inFlight.set(id, work);
     return work;
   }
@@ -741,37 +836,55 @@ export class DeliveryEngine {
         other.order < item!.order &&
         isActive(other),
     );
-    for (const dependency of earlier)
+    for (const dependency of earlier) {
+      const delayed = this.recordRetryAt.get(dependency.id) ?? 0;
+      if (!explicit && delayed > Date.now()) {
+        this.recordRetryAt.set(id, delayed);
+        return item;
+      }
       await this.deliver(dependency.id, explicit);
+    }
     item = (await this.fresh(id)) ?? item;
     const now = Date.now();
+    let failure: { error: unknown } | undefined;
     for (const peerId of Object.keys(item.peers)) {
       const current = await this.fresh(id);
       if (!current) return undefined;
       const peer = current.peers[peerId];
       if (!peer || peer.state === "accepted") continue;
-      if (!explicit && (current.stopped || !this.automaticallyDue(peer, now)))
+      if (!explicit && (current.stopped || this.dueAt(id, peerId, peer) > now))
         continue;
       const started = Date.now();
       // Random, so two attempts that start in the same millisecond differ.
       const attemptId = crypto.randomUUID();
-      const next = await this.attempt(
-        current,
-        peerId,
-        peer,
-        started,
-        attemptId,
-      );
-      // Null means that this attempt sent nothing and has no outcome to
-      // store: the record was certainly not sent, or another attempt owns
-      // the send. Nothing is written, so a state that another tab or a
-      // Resume stored meanwhile stays as it is.
-      if (next === null) {
+      try {
+        const next = await this.attempt(
+          current,
+          peerId,
+          peer,
+          started,
+          attemptId,
+        );
+        // Null means that this attempt sent nothing and has no outcome to save.
+        if (next) await this.saveOutcome(id, peerId, peer, next, attemptId);
         await this.notify();
-        continue;
+      } catch (error) {
+        // Other recipients of this record can still have work due.
+        failure ??= { error };
       }
-      // Merge only this peer's result with what is stored now. A stop, another
-      // tab's acceptance, or a newer retry decision stays.
+    }
+    if (failure) throw failure.error;
+    return this.fresh(id);
+  }
+  private async saveOutcome(
+    id: string,
+    peerId: string,
+    peer: PeerDelivery,
+    next: PeerDelivery,
+    attemptId: string,
+  ) {
+    // Keep a stop, another tab's acceptance, or a newer retry decision.
+    try {
       await this.store.mergeOutbox(id, (stored) => ({
         ...stored,
         peers: {
@@ -781,9 +894,27 @@ export class DeliveryEngine {
             : next,
         },
       }));
-      await this.notify();
+    } catch (error) {
+      if (
+        peer.state === "refused" ||
+        next.state === "accepted" ||
+        next.state === "refused" ||
+        next.verifyReceipt
+      ) {
+        let receipts = this.pendingReceipts.get(id);
+        if (!receipts) this.pendingReceipts.set(id, (receipts = new Map()));
+        receipts.set(peerId, {
+          outcome: next,
+          seen: peer,
+          attempt: attemptId,
+        });
+        this.scheduleGeneration++;
+      }
+      throw error;
     }
-    return this.fresh(id);
+    const receipts = this.pendingReceipts.get(id);
+    receipts?.delete(peerId);
+    if (receipts?.size === 0) this.pendingReceipts.delete(id);
   }
   private async attempt(
     item: OutboxItem,
@@ -802,12 +933,13 @@ export class DeliveryEngine {
         attempt: attemptId,
       };
     const attempts = peer.attempts + 1;
+    const pending = this.pendingReceipt(item.id, peerId, peer);
     const fetchVariant = (id: string) =>
       objectBytes(`/events/${encodeURIComponent(id)}`, 20480, {
         peer: target,
       });
     const settle = async (receipt: Receipt): Promise<PeerDelivery> => {
-      const { state, error } = await classifyReceipt(
+      const { state, error, verifyReceipt } = await classifyReceipt(
         item,
         receipt,
         fetchVariant,
@@ -830,6 +962,9 @@ export class DeliveryEngine {
               : null,
         receipt,
         attempt: attemptId,
+        ...(state === "unknown" && (verifyReceipt || peer.verifyReceipt)
+          ? { verifyReceipt: true }
+          : {}),
       };
     };
     // Set just before the POST starts. Before that point only receipt and
@@ -841,17 +976,19 @@ export class DeliveryEngine {
       // a queued record is looked up first too, so that a failed lookup
       // shows that the POST was never sent. No peer is rewritten first.
       if (
+        pending ||
+        peer.verifyReceipt ||
         peer.state === "unknown" ||
         peer.state === "missing-body" ||
         peer.state === "refused" ||
         peer.sendStarted !== undefined ||
         !navigator.onLine
       ) {
+        let receipt: Receipt | undefined;
+        const neverSent =
+          peer.state === "queued" && peer.sendStarted === undefined;
         try {
-          const receipt = await getReceipt(item.id, { peer: target });
-          const settled = await settle(receipt);
-          if (settled.state === "accepted" || settled.state === "refused")
-            return settled;
+          receipt = await getReceipt(item.id, { peer: target });
         } catch (error) {
           const notFound =
             error instanceof RequestError && error.status === 404;
@@ -859,13 +996,35 @@ export class DeliveryEngine {
           // connection. An error answer, or an answer without a usable
           // receipt, lets the POST go ahead. Only a valid receipt can show
           // that the record was delivered.
-          const neverSent =
-            peer.state === "queued" && peer.sendStarted === undefined;
           const answered =
             neverSent &&
             !(error instanceof TransportError) &&
             !(error instanceof DOMException && error.name === "AbortError");
-          if (!notFound && !answered) throw error;
+          if (notFound && pending?.outcome.state === "refused")
+            return { ...pending.outcome, attempt: attemptId };
+          if (
+            notFound &&
+            pending &&
+            peer.state === "refused" &&
+            pending.outcome.state !== "accepted"
+          )
+            return peer;
+          if (pending || peer.verifyReceipt || (!notFound && !answered))
+            throw error;
+        }
+        if (receipt) {
+          const settled = await settle(receipt);
+          if (settled.state === "accepted" || settled.state === "refused")
+            return settled;
+          if (pending)
+            throw new Error(
+              settled.error ?? "Receipt verification is pending.",
+            );
+          if (
+            settled.state === "unknown" &&
+            (!neverSent || settled.verifyReceipt)
+          )
+            return settled;
         }
       }
       // Store that delivery is uncertain before the POST starts. If the page
@@ -915,11 +1074,12 @@ export class DeliveryEngine {
       });
       if (!maySend) return null;
       // Open pages show the mark, for example the saved publication row.
-      await this.notify();
+      await this.notify().catch(() => {});
       posted = true;
       const receipt = await postEvent(item.transport, { peer: target });
-      return settle(receipt);
+      return await settle(receipt);
     } catch (error) {
+      if (pending) throw error;
       // A failed lookup or read before the POST is not an answer about the
       // record, even when the status is one that refuses a POST. It is
       // retried after the backoff. A refusal, or a record whose earlier POST
@@ -937,6 +1097,7 @@ export class DeliveryEngine {
           failure: "server",
           receipt: peer.receipt,
           attempt: attemptId,
+          ...(peer.verifyReceipt ? { verifyReceipt: true } : {}),
         };
       if (error instanceof RequestError) {
         const refused = REFUSAL_STATUSES.includes(error.status);
@@ -975,13 +1136,18 @@ export class DeliveryEngine {
         failure: transport ?? "server",
         receipt: peer.receipt,
         attempt: attemptId,
+        ...(peer.verifyReceipt ? { verifyReceipt: true } : {}),
       };
     }
   }
   /** Stops future automatic attempts for every unfinished selected peer of one record. */
   async stop(id: string) {
     await this.store.mergeOutbox(id, (item) => ({ ...item, stopped: true }));
-    await this.notify();
+    try {
+      await this.notify();
+    } finally {
+      this.schedule();
+    }
   }
   /** Deletes a stopped leaf after storage checks its current dependencies. */
   async discard(id: string) {
@@ -1039,11 +1205,7 @@ export class DeliveryEngine {
     // for a receipt first. While the browser reports offline, a lookup that
     // fails at the network level keeps a refused record refused. With the
     // browser online, the same failure makes the outcome unknown.
-    try {
-      return await this.deliver(id, true);
-    } finally {
-      this.schedule();
-    }
+    return this.deliver(id, true);
   }
   /** Signed records and their bodies as JSON lines, for export. */
   async exportLines(items: OutboxItem[]): Promise<string> {
