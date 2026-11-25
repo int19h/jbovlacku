@@ -64,7 +64,8 @@ test("package search survives fresh storage reads and invalidates same-snapshot 
     await writer.delete("packages", "en");
     const deleted = await store.get("packages", "en");
     return {
-      freshRead: first !== second,
+      retained: first === second,
+      freshAcrossConnections: otherRead !== first,
       replaced: first !== replacement,
       sameSnapshot: first.snapshot === replacement.snapshot,
       cold: cold.hits[0].length,
@@ -75,6 +76,7 @@ test("package search survives fresh storage reads and invalidates same-snapshot 
       warmParses: warm.metrics.headwordsParsed,
       reusedAcrossConnections: !shared.prepared,
       keptAfterNonceFailure:
+        afterNonceFailure === replacement &&
         !afterNonceFailureSearch.prepared &&
         afterNonceFailureSearch.hits[0][0]?.preview?.plain_text ===
           "new meaning",
@@ -82,13 +84,15 @@ test("package search survives fresh storage reads and invalidates same-snapshot 
         rows.map((hit: any) => hit.preview?.plain_text),
       ),
       keptAfterFailure:
+        afterFailure === replacement &&
         !afterFailureSearch.prepared &&
         afterFailureSearch.hits[0][0]?.preview?.plain_text === "new meaning",
       deleted: deleted === undefined,
     };
   });
   expect(result).toEqual({
-    freshRead: true,
+    retained: true,
+    freshAcrossConnections: true,
     replaced: true,
     sameSnapshot: true,
     cold: 1,
