@@ -846,11 +846,11 @@ fn unavailable_evaluations_skip_setup_bounds_for_raw_overlays() {
 }
 
 #[test]
-fn restored_malformed_overlay_never_panics_in_setup() {
+fn malformed_overlay_restore_requires_a_saved_refusal() {
     let (f, _) = fixture();
     let overlay = json!({"trust":[{"issuer":1}]});
 
-    // 1. A real resource_unavailable checkpoint with a raw malformed overlay restores and skips setup.
+    // A resource refusal restores and skips setup even if its overlay is malformed.
     let mut unavail_input: Value = serde_json::from_slice(&f.bytes()).unwrap();
     unavail_input["limits"] = json!({"traversal": 0});
     unavail_input["overlay"] = overlay.clone();
@@ -865,7 +865,7 @@ fn restored_malformed_overlay_never_panics_in_setup() {
     assert!(!d.available);
     assert_eq!((d.setup.setup_bytes, d.setup.setup_units), (0, 0));
 
-    // 2. An available checkpoint mutated to carry a malformed overlay never panics in setup.
+    // Restore rejects an available result with a malformed overlay.
     let session = EvaluationSession::new(&f.bytes()).unwrap();
     let mut saved: Value =
         serde_json::from_slice(&session.checkpoint("raw-overlay").unwrap()).unwrap();
@@ -886,17 +886,12 @@ fn restored_malformed_overlay_never_panics_in_setup() {
         bytes.extend_from_slice(format!(",\"digest\":\"{digest}\"}}").as_bytes());
         bytes
     };
-    let restored_avail =
-        EvaluationSession::restore_host_checkpoint(&seal(saved.clone()), "raw-overlay").unwrap();
-    assert_eq!(
-        restored_avail
-            .ranking_descriptor_native(&policy())
-            .unwrap_err()
-            .code,
-        "invalid_overlay"
+    assert!(
+        jvc_state::EvaluatedState::restore_host_checkpoint(&seal(saved.clone()), "raw-overlay")
+            .is_err()
     );
 
-    // 3. Forging resource_unavailable onto a populated available checkpoint is rejected on restore.
+    // A resource refusal cannot carry the original evaluated results.
     saved["evaluation"]["available"] = json!(false);
     saved["evaluation"]["reasons"] = json!(["resource_unavailable"]);
     assert!(

@@ -262,19 +262,14 @@ try {
   );
   delete checkpoint.digest;
   checkpoint.digest = wasm.content_hash(utf8(checkpoint));
-  const restored = wasm.EvaluationSession.restore_host_checkpoint(
-    utf8(checkpoint),
-    "raw-overlay",
+  assert.throws(
+    () =>
+      wasm.EvaluationSession.restore_host_checkpoint(
+        utf8(checkpoint),
+        "raw-overlay",
+      ),
+    /checkpoint version or binding does not match/,
   );
-  try {
-    assert.throws(
-      () => restored.ranking_descriptor(utf8(resourceRow.policy)),
-      /invalid_overlay/,
-    );
-    assert.equal(JSON.parse(restored.state()).available, true);
-  } finally {
-    restored.free();
-  }
   checkpoint.evaluation.available = false;
   checkpoint.evaluation.reasons = ["resource_unavailable"];
   delete checkpoint.digest;
