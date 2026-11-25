@@ -209,13 +209,11 @@ test("nearby consent does not announce a server search during local validation",
     Object.assign(globalThis, { heldNearby: held });
     const NativeWorker = globalThis.Worker;
     globalThis.Worker = class extends NativeWorker {
-      postMessage(
-        message: { options?: { nearby?: boolean } },
-        options?: StructuredSerializeOptions,
-      ) {
-        if (message.options?.nearby)
-          held.push(() => super.postMessage(message, options));
-        else super.postMessage(message, options);
+      postMessage(message: any, ...options: unknown[]) {
+        const send = () =>
+          Reflect.apply(super.postMessage, this, [message, ...options]);
+        if (message.options?.nearby) held.push(send);
+        else send();
       }
     };
   });
