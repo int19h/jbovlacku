@@ -594,17 +594,58 @@ function publicationStatus(value: unknown): value is PublicationStatus {
     (value.controller === null || identityId(value.controller)) &&
     nullableEvent(value.claim) &&
     typeof value.account_authority_applied === "boolean" &&
-    (value.account_control === null
-      ? !value.account_authority_applied
-      : accountKey(value.account_control) &&
-        Object.keys(value.account_control).length === 2) &&
-    // Native status has no account reference, period or account pass.
-    (value.authority !== "native" ||
-      (value.account_control === null &&
-        !value.account_authority_applied &&
-        value.claim === null &&
-        value.deciding_claim === null))
+    (value.account_control === null ||
+      (accountKey(value.account_control) &&
+        Object.keys(value.account_control).length === 2)) &&
+    statusAccountFields(value)
   );
+}
+/**
+ * The account fields that each authority allows. Only the account pass sets
+ * a period, a deciding period or source-account authority, and that pass
+ * runs exactly for the statuses with account_authority_applied.
+ *
+ * | applied | authority      | account_control | controller | claim    | deciding_claim |
+ * | ------- | -------------- | --------------- | ---------- | -------- | -------------- |
+ * | false   | native         | null            | set        | null     | null           |
+ * | false   | none           | null or set     | null       | null     | null           |
+ * | false   | uncertain      | null            | null       | null     | null           |
+ * | false   | source-account | not allowed     |            |          |                |
+ * | true    | source-account | set             | set        | set      | null or set    |
+ * | true    | none           | set             | null       | null/set | null or set    |
+ * | true    | uncertain      | set             | null/set   | null/set | null or set    |
+ * | true    | native         | not allowed     |            |          |                |
+ */
+function statusAccountFields(value: Record<string, unknown>): boolean {
+  const reference = value.account_control !== null;
+  const controller = value.controller !== null;
+  const claim = value.claim !== null;
+  if (!value.account_authority_applied) {
+    if (claim || value.deciding_claim !== null) return false;
+    switch (value.authority) {
+      case "native":
+        return !reference && controller;
+      case "none":
+        return !controller;
+      case "uncertain":
+        // Only the native pass gives uncertain authority without the
+        // account pass, and native publications have no account.
+        return !reference && !controller;
+      default:
+        return false;
+    }
+  }
+  if (!reference) return false;
+  switch (value.authority) {
+    case "source-account":
+      return controller && claim;
+    case "none":
+      return !controller;
+    case "uncertain":
+      return true;
+    default:
+      return false;
+  }
 }
 export function validateWord(value: unknown, id: string): WordResponse {
   const invalid = () =>
@@ -811,9 +852,12 @@ export function validateAccountControl(
           rows[i - 1].policy < row.policy ||
           (rows[i - 1].policy === row.policy && rows[i - 1].claim < row.claim)),
     ) ||
-    // Only a selected controller has selected observations. An unclaimed
-    // row can still carry witness contributions.
-    (value.state === "unclaimed" && value.current_observations.length > 0) ||
+    !accountStateFields(
+      String(value.state),
+      value.controller_candidates.length,
+      value.current_observations.length,
+      value.contributions.length,
+    ) ||
     (!value.row_present &&
       (value.state !== "unclaimed" ||
         value.contributions.length > 0 ||
@@ -825,6 +869,36 @@ export function validateAccountControl(
   )
     throw new Error("The server returned invalid account evidence.");
   return value as unknown as AccountControlResponse;
+}
+
+/**
+ * The candidate and selection counts that each account state allows. Only a
+ * selected controller has selected observations, at most one for each
+ * current witness group. Every state can carry witness contributions.
+ *
+ * | state       | controller_candidates | current_observations       |
+ * | ----------- | --------------------- | -------------------------- |
+ * | controlled  | exactly 1             | at most one per group      |
+ * | disputed    | 2 or more             | empty                      |
+ * | unclaimed   | 0 or 1                | empty                      |
+ * | unavailable | any                   | empty                      |
+ */
+function accountStateFields(
+  state: string,
+  candidates: number,
+  selected: number,
+  groups: number,
+): boolean {
+  switch (state) {
+    case "controlled":
+      return candidates === 1 && selected <= groups;
+    case "disputed":
+      return candidates >= 2 && selected === 0;
+    case "unclaimed":
+      return candidates <= 1 && selected === 0;
+    default:
+      return selected === 0;
+  }
 }
 
 type AccountPinCache = Map<string, Promise<AccountControlResponse>>;
@@ -1042,10 +1116,10 @@ export async function remoteSearch(
   if (options.retired) params.set("retired", "1");
   if (options.literal) params.set("literal", "1");
   if (options.group) params.set("group", options.group);
-  if (context) {
-    params.set("snapshot", context.snapshot);
-    params.set("view", context.view);
-  } else if (preferredView) params.set("view", preferredView);
+  // The view this request pins: the context view, or the preferred view.
+  const pinnedView = context ? context.view : preferredView;
+  if (context) params.set("snapshot", context.snapshot);
+  if (pinnedView) params.set("view", pinnedView);
   if (after) params.set("after", after);
   const result = draftBody
     ? await api<unknown>("/search", {
@@ -1062,8 +1136,8 @@ export async function remoteSearch(
     !isObject(result) ||
     !hashId(result.snapshot) ||
     !eventId(result.view) ||
-    (context &&
-      (result.snapshot !== context.snapshot || result.view !== context.view)) ||
+    (context && result.snapshot !== context.snapshot) ||
+    (pinnedView && result.view !== pinnedView) ||
     !(result.next === null || validCursor(result.next)) ||
     !(
       result.all_lojban === undefined || typeof result.all_lojban === "boolean"

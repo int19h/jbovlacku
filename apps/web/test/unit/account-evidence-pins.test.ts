@@ -12,6 +12,8 @@ const {
   validateAccountControl,
   validateWord,
   setPreferredView,
+  remoteSearch,
+  remoteDraftSearch,
 } = await import("../../src/data/api.ts");
 
 const id = (prefix: string, digit: string) => `${prefix}:${digit.repeat(64)}`;
@@ -151,6 +153,7 @@ test("an unclaimed account row cannot supply a selected observation", async () =
         state: "controlled",
         controller_candidates: [claim],
         current_observations: [proof],
+        contributions,
       }),
       account,
       { snapshot, view },
@@ -214,4 +217,257 @@ test("a pinned identity read rejects an answer for another snapshot", async () =
     (await getIdentity(controller, { snapshot })).snapshot,
     snapshot,
   );
+});
+
+test("only a controlled row with one candidate supplies selected observations", async () => {
+  const pin = { snapshot, view };
+  const other = id("jve1", "9");
+  const contributions = [
+    { witness: controller, claims: [claim], observations: [proof] },
+  ];
+  const valid = (overrides: Record<string, unknown>) =>
+    validateAccountControl(accountRow(overrides), account, pin);
+  for (const overrides of [
+    // A dispute or an unavailable account selects no controller.
+    {
+      state: "disputed",
+      controller_candidates: [claim, other],
+      current_observations: [proof],
+    },
+    {
+      state: "unavailable",
+      controller_candidates: [claim],
+      current_observations: [proof],
+    },
+    // The state and the candidate count must agree.
+    {
+      state: "controlled",
+      controller_candidates: [],
+      current_observations: [],
+    },
+    {
+      state: "controlled",
+      controller_candidates: [claim, other],
+      current_observations: [],
+    },
+    {
+      state: "disputed",
+      controller_candidates: [claim],
+      current_observations: [],
+    },
+    {
+      state: "unclaimed",
+      controller_candidates: [claim, other],
+      current_observations: [],
+    },
+    // At most one selected observation for each current witness group.
+    {
+      state: "controlled",
+      controller_candidates: [claim],
+      current_observations: [proof, other],
+      contributions,
+    },
+  ])
+    assert.throws(
+      () => valid(overrides),
+      /invalid account evidence/,
+      JSON.stringify(overrides),
+    );
+  for (const overrides of [
+    {
+      state: "controlled",
+      controller_candidates: [claim],
+      current_observations: [proof],
+      contributions,
+    },
+    { state: "disputed", controller_candidates: [claim, other], contributions },
+    { state: "unavailable", controller_candidates: [claim, other] },
+    { state: "unavailable" },
+    { state: "unclaimed", controller_candidates: [claim], contributions },
+  ])
+    assert.doesNotThrow(() => valid(overrides), JSON.stringify(overrides));
+  serve(() =>
+    accountRow({
+      state: "disputed",
+      controller_candidates: [claim, other],
+      current_observations: [proof],
+    }),
+  );
+  await assert.rejects(
+    getPublicationEvidence(status as never, pin),
+    /invalid account evidence/,
+  );
+});
+
+test("a search for the preferred view rejects an answer for another view", async () => {
+  const page = (answer: { snapshot: string; view: string }) => ({
+    ...answer,
+    hits: [],
+    next: null,
+  });
+  setPreferredView(view);
+  try {
+    let requests = serve(() => page({ snapshot, view: otherView }));
+    await assert.rejects(
+      remoteSearch("cukta", "en", 10, null, null),
+      /invalid search page/,
+    );
+    assert.equal(requests[0].searchParams.get("view"), view);
+    serve(() => page({ snapshot, view: otherView }));
+    await assert.rejects(
+      remoteDraftSearch("cukta", "en", 10),
+      /invalid search page/,
+    );
+    requests = serve(() => page({ snapshot: otherSnapshot, view }));
+    const accepted = await remoteSearch("cukta", "en", 10, null, null);
+    assert.deepEqual([accepted.snapshot, accepted.view], [otherSnapshot, view]);
+  } finally {
+    setPreferredView(null);
+  }
+  // Without a pin, the page names the view of the answer.
+  serve(() => page({ snapshot, view: otherView }));
+  assert.equal(
+    (await remoteSearch("cukta", "en", 10, null, null)).view,
+    otherView,
+  );
+  // A context pins both values.
+  serve(() => page({ snapshot: otherSnapshot, view }));
+  await assert.rejects(
+    remoteSearch("cukta", "en", 10, { snapshot, view }, null),
+    /invalid search page/,
+  );
+});
+
+test("status account fields follow the authority and the account pass", () => {
+  const pin = { snapshot, view };
+  const check = (fields: Record<string, unknown>) =>
+    validateWord(
+      { ...wordResponse(pin), statuses: [{ ...status, ...fields }] },
+      word,
+    );
+  const base = {
+    account_control: null,
+    account_authority_applied: false,
+    controller: null,
+    claim: null,
+    deciding_claim: null,
+  };
+  const valid = [
+    { ...base, authority: "native", controller },
+    { ...base, authority: "none" },
+    { ...base, authority: "none", account_control: account },
+    { ...base, authority: "uncertain" },
+    {
+      ...base,
+      authority: "source-account",
+      account_control: account,
+      account_authority_applied: true,
+      controller,
+      claim,
+    },
+    {
+      ...base,
+      authority: "source-account",
+      account_control: account,
+      account_authority_applied: true,
+      controller,
+      claim,
+      deciding_claim: claim,
+    },
+    {
+      ...base,
+      authority: "none",
+      account_control: account,
+      account_authority_applied: true,
+    },
+    {
+      ...base,
+      authority: "none",
+      account_control: account,
+      account_authority_applied: true,
+      claim,
+      deciding_claim: claim,
+    },
+    {
+      ...base,
+      authority: "uncertain",
+      account_control: account,
+      account_authority_applied: true,
+    },
+    {
+      ...base,
+      authority: "uncertain",
+      account_control: account,
+      account_authority_applied: true,
+      controller,
+      claim,
+    },
+  ];
+  const invalid = [
+    // Without the account pass.
+    { ...base, authority: "native" },
+    { ...base, authority: "none", controller },
+    { ...base, authority: "none", account_control: account, claim },
+    {
+      ...base,
+      authority: "none",
+      account_control: account,
+      deciding_claim: claim,
+    },
+    { ...base, authority: "uncertain", controller },
+    { ...base, authority: "uncertain", account_control: account },
+    { ...base, authority: "source-account" },
+    {
+      ...base,
+      authority: "source-account",
+      account_control: account,
+      controller,
+      claim,
+    },
+    // With the account pass.
+    {
+      ...base,
+      authority: "source-account",
+      account_authority_applied: true,
+      controller,
+      claim,
+    },
+    {
+      ...base,
+      authority: "source-account",
+      account_control: account,
+      account_authority_applied: true,
+      claim,
+    },
+    {
+      ...base,
+      authority: "source-account",
+      account_control: account,
+      account_authority_applied: true,
+      controller,
+    },
+    {
+      ...base,
+      authority: "none",
+      account_control: account,
+      account_authority_applied: true,
+      controller,
+    },
+    {
+      ...base,
+      authority: "native",
+      account_control: account,
+      account_authority_applied: true,
+      controller,
+    },
+    { ...base, authority: "uncertain", account_authority_applied: true },
+  ];
+  for (const fields of valid)
+    assert.doesNotThrow(() => check(fields), JSON.stringify(fields));
+  for (const fields of invalid)
+    assert.throws(
+      () => check(fields),
+      /invalid word response/,
+      JSON.stringify(fields),
+    );
 });

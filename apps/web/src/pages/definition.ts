@@ -172,6 +172,8 @@ export async function definitionPage(
   try {
     const receipt = await getReceipt(id, { signal: context.signal });
     if (!context.live()) return;
+    if (receipt.id !== id)
+      throw new Error("The server returned a receipt for another record.");
     main.append(
       p(
         `This server: admission ${receipt.admission}, interpretation ${receipt.interpretation}, body ${receipt.body_status}${receipt.reasons.length ? ` (${receipt.reasons.join(", ")})` : ""}.`,
