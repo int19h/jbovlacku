@@ -29,7 +29,7 @@ import {
   savedPackage,
   savedRafsiClaims,
   savedRafsiUnion,
-  requireDenseList,
+  requirePackageListShapes,
   savedRowReader,
   savedSpellingChecks,
   savedWordIdCache,
@@ -137,8 +137,8 @@ export async function wordsWithRafsi(
         continue;
       }
       // Read the coverage flag only from rows that pass the package rule.
-      requireDenseList(pkg.entries);
-      const readRow = savedRowReader(pkg, language);
+      requirePackageListShapes(pkg);
+      const readRow = savedRowReader(pkg, language, undefined, true);
       const claims = savedRafsiClaims();
       const spellings = savedSpellingChecks();
       let incomplete = false;
@@ -677,8 +677,8 @@ async function resolvePair(
       if (!loaded.fresh) {
         // A failed download can leave a candidate from a checked prefix.
         found = undefined;
-        requireDenseList(loaded.pkg.entries);
-        const readRow = savedRowReader(loaded.pkg, language);
+        requirePackageListShapes(loaded.pkg);
+        const readRow = savedRowReader(loaded.pkg, language, undefined, true);
         const countRafsi = savedRafsiUnion();
         const wordIdOf = savedWordIdCache();
         const spellings = savedSpellingChecks();

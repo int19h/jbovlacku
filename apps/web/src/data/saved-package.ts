@@ -71,10 +71,42 @@ const ATTRIBUTION_FIELDS = ["source", "author", "account", "dates"];
 const ACCOUNT_FIELDS = ["origin", "account"];
 const LEGACY_STATUS_FIELDS = ["view", "status"];
 
+export const PACKAGE_GLOSS_LIMIT = 8192;
+export const PACKAGE_RAFSI_LIMIT = 64;
+const COMPONENT_BYTE_LIMIT = 128;
+
+/**
+ * Check the outer `entries` list and every row's nested lists in one
+ * unbudgeted pass before any budget charge or content measurement.
+ * Lists with a format cap (`glosses` and `rafsi`) reject over-cap lengths
+ * before inspecting own keys.
+ */
+export function requirePackageListShapes(pkg: unknown): void {
+  if (!isRecord(pkg)) throw new PackageValidationError();
+  const { entries } = pkg;
+  requireDenseList(entries);
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!isRecord(entry)) throw new PackageValidationError();
+    const { glosses, classification, rafsi } = entry;
+    if (!Array.isArray(glosses) || glosses.length > PACKAGE_GLOSS_LIMIT)
+      throw new PackageValidationError();
+    requireDenseList(glosses);
+    if (!isRecord(classification)) throw new PackageValidationError();
+    requireDenseList(classification.selmaho);
+    if (Object.hasOwn(entry, "rafsi")) {
+      if (!Array.isArray(rafsi) || rafsi.length > PACKAGE_RAFSI_LIMIT)
+        throw new PackageValidationError();
+      requireDenseList(rafsi);
+    }
+  }
+}
+
 /** Check the shapes that content measurement reads before measuring content. */
 export function requireSavedRowLists(
   value: unknown,
   budget?: SearchRequestBudget,
+  listsVerified = false,
 ): asserts value is Record<string, unknown> {
   if (!isRecord(value)) throw new PackageValidationError();
   const { word, classification, glosses, rafsi, attribution } = value;
@@ -85,11 +117,14 @@ export function requireSavedRowLists(
   )
     throw new PackageValidationError();
 
-  if (!Array.isArray(glosses) || glosses.length > 8192)
-    throw new PackageValidationError();
-  requireDenseList(glosses);
-  for (let i = 0; i < glosses.length; i++) {
-    const gloss = glosses[i];
+  if (!listsVerified) {
+    if (!Array.isArray(glosses) || glosses.length > PACKAGE_GLOSS_LIMIT)
+      throw new PackageValidationError();
+    requireDenseList(glosses);
+  }
+  const glossList = glosses as unknown[];
+  for (let i = 0; i < glossList.length; i++) {
+    const gloss = glossList[i];
     if (
       !fields(gloss, GLOSS_FIELDS) ||
       !languageTag(gloss.language) ||
@@ -100,16 +135,20 @@ export function requireSavedRowLists(
   }
 
   const { selmaho } = classification;
-  requireDenseList(selmaho);
-  for (let i = 0; i < selmaho.length; i++)
-    if (typeof selmaho[i] !== "string") throw new PackageValidationError();
+  if (!listsVerified) requireDenseList(selmaho);
+  const selmahoList = selmaho as unknown[];
+  for (let i = 0; i < selmahoList.length; i++)
+    if (typeof selmahoList[i] !== "string") throw new PackageValidationError();
 
   if (Object.hasOwn(value, "rafsi")) {
-    if (!Array.isArray(rafsi) || rafsi.length > PACKAGE_RAFSI_LIMIT)
-      throw new PackageValidationError();
-    requireDenseList(rafsi);
-    for (let i = 0; i < rafsi.length; i++)
-      if (!validPackageRafsi(rafsi[i])) throw new PackageValidationError();
+    if (!listsVerified) {
+      if (!Array.isArray(rafsi) || rafsi.length > PACKAGE_RAFSI_LIMIT)
+        throw new PackageValidationError();
+      requireDenseList(rafsi);
+    }
+    const rafsiList = rafsi as unknown[];
+    for (let i = 0; i < rafsiList.length; i++)
+      if (!validPackageRafsi(rafsiList[i])) throw new PackageValidationError();
   }
 
   if (attribution != null) {
@@ -139,9 +178,6 @@ export function requireSavedRowLists(
     }
   }
 }
-
-export const PACKAGE_RAFSI_LIMIT = 64;
-const COMPONENT_BYTE_LIMIT = 128;
 
 export function isV2(entry: PackageEntry): entry is PackageEntryV2 {
   return "issuer" in entry;
@@ -216,9 +252,10 @@ export function fitsSavedComponent(component: {
   return (
     fitsComponentSpelling(component.spelling) &&
     (component.locked == null || fitsComponentSpelling(component.locked)) &&
+    Array.isArray(component.claims) &&
     component.claims.length <= PACKAGE_RAFSI_LIMIT &&
     isDenseList(component.claims) &&
-    component.claims.every((claim) => validPackageRafsi(claim?.rafsi))
+    component.claims.every((claim) => isRecord(claim) && validPackageRafsi(claim.rafsi))
   );
 }
 
@@ -276,8 +313,9 @@ export function savedRow(
   language: string,
   packageView?: string,
   budget?: SearchRequestBudget,
+  listsVerified = false,
 ): PackageEntry {
-  requireSavedRowLists(entry, budget);
+  requireSavedRowLists(entry, budget, listsVerified);
   if (
     !eventId(entry.event) ||
     entry.language !== language ||
@@ -326,10 +364,18 @@ export function savedRowReader(
   pkg: CachedPackage,
   language: string,
   budget?: SearchRequestBudget,
+  listsVerified = false,
 ) {
   let previous = "";
   return (value: unknown) => {
-    const row = savedRow(value, pkg.version, language, pkg.search_view, budget);
+    const row = savedRow(
+      value,
+      pkg.version,
+      language,
+      pkg.search_view,
+      budget,
+      listsVerified,
+    );
     if (row.event <= previous) throw new PackageValidationError();
     previous = row.event;
     return row;
@@ -420,7 +466,7 @@ export function savedRafsiClaims() {
         queued.add(spelling);
         needed.push(spelling);
       }
-      if (needed.length === 128) flush();
+      if (needed.length === 128 || pending.length === 128) flush();
     },
     finish: flush,
   };

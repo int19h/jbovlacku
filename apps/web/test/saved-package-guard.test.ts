@@ -1983,3 +1983,165 @@ test("saved shapes rejects probe-filled sparse lists as invalid before budgets, 
     aliasBax: [{ spelling: shortSpelling, claims: ["bab", "bax"] }],
   });
 });
+
+test("saved shapes reject later-row list holes and over-cap lists before the request budget", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const searchPath = corePath.replace(
+    "/packages/core/src/browser.ts",
+    "/packages/search/src/index.ts",
+  );
+  const report = await page.evaluate(
+    async ({ coreUrl, searchUrl }) => {
+      const { initializeCore } = await import(coreUrl);
+      await initializeCore();
+      const { searchPackage, samePackageStructure } = await import(
+        String("/src/data/package-search.ts")
+      );
+      const { PackageValidationError } = await import(
+        String("/src/data/saved-package.ts")
+      );
+      const { inventoryFromPackage } = await import(
+        String("/src/model/builders.ts")
+      );
+      const { SearchRequestBudget, searchMetrics } = await import(searchUrl);
+    const makeRow = (n: number, extra: Record<string, unknown> = {}) => ({
+      event: "jve1:" + (n + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "cukta" },
+      language: "en",
+      glosses: [{ language: "en", text: "book", sense: null }],
+      plain_text: "book",
+      classification: { kind: "gismu", selmaho: [] as unknown[] },
+      body: null,
+      issuer: "ed25519:" + "a".repeat(64),
+      notes: false,
+      rafsi: ["cku"],
+      rafsi_complete: true,
+      attribution: null,
+      ...extra,
+    });
+    const stamp = { version: 2, snapshot: "sha256:" + "a".repeat(64) };
+    const classify = async (fn: () => Promise<unknown> | unknown) => {
+      try {
+        await fn();
+        return "accepted";
+      } catch (error) {
+        return error instanceof PackageValidationError
+          ? "PackageValidationError"
+          : (error as Error).constructor.name;
+      }
+    };
+    const askWorker = (pkg: unknown, workLimit: number) =>
+      new Promise<string>((resolveWorker, rejectWorker) => {
+        const worker = new Worker(
+          new URL("/src/data/package-search-worker.ts", location.origin),
+          { type: "module" },
+        );
+        worker.onmessage = ({ data }) => {
+          worker.terminate();
+          resolveWorker(data.code ?? "ok");
+        };
+        worker.onerror = (event) => {
+          worker.terminate();
+          rejectWorker(new Error(event.message));
+        };
+        worker.postMessage({
+          request: 1,
+          key: "guard-case-a",
+          pkg,
+          language: "en",
+          queries: [],
+          options: { workLimit },
+        });
+      });
+
+    const base = {
+      ...stamp,
+      entries: [
+        makeRow(0, { plain_text: "x".repeat(4000) }),
+        makeRow(1, { classification: { kind: "gismu", selmaho: ["BAI", "BAI"] } }),
+      ],
+    };
+    const holey: unknown[] = ["BAI", "BAI"];
+    delete holey[0];
+    const caseA = {
+      ...stamp,
+      entries: [
+        makeRow(0, { plain_text: "x".repeat(4000) }),
+        makeRow(1, { classification: { kind: "gismu", selmaho: holey } }),
+      ],
+    };
+
+    const overCapGlosses = Array.from({ length: 100_000 }, () => ({
+      language: "en",
+      text: "book",
+      sense: null,
+    }));
+    delete overCapGlosses[99_999];
+    const overCapRafsi = Array.from({ length: 100_000 }, () => "cku");
+    delete overCapRafsi[99_999];
+    const watched = new WeakSet<object>([overCapGlosses, overCapRafsi]);
+    let scannedOverCap = 0;
+    const origOwnKeys = Reflect.ownKeys;
+    Reflect.ownKeys = ((target: object) => {
+      if (watched.has(target)) scannedOverCap++;
+      return origOwnKeys(target);
+    }) as typeof Reflect.ownKeys;
+
+    const overGlossPkg = {
+      ...stamp,
+      entries: [
+        makeRow(0, { plain_text: "x".repeat(4000) }),
+        makeRow(1, { glosses: overCapGlosses }),
+      ],
+    };
+    const overRafsiPkg = {
+      ...stamp,
+      entries: [
+        makeRow(0, { plain_text: "x".repeat(4000) }),
+        makeRow(1, { rafsi: overCapRafsi }),
+      ],
+    };
+
+    try {
+      const checkAll = async (pkg: unknown) => ({
+        client: await classify(() =>
+          searchPackage(pkg as never, "en", ["cukta"], { workLimit: 20 }),
+        ),
+        worker: await askWorker(pkg, 20),
+        direct: await classify(() =>
+          inventoryFromPackage({ language: "en", pkg: pkg as never }),
+        ),
+        sameStructure: await classify(() =>
+          samePackageStructure(
+            pkg,
+            base as never,
+            new SearchRequestBudget(searchMetrics(), { workLimit: 20 }),
+          ),
+        ),
+      });
+      return {
+        caseA: await checkAll(caseA),
+        overGloss: await checkAll(overGlossPkg),
+        overRafsi: await checkAll(overRafsiPkg),
+        scannedOverCap,
+      };
+    } finally {
+      Reflect.ownKeys = origOwnKeys;
+    }
+  }, { coreUrl: corePath, searchUrl: searchPath });
+
+  const expected = {
+    client: "PackageValidationError",
+    worker: "invalid-package",
+    direct: "PackageValidationError",
+    sameStructure: "PackageValidationError",
+  };
+  expect(report).toEqual({
+    caseA: expected,
+    overGloss: expected,
+    overRafsi: expected,
+    scannedOverCap: 0,
+  });
+});

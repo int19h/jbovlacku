@@ -22,7 +22,7 @@ import {
   PackageValidationError,
   savedPackage,
   savedRafsiUnion,
-  requireDenseList,
+  requirePackageListShapes,
   savedRowReader,
   savedSpellingChecks,
   savedWordIdCache,
@@ -461,11 +461,11 @@ export function savedInventory(saved: SavedPackages): SavedInventory {
 }
 /**
  * The conflict inventory from the local package, which must pass
- * `savedPackage`. The entries list passes `requireDenseList`, each row passes
- * `savedRowReader`, claims pass `savedRafsiUnion`, gismu, claim, and
- * incomplete-rafsi rows derive canonical IDs through `savedWordIdCache`, and
- * remaining rows pass `savedSpellingChecks`. Any failure raises
- * `PackageValidationError`.
+ * `savedPackage`. All outer and nested list shapes pass
+ * `requirePackageListShapes`, each row passes `savedRowReader`, claims pass
+ * `savedRafsiUnion`, gismu, claim, and incomplete-rafsi rows derive canonical
+ * IDs through `savedWordIdCache`, and remaining rows pass
+ * `savedSpellingChecks`. Any failure raises `PackageValidationError`.
  */
 export function inventoryFromPackage(
   saved: SavedLanguagePackage | null,
@@ -484,8 +484,8 @@ export function inventoryFromPackage(
   const gismu = new Map<string, string>();
   const incomplete = new Map<string, string>();
   let hasClaims = false;
-  requireDenseList(pkg.entries);
-  const readRow = savedRowReader(pkg, language);
+  requirePackageListShapes(pkg);
+  const readRow = savedRowReader(pkg, language, undefined, true);
   const countRafsi = savedRafsiUnion();
   const wordIdOf = savedWordIdCache();
   const spellings = savedSpellingChecks();

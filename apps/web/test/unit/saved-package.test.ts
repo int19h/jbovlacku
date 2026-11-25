@@ -578,20 +578,26 @@ test("samePackageStructure detects holes, extra array keys, order changes, and s
   edited.entries[1].plain_text = "changed";
   assert.equal(samePackageStructure(edited, base, budget()), false);
 
-  // Own extra key on rafsi array (including numeric includes).
+  // Own extra key on rafsi array rejects as an invalid package before comparison.
   const extraKey = structuredClone(base) as {
     entries: { rafsi: string[] }[];
   };
   Object.assign(extraKey.entries[0].rafsi, { includes: 1 });
-  assert.equal(samePackageStructure(extraKey, base, budget()), false);
+  assert.throws(
+    () => samePackageStructure(extraKey, base, budget()),
+    saved.PackageValidationError,
+  );
 
-  // Hole plus extra key keeping the same own-key count.
+  // Hole plus extra key keeping the same own-key count rejects as invalid.
   const holePlusExtra = structuredClone(base) as {
     entries: { rafsi: unknown[] }[];
   };
   delete holePlusExtra.entries[0].rafsi[0];
   Object.assign(holePlusExtra.entries[0].rafsi, { includes: 1 });
-  assert.equal(samePackageStructure(holePlusExtra, base, budget()), false);
+  assert.throws(
+    () => samePackageStructure(holePlusExtra, base, budget()),
+    saved.PackageValidationError,
+  );
 
   // Exhausted budget refuses before enumerating keys.
   assert.throws(
@@ -885,4 +891,169 @@ test("batched wordIdSpellings matches wordId across valid and invalid inputs", a
   assert.deepEqual(wordIdSpellings([]), []);
   for (const invalid of ["", " cukta", "x\0y", "\ud800", "e\u0301"])
     assert.throws(() => wordIdSpellings(["cukta", invalid]));
+});
+
+test("later-row nested list holes and over-cap lists reject before budget across validation and structural reuse", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const { inventoryFromPackage } = await import("../../src/model/builders.ts");
+  const budget = (workLimit: number) =>
+    new SearchRequestBudget(searchMetrics(), {
+      workLimit,
+      deadlineMs: Infinity,
+    });
+
+  // Case A: valid row 1 exceeds workLimit 20; row 2 has a hole in selmaho.
+  const base = pkg([
+    v2Row({
+      event: "jve1:" + "1".repeat(64),
+      plain_text: "x".repeat(4000),
+    }),
+    v2Row({
+      event: "jve1:" + "2".repeat(64),
+      classification: { kind: "gismu", selmaho: ["BAI", "BAI"] },
+    }),
+  ]) as never;
+  const holeySelmaho: unknown[] = ["BAI", "BAI"];
+  delete holeySelmaho[0];
+  const caseA = pkg([
+    v2Row({
+      event: "jve1:" + "1".repeat(64),
+      plain_text: "x".repeat(4000),
+    }),
+    v2Row({
+      event: "jve1:" + "2".repeat(64),
+      classification: { kind: "gismu", selmaho: holeySelmaho as string[] },
+    }),
+  ]);
+  assert.throws(
+    () => search.validateCachedPackage(caseA, "en", budget(20)),
+    saved.PackageValidationError,
+  );
+  assert.throws(
+    () => inventoryFromPackage({ language: "en", pkg: caseA as never }),
+    saved.PackageValidationError,
+  );
+  assert.throws(
+    () => samePackageStructure(caseA, base, budget(20)),
+    saved.PackageValidationError,
+  );
+
+  // Over-cap nested lists with a hole at the end reject immediately without a key scan.
+  const overCapGlosses = Array.from({ length: 100_000 }, () => ({
+    language: "en",
+    text: "book",
+    sense: null,
+  }));
+  delete overCapGlosses[99_999];
+  const overCapRafsi = Array.from({ length: 100_000 }, () => "cku");
+  delete overCapRafsi[99_999];
+  const watched = new WeakSet<object>([overCapGlosses, overCapRafsi]);
+  let scannedOverCap = 0;
+  const originalOwnKeys = Reflect.ownKeys;
+  Reflect.ownKeys = ((target: object) => {
+    if (watched.has(target)) scannedOverCap++;
+    return originalOwnKeys(target);
+  }) as typeof Reflect.ownKeys;
+  try {
+    const overGlossPkg = pkg([
+      v2Row({
+        event: "jve1:" + "1".repeat(64),
+        plain_text: "x".repeat(4000),
+      }),
+      v2Row({
+        event: "jve1:" + "2".repeat(64),
+        glosses: overCapGlosses as never,
+      }),
+    ]);
+    const overRafsiPkg = pkg([
+      v2Row({
+        event: "jve1:" + "1".repeat(64),
+        plain_text: "x".repeat(4000),
+      }),
+      v2Row({
+        event: "jve1:" + "2".repeat(64),
+        rafsi: overCapRafsi as never,
+      }),
+    ]);
+    for (const candidate of [overGlossPkg, overRafsiPkg]) {
+      assert.throws(
+        () => search.validateCachedPackage(candidate, "en", budget(20)),
+        saved.PackageValidationError,
+      );
+      assert.throws(
+        () => samePackageStructure(candidate, base, budget(20)),
+        saved.PackageValidationError,
+      );
+      assert.throws(
+        () => inventoryFromPackage({ language: "en", pkg: candidate as never }),
+        saved.PackageValidationError,
+      );
+    }
+    assert.equal(scannedOverCap, 0);
+  } finally {
+    Reflect.ownKeys = originalOwnKeys;
+  }
+});
+
+test("savedRafsiClaims and savedSpellingChecks do not hide invalid rows behind a small budget", async () => {
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const { wordSpellingStatus } = await import(
+    "../../../../packages/core/src/index.ts"
+  );
+  const budget = (workLimit: number) =>
+    new SearchRequestBudget(searchMetrics(), {
+      workLimit,
+      deadlineMs: Infinity,
+    });
+  const claims = (start: number, count: number) =>
+    Array.from({ length: count }, (_, i) => `r${start + i}`);
+  const rowAt = (n: number, extra: Record<string, unknown>) =>
+    v2Row({
+      event: "jve1:" + (n + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "cukta" },
+      glosses: [],
+      plain_text: "",
+      rafsi: [],
+      ...extra,
+    });
+
+  // Finding B: 5,002 rows all spelled cukta, union overflows on row 2.
+  const repeatedUnion = pkg([
+    rowAt(0, { rafsi: claims(0, 40) }),
+    rowAt(1, { rafsi: claims(40, 40) }),
+    ...Array.from({ length: 5000 }, (_, i) => rowAt(i + 2, { rafsi: ["cku"] })),
+  ]);
+  assert.throws(
+    () => search.validateCachedPackage(repeatedUnion, "en", budget(20_000)),
+    saved.PackageValidationError,
+  );
+
+  // Same class: overflowing union on rows 1-2 followed by 5,000 empty-rafsi rows.
+  const unionThenEmpty = pkg([
+    rowAt(0, { rafsi: claims(0, 40) }),
+    rowAt(1, { rafsi: claims(40, 40) }),
+    ...Array.from({ length: 5000 }, (_, i) => rowAt(i + 2, { rafsi: [] })),
+  ]);
+  assert.throws(
+    () => search.validateCachedPackage(unionThenEmpty, "en", budget(20_000)),
+    saved.PackageValidationError,
+  );
+
+  // Same class: buffered invalid fallback spelling on row 1 before huge row 2.
+  assert.equal(wordSpellingStatus("e\u0301"), "check");
+  const deferredFallbackSpelling = pkg([
+    rowAt(0, { word: { language: "jbo", spelling: "e\u0301" }, rafsi: [] }),
+    rowAt(1, { plain_text: "x".repeat(4000), rafsi: [] }),
+  ]);
+  assert.throws(
+    () => search.validateCachedPackage(deferredFallbackSpelling, "en", budget(20)),
+    saved.PackageValidationError,
+  );
 });

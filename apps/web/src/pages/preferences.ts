@@ -28,7 +28,7 @@ import {
   PackageValidationError,
   savedPackage,
   savedRafsiClaims,
-  requireDenseList,
+  requirePackageListShapes,
   savedRowReader,
   savedSpellingChecks,
 } from "../data/saved-package.ts";
@@ -664,8 +664,8 @@ async function preferencesBody(context: RenderContext, app: App) {
       if (pkg)
         checks.push(() => {
           try {
-            requireDenseList(pkg.entries);
-            const readRow = savedRowReader(pkg, key);
+            requirePackageListShapes(pkg);
+            const readRow = savedRowReader(pkg, key, undefined, true);
             const claims = savedRafsiClaims();
             const spellings = savedSpellingChecks();
             for (const value of pkg.entries) {

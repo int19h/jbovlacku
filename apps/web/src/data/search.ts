@@ -16,6 +16,7 @@ import {
   isPatternQuery,
   comparePatternSpelling,
   searchMetrics,
+  SearchBudgetError,
   SearchRequestBudget,
   type SearchOptions,
   type SegmentationStatus,
@@ -32,6 +33,7 @@ import {
   PACKAGE_RAFSI_LIMIT,
   PackageValidationError,
   requireDenseList,
+  requirePackageListShapes,
   savedPackage,
   savedRafsiClaims,
   savedRafsiUnion,
@@ -226,20 +228,30 @@ export function validateCachedPackage(
 ): asserts value is CachedPackage {
   const pkg = savedPackage(value);
   if (!pkg) throw invalidPackage();
-  requireDenseList(pkg.entries);
+  requirePackageListShapes(pkg);
   if (pkg.entries.length) budget?.ensure(1, "prepare");
-  const readRow = savedRowReader(pkg, language, budget);
+  const readRow = savedRowReader(pkg, language, budget, true);
   const claims = savedRafsiClaims();
   const spellings = savedSpellingChecks();
-  for (const entry of pkg.entries) {
-    // One validated entry costs one unit plus its content, charged before
-    // the entry is indexed so a bloated package refuses up front. The unit is
-    // ensured before measuring, so an exhausted budget walks nothing.
-    budget?.ensure(1, "prepare");
-    const row = readRow(entry);
-    budget?.reserve(1 + entryContentUnits(row, budget, "prepare"), "prepare");
-    if (isV2(row) && row.rafsi.length) claims.add(row);
-    else spellings.add(row.word.spelling);
+  try {
+    for (const entry of pkg.entries) {
+      // One validated entry costs one unit plus its content, charged before
+      // the entry is indexed so a bloated package refuses up front. The unit is
+      // ensured before measuring, so an exhausted budget walks nothing.
+      budget?.ensure(1, "prepare");
+      const row = readRow(entry);
+      if (isV2(row) && row.rafsi.length) claims.add(row);
+      else spellings.add(row.word.spelling);
+      budget?.reserve(1 + entryContentUnits(row, budget, "prepare"), "prepare");
+    }
+  } catch (error) {
+    if (error instanceof SearchBudgetError) {
+      // Resolve any buffered claims or fallback spellings from rows already
+      // read so batching never lets a later budget refusal hide an invalid row.
+      claims.finish();
+      spellings.finish();
+    }
+    throw error;
   }
   claims.finish();
   spellings.finish();

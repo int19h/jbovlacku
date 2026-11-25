@@ -1,7 +1,7 @@
 import { packageStorageKey } from "./store.ts";
 import {
   PackageValidationError,
-  requireDenseList,
+  requirePackageListShapes,
   requireSavedRowLists,
 } from "./saved-package.ts";
 export { PackageValidationError };
@@ -293,10 +293,22 @@ function sameStructuredValue(
   return true;
 }
 
+function sameValidatedPackageStructure(
+  incoming: unknown,
+  trusted: CachedPackage,
+  budget: SearchRequestBudget,
+): boolean {
+  if (incoming === trusted) return true;
+  if (!incoming || typeof incoming !== "object" || Array.isArray(incoming))
+    return false;
+  return sameStructuredValue(incoming, trusted, budget);
+}
+
 /**
  * Exact structural equality between a freshly read package clone and a
- * trusted validated snapshot, charged to the request budget. Checks row
- * order, actual own array keys, holes, and all worker fields.
+ * trusted validated snapshot. List shapes pass the shared unbudgeted
+ * `requirePackageListShapes` check before any budget charge, and the remaining
+ * value comparison charges the request budget.
  */
 export function samePackageStructure(
   incoming: unknown,
@@ -306,7 +318,8 @@ export function samePackageStructure(
   if (incoming === trusted) return true;
   if (!incoming || typeof incoming !== "object" || Array.isArray(incoming))
     return false;
-  return sameStructuredValue(incoming, trusted, budget);
+  requirePackageListShapes(incoming);
+  return sameValidatedPackageStructure(incoming, trusted, budget);
 }
 
 function pruneSnapshots(current: Client): void {
@@ -476,18 +489,19 @@ export async function searchPackage(
         }
       }
     }
-    // Fresh clone with the same durable storage revision: validate top-level
-    // list shape before any budgeted equality work, then reuse only after
-    // exact structural equality against the validated snapshot.
+    // Fresh clone with the same durable storage revision: validate all outer
+    // and nested list shapes before any budgeted equality or transfer work,
+    // then reuse only after exact structural equality against the validated
+    // snapshot.
     if (matchedKey === undefined) {
-      requireDenseList(pkg.entries);
+      requirePackageListShapes(pkg);
       if (storageHint !== undefined) {
         for (const [candidateKey, entry] of client.snapshots) {
           if (
             entry.language === language &&
             entry.storageHint === storageHint &&
             client.retained.has(candidateKey) &&
-            samePackageStructure(pkg, entry.pkg, clientBudget)
+            sameValidatedPackageStructure(pkg, entry.pkg, clientBudget)
           ) {
             matchedKey = candidateKey;
             resolvedPkg = entry.pkg;
@@ -498,7 +512,7 @@ export async function searchPackage(
       }
     }
   } else {
-    requireDenseList(pkg.entries);
+    requirePackageListShapes(pkg);
   }
   const key = matchedKey ?? ++packageId;
   const send = (force = false) => {
@@ -581,11 +595,11 @@ export async function searchPackage(
         // remaining package; the per-entry measurement itself checks the
         // allowance inside large date maps.
         if (prepare) {
-          if (force) requireDenseList(resolvedPkg.entries);
+          if (force) requirePackageListShapes(resolvedPkg);
           if (resolvedPkg.entries.length) clientBudget.ensure(1, "prepare");
           for (const entry of resolvedPkg.entries) {
             clientBudget.ensure(1, "prepare");
-            requireSavedRowLists(entry, clientBudget);
+            requireSavedRowLists(entry, clientBudget, true);
             clientBudget.reserve(
               1 + entryContentUnits(entry, clientBudget, "prepare"),
               "prepare",

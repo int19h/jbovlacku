@@ -323,9 +323,10 @@ A rafsi lookup downloads the current package for each of its languages. When bro
 A saved package list must have a value at every index and no extra properties.
 This rule covers entries, glosses, selma'o names, and rafsi.
 Attribution dates form a map from names to strings.
-Direct readers, client transfer, and the search worker apply the same package, list, and row shape rules before any budget charge or content measurement.
-The list check inspects actual own keys rather than sampling indices, so any hole, extra own property, or sparse huge length rejects the entire package as invalid rather than reporting a budget failure.
-After the shape checks pass, the worker and client transfer charge content work to the request budget; direct readers apply the same package and row rules without a request budget.
+Direct readers, client transfer, structural reuse comparison, and the search worker check the outer `entries` list and every row's `glosses`, `selmaho`, and `rafsi` lists in one pass before any budget charge or content measurement.
+For lists with a format cap (`glosses` up to 8,192 items and `rafsi` up to 64 items), the pass rejects an over-cap length before inspecting own keys.
+For lists without a format cap (`entries` and `selmaho`), and for capped lists within their cap, the pass inspects actual own keys rather than sampling indices, so any hole, extra own property, or sparse huge length rejects the entire package as invalid rather than reporting a budget failure.
+After that list-shape pass succeeds, the worker and client transfer charge per-row content work to the request budget, checking each row's own field shapes before charging that row and metering large attribution date maps, while direct readers apply the same row rules without a request budget.
 
 In a version 2 package, all rows for one canonical word ID can list up to 64 distinct rafsi.
 Each rafsi can use up to 128 UTF-8 bytes and must have no lone surrogate.
