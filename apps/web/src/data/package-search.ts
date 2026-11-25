@@ -230,15 +230,6 @@ let client: Client | undefined;
 let requestId = 0,
   packageId = 0;
 
-function sameOwnKeys(a: object, b: object): boolean {
-  const keysA = Reflect.ownKeys(a);
-  const keysB = Reflect.ownKeys(b);
-  if (keysA.length !== keysB.length) return false;
-  for (let i = 0; i < keysA.length; i++)
-    if (keysA[i] !== keysB[i] && !Object.hasOwn(b, keysA[i])) return false;
-  return true;
-}
-
 function sameStructuredValue(
   incoming: unknown,
   trusted: unknown,
@@ -263,10 +254,17 @@ function sameStructuredValue(
   if (isArray) {
     const left = incoming as unknown[];
     const right = trusted as unknown[];
-    if (left.length !== right.length) return false;
-    if (left.length > 0) budget.reserve(left.length, "prepare");
-    if (!sameOwnKeys(left, right)) return false;
-    for (let i = 0; i < right.length; i++) {
+    const len = right.length;
+    if (left.length !== len) return false;
+    if (len > 0) budget.reserve(len, "prepare");
+    const keysA = Reflect.ownKeys(left);
+    const keysB = Reflect.ownKeys(right);
+    if (keysA.length !== keysB.length) return false;
+    if (len === 0) return keysA.length === 1 && keysA[0] === "length" && keysB[0] === "length";
+    for (let i = 0; i < keysA.length; i++)
+      if (keysA[i] !== keysB[i] && !Object.hasOwn(right, keysA[i]))
+        return false;
+    for (let i = 0; i < len; i++) {
       const hasLeft = Object.hasOwn(left, i);
       const hasRight = Object.hasOwn(right, i);
       if (hasLeft !== hasRight) return false;
@@ -275,11 +273,15 @@ function sameStructuredValue(
     }
     return true;
   }
-  if (!sameOwnKeys(incoming, trusted)) return false;
+  const keysA = Reflect.ownKeys(incoming);
+  const keysB = Reflect.ownKeys(trusted);
+  if (keysA.length !== keysB.length) return false;
+  if (keysB.length > 0) budget.reserve(keysB.length, "prepare");
   const left = incoming as Record<PropertyKey, unknown>;
   const right = trusted as Record<PropertyKey, unknown>;
-  for (const key of Reflect.ownKeys(right)) {
-    budget.reserve(1, "prepare");
+  for (let i = 0; i < keysB.length; i++) {
+    const key = keysB[i];
+    if (keysA[i] !== key && !Object.hasOwn(incoming, key)) return false;
     if (!sameStructuredValue(left[key], right[key], budget)) return false;
   }
   return true;
