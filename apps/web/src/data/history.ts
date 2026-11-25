@@ -274,6 +274,17 @@ export const unknownRegister = { known: false } as const;
 export function scopeKey(scope: TrustScope) {
   return `${scope.kind}|${scope.word}|${scope.language}`;
 }
+/** Confirms that the register still names the events shown to the reader. */
+export function matchesRegister(
+  state: RegisterState<unknown> | undefined,
+  events: readonly string[],
+): boolean {
+  return (
+    state?.known === true &&
+    state.events.length === events.length &&
+    state.events.every((id, index) => id === events[index])
+  );
+}
 export interface OwnRegisters {
   complete: boolean;
   judgments: Map<string, RegisterState<JudgmentValue>>;
@@ -286,7 +297,10 @@ export interface OwnRegisters {
  * Resolves this identity's own registers. For each register, the maximal
  * events without a causally later event for the same register are retained.
  */
-export function deriveRegisters(history: OwnHistory): OwnRegisters {
+export function deriveRegisters(
+  history: OwnHistory,
+  only?: { kind: "judgment" | "trust"; key: string },
+): OwnRegisters {
   const events = history.events;
   const groups = new Map<
     string,
@@ -312,7 +326,8 @@ export function deriveRegisters(history: OwnHistory): OwnRegisters {
     ) {
       publications.push(envelope.id);
     }
-    if (!key || !kind) continue;
+    if (!key || !kind || (only && (kind !== only.kind || key !== only.key)))
+      continue;
     const groupKey = `${kind}|${key}`;
     const group = groups.get(groupKey) ?? { kind, key, ids: [] };
     group.ids.push(envelope.id);

@@ -3,6 +3,7 @@ import {
   acceptFirstSignature,
   corePath,
   createIdentity,
+  establishOwnHistory,
   fixture,
   openWord,
   PASSPHRASE,
@@ -1749,6 +1750,11 @@ test("a press that starts while the definitions load holds back the reorder", as
   page,
 }) => {
   const f = fixture();
+  const word = await page.request.get(
+    `/api/v1/words/${encodeURIComponent(f.words.cukta)}`,
+  );
+  expect(word.ok()).toBe(true);
+  const { definitions } = await word.json();
   await page.setViewportSize({ width: 1280, height: 900 });
   const releaseScores = await heldPersonal(page);
   let releaseDefinition!: () => void;
@@ -1771,7 +1777,9 @@ test("a press that starts while the definitions load holds back the reorder", as
   let before: (string | undefined)[] = [];
   try {
     releaseDefinition();
-    await expect(page.locator("article.definition")).toHaveCount(4);
+    await expect(page.locator("article.definition")).toHaveCount(
+      definitions.length,
+    );
     before = await order(page);
     releaseScores();
     // The calculation finishes while the button is down. The scores wait
@@ -1810,8 +1818,10 @@ test("a word whose definitions all fail to load shows only the failure notices",
       : route.continue();
   });
   await page.goto("/word/cukta");
-  await expect(page.getByText(/^Definition .* is unavailable:/)).toHaveCount(4);
-  expect(definitions.has(f.definitions.cukta1)).toBe(true);
+  await expect.poll(() => definitions.has(f.definitions.cukta1)).toBe(true);
+  await expect(page.getByText(/^Definition .* is unavailable:/)).toHaveCount(
+    definitions.size,
+  );
   const list = page.locator(".definition-list");
   expect(await list.evaluate((node) => node.childNodes.length)).toBe(0);
   await expect(page.locator("main")).not.toContainText("undefined");
@@ -2287,4 +2297,229 @@ test("a selection in the judgments-first explanation survives the scores", async
     "Definitions follow ranking layers, then event order.",
   );
   expect(await page.evaluate(() => getSelection()!.toString())).toBe("browser");
+});
+
+/** Holds one history response while later reads and signed actions proceed. */
+async function holdJudgmentHistory(page: Page, target: string) {
+  const signed: { id: string; value: string; previous: string[] }[] = [];
+  let holdAfter = Infinity;
+  let held = false;
+  let captured = false;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/v1/events", (route) => {
+    if (route.request().method() === "POST") {
+      const { id, header } = route.request().postDataJSON().envelope;
+      if (
+        header.action.kind === "judgment.set" &&
+        header.action.target === target
+      )
+        signed.push({
+          id,
+          value: header.action.value,
+          previous: header.previous,
+        });
+    }
+    return route.continue();
+  });
+  await page.route("**/api/v1/identity-heads/**", async (route) => {
+    if (held || signed.length < holdAfter) return route.continue();
+    held = true;
+    const response = await route.fetch();
+    captured = true;
+    await waiting;
+    await route.fulfill({ response }).catch(() => {});
+  });
+  return {
+    signed,
+    holdNextAfter: (count: number) => (holdAfter = count),
+    waitForCapture: () => expect.poll(() => captured).toBe(true),
+    release,
+  };
+}
+
+for (const [arrow, value, noun] of [
+  ["Endorse", "bless", "endorsement"],
+  ["Oppose", "curse", "opposition"],
+] as const)
+  test(`delayed judgment history cannot repeat ${arrow} after success`, async ({
+    page,
+  }) => {
+    const target = fixture().definitions.cukta1;
+    await createIdentity(page);
+    await openWord(page, "cukta");
+    const press = block(page, target).getByRole("button", { name: arrow });
+    await expect(press).toHaveAttribute("aria-pressed", "false");
+    const history = await holdJudgmentHistory(page, target);
+    history.holdNextAfter(1);
+    try {
+      await press.click();
+      await acceptFirstSignature(page);
+      const status = page.getByRole("status");
+      await expect(status).toHaveText(`Your ${noun} is published.`);
+      await history.waitForCapture();
+      await press.click();
+      await expect
+        .poll(() => history.signed.map(({ value }) => value))
+        .toEqual([value, "clear"]);
+      expect(history.signed[1].previous).toContain(history.signed[0].id);
+      await expect(status).toHaveText("Your judgment is cleared.");
+    } finally {
+      history.release();
+    }
+  });
+
+test("delayed judgment history cannot turn Endorse after Score details Clear into another clear", async ({
+  page,
+}) => {
+  const target = fixture().definitions.cukta1;
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  const entry = block(page, target);
+  const endorse = entry.getByRole("button", { name: "Endorse" });
+  const history = await holdJudgmentHistory(page, target);
+  history.holdNextAfter(2);
+  const status = page.getByRole("status");
+  try {
+    await endorse.click();
+    await acceptFirstSignature(page);
+    await expect(endorse).toHaveAttribute("aria-pressed", "true");
+    await entry.locator("details.judgment-details > summary").click();
+    const clear = entry.getByRole("button", { name: "Clear my judgment" });
+    await clear.click();
+    await expect(status).toContainText("Your judgment is cleared.");
+    await history.waitForCapture();
+    await endorse.click();
+    await expect
+      .poll(() => history.signed.map(({ value }) => value))
+      .toEqual(["bless", "clear", "bless"]);
+    expect(history.signed[2].previous).toContain(history.signed[1].id);
+    await expect(status).toHaveText("Your endorsement is published.");
+  } finally {
+    history.release();
+  }
+});
+
+test("delayed judgment history cannot overwrite a newer arrow or Score details", async ({
+  page,
+}) => {
+  const target = fixture().definitions.cukta1;
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  const entry = block(page, target);
+  const endorse = entry.getByRole("button", { name: "Endorse" });
+  const oppose = entry.getByRole("button", { name: "Oppose" });
+  const summary = entry.locator("details.judgment-details > summary");
+  await expect(endorse).toHaveAttribute("aria-pressed", "false");
+  const history = await holdJudgmentHistory(page, target);
+  history.holdNextAfter(1);
+  try {
+    await endorse.click();
+    await acceptFirstSignature(page);
+    await expect(page.getByRole("status")).toHaveText(
+      "Your endorsement is published.",
+    );
+    await history.waitForCapture();
+    await summary.click();
+    await oppose.click();
+    await expect(page.getByRole("status")).toHaveText(
+      "Your opposition is published.",
+    );
+    await expect(oppose).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      entry.getByRole("button", { name: "Clear my judgment" }),
+    ).toBeEnabled();
+    const oldResponse = page.waitForResponse((response) =>
+      response.url().includes("/api/v1/identity-heads/"),
+    );
+    history.release();
+    await (await oldResponse).finished();
+    // Give the returned read time to derive and paint its register.
+    await page.waitForTimeout(500);
+    await expect(oppose).toHaveAttribute("aria-pressed", "true");
+    await expect(endorse).toHaveAttribute("aria-pressed", "false");
+  } finally {
+    history.release();
+  }
+});
+
+test("delayed judgment history in newly opened Score details follows later own history", async ({
+  page,
+  context,
+}) => {
+  const { cukta1, cukta2 } = fixture().definitions;
+  await createIdentity(page);
+  await openWord(page, "cukta");
+  const other = block(page, cukta2);
+  await other.getByRole("button", { name: "Endorse" }).click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toHaveText(
+    "Your endorsement is published.",
+  );
+  const history = await holdJudgmentHistory(page, cukta2);
+  history.holdNextAfter(1);
+  const second = await context.newPage();
+  try {
+    await other.getByRole("button", { name: "Endorse" }).click();
+    await expect(page.getByRole("status")).toHaveText(
+      "Your judgment is cleared.",
+    );
+    await history.waitForCapture();
+    const entry = block(page, cukta1);
+    await entry.locator("details.judgment-details > summary").click();
+
+    await second.goto("/word/cukta");
+    await block(second, cukta1)
+      .getByRole("button", { name: "Endorse" })
+      .click();
+    const unlock = second.getByRole("dialog", { name: "Unlock your key" });
+    await unlock.getByLabel("Passphrase").fill(PASSPHRASE);
+    await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
+    await expect(second.getByRole("status")).toHaveText(
+      "Your endorsement is published.",
+    );
+
+    await other.getByRole("button", { name: "Oppose" }).click();
+    await expect(page.getByRole("status")).toHaveText(
+      "Your opposition is published.",
+    );
+    await expect(
+      entry.getByRole("button", { name: "Clear my judgment" }),
+    ).toBeEnabled();
+  } finally {
+    history.release();
+    await second.close();
+  }
+});
+
+test("an incomplete local judgment history refuses to sign", async ({
+  page,
+}) => {
+  await createIdentity(page);
+  await establishOwnHistory(page);
+  await page.getByText("Offline signing", { exact: true }).click();
+  await page.getByLabel("Sign from history saved in this browser only").check();
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    const own = await store.list("ownhistory");
+    const clear = own.find(
+      (record: any) => record.header.action.value === "clear",
+    );
+    await store.delete("ownhistory", clear.header.previous[0]);
+  });
+  await openWord(page, "cukta");
+  const target = fixture().definitions.cukta1;
+  const history = await holdJudgmentHistory(page, target);
+  await block(page, target).getByRole("button", { name: "Endorse" }).click();
+  await expect(page.getByRole("status")).toHaveText(
+    "Your judgment is unknown here. Nothing was signed.",
+  );
+  expect(history.signed).toHaveLength(0);
+  expect(
+    await page.evaluate(async () => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      return (await new LocalStore().list("outbox")).length;
+    }),
+  ).toBe(0);
 });

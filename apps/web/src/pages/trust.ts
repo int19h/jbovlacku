@@ -13,7 +13,12 @@ import { getManifest, loadRecord } from "../data/api.ts";
 import { loadSiteView } from "../data/view.ts";
 import { eventId, type ViewBody } from "../model/types.ts";
 import { identityLink } from "../components/attribution.ts";
-import { loadOwnHistory, scopeKey } from "../data/history.ts";
+import {
+  deriveRegisters,
+  loadOwnHistory,
+  matchesRegister,
+  scopeKey,
+} from "../data/history.ts";
 import { renderRichText } from "../model/richtext.ts";
 import { describeScope } from "../components/trustpanel.ts";
 import { scopeError } from "../data/scope.ts";
@@ -25,13 +30,18 @@ interface Visit {
   explanationOpen: boolean;
   /** The explanation on the page now. */
   explanation: HTMLDetailsElement | null;
+  undoing: Set<string>;
 }
 export async function trustPage(
   _route: Route,
   context: RenderContext,
   app: App,
   // What the reader opened on this visit. A rerender keeps it.
-  visit: Visit = { explanationOpen: false, explanation: null },
+  visit: Visit = {
+    explanationOpen: false,
+    explanation: null,
+    undoing: new Set(),
+  },
 ) {
   const { main } = context;
   context.title("Trust");
@@ -145,19 +155,38 @@ export async function trustPage(
   const undoPublic = (
     subject: string,
     scope: ReturnType<typeof parseKey>["scope"],
-  ) =>
-    button(
+    events: string[],
+  ) => {
+    const key = `${subject}|${scopeKey(scope)}`;
+    const identity = app.session.identity;
+    const undo = button(
       "Undo",
-      () =>
-        app.session.requireUnlocked(
-          `Clearing public trust for ${subject.slice(8, 16)}`,
-          async () => {
-            if (!(await app.session.firstSignatureDisclosure())) return;
-            try {
+      async () => {
+        if (visit.undoing.has(key) || identity !== app.session.identity) return;
+        visit.undoing.add(key);
+        undo.disabled = true;
+        try {
+          await app.session.requireUnlocked(
+            `Clearing public trust for ${subject.slice(8, 16)}`,
+            async () => {
+              if (!(await app.session.firstSignatureDisclosure())) return;
+              if (!undo.isConnected || identity !== app.session.identity)
+                return;
               const results = await app.signer.publish([
                 {
-                  action: { kind: "trust.set", subject, scope, value: "clear" },
+                  action: { kind: "trust.set", subject, scope },
                   body: null,
+                  chooseValue(history) {
+                    const current = deriveRegisters(history, {
+                      kind: "trust",
+                      key,
+                    }).trust.get(key);
+                    if (!history.complete || !matchesRegister(current, events))
+                      throw new Error(
+                        "Your public trust changed or is unknown here. Nothing was signed.",
+                      );
+                    return "clear";
+                  },
                 },
               ]);
               app.own.invalidate();
@@ -165,13 +194,21 @@ export async function trustPage(
                 await import("../components/trustpanel.ts");
               app.announce(publicClearOutcome(results));
               rerender();
-            } catch (error) {
-              app.announce(describe(error));
-            }
-          },
-        ),
+            },
+          );
+        } catch (error) {
+          app.own.invalidate();
+          app.announce(describe(error));
+          rerender();
+        } finally {
+          visit.undoing.delete(key);
+          undo.disabled = false;
+        }
+      },
       { class: "btn btn-quiet" },
     );
+    return undo;
+  };
   for (const [key, state] of publicRows) {
     const { subject, scope } = parseKey(key);
     if (!state.known || state.conflicted) continue;
@@ -188,7 +225,7 @@ export async function trustPage(
           text(` ${describeScope(scope)}`, "meta"),
         ),
       ),
-      undoPublic(subject, scope),
+      undoPublic(subject, scope, state.events),
     );
     (state.value === "heed" ? trusted : ignored).append(row);
   }
@@ -220,7 +257,7 @@ export async function trustPage(
           ),
         ),
       ),
-      undoPublic(subject, scope),
+      undoPublic(subject, scope, state.events),
     );
     conflicted.append(row);
   }

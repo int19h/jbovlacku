@@ -9,7 +9,7 @@ import {
   utf8,
 } from "../../../../packages/core/src/browser.ts";
 import { forgetWord, RequestError, TransportError } from "../data/api.ts";
-import { ownHeads } from "../data/history.ts";
+import { loadOwnHistory, type OwnHistory } from "../data/history.ts";
 import { freshPeer, type DeliveryEngine } from "../data/delivery.ts";
 import { LIFECYCLE_KINDS } from "../data/lifecycle.ts";
 import {
@@ -22,11 +22,13 @@ import {
   type SavedRecipient,
 } from "../data/store.ts";
 import type { Session } from "./session.ts";
-import type { Transport } from "../model/types.ts";
+import type { JudgmentValue, Transport, TrustValue } from "../model/types.ts";
 
 export interface GroupItem {
   action: Record<string, unknown> & { kind: string };
   body: unknown | null;
+  /** Chooses the value from the same history that supplies the signed parents. */
+  chooseValue?: (history: OwnHistory) => JudgmentValue | TrustValue;
   /** Fills references to earlier items of the group, by index. */
   dependsOn?: (ids: string[]) => Record<string, unknown>;
   label?: Partial<OutboxLabel>;
@@ -105,15 +107,17 @@ export class Signer {
     // history on a server. Both offline paths use this rule.
     const localParents = async () => {
       if (!(await this.hasLocalHistory(identity))) throw new Error(firstTime);
-      const parents = await ownHeads(session.store, identity, true);
-      if (!parents.length) throw new Error(firstTime);
-      return parents;
+      const history = await loadOwnHistory(session.store, identity, {
+        offline: true,
+      });
+      if (!history.frontier.length) throw new Error(firstTime);
+      return history;
     };
-    let previous: string[];
-    if (this.offlineSigning()) previous = await localParents();
+    let history: OwnHistory;
+    if (this.offlineSigning()) history = await localParents();
     else
       try {
-        previous = await ownHeads(session.store, identity, false);
+        history = await loadOwnHistory(session.store, identity);
       } catch (error) {
         // A lost connection must not block signing. Sign from the history
         // saved in this browser. Delivery keeps the group for retry.
@@ -122,7 +126,7 @@ export class Signer {
           (error instanceof RequestError &&
             [502, 503, 504].includes(error.status));
         if (!unreachable) throw error;
-        previous = await localParents();
+        history = await localParents();
       }
     const learnedRestriction = await session.signingDisabled(identity);
     if (learnedRestriction) throw new Error(learnedRestriction);
@@ -131,6 +135,8 @@ export class Signer {
       session.backup?.identity !== identity
     )
       throw new Error("Unlock this identity again before signing.");
+    const values = items.map((item) => item.chooseValue?.(history));
+    let previous = history.frontier;
     const group = crypto.randomUUID();
     const signed: OutboxItem[] = [];
     const ids: string[] = [];
@@ -141,6 +147,7 @@ export class Signer {
       ).join("");
       const action = {
         ...item.action,
+        ...(values[order] === undefined ? {} : { value: values[order] }),
         ...(item.dependsOn ? item.dependsOn(ids) : {}),
       };
       const prepared = prepareSigning(
