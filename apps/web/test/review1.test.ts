@@ -52,17 +52,11 @@ test("a receipt with a missing or wrong hash leaves delivery unknown on POST and
       json: { ...receipt, envelope_hash: "sha256:" + "0".repeat(64) },
     });
   });
-  await page.route("**/api/v1/events", (route) =>
-    route.fulfill({
-      status: 500,
-      json: {
-        code: "test",
-        message: "No resend during this step.",
-        event: null,
-        field: null,
-      },
-    }),
-  );
+  let posted = 0;
+  await page.route("**/api/v1/events", (route) => {
+    posted++;
+    return route.continue();
+  });
   await page.getByRole("link", { name: "1 not delivered" }).click();
   await page.getByRole("button", { name: "Try now" }).click();
   await expect
@@ -70,7 +64,10 @@ test("a receipt with a missing or wrong hash leaves delivery unknown on POST and
     .toBe(2);
   items = await outboxItems(page);
   expect(items[0].peers.self.state).toBe("unknown");
-  expect(items[0].peers.self.error).toContain("No resend during this step");
+  expect(items[0].peers.self.error).toContain(
+    "names an envelope that does not match the stored record",
+  );
+  expect(posted).toBe(0);
   // A lookup receipt with the right envelope hash but a wrong body status for a
   // bodiless judgment is also not accepted.
   await page.unroute("**/api/v1/receipts/**");
@@ -88,15 +85,12 @@ test("a receipt with a missing or wrong hash leaves delivery unknown on POST and
     .toBe(3);
   items = await outboxItems(page);
   expect(items[0].peers.self.state).toBe("unknown");
-  expect(items[0].peers.self.error).toContain("No resend during this step");
+  expect(items[0].peers.self.error).toContain(
+    "reports a body for a record that has none",
+  );
+  expect(posted).toBe(0);
   // The real receipt completes delivery without a second POST.
   await page.unroute("**/api/v1/receipts/**");
-  let posted = 0;
-  await page.unroute("**/api/v1/events");
-  await page.route("**/api/v1/events", (route) => {
-    posted++;
-    return route.continue();
-  });
   await page.getByRole("button", { name: "Try now" }).click();
   await expect(page.getByRole("status")).toHaveText("Delivered.");
   items = await outboxItems(page);
