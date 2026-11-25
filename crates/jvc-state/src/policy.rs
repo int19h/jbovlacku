@@ -514,8 +514,7 @@ fn private_trust_metered(
         trust.push(rule.clone());
     }
     let mut private_weights_by_pair: PrivateWeights = BTreeMap::new();
-    charge_lookup(meter, evaluation.reasons.len(), "invalid_overlay")?;
-    if !overlay_context_refused(evaluation) {
+    if !overlay_context_refused_metered(evaluation, meter)? {
         if let Some(overlay) = &evaluation.overlay {
             charge_lookup(meter, overlay.as_object().map_or(0, |o| o.len()), "trust")?;
             let mut private: BTreeMap<(String, String, String), (CompactValue, BTreeSet<String>)> =
@@ -867,8 +866,7 @@ fn index_private_rules_metered<'e>(
     e: &'e Evaluation,
     meter: &mut SetupMeter<'_>,
 ) -> jvc_core::Result<&'e [Value]> {
-    charge_lookup(meter, e.reasons.len(), "invalid_overlay")?;
-    if overlay_context_refused(e) {
+    if overlay_context_refused_metered(e, meter)? {
         return Ok(&[]);
     }
     let Some(overlay) = &e.overlay else {
@@ -1285,6 +1283,19 @@ fn resolve_context<A: RowArithmetic>(
 fn overlay_context_refused(evaluation: &Evaluation) -> bool {
     evaluation.reasons.contains("invalid_overlay")
         || evaluation.reasons.contains("resource_unavailable")
+}
+/// Like `overlay_context_refused`, with each reason lookup charged before it runs.
+fn overlay_context_refused_metered(
+    evaluation: &Evaluation,
+    meter: &mut SetupMeter<'_>,
+) -> jvc_core::Result<bool> {
+    for reason in ["invalid_overlay", "resource_unavailable"] {
+        charge_lookup(meter, evaluation.reasons.len(), reason)?;
+        if evaluation.reasons.contains(reason) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn resolve_context_indexed<A: RowArithmetic>(

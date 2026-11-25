@@ -428,3 +428,32 @@ fn account_availability_refuses_invented_reasons_and_missing_ids() {
             json!([format!("jve1:{:064x}", 81_999)]);
     });
 }
+
+#[test]
+fn ranking_setup_charges_both_overlay_reason_lookups() {
+    let mut input = base_with_calculation(jvc_rank::approximate::ALGORITHM);
+    select_account_view(&mut input, vec![format!("jve1:{:064x}", 1)], None);
+    let state = input.into_state();
+    let e = state.evaluation();
+    assert!(e.available);
+    assert!(e.reasons.contains("policy_ancestry_unavailable"));
+    assert!(e.overlay.is_none() && e.trust.is_empty() && e.publications.is_empty());
+    let cost = |key: &str| arena::lookup_work(e.reasons.len() as u64, key.len() as u64);
+    let pair = [cost("invalid_overlay"), cost("resource_unavailable")];
+    let mut charges = Vec::new();
+    state
+        .ranking_index_bound_metered(&mut |w, _, _, _| {
+            charges.push(w);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(charges, pair);
+    charges.clear();
+    state
+        .ensure_ranking_index_metered(&mut |w, _, _, _| {
+            charges.push(w);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(charges, [pair[0], pair[1], 0, pair[0], pair[1]]);
+}
