@@ -140,7 +140,7 @@ The panel reports a server search while that request is in progress.
 The server prepares lexical indexes during package materialization, before completed snapshots become readable.
 Within one page session, `LocalStore.get` checks durable revision markers and retains at most two language snapshots in memory.
 App writes and deletions write a new revision marker, so this tab's writes, another tab's app writes, and eviction by a third language cause the next read to read fresh from storage even when the snapshot ID is unchanged.
-A raw storage edit that preserves the revision marker is caught on the next page load, because page reload clears the session cache and validates each newly read package through its last row.
+Page reload clears the session cache, so the next package read after reload reads fresh from storage and validates the package through its last row, catching any raw storage edit that preserved the revision marker.
 The [search specification](frontend.md#4-search-and-reading) defines the bounds, ranking, and fallback rules.
 
 Local and server search also share bounded pattern matching in WebAssembly.
