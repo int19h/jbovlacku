@@ -960,8 +960,10 @@ export class DeliveryEngine {
         attempt: attemptId,
       };
     const unsaved = this.unsavedOutcome(item.id, peerId, peer);
-    // A pending receipt permits a lookup only. Any other unsaved outcome
-    // follows the normal rules for its state.
+    // Every unsaved outcome makes this attempt look up the receipt first.
+    // After an unsaved acceptance, refusal or open verification, a failed
+    // lookup sends nothing. Any other unsaved outcome follows the normal
+    // rules for its state.
     const pending =
       unsaved && receiptOnly(unsaved.outcome) ? unsaved : undefined;
     // A kept acceptance or refusal is a server answer about this record. A
