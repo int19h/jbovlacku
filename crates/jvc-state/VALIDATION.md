@@ -80,8 +80,8 @@ The probe used the default limits and supplied no padding, selections, transfers
 
 The base and record terms supplied 163,600,256 units. The predecessor term supplied 614,366,720 units.
 After the first 64 merges, each additional merge needs 649 units in this shape and adds 1,280 units to the allowance.
-Each predecessor contributes one contiguous ancestry range and no missing IDs.
-The cap excludes an inline range, so this shape adds no bytes to the range count.
+In the probe's fresh full layout, each predecessor has one contiguous range in each ancestry cache and no missing IDs.
+The cap counts zero bytes for those inline ranges.
 
 A history with the same predecessor count can need more work.
 Interleaved branches can split the ancestry of a record into many ranges.

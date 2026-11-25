@@ -733,11 +733,16 @@ Its work grew by 649 units per added merge after startup, with an allowance of 1
 Fragmented ancestry, missing IDs, and account, policy, or status work can exhaust the budget, even when total work grows linearly.
 See the [wide predecessor measurement](../crates/jvc-state/VALIDATION.md#wide-predecessor-lists) for the fixture and its memory use.
 
-The layout keeps the records of each issuer in one block, in dependency order.
-The number of ranges in each closure determines its stored size.
-If an issuer has one complete chain and no links to other issuers, each closure keeps one contiguous range.
-These ranges use none of the range cap.
-This holds even if each record names up to 64 earlier records of that chain.
+In a fresh full layout, each issuer occupies one block.
+Within a complete chain, the layout places each predecessor before the records that name it.
+In that layout, if an issuer has one complete chain and no links to other issuers, each ancestry cache stores one contiguous range per record.
+This holds even if a record names up to 64 earlier records on the chain.
+The cap counts zero bytes for these inline ranges.
+
+A live append can store new record IDs outside the ranges.
+A compromise cutoff with an empty `safe` list has zero ranges.
+The examples below use the fresh full layout to count bytes against the cap.
+
 Branches that a merge combines at each step count 32 bytes for most records in each kept cache: such a record keeps the earlier steps as one range and its own position as a second. For example, 16 devices of one key in lockstep, where each record names all 16 records of the step before, keep about 30 bytes per record with one cache. A chain on a key after that key's transfer counts nothing, because its closures stay in the key's own block. These figures assume that the old key's history and the successor's history are each a single chain without side branches. For other histories the count follows the number of ranges in each closure, under the per-closure rule. A record on the successor key after one accepted transfer reaches two intervals, one per key, in each of two link modes. If the two intervals touch in the fresh layout, they form one range and the record counts nothing. That happens when the old key's block comes right before the successor's block, the transfer is the last record of the old block, and the acceptance is the first record of the successor's block. If a gap separates them, each of the two link modes keeps two ranges, and the record counts 64 bytes. Further transfers follow the same per-closure rule: a closure counts 0 bytes with at most one range and 16 + 8r bytes with r ranges otherwise. So a further transfer that leaves each of the two closures with one range more costs 64 bytes per later record when the closures go from one range to two, and 16 bytes when they already have two or more. The cap stays ahead of these charges at any size while each record's kept closures hold fewer than about 120 ranges together. For example, one actor can have up to about 60 accepted key transfers whose intervals stay separate. With more such transfers, a long enough history refuses. The other records decide whether the cap or the work budget refuses it first. A history whose ranges grow with its record count still refuses. For example, take a chain of 3,500 records in which each record has one child that is never merged, and give each child an ID that sorts right after its parent's ID. Each chain closure then skips every earlier child, and the 7,000 records fill the cap. If all chain IDs sort before all child IDs, and the child IDs sort in the order of their parents, each chain closure keeps one range and counts nothing. Each child closure keeps two ranges, its parent's chain and itself, and counts 32 bytes, so the 7,000 records keep 112,000 bytes and evaluate. If the child of the last chain record sorts first among the children instead, that child follows its parent directly and keeps one range, so the records keep 111,968 bytes.
 
 The server, worker, and Wasm artifacts at `fedfec3` match the earlier measurement at `b6c0354`.
