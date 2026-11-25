@@ -597,7 +597,13 @@ function publicationStatus(value: unknown): value is PublicationStatus {
     (value.account_control === null
       ? !value.account_authority_applied
       : accountKey(value.account_control) &&
-        Object.keys(value.account_control).length === 2)
+        Object.keys(value.account_control).length === 2) &&
+    // Native status has no account reference, period or account pass.
+    (value.authority !== "native" ||
+      (value.account_control === null &&
+        !value.account_authority_applied &&
+        value.claim === null &&
+        value.deciding_claim === null))
   );
 }
 export function validateWord(value: unknown, id: string): WordResponse {
@@ -740,7 +746,19 @@ export function getWord(
         `/words/${encodeURIComponent(id)}${query.size ? `?${query}` : ""}`,
         options,
       );
-    })().then((value) => validateWord(value, id));
+    })().then((value) => {
+      const word = validateWord(value, id);
+      // A pinned read must answer for that pin. Otherwise its evidence
+      // links would name another snapshot or view.
+      if (
+        (options.snapshot && word.snapshot !== options.snapshot) ||
+        (view && word.view !== view)
+      )
+        throw new Error(
+          "The server answered the word request for another snapshot or view.",
+        );
+      return word;
+    });
     wordCache.set(key, pending);
     pending.catch(() => wordCache.delete(key));
     // Word responses change with new admissions. Keep them briefly.
@@ -793,6 +811,9 @@ export function validateAccountControl(
           rows[i - 1].policy < row.policy ||
           (rows[i - 1].policy === row.policy && rows[i - 1].claim < row.claim)),
     ) ||
+    // Only a selected controller has selected observations. An unclaimed
+    // row can still carry witness contributions.
+    (value.state === "unclaimed" && value.current_observations.length > 0) ||
     (!value.row_present &&
       (value.state !== "unclaimed" ||
         value.contributions.length > 0 ||
@@ -1113,7 +1134,8 @@ export async function getIdentity(
   if (options.fresh && !options.snapshot) await waitForMaterialization(options);
   const params = new URLSearchParams();
   if (options.snapshot) params.set("snapshot", options.snapshot);
-  if (preferredView) params.set("view", preferredView);
+  const view = preferredView;
+  if (view) params.set("view", view);
   const query = params.size ? `?${params}` : "";
   const value = await api<unknown>(
     `/identities/${encodeURIComponent(identity)}${query}`,
@@ -1122,6 +1144,9 @@ export async function getIdentity(
   if (
     !isObject(value) ||
     !hashId(value.snapshot) ||
+    (options.snapshot && value.snapshot !== options.snapshot) ||
+    !eventId(value.view) ||
+    (view && value.view !== view) ||
     value.identity !== identity ||
     !identityId(value.actor) ||
     !isObject(value.profile) ||

@@ -95,3 +95,4 @@ These synthetic results do not establish HTTP latency or live dictionary capacit
 
 State export version 2 stores each account's contributions in account_controls. An attributed publication carries an account reference if the evaluation has a row for its account. The reference applies only to the snapshot and view of that evaluation.
 The export preserves selected current observations separately from historical certificates. Checkpoints keep their own format.
+`Publication` has no serializer, because its fields repeat the account evidence. `Evaluation::export_publications` writes the publication map in the version 2 form.

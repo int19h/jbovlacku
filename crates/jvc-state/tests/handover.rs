@@ -3228,3 +3228,49 @@ fn account_references_distinguish_origins_and_import_kinds() {
         "unclaimed"
     );
 }
+/// True when `T` implements `Serialize`. An inherent associated constant
+/// wins over the trait fallback only when its bound holds.
+struct SerializeProbe<T>(std::marker::PhantomData<T>);
+trait NoSerialize {
+    const SERIALIZES: bool = false;
+}
+impl<T> NoSerialize for SerializeProbe<T> {}
+impl<T: serde::Serialize> SerializeProbe<T> {
+    #[allow(dead_code)]
+    const SERIALIZES: bool = true;
+}
+#[test]
+fn publication_map_serializes_only_with_account_references() {
+    assert!(SerializeProbe::<jvc_state::AccountKey>::SERIALIZES);
+    assert!(
+        !SerializeProbe::<jvc_state::Publication>::SERIALIZES,
+        "a raw publication serializer would repeat the account evidence"
+    );
+    let mut f = Fixture::new();
+    let newer = f.publish_after(1, vec![f.d.clone()]);
+    let d = f.d.clone();
+    chunk_policy(&mut f, vec![(9, vec![d.clone()]), (9, vec![newer.clone()])]);
+    let result = evaluate_observed(&f.input);
+    let export = serde_json::to_value(jvc_state::StateExport::new(&result)).unwrap();
+    let publications = serde_json::to_value(result.export_publications()).unwrap();
+    assert_eq!(publications, export["publications"]);
+    let reference = json!({"origin": ORIGIN, "account": 41});
+    for id in [d, newer] {
+        let row = &publications[&id];
+        assert_eq!(row["account_control"], reference);
+        for field in [
+            "witness_contributions",
+            "controller_candidates",
+            "observations",
+        ] {
+            assert!(row.get(field).is_none(), "{id} has {field}");
+        }
+    }
+    let token = format!("{ORIGIN}#41");
+    assert!(
+        !export["account_controls"][&token]["contributions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}

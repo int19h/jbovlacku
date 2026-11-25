@@ -5,7 +5,7 @@ mod ancestors;
 mod api;
 mod arena;
 mod export;
-pub use export::{STATE_EXPORT_VERSION, StateExport};
+pub use export::{ExportPublications, STATE_EXPORT_VERSION, StateExport};
 mod graph;
 mod incremental;
 mod policy;
@@ -341,7 +341,11 @@ impl AccountKey {
         format!("{}#{}", self.origin, self.account)
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// A publication as the evaluator holds it. It has no `Serialize`
+/// implementation, because its witness fields repeat the account
+/// evidence. Use `StateExport` or `Evaluation::export_publications` for
+/// the version 2 form, which refers to the account row instead.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Publication {
     pub id: String,

@@ -43,7 +43,16 @@ impl Serialize for RankingSourceEvaluation<'_> {
     }
 }
 
-pub(super) struct ExportPublications<'a>(pub &'a Evaluation);
+/// The publication map in the version 2 form. Each publication refers
+/// to its account row instead of a copy of the witness evidence.
+pub struct ExportPublications<'a>(pub(super) &'a Evaluation);
+
+impl Evaluation {
+    /// The publication map as the full state export writes it.
+    pub fn export_publications(&self) -> ExportPublications<'_> {
+        ExportPublications(self)
+    }
+}
 
 impl Serialize for ExportPublications<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
