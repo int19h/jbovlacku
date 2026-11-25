@@ -311,11 +311,29 @@ export function mergePeer(
   return { ...stored, attempts };
 }
 
-type PendingReceipt = {
+/**
+ * An outcome that this tab computed but could not save. `seen` is the stored
+ * state that its attempt read. The entry applies only while the stored row
+ * still matches that read or holds the attempt's own send mark.
+ */
+type UnsavedOutcome = {
   outcome: PeerDelivery;
   seen: PeerDelivery;
   attempt: string;
 };
+/**
+ * True when the unsaved outcome shows that the server answered about the
+ * record, or that a receipt still needs verification. The next attempt then
+ * looks up the receipt. It does not send while it keeps the answer or while
+ * verification stays open.
+ */
+function receiptOnly(outcome: PeerDelivery): boolean {
+  return (
+    outcome.state === "accepted" ||
+    outcome.state === "refused" ||
+    outcome.verifyReceipt === true
+  );
+}
 
 export class DeliveryEngine {
   private profileCompletions?: Set<string>;
@@ -325,7 +343,7 @@ export class DeliveryEngine {
   private scheduleGeneration = 0;
   private listRetryAt = 0;
   private recordRetryAt = new Map<string, number>();
-  private pendingReceipts = new Map<string, Map<string, PendingReceipt>>();
+  private unsavedOutcomes = new Map<string, Map<string, UnsavedOutcome>>();
   private listeners = new Set<DeliveryListener>();
   private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
   private inFlight = new Map<string, Promise<OutboxItem | undefined>>();
@@ -670,7 +688,7 @@ export class DeliveryEngine {
       peer.state !== "accepted" &&
       peer.failure !== "unresolved" &&
       (peer.verifyReceipt === true ||
-        this.pendingReceipt(item.id, peerId, peer) !== undefined ||
+        this.unsavedOutcome(item.id, peerId, peer) !== undefined ||
         (peer.state === "queued" &&
           peer.sendStarted !== undefined &&
           !this.isDelivering(item.id)))
@@ -692,14 +710,14 @@ export class DeliveryEngine {
       ? due
       : null;
   }
-  private pendingReceipt(id: string, peerId: string, peer: PeerDelivery) {
-    const pending = this.pendingReceipts.get(id)?.get(peerId);
+  private unsavedOutcome(id: string, peerId: string, peer: PeerDelivery) {
+    const unsaved = this.unsavedOutcomes.get(id)?.get(peerId);
     if (
-      pending &&
-      (peer.sendAttempt === pending.attempt ||
-        unchangedSince(peer, pending.seen))
+      unsaved &&
+      (peer.sendAttempt === unsaved.attempt ||
+        unchangedSince(peer, unsaved.seen))
     )
-      return pending;
+      return unsaved;
   }
   private setTimer(delay?: number) {
     this.scheduleGeneration++;
@@ -734,8 +752,8 @@ export class DeliveryEngine {
         }
         for (const id of this.recordRetryAt.keys())
           if (!present.has(id)) this.recordRetryAt.delete(id);
-        for (const id of this.pendingReceipts.keys())
-          if (!present.has(id)) this.pendingReceipts.delete(id);
+        for (const id of this.unsavedOutcomes.keys())
+          if (!present.has(id)) this.unsavedOutcomes.delete(id);
         const due = Math.max(next, this.listRetryAt);
         this.setTimer(
           due === Infinity ? undefined : Math.max(250, due - Date.now()),
@@ -745,12 +763,23 @@ export class DeliveryEngine {
         if (generation === this.scheduleGeneration) this.deferListRead();
       });
   }
-  /** The next automatic attempt. A pending receipt permits a read only. */
+  /**
+   * The next automatic attempt. An unsaved outcome keeps the retry time that
+   * it would have stored, so a failed save neither drops the timer nor sends
+   * sooner than a Retry-After or the backoff allows.
+   */
   private dueAt(id: string, peerId: string, peer: PeerDelivery): number {
     if (peer.state === "accepted" || peer.failure === "unresolved")
       return Infinity;
     const delayed = this.recordRetryAt.get(id) ?? 0;
-    if (this.pendingReceipt(id, peerId, peer)) return delayed;
+    const unsaved = this.unsavedOutcome(id, peerId, peer)?.outcome;
+    if (unsaved)
+      return Math.max(
+        delayed,
+        unsaved.nextAttempt !== null && Number.isFinite(unsaved.nextAttempt)
+          ? unsaved.nextAttempt
+          : 0,
+      );
     if (peer.state === "refused" || peer.nextAttempt === null) return Infinity;
     return Math.max(
       delayed,
@@ -895,14 +924,13 @@ export class DeliveryEngine {
         },
       }));
     } catch (error) {
-      if (
-        next.state === "accepted" ||
-        next.state === "refused" ||
-        next.verifyReceipt
-      ) {
-        let receipts = this.pendingReceipts.get(id);
-        if (!receipts) this.pendingReceipts.set(id, (receipts = new Map()));
-        receipts.set(peerId, {
+      // Keep the outcome in this tab, so that its retry time and any receipt
+      // that it holds still apply. An unresolved recipient sends nothing and
+      // gets the same outcome again.
+      if (next.failure !== "unresolved") {
+        let unsaved = this.unsavedOutcomes.get(id);
+        if (!unsaved) this.unsavedOutcomes.set(id, (unsaved = new Map()));
+        unsaved.set(peerId, {
           outcome: next,
           seen: peer,
           attempt: attemptId,
@@ -911,9 +939,9 @@ export class DeliveryEngine {
       }
       throw error;
     }
-    const receipts = this.pendingReceipts.get(id);
-    receipts?.delete(peerId);
-    if (receipts?.size === 0) this.pendingReceipts.delete(id);
+    const unsaved = this.unsavedOutcomes.get(id);
+    unsaved?.delete(peerId);
+    if (unsaved?.size === 0) this.unsavedOutcomes.delete(id);
   }
   private async attempt(
     item: OutboxItem,
@@ -931,8 +959,19 @@ export class DeliveryEngine {
         failure: "unresolved",
         attempt: attemptId,
       };
-    const attempts = peer.attempts + 1;
-    const pending = this.pendingReceipt(item.id, peerId, peer);
+    const unsaved = this.unsavedOutcome(item.id, peerId, peer);
+    // A pending receipt permits a lookup only. Any other unsaved outcome
+    // follows the normal rules for its state.
+    const pending =
+      unsaved && receiptOnly(unsaved.outcome) ? unsaved : undefined;
+    // A kept acceptance or refusal is a server answer about this record. A
+    // later lookup can replace it only with another such answer.
+    const kept =
+      pending && pending.outcome.state !== "unknown"
+        ? { ...pending.outcome, attempt: attemptId }
+        : undefined;
+    const attempts =
+      Math.max(peer.attempts, unsaved?.outcome.attempts ?? 0) + 1;
     const fetchVariant = (id: string) =>
       objectBytes(`/events/${encodeURIComponent(id)}`, 20480, {
         peer: target,
@@ -961,7 +1000,8 @@ export class DeliveryEngine {
               : null,
         receipt,
         attempt: attemptId,
-        ...(state === "unknown" && (verifyReceipt || peer.verifyReceipt)
+        // Only this read decides. A completed check ends verification.
+        ...(state === "unknown" && verifyReceipt
           ? { verifyReceipt: true }
           : {}),
       };
@@ -975,7 +1015,7 @@ export class DeliveryEngine {
       // a queued record is looked up first too, so that a failed lookup
       // shows that the POST was never sent. No peer is rewritten first.
       if (
-        pending ||
+        unsaved ||
         peer.verifyReceipt ||
         peer.state === "unknown" ||
         peer.state === "missing-body" ||
@@ -999,8 +1039,7 @@ export class DeliveryEngine {
             neverSent &&
             !(error instanceof TransportError) &&
             !(error instanceof DOMException && error.name === "AbortError");
-          if (notFound && pending?.outcome.state === "refused")
-            return { ...pending.outcome, attempt: attemptId };
+          if (notFound && kept) return kept;
           if (pending || peer.verifyReceipt || (!notFound && !answered))
             throw error;
         }
@@ -1008,15 +1047,18 @@ export class DeliveryEngine {
           const settled = await settle(receipt);
           if (settled.state === "accepted" || settled.state === "refused")
             return settled;
-          if (pending)
-            throw new Error(
-              settled.error ?? "Receipt verification is pending.",
-            );
-          if (
-            settled.state === "unknown" &&
-            (!neverSent || settled.verifyReceipt)
-          )
+          // An envelope that could not be read leaves verification open, so
+          // the record is not sent. Any other answer, such as a verified
+          // missing body or a receipt for a different envelope, permits the
+          // identical retry below.
+          if (settled.verifyReceipt) {
+            if (pending)
+              throw new Error(
+                settled.error ?? "Receipt verification is pending.",
+              );
             return settled;
+          }
+          if (kept) return kept;
         }
       }
       // Store that delivery is uncertain before the POST starts. If the page

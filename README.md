@@ -14,7 +14,7 @@ The browser app covers reading, contributing, and personal ranking:
 
 - Anonymous lookup through server search or downloaded language packages, with Lojban morphology, compound cmavo matching, and glob and regular-expression patterns.
 - Word pages that show every definition under the selected view, with revision comparisons, source evidence, rafsi pairs, and reviewer details.
-- Local keys with encrypted backups, signed delivery with per-server receipts, and flows that hand a key over to a successor or mark it as compromised. If a receipt save fails, the same tab checks it again while it stays open, the browser reports online, and delivery stays active.
+- Local keys with encrypted backups, signed delivery with per-server receipts, and flows that hand a key over to a successor or mark it as compromised. If an outcome save fails, the same tab keeps its retry time and checks the receipt again while it stays open, the browser reports online, and delivery stays active.
 - A guided authoring wizard and a full editor with accessible rich-text fields, a lujvo builder, and a gismu generator.
 - A personal view that verifies the snapshot records in a Web Worker and ranks words locally with the reader's private trust choices.
 

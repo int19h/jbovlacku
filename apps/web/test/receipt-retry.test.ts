@@ -407,3 +407,326 @@ test("an outbox read failure keeps the empty state unknown", async ({
   await page.getByRole("button", { name: "Retry reading" }).click();
   await expect(page.getByText("No unfinished records.")).toBeVisible();
 });
+
+const signatureVariants = () =>
+  JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../packages/service/test/fixtures/signature-variants.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as Transport[];
+
+type SaveFailure = "outcome" | "unknown" | "verification";
+
+/**
+ * Queues one record in its own database and starts a delivery engine that
+ * stays open in the page. IndexedDB aborts up to `failures` outbox writes of
+ * the record that match `fail`. The send mark of a first send stays queued,
+ * so "outcome" fails every write except that mark.
+ */
+async function startEngine(
+  page: Page,
+  options: {
+    database: string;
+    fail: SaveFailure;
+    failures: number;
+    transport?: Transport;
+    peer?: Record<string, unknown>;
+  },
+) {
+  return page.evaluate(
+    async ({ corePath, options }) => {
+      const core = await import(corePath);
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
+      const { outboxItem } = await import(String("/src/data/lifecycle.ts"));
+      await core.initializeCore();
+      const store = new LocalStore(options.database);
+      const item: OutboxItem = outboxItem(
+        options.transport ??
+          core.createEvent(
+            crypto.getRandomValues(new Uint8Array(32)),
+            [],
+            "1".repeat(32),
+            { kind: "identity.profile" },
+            { name: "Unsaved outcome", bio: [], links: [] },
+          ),
+        "unsaved",
+        0,
+        {
+          self: {
+            origin: location.origin,
+            base: "/api/v1",
+            label: "This server",
+          },
+        },
+      );
+      Object.assign(item.peers.self, options.peer ?? {});
+      await store.queueGroup([item]);
+      let failed = 0;
+      const matches = (peer: { state: string; verifyReceipt?: boolean }) =>
+        options.fail === "outcome"
+          ? peer.state !== "queued"
+          : options.fail === "unknown"
+            ? peer.state === "unknown"
+            : peer.verifyReceipt === true;
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, key) {
+        const request = put.call(this, value, key);
+        if (
+          this.name === "outbox" &&
+          key === item.id &&
+          value.peers?.self &&
+          matches(value.peers.self) &&
+          failed < options.failures
+        ) {
+          failed++;
+          this.transaction.abort();
+        }
+        return request;
+      };
+      const engine = new DeliveryEngine(store);
+      Object.assign(window, { unsavedEngine: engine });
+      const result = await engine.tryNow(item.id).then(
+        () => "saved",
+        (error: Error) => error.name,
+      );
+      return { item, result, failed };
+    },
+    { corePath, options },
+  );
+}
+
+async function storedPeer(page: Page, database: string) {
+  return (await readOutbox(page, database))[0].peers.self;
+}
+
+test("an unsaved outcome keeps its Retry-After", async ({ page }) => {
+  await page.goto("/about");
+  await expect(page.locator("main h1")).toBeAttached();
+  await freeze(page);
+  const { posts, lookups } = deliveryRequests(page);
+  await page.route("**/api/v1/events", (route) =>
+    route.fulfill({
+      status: 503,
+      headers: { "retry-after": "600" },
+      json: { code: "busy", message: "Busy.", event: null, field: null },
+    }),
+  );
+  const { item, result } = await startEngine(page, {
+    database: "unsaved-retry-after",
+    fail: "outcome",
+    failures: 1000,
+  });
+  expect(result).not.toBe("saved");
+  expect(posts).toEqual([item.transport]);
+  const wait = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const [row] = await new LocalStore("unsaved-retry-after").list("outbox");
+    const engine = (
+      window as unknown as {
+        unsavedEngine: { nextTryAt(item: unknown, peer: string): number };
+      }
+    ).unsavedEngine;
+    return engine.nextTryAt(row, "self") - Date.now();
+  });
+  expect(wait).toBe(600_000);
+  for (let step = 0; step < 39; step++) await page.clock.fastForward(15_000);
+  // Give a wrongly due attempt real time to start its requests.
+  await page.waitForTimeout(1000);
+  expect(posts).toEqual([item.transport]);
+  expect(lookups).toEqual([]);
+  await page.clock.fastForward(15_000);
+  await expect.poll(() => posts.length).toBe(2);
+  expect(posts).toEqual([item.transport, item.transport]);
+  expect(lookups).toEqual([item.id]);
+  expect((await readOutbox(page, "unsaved-retry-after"))[0].transport).toBe(
+    item.transport,
+  );
+});
+
+test("a refused record keeps a timer when its lookup and its outcome save fail", async ({
+  page,
+}) => {
+  await page.goto("/about");
+  await expect(page.locator("main h1")).toBeAttached();
+  await freeze(page);
+  const { posts, lookups } = deliveryRequests(page);
+  await page.route("**/api/v1/receipts/*", (route) => route.abort("failed"));
+  const { item, result, failed } = await startEngine(page, {
+    database: "unsaved-refusal",
+    fail: "unknown",
+    failures: 1,
+    peer: {
+      state: "refused",
+      nextAttempt: null,
+      failure: "refused",
+      attempt: "older-refusal",
+    },
+  });
+  expect(result).not.toBe("saved");
+  expect(failed).toBe(1);
+  expect(lookups).toEqual([item.id]);
+  expect((await storedPeer(page, "unsaved-refusal")).state).toBe("refused");
+  await page.clock.fastForward(15_000);
+  await expect.poll(() => lookups.length).toBe(2);
+  await expect
+    .poll(async () => (await storedPeer(page, "unsaved-refusal")).state)
+    .toBe("unknown");
+  expect(posts).toEqual([]);
+});
+
+test("a pending verification that finds a missing body sends the identical record again", async ({
+  page,
+}) => {
+  const variants = signatureVariants();
+  await page.goto("/about");
+  await expect(page.locator("main h1")).toBeAttached();
+  await freeze(page);
+  const { posts, lookups } = deliveryRequests(page);
+  const bytes = await page.evaluate(
+    async ({ corePath, envelope }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const bytes = core.canonicalize(core.utf8(JSON.stringify(envelope)));
+      return { bytes, hash: core.contentHash(core.utf8(bytes)) };
+    },
+    { corePath, envelope: variants[0].envelope },
+  );
+  const receipt = {
+    id: variants[1].envelope.id,
+    envelope_hash: bytes.hash,
+    body_status: "missing",
+    body_hash: null,
+    admission: "accepted",
+    interpretation: "effective",
+    cursor: "x.1",
+    snapshot: null,
+    view: "jve1:" + "a".repeat(64),
+    reasons: [],
+  };
+  await page.route("**/api/v1/events", (route) =>
+    route.fulfill({ status: 201, json: receipt }),
+  );
+  await page.route("**/api/v1/receipts/*", (route) =>
+    route.fulfill({ json: receipt }),
+  );
+  let envelopeReads = 0;
+  await page.route("**/api/v1/events/*", async (route) => {
+    if (++envelopeReads === 1) return route.abort("failed");
+    await route.fulfill({ body: bytes.bytes, contentType: "application/json" });
+  });
+  const { item, result, failed } = await startEngine(page, {
+    database: "unsaved-missing-body",
+    fail: "verification",
+    failures: 1,
+    transport: variants[1],
+  });
+  expect(result).not.toBe("saved");
+  expect(failed).toBe(1);
+  expect(posts).toEqual([item.transport]);
+  await page.clock.fastForward(15_000);
+  await expect
+    .poll(async () => (await storedPeer(page, "unsaved-missing-body")).state)
+    .toBe("missing-body");
+  expect(posts).toEqual([item.transport, item.transport]);
+  expect(lookups).toEqual([item.id]);
+  expect((await storedPeer(page, "unsaved-missing-body")).verifyReceipt).toBe(
+    undefined,
+  );
+});
+
+test("the outbox shows a proved receipt mismatch after pending verification", async ({
+  page,
+}) => {
+  const variants = signatureVariants();
+  await page.goto("/about");
+  await expect(page.locator("main h1")).toBeAttached();
+  const seed = await page.evaluate(
+    async ({ corePath, variants }) => {
+      const core = await import(corePath);
+      await core.initializeCore();
+      const canonical = (envelope: unknown) =>
+        core.canonicalize(core.utf8(JSON.stringify(envelope)));
+      const other = canonical(
+        core.createEvent(
+          crypto.getRandomValues(new Uint8Array(32)),
+          [],
+          "1".repeat(32),
+          { kind: "identity.profile" },
+          { name: "Other record", bio: [], links: [] },
+        ).envelope,
+      );
+      return {
+        other,
+        hash: core.contentHash(core.utf8(canonical(variants[0].envelope))),
+      };
+    },
+    { corePath, variants },
+  );
+  const receipt = {
+    id: variants[1].envelope.id,
+    envelope_hash: seed.hash,
+    body_status: "present",
+    body_hash: variants[1].envelope.header.content?.hash,
+    admission: "accepted",
+    interpretation: "effective",
+    cursor: "x.1",
+    snapshot: null,
+    view: "jve1:" + "a".repeat(64),
+    reasons: [],
+  };
+  const { posts } = deliveryRequests(page);
+  await page.route("**/api/v1/events", (route) =>
+    route.fulfill({ status: 201, json: receipt }),
+  );
+  await page.route("**/api/v1/receipts/*", (route) =>
+    route.fulfill({ json: receipt }),
+  );
+  let envelopeReads = 0;
+  await page.route("**/api/v1/events/*", async (route) => {
+    if (++envelopeReads === 1) return route.abort("failed");
+    await route.fulfill({ body: seed.other, contentType: "application/json" });
+  });
+  const item = await page.evaluate(async (transport) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { outboxItem } = await import(String("/src/data/lifecycle.ts"));
+    const item: OutboxItem = outboxItem(transport, "mismatch", 0, {
+      self: {
+        origin: location.origin,
+        base: "/api/v1",
+        label: "This server",
+      },
+    });
+    await new LocalStore().queueGroup([item]);
+    return item;
+  }, variants[1]);
+  await page.goto("/outbox");
+  await expect(
+    page.getByText(
+      "The result is unconfirmed. The browser will check the receipt again when online.",
+    ),
+  ).toBeVisible();
+  expect((await readOutbox(page))[0].peers.self.verifyReceipt).toBe(true);
+  await page.getByRole("button", { name: "Try now" }).click();
+  await expect(
+    page.getByText(
+      /The receipt names an envelope that does not match the stored record\. Delivery remains unknown\. The client asks whether the record arrived before it sends the same bytes again\./,
+    ),
+  ).toBeVisible();
+  await expect(page.getByText(/Receipt verification is pending/)).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByText(/will check the receipt again when online/),
+  ).toHaveCount(0);
+  const [saved] = await readOutbox(page);
+  expect(saved.peers.self).toMatchObject({ state: "unknown" });
+  expect(saved.peers.self.verifyReceipt).toBe(undefined);
+  // The proved mismatch permits the identical retry.
+  expect(posts).toEqual([item.transport, item.transport]);
+  expect(saved.transport).toBe(item.transport);
+});
