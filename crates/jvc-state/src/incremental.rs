@@ -10014,7 +10014,11 @@ mod rebuild_tests {
         control_delta.add_host_verified_record(appended_pub.clone());
         control_delta.add_host_verified_record(appended_judgment.clone());
         let control_after = state_open.clone().advance(control_delta, &[]);
-        assert!(!control_after.statistics().rebuilt);
+        assert!(
+            !control_after.statistics().rebuilt,
+            "{:?}",
+            control_after.statistics()
+        );
         assert_eq!(control_after.statistics().incremental_records, 2);
 
         let saved_full = state_open.checkpoint("scalar-audit").unwrap();

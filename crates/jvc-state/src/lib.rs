@@ -1414,51 +1414,69 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
         };
     }
 }
-fn register_key(
-    n: &graph::Node,
-    actor: &str,
-    resolve_subject: impl FnOnce(&str) -> String,
-) -> Option<String> {
-    let key = match n.kind.as_str() {
-        "judgment.set" => format!(
-            "judgment|{}",
-            n.action.view().index("target").as_str().unwrap_or_default()
-        ),
-        "trust.set" => format!(
-            "trust|{}|{}",
-            resolve_subject(
-                n.action
-                    .view()
-                    .index("subject")
-                    .as_str()
-                    .unwrap_or_default()
+enum RegisterKind {
+    Judgment,
+    Trust,
+    Profile,
+    Report,
+    Bridge,
+    Account,
+    Observation,
+}
+impl RegisterKind {
+    fn for_action(kind: &str) -> Option<Self> {
+        match kind {
+            "judgment.set" => Some(Self::Judgment),
+            "trust.set" => Some(Self::Trust),
+            "identity.profile" => Some(Self::Profile),
+            "report.set" => Some(Self::Report),
+            "bridge.set" => Some(Self::Bridge),
+            "account.set" => Some(Self::Account),
+            "account.observe" => Some(Self::Observation),
+            _ => None,
+        }
+    }
+
+    fn key(
+        self,
+        n: &graph::Node,
+        actor: &str,
+        resolve_subject: impl FnOnce(&str) -> String,
+    ) -> String {
+        let action = n.action.view();
+        match self {
+            Self::Judgment => format!(
+                "{actor}|judgment|{}",
+                action.index("target").as_str().unwrap_or_default()
             ),
-            n.action.view().index("scope")
-        ),
-        "identity.profile" => "profile".into(),
-        "report.set" => format!(
-            "report|{}|{}",
-            n.action.view().index("subject"),
-            n.action.view().index("category")
-        ),
-        "bridge.set" => format!(
-            "bridge|{}|{}",
-            n.action.view().index("origin"),
-            n.action.view().index("source_definition")
-        ),
-        "account.set" => format!(
-            "account|{}|{}",
-            n.action.view().index("origin"),
-            n.action.view().index("account")
-        ),
-        "account.observe" => format!(
-            "observe|{}|{}",
-            n.action.view().index("origin"),
-            n.action.view().index("account")
-        ),
-        _ => return None,
-    };
-    Some(format!("{actor}|{key}"))
+            Self::Trust => format!(
+                "{actor}|trust|{}|{}",
+                resolve_subject(action.index("subject").as_str().unwrap_or_default()),
+                action.index("scope")
+            ),
+            Self::Profile => format!("{actor}|profile"),
+            Self::Report => format!(
+                "{actor}|report|{}|{}",
+                action.index("subject"),
+                action.index("category")
+            ),
+            Self::Bridge => format!(
+                "{actor}|bridge|{}|{}",
+                action.index("origin"),
+                action.index("source_definition")
+            ),
+            Self::Account => format!(
+                "{actor}|account|{}|{}",
+                action.index("origin"),
+                action.index("account")
+            ),
+            Self::Observation => format!(
+                "{actor}|observe|{}|{}",
+                action.index("origin"),
+                action.index("account")
+            ),
+        }
+    }
 }
 fn registers(graph: &graph::Graph, result: &mut Evaluation) {
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -1480,7 +1498,8 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
             continue;
         }
         let actor = graph.actor(&n.issuer);
-        if let Some(key) = register_key(n, &actor, |subject| graph.actor(subject)) {
+        if let Some(kind) = RegisterKind::for_action(&n.kind) {
+            let key = kind.key(n, &actor, |subject| graph.actor(subject));
             groups.entry(key).or_default().push(id.clone());
         }
     }

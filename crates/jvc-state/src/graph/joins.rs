@@ -85,8 +85,12 @@ fn collect_scopes(graph: &Graph, records: &[Record<'_>]) -> Option<Vec<Vec<Opera
         if !node.semantic {
             continue;
         }
+        let register = linked
+            .then(|| crate::RegisterKind::for_action(&node.kind))
+            .flatten();
         let is_carry = graph.has_carry && is_carry_candidate(node);
-        if !linked && !is_carry {
+        let is_status = linked && matches!(node.kind.as_str(), "status.set" | "import.status");
+        if register.is_none() && !is_carry && !is_status {
             continue;
         }
         // Account for the input bytes before hashing or formatting
@@ -141,9 +145,10 @@ fn collect_scopes(graph: &Graph, records: &[Record<'_>]) -> Option<Vec<Vec<Opera
                 mode,
             });
         };
-        if let Some(key) = crate::register_key(node, issuer, |subject| {
-            actors.get(subject).copied().unwrap_or(subject).to_owned()
-        }) {
+        if let Some(kind) = register {
+            let key = kind.key(node, issuer, |subject| {
+                actors.get(subject).copied().unwrap_or(subject).to_owned()
+            });
             add(MaximaKey::Register(key), Mode::Accepted);
         }
         let field = |name| {
