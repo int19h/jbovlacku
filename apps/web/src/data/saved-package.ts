@@ -30,6 +30,7 @@
 import {
   validWordIdSpellings,
   wordId,
+  wordSpellingStatus,
 } from "../../../../packages/core/src/browser.ts";
 import type { CachedPackage } from "./search.ts";
 import {
@@ -198,25 +199,14 @@ export function savedWordId(word: {
   }
 }
 
-function needsCoreSpellingCheck(spelling: string): boolean {
-  // Printable ASCII needs no Unicode normalization. Its byte count is
-  // its string length, and only a space can be edge whitespace.
-  if (!spelling.length || spelling.length > 256)
-    throw new PackageValidationError();
-  if (spelling[0] === " " || spelling[spelling.length - 1] === " ")
-    throw new PackageValidationError();
-  return /[^ -~]/.test(spelling);
-}
-
 /** Check a row's spelling when the caller does not need its ID. */
 export function checkSavedWord(word: {
   language: "jbo";
   spelling: string;
 }): void {
-  if (
-    needsCoreSpellingCheck(word.spelling) &&
-    !validWordIdSpellings([word.spelling])
-  )
+  const status = wordSpellingStatus(word.spelling);
+  if (status === "valid") return;
+  if (status === "invalid" || !validWordIdSpellings([word.spelling]))
     throw new PackageValidationError();
 }
 
@@ -224,12 +214,15 @@ export function checkSavedWord(word: {
 export function savedSpellingChecks() {
   const spellings: string[] = [];
   const finish = () => {
-    if (!validWordIdSpellings(spellings)) throw new PackageValidationError();
+    if (spellings.length && !validWordIdSpellings(spellings))
+      throw new PackageValidationError();
     spellings.length = 0;
   };
   return {
     add(spelling: string) {
-      if (!needsCoreSpellingCheck(spelling)) return;
+      const status = wordSpellingStatus(spelling);
+      if (status === "valid") return;
+      if (status === "invalid") throw new PackageValidationError();
       spellings.push(spelling);
       if (spellings.length === 128) finish();
     },

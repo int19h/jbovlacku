@@ -25,9 +25,9 @@ import { getCapabilities, getManifest, selfPeer } from "../data/api.ts";
 import {
   INVALID_PACKAGE_MESSAGE,
   PackageValidationError,
-  checkSavedWord,
   savedPackage,
   savedRow,
+  savedSpellingChecks,
 } from "../data/saved-package.ts";
 import type { Preferences } from "../data/store.ts";
 
@@ -661,8 +661,10 @@ async function preferencesBody(context: RenderContext, app: App) {
       if (pkg)
         checks.push(() => {
           try {
+            const spellings = savedSpellingChecks();
             for (const entry of pkg.entries)
-              checkSavedWord(savedRow(entry, pkg.version, key).word);
+              spellings.add(savedRow(entry, pkg.version, key).word.spelling);
+            spellings.finish();
             detail.textContent = `${plural(pkg.entries.length, "definition")} · snapshot ${pkg.snapshot.slice(7, 19)}… · version ${pkg.version ?? 1}${
               pkg.downgrade
                 ? `. Version 1 was saved instead of version 2: ${packageCause(pkg.downgrade)}`

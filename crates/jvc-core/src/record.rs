@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use unicode_normalization::{UnicodeNormalization, is_nfc};
+use unicode_normalization::{
+    IsNormalized, UnicodeNormalization, char::canonical_combining_class, is_nfc, is_nfc_quick,
+};
 
 pub const MAX_HEADER_BYTES: usize = 16 * 1024;
 pub const MAX_ENVELOPE_BYTES: usize = 20 * 1024;
@@ -222,6 +224,70 @@ pub fn valid_word_id_spelling(spelling: &str) -> bool {
             Ok(false) => true,
             Err(_) => false,
         }
+}
+fn is_nfc_starter(c: char) -> bool {
+    canonical_combining_class(c) == 0 && is_nfc_quick(std::iter::once(c)) == IsNormalized::Yes
+}
+/// Conservative single-UTF-16-unit spelling characters whose concatenation is
+/// already NFC, satisfies the acute rule, and strips to a valid NFC identity
+/// spelling without growing in UTF-8 byte length.
+pub fn qualifies_safe_bmp_spelling_char(c: char) -> bool {
+    if !is_nfc_starter(c) || c.is_control() || c.is_whitespace() {
+        return false;
+    }
+    let mut buf = [0u8; 4];
+    let s = c.encode_utf8(&mut buf);
+    let mut dec = s.nfd();
+    if dec
+        .next()
+        .is_none_or(|first| canonical_combining_class(first) != 0)
+    {
+        return false;
+    }
+    if acute_accents(s).is_err() {
+        return false;
+    }
+    let mut stripped = s.nfd().filter(|a| *a != '\u{301}').nfc();
+    let Some(t) = stripped.next() else {
+        return false;
+    };
+    stripped.next().is_none()
+        && is_nfc_starter(t)
+        && !t.is_control()
+        && !t.is_whitespace()
+        && t.len_utf8() <= c.len_utf8()
+}
+/// Inclusive BMP code-point ranges that qualify for the fast spelling test,
+/// including ASCII space (allowed only in the interior by the caller).
+pub fn safe_bmp_spelling_ranges() -> Vec<(u32, u32)> {
+    let mut ranges = Vec::new();
+    let mut start = None;
+    for code in 0..=0x10000u32 {
+        let yes = code == 0x20
+            || (code < 0x10000
+                && char::from_u32(code).is_some_and(qualifies_safe_bmp_spelling_char));
+        if yes && start.is_none() {
+            start = Some(code);
+        } else if !yes && let Some(begin) = start.take() {
+            ranges.push((begin, code - 1));
+        }
+    }
+    ranges
+}
+/// Format the TypeScript module generated from `safe_bmp_spelling_ranges`.
+pub fn format_safe_bmp_spelling_ts() -> String {
+    let ranges = safe_bmp_spelling_ranges();
+    let mut pattern = String::from("[^");
+    for (start, end) in &ranges {
+        pattern.push_str(&format!("\\u{start:04x}"));
+        if start != end {
+            pattern.push_str(&format!("-\\u{end:04x}"));
+        }
+    }
+    pattern.push(']');
+    format!(
+        "/**\n * Generated from jvc-core Unicode normalization and spelling rules.\n * Regenerate with: cargo run -p jvc-core --example spelling_ranges\n */\nexport const OUTSIDE_SAFE_BMP_SPELLING = /{pattern}/;\n"
+    )
 }
 /// Acute stress marks affect display only. Keep every other diacritic.
 pub fn strip_acute_accents(spelling: &str) -> String {
@@ -647,5 +713,71 @@ mod verifier_cache_tests {
         }
         assert_eq!(verifier.public_key_checks(), checks + 2);
         assert_eq!(verifier.keys.len(), VERIFIED_KEY_CACHE_LIMIT);
+    }
+}
+
+#[cfg(test)]
+mod spelling_ranges_tests {
+    use super::*;
+
+    fn in_ranges(ranges: &[(u32, u32)], code: u32) -> bool {
+        ranges.iter().any(|&(a, b)| code >= a && code <= b)
+    }
+
+    #[test]
+    fn safe_bmp_table_matches_committed_module_and_core_word_id() {
+        let committed = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packages/core/src/word-spelling-ranges.ts"
+        ))
+        .expect("committed word-spelling-ranges.ts must exist");
+        assert_eq!(committed, format_safe_bmp_spelling_ts());
+
+        let ranges = safe_bmp_spelling_ranges();
+        assert!(!ranges.is_empty());
+
+        // Every single BMP scalar in the table (except space) must be valid alone
+        // and inside a spelling.
+        for code in 0u32..=0xFFFF {
+            let Some(ch) = char::from_u32(code) else {
+                assert!(!in_ranges(&ranges, code));
+                continue;
+            };
+            if in_ranges(&ranges, code) {
+                if code == 0x20 {
+                    assert!(valid_word_id_spelling("a b"));
+                    assert!(!valid_word_id_spelling(" "));
+                } else {
+                    let s = ch.to_string();
+                    assert!(valid_word_id_spelling(&s), "U+{code:04X} alone");
+                    assert!(
+                        word_id(&serde_json::json!({"language": "jbo", "spelling": s})).is_ok(),
+                        "word_id U+{code:04X}"
+                    );
+                }
+            }
+        }
+
+        // Known counterexamples must stay outside the fast BMP table.
+        for excluded in ['\u{0000}', '\u{00a0}', '\u{0301}', '\u{1161}', '\u{1e83}'] {
+            assert!(
+                !in_ranges(&ranges, excluded as u32),
+                "U+{:04X} must fall back to core",
+                excluded as u32
+            );
+        }
+        // Hangul L + V fails NFC when concatenated; V is outside the table.
+        assert!(!valid_word_id_spelling("\u{1100}\u{1161}"));
+        assert!(!valid_word_id_spelling("e\u{0301}"));
+        assert!(!valid_word_id_spelling("á\u{0301}"));
+        assert!(!valid_word_id_spelling("q\u{0301}"));
+        assert!(!valid_word_id_spelling("\u{00a0}a"));
+
+        let ok_256 = format!("{}a", "水".repeat(85));
+        assert_eq!(ok_256.len(), 256);
+        assert!(valid_word_id_spelling(&ok_256));
+        let bad_258 = "水".repeat(86);
+        assert_eq!(bad_258.len(), 258);
+        assert!(!valid_word_id_spelling(&bad_258));
     }
 }

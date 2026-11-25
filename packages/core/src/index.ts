@@ -183,6 +183,10 @@ export function createEvent(
     throw new Error("Draft does not satisfy version 1 action and body rules.");
   return { envelope, body };
 }
+export {
+  wordSpellingStatus,
+  type WordSpellingStatus,
+} from "./word-spelling.ts";
 export const wordId = (word: { language: "jbo"; spelling: string }): string =>
   wasm.runtime_word_identifier(utf8(JSON.stringify(word)));
 export function validWordIdSpellings(spellings: string[]): boolean {
