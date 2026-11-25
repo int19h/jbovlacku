@@ -251,3 +251,180 @@ fn checkpoints_refuse_account_fields_on_native_publications() {
         });
     }
 }
+
+const ACCOUNT_41: &str = "https://source.example#41";
+
+fn witnessed_claim() -> (PreparedEvaluationInput, String, String) {
+    let mut input = witnessed_view();
+    let issuer = identity_from_seed(&[1; 32]);
+    let claim = format!("jve1:{:064x}", 81_001);
+    input.add_host_verified_record(host(
+        claim.clone(),
+        &issuer,
+        vec![],
+        json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":null,"carry":[]}),
+    ));
+    observe(&mut input, 10, 1, &claim);
+    observe(&mut input, 11, 1, &claim);
+    (input, claim, issuer)
+}
+
+fn select_account_view(
+    input: &mut PreparedEvaluationInput,
+    parents: Vec<String>,
+    witnesses: Option<Value>,
+) {
+    let mut body = serde_json::to_value(
+        input.nodes[&input.options.selected_view]
+            .body
+            .as_ref()
+            .unwrap(),
+    )
+    .unwrap();
+    if let Some(witnesses) = witnesses {
+        body["account_witnesses"] = witnesses;
+    }
+    let (view, body) = event(
+        20,
+        78,
+        json!({"kind":"view.publish","parents":parents}),
+        Some(body),
+    );
+    input.options.selected_view = view.id().into();
+    input.add_record(&view, body.as_deref());
+}
+
+fn assert_fresh_account(input: &PreparedEvaluationInput, reason: &str) {
+    let fresh = input.clone().evaluate();
+    assert!(
+        fresh.accounts[ACCOUNT_41].reasons.contains(reason),
+        "{:#?}",
+        fresh.accounts[ACCOUNT_41]
+    );
+    for checkpoint in restore_gap_checkpoints(input.clone(), |_, _| {}) {
+        assert_eq!(checkpoint.unwrap().evaluation(), &fresh);
+    }
+}
+
+#[test]
+fn account_availability_follows_policy_ancestry() {
+    let (mut input, claim, issuer) = witnessed_claim();
+    select_account_view(&mut input, vec![format!("jve1:{:064x}", 81_999)], None);
+    assert_fresh_account(&input, "policy_ancestry_unavailable");
+    let fresh = input.clone().evaluate();
+    assert!(fresh.accounts[ACCOUNT_41].unavailable);
+    assert_restore_gap_rejected(input, |cp, _| {
+        let account = &mut cp["evaluation"]["accounts"][ACCOUNT_41];
+        let observations: BTreeSet<String> = account["observation_evidence"]
+            .as_object()
+            .unwrap()
+            .values()
+            .filter_map(|ids| ids.as_array()?.first()?.as_str().map(str::to_owned))
+            .collect();
+        account["unavailable"] = json!(false);
+        account["reasons"] = json!([]);
+        account["controller"] = json!(claim);
+        account["controller_identity"] = json!(issuer);
+        account["commands"] = json!(true);
+        account["current_observations"] = json!(observations);
+    });
+}
+
+#[test]
+fn account_availability_compares_claim_paths() {
+    for (previous, depth, reason) in [
+        ("missing", 10, "claim_pending"),
+        ("foreign", 10, "binding_unavailable"),
+        ("missing", 1, "resource_unavailable"),
+        ("cycle", 10, "binding_unavailable"),
+    ] {
+        let mut input = witnessed_view();
+        input.options.limits.claim_depth = depth;
+        let issuer = identity_from_seed(&[2; 32]);
+        let claim = format!("jve1:{:064x}", 81_002);
+        let prior = format!("jve1:{:064x}", 81_003);
+        if previous == "foreign" {
+            input.add_host_verified_record(host(
+                prior.clone(), &issuer, vec![],
+                json!({"kind":"account.set","origin":"https://source.example","account":42,"value":"claim","previous":null,"carry":[]}),
+            ));
+        }
+        let parent = if previous == "cycle" { &claim } else { &prior };
+        input.add_host_verified_record(host(
+            claim.clone(), &issuer, vec![],
+            json!({"kind":"account.set","origin":"https://source.example","account":41,"value":"claim","previous":parent,"carry":[parent]}),
+        ));
+        observe(&mut input, 10, 1, &claim);
+        observe(&mut input, 11, 1, &claim);
+        assert_fresh_account(&input, reason);
+        assert_restore_gap_rejected(input, |cp, _| {
+            cp["evaluation"]["accounts"][ACCOUNT_41]["reasons"] = json!(["historical_guard"]);
+        });
+    }
+}
+
+#[test]
+fn account_availability_compares_witness_and_historical_reasons() {
+    let (mut historical, _, _) = witnessed_claim();
+    let parent = historical.options.selected_view.clone();
+    select_account_view(
+        &mut historical,
+        vec![parent],
+        Some(json!([
+            identity_from_seed(&[12; 32]),
+            identity_from_seed(&[13; 32])
+        ])),
+    );
+    assert_fresh_account(&historical, "policy_history_unavailable");
+    assert_restore_gap_rejected(historical, |cp, _| {
+        cp["evaluation"]["accounts"][ACCOUNT_41]["reasons"] = json!(["historical_guard"]);
+    });
+
+    let (mut suspended, _, _) = witnessed_claim();
+    suspended.add_host_verified_record(host(
+        format!("jve1:{:064x}", 81_004),
+        &identity_from_seed(&[10; 32]),
+        vec![format!("jve1:{:064x}", 81_005)],
+        json!({"kind":"identity.merge"}),
+    ));
+    assert_fresh_account(&suspended, "witness_history_incomplete");
+    assert_restore_gap_rejected(suspended, |cp, _| {
+        cp["evaluation"]["accounts"][ACCOUNT_41]["reasons"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|reason| reason != "witness_history_incomplete");
+    });
+}
+
+#[test]
+fn account_availability_compares_pending_observation_evidence() {
+    let (mut input, claim, _) = witnessed_claim();
+    let (missing, _) = event(
+        10,
+        2,
+        json!({"kind":"account.observe","origin":"https://source.example","account":41,"claim":claim,"result":"present"}),
+        Some(
+            json!({"origin":"https://source.example","account":41,"username":"author","field_hash":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","markers":[claim],"method":"lensisku-public-profile-v1","observed_at":"2026-10-11T00:00:00Z"}),
+        ),
+    );
+    input.add_record(&missing, None);
+    assert_fresh_account(&input, "observation_pending");
+    assert_restore_gap_rejected(input, |cp, _| {
+        let account = &mut cp["evaluation"]["accounts"][ACCOUNT_41];
+        account["reasons"] = json!(["historical_guard"]);
+    });
+}
+
+#[test]
+fn account_availability_refuses_invented_reasons_and_missing_ids() {
+    let (input, _, _) = witnessed_claim();
+    for reason in ["observation_pending", "invented_reason"] {
+        assert_restore_gap_rejected(input.clone(), |cp, _| {
+            cp["evaluation"]["accounts"][ACCOUNT_41]["reasons"] = json!([reason]);
+        });
+    }
+    assert_restore_gap_rejected(input, |cp, _| {
+        cp["evaluation"]["accounts"][ACCOUNT_41]["missing"] =
+            json!([format!("jve1:{:064x}", 81_999)]);
+    });
+}

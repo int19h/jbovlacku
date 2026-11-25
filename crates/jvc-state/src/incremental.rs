@@ -1,6 +1,9 @@
 use super::*;
 use graph::{Graph, Node};
 
+#[path = "incremental_account_checks.rs"]
+mod account_checks;
+
 pub const CHECKPOINT_VERSION: &str = "jvc-evaluation-checkpoint-v12";
 const RESULTS_CHECKPOINT_VERSION: &str = "jvc-evaluation-results-v13";
 pub const MAX_INCREMENTAL_RECORDS: usize = 64;
@@ -2572,12 +2575,17 @@ fn check_saved_state(
         return Err("publications_len");
     }
     let live_native = live_native_keys(lifecycle);
+    let keys_with_pending_cutoff = keys_reaching(
+        &lifecycle.successor,
+        required_pending_cutoffs.iter().copied(),
+    );
     let imports = saved
         .evaluation
         .policy
         .as_ref()
         .map(|policy| ImportEntries::new(policy, &saved.evaluation.selections));
     let mut expected_eligibility = BTreeMap::new();
+    let mut publication_missing_by_account: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
     let mut publication_reasons = BTreeMap::new();
     for (id, p) in &saved.evaluation.publications {
         let node = nodes
@@ -2820,6 +2828,11 @@ fn check_saved_state(
                 }
                 if state.unavailable {
                     expected_reasons.extend(state.reasons.iter().cloned());
+                } else if !p.missing.is_empty() {
+                    publication_missing_by_account
+                        .entry(state.account.token())
+                        .or_default()
+                        .extend(p.missing.iter().map(String::as_str));
                 }
                 if !state.commands && state.controller.is_some() {
                     expected_reasons.insert("current_authority_lost".into());
@@ -3097,6 +3110,8 @@ fn check_saved_state(
                 .collect::<Vec<_>>()
         })
         .collect();
+    let mut account_checks = (!saved.evaluation.accounts.is_empty())
+        .then(|| account_checks::AccountChecks::new(nodes, &saved.evaluation));
     for (token, state) in &saved.evaluation.accounts {
         if state.account.token() != *token
             || state.contributions.keys().cloned().collect::<BTreeSet<_>>()
@@ -3152,9 +3167,6 @@ fn check_saved_state(
         }
         if state.disputed != (state.candidates.len() > 1) {
             return Err("account_disputed");
-        }
-        if state.unavailable && (state.controller.is_some() || state.reasons.is_empty()) {
-            return Err("account_unavailable");
         }
         let max_chains = state
             .candidates
@@ -3229,6 +3241,25 @@ fn check_saved_state(
                 }
             }
         }
+        account_checks.as_mut().unwrap().check(
+            token,
+            state,
+            lifecycle,
+            saved.options.limits.claim_depth,
+        )?;
+        if !state.unavailable
+            && !state
+                .missing
+                .iter()
+                .map(String::as_str)
+                .eq(publication_missing_by_account
+                    .get(token)
+                    .into_iter()
+                    .flatten()
+                    .copied())
+        {
+            return Err("account_publication_missing");
+        }
         let expected_controller = if !state.unavailable
             && state.candidates.len() == 1
             && !state.contributions.is_empty()
@@ -3248,7 +3279,12 @@ fn check_saved_state(
             let claim = nodes.get(controller).ok_or("account_controller_node")?;
             let issuer = claim.issuer.as_str();
             if state.commands
-                && (!live_native.contains(issuer) || !complete.contains(controller.as_str()))
+                && (!live_native.contains(issuer)
+                    || !complete.contains(controller.as_str())
+                    || keys_with_pending_cutoff.contains(issuer)
+                    || saved.evaluation.receipts[controller]
+                        .reasons
+                        .contains("outside_retained_history"))
             {
                 return Err("account_commands_history");
             }
@@ -3288,9 +3324,8 @@ fn check_saved_state(
             .missing
             .iter()
             .any(|id| nodes.get(id).is_some_and(|node| node.body.is_some()))
-            || state.reasons.contains("controller_dispute") != state.disputed
         {
-            return Err("account_reason_or_missing");
+            return Err("account_missing_record");
         }
         let expected_identity = if state.commands {
             state
