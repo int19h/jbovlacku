@@ -787,7 +787,7 @@ test("a requested rafsi claim is signed even when every lookup fails, and a know
   // Earlier tests can add a root that now conflicts with this manual spelling.
   for (const root of await page
     .getByRole("checkbox", {
-      name: /I publish brodi although the refreshed package shows/,
+      name: /I publish brodi although the local package shows/,
     })
     .all())
     await root.check();
@@ -2518,7 +2518,7 @@ test("root conflicts of a gismu are checked again against the current package be
   await expect(publish).toBeDisabled();
   await page
     .getByLabel(
-      /although the refreshed package shows a new root conflict with cukta/,
+      /although the local package shows a new root conflict with cukta/,
     )
     .check();
   await expect(publish).toBeEnabled();
