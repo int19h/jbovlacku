@@ -52,11 +52,8 @@ async function savePackages(
   );
 }
 
-test("a rafsi pair skips a matching package with a bad later row", async ({
-  page,
-}) => {
-  await savePackages(page, { en: [englishRow, null], fr: [frenchRow] });
-  const pair = await page.evaluate(async (path) => {
+function cuktaPair(page: Page) {
+  return page.evaluate(async (path) => {
     const core = await import(path);
     await core.initializeCore();
     return core.rafsiPairId(
@@ -64,6 +61,13 @@ test("a rafsi pair skips a matching package with a bad later row", async ({
       "cuk",
     );
   }, corePath);
+}
+
+test("a rafsi pair skips a matching package with a bad later row", async ({
+  page,
+}) => {
+  await savePackages(page, { en: [englishRow, null], fr: [frenchRow] });
+  const pair = await cuktaPair(page);
   await page.route("**/api/v1/manifest", (route) => route.abort());
   await page.goto(`/rafsi-pair/${pair}`);
   const word = page.locator('main a[href^="/word/cukta?"]').first();
@@ -118,14 +122,7 @@ test("a saved pair uses word IDs only when it needs an identity", async ({
     rafsi: [],
   }));
   await savePackages(page, { en: [englishRow, ...rows] });
-  const pair = await page.evaluate(async (path) => {
-    const core = await import(path);
-    await core.initializeCore();
-    return core.rafsiPairId(
-      core.wordId({ language: "jbo", spelling: "cukta" }),
-      "cuk",
-    );
-  }, corePath);
+  const pair = await cuktaPair(page);
   await countWordIds(page);
   await page.route("**/api/v1/manifest", (route) => route.abort());
   await page.goto(`/rafsi-pair/${pair}`);
@@ -138,6 +135,8 @@ test("a saved pair uses word IDs only when it needs an identity", async ({
 test("a saved pair still rejects an invalid spelling after a match", async ({
   page,
 }) => {
+  await page.route("**/api/v1/manifest", (route) => route.abort());
+  let pair: string | undefined;
   for (const spelling of [
     " cukta",
     "c\u0000ukta",
@@ -149,8 +148,8 @@ test("a saved pair still rejects an invalid spelling after a match", async ({
       en: [englishRow, { ...englishRow, word: { language: "jbo", spelling } }],
       fr: [frenchRow],
     });
-    await page.route("**/api/v1/manifest", (route) => route.abort());
-    await page.goto(`/rafsi-pair/${fixture().pair}`);
+    pair ??= await cuktaPair(page);
+    await page.goto(`/rafsi-pair/${pair}`);
     await expect(
       page.locator('main a[href^="/word/cukta?"]').first(),
     ).toHaveAttribute("href", "/word/cukta?lang=fr");
