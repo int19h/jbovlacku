@@ -896,7 +896,6 @@ export class DeliveryEngine {
       }));
     } catch (error) {
       if (
-        peer.state === "refused" ||
         next.state === "accepted" ||
         next.state === "refused" ||
         next.verifyReceipt
@@ -1002,13 +1001,6 @@ export class DeliveryEngine {
             !(error instanceof DOMException && error.name === "AbortError");
           if (notFound && pending?.outcome.state === "refused")
             return { ...pending.outcome, attempt: attemptId };
-          if (
-            notFound &&
-            pending &&
-            peer.state === "refused" &&
-            pending.outcome.state !== "accepted"
-          )
-            return peer;
           if (pending || peer.verifyReceipt || (!notFound && !answered))
             throw error;
         }

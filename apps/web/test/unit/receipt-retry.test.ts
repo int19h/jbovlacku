@@ -93,7 +93,14 @@ function fixture(t: TestContext, signed = signedProfile()) {
         : Response.json({ error: "Not found" }, { status: 404 });
     },
   );
-  const fail = { get: 0, list: 0, mark: 0, outcome: 0, refusal: 0 };
+  const fail = {
+    get: 0,
+    list: 0,
+    mark: 0,
+    outcome: 0,
+    refusal: 0,
+    verification: 0,
+  };
   let gets = 0;
   let lists = 0;
   const store = {
@@ -117,6 +124,10 @@ function fixture(t: TestContext, signed = signedProfile()) {
       }
       if (id === item.id && peer.state === "refused" && fail.refusal > 0) {
         fail.refusal--;
+        throw quota();
+      }
+      if (id === item.id && peer.verifyReceipt && fail.verification > 0) {
+        fail.verification--;
         throw quota();
       }
       if (peer.sendAttempt && fail.mark > 0) {
@@ -275,6 +286,56 @@ for (const failSave of [true, false]) {
     assert.equal(f.saved.transport, f.item.transport);
   });
 }
+
+test("a missing receipt does not end pending envelope verification on a refused record", async (t) => {
+  const variants = JSON.parse(
+    await readFile(
+      new URL(
+        "../../../../packages/service/test/fixtures/signature-variants.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as Transport[];
+  const f = fixture(t, variants[1]);
+  Object.assign(f.item.peers.self, {
+    state: "refused",
+    nextAttempt: null,
+    failure: "refused",
+    attempt: "older-refusal",
+  });
+  const bytes = core.canonicalize(
+    core.utf8(JSON.stringify(variants[0].envelope)),
+  );
+  const receipt = receiptFor(f.item, core.contentHash(core.utf8(bytes)));
+  let lookups = 0;
+  let envelopes = 0;
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string, options?: RequestInit) => {
+      assert.notEqual(options?.method, "POST");
+      if (url.includes("/receipts/"))
+        return ++lookups === 2
+          ? Response.json({ message: "Not found" }, { status: 404 })
+          : Response.json(receipt);
+      if (++envelopes === 1) throw new TypeError("The envelope read failed.");
+      return new Response(bytes);
+    },
+  );
+  f.fail.verification = 1;
+  await assert.rejects(f.engine.tryNow(f.item.id), {
+    name: "QuotaExceededError",
+  });
+  await f.advance(15_000);
+  assert.equal(lookups, 2);
+  assert.equal(f.saved.peers.self.state, "refused");
+  await f.advance(15_000);
+  assert.equal(lookups, 3);
+  assert.equal(envelopes, 2);
+  assert.equal(f.saved.peers.self.state, "accepted");
+  assert.equal(f.saved.transport, f.item.transport);
+});
 
 test("one record's repeated receipt write failure leaves independent records due", async (t) => {
   const f = fixture(t);
