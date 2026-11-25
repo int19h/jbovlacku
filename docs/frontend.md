@@ -307,8 +307,9 @@ Inline or historical reads that must construct a package still include that work
 The server's existing package and evaluation lifetimes bound those prepared indexes.
 
 Browser storage version 4 records a revision marker beside each language package in the same transaction as its write or deletion.
-Every package read checks that marker, including reads from another connection or tab.
-Each connection retains at most two package objects. A changed revision invalidates that connection's retained data, even when the snapshot ID stays equal.
+Every package read acquires both the stored value and its revision marker in one readonly transaction.
+A missing legacy revision supplies no reuse evidence.
+A page uses a freshly read package only after all of its rows pass validation for that language. No whole-package verdict is persisted in storage.
 A failed download leaves the saved package and revision unchanged.
 
 A package save reads the revision before its download starts. It writes only when that revision is still the current one, and the check and the write are one transaction. So a save never overwrites a Remove or another save that finished after it started. A Remove always wins over a save that started earlier.
@@ -317,7 +318,7 @@ A rafsi lookup downloads the current package for each of its languages. When bro
 
 One static module worker validates and searches saved packages outside the main thread.
 Download hashing and entry checks retain their existing download path.
-It retains two prepared packages, keyed by database name, language, and durable revision. Separate connections can reuse the same prepared revision.
+It retains two prepared packages by distinct in-memory identity. Within one session, repeated queries on the same acquired snapshot reuse its prepared index directly. A fresh storage read with the same durable revision shares that preparation only after exact structural equality against the trusted snapshot succeeds within the request budget, including row order, own array keys, holes, and worker fields. Otherwise the incoming copy is validated and prepared under a new in-memory identity.
 Page reload closes that worker and its caches. The first search after reload reads, transfers, validates, and prepares the saved package again.
 
 Nearby lookup in the meaning step and part lookup in the lujvo builder use the same worker and prepared index.
