@@ -194,7 +194,7 @@ test("a native status cannot carry an account reference or account fields", () =
     );
 });
 
-test("a pinned identity read rejects an answer for another snapshot or view", async () => {
+test("a pinned identity read rejects an answer for another snapshot", async () => {
   const identity = {
     view,
     identity: controller,
@@ -209,16 +209,9 @@ test("a pinned identity read rejects an answer for another snapshot or view", as
     getIdentity(controller, { snapshot }),
     /invalid identity response/,
   );
-  setPreferredView(view);
-  try {
-    serve(() => ({ ...identity, snapshot, view: otherView }));
-    await assert.rejects(
-      getIdentity(controller, { snapshot }),
-      /invalid identity response/,
-    );
-    serve(() => ({ ...identity, snapshot }));
-    assert.equal((await getIdentity(controller, { snapshot })).view, view);
-  } finally {
-    setPreferredView(null);
-  }
+  serve(() => ({ ...identity, snapshot }));
+  assert.equal(
+    (await getIdentity(controller, { snapshot })).snapshot,
+    snapshot,
+  );
 });

@@ -3241,11 +3241,13 @@ impl<T: serde::Serialize> SerializeProbe<T> {
 }
 #[test]
 fn publication_map_serializes_only_with_account_references() {
-    assert!(SerializeProbe::<jvc_state::AccountKey>::SERIALIZES);
-    assert!(
-        !SerializeProbe::<jvc_state::Publication>::SERIALIZES,
-        "a raw publication serializer would repeat the account evidence"
-    );
+    const {
+        assert!(SerializeProbe::<jvc_state::AccountKey>::SERIALIZES);
+        assert!(
+            !SerializeProbe::<jvc_state::Publication>::SERIALIZES,
+            "a raw publication serializer would repeat the account evidence"
+        );
+    }
     let mut f = Fixture::new();
     let newer = f.publish_after(1, vec![f.d.clone()]);
     let d = f.d.clone();

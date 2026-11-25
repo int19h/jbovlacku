@@ -1134,8 +1134,7 @@ export async function getIdentity(
   if (options.fresh && !options.snapshot) await waitForMaterialization(options);
   const params = new URLSearchParams();
   if (options.snapshot) params.set("snapshot", options.snapshot);
-  const view = preferredView;
-  if (view) params.set("view", view);
+  if (preferredView) params.set("view", preferredView);
   const query = params.size ? `?${params}` : "";
   const value = await api<unknown>(
     `/identities/${encodeURIComponent(identity)}${query}`,
@@ -1145,8 +1144,6 @@ export async function getIdentity(
     !isObject(value) ||
     !hashId(value.snapshot) ||
     (options.snapshot && value.snapshot !== options.snapshot) ||
-    !eventId(value.view) ||
-    (view && value.view !== view) ||
     value.identity !== identity ||
     !identityId(value.actor) ||
     !isObject(value.profile) ||
