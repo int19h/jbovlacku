@@ -132,6 +132,89 @@ test("a saved pair uses word IDs only when it needs an identity", async ({
   expect(await page.evaluate(() => (globalThis as any).wordIdCalls)).toBe(2);
 });
 
+test("a 30,000-row saved pair makes zero extra word-ID calls and enforces legal and illegal fallback batches", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const pair = await cuktaPair(page);
+  // Seed 29,999 empty-rafsi rows using safe Unicode spellings plus legal fallback spellings.
+  await page.evaluate(async (sample) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    await store.setPreferences({
+      definitionLanguage: "en",
+      searchMode: "local",
+    });
+    const rows = Array.from({ length: 30_000 }, (_, i) => ({
+      ...sample,
+      event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+      word: {
+        language: "jbo",
+        spelling:
+          i === 0
+            ? "cukta"
+            : i % 5000 === 0
+              ? `𠮷${i}`
+              : i % 3 === 0
+                ? `ba'a${i}’á`
+                : `水`.repeat(10) + String(i),
+      },
+      rafsi: i === 0 ? ["cuk"] : [],
+    }));
+    await store.put("packages", "en", {
+      version: 2,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: rows,
+    });
+  }, englishRow);
+  await countWordIds(page);
+  await page.route("**/api/v1/manifest", (route) => route.abort());
+  await page.goto(`/rafsi-pair/${pair}`);
+  await expect(
+    page.locator('main a[href="/word/cukta?lang=en"]').first(),
+  ).toBeVisible();
+  // One ID for matching row 0 and one for pairCard; zero for the 29,999 tail rows.
+  expect(await page.evaluate(() => (globalThis as any).wordIdCalls)).toBe(2);
+
+  // Now place an illegal fallback spelling in the final partial batch after 130 legal fallbacks.
+  await page.evaluate(
+    async ({ sample, fr }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const store = new LocalStore();
+      const rows = [
+        sample,
+        ...Array.from({ length: 130 }, (_, i) => ({
+          ...sample,
+          event: "jve1:" + (i + 2).toString(16).padStart(64, "0"),
+          word: { language: "jbo", spelling: `𠮷${i}` },
+          rafsi: [],
+        })),
+        {
+          ...sample,
+          event: "jve1:" + "f".repeat(64),
+          word: { language: "jbo", spelling: "\u1100\u1161" },
+          rafsi: [],
+        },
+      ];
+      await store.put("packages", "en", {
+        version: 2,
+        snapshot: "sha256:" + "a".repeat(64),
+        entries: rows,
+      });
+      await store.put("packages", "fr", {
+        version: 2,
+        snapshot: "sha256:" + "b".repeat(64),
+        entries: [fr],
+      });
+    },
+    { sample: englishRow, fr: frenchRow },
+  );
+  await page.goto(`/rafsi-pair/${pair}`);
+  await expect(
+    page.locator('main a[href^="/word/cukta?"]').first(),
+  ).toHaveAttribute("href", "/word/cukta?lang=fr");
+});
+
 test("a saved pair still rejects an invalid spelling after a match", async ({
   page,
 }) => {

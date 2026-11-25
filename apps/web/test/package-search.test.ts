@@ -28,6 +28,7 @@ test("package search survives fresh storage reads and invalidates same-snapshot 
     await writer.put("packages", "en", pkg("old meaning"));
     const first = await store.get("packages", "en");
     const cold = await searchPackage(first, "en", ["old"]);
+    const sameSnapshot = await searchPackage(first, "en", ["old"]);
     const second = await store.get("packages", "en");
     const warm = await searchPackage(second, "en", ["old"]);
     const otherRead = await writer.get("packages", "en");
@@ -39,6 +40,7 @@ test("package search survives fresh storage reads and invalidates same-snapshot 
       await writer.put("packages", "en", () => {});
     } catch {}
     const afterFailure = await store.get("packages", "en");
+    const afterFailureSearch = await searchPackage(afterFailure, "en", ["new"]);
     const random = crypto.getRandomValues;
     crypto.getRandomValues = () => {
       throw new Error("Synthetic revision failure.");
@@ -54,35 +56,200 @@ test("package search survives fresh storage reads and invalidates same-snapshot 
       crypto.getRandomValues = random;
     }
     const afterNonceFailure = await store.get("packages", "en");
+    const afterNonceFailureSearch = await searchPackage(
+      afterNonceFailure,
+      "en",
+      ["new"],
+    );
     await writer.delete("packages", "en");
     const deleted = await store.get("packages", "en");
     return {
-      retained: first === second,
+      freshRead: first !== second,
       replaced: first !== replacement,
       sameSnapshot: first.snapshot === replacement.snapshot,
       cold: cold.hits[0].length,
+      sameSnapshotWarm: !sameSnapshot.prepared,
+      sameSnapshotParses: sameSnapshot.metrics.headwordsParsed,
       warm: warm.hits[0].length,
+      warmPrepared: warm.prepared,
       warmParses: warm.metrics.headwordsParsed,
       reusedAcrossConnections: !shared.prepared,
-      keptAfterNonceFailure: afterNonceFailure === replacement,
+      keptAfterNonceFailure:
+        !afterNonceFailureSearch.prepared &&
+        afterNonceFailureSearch.hits[0][0]?.preview?.plain_text ===
+          "new meaning",
       updated: updated.hits.map((rows: any[]) =>
         rows.map((hit: any) => hit.preview?.plain_text),
       ),
-      keptAfterFailure: afterFailure === replacement,
+      keptAfterFailure:
+        !afterFailureSearch.prepared &&
+        afterFailureSearch.hits[0][0]?.preview?.plain_text === "new meaning",
       deleted: deleted === undefined,
     };
   });
   expect(result).toEqual({
-    retained: true,
+    freshRead: true,
     replaced: true,
     sameSnapshot: true,
     cold: 1,
+    sameSnapshotWarm: true,
+    sameSnapshotParses: 0,
     warm: 1,
+    warmPrepared: false,
     warmParses: 0,
     reusedAcrossConnections: true,
     keptAfterNonceFailure: true,
     updated: [["new meaning"], []],
     keptAfterFailure: true,
+    deleted: true,
+  });
+});
+
+test("raw IndexedDB edits preserving the revision invalidate worker reuse and row references", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const firstPhase = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { searchPackage, PackageValidationError } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const dbName = "raw-idb-verdict-135";
+    const store = new LocalStore(dbName);
+    const other = new LocalStore(dbName);
+    const row = (id: string, spelling: string, text: string, lang = "en") => ({
+      event: "jve1:" + id.repeat(64),
+      word: { language: "jbo", spelling },
+      language: lang,
+      glosses: [{ language: lang, text, sense: null }],
+      plain_text: text,
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+    });
+    const makePkg = (entries: unknown[]) => ({
+      snapshot: "sha256:" + "a".repeat(64),
+      version: 1,
+      entries,
+    });
+    const rawPut = async (value: unknown) => {
+      const db = await store.database;
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("packages", "readwrite");
+        tx.objectStore("packages").put(value, "en");
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error);
+      });
+    };
+    const initial = makePkg([
+      row("1", "klama", "come"),
+      row("2", "cukta", "book"),
+    ]);
+    await store.put("packages", "en", initial);
+    const revBefore = await store.packageRevisionOf("en");
+    const snap1 = await store.get("packages", "en");
+    const cold = await searchPackage(snap1, "en", ["come"]);
+    const sameTwice = await searchPackage(snap1, "en", ["book"]);
+
+    // 1. Raw IndexedDB edit keeping the same revision: invalid late row.
+    await rawPut(
+      makePkg([row("1", "klama", "come"), row("2", "cukta", "livre", "fr")]),
+    );
+    const revAfterInvalid = await store.packageRevisionOf("en");
+    const badSameConn = await store.get("packages", "en");
+    let sameConnRejected = false;
+    try {
+      await searchPackage(badSameConn, "en", ["come"]);
+    } catch (error) {
+      sameConnRejected =
+        error instanceof PackageValidationError ||
+        (error as Error).constructor.name === "PackageValidationError";
+    }
+    const badOtherConn = await other.get("packages", "en");
+    let otherConnRejected = false;
+    try {
+      await searchPackage(badOtherConn, "en", ["come"]);
+    } catch (error) {
+      otherConnRejected =
+        error instanceof PackageValidationError ||
+        (error as Error).constructor.name === "PackageValidationError";
+    }
+
+    // Already-acquired snapshot remains immutable and valid in memory.
+    const oldStillWorks = await searchPackage(snap1, "en", ["book"]);
+
+    // 2. Raw IndexedDB edit keeping the same revision: valid change in row order and meaning.
+    await rawPut(
+      makePkg([
+        row("1", "cukta", "revised volume"),
+        row("2", "klama", "travel"),
+      ]),
+    );
+    const edited = await store.get("packages", "en");
+    const editedSearch = await searchPackage(edited, "en", ["revised"]);
+    const editedOther = await other.get("packages", "en");
+    const editedOtherSearch = await searchPackage(editedOther, "en", [
+      "travel",
+    ]);
+
+    return {
+      sameRevision: revBefore === revAfterInvalid,
+      coldWord: cold.hits[0][0]?.word.spelling,
+      sameTwicePrepared: sameTwice.prepared,
+      sameTwiceParses: sameTwice.metrics.headwordsParsed,
+      sameTwiceWord: sameTwice.hits[0][0]?.word.spelling,
+      sameConnRejected,
+      otherConnRejected,
+      oldStillWord: oldStillWorks.hits[0][0]?.word.spelling,
+      oldStillText: oldStillWorks.hits[0][0]?.preview?.plain_text,
+      editedPrepared: editedSearch.prepared,
+      editedWord: editedSearch.hits[0][0]?.word.spelling,
+      editedText: editedSearch.hits[0][0]?.preview?.plain_text,
+      editedOtherReused: !editedOtherSearch.prepared,
+      editedOtherWord: editedOtherSearch.hits[0][0]?.word.spelling,
+      editedOtherText: editedOtherSearch.hits[0][0]?.preview?.plain_text,
+    };
+  });
+  expect(firstPhase).toEqual({
+    sameRevision: true,
+    coldWord: "klama",
+    sameTwicePrepared: false,
+    sameTwiceParses: 0,
+    sameTwiceWord: "cukta",
+    sameConnRejected: true,
+    otherConnRejected: true,
+    oldStillWord: "cukta",
+    oldStillText: "book",
+    editedPrepared: true,
+    editedWord: "cukta",
+    editedText: "revised volume",
+    editedOtherReused: true,
+    editedOtherWord: "klama",
+    editedOtherText: "travel",
+  });
+
+  // 3. Reload starts a fresh worker and sees the stored raw-edited package.
+  await page.reload();
+  const afterReload = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const store = new LocalStore("raw-idb-verdict-135");
+    const pkg = await store.get("packages", "en");
+    const res = await searchPackage(pkg, "en", ["revised"]);
+    await store.delete("packages", "en");
+    const gone = await store.get("packages", "en");
+    return {
+      prepared: res.prepared,
+      word: res.hits[0][0]?.word.spelling,
+      text: res.hits[0][0]?.preview?.plain_text,
+      deleted: gone === undefined,
+    };
+  });
+  expect(afterReload).toEqual({
+    prepared: true,
+    word: "cukta",
+    text: "revised volume",
     deleted: true,
   });
 });

@@ -463,3 +463,111 @@ test("an own some property on a stored array does not replace the rule's test", 
   assert.equal(workerAccepts(value), false);
   assert.equal(readAll(value), value);
 });
+
+test("spelling checks and bounded batches agree with core wordId on composition and byte counterexamples", () => {
+  const validCases = [
+    "cukta",
+    "ba'a",
+    "Ba’a",
+    "bá",
+    "máik",
+    "slaka bu",
+    "a".repeat(256),
+    "水".repeat(85) + "a",
+    "𠮷".repeat(64),
+    "a\u00a0b",
+  ];
+  const invalidCases = [
+    "",
+    " ",
+    " cukta",
+    "cukta ",
+    "a".repeat(257),
+    "水".repeat(86),
+    "𠮷".repeat(65),
+    "\u1100\u1161",
+    "e\u0301",
+    "á\u0301",
+    "q\u0301",
+    "\u00a0a",
+    "x\0",
+    "\ud800",
+    "\u1e83",
+  ];
+  const batch = saved.savedSpellingChecks();
+  for (const spelling of validCases) {
+    assert.doesNotThrow(() =>
+      saved.checkSavedWord({ language: "jbo", spelling }),
+    );
+    assert.doesNotThrow(() => wordId({ language: "jbo", spelling }));
+    batch.add(spelling);
+  }
+  assert.doesNotThrow(() => batch.finish());
+  for (const spelling of invalidCases) {
+    assert.throws(() => wordId({ language: "jbo", spelling }));
+    assert.throws(
+      () => saved.checkSavedWord({ language: "jbo", spelling }),
+      saved.PackageValidationError,
+      JSON.stringify(spelling),
+    );
+    const badBatch = saved.savedSpellingChecks();
+    assert.throws(() => {
+      badBatch.add("𠮷");
+      badBatch.add(spelling);
+      badBatch.finish();
+    }, saved.PackageValidationError);
+  }
+});
+
+test("samePackageStructure detects holes, extra array keys, order changes, and stays within budget", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchBudgetError, SearchRequestBudget, searchMetrics } =
+    await import("../../../../packages/search/src/index.ts");
+  const base = pkg([
+    v2Row({ event: "jve1:" + "1".repeat(64) }),
+    v2Row({ event: "jve1:" + "2".repeat(64), plain_text: "volume" }),
+  ]) as never;
+  const equal = structuredClone(base);
+  const budget = () => new SearchRequestBudget(searchMetrics());
+  assert.equal(samePackageStructure(equal, base, budget()), true);
+
+  // Changed row order.
+  const swapped = pkg([
+    v2Row({ event: "jve1:" + "2".repeat(64), plain_text: "volume" }),
+    v2Row({ event: "jve1:" + "1".repeat(64) }),
+  ]);
+  assert.equal(samePackageStructure(swapped, base, budget()), false);
+
+  // Changed meaning in last row.
+  const edited = structuredClone(base) as { entries: { plain_text: string }[] };
+  edited.entries[1].plain_text = "changed";
+  assert.equal(samePackageStructure(edited, base, budget()), false);
+
+  // Own extra key on rafsi array (including numeric includes).
+  const extraKey = structuredClone(base) as {
+    entries: { rafsi: string[] }[];
+  };
+  Object.assign(extraKey.entries[0].rafsi, { includes: 1 });
+  assert.equal(samePackageStructure(extraKey, base, budget()), false);
+
+  // Hole plus extra key keeping the same own-key count.
+  const holePlusExtra = structuredClone(base) as {
+    entries: { rafsi: unknown[] }[];
+  };
+  delete holePlusExtra.entries[0].rafsi[0];
+  Object.assign(holePlusExtra.entries[0].rafsi, { includes: 1 });
+  assert.equal(samePackageStructure(holePlusExtra, base, budget()), false);
+
+  // Exhausted budget refuses before enumerating keys.
+  assert.throws(
+    () =>
+      samePackageStructure(
+        equal,
+        base,
+        new SearchRequestBudget(searchMetrics(), { workLimit: 1 }),
+      ),
+    SearchBudgetError,
+  );
+});
