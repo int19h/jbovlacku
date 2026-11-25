@@ -45,7 +45,7 @@ import {
 import { definitionBlock } from "../../components/definition.ts";
 import { identityProfile, profileName } from "../../components/attribution.ts";
 import { getWord, selfPeer } from "../../data/api.ts";
-import { describePeer, isNotDelivered } from "../../data/delivery.ts";
+import { describePeer } from "../../data/delivery.ts";
 import {
   PublicationConflictError,
   labelIndex,
@@ -937,12 +937,18 @@ export async function publishPage(
   }
 }
 /** The values that the saved group actually shows. Retry timestamps stay private to delivery. */
-function savedGroupState(items: OutboxItem[]) {
+function savedGroupState(items: OutboxItem[], delivery: App["delivery"]) {
   const unfinished = items.filter((item) =>
     Object.values(item.peers).some((peer) => peer.state !== "accepted"),
   );
-  const failed = unfinished.some((item) => isNotDelivered(item));
-  const sending = unfinished.length > 0 && !failed;
+  const unconfirmed = unfinished.some((item) =>
+    Object.keys(item.peers).some((peerId) =>
+      delivery.needsReceipt(item, peerId),
+    ),
+  );
+  const failed = unfinished.some((item) => delivery.isNotDelivered(item));
+  const sending =
+    !failed && unfinished.some((item) => delivery.isDelivering(item.id));
   const labels = labelIndex(items);
   return {
     unfinished,
@@ -950,14 +956,20 @@ function savedGroupState(items: OutboxItem[]) {
     sending,
     headline: sending
       ? "Saved. Sending."
-      : unfinished.length
-        ? "Saved. Not delivered yet."
-        : "Published.",
+      : unconfirmed
+        ? "Saved. Outcome unconfirmed."
+        : unfinished.length
+          ? failed
+            ? "Saved. Not delivered yet."
+            : "Saved. Waiting to send."
+          : "Published.",
     explanation: sending
       ? `All ${items.length} signed records are saved in this browser. Their first delivery is in progress.`
-      : unfinished.length
-        ? `${unfinished.length} of ${items.length} signed records did not finish delivery. They are kept in this browser with their exact bytes and sent again automatically. Publishing again would create a second definition, so this page offers delivery of the saved records instead.`
-        : `All ${items.length} signed records were accepted.`,
+      : unconfirmed
+        ? "This browser keeps the exact signed bytes and will check the receipt again when online."
+        : unfinished.length
+          ? `${unfinished.length} of ${items.length} signed records have unfinished delivery. This browser keeps their exact bytes. Publishing again would create a second definition. Use the saved records to continue delivery.`
+          : `All ${items.length} signed records were accepted.`,
     lines: items.map((item) => {
       const label = resolvedLabel(item, labels);
       return `${label.action} ${label.subject}: ${Object.values(item.peers).map(describePeer).join(" ")}`;
@@ -1001,7 +1013,7 @@ function savedPublicationView(
         : null;
     const action = focused?.dataset.savedAction;
     const items = currentItems ?? [];
-    const state = savedGroupState(items);
+    const state = savedGroupState(items, app.delivery);
     const headline = readFailed
       ? "Saved publication could not be read."
       : !currentItems
@@ -1086,7 +1098,7 @@ function savedPublicationView(
   };
   const retry = async () => {
     if (retrying || readFailed || !currentItems || !live()) return;
-    const unfinished = savedGroupState(currentItems).unfinished;
+    const unfinished = savedGroupState(currentItems, app.delivery).unfinished;
     retrying = true;
     paint();
     try {

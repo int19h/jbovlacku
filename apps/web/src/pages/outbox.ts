@@ -3,12 +3,7 @@ import { el, p, link, text, button, describe, download } from "../lib/dom.ts";
 import { clockTime, dayMonth, inDuration } from "../lib/format.ts";
 import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
-import {
-  describePeer,
-  isNotDelivered,
-  isFinished,
-  recipientLabel,
-} from "../data/delivery.ts";
+import { describePeer, isFinished, recipientLabel } from "../data/delivery.ts";
 import {
   ownGraph,
   dependentIds,
@@ -44,8 +39,13 @@ export async function outboxPage(
   const intro = el("p", { class: "muted", style: "margin:6px 0 20px" });
   const list = el("ol", { "aria-label": "Unfinished records" });
   const empty = el("p", { class: "small" });
-  const exportLine = el("p", { class: "small", style: "margin-top:16px" });
-  main.append(intro, list, empty, exportLine);
+  const readProblem = el("div", { class: "notice", hidden: true });
+  const exportLine = el("p", {
+    class: "small",
+    style: "margin-top:16px",
+    hidden: true,
+  });
+  main.append(readProblem, intro, list, empty, exportLine);
   let currentItems: OutboxItem[] = [];
   let currentActive: OutboxItem[] = [];
   const exportActive = button(
@@ -68,6 +68,7 @@ export async function outboxPage(
   const retained = el("details", {
     class: "disclosure",
     style: "margin-top:24px",
+    hidden: true,
   });
   const retainedSummary = el("summary");
   const retainedBody = el("div", { class: "body" });
@@ -92,12 +93,13 @@ export async function outboxPage(
     const current = ++generation;
     const own = await app.store.list<Envelope>("ownhistory").catch(() => null);
     if (!context.live() || current !== generation) return;
+    readProblem.hidden = true;
     currentItems = items;
     const focused = document.activeElement as HTMLElement | null;
     const focusedRow = focused?.closest<HTMLElement>("[data-outbox-record]");
     const focusId = focusedRow?.dataset.outboxRecord;
     const focusAction = focused?.dataset.outboxAction;
-    const active = items.filter((item) => isNotDelivered(item));
+    const active = items.filter((item) => app.delivery.isNotDelivered(item));
     currentActive = active;
     const waiting = active.filter((item) => !item.stopped);
     const stopped = active.filter((item) => item.stopped);
@@ -115,7 +117,7 @@ export async function outboxPage(
       );
     if (kinds.has("refused"))
       reasons.push(
-        "A server refused some records. Refused recipients wait until you try again.",
+        "A server refused some records. Sends to those recipients wait until you try again.",
       );
     if (kinds.has("missing-body"))
       reasons.push(
@@ -123,7 +125,11 @@ export async function outboxPage(
       );
     if (kinds.has("unknown"))
       reasons.push(
-        waiting.some((item) => Object.values(item.peers).some((peer) => peer.state === "unknown" && peer.failure === "offline"))
+        waiting.some((item) =>
+          Object.values(item.peers).some(
+            (peer) => peer.state === "unknown" && peer.failure === "offline",
+          ),
+        )
           ? "Some delivery outcomes are unknown. No connection to the server was reported for some records. The client asks for receipts before it sends the same bytes again."
           : "Some delivery outcomes are unknown. The client asks for receipts before it sends the same bytes again.",
       );
@@ -233,7 +239,23 @@ export async function outboxPage(
       ).focus();
     }
   };
-  const unsubscribe = app.delivery.subscribe(render);
+  const readFailed = () => {
+    if (!context.live()) return;
+    generation++;
+    empty.textContent = "";
+    readProblem.hidden = false;
+  };
+  readProblem.append(
+    p("This browser could not read the saved records."),
+    button(
+      "Retry reading",
+      async () => {
+        await app.delivery.items().then(render, readFailed);
+      },
+      { class: "btn" },
+    ),
+  );
+  const unsubscribe = app.delivery.subscribe(render, readFailed);
   context.signal.addEventListener("abort", () => unsubscribe());
 }
 function row(
@@ -275,25 +297,25 @@ function row(
       parts.push(`${recipientLabel(item, peerId)}:`);
     if (peer.lastAttempt)
       parts.push(`Last try ${clockTime(new Date(peer.lastAttempt))}.`);
+    const receiptPending = app.delivery.needsReceipt(item, peerId);
     parts.push(
-      // A timeout keeps its own text. The browser's offline report does
-      // not show that a request that timed out was never sent.
-      !navigator.onLine &&
-        peer.failure !== "unresolved" &&
-        peer.failure !== "timeout" &&
-        peer.state !== "accepted" &&
-        peer.state !== "refused"
-        ? "Waiting for a connection."
-        : describePeer(peer),
+      receiptPending
+        ? "The result is unconfirmed. The browser will check the receipt again when online."
+        : // A timeout keeps its own text. The browser's offline report does
+          // not show that a request that timed out was never sent.
+          !navigator.onLine &&
+            peer.failure !== "unresolved" &&
+            peer.failure !== "timeout" &&
+            peer.state !== "accepted" &&
+            peer.state !== "refused"
+          ? "Waiting for a connection."
+          : describePeer(peer),
     );
-    if (
-      !item.stopped &&
-      navigator.onLine &&
-      peer.nextAttempt &&
-      peer.state !== "accepted" &&
-      peer.state !== "refused"
-    )
-      parts.push(`Next try ${inDuration(peer.nextAttempt - Date.now())}.`);
+    const nextTry = app.delivery.nextTryAt(item, peerId);
+    if (navigator.onLine && nextTry !== null)
+      parts.push(
+        `${receiptPending ? "Next receipt check" : "Next try"} ${inDuration(nextTry - Date.now())}.`,
+      );
     if (peer.failure === "unresolved")
       // A migrated record saved no address. Preferences never supply one.
       parts.push(
