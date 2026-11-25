@@ -308,9 +308,11 @@ The server's existing package and evaluation lifetimes bound those prepared inde
 
 Browser storage version 4 records a revision marker beside each language package in the same transaction as its write or deletion.
 `LocalStore.get` checks the revision marker and, when needed, reads the stored package in one readonly transaction.
-Each `LocalStore` instance retains at most two language snapshots that have a string revision, evicting the oldest entry when a third language is cached.
+Each `LocalStore` instance retains at most two language snapshots that have a string revision, evicting the least recently used entry when a third language is cached.
 While a language stays in that two-language cache and its stored revision is unchanged, repeat `LocalStore.get` calls can reuse the retained snapshot without reading the package again.
-This tab's writes and deletions, a new revision written by another tab, eviction by a third language, and a database version change all drop cached data so the next read reads fresh from storage.
+This tab's writes and deletions, a new revision written by another tab, and eviction by a third language all drop cached data so the next read reads fresh from storage.
+A database version change clears the cache and closes the connection.
+Later reads in that page fail until the page reloads.
 `LocalStore.listPackages` reads all stored packages without revision markers and supplies no reuse evidence.
 A missing legacy revision supplies no reuse evidence.
 A page uses a freshly read package only after all of its rows pass validation for that language. No whole-package verdict is persisted in storage.
