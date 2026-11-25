@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
+  acceptFirstSignature,
   createIdentity,
   fixture,
   openWord,
@@ -616,4 +617,53 @@ test("a rule saved before this browser had a key is described as such", async ({
   ).toContainText(
     "This rule was saved before this browser had a key. It moves to your key when you create or restore one, unless your key already has a rule for the same person and scope. That rule then takes priority.",
   );
+});
+
+test("public trust Undo cannot sign twice while its first clear is pending", async ({
+  page,
+}) => {
+  const subject = fixture().identities.author;
+  await createIdentity(page);
+  await openPerson(page, subject);
+  await page.getByRole("button", { name: "Trust their judgments" }).click();
+  const panel = page.getByRole("region", { name: /^Trust\b/ });
+  await panel.getByRole("radio", { name: /Publicly/ }).check();
+  await panel.getByRole("button", { name: "Trust", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Trust", exact: true })
+    .click();
+  await acceptFirstSignature(page);
+  await expect(page.getByRole("status")).toContainText(
+    "Signed. Others can build on it.",
+  );
+  await page.getByRole("link", { name: /^Trust:/ }).click();
+  const undo = page.getByRole("button", { name: "Undo", exact: true });
+  const cleared = new Set<string>();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/v1/events", async (route) => {
+    if (route.request().method() === "POST") {
+      const { id, header } = route.request().postDataJSON().envelope;
+      if (
+        header.action.kind === "trust.set" &&
+        header.action.subject === subject &&
+        header.action.value === "clear"
+      ) {
+        cleared.add(id);
+        await held;
+      }
+    }
+    await route.continue();
+  });
+  try {
+    await undo.click();
+    await expect.poll(() => cleared.size).toBe(1);
+    await expect(undo).toBeDisabled();
+    await undo.dispatchEvent("click");
+  } finally {
+    release();
+  }
+  await expect(undo).toHaveCount(0);
+  expect(cleared.size).toBe(1);
 });

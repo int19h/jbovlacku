@@ -17,7 +17,11 @@ import type {
   Calculation,
   ReviewerDetail,
 } from "../model/types.ts";
-import type { RegisterState } from "../data/history.ts";
+import {
+  deriveRegisters,
+  matchesRegister,
+  type RegisterState,
+} from "../data/history.ts";
 import type { OutboxItem } from "../data/store.ts";
 import { deliveryAccepted, isActive } from "../data/delivery.ts";
 import { getEnvelope, getWord } from "../data/api.ts";
@@ -108,17 +112,91 @@ function setBusy(target: string, value: boolean) {
   else busy.delete(target);
   for (const listener of busyListeners) listener();
 }
-/**
- * Per target, the number of judgment actions that succeeded on this page.
- * Actions in Score details are drawn from a history read. Once another
- * action for the target succeeds, every set drawn before it is retired: its
- * buttons stay disabled until a fresh history read draws what to offer.
- */
-const settled = new Map<string, number>();
-const retireListeners = new Set<(target: string) => void>();
-function retireActions(target: string) {
-  settled.set(target, (settled.get(target) ?? 0) + 1);
-  for (const listener of [...retireListeners]) listener(target);
+const resultListeners = new Set<
+  (target: string, value: JudgmentValue, item: OutboxItem) => void
+>();
+function showJudgmentResult(
+  target: string,
+  value: JudgmentValue,
+  item: OutboxItem,
+) {
+  for (const listener of [...resultListeners]) listener(target, value, item);
+}
+
+type JudgmentChoice =
+  | { arrow: "bless" | "curse" }
+  | { value: JudgmentValue; events: string[]; current: () => boolean };
+
+/** Checks the choice against the history used for the signature. */
+async function signJudgment(
+  app: App,
+  target: JudgmentTarget,
+  options: JudgmentOptions,
+  choice: JudgmentChoice,
+  description: JudgmentValue,
+) {
+  if (busy.has(target.id)) return;
+  const identity = app.session.identity;
+  const canUseChoice = () =>
+    !busy.has(target.id) &&
+    (!identity || identity === app.session.identity) &&
+    ("arrow" in choice || choice.current());
+  await app.session.requireUnlocked(target.describe(description), async () => {
+    if (!canUseChoice() || !(await app.session.firstSignatureDisclosure()))
+      return;
+    if (!canUseChoice()) return;
+    setBusy(target.id, true);
+    let value = description;
+    try {
+      const results = await app.signer.publish([
+        {
+          action: { kind: "judgment.set", target: target.id },
+          body: null,
+          label: target.spelling ? { subject: target.spelling } : undefined,
+          chooseValue(history) {
+            if (!history.complete)
+              throw new Error(
+                "Your judgment is unknown here. Nothing was signed.",
+              );
+            const current = deriveRegisters(history, {
+              kind: "judgment",
+              key: target.id,
+            }).judgments.get(target.id);
+            if ("arrow" in choice)
+              value =
+                current?.known && current.value === choice.arrow
+                  ? "clear"
+                  : choice.arrow;
+            else {
+              if (!matchesRegister(current, choice.events))
+                throw new Error("Your judgment changed. Nothing was signed.");
+              value = choice.value;
+            }
+            return value;
+          },
+        },
+      ]);
+      showJudgmentResult(target.id, value, results[0]);
+      app.own.invalidate();
+      app.announce(
+        deliveryAccepted(results)
+          ? value === "clear"
+            ? "arrow" in choice
+              ? "Your judgment is cleared."
+              : "Your judgment is cleared. The earlier public record stays in history."
+            : value === "bless"
+              ? "Your endorsement is published."
+              : "Your opposition is published."
+          : "Your judgment is signed and saved here. Delivery is not finished. See Not delivered.",
+      );
+      options.onChange?.();
+    } catch (error) {
+      app.own.invalidate();
+      app.announce(describe(error));
+    } finally {
+      setBusy(target.id, false);
+    }
+  });
 }
 const controls = new WeakMap<HTMLElement, (options: JudgmentOptions) => void>();
 const detailsPainters = new WeakMap<HTMLDetailsElement, () => void>();
@@ -202,101 +280,91 @@ export function judgmentControl(
   group.append(endorse, score, oppose);
   const ownNote = el("span", { class: "meta own-judgment" });
   wrapper.append(group, ownNote);
-  const applyOwn = async () => {
-    try {
-      const items = await app.delivery.items();
-      const { state, pending } = await ownValue(app, target.id, items);
-      for (const node of [endorse, oppose]) {
-        node.removeAttribute("aria-pressed");
-        node.classList.remove("pending");
-        node.removeAttribute("aria-describedby");
-      }
-      ownNote.textContent = "";
-      if (pending) {
-        const value = JSON.parse(pending.transport).envelope.header.action
-          .value;
-        const node =
-          value === "bless" ? endorse : value === "curse" ? oppose : null;
-        node?.classList.add("pending");
-        ownNote.textContent =
-          value === "clear"
-            ? "Your clear is not delivered yet"
-            : `Your ${value === "bless" ? "endorsement" : "opposition"} is not delivered yet`;
-        return;
-      }
-      if (!state.known) {
-        ownNote.textContent = app.session.identity
-          ? "Your judgment is unknown here"
-          : "";
-        return;
-      }
-      if (state.conflicted) {
-        ownNote.append(
-          text("Your judgment conflicts between devices. "),
-          await conflictBranches(app, state.events),
-        );
-        return;
-      }
+  let displayed: RegisterState<JudgmentValue> = { known: false };
+  const paintOwn = (
+    state: RegisterState<JudgmentValue>,
+    pending: OutboxItem | null,
+    branches?: HTMLElement,
+  ) => {
+    displayed = state;
+    for (const node of [endorse, oppose]) {
+      node.removeAttribute("aria-pressed");
+      node.classList.remove("pending");
+      node.removeAttribute("aria-describedby");
+    }
+    ownNote.textContent = "";
+    if (pending) {
+      const value = JSON.parse(pending.transport).envelope.header.action.value;
+      const node =
+        value === "bless" ? endorse : value === "curse" ? oppose : null;
+      node?.classList.add("pending");
+      ownNote.textContent =
+        value === "clear"
+          ? "Your clear is not delivered yet"
+          : `Your ${value === "bless" ? "endorsement" : "opposition"} is not delivered yet`;
+    } else if (!state.known) {
+      ownNote.textContent = app.session.identity
+        ? "Your judgment is unknown here"
+        : "";
+    } else if (state.conflicted) {
+      ownNote.append(text("Your judgment conflicts between devices. "));
+      if (branches) ownNote.append(branches);
+    } else {
       endorse.setAttribute("aria-pressed", String(state.value === "bless"));
       oppose.setAttribute("aria-pressed", String(state.value === "curse"));
-    } catch (error) {
-      ownNote.textContent = describe(error);
     }
   };
-  void applyOwn();
-  // The subscriptions last while the control is in the document.
-  onDisconnect(
-    wrapper,
-    app.own.subscribe(() => void applyOwn()),
-    options.signal,
-  );
-  busyListeners.add(syncDisabled);
-  onDisconnect(
-    wrapper,
-    () => busyListeners.delete(syncDisabled),
-    options.signal,
-  );
-  const act = (arrow: "bless" | "curse") => async () => {
-    if (busy.has(target.id)) return;
-    const pressed =
-      (arrow === "bless" ? endorse : oppose).getAttribute("aria-pressed") ===
-      "true";
-    const value: JudgmentValue = pressed ? "clear" : arrow;
-    await app.session.requireUnlocked(target.describe(value), async () => {
-      if (!(await app.session.firstSignatureDisclosure())) return;
-      if (busy.has(target.id)) return;
-      setBusy(target.id, true);
-      try {
-        const results = await app.signer.publish([
-          {
-            action: { kind: "judgment.set", target: target.id, value },
-            body: null,
-            label: target.spelling ? { subject: target.spelling } : undefined,
-          },
-        ]);
-        app.own.invalidate();
-        retireActions(target.id);
-        if (deliveryAccepted(results))
-          app.announce(
-            value === "clear"
-              ? "Your judgment is cleared."
-              : value === "bless"
-                ? "Your endorsement is published."
-                : "Your opposition is published.",
-          );
-        else
-          app.announce(
-            "Your judgment is signed and saved here. Delivery is not finished. See Not delivered.",
-          );
-        options.onChange?.();
-      } catch (error) {
-        app.announce(describe(error));
-      } finally {
-        setBusy(target.id, false);
-        void applyOwn();
-      }
-    });
+  let reads = 0;
+  let released = false;
+  const applyOwn = async () => {
+    const read = ++reads;
+    const identity = app.session.identity;
+    const current = () =>
+      !released && read === reads && identity === app.session.identity;
+    try {
+      const items = await app.delivery.items();
+      if (!current()) return;
+      const { state, pending } = await ownValue(app, target.id, items);
+      if (!current()) return;
+      const branches =
+        !pending && state.known && state.conflicted
+          ? await conflictBranches(app, state.events)
+          : undefined;
+      if (current()) paintOwn(state, pending, branches);
+    } catch (error) {
+      if (current()) ownNote.textContent = describe(error);
+    }
   };
+  const onResult = (id: string, value: JudgmentValue, item: OutboxItem) => {
+    if (id !== target.id || item.identity !== app.session.identity) return;
+    ++reads;
+    paintOwn(
+      { known: true, conflicted: false, value, events: [item.id] },
+      isActive(item) ? item : null,
+    );
+  };
+  const unsubscribe = app.own.subscribe(() => void applyOwn());
+  busyListeners.add(syncDisabled);
+  resultListeners.add(onResult);
+  onDisconnect(
+    wrapper,
+    () => {
+      released = true;
+      unsubscribe();
+      busyListeners.delete(syncDisabled);
+      resultListeners.delete(onResult);
+    },
+    options.signal,
+  );
+  void applyOwn();
+  const act = (arrow: "bless" | "curse") => () =>
+    signJudgment(
+      app,
+      target,
+      options,
+      { arrow },
+      displayed.known && displayed.value === arrow ? "clear" : arrow,
+    );
   endorse.addEventListener("click", act("bless"));
   oppose.addEventListener("click", act("curse"));
   return wrapper;
@@ -691,65 +759,24 @@ function renderOwnActions(
   slot: HTMLElement,
 ) {
   let released = false;
-  // These buttons share the page-wide in-flight set with the judgment
-  // controls, so one target never has two judgment actions in flight.
-  // They also describe the judgment that one history read found. After any
-  // judgment action for the target succeeds, in any control or disclosure,
-  // they stay disabled, and a fresh history read draws new ones.
   let buttons: HTMLButtonElement[] = [];
-  let generation = settled.get(target.id) ?? 0;
-  const retired = () => (settled.get(target.id) ?? 0) !== generation;
+  let reads = 0;
+  let drawnBy = 0;
   const syncDisabled = () => {
     for (const node of buttons)
       node.disabled =
-        retired() || !app.session.storageAvailable || busy.has(target.id);
+        drawnBy !== reads ||
+        !app.session.storageAvailable ||
+        busy.has(target.id);
   };
-  const choose = (label: string, value: JudgmentValue) =>
-    button(
-      label,
-      () => {
-        if (retired() || busy.has(target.id)) return;
-        return app.session.requireUnlocked(target.describe(value), async () => {
-          if (!(await app.session.firstSignatureDisclosure())) return;
-          if (retired() || busy.has(target.id)) return;
-          setBusy(target.id, true);
-          try {
-            const results = await app.signer.publish([
-              {
-                action: { kind: "judgment.set", target: target.id, value },
-                body: null,
-                label: target.spelling ? { subject: target.spelling } : undefined,
-              },
-            ]);
-            app.own.invalidate();
-            app.announce(
-              deliveryAccepted(results)
-                ? value === "clear"
-                  ? "Your judgment is cleared. The earlier public record stays in history."
-                  : value === "bless"
-                    ? "Your endorsement is published."
-                    : "Your opposition is published."
-                : "Your judgment is signed and saved here. Delivery is not finished. See Not delivered.",
-            );
-            // This set and every other one for the target retire and read
-            // the history again.
-            retireActions(target.id);
-            options.onChange?.();
-          } catch (error) {
-            app.announce(describe(error));
-          } finally {
-            setBusy(target.id, false);
-          }
-        });
-      },
-      { class: "btn btn-quiet" },
-    );
-  let reads = 0;
-  /** Reads the history and draws what it offers. A newer read wins. */
   const draw = async () => {
     const read = ++reads;
-    const before = settled.get(target.id) ?? 0;
+    const identity = app.session.identity;
+    const current = () =>
+      !released && read === reads && identity === app.session.identity;
+    syncDisabled();
     const own = await app.own.registers();
+    if (!current()) return;
     const state = own?.judgments.get(target.id);
     const nodes: Node[] = [];
     const drawn: HTMLButtonElement[] = [];
@@ -771,30 +798,41 @@ function renderOwnActions(
             ["Clear my judgment", "clear"],
           ]
         : [["Clear my judgment", "clear"]];
-      for (const [label, value] of choices) drawn.push(choose(label, value));
+      for (const [label, value] of choices)
+        drawn.push(
+          button(
+            label,
+            () => {
+              if (!current() || !slot.isConnected) return;
+              return signJudgment(
+                app,
+                target,
+                options,
+                { value, events: state.events, current },
+                value,
+              );
+            },
+            { class: "btn btn-quiet" },
+          ),
+        );
       nodes.push(
         el("div", { class: "actions", style: "margin-top:8px" }, ...drawn),
       );
     }
-    if (read !== reads || released) return;
-    generation = before;
+    if (!current()) return;
+    drawnBy = read;
     buttons = drawn;
     syncDisabled();
     slot.replaceChildren(...nodes);
   };
-  const onRetire = (retiredTarget: string) => {
-    if (retiredTarget !== target.id) return;
-    syncDisabled();
-    draw().catch((error) => app.announce(describe(error)));
-  };
+  const unsubscribe = app.own.subscribe(() => void draw());
   busyListeners.add(syncDisabled);
-  retireListeners.add(onRetire);
   onDisconnect(
     slot,
     () => {
       released = true;
+      unsubscribe();
       busyListeners.delete(syncDisabled);
-      retireListeners.delete(onRetire);
     },
     options.signal,
   );

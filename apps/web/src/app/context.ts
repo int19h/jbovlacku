@@ -20,8 +20,11 @@ export class OwnState {
     private session: Session,
     private offline: () => boolean,
   ) {
+    let identity = session.identity;
     session.subscribe(() => {
-      if (!session.backup) this.invalidate();
+      if (session.identity === identity) return;
+      identity = session.identity;
+      this.invalidate();
     });
   }
   subscribe(listener: () => void) {
@@ -34,14 +37,15 @@ export class OwnState {
     if (!identity || !this.session.storageAvailable)
       return Promise.resolve(null);
     if (!this.cache) {
-      this.cache = loadOwnHistory(this.store, identity, {
+      const read = loadOwnHistory(this.store, identity, {
         offline: this.offline(),
       })
         .then((history) => deriveRegisters(history))
         .catch((error) => {
-          this.lastError = describe(error);
+          if (this.cache === read) this.lastError = describe(error);
           return null;
         });
+      this.cache = read;
     }
     return this.cache;
   }
