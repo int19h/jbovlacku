@@ -255,6 +255,117 @@ fn records_with_64_absent_predecessors_fit_the_default_budget() {
     assert_fits_at_any_size("64 absent predecessors", &small, &large);
 }
 
+fn chain_with_64_predecessors(merges: usize) -> Vec<HostVerifiedRecord> {
+    let issuer = identity(2);
+    let ids: Vec<_> = (0..merges).map(|i| id(1_000_000 + i)).collect();
+    let mut records = vec![view(vec![], &[])];
+    records.extend(ids.iter().enumerate().map(|(i, record_id)| {
+        record(
+            record_id,
+            &issuer,
+            ids[i.saturating_sub(64)..i].to_vec(),
+            json!({"kind": "identity.merge"}),
+            None,
+        )
+    }));
+    records
+}
+
+#[test]
+fn present_predecessors_supply_the_steady_state_budget() {
+    let selections = BTreeMap::new();
+    let small = chain_with_64_predecessors(128);
+    let large = chain_with_64_predecessors(256);
+    let small_state = evaluate(&small, &selections, None);
+    let large_state = evaluate(&large, &selections, None);
+    for (records, state) in [(&small, &small_state), (&large, &large_state)] {
+        assert!(
+            state.evaluation().available,
+            "{:?}",
+            state.evaluation().reasons
+        );
+        let merges = records.len() - 1;
+        // The first 64 merges name fewer than 64 predecessors each.
+        let predecessors = 64 * merges - 64 * 65 / 2;
+        let record_budget = 10_000_000 + 256 * records.len();
+        let edge_budget = 16 * predecessors;
+        println!(
+            "{} records, {predecessors} predecessors, {} work, {} budget, {edge_budget} expected edge allowance",
+            records.len(),
+            state.consumed_work(),
+            state.traversal_budget()
+        );
+        assert_eq!(state.traversal_budget(), record_budget + edge_budget);
+    }
+
+    let added = large.len() - small.len();
+    let work = large_state.consumed_work() - small_state.consumed_work();
+    let allowance = large_state.traversal_budget() - small_state.traversal_budget();
+    println!("{added} added records, {work} added work, {allowance} added allowance");
+    assert!(
+        work > 256 * added,
+        "the record allowance alone covers the work"
+    );
+    assert!(
+        work < allowance,
+        "the default allowance falls behind the work"
+    );
+
+    let mut delta = PreparedEvaluationInput::new(EvaluationOptions {
+        selected_view: id(VIEW),
+        import_selections: selections.clone(),
+        overlay: None,
+        limits: Limits::default(),
+    });
+    for record in &large[small.len()..] {
+        delta.add_host_verified_record(record.clone());
+    }
+    let appended = small_state.advance(delta, &[]);
+    assert!(appended.statistics().rebuilt);
+    assert_eq!(
+        appended.statistics().reason.as_deref(),
+        Some("global_action")
+    );
+    assert_eq!(appended.evaluation(), large_state.evaluation());
+    assert_eq!(appended.consumed_work(), large_state.consumed_work());
+    assert_eq!(appended.traversal_budget(), large_state.traversal_budget());
+}
+
+#[test]
+fn present_predecessor_budget_boundary_survives_both_checkpoints() {
+    let records = chain_with_64_predecessors(128);
+    let selections = BTreeMap::new();
+    let default = evaluate(&records, &selections, None);
+    assert!(default.evaluation().available);
+    let work = default.consumed_work();
+    let binding = "present-predecessors";
+    for (limit, available) in [(work - 1, false), (work, true)] {
+        let state = evaluate(&records, &selections, Some(limit));
+        assert_eq!(state.evaluation().available, available, "limit={limit}");
+        assert_eq!(state.traversal_budget(), limit);
+        assert_eq!(state.consumed_work(), limit);
+        if available {
+            assert_eq!(state.evaluation(), default.evaluation());
+        } else {
+            assert!(refused(&state));
+            assert!(state.evaluation().receipts.is_empty());
+        }
+
+        let full = state.checkpoint(binding).unwrap();
+        let results = state.result_checkpoint(binding).unwrap();
+        let full = EvaluatedState::restore_host_checkpoint(&full, binding).unwrap();
+        let results =
+            EvaluatedState::restore_host_result_checkpoint(&results, binding, records.clone())
+                .unwrap();
+        for restored in [full, results] {
+            assert_eq!(restored.evaluation(), state.evaluation());
+            assert_eq!(restored.traversal_budget(), limit);
+            assert_eq!(restored.consumed_work(), limit);
+        }
+        println!("limit={limit}: available={available} in fresh state and both restores");
+    }
+}
+
 /// One account claim that `witnesses` witnesses each observe, and
 /// `imports` imported definitions credited to the account.
 fn account_fixture(
