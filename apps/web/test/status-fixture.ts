@@ -17,3 +17,12 @@ export function statusFixture(
     account_authority_applied: false,
   };
 }
+
+export function statusFixtures(
+  events: readonly string[],
+  state?: (index: number) => PublicationStatus["state"],
+): PublicationStatus[] {
+  return events
+    .map((event, index) => statusFixture(event, state?.(index)))
+    .sort((a, b) => a.event.localeCompare(b.event));
+}

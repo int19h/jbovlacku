@@ -1,4 +1,4 @@
-import { statusFixture } from "./status-fixture.ts";
+import { statusFixture, statusFixtures } from "./status-fixture.ts";
 import { expectRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
@@ -448,11 +448,8 @@ test("word pages show tied layers, deprecated and unavailable definitions, and n
     assignments: [],
     layers: [[ids[2], ids[1]], [ids[0]]],
     status_version: 2,
-    statuses: ids.map((event: string, index: number) =>
-      statusFixture(
-        event,
-        index === 0 ? "deprecated" : index === 3 ? "unavailable" : "active",
-      ),
+    statuses: statusFixtures(ids, (index) =>
+      index === 0 ? "deprecated" : index === 3 ? "unavailable" : "active",
     ),
     unavailable_scores: [ids[3]],
     scores: ids.slice(0, 3).map(score),

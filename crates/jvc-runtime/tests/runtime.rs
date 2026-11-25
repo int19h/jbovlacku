@@ -173,7 +173,7 @@ impl Fixture {
         canonical_value(&json!({"events":self.events,"bodies":self.bodies,"selected_view":self.selected_view,"import_selections":{},"overlay":self.overlay,"limits":self.limits})).unwrap()
     }
     fn expected_state_output(&self) -> Value {
-        let evaluation = jvc_state::evaluate(&jvc_state::EvaluationInput {
+        let state = jvc_state::EvaluatedState::from_input(&jvc_state::EvaluationInput {
             events: self
                 .events
                 .iter()
@@ -189,7 +189,10 @@ impl Fixture {
             import_selections: BTreeMap::new(),
             limits: self.limits.clone(),
         });
-        let mut value = serde_json::to_value(&evaluation).unwrap();
+        let evaluation = state.evaluation();
+        let mut saved: Value =
+            serde_json::from_slice(&state.checkpoint("oracle").unwrap()).unwrap();
+        let mut value = saved["evaluation"].take();
         value["state_export_version"] = json!(2);
         for publication in value["publications"].as_object_mut().unwrap().values_mut() {
             let row = publication.as_object_mut().unwrap();
@@ -208,7 +211,7 @@ impl Fixture {
                 .publications
                 .keys()
                 .filter_map(
-                    |id| jvc_state::publication_status(&evaluation, id).map(|status| (id, status))
+                    |id| jvc_state::publication_status(evaluation, id).map(|status| (id, status))
                 )
                 .collect::<BTreeMap<_, _>>()
         );
@@ -219,7 +222,7 @@ impl Fixture {
                 .map(|(key, account)| (
                     key,
                     jvc_state::account_control(
-                        &evaluation,
+                        evaluation,
                         "",
                         &account.account.origin,
                         account.account.account

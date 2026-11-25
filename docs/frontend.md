@@ -1843,7 +1843,9 @@ This endpoint reports the server's known branches, not proof of complete device 
 They retrieve and authenticate headers before using those references for signing or a handover.
 
 Account-control queries require a canonical HTTPS origin and a positive numeric account ID. Invalid inputs return HTTP 400.
-AccountControlResponse contains exactly snapshot, view, origin, account, state, controller_candidates, contributions, certificates, chain, current_observations, and reasons.
+AccountControlResponse contains exactly snapshot, view, origin, account, row_present, state, controller_candidates, contributions, certificates, chain, current_observations, and reasons.
+Row_present is true when the evaluation has a row for the requested account. It is false for an absent account, which returns unclaimed with empty lists.
+An unclaimed row can also exist in the evaluation. Its row_present is true.
 State is unclaimed, controlled, disputed, or unavailable. Controlled identifies one selected period, not a promise that its key can still issue commands.
 
 Controller_candidates is the sorted candidate claim list. Contributions contains rows with exactly witness, claims, and observations.
@@ -2063,8 +2065,9 @@ Assignment status is `eligible`, `inactive`, or `unknown`, with distinct pair sc
 Statuses contains one entry for each returned signed definition, sorted by event ID. It uses the response's exact snapshot and view.
 Frontier lists the deciding maximal status actions, or their union during a controller dispute. Event-ID arrays are sorted and duplicate-free.
 
-Deciding_claim names the period that supplies the account decision. It is null for a default, dispute, or unavailable account decision.
-A conflict between import selections can make the publication unavailable and leave this claim visible.
+Deciding_claim names the period that supplies the publication status decision. An inherited decision can name an earlier period than claim.
+Deciding_claim is null for a default, dispute, or unavailable account decision.
+A conflict between selected revisions of the same source record can make the publication unavailable and leave deciding_claim visible. The revisions can occur in one selection or in several selections.
 Reasons uses stable codes, including controller_dispute, binding_unavailable, witness_history_incomplete, policy_history_unavailable, carry_history_pending, current_authority_lost, and claim_pending.
 Authority describes permission for a new command independently of the displayed state. A dispute or lost controller authority disables commands.
 
@@ -2076,7 +2079,8 @@ An attributed import refers to its account only when that account has a row in t
 Account_authority_applied is true if the account pass applies the enabled policy to an imported definition. A missing controller does not make this flag false.
 With a disabled policy, an attributed import still refers to the account row. Its account_authority_applied is false.
 
-For evidence, request /account-control on demand with the reference and the word response snapshot and view. Reuse the result for that exact account and pin.
+For evidence, request /account-control on demand with the reference and the word response snapshot and view. Reuse the result for that exact account and pin. Concurrent readers share the request. A reader can cancel its own wait.
+If a non-null reference receives row_present false, report an inconsistent export.
 If the snapshot expires, show that the evidence is unavailable for that request. Use the publication state alone to show a status badge.
 Read contributions from the account row whenever a reference exists. Read controller_candidates and current_observations only when account_authority_applied is true.
 Elsewhere those lists are empty. A null reference gives empty lists. A missing referenced row makes the export inconsistent.

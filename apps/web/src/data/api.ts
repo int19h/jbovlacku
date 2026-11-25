@@ -27,7 +27,7 @@ import {
   languageTag,
   matchKinds,
   wordIdValid,
-  type AccountControl,
+  type AccountControlResponse,
   type AccountKey,
   type PublicationStatus,
   type ActivityResponse,
@@ -569,10 +569,10 @@ function accountKey(value: unknown): value is AccountKey {
     return false;
   }
 }
-const sortedIds = (value: unknown) =>
+const sortedIds = (value: unknown): value is string[] =>
   Array.isArray(value) &&
   value.every((id, i) => eventId(id) && (i === 0 || value[i - 1] < id));
-const codes = (value: unknown) =>
+const codes = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((code) => typeof code === "string");
 const nullableEvent = (value: unknown) => value === null || eventId(value);
 function publicationStatus(value: unknown): value is PublicationStatus {
@@ -627,6 +627,14 @@ export function validateWord(value: unknown, id: string): WordResponse {
     !(value.calculation === null || isObject(value.calculation))
   )
     throw invalid();
+  if (value.statuses.length !== value.definitions.length) throw invalid();
+  const definitions = new Set(value.definitions);
+  let previous = "";
+  for (const status of value.statuses) {
+    if (status.event <= previous || !definitions.delete(status.event))
+      throw invalid();
+    previous = status.event;
+  }
   for (const score of value.scores) {
     if (
       !isObject(score) ||
@@ -740,16 +748,17 @@ export function getWord(
   }
   return pending;
 }
-type EvidencePin = Pick<WordResponse, "snapshot" | "view">;
+type EvidencePin = Readonly<Pick<WordResponse, "snapshot" | "view">>;
 
 export function validateAccountControl(
   value: unknown,
   account: AccountKey,
   pin: EvidencePin,
-): AccountControl {
+): AccountControlResponse {
   if (
     !isObject(value) ||
-    Object.keys(value).length !== 11 ||
+    Object.keys(value).length !== 12 ||
+    typeof value.row_present !== "boolean" ||
     value.snapshot !== pin.snapshot ||
     value.view !== pin.view ||
     value.origin !== account.origin ||
@@ -783,51 +792,88 @@ export function validateAccountControl(
         (i === 0 ||
           rows[i - 1].policy < row.policy ||
           (rows[i - 1].policy === row.policy && rows[i - 1].claim < row.claim)),
-    )
+    ) ||
+    (!value.row_present &&
+      (value.state !== "unclaimed" ||
+        value.contributions.length > 0 ||
+        value.certificates.length > 0 ||
+        value.controller_candidates.length > 0 ||
+        value.current_observations.length > 0 ||
+        value.chain.length > 0 ||
+        value.reasons.length > 0))
   )
     throw new Error("The server returned invalid account evidence.");
-  return value as unknown as AccountControl;
+  return value as unknown as AccountControlResponse;
 }
 
-const accountControlCache = new Map<string, Promise<AccountControl>>();
+type AccountPinCache = Map<string, Promise<AccountControlResponse>>;
+
+// Any reader that holds its pin keeps the shared cache for that pin alive.
+const ownedAccountPins = new WeakMap<EvidencePin, Set<AccountPinCache>>();
+const accountPins = new Map<string, WeakRef<AccountPinCache>>();
+const expiredAccountPins = new FinalizationRegistry<{
+  key: string;
+  reference: WeakRef<AccountPinCache>;
+}>(({ key, reference }) => {
+  if (accountPins.get(key) === reference) accountPins.delete(key);
+});
+
+function accountPinCache(peer: Peer, pin: EvidencePin): AccountPinCache {
+  const key = JSON.stringify([peer.id, peer.base, pin.snapshot, pin.view]);
+  let cache = accountPins.get(key)?.deref();
+  if (!cache) {
+    cache = new Map();
+    const reference = new WeakRef(cache);
+    accountPins.set(key, reference);
+    expiredAccountPins.register(cache, { key, reference });
+  }
+  let owned = ownedAccountPins.get(pin);
+  if (!owned) ownedAccountPins.set(pin, (owned = new Set()));
+  owned.add(cache);
+  return cache;
+}
+
+function waitForAccount(
+  pending: Promise<AccountControlResponse>,
+  signal: AbortSignal | null | undefined,
+): Promise<AccountControlResponse> {
+  if (!signal) return pending;
+  return new Promise((resolve, reject) => {
+    const cancel = () => reject(signal.reason);
+    signal.addEventListener("abort", cancel, { once: true });
+    void pending.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", cancel);
+    });
+  });
+}
 
 export function getAccountControl(
   account: AccountKey,
   pin: EvidencePin,
   options: RequestOptions = {},
-): Promise<AccountControl> {
+): Promise<AccountControlResponse> {
   if (!accountKey(account) || !hashId(pin.snapshot) || !eventId(pin.view)) {
     return Promise.reject(new Error("The account evidence link is invalid."));
   }
-  const query = new URLSearchParams({
-    origin: account.origin,
-    account: String(account.account),
-    snapshot: pin.snapshot,
-    view: pin.view,
-  });
-  const peer = options.peer ?? selfPeer;
-  const key = JSON.stringify([peer.id, peer.base, query.toString()]);
-  const load = () =>
-    api<unknown>(`/account-control?${query}`, options).then((value) =>
+  const { signal, ...request } = options;
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  const cache = accountPinCache(request.peer ?? selfPeer, pin);
+  const key = account.origin + "#" + account.account;
+  let pending = cache.get(key);
+  if (!pending) {
+    const query = new URLSearchParams({
+      origin: account.origin,
+      account: String(account.account),
+      snapshot: pin.snapshot,
+      view: pin.view,
+    });
+    pending = api<unknown>(`/account-control?${query}`, request).then((value) =>
       validateAccountControl(value, account, pin),
     );
-  if (options.signal) return load();
-  let pending = accountControlCache.get(key);
-  if (!pending) {
-    pending = load();
-    accountControlCache.set(key, pending);
-    if (accountControlCache.size > 128) {
-      const oldest = accountControlCache.keys().next().value;
-      if (oldest !== undefined) accountControlCache.delete(oldest);
-    }
-    const clear = () => {
-      if (accountControlCache.get(key) === pending)
-        accountControlCache.delete(key);
-    };
-    pending.catch(clear);
-    setTimeout(clear, 15000);
+    cache.set(key, pending);
+    void pending.catch(() => cache.delete(key));
   }
-  return pending;
+  return waitForAccount(pending, signal);
 }
 
 export async function getPublicationEvidence(
@@ -838,6 +884,8 @@ export async function getPublicationEvidence(
   const account = status.account_control
     ? await getAccountControl(status.account_control, pin, options)
     : null;
+  if (account && !account.row_present)
+    throw new Error("The publication refers to missing account evidence.");
   return {
     witness_contributions: account?.contributions ?? [],
     controller_candidates: status.account_authority_applied

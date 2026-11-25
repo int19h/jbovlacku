@@ -70,7 +70,7 @@ import {
   interpretDefinition,
   stripAcuteAccents,
   STATE_EXPORT_VERSION,
-  type AccountControl,
+  type AccountControlResponse,
   type Evaluation,
   type EvaluationRequest,
 } from "../../core/src/index.ts";
@@ -3098,14 +3098,15 @@ export class DictionaryService {
           "Selected view cannot be evaluated.",
         );
       const summary = evaluation.account_controls[origin + "#" + accountText];
-      const response: AccountControl = summary
-        ? { ...summary, snapshot: snapshot.snapshot }
+      const response: AccountControlResponse = summary
+        ? { ...summary, snapshot: snapshot.snapshot, row_present: true }
         : {
             snapshot: snapshot.snapshot,
             view,
             origin,
             account: Number(accountText),
             state: "unclaimed",
+            row_present: false,
             controller_candidates: [],
             contributions: [],
             certificates: [],

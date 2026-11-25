@@ -46,6 +46,11 @@ export interface AccountControl extends AccountKey {
   reasons: string[];
 }
 
+/** The HTTP response also says whether this account has an evaluated row. */
+export interface AccountControlResponse extends AccountControl {
+  row_present: boolean;
+}
+
 export interface ProjectedAccount {
   account: AccountKey;
   controller: string | null;

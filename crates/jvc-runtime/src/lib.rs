@@ -1966,10 +1966,13 @@ mod state_output_tests {
 
     #[test]
     fn borrowed_state_output_keeps_unavailable_fields() {
-        let evaluation = jvc_state::evaluate(
+        let state = jvc_state::EvaluatedState::from_input(
             &evaluation_input(include_bytes!("../tests/invalid-overlay.json")).unwrap(),
         );
-        let mut previous = serde_json::to_value(&evaluation).unwrap();
+        let evaluation = state.evaluation();
+        let mut saved: Value =
+            serde_json::from_slice(&state.checkpoint("oracle").unwrap()).unwrap();
+        let mut previous = saved["evaluation"].take();
         previous["state_export_version"] = json!(2);
         for publication in previous["publications"]
             .as_object_mut()
@@ -1992,7 +1995,7 @@ mod state_output_tests {
                 .publications
                 .keys()
                 .filter_map(
-                    |id| jvc_state::publication_status(&evaluation, id).map(|status| (id, status))
+                    |id| jvc_state::publication_status(evaluation, id).map(|status| (id, status))
                 )
                 .collect::<BTreeMap<_, _>>()
         );
@@ -2003,7 +2006,7 @@ mod state_output_tests {
                 .map(|(key, account)| (
                     key,
                     jvc_state::account_control(
-                        &evaluation,
+                        evaluation,
                         "",
                         &account.account.origin,
                         account.account.account
@@ -2012,7 +2015,7 @@ mod state_output_tests {
                 .collect::<BTreeMap<_, _>>()
         );
         assert_eq!(
-            serde_json::to_value(StateExport::new(&evaluation)).unwrap(),
+            serde_json::to_value(StateExport::new(evaluation)).unwrap(),
             previous
         );
     }

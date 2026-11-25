@@ -1,4 +1,4 @@
-import { statusFixture } from "./status-fixture.ts";
+import { statusFixture, statusFixtures } from "./status-fixture.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
@@ -164,7 +164,7 @@ test("phone language tabs stay on one row and a lujvo without compound evidence 
     assignments: [],
     layers: [ids],
     status_version: 2,
-    statuses: ids.map((event: string) => statusFixture(event)),
+    statuses: statusFixtures(ids),
     unavailable_scores: [],
     scores: ids.map(zeroScore),
   });
@@ -315,7 +315,7 @@ test("a tied layer gives a reason that holds for every kind of layer", async ({
     assignments: [],
     layers: [ids],
     status_version: 2,
-    statuses: ids.map((event: string) => statusFixture(event)),
+    statuses: statusFixtures(ids),
     unavailable_scores: [],
     scores: ids.map(zeroScore),
   });
@@ -371,8 +371,8 @@ test("the deprecated layer says that its definitions are not ranked against each
     // One of them has a clearly higher score than the other.
     layers: [[ids[0]], [ids[1], ids[2]]],
     status_version: 2,
-    statuses: ids.map((event: string, index: number) =>
-      statusFixture(event, index === 0 ? "active" : "deprecated"),
+    statuses: statusFixtures(ids, (index) =>
+      index === 0 ? "active" : "deprecated",
     ),
     unavailable_scores: [],
     scores: [
@@ -663,7 +663,7 @@ async function manyLanguages(page: Page) {
     assignments: [],
     layers: [ids],
     status_version: 2,
-    statuses: ids.map((event: string) => statusFixture(event)),
+    statuses: statusFixtures(ids),
     unavailable_scores: [],
     scores: ids.map(zeroScore),
   });
@@ -1213,9 +1213,7 @@ test("a lujvo with a definition that did not load makes no claim about its compo
     assignments: [],
     layers: [[...ids, missing]],
     status_version: 2,
-    statuses: [...ids, missing].map((event: string) =>
-      statusFixture(event, "active"),
-    ),
+    statuses: statusFixtures([...ids, missing]),
     unavailable_scores: [],
     scores: [...ids, missing].map(zeroScore),
   });
@@ -1498,7 +1496,7 @@ test("a lujvo whose etymology text gives the composition points to it", async ({
     assignments: [],
     layers: [ids],
     status_version: 2,
-    statuses: ids.map((event: string) => statusFixture(event)),
+    statuses: statusFixtures(ids),
     unavailable_scores: [],
     scores: ids.map(zeroScore),
   });

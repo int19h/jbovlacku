@@ -12,6 +12,7 @@ export {
   type Publication,
   type PublicationStatus,
   type AccountControl,
+  type AccountControlResponse,
   type AccountKey,
 } from "./state-export.ts";
 import type { WordResultPolicy } from "./word-policy.ts";

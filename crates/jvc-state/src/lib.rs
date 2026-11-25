@@ -473,8 +473,7 @@ pub struct Evaluation {
     /// copies one pointer.
     pub overlay: Option<std::rc::Rc<Value>>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EvaluationResults {
     pub receipts: BTreeMap<String, Receipt>,
     pub lifecycle: Lifecycle,
@@ -482,7 +481,6 @@ pub struct EvaluationResults {
     pub accounts: BTreeMap<String, AccountState>,
     pub registers: BTreeMap<String, Register>,
     pub judgments: BTreeMap<String, BTreeMap<String, Judgment>>,
-    #[serde(deserialize_with = "Option::deserialize")]
     pub policy: Option<CompactValue>,
     pub(crate) policies: Vec<CompactValue>,
     pub(crate) policy_history: BTreeMap<String, CompactValue>,
@@ -500,12 +498,13 @@ impl std::ops::DerefMut for Evaluation {
         std::rc::Rc::make_mut(&mut self.results)
     }
 }
+// The default output uses the public projection. Checkpoints use their own writer.
 impl Serialize for Evaluation {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        self.serialize_as(serializer, EvaluationEncoding::Expanded)
+        StateExport::new(self).serialize(serializer)
     }
 }
 /// The evaluation as a checkpoint stores it: every publication without
@@ -622,7 +621,6 @@ impl<'a> From<&'a Publication> for CheckpointPublication<'a> {
 }
 #[derive(Clone, Copy)]
 enum EvaluationEncoding {
-    Expanded,
     Checkpoint,
     Export,
     RankingSource,
@@ -644,9 +642,6 @@ impl Evaluation {
             EvaluationEncoding::Checkpoint => {
                 map.serialize_entry("publications", &CheckpointPublications(&self.publications))?;
             }
-            EvaluationEncoding::Expanded => {
-                map.serialize_entry("publications", &self.publications)?;
-            }
             EvaluationEncoding::Export | EvaluationEncoding::RankingSource => {
                 map.serialize_entry("publications", &export::ExportPublications(self))?;
             }
@@ -667,6 +662,7 @@ impl Evaluation {
         map.end()
     }
 }
+// Checkpoint readers use the private, restorable form.
 impl<'de> Deserialize<'de> for Evaluation {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,

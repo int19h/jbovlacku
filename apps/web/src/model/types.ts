@@ -4,6 +4,7 @@ import type {
 } from "../../../../packages/core/src/browser.ts";
 export type {
   AccountControl,
+  AccountControlResponse,
   AccountKey,
   PublicationStatus,
 } from "../../../../packages/core/src/browser.ts";

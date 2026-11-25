@@ -1229,13 +1229,59 @@ test("word status references the pinned account evidence once", async () => {
   assert.equal((await read(expired)).code, "snapshot_expired");
 });
 
+test("account control marks present and absent unclaimed rows", async () => {
+  const { service } = await fixture();
+  const { buildFixture } = await import("../../../apps/web/test/seed.ts");
+  const imported = await buildFixture("http://localhost");
+  const selection = await service.fetch(
+    new Request("http://localhost/api/v1/import-selections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: imported.selection,
+    }),
+  );
+  assert.ok(selection.ok, await selection.text());
+  for (const event of imported.events) {
+    const response = await service.fetch(request("/events", event));
+    assert.ok(response.ok, await response.text());
+  }
+  const word = await read(
+    await service.fetch(
+      request(
+        `/words/${imported.fixture.words.ckusro}?view=${imported.view.envelope.id}`,
+      ),
+    ),
+  );
+  const query = new URLSearchParams({
+    origin: "https://lensisku.invalid",
+    account: "8",
+    view: word.view,
+    snapshot: word.snapshot,
+  });
+  const present = await read(
+    await service.fetch(request(`/account-control?${query}`)),
+  );
+  query.set("account", "9001");
+  const absent = await read(
+    await service.fetch(request(`/account-control?${query}`)),
+  );
+  assert.deepEqual(
+    [present.state, present.row_present, absent.state, absent.row_present],
+    ["unclaimed", true, "unclaimed", false],
+  );
+});
+
 test("account control allows 16 MiB and refuses a larger UTF-8 response", async () => {
   const { service, view } = await fixture();
   const origin = "https://source.example";
   const path = `/account-control?origin=${encodeURIComponent(origin)}&account=41&view=${view.envelope.id}`;
   const absent = await read(await service.fetch(request(path)));
   const summary = { ...absent, snapshot: "", reasons: [""] };
-  const fullResponse = { ...summary, snapshot: absent.snapshot };
+  const fullResponse = {
+    ...summary,
+    snapshot: absent.snapshot,
+    row_present: true,
+  };
   const remaining =
     16 * 1024 * 1024 - utf8(JSON.stringify(fullResponse)).length;
   summary.reasons = [

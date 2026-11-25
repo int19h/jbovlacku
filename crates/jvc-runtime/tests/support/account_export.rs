@@ -2,7 +2,7 @@ use super::*;
 
 const ORIGIN: &str = "https://source.example";
 
-fn concentrated_input(n: usize) -> (Fixture, Value, Vec<String>) {
+fn concentrated_input(n: usize, account_authority: bool) -> (Fixture, Value, Vec<String>) {
     let mut fixture = Fixture::new();
     let claim = fixture.event(
         1,
@@ -45,7 +45,7 @@ fn concentrated_input(n: usize) -> (Fixture, Value, Vec<String>) {
         "rafsi_threshold":{"numerator":1,"denominator":1},"H":{"numerator":3,"denominator":1},
         "alpha":{"numerator":1,"denominator":2},"excluded":[],"calculation":"simple-routes-bounds-v1",
         "work":1000,"import_sets":[{"source":"fixture","importer":key(9),"selection":selection}],
-        "account_witnesses":[key(10)],"account_authority":false,"notes":[]
+        "account_witnesses":[key(10)],"account_authority":account_authority,"notes":[]
     })));
     let mut request: Value = serde_json::from_slice(&fixture.bytes()).unwrap();
     request["import_selections"][selection] = json!(ids);
@@ -56,7 +56,7 @@ fn concentrated_input(n: usize) -> (Fixture, Value, Vec<String>) {
 fn concentrated_account_export_sizes_grow_with_records() {
     let mut previous = None;
     for n in [250, 500, 1000] {
-        let (_, request, ids) = concentrated_input(n);
+        let (_, request, ids) = concentrated_input(n, false);
         let bytes = serde_json::to_vec(&request).unwrap();
         let state = jvc_runtime::evaluate_bytes(&bytes).unwrap();
         assert_eq!(state["state_export_version"], 2);
@@ -142,7 +142,7 @@ fn concentrated_account_export_sizes_grow_with_records() {
 
 #[test]
 fn account_export_keeps_a_reference_through_restores_and_judgment_deltas() {
-    let (mut fixture, mut input, ids) = concentrated_input(4);
+    let (mut fixture, mut input, ids) = concentrated_input(4, false);
     let bytes = serde_json::to_vec(&input).unwrap();
     let parent = jvc_runtime::EvaluationSession::new(&bytes).unwrap();
     let state = jvc_runtime::evaluate_bytes(&bytes).unwrap();
@@ -207,5 +207,63 @@ fn account_export_keeps_a_reference_through_restores_and_judgment_deltas() {
             advanced.rank(&fixture.word).unwrap(),
             fresh.rank(&fixture.word).unwrap()
         );
+    }
+}
+
+#[test]
+fn direct_evaluation_serialization_uses_shared_account_rows() {
+    let (fixture, request, ids) = concentrated_input(2, true);
+    let evaluation = jvc_state::evaluate(&jvc_state::EvaluationInput {
+        events: fixture
+            .events
+            .iter()
+            .map(|event| jvc_core::verify_envelope(event.as_bytes()).unwrap())
+            .collect(),
+        bodies: fixture
+            .bodies
+            .into_iter()
+            .map(|(id, body)| (id, body.into_bytes()))
+            .collect(),
+        selected_view: fixture.selected_view,
+        import_selections: serde_json::from_value(request["import_selections"].clone()).unwrap(),
+        overlay: None,
+        limits: Default::default(),
+    });
+    assert!(evaluation.available);
+    for id in &ids {
+        let original = &evaluation.publications[id];
+        assert_eq!(original.witness_contributions.len(), 1);
+        assert_eq!(original.controller_candidates.len(), 1);
+        assert_eq!(original.observations.len(), 1);
+    }
+    let state = serde_json::to_value(&evaluation).unwrap();
+    assert_eq!(state["state_export_version"], 2);
+    assert_eq!(state["account_controls"].as_object().unwrap().len(), 1);
+    let evidence = &state["account_controls"][format!("{ORIGIN}#41")];
+    assert_eq!(
+        evidence["contributions"][0]["observations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for id in ids {
+        for row in [
+            &state["publications"][&id],
+            &state["publication_statuses"][&id],
+        ] {
+            assert_eq!(
+                row["account_control"],
+                json!({"origin":ORIGIN,"account":41})
+            );
+            assert_eq!(row["account_authority_applied"], true);
+            for field in [
+                "witness_contributions",
+                "controller_candidates",
+                "observations",
+            ] {
+                assert!(row.get(field).is_none(), "{field}");
+            }
+        }
     }
 }

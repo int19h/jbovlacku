@@ -7,6 +7,7 @@ export {
   type Publication,
   type PublicationStatus,
   type AccountControl,
+  type AccountControlResponse,
   type AccountKey,
   STATE_EXPORT_VERSION,
   type Evaluation,

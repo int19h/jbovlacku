@@ -58,7 +58,7 @@ Use a new corpus directory for each run, so old cases cannot enter the compariso
 mkdir -p .cache
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 export JVC_STATE_PARITY_DIR="$(mktemp -d "$PWD/.cache/state-parity.XXXXXX")"
-cargo test -p jvc-state --locked --jobs 2 -- --test-threads=2
+cargo test -p jvc-state -p jvc-runtime --locked --jobs 2 -- --test-threads=2
 npm run build:core
 node scripts/test-state-parity.mjs
 ```

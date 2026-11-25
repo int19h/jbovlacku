@@ -1,4 +1,4 @@
-import { statusFixture } from "./status-fixture.ts";
+import { statusFixtures } from "./status-fixture.ts";
 import { test, expect } from "@playwright/test";
 import { corePath, fixture } from "./helpers.ts";
 
@@ -220,7 +220,7 @@ test("reading language lists show names and hide the test tag", async ({
           calculation: null,
           unavailable_scores: ids,
           status_version: 2,
-          statuses: ids.map((event: string) => statusFixture(event)),
+          statuses: statusFixtures(ids),
         },
       }),
   );
