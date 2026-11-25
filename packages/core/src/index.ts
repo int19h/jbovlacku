@@ -190,17 +190,31 @@ export {
 export const wordId = (word: { language: "jbo"; spelling: string }): string =>
   wasm.runtime_word_identifier(utf8(JSON.stringify(word)));
 export function validWordIdSpellings(spellings: string[]): boolean {
+  if (spellings.length === 0) return true;
   // NUL separates spellings. The WebAssembly binding replaces lone surrogates.
-  return (
-    spellings.length === 0 ||
-    (!spellings.some((spelling) => /[\0\p{Cs}]/u.test(spelling)) &&
-      wasm.valid_word_id_spellings(spellings.join("\0")))
-  );
+  // An indexed loop rejects empty slots in sparse arrays as well.
+  for (let i = 0; i < spellings.length; i++) {
+    const spelling = spellings[i];
+    if (
+      typeof spelling !== "string" ||
+      !spelling.length ||
+      /[\0\p{Cs}]/u.test(spelling)
+    )
+      return false;
+  }
+  return wasm.valid_word_id_spellings(spellings.join("\0"));
 }
 export function wordIdSpellings(spellings: string[]): string[] {
   if (spellings.length === 0) return [];
-  if (spellings.some((spelling) => !spelling.length || /[\0\p{Cs}]/u.test(spelling)))
-    throw new Error("invalid word spelling");
+  for (let i = 0; i < spellings.length; i++) {
+    const spelling = spellings[i];
+    if (
+      typeof spelling !== "string" ||
+      !spelling.length ||
+      /[\0\p{Cs}]/u.test(spelling)
+    )
+      throw new Error("invalid word spelling");
+  }
   return wasm.word_id_spellings(spellings.join("\0")).split("\0");
 }
 /** The rafsi pair ID of a word ID and NFC rafsi spelling, per the format specification. */

@@ -2145,3 +2145,186 @@ test("saved shapes reject later-row list holes and over-cap lists before the req
     scannedOverCap: 0,
   });
 });
+
+test("saved shapes reject non-plain attribution dates on warm reuse and enforce manual lujvo source and rafsi limits", async ({
+  page,
+}) => {
+  await page.goto("/");
+  // 1. Warm structural reuse must reject non-plain attribution.dates objects.
+  const warmReuse = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    const { PackageValidationError } = await import(
+      String("/src/data/saved-package.ts")
+    );
+    const dbName = "saved-shapes-proto-r5";
+    const store = new LocalStore(dbName);
+    const makePkg = (language: string, dates: unknown = {}) => ({
+      version: 2,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: [
+        {
+          event: "jve1:" + "1".repeat(64),
+          word: { language: "jbo", spelling: "cukta" },
+          language,
+          glosses: [{ language, text: "book", sense: null }],
+          plain_text: "book",
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+          issuer: "ed25519:" + "a".repeat(64),
+          notes: false,
+          rafsi: ["cku"],
+          rafsi_complete: true,
+          attribution: {
+            source: "jbovlaste",
+            author: "alice",
+            account: null,
+            dates,
+          },
+        },
+      ],
+    });
+    await store.put("packages", "en", makePkg("en"), null);
+    await store.put("packages", "es", makePkg("es"), null);
+    await store.put("packages", "fr", makePkg("fr"), null);
+
+    const trustedEn = await store.get("packages", "en");
+    const cold = await searchPackage(trustedEn as never, "en", ["cukta"]);
+
+    const results: Record<string, string> = {};
+    for (const [label, badDates] of [
+      ["Date", new Date(0)],
+      ["Map", new Map([["created", 123]])],
+      ["Set", new Set(["x"])],
+      ["ArrayBuffer", new ArrayBuffer(8)],
+    ] as const) {
+      // Evict "en" from LocalStore's two-language cache while keeping worker warm.
+      await store.get("packages", "es");
+      await store.get("packages", "fr");
+      // Replace packages["en"] out-of-band while preserving packageRevisions["en"].
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const req = indexedDB.open(dbName);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("packages", "readwrite");
+        tx.objectStore("packages").put(makePkg("en", badDates), "en");
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+      db.close();
+      const fresh = await store.get("packages", "en");
+      try {
+        await searchPackage(fresh as never, "en", ["cukta"]);
+        results[label] = "accepted";
+      } catch (error) {
+        results[label] =
+          error instanceof PackageValidationError
+            ? "PackageValidationError"
+            : (error as Error).constructor.name;
+      }
+    }
+    return { coldPrepared: cold.prepared, results };
+  });
+  expect(warmReuse).toEqual({
+    coldPrepared: true,
+    results: {
+      Date: "PackageValidationError",
+      Map: "PackageValidationError",
+      Set: "PackageValidationError",
+      ArrayBuffer: "PackageValidationError",
+    },
+  });
+
+  // 2a. Manual source over 128 bytes in "Other source word for part 1" shows a notice and is not saved.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const draft = newDraft({
+      language: "en",
+      spelling: "ckugerku",
+      typedSpelling: "ckugerku",
+      kind: "lujvo",
+    });
+    await new LocalStore().put("drafts", "current", draft);
+  });
+  await page.goto("/new/lujvo");
+  const otherSource = page.getByLabel("Other source word for part 1");
+  await otherSource.fill("cukta".repeat(26));
+  await otherSource.dispatchEvent("change");
+  await expect(
+    page.getByText("This spelling exceeds the builder limit of 128 bytes."),
+  ).toBeVisible();
+  const savedManualSource = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const draft = (await new LocalStore().get("drafts", "current")) as {
+      lujvo?: { components: { spelling: string }[] };
+    };
+    return draft.lujvo?.components[0]?.spelling ?? "";
+  });
+  expect(savedManualSource).not.toBe("cukta".repeat(26));
+
+  // 2b. Manual rafsi > 64 or > 128 bytes in "Other rafsi you know" show notices and are not saved.
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { newDraft } = await import(String("/src/model/draft.ts"));
+    const { newLujvoState } = await import(String("/src/model/builders.ts"));
+    const draft = newDraft({
+      language: "en",
+      spelling: "",
+      kind: "lujvo",
+    });
+    draft.lujvo = {
+      ...newLujvoState(),
+      components: [
+        {
+          id: "c1",
+          spelling: "cukta",
+          kind: "gismu",
+          definition: null,
+          gloss: "book",
+          claims: [],
+          locked: null,
+        },
+        {
+          id: "c2",
+          spelling: "gerku",
+          kind: "gismu",
+          definition: null,
+          gloss: "dog",
+          claims: [],
+          locked: null,
+        },
+      ],
+    };
+    await new LocalStore().put("drafts", "current", draft);
+  });
+  await page.goto("/new/lujvo");
+  const knownRafsi = page.getByLabel("Other rafsi you know").first();
+  await knownRafsi.fill("a".repeat(129));
+  await knownRafsi.dispatchEvent("change");
+  await expect(
+    page.getByText(
+      "Each rafsi must fit within the builder limit of 128 bytes.",
+    ),
+  ).toBeVisible();
+  await knownRafsi.fill(
+    Array.from({ length: 65 }, (_, i) => `r${i}`).join(", "),
+  );
+  await knownRafsi.dispatchEvent("change");
+  await expect(
+    page.getByText("A part can list at most 64 rafsi."),
+  ).toBeVisible();
+  const savedClaims = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const draft = (await new LocalStore().get("drafts", "current")) as {
+      lujvo?: { components: { claims: unknown[] }[] };
+    };
+    return draft.lujvo?.components[0]?.claims ?? [];
+  });
+  expect(savedClaims).toEqual([]);
+});

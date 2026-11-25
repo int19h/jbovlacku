@@ -643,8 +643,7 @@ export async function lujvoPage(
             const choice = options.find(
               (choice) => choice.spelling === source.input.value,
             );
-            if (!choice) return;
-            selectLujvoSource(state, index, choice);
+            if (!choice || !selectLujvoSource(state, index, choice)) return;
             saver.touch();
             rebuild();
           });
@@ -660,12 +659,21 @@ export async function lujvoPage(
             lang: "jbo",
             spellcheck: false,
           });
+          const sourceNotice = p("", "notice");
+          sourceNotice.hidden = true;
           source.input.addEventListener("change", () => {
-            selectLujvoSource(state, index, source.input.value);
+            if (!selectLujvoSource(state, index, source.input.value)) {
+              sourceNotice.textContent =
+                "This spelling exceeds the builder limit of 128 bytes.";
+              sourceNotice.hidden = false;
+              return;
+            }
+            sourceNotice.textContent = "";
+            sourceNotice.hidden = true;
             saver.touch();
             rebuild();
           });
-          item.append(source.wrapper);
+          item.append(source.wrapper, sourceNotice);
           if (!options.length && !component.spelling)
             item.append(
               p(
@@ -848,21 +856,43 @@ export async function lujvoPage(
         lang: "jbo",
       });
       known.input.style.width = "12rem";
+      const knownNotice = p("", "notice");
+      knownNotice.hidden = true;
+      knownNotice.style.flexBasis = "100%";
+      knownNotice.style.margin = "0";
       known.input.addEventListener("change", () => {
-        const id = wordId({ language: "jbo", spelling: component.spelling });
         const packaged = component.claims.filter((c) =>
           inventory.claims.some((k) => k.pair === c.pair),
         );
-        const entered = known.input.value
-          .split(",")
-          .map((s) => s.trim().toLowerCase())
-          .filter(Boolean);
+        const entered = [
+          ...new Set(
+            known.input.value
+              .split(",")
+              .map((s) => s.trim().toLowerCase())
+              .filter(Boolean),
+          ),
+        ];
+        const extra = entered.filter(
+          (r) => !packaged.some((c) => c.rafsi === r),
+        );
+        if (extra.some((r) => !validPackageRafsi(r))) {
+          knownNotice.textContent =
+            "Each rafsi must fit within the builder limit of 128 bytes.";
+          knownNotice.hidden = false;
+          return;
+        }
+        if (packaged.length + extra.length > PACKAGE_RAFSI_LIMIT) {
+          knownNotice.textContent = `A part can list at most ${PACKAGE_RAFSI_LIMIT} rafsi.`;
+          knownNotice.hidden = false;
+          return;
+        }
+        const id = wordId({ language: "jbo", spelling: component.spelling });
+        knownNotice.textContent = "";
+        knownNotice.hidden = true;
         editLujvoRows(state, (rows) => {
           rows[index].claims = [
             ...packaged,
-            ...entered
-              .filter((r) => !packaged.some((c) => c.rafsi === r))
-              .map((r) => ({ rafsi: r, pair: rafsiPairId(id, r) })),
+            ...extra.map((r) => ({ rafsi: r, pair: rafsiPairId(id, r) })),
           ];
         });
         saver.touch();
@@ -887,7 +917,7 @@ export async function lujvoPage(
       remove.style.position = "absolute";
       remove.style.top = "14px";
       remove.style.right = "16px";
-      item.append(moves, name, chips, known.wrapper, remove);
+      item.append(moves, name, chips, known.wrapper, remove, knownNotice);
       if (row?.diagnostics.length)
         item.append(
           el("p", {

@@ -279,6 +279,12 @@ function sameStructuredValue(
     }
     return true;
   }
+  const protoA = Object.getPrototypeOf(incoming);
+  const protoB = Object.getPrototypeOf(trusted);
+  const plainA = protoA === Object.prototype || protoA === null;
+  const plainB = protoB === Object.prototype || protoB === null;
+  if (plainA !== plainB) return false;
+  if (!plainA && protoA !== protoB) return false;
   const keysA = Reflect.ownKeys(incoming);
   const keysB = Reflect.ownKeys(trusted);
   if (keysA.length !== keysB.length) return false;

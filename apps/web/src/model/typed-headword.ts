@@ -174,22 +174,26 @@ export function selectLujvoSource(
   state: LujvoState,
   index: number,
   source: LujvoComponentState | string,
-) {
+): boolean {
   const row = state.components[index];
   if (typeof source !== "string") {
-    state.components[index] = { ...source, id: row.id, locked: row.locked };
-  } else {
-    const spelling = typedWord(source);
-    Object.assign(row, {
-      spelling,
-      kind: detectWord(spelling).kind,
-      definition: null,
-      definitions: [],
-      claims: [],
-    });
-    if (spelling) delete row.unresolvedSource;
-    else row.unresolvedSource = "Link a source word if you know it.";
+    const next = { ...source, id: row.id, locked: row.locked };
+    if (!fitsSavedComponent(next)) return false;
+    state.components[index] = next;
+    return true;
   }
+  const spelling = typedWord(source);
+  if (spelling && !fitsComponentSpelling(spelling)) return false;
+  Object.assign(row, {
+    spelling,
+    kind: detectWord(spelling).kind,
+    definition: null,
+    definitions: [],
+    claims: [],
+  });
+  if (spelling) delete row.unresolvedSource;
+  else row.unresolvedSource = "Link a source word if you know it.";
+  return true;
 }
 
 /** Record a confirmed gismu choice and keep the previous component inputs. */
@@ -297,20 +301,38 @@ function signedComponent(
   profile: MorphologyProfile,
   zei = false,
 ): LujvoComponentState {
+  const locked =
+    component.rafsi && fitsComponentSpelling(component.rafsi)
+      ? component.rafsi
+      : null;
+  if (!fitsComponentSpelling(component.word.spelling)) {
+    return {
+      id: componentId(),
+      spelling: "",
+      kind: "other",
+      definition: null,
+      definitions: [],
+      claims: [],
+      locked,
+      gloss: "",
+      unresolvedSource: "Link a source word if you know it.",
+    };
+  }
   return {
     id: componentId(),
     spelling: component.word.spelling,
     kind: detectWord(component.word.spelling, profile).kind,
     definition: component.definition,
-    claims: zei
-      ? []
-      : [
-          {
-            rafsi: component.rafsi,
-            pair: rafsiPairId(wordId(component.word), component.rafsi),
-          },
-        ],
-    locked: component.rafsi,
+    claims:
+      zei || !validPackageRafsi(component.rafsi)
+        ? []
+        : [
+            {
+              rafsi: component.rafsi,
+              pair: rafsiPairId(wordId(component.word), component.rafsi),
+            },
+          ],
+    locked,
     gloss: "",
   };
 }
@@ -779,18 +801,26 @@ export function typedLujvoState(
           stripAcuteAccents(display) === stripAcuteAccents(choices[0].spelling)
           ? { ...choices[0], spelling: display }
           : choices[0];
-      if (zei)
+      const locked = fitsComponentSpelling(part.text) ? part.text : null;
+      if (zei) {
+        const zeiSpelling =
+          display && fitsComponentSpelling(display)
+            ? display
+            : (locked ?? "");
         return {
           id: componentId(),
-          spelling:
-            display && fitsComponentSpelling(display) ? display : part.text,
-          kind: detectWord(part.text, profile).kind,
+          spelling: zeiSpelling,
+          kind: zeiSpelling ? detectWord(part.text, profile).kind : "other",
           definition: null,
           definitions: [],
           gloss: "",
           claims: [],
-          locked: part.text,
+          locked,
+          ...(zeiSpelling
+            ? {}
+            : { unresolvedSource: "Link a source word if you know it." }),
         };
+      }
       return {
         id: componentId(),
         spelling: "",
@@ -798,7 +828,7 @@ export function typedLujvoState(
         definition: null,
         gloss: "",
         claims: [],
-        locked: part.text,
+        locked,
         unresolvedSource: choices.length
           ? "Choose a source word."
           : "Link a source word if you know it.",

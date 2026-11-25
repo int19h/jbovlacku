@@ -496,20 +496,20 @@ pub fn runtime_word_identifier(bytes: &[u8]) -> std::result::Result<String, JsVa
 pub fn valid_word_id_spellings(spellings: &str) -> bool {
     spellings.split('\0').all(jvc_core::valid_word_id_spelling)
 }
-#[wasm_bindgen]
-pub fn word_id_spellings(spellings: &str) -> std::result::Result<String, JsValue> {
-    if spellings.is_empty() {
-        return Ok(String::new());
-    }
+fn word_id_spellings_joined(spellings: &str) -> std::result::Result<String, Error> {
     let mut out = String::with_capacity(spellings.len() * 2);
     for (index, spelling) in spellings.split('\0').enumerate() {
         if index > 0 {
             out.push('\0');
         }
-        let id = jvc_core::word_id_for_lojban_spelling(spelling).map_err(fail)?;
+        let id = jvc_core::word_id_for_lojban_spelling(spelling)?;
         out.push_str(&id);
     }
     Ok(out)
+}
+#[wasm_bindgen]
+pub fn word_id_spellings(spellings: &str) -> std::result::Result<String, JsValue> {
+    word_id_spellings_joined(spellings).map_err(fail)
 }
 
 #[wasm_bindgen]
@@ -2065,5 +2065,13 @@ mod state_output_tests {
             serde_json::to_value(StateOutput::new(&evaluation)).unwrap(),
             previous
         );
+    }
+
+    #[test]
+    fn word_id_spellings_joined_rejects_empty_input() {
+        assert!(!valid_word_id_spellings(""));
+        assert!(word_id_spellings_joined("").is_err());
+        let expected = jvc_core::word_id_for_lojban_spelling("cukta").unwrap();
+        assert_eq!(word_id_spellings_joined("cukta").unwrap(), expected);
     }
 }

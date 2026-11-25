@@ -137,8 +137,10 @@ export function requireSavedRowLists(
   const { selmaho } = classification;
   if (!listsVerified) requireDenseList(selmaho);
   const selmahoList = selmaho as unknown[];
-  for (let i = 0; i < selmahoList.length; i++)
+  for (let i = 0; i < selmahoList.length; i++) {
     if (typeof selmahoList[i] !== "string") throw new PackageValidationError();
+    if (budget && (i + 1) % 64 === 0) budget.ensure(2 + i, "prepare");
+  }
 
   if (Object.hasOwn(value, "rafsi")) {
     if (!listsVerified) {

@@ -5,6 +5,7 @@ import {
   initializeCore,
   validWordIdSpellings,
   wordId,
+  wordIdSpellings,
   wordSpellingStatus,
 } from "../src/index.ts";
 
@@ -113,4 +114,24 @@ test("wordSpellingStatus plus core fallback agrees with wordId across BMP and co
       );
     }
   }
+});
+
+test("wordIdSpellings and validWordIdSpellings reject sparse arrays and empty Wasm input", async () => {
+  const sparse1 = new Array<string>(1);
+  assert.equal(validWordIdSpellings(sparse1), false);
+  assert.throws(() => wordIdSpellings(sparse1));
+
+  const sparse2 = new Array<string>(2);
+  sparse2[0] = "cukta";
+  assert.equal(validWordIdSpellings(sparse2), false);
+  assert.throws(() => wordIdSpellings(sparse2));
+
+  assert.equal(validWordIdSpellings([""]), false);
+  assert.throws(() => wordIdSpellings([""]));
+  assert.deepEqual(wordIdSpellings([]), []);
+  assert.equal(validWordIdSpellings([]), true);
+
+  const wasm = await import("../generated/jvc_runtime.js");
+  assert.equal(wasm.valid_word_id_spellings(""), false);
+  assert.throws(() => wasm.word_id_spellings(""));
 });

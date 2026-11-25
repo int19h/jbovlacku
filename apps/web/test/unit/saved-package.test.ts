@@ -1057,3 +1057,147 @@ test("savedRafsiClaims and savedSpellingChecks do not hide invalid rows behind a
     saved.PackageValidationError,
   );
 });
+
+test("samePackageStructure rejects non-plain attribution.dates objects and accepts null-prototype plain objects", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const budget = () => new SearchRequestBudget(searchMetrics());
+  const base = pkg([
+    v2Row({
+      attribution: {
+        source: "jbovlaste",
+        author: "alice",
+        account: null,
+        dates: {},
+      },
+    }),
+  ]) as never;
+
+  const nullProtoDates = Object.create(null);
+  const plainNull = pkg([
+    v2Row({
+      attribution: {
+        source: "jbovlaste",
+        author: "alice",
+        account: null,
+        dates: nullProtoDates,
+      },
+    }),
+  ]);
+  assert.equal(samePackageStructure(plainNull, base, budget()), true);
+
+  for (const badDates of [
+    new Date(0),
+    new Map([["created", 123]]),
+    new Set(["x"]),
+    new ArrayBuffer(8),
+  ]) {
+    const corrupted = pkg([
+      v2Row({
+        attribution: {
+          source: "jbovlaste",
+          author: "alice",
+          account: null,
+          dates: badDates,
+        },
+      }),
+    ]);
+    assert.equal(samePackageStructure(corrupted, base, budget()), false);
+  }
+});
+
+test("requireSavedRowLists meters uncapped classification.selmaho reads under a small budget", async () => {
+  const { SearchBudgetError, SearchRequestBudget, searchMetrics } =
+    await import("../../../../packages/search/src/index.ts");
+  const rawSelmaho = Array(200_000).fill("BAI");
+  let reads = 0;
+  const proxied = new Proxy(rawSelmaho, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && /^\d+$/.test(prop)) reads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const big = pkg([
+    v2Row({
+      classification: { kind: "gismu", selmaho: proxied as string[] },
+    }),
+  ]);
+  assert.throws(
+    () =>
+      search.validateCachedPackage(
+        big,
+        "en",
+        new SearchRequestBudget(searchMetrics(), {
+          workLimit: 1,
+          deadlineMs: Infinity,
+        }),
+      ),
+    SearchBudgetError,
+  );
+  assert.equal(reads, 64);
+});
+
+test("selectLujvoSource and signedComponent enforce builder component limits", async () => {
+  const typedHeadword = await import("../../src/model/typed-headword.ts");
+  const draftMod = await import("../../src/model/draft.ts");
+
+  // Manual source over 128 bytes is rejected without mutating the component row.
+  const draft = draftMod.newDraft({
+    language: "en",
+    spelling: "ckugerku",
+    typedSpelling: "ckugerku",
+    kind: "lujvo",
+  });
+  const state = typedHeadword.prepareLujvoBuilder(draft, null);
+  const before = structuredClone(state.components[0]);
+  assert.equal(
+    typedHeadword.selectLujvoSource(state, 0, "cukta".repeat(26)),
+    false,
+  );
+  assert.deepEqual(state.components[0], before);
+  assert.equal(saved.fitsSavedComponent(state.components[0]), true);
+
+  // A retained signed compound source over 128 bytes becomes an unresolved source.
+  const longSpelling = "cukta".repeat(26);
+  const signedDraft = draftMod.newDraft({
+    language: "en",
+    spelling: "ckugerku",
+    typedSpelling: "ckugerku",
+    kind: "lujvo",
+  });
+  signedDraft.compound = {
+    morphology: {
+      id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo",
+      version: "4",
+    },
+    scoring: {
+      id: "https://github.com/int19h/jbovlacku/blob/main/docs/morphology.md#extended-lujvo-scoring",
+      version: "1",
+    },
+    score: null,
+    notes: [],
+    components: [
+      {
+        word: { language: "jbo", spelling: longSpelling },
+        rafsi: "cku",
+        definition: null,
+      },
+      {
+        word: { language: "jbo", spelling: "gerku" },
+        rafsi: "gerku",
+        definition: null,
+      },
+    ],
+  };
+  signedDraft.evidenceForm = "ckugerku";
+  const hydrated = typedHeadword.prepareLujvoBuilder(signedDraft, null);
+  assert.equal(hydrated.components[0].spelling, "");
+  assert.equal(hydrated.components[0].locked, "cku");
+  assert.ok(hydrated.components[0].unresolvedSource);
+  assert.equal(saved.fitsSavedComponent(hydrated.components[0]), true);
+  assert.equal(hydrated.components[1].spelling, "gerku");
+});
