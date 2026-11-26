@@ -53,12 +53,16 @@ The guard covers status, carry, register, and account evidence merges.
 The evaluator builds this guard before the first eligible append to a fresh layout.
 It skips the guard if there are no semantic acceptances or claims with at least three carry entries.
 A live state and both checkpoint restores derive the guard from the positioned records.
-Building the guard is linear work. It makes one pass over the retained records to collect the scopes.
-It then scans the ranges of each scope if that visits at most twice the scope memberships plus the distinct ranges. Otherwise it reads each distinct stored range list at most three times.
+Building the guard is linear work. It makes a table of the retained records.
+If a claim has at least three carry entries, one pass indexes the record IDs. Another pass groups the records into scopes.
+Let H count the scope memberships, U count the distinct stored ranges, and W sum the ranges over every membership.
+If W is at most 2(H + U), the build scans the ranges of each scope.
+Otherwise it reads each distinct stored range list once to find candidate gaps, and twice more if at least one candidate exists.
 Under the input handling rule above, the budget does not charge it, and it takes no units from the append eligibility allowance.
 A graph builds the guard at most once, and later appends on the same layout reuse it.
 A rebuilt graph builds a new guard, and the rebuild already does linear work over the same records.
-A gap test looks up a sorted list of marks, or reads only the scopes of the ranges that end or start at that gap and saves its answer for the layout.
+An empty guard answers a gap test at once. A guard from the scan searches a sorted list of marks.
+A guard from the common path answers a gap that is not a candidate at once. At a candidate gap, the first test reads the scope lists of the ranges that end or start there and saves the answer for the layout. Later tests at that gap read no lists.
 Temporary join marks add no work to the full evaluation price.
 
 When a full evaluation exceeds its work budget, it returns an empty `resource_unavailable` result.

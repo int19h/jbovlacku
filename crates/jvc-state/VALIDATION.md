@@ -80,15 +80,20 @@ A failed graph build stops before the index scans the ranges.
 
 A merge scope contains the records that can contribute to one priced union.
 A test compares both kinds of scope index with direct membership at every issuer gap.
-If repeated wide operands would make the direct scan too large, the index reads each distinct range list once to find candidate gaps.
+Let H count the scope memberships, U count the distinct stored ranges, and W sum the ranges over every membership.
+If W is at most 2(H + U), the index scans the ranges of each scope and stores sorted marks.
+Otherwise it reads each distinct range list once to find candidate gaps.
 If at least one candidate gap exists, it reads each distinct range list twice more to record which ranges end or start at each candidate gap.
-A query at a candidate gap reads the scopes of those ranges and saves its answer.
+The first query at a candidate gap reads the scope lists of those ranges and saves its answer. Later queries at that gap read no lists.
+A query at another gap, or on an empty index, reads no lists.
 The build and the gap tests are input handling. They take no units from the work budget or the eligibility allowance.
 
 The signed tests compare fresh evaluation, live append, and both restored appends for these merges: carry, native status, historical witness, command authority, authorized claims, and import status periods.
-They use the exact fresh cost, one unit below it, and one unit above it.
+They use the default budget, the exact fresh cost, one unit below it, and one unit above it.
 All paths refuse below the cost and agree on results, work, and ancestry bytes at the cost or above it.
-The check records each `maxima` call with at least three stored operands and each carry prefix with at least two present heads. Each recorded union must stay in one issuer block or lie in one collected scope.
+The check records the IDs of each `maxima` call that names at least three distinct stored records.
+Each carry closure adds at most one set: its present heads without the last present occurrence, kept if at least two distinct heads remain.
+Each recorded union must stay in one issuer block or lie in one collected scope.
 The signed merge tests and the append comparisons that use `fresh_checked` test recorded unions when the reference graph exists and its resource flag is clear.
 
 Two tests add one transfer and its acceptance to many root judgments from distinct keys.

@@ -222,10 +222,12 @@ impl<'a> Scopes<'a> {
 ///
 /// The index is input handling. It is not charged to the work meter
 /// or to the fast-path eligibility fuel. Its construction is linear
-/// work: one pass over the retained records to collect scopes, then
-/// either the direct scan, which visits at most `2(H + U)` ranges, or
-/// at most three reads of each distinct stored range list. `H` counts
-/// scope incidences and `U` counts distinct stored ranges. A graph
+/// work. It makes a table of the records. With a carry candidate, one
+/// pass indexes the record IDs, and another groups the records into
+/// scopes. Then it takes either the direct scan, which visits at most
+/// `2(H + U)` ranges, or at most three reads of each distinct stored
+/// range list. `H` counts scope incidences and `U` counts distinct
+/// stored ranges. A graph
 /// builds it at most once, before its first
 /// eligible append. A later append on the same layout reuses it. A
 /// rebuilt graph builds a new one, and that rebuild already does

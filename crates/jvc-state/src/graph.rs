@@ -60,9 +60,11 @@ pub(super) fn layout_edge_reads() -> usize {
 pub(super) type PricedUnion = (u8, BTreeSet<String>);
 #[cfg(test)]
 thread_local! {
-    /// While set, the operands of every `maxima` call with at least
-    /// three stored operands and every carry prefix with at least two
-    /// present heads. Smaller unions cannot form a priced join.
+    /// While set, the IDs of each `maxima` call that names at least
+    /// three distinct stored records. Each `closure` call adds at most
+    /// one set: its present heads without the last present occurrence,
+    /// kept if at least two distinct heads remain. That set holds every
+    /// shorter prefix. Smaller unions cannot form a priced join.
     static PRICED_UNIONS: std::cell::RefCell<Option<Vec<PricedUnion>>> =
         const { std::cell::RefCell::new(None) };
 }
