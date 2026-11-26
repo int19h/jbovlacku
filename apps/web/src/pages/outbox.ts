@@ -3,12 +3,7 @@ import { el, p, link, text, button, describe, download } from "../lib/dom.ts";
 import { clockTime, dayMonth, inDuration } from "../lib/format.ts";
 import type { RenderContext, Route } from "../app/router.ts";
 import type { App } from "../app/context.ts";
-import {
-  describePeer,
-  isFinished,
-  recipientLabel,
-  UNCONFIRMED_TEXT,
-} from "../data/delivery.ts";
+import { isFinished, recipientLabel } from "../data/delivery.ts";
 import {
   ownGraph,
   dependentIds,
@@ -108,17 +103,20 @@ export async function outboxPage(
     currentActive = active;
     const waiting = active.filter((item) => !item.stopped);
     const stopped = active.filter((item) => item.stopped);
-    const kinds = new Set(
+    // The summary reads the same facts as the rows.
+    const kinds = new Set<string>(
       waiting.flatMap((item) =>
-        Object.entries(item.peers).map(([peerId, peer]) =>
-          peer.failure === "unresolved"
-            ? "unresolved"
-            : app.delivery.needsReceipt(item, peerId)
+        Object.values(app.delivery.view(item).peers).map((view) =>
+          view.status.startsWith("saving")
+            ? "saving"
+            : view.status === "verifying" || view.status === "unconfirmed"
               ? "unconfirmed"
-              : peer.state,
+              : view.status,
         ),
       ),
     );
+    if (stopped.some((item) => app.delivery.view(item).saving))
+      kinds.add("saving");
     const reasons: string[] = [];
     if (kinds.has("unresolved"))
       reasons.push(
@@ -132,6 +130,10 @@ export async function outboxPage(
       reasons.push(
         "A server stored a signed header without its required body.",
       );
+    if (kinds.has("saving"))
+      reasons.push(
+        "This browser could not save some delivery results yet. It keeps trying to save them, also while a record is stopped, and contacts no server for those recipients until then.",
+      );
     if (kinds.has("unknown"))
       reasons.push(
         waiting.some((item) =>
@@ -144,7 +146,7 @@ export async function outboxPage(
       );
     if (kinds.has("unconfirmed"))
       reasons.push(
-        "Some delivery outcomes are unconfirmed. The browser checks their receipts again when online.",
+        "Some delivery outcomes are unconfirmed. The browser asks for their receipts before it sends the same bytes again.",
       );
     if (kinds.has("queued"))
       reasons.push(
@@ -302,37 +304,37 @@ function row(
       text(` ${label.action}${when ? ` · ${when}` : ""}`, "meta"),
     ),
   );
+  const summary = app.delivery.view(item);
   for (const [peerId, peer] of Object.entries(item.peers)) {
-    if (peer.state === "accepted" && Object.keys(item.peers).length === 1)
+    const view = summary.peers[peerId];
+    if (view.status === "accepted" && Object.keys(item.peers).length === 1)
       continue;
     const parts: string[] = [];
     if (Object.keys(item.peers).length > 1)
       parts.push(`${recipientLabel(item, peerId)}:`);
     if (peer.lastAttempt)
       parts.push(`Last try ${clockTime(new Date(peer.lastAttempt))}.`);
-    const receiptPending = app.delivery.needsReceipt(item, peerId);
     parts.push(
-      receiptPending
-        ? UNCONFIRMED_TEXT
-        : app.delivery.unconfirmed(item, peerId)
-          ? // A stopped record has no automatic lookup.
-            app.delivery.describe(item, peerId)
-          : // A timeout keeps its own text. The browser's offline report does
-            // not show that a request that timed out was never sent.
-            !navigator.onLine &&
-              peer.failure !== "unresolved" &&
-              peer.failure !== "timeout" &&
-              peer.state !== "accepted" &&
-              peer.state !== "refused"
-            ? "Waiting for a connection."
-            : describePeer(peer),
+      // A timeout keeps its own text. The browser's offline report does
+      // not show that a request that timed out was never sent.
+      ["queued", "unknown", "missing-body"].includes(view.status) &&
+        !navigator.onLine &&
+        peer.failure !== "timeout"
+        ? "Waiting for a connection."
+        : view.text,
     );
-    const nextTry = app.delivery.nextTryAt(item, peerId);
-    if (navigator.onLine && nextTry !== null)
+    // A local save runs offline too. Network work waits for a connection.
+    if (view.next && (view.next.kind === "save" || navigator.onLine))
       parts.push(
-        `${receiptPending ? "Next receipt check" : "Next try"} ${inDuration(nextTry - Date.now())}.`,
+        `${
+          view.next.kind === "save"
+            ? "Next save attempt"
+            : view.next.kind === "receipt"
+              ? "Next receipt check"
+              : "Next try"
+        } ${inDuration(view.next.at - Date.now())}.`,
       );
-    if (peer.failure === "unresolved")
+    if (peer.failure === "unresolved" || view.status === "unresolved")
       // A migrated record saved no address. Preferences never supply one.
       parts.push(
         "This browser cannot send it. Export is the only path: save the record as a file and submit it with another client, then stop retrying here.",
@@ -374,7 +376,13 @@ function row(
         },
       ),
     );
-    if (discardState === "leaf")
+    if (discardState === "leaf" && summary.saving)
+      info.append(
+        el("small", {
+          text: "This browser is still saving a delivery result. Discard is available after it is saved.",
+        }),
+      );
+    else if (discardState === "leaf")
       li.append(
         button(
           "Discard",
@@ -418,16 +426,27 @@ function row(
       tryNow.setAttribute("aria-disabled", "true");
       try {
         const result = await app.delivery.tryNow(item.id);
-        const states = result
-          ? Object.values(result.peers).map((peer) => peer.state)
-          : [];
+        const after = result ? app.delivery.view(result) : null;
         app.announce(
-          states.every((state) => state === "accepted")
-            ? "Delivered."
-            : "Still not delivered. The row shows the latest outcome.",
+          !after
+            ? "This record is no longer in this browser's outbox."
+            : after.delivered
+              ? "Delivered."
+              : after.accepted
+                ? "The server accepted this record. This browser still needs to save the receipt."
+                : after.saving
+                  ? "This browser still needs to save a delivery result. The row shows the next step."
+                  : after.unconfirmed
+                    ? "Delivery is unconfirmed. The row shows the next step."
+                    : "Still not delivered. The row shows the latest outcome.",
         );
       } catch (error) {
-        app.announce(describe(error));
+        // A result that still needs saving is not a delivery failure.
+        app.announce(
+          app.delivery.hasPendingWrite(item.id)
+            ? "This browser could not save a delivery result yet. It keeps trying. The row shows the next step."
+            : describe(error),
+        );
       } finally {
         tryNow.removeAttribute("aria-disabled");
       }

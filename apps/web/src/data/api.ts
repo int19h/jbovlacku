@@ -44,6 +44,10 @@ export class RequestError extends Error {
     message: string,
     public code: string | null = null,
     public retryAfterMs: number | null = null,
+    /** The absolute time from Retry-After, fixed when the headers arrived. */
+    public retryAt: number | null = retryAfterMs === null
+      ? null
+      : Date.now() + retryAfterMs,
   ) {
     super(message);
   }
@@ -121,15 +125,20 @@ export interface RequestOptions extends RequestInit {
   peer?: Peer;
   timeoutMs?: number;
 }
-function parseRetryAfter(value: string | null): number | null {
+/**
+ * The absolute Retry-After deadline. Seconds count from `received`, the time
+ * the headers arrived. A date is already absolute. An unrepresentable or
+ * malformed value gives null, so ordinary backoff applies.
+ */
+export function retryDeadline(
+  value: string | null,
+  received: number,
+): number | null {
   if (!value) return null;
-  const now = Date.now();
-  const delay = /^\d+$/.test(value)
-    ? Number(value) * 1000
-    : Math.max(0, Date.parse(value) - now);
-  return Number.isSafeInteger(delay) && Number.isSafeInteger(now + delay)
-    ? delay
-    : null;
+  const at = /^\d+$/.test(value.trim())
+    ? received + Number(value.trim()) * 1000
+    : Date.parse(value);
+  return Number.isSafeInteger(at) ? Math.max(at, received) : null;
 }
 export async function objectBytes(
   path: string,
@@ -158,20 +167,30 @@ export async function objectBytes(
     if (options.signal?.aborted) throw error;
     throw new TransportError("No connection to the server.", "offline");
   }
+  // Fix the server's deadline when the headers arrive. A later body failure
+  // keeps it.
+  const received = Date.now();
+  const retryAt = retryDeadline(response.headers.get("retry-after"), received);
   let bytes: Uint8Array;
   try {
     bytes = await readBounded(response, limit, signal);
   } catch (error) {
     if ((error as { name?: string } | null)?.name === "QuotaExceededError")
       throw error;
-    if ((error as { name?: string } | null)?.name === "TimeoutError")
-      throw new TransportError("The server did not answer in time.", "timeout");
     if (options.signal?.aborted) throw error;
-    if (error instanceof TypeError)
-      throw new TransportError("No connection to the server.", "offline");
-    // An error answer keeps its status when its body is too large. The body
-    // is discarded, and the error uses the plain status message.
-    if (!(error instanceof ByteLimitError) || response.ok) throw error;
+    // An error answer keeps its status and deadline when its body is too
+    // large, interrupted or late. The body is discarded, and the error uses
+    // the plain status message. A damaged body never proves acceptance.
+    if (response.ok) {
+      if ((error as { name?: string } | null)?.name === "TimeoutError")
+        throw new TransportError(
+          "The server did not answer in time.",
+          "timeout",
+        );
+      if (error instanceof TypeError)
+        throw new TransportError("No connection to the server.", "offline");
+      throw error;
+    }
     bytes = new Uint8Array();
   }
   if (!response.ok) {
@@ -186,7 +205,8 @@ export async function objectBytes(
       response.status,
       message,
       code,
-      parseRetryAfter(response.headers.get("retry-after")),
+      retryAt === null ? null : Math.max(0, retryAt - received),
+      retryAt,
     );
   }
   return bytes;

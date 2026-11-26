@@ -940,6 +940,39 @@ export async function handoverPage(
   renderApprove();
 }
 /** The status of a stored handover, for the key page and this page. */
+/** The handover headline. It reads the same delivery summary as the record lines. */
+export function handoverStatusLine(
+  delivery: App["delivery"],
+  state: {
+    transfer: OutboxItem | null;
+    accept: OutboxItem | null;
+    transferDone: boolean;
+    acceptDone: boolean;
+  },
+): string {
+  const summary = (item: OutboxItem | null) =>
+    item ? delivery.view(item) : null;
+  const transfer = summary(state.transfer);
+  const accept = summary(state.accept);
+  const word = (view: ReturnType<typeof summary>) =>
+    view?.accepted
+      ? "accepted, saving the receipt"
+      : view?.unconfirmed
+        ? "unconfirmed"
+        : "waiting";
+  return state.transferDone && state.acceptDone
+    ? "Handover complete. The new key is active, and the old key is retired."
+    : transfer?.accepted && accept?.accepted
+      ? "Both events were accepted. This browser still needs to save a receipt."
+      : state.transferDone
+        ? `Old key retired, acceptance ${word(accept)}.`
+        : state.acceptDone
+          ? `Acceptance delivered, transfer ${word(transfer)}.`
+          : word(transfer) === "waiting" && word(accept) === "waiting"
+            ? "Old key retired locally. Both events are waiting to upload."
+            : `Old key retired locally. Transfer ${word(transfer)}, acceptance ${word(accept)}.`;
+}
+
 export function renderExisting(
   container: HTMLElement,
   app: App,
@@ -974,14 +1007,7 @@ export function renderExisting(
     const active = document.activeElement;
     const focusKind = active && box.contains(active) ? active.tagName : null;
     box.replaceChildren();
-    const line =
-      state.transferDone && state.acceptDone
-        ? "Handover complete. The new key is active, and the old key is retired."
-        : state.transferDone
-          ? "Old key retired, acceptance waiting."
-          : state.acceptDone
-            ? "Acceptance delivered, transfer waiting."
-            : "Old key retired locally. Both events are waiting to upload.";
+    const line = handoverStatusLine(app.delivery, state);
     const statusLine = el("p", {
       class: "small",
       style: "font-weight:650;margin:0",
@@ -999,10 +1025,18 @@ export function renderExisting(
       if (!item) return p(`${name}: not in this browser's outbox.`, "meta");
       return p(
         `${name}: ${Object.entries(item.peers)
-          .map(
-            ([id, peer]) =>
-              `${savedPeer(item, id)?.label ?? id} ${app.delivery.unconfirmed(item, id) ? "unconfirmed" : peer.state}`,
-          )
+          .map(([id]) => {
+            const view = app.delivery.peerView(item, id);
+            return `${savedPeer(item, id)?.label ?? id} ${
+              view.status === "saving-accepted"
+                ? "accepted, receipt not saved yet"
+                : view.status.startsWith("saving")
+                  ? "result not saved yet"
+                  : view.status === "verifying" || view.status === "unconfirmed"
+                    ? "unconfirmed"
+                    : view.status
+            }`;
+          })
           .join(", ")}.`,
         "meta",
       );

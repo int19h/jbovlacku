@@ -935,47 +935,56 @@ export async function publishPage(
     renderSaved(undefined, published.ids);
   }
 }
-/** The values that the saved group actually shows. Retry timestamps stay private to delivery. */
+/** The values that the saved group actually shows. Every fact comes from the delivery summary. */
 export function savedGroupState(
   items: OutboxItem[],
   delivery: App["delivery"],
 ) {
-  const unfinished = items.filter((item) =>
-    Object.values(item.peers).some((peer) => peer.state !== "accepted"),
-  );
-  const unconfirmed = unfinished.some((item) =>
-    Object.keys(item.peers).some((peerId) =>
-      delivery.needsReceipt(item, peerId),
-    ),
-  );
-  const failed = unfinished.some((item) => delivery.isNotDelivered(item));
-  const sending =
-    !failed && unfinished.some((item) => delivery.isDelivering(item.id));
+  const views = new Map(items.map((item) => [item, delivery.view(item)]));
+  const unfinished = items.filter((item) => !views.get(item)!.delivered);
+  const pending = unfinished.map((item) => views.get(item)!);
+  const saving = pending.some((view) => view.saving);
+  const unconfirmed = pending.some((view) => view.unconfirmed);
+  const stopped = pending.some((view) => view.stopped);
+  const failed = pending.some((view) => view.notDelivered);
+  const sending = !failed && pending.some((view) => view.sending);
   const labels = labelIndex(items);
   return {
     unfinished,
     failed,
     sending,
-    headline: sending
-      ? "Saved. Sending."
-      : unconfirmed
-        ? "Saved. Outcome unconfirmed."
-        : unfinished.length
-          ? failed
-            ? "Saved. Not delivered yet."
-            : "Saved. Waiting to send."
-          : "Published.",
-    explanation: sending
-      ? `All ${items.length} signed records are saved in this browser. Their first delivery is in progress.`
-      : unconfirmed
-        ? "This browser keeps the exact signed bytes and will check the receipt again when online."
-        : unfinished.length
-          ? `${unfinished.length} of ${items.length} signed records have unfinished delivery. This browser keeps their exact bytes. Publishing again would create a second definition. Use the saved records to continue delivery.`
-          : `All ${items.length} signed records were accepted.`,
+    headline: !items.length
+      ? "Saved. Delivery state unavailable."
+      : sending
+        ? "Saved. Sending."
+        : saving
+          ? "Saved. A delivery result still needs saving."
+          : unconfirmed
+            ? "Saved. Outcome unconfirmed."
+            : unfinished.length
+              ? failed
+                ? "Saved. Not delivered yet."
+                : "Saved. Waiting to send."
+              : "Published.",
+    explanation: !items.length
+      ? "This browser could not find these signed records in its outbox. Open Not delivered to check them."
+      : sending
+        ? `All ${items.length} signed records are saved in this browser. Their first delivery is in progress.`
+        : saving
+          ? "A server answered, but this browser could not save that answer yet. It keeps the exact signed bytes and keeps trying to save the answer."
+          : unconfirmed
+            ? stopped
+              ? "This browser keeps the exact signed bytes. Automatic delivery is stopped, so it does not check the receipt until you resume."
+              : "This browser keeps the exact signed bytes and will check the receipt again when online."
+            : unfinished.length
+              ? `${unfinished.length} of ${items.length} signed records have unfinished delivery. This browser keeps their exact bytes. Publishing again would create a second definition. Use the saved records to continue delivery.`
+              : `All ${items.length} signed records were accepted.`,
     lines: items.map((item) => {
       const label = resolvedLabel(item, labels);
-      return `${label.action} ${label.subject}: ${Object.keys(item.peers)
-        .map((peerId) => delivery.describe(item, peerId))
+      return `${label.action} ${label.subject}: ${Object.values(
+        views.get(item)!.peers,
+      )
+        .map((view) => view.text)
         .join(" ")}`;
     }),
   };

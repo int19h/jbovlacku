@@ -161,7 +161,7 @@ function fixture(t: TestContext, signed = signedProfile()) {
   };
 }
 
-test("automatic delivery retries a failed receipt write with its send mark", async (t) => {
+test("automatic delivery replays a failed receipt write locally with its send mark", async (t) => {
   const f = fixture(t);
   f.fail.outcome = 2;
   await f.engine.tick().catch(() => {});
@@ -169,16 +169,18 @@ test("automatic delivery retries a failed receipt write with its send mark", asy
   assert.ok(sent.sendAttempt);
   assert.equal(sent.sendStarted, Date.now());
   assert.deepEqual(f.requests, ["post"]);
-
-  await f.advance(14_999);
-  assert.deepEqual(f.requests, ["post"]);
-  await f.advance(1);
-  assert.deepEqual(f.requests, ["post", "receipt"]);
+  // The first local retry runs after 1 s and fails. The second runs 2 s
+  // later and commits. No request goes to the server.
+  await f.advance(999);
   assert.deepEqual(f.saved.peers.self, sent);
-  await f.advance(15_000);
-  assert.deepEqual(f.requests, ["post", "receipt", "receipt"]);
+  await f.advance(1);
+  assert.deepEqual(f.saved.peers.self, sent);
+  await f.advance(2_000);
   assert.equal(f.saved.peers.self.state, "accepted");
+  assert.deepEqual(f.requests, ["post"]);
   assert.equal(f.saved.transport, f.item.transport);
+  await f.advance(120_000);
+  assert.deepEqual(f.requests, ["post"]);
 });
 
 test("a direct delivery failure rejects to the caller and still retries", async (t) => {
@@ -187,12 +189,12 @@ test("a direct delivery failure rejects to the caller and still retries", async 
   await assert.rejects(f.engine.deliver(f.item.id, true), {
     name: "QuotaExceededError",
   });
-  await f.advance(15_000);
-  assert.deepEqual(f.requests, ["post", "receipt"]);
+  await f.advance(1_000);
+  assert.deepEqual(f.requests, ["post"]);
   assert.equal(f.saved.peers.self.state, "accepted");
 });
 
-test("a failed acceptance save retries the receipt of a refused record without a POST", async (t) => {
+test("a failed acceptance save of a refused record replays locally without a request", async (t) => {
   const f = fixture(t);
   Object.assign(f.item.peers.self, {
     state: "refused",
@@ -207,10 +209,10 @@ test("a failed acceptance save retries the receipt of a refused record without a
   });
   assert.equal(f.saved.peers.self.state, "refused");
   assert.deepEqual(f.requests, ["receipt"]);
-  await f.advance(14_999);
+  // The saved refusal hides the pending acceptance until the local write
+  // commits. It recovers without a user action.
+  await f.advance(1_000);
   assert.deepEqual(f.requests, ["receipt"]);
-  await f.advance(1);
-  assert.deepEqual(f.requests, ["receipt", "receipt"]);
   assert.equal(f.saved.peers.self.state, "accepted");
   assert.equal(f.saved.transport, f.item.transport);
 });
@@ -259,12 +261,13 @@ for (const failSave of [true, false]) {
       },
     );
     if (failSave) {
+      // The first envelope read verifies the variant. The acceptance save
+      // fails, and a local replay commits it without another request.
       f.fail.outcome = 1;
       await assert.rejects(f.engine.tryNow(f.item.id), {
         name: "QuotaExceededError",
       });
-      await f.advance(15_000);
-      assert.deepEqual(requests, ["post", "envelope", "receipt", "envelope"]);
+      await f.advance(1_000);
     } else {
       // Reuse only persisted state after the envelope read fails.
       const first = await new DeliveryEngine(
@@ -275,11 +278,10 @@ for (const failSave of [true, false]) {
       t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 25_000 });
       await f.engine.tick();
     }
-    if (failSave) await f.advance(15_000);
     assert.deepEqual(
       requests,
       failSave
-        ? ["post", "envelope", "receipt", "envelope", "receipt", "envelope"]
+        ? ["post", "envelope"]
         : ["post", "envelope", "receipt", "envelope"],
     );
     assert.equal(f.saved.peers.self.state, "accepted");
@@ -287,7 +289,7 @@ for (const failSave of [true, false]) {
   });
 }
 
-test("a missing receipt does not end pending envelope verification on a refused record", async (t) => {
+test("a saved refusal hides a pending verification until its local write commits", async (t) => {
   const variants = JSON.parse(
     await readFile(
       new URL(
@@ -327,10 +329,18 @@ test("a missing receipt does not end pending envelope verification on a refused 
   await assert.rejects(f.engine.tryNow(f.item.id), {
     name: "QuotaExceededError",
   });
-  await f.advance(15_000);
-  assert.equal(lookups, 2);
+  assert.equal(lookups, 1);
   assert.equal(f.saved.peers.self.state, "refused");
-  await f.advance(15_000);
+  // The local write saves the open verification. No request runs meanwhile.
+  await f.advance(1_000);
+  assert.equal(lookups, 1);
+  assert.equal(f.saved.peers.self.verifyReceipt, true);
+  // The saved check runs on its network time. A 404 keeps it open.
+  await f.advance(14_000);
+  assert.equal(lookups, 2);
+  assert.equal(f.saved.peers.self.verifyReceipt, true);
+  assert.equal(f.saved.peers.self.state, "unknown");
+  await f.advance(30_000);
   assert.equal(lookups, 3);
   assert.equal(envelopes, 2);
   assert.equal(f.saved.peers.self.state, "accepted");
@@ -359,17 +369,15 @@ test("one record's repeated receipt write failure leaves other records due", asy
   // dependent does not wait for the failed save.
   assert.deepEqual(f.sentIds, [f.item.id, dependent.id, independent.id]);
   assert.equal(f.records.get(independent.id)?.peers.self.state, "accepted");
-  for (let retry = 0; retry < 2; retry++) {
-    const count = f.requests.length;
-    await f.advance(14_999);
-    assert.equal(f.requests.length, count);
-    await f.advance(1);
-    assert.equal(f.requests.at(-1), "receipt");
-    assert.deepEqual(f.sentIds, [f.item.id, dependent.id, independent.id]);
+  // Local retries after 1 s and 2 s fail, the one 4 s later commits.
+  for (let second = 1; second <= 6; second++) {
+    await f.advance(1_000);
+    assert.equal(f.saved.peers.self.state, "queued");
   }
-  await f.advance(15_000);
+  await f.advance(1_000);
   assert.equal(f.saved.peers.self.state, "accepted");
   assert.equal(f.saved.transport, f.item.transport);
+  assert.deepEqual(f.requests, ["post", "post", "post"]);
   assert.deepEqual(f.sentIds, [f.item.id, dependent.id, independent.id]);
 });
 
@@ -399,7 +407,7 @@ test("an unrepresentable Retry-After falls back to a finite receipt retry", asyn
   assert.equal(f.saved.transport, f.item.transport);
 });
 
-test("a failed refusal save checks the receipt and preserves the refusal without another POST", async (t) => {
+test("a failed refusal save replays the refusal locally without another request", async (t) => {
   const f = fixture(t);
   t.mock.method(
     globalThis,
@@ -416,12 +424,12 @@ test("a failed refusal save checks the receipt and preserves the refusal without
   f.fail.refusal = 1;
   await f.engine.tick();
   assert.ok(f.saved.peers.self.sendAttempt);
-  await f.advance(15_000);
-  assert.deepEqual(f.requests, ["post", "receipt"]);
+  await f.advance(1_000);
+  assert.deepEqual(f.requests, ["post"]);
   assert.equal(f.saved.peers.self.state, "refused");
   assert.equal(f.saved.peers.self.nextAttempt, null);
   await f.advance(60_000);
-  assert.deepEqual(f.requests, ["post", "receipt"]);
+  assert.deepEqual(f.requests, ["post"]);
   assert.equal(f.saved.transport, f.item.transport);
 });
 
@@ -476,10 +484,13 @@ test("a failed mark write sends nothing until a later attempt commits a mark", a
   const f = fixture(t);
   f.fail.mark = 1;
   await f.engine.tick();
+  // Nothing was sent, so nothing is saved. The row stays as it was.
   assert.deepEqual(f.requests, []);
-  assert.equal(f.saved.peers.self.state, "unknown");
+  assert.equal(f.saved.peers.self.state, "queued");
+  assert.equal(f.saved.peers.self.sendAttempt, undefined);
   await f.advance(15_000);
-  assert.deepEqual(f.requests, ["receipt", "post"]);
+  // The later attempt rereads the row and commits its own mark.
+  assert.deepEqual(f.requests, ["post"]);
   assert.equal(f.saved.peers.self.state, "accepted");
 });
 
@@ -504,7 +515,8 @@ test("an older schedule read cannot remove the retry timer for a failed write", 
   await f.engine.deliver(f.item.id, true).catch(() => {});
   finish();
   await f.advance(15_000);
-  assert.deepEqual(f.requests, ["post", "receipt"]);
+  // The local write retry survives the older read. It needs no request.
+  assert.deepEqual(f.requests, ["post"]);
   assert.equal(f.saved.peers.self.state, "accepted");
 });
 

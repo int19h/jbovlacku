@@ -174,29 +174,27 @@ for (const mode of [
     const expectedLookups = mode === "refused" ? [before.saved.id] : [];
     expect(lookups).toEqual(expectedLookups);
     const read = () => readOutbox(page, "receipt-retry");
-    if (before.other) {
+    if (before.other)
       expect(
         (await read()).find((row) => row.id === before.other?.id)?.peers.self
           .state,
       ).toBe("accepted");
-      await page.clock.fastForward(15_000);
-      await expect.poll(() => lookups.slice()).toEqual([before.saved.id]);
-      expect(
-        (await read()).find((row) => row.id === before.saved.id)?.peers.self
-          .state,
-      ).toBe("queued");
-      expectedLookups.push(before.saved.id);
-    }
-    await page.clock.fastForward(15_000);
+    // A validated answer whose write failed commits locally, with no
+    // request. An uncertain answer looks up the receipt after the backoff.
+    if (mode === "oversized") await page.clock.fastForward(15_000);
+    // Storage answers in real time, so the fake clock moves one second per
+    // check until the local write commits.
     await expect
-      .poll(
-        async () =>
-          (await read()).find((row) => row.id === before.saved.id)?.peers.self
-            .state,
-      )
+      .poll(async () => {
+        if (mode !== "oversized") await page.clock.runFor(1_000);
+        return (await read()).find((row) => row.id === before.saved.id)?.peers
+          .self.state;
+      })
       .toBe("accepted");
     expect(posts).toEqual(expectedPosts);
-    expect(lookups).toEqual([...expectedLookups, before.saved.id]);
+    expect(lookups).toEqual(
+      mode === "oversized" ? [before.saved.id] : expectedLookups,
+    );
     const after = await read();
     expect(after).toHaveLength(before.other ? 2 : 1);
     expect(after.find((row) => row.id === before.saved.id)).toMatchObject({
@@ -206,7 +204,7 @@ for (const mode of [
   });
 }
 
-test("delivery retries an envelope read after a failed receipt save", async ({
+test("a verified variant acceptance whose save fails commits locally without another request", async ({
   page,
 }) => {
   const variants = JSON.parse(
@@ -292,11 +290,7 @@ test("delivery retries an envelope read after a failed receipt save", async ({
   expect(failure).toBe(true);
   expect(posts).toEqual([seed.item.transport]);
   expect(envelopeReads).toBe(1);
-  await page.clock.fastForward(15_000);
-  await expect.poll(() => envelopeReads).toBe(2);
-  expect(posts).toEqual([seed.item.transport]);
-  await expect.poll(() => lookups.slice()).toEqual([seed.item.id]);
-  await page.clock.fastForward(15_000);
+  await page.clock.fastForward(2_000);
   await expect
     .poll(
       async () =>
@@ -304,14 +298,14 @@ test("delivery retries an envelope read after a failed receipt save", async ({
     )
     .toBe("accepted");
   expect(posts).toEqual([seed.item.transport]);
-  expect(lookups).toEqual([seed.item.id, seed.item.id]);
-  expect(envelopeReads).toBe(3);
+  expect(lookups).toEqual([]);
+  expect(envelopeReads).toBe(1);
   expect((await readOutbox(page, "receipt-retry"))[0].transport).toBe(
     seed.item.transport,
   );
 });
 
-test("a failed publication receipt save reports an unconfirmed outcome", async ({
+test("a failed publication receipt save reports a result that still needs saving", async ({
   page,
 }) => {
   await createIdentity(page);
@@ -356,8 +350,13 @@ test("a failed publication receipt save reports an unconfirmed outcome", async (
   await acceptFirstSignature(page);
   await expect(page.getByText(/A step after saving failed:/)).toBeVisible();
   const saved = page.getByRole("region", { name: "Saved publication" });
-  await expect(saved).toContainText("Saved. Outcome unconfirmed.");
-  await expect(saved).toContainText("will check the receipt again when online");
+  await expect(saved).toContainText(
+    "Saved. A delivery result still needs saving.",
+  );
+  await expect(saved).toContainText("could not save that answer yet");
+  await expect(saved).toContainText(
+    "The server accepted this record. This browser still needs to save the receipt.",
+  );
   await expect(saved).not.toContainText("Saved. Sending.");
   await expect(saved.getByRole("button", { name: "Try now" })).toBeVisible();
   const [first] = (await readOutbox(page)).sort((a, b) => a.order - b.order);
@@ -366,7 +365,7 @@ test("a failed publication receipt save reports an unconfirmed outcome", async (
   // records of the group can go ahead. The first record is sent once.
   expect(posts.filter((post) => post === first.transport)).toHaveLength(1);
   expect(lookups).toEqual([]);
-  await page.clock.fastForward(15_000);
+  await page.clock.fastForward(2_000);
   await expect
     .poll(
       async () =>
@@ -374,8 +373,19 @@ test("a failed publication receipt save reports an unconfirmed outcome", async (
           .state,
     )
     .toBe("accepted");
-  expect(posts.filter((post) => post === first.transport)).toHaveLength(1);
-  expect(lookups.filter((id) => id === first.id)).toHaveLength(1);
+  // The local write needed no request. Every record of the group went
+  // once, also the later ones that went ahead meanwhile.
+  await expect
+    .poll(async () =>
+      (await readOutbox(page)).every(
+        (row) => row.peers.self.state === "accepted",
+      ),
+    )
+    .toBe(true);
+  expect(lookups).toEqual([]);
+  expect(posts).toHaveLength(4);
+  expect(new Set(posts).size).toBe(posts.length);
+  await expect(saved).toContainText("Published.");
   expect(
     (await readOutbox(page)).find((row) => row.id === first.id)?.transport,
   ).toBe(first.transport);
@@ -511,7 +521,9 @@ async function storedPeer(page: Page, database: string) {
   return (await readOutbox(page, database))[0].peers.self;
 }
 
-test("an unsaved outcome keeps its Retry-After", async ({ page }) => {
+test("a failed write of a Retry-After outcome commits locally and keeps the deadline", async ({
+  page,
+}) => {
   await page.goto("/about");
   await expect(page.locator("main h1")).toBeAttached();
   await freeze(page);
@@ -523,13 +535,21 @@ test("an unsaved outcome keeps its Retry-After", async ({ page }) => {
       json: { code: "busy", message: "Busy.", event: null, field: null },
     }),
   );
+  // The outcome write fails, then its two local retries fail.
   const { item, result } = await startEngine(page, {
     database: "unsaved-retry-after",
     fail: "outcome",
-    failures: 1000,
+    failures: 3,
   });
   expect(result).not.toBe("saved");
   expect(posts).toEqual([item.transport]);
+  await expect
+    .poll(async () => {
+      await page.clock.runFor(1_000);
+      return (await readOutbox(page, "unsaved-retry-after"))[0].peers.self
+        .state;
+    })
+    .toBe("unknown");
   const wait = await page.evaluate(async () => {
     const { LocalStore } = await import(String("/src/data/store.ts"));
     const [row] = await new LocalStore("unsaved-retry-after").list("outbox");
@@ -538,15 +558,33 @@ test("an unsaved outcome keeps its Retry-After", async ({ page }) => {
         unsavedEngine: { nextTryAt(item: unknown, peer: string): number };
       }
     ).unsavedEngine;
-    return engine.nextTryAt(row, "self") - Date.now();
+    return engine.nextTryAt(row, "self") - row.peers.self.lastAttempt;
   });
+  // The local retries left the server's deadline as it was.
   expect(wait).toBe(600_000);
-  for (let step = 0; step < 39; step++) await page.clock.fastForward(15_000);
+  expect(lookups).toEqual([]);
+  // Move to 10 s before the deadline in 15 s steps.
+  const elapsed = await page.evaluate(
+    async () =>
+      Date.now() -
+      (
+        await (
+          await import(String("/src/data/store.ts"))
+        ).LocalStore.prototype.list.call(
+          new (await import(String("/src/data/store.ts"))).LocalStore(
+            "unsaved-retry-after",
+          ),
+          "outbox",
+        )
+      )[0].peers.self.lastAttempt,
+  );
+  for (let left = 590_000 - elapsed; left > 0; left -= 15_000)
+    await page.clock.fastForward(Math.min(15_000, left));
   // Give a wrongly due attempt real time to start its requests.
   await page.waitForTimeout(1000);
   expect(posts).toEqual([item.transport]);
   expect(lookups).toEqual([]);
-  await page.clock.fastForward(15_000);
+  await page.clock.fastForward(20_000);
   await expect.poll(() => posts.length).toBe(2);
   expect(posts).toEqual([item.transport, item.transport]);
   expect(lookups).toEqual([item.id]);
@@ -555,7 +593,7 @@ test("an unsaved outcome keeps its Retry-After", async ({ page }) => {
   );
 });
 
-test("a refused record keeps a timer when its lookup and its outcome save fail", async ({
+test("a refused record whose lookup and outcome save fail saves the result locally and keeps its timer", async ({
   page,
 }) => {
   await page.goto("/about");
@@ -578,11 +616,15 @@ test("a refused record keeps a timer when its lookup and its outcome save fail",
   expect(failed).toBe(1);
   expect(lookups).toEqual([item.id]);
   expect((await storedPeer(page, "unsaved-refusal")).state).toBe("refused");
-  await page.clock.fastForward(15_000);
-  await expect.poll(() => lookups.length).toBe(2);
+  // The unknown result commits locally, without a request.
+  await page.clock.fastForward(2_000);
   await expect
     .poll(async () => (await storedPeer(page, "unsaved-refusal")).state)
     .toBe("unknown");
+  expect(lookups).toEqual([item.id]);
+  // Its saved retry time then runs the next lookup.
+  await page.clock.fastForward(15_000);
+  await expect.poll(() => lookups.length).toBe(2);
   expect(posts).toEqual([]);
 });
 
@@ -635,6 +677,15 @@ test("a pending verification that finds a missing body sends the identical recor
   expect(result).not.toBe("saved");
   expect(failed).toBe(1);
   expect(posts).toEqual([item.transport]);
+  // The open verification commits locally first.
+  await page.clock.fastForward(2_000);
+  await expect
+    .poll(
+      async () =>
+        (await storedPeer(page, "unsaved-missing-body")).verifyReceipt,
+    )
+    .toBe(true);
+  expect(lookups).toEqual([]);
   await page.clock.fastForward(15_000);
   await expect
     .poll(async () => (await storedPeer(page, "unsaved-missing-body")).state)
@@ -713,10 +764,9 @@ test("the outbox shows a proved receipt mismatch after pending verification", as
   }, variants[1]);
   await page.goto("/outbox");
   await expect(
-    page.getByText(
-      "The result is unconfirmed. The browser will check the receipt again when online.",
-    ),
+    page.getByText("Delivery is unconfirmed. Receipt verification is pending."),
   ).toBeVisible();
+  await expect(page.getByText(/Next receipt check/)).toBeVisible();
   expect((await readOutbox(page))[0].peers.self.verifyReceipt).toBe(true);
   await page.getByRole("button", { name: "Try now" }).click();
   await expect(
@@ -727,9 +777,6 @@ test("the outbox shows a proved receipt mismatch after pending verification", as
   await expect(page.getByText(/Receipt verification is pending/)).toHaveCount(
     0,
   );
-  await expect(
-    page.getByText(/will check the receipt again when online/),
-  ).toHaveCount(0);
   const [saved] = await readOutbox(page);
   expect(saved.peers.self).toMatchObject({ state: "unknown" });
   expect(saved.peers.self.verifyReceipt).toBe(undefined);
@@ -738,11 +785,19 @@ test("the outbox shows a proved receipt mismatch after pending verification", as
   expect(saved.transport).toBe(item.transport);
 });
 
-/** Aborts the next `count` outbox writes in this page whose peer state is `state`. */
+/**
+ * Aborts the next `count` outbox writes in this page whose peer state is
+ * `state` and that carry no send mark. `releaseOutboxAborts` ends it early.
+ */
 async function abortOutboxWrites(page: Page, state: string, count = 1) {
   await page.evaluate(
     ({ state, count }) => {
       let left = count;
+      Object.assign(window, {
+        releaseOutboxAborts: () => {
+          left = 0;
+        },
+      });
       const put = IDBObjectStore.prototype.put;
       IDBObjectStore.prototype.put = function (value, key) {
         const request = put.call(this, value, key);
@@ -751,7 +806,11 @@ async function abortOutboxWrites(page: Page, state: string, count = 1) {
           left > 0 &&
           Object.values(
             (value?.peers ?? {}) as Record<string, { state: string }>,
-          ).some((peer) => peer.state === state)
+          ).some(
+            (peer) =>
+              peer.state === state &&
+              (peer as { sendAttempt?: string }).sendAttempt === undefined,
+          )
         ) {
           left--;
           this.transaction.abort();
@@ -762,6 +821,12 @@ async function abortOutboxWrites(page: Page, state: string, count = 1) {
     { state, count },
   );
 }
+const releaseOutboxAborts = (page: Page) =>
+  page.evaluate(() =>
+    (
+      window as unknown as { releaseOutboxAborts(): void }
+    ).releaseOutboxAborts(),
+  );
 
 /** Queues one fresh signed profile in the app's own outbox. */
 async function queueProfile(page: Page, peer: Record<string, unknown> = {}) {
@@ -817,18 +882,24 @@ test("Stop and Resume on the outbox send again after an unsaved refusal", async 
         })
       : route.continue(),
   );
-  await abortOutboxWrites(page, "refused");
+  await abortOutboxWrites(page, "refused", 1000);
   const item = await queueProfile(page);
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await expect.poll(() => posts.length).toBe(1);
   await expect(
-    page.getByText(
-      "The result is unconfirmed. The browser will check the receipt again when online.",
-    ),
+    page.getByText(/This browser still needs to save that answer\./),
   ).toBeVisible();
+  await expect(page.getByText(/Next save attempt/)).toBeVisible();
   expect((await readOutbox(page))[0].peers.self.state).toBe("queued");
   refuse = false;
   await page.getByRole("button", { name: "Stop retrying" }).click();
+  await expect(page.getByText("Stopped", { exact: true })).toBeVisible();
+  // Resume cannot take effect while the refusal is not saved.
+  await page.getByRole("button", { name: "Resume" }).click();
+  await expect(page.getByRole("button", { name: "Resume" })).toBeVisible();
+  expect((await readOutbox(page))[0].stopped).toBe(true);
+  expect(posts).toEqual([item.transport]);
+  await releaseOutboxAborts(page);
   await page.getByRole("button", { name: "Resume" }).click();
   await expect
     .poll(async () => (await readOutbox(page))[0].peers.self.state)
@@ -836,7 +907,7 @@ test("Stop and Resume on the outbox send again after an unsaved refusal", async 
   expect(posts).toEqual([item.transport, item.transport]);
 });
 
-test("the outbox summary and saved publication lines show an unconfirmed outcome", async ({
+test("the outbox summary, rows and saved publication lines show a result that still needs saving", async ({
   page,
 }) => {
   await page.goto("/outbox");
@@ -876,16 +947,19 @@ test("the outbox summary and saved publication lines show an unconfirmed outcome
   await expect(
     page.getByText(/A server stored a signed header without its required body/),
   ).toBeVisible();
-  await abortOutboxWrites(page, "accepted");
+  await abortOutboxWrites(page, "accepted", 1000);
   await page.getByRole("button", { name: "Try now" }).click();
   await expect(
     page.getByText(
-      "The result is unconfirmed. The browser will check the receipt again when online.",
+      "The server accepted this record. This browser still needs to save the receipt.",
     ),
   ).toBeVisible();
   await expect(
-    page.getByText(/Some delivery outcomes are unconfirmed/),
+    page.getByText(/could not save some delivery results yet/),
   ).toBeVisible();
+  await expect(page.getByRole("status")).toContainText(
+    "This browser could not save a delivery result yet",
+  );
   await expect(
     page.getByText(/A server stored a signed header without its required body/),
   ).toHaveCount(0);
@@ -929,18 +1003,24 @@ test("the outbox summary and saved publication lines show an unconfirmed outcome
   }, stale);
   expect(lines.state).toBe("missing-body");
   expect(lines.lines.join(" ")).toContain(
-    "The result is unconfirmed. The browser will check the receipt again when online.",
+    "The server accepted this record. This browser still needs to save the receipt.",
   );
   expect(lines.lines.join(" ")).not.toContain("will be sent again");
 
-  // A stopped record keeps the unconfirmed text and promises no lookup.
+  // A stopped record keeps the pending answer and promises no lookup.
   await page.getByRole("button", { name: "Stop retrying" }).click();
   await expect(
     page.getByText(
-      "The result is unconfirmed. The browser does not check the receipt while the record is stopped.",
+      "The server accepted this record. This browser still needs to save the receipt. Automatic delivery is stopped.",
     ),
   ).toBeVisible();
   await expect(page.getByText(/will be sent again/)).toHaveCount(0);
+  // Once storage works, the local write ends delivery without a request.
+  await releaseOutboxAborts(page);
+  await expect
+    .poll(async () => (await readOutbox(page))[0].peers.self.state)
+    .toBe("accepted");
+  expect(posts).toEqual([]);
 });
 
 test("a judgment whose outcome save fails still reports a saved record", async ({
@@ -1093,5 +1173,264 @@ test("Try now that decides nothing keeps an unsaved refusal", async ({
     )
     .toBe("refused");
   expect(posts).toEqual([item.transport]);
-  expect(lookups.length).toBeGreaterThanOrEqual(2);
+  // Try now first saved the refusal locally. Its offline lookup learned
+  // nothing, and a saved refusal has no automatic lookup.
+  expect(lookups).toEqual([item.id]);
+});
+
+/**
+ * Queues one record for the given recipients in its own database, POSTs it
+ * through a page engine and aborts the acceptance writes of the recipients
+ * in `failing` until `releaseOutboxAborts`.
+ */
+async function acceptedWithFailedWrites(
+  page: Page,
+  database: string,
+  peers: string[],
+  failing: string[],
+) {
+  return page.evaluate(
+    async ({ corePath, database, peers, failing }) => {
+      const core = await import(corePath);
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
+      const { outboxItem } = await import(String("/src/data/lifecycle.ts"));
+      await core.initializeCore();
+      const store = new LocalStore(database);
+      const item: OutboxItem = outboxItem(
+        core.createEvent(
+          crypto.getRandomValues(new Uint8Array(32)),
+          [],
+          "1".repeat(32),
+          { kind: "identity.profile" },
+          { name: "Discard guard", bio: [], links: [] },
+        ),
+        "discard",
+        0,
+        Object.fromEntries(
+          peers.map((peer) => [
+            peer,
+            { origin: location.origin, base: "/api/v1", label: peer },
+          ]),
+        ),
+      );
+      await store.queueGroup([item]);
+      let released = false;
+      Object.assign(window, {
+        releaseOutboxAborts: () => {
+          released = true;
+        },
+      });
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, key) {
+        const request = put.call(this, value, key);
+        if (
+          !released &&
+          this.name === "outbox" &&
+          key === item.id &&
+          failing.some(
+            (peer) =>
+              value.peers?.[peer]?.state === "accepted" &&
+              value.peers?.[peer]?.sendAttempt === undefined,
+          )
+        )
+          this.transaction.abort();
+        return request;
+      };
+      const engine = new DeliveryEngine(store);
+      Object.assign(window, { discardEngine: engine });
+      await engine.tryNow(item.id).catch(() => {});
+      await engine.stop(item.id);
+      return item;
+    },
+    { corePath, database, peers, failing },
+  );
+}
+const discardResult = (page: Page, id: string) =>
+  page.evaluate(async (id) => {
+    const engine = (
+      window as unknown as {
+        discardEngine: {
+          discard(id: string): Promise<void>;
+          view(item: unknown): { saving: boolean; accepted: boolean };
+        };
+      }
+    ).discardEngine;
+    try {
+      await engine.discard(id);
+      return "discarded";
+    } catch (error) {
+      return (error as Error).message;
+    }
+  }, id);
+
+for (const [label, peers, failing] of [
+  ["a pending acceptance", ["self"], ["self"]],
+  ["saved and pending acceptances", ["self", "copy"], ["copy"]],
+] as const)
+  test(`Discard keeps a record with ${label}`, async ({ page }) => {
+    await page.goto("/about");
+    await expect(page.locator("main h1")).toBeAttached();
+    const database = `discard-${peers.length}`;
+    const item = await acceptedWithFailedWrites(
+      page,
+      database,
+      [...peers],
+      [...failing],
+    );
+    const [row] = await readOutbox(page, database);
+    expect(row.stopped).toBe(true);
+    // The pending write cannot commit yet, so Discard does not run.
+    expect(await discardResult(page, item.id)).toMatch(/Discard did not run/);
+    expect(await readOutbox(page, database)).toHaveLength(1);
+    // Once it commits, the storage guard sees every acceptance.
+    await releaseOutboxAborts(page);
+    expect(await discardResult(page, item.id)).toMatch(
+      /delivered to every recipient/,
+    );
+    const [kept] = await readOutbox(page, database);
+    expect(kept.transport).toBe(item.transport);
+    expect(Object.values(kept.peers).map((peer) => peer.state)).toEqual(
+      peers.map(() => "accepted"),
+    );
+    expect(kept.stopped).toBe(true);
+    const marker = await page.evaluate(
+      async ({ database, id }) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        return new LocalStore(database).get("keys", `discarded:${id}`);
+      },
+      { database, id: item.id },
+    );
+    expect(marker).toBeUndefined();
+  });
+
+test("Discard is offered for a stopped leaf only after its pending refusal commits", async ({
+  page,
+}) => {
+  await page.goto("/outbox");
+  await expect(page.getByText("No unfinished records.")).toBeVisible();
+  await page.route("**/api/v1/events", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({
+          status: 422,
+          json: {
+            code: "refused",
+            message: "Refused.",
+            event: null,
+            field: null,
+          },
+        })
+      : route.continue(),
+  );
+  await abortOutboxWrites(page, "refused", 1000);
+  await queueProfile(page);
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect(
+    page.getByText(/This browser still needs to save that answer\./),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Stop retrying" }).click();
+  await expect(page.getByText("Stopped", { exact: true })).toBeVisible();
+  const discard = page.getByRole("button", { name: "Discard" });
+  const saving = page.getByText(
+    "This browser is still saving a delivery result. Discard is available after it is saved.",
+  );
+  const unavailable = page.getByText(/Local history is unavailable/);
+  await expect(saving.or(unavailable)).toBeVisible();
+  await expect(discard).toHaveCount(0);
+  await releaseOutboxAborts(page);
+  await expect
+    .poll(async () => (await readOutbox(page))[0].peers.self.state)
+    .toBe("refused");
+  await expect(saving).toHaveCount(0);
+  expect((await readOutbox(page))[0].stopped).toBe(true);
+  if (await unavailable.isVisible()) return;
+  page.on("dialog", (dialog) => void dialog.accept());
+  await discard.click();
+  await expect(page.getByRole("status")).toContainText("Discarded");
+  expect(await readOutbox(page)).toHaveLength(0);
+});
+
+test("the stopped publication, an empty group and the handover headline read one summary", async ({
+  page,
+}) => {
+  await page.goto("/about");
+  await expect(page.locator("main h1")).toBeAttached();
+  const database = "summary-text";
+  const item = await acceptedWithFailedWrites(
+    page,
+    database,
+    ["self"],
+    ["self"],
+  );
+  const texts = await page.evaluate(
+    async ({ database, id }) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { savedGroupState } = await import(
+        String("/src/pages/wizard/publish.ts")
+      );
+      const { handoverStatusLine } = await import(
+        String("/src/pages/handover.ts")
+      );
+      const engine = (window as unknown as { discardEngine: never })
+        .discardEngine;
+      const rows = (await new LocalStore(database).list(
+        "outbox",
+      )) as OutboxItem[];
+      const row = rows.find((candidate) => candidate.id === id)!;
+      const stopped = savedGroupState([row], engine);
+      const empty = savedGroupState([], engine);
+      const handover = handoverStatusLine(engine, {
+        transfer: row,
+        accept: row,
+        transferDone: false,
+        acceptDone: false,
+      });
+      const savedAndPending = handoverStatusLine(engine, {
+        transfer: {
+          ...row,
+          id: "jve1:" + "c".repeat(64),
+          peers: { self: { ...row.peers.self, state: "accepted" } },
+        },
+        accept: row,
+        transferDone: true,
+        acceptDone: false,
+      });
+      const pendingAccept = handoverStatusLine(engine, {
+        transfer: row,
+        accept: {
+          ...row,
+          id: "jve1:" + "d".repeat(64),
+          peers: {
+            self: {
+              ...row.peers.self,
+              state: "queued",
+              sendAttempt: undefined,
+              sendStarted: undefined,
+            },
+          },
+        },
+        transferDone: false,
+        acceptDone: false,
+      });
+      return { stopped, empty, handover, savedAndPending, pendingAccept };
+    },
+    { database, id: item.id },
+  );
+  expect(texts.stopped.headline).toBe(
+    "Saved. A delivery result still needs saving.",
+  );
+  expect(texts.stopped.lines.join(" ")).toContain(
+    "The server accepted this record. This browser still needs to save the receipt. Automatic delivery is stopped.",
+  );
+  expect(texts.empty.headline).toBe("Saved. Delivery state unavailable.");
+  expect(texts.empty.headline).not.toBe("Published.");
+  expect(texts.handover).toBe(
+    "Both events were accepted. This browser still needs to save a receipt.",
+  );
+  expect(texts.savedAndPending).toBe(
+    "Both events were accepted. This browser still needs to save a receipt.",
+  );
+  expect(texts.pendingAccept).toBe(
+    "Old key retired locally. Transfer accepted, saving the receipt, acceptance waiting.",
+  );
 });
