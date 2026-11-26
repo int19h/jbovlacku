@@ -503,6 +503,9 @@ Mocked capacity tests cover two 59,129-input index runs, 8,192 assistance histor
 Mocked tests cover provider validation, caller departure, unknown charges, deadlines, and interrupted reservations after restart.
 The host can create fresh application profiles and derive bounded `definition-json-v1` and `literal-query-v1` inputs.
 Separate private semantic rows retain complete interpreted evidence and bind each input to its original event and body hash.
+The full state export and word status responses use version 2. Account evidence lives in each account's control row.
+A publication can refer to that row even when its view disables account authority. The word page reads only the local status for badges.
+
 Admission commits semantic rows and compact evaluation rows together. Evaluation and checkpoint restore never load semantic rows.
 Recipe inputs preserve literal imported markers and mathematics. They exclude top-level notes, etymology, and import evidence.
 The codecs encode unit vectors as little-endian float32.

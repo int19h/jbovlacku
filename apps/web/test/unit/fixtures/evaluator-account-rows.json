@@ -1,0 +1,657 @@
+{
+  "applied_disputed": {
+    "row": {
+      "account": 41,
+      "certificates": [
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:4017ae8161c35a45b36b0fdb739bd65a841c39334162598964f9b34bd27abf18"
+        },
+        {
+          "claim": "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4",
+          "observations": [
+            "jve1:5cb55f67d325ad777a54971fea159221d00bc6d41f7b720bf37e6719aef6adc3",
+            "jve1:7a1383a98d947e8b98d46494c36b9c72ab652fc5704a632b980894deb2f79d5e"
+          ],
+          "policy": "jve1:4017ae8161c35a45b36b0fdb739bd65a841c39334162598964f9b34bd27abf18"
+        },
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        },
+        {
+          "claim": "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4",
+          "observations": [
+            "jve1:5cb55f67d325ad777a54971fea159221d00bc6d41f7b720bf37e6719aef6adc3",
+            "jve1:7a1383a98d947e8b98d46494c36b9c72ab652fc5704a632b980894deb2f79d5e"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        }
+      ],
+      "chain": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+        "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4"
+      ],
+      "contributions": [
+        {
+          "claims": [
+            "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+            "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4"
+          ],
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:7a1383a98d947e8b98d46494c36b9c72ab652fc5704a632b980894deb2f79d5e"
+          ],
+          "witness": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+        },
+        {
+          "claims": [
+            "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+            "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4"
+          ],
+          "observations": [
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce",
+            "jve1:5cb55f67d325ad777a54971fea159221d00bc6d41f7b720bf37e6719aef6adc3"
+          ],
+          "witness": "ed25519:66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a"
+        }
+      ],
+      "controller_candidates": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+        "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4"
+      ],
+      "current_observations": [],
+      "origin": "https://source.example",
+      "reasons": ["controller_dispute"],
+      "snapshot": "",
+      "state": "disputed",
+      "view": "jve1:4017ae8161c35a45b36b0fdb739bd65a841c39334162598964f9b34bd27abf18"
+    },
+    "source": "all_handover_fixtures_and_delivery_orders_roundtrip_both_checkpoints_and_append",
+    "status": {
+      "account_authority_applied": true,
+      "account_control": {
+        "account": 41,
+        "origin": "https://source.example"
+      },
+      "authority": "none",
+      "claim": null,
+      "controller": null,
+      "deciding_claim": null,
+      "event": "jve1:399b47d5653bd4f8e1fb7247cb58b8c2f7f59a6b92b89c4b7a8bef96d682390e",
+      "frontier": [
+        "jve1:a918bfedb8ba0b104ae19b4c883f1bb06a0176595d5cd02d2d3339e9ec14dca9",
+        "jve1:bbc1037528ab9c80524f221231ac51cec0a2e0c8a509417da364a6459fbd39c4"
+      ],
+      "reasons": ["controller_dispute"],
+      "state": "deprecated"
+    }
+  },
+  "applied_unavailable": {
+    "row": {
+      "account": 41,
+      "certificates": [
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        },
+        {
+          "claim": "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66",
+          "observations": [
+            "jve1:3945dc8275b0ada20ae2944df0484fabf102e9e515b7bd499ffa855a32eec91b",
+            "jve1:85f2300911b4ec4b040a732c1b1c15425895095f9b49762494818998195dfe28"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        }
+      ],
+      "chain": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+        "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66"
+      ],
+      "contributions": [
+        {
+          "claims": [],
+          "observations": [],
+          "witness": "ed25519:0b513ad9b4924015ca0902ed079044d3ac5dbec2306f06948c10da8eb6e39f2d"
+        },
+        {
+          "claims": [],
+          "observations": [],
+          "witness": "ed25519:91a28a0b74381593a4d9469579208926afc8ad82c8839b7644359b9eba9a4b3a"
+        }
+      ],
+      "controller_candidates": [],
+      "current_observations": [],
+      "origin": "https://source.example",
+      "reasons": ["historical_guard", "policy_history_unavailable"],
+      "snapshot": "",
+      "state": "unavailable",
+      "view": "jve1:d027dad88af0461f5bbfe1aa2337c63bd73c12db28ccf32b302cdb70c9df88e0"
+    },
+    "source": "all_handover_fixtures_and_delivery_orders_roundtrip_both_checkpoints_and_append",
+    "status": {
+      "account_authority_applied": true,
+      "account_control": {
+        "account": 41,
+        "origin": "https://source.example"
+      },
+      "authority": "none",
+      "claim": null,
+      "controller": null,
+      "deciding_claim": null,
+      "event": "jve1:5f95ef27e969d9a8eff8d8653e334ff323c62d4e04b5c4f438a8185d834674e9",
+      "frontier": [],
+      "reasons": ["historical_guard", "policy_history_unavailable"],
+      "state": "unavailable"
+    }
+  },
+  "controlled": {
+    "row": {
+      "account": 41,
+      "certificates": [
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        },
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:fc4caff3cf3194a06e35fc46b95462cacbe5d7334590eb31ac2af36b88109199"
+        }
+      ],
+      "chain": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+      ],
+      "contributions": [
+        {
+          "claims": [
+            "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+          ],
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949"
+          ],
+          "witness": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+        },
+        {
+          "claims": [
+            "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+          ],
+          "observations": [
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "witness": "ed25519:66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a"
+        }
+      ],
+      "controller_candidates": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+      ],
+      "current_observations": [
+        "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+        "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+      ],
+      "origin": "https://source.example",
+      "reasons": [],
+      "snapshot": "",
+      "state": "controlled",
+      "view": "jve1:fc4caff3cf3194a06e35fc46b95462cacbe5d7334590eb31ac2af36b88109199"
+    },
+    "source": "accepted_importer_succession_keeps_one_source_slot"
+  },
+  "direct": {
+    "row": {
+      "account": 41,
+      "certificates": [
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        },
+        {
+          "claim": "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66",
+          "observations": [
+            "jve1:3945dc8275b0ada20ae2944df0484fabf102e9e515b7bd499ffa855a32eec91b",
+            "jve1:85f2300911b4ec4b040a732c1b1c15425895095f9b49762494818998195dfe28"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        }
+      ],
+      "chain": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+        "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66"
+      ],
+      "contributions": [
+        {
+          "claims": [
+            "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66"
+          ],
+          "observations": [
+            "jve1:85f2300911b4ec4b040a732c1b1c15425895095f9b49762494818998195dfe28"
+          ],
+          "witness": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+        },
+        {
+          "claims": [
+            "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66"
+          ],
+          "observations": [
+            "jve1:3945dc8275b0ada20ae2944df0484fabf102e9e515b7bd499ffa855a32eec91b"
+          ],
+          "witness": "ed25519:66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a"
+        }
+      ],
+      "controller_candidates": [
+        "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66"
+      ],
+      "current_observations": [
+        "jve1:3945dc8275b0ada20ae2944df0484fabf102e9e515b7bd499ffa855a32eec91b",
+        "jve1:85f2300911b4ec4b040a732c1b1c15425895095f9b49762494818998195dfe28"
+      ],
+      "origin": "https://source.example",
+      "reasons": [],
+      "snapshot": "",
+      "state": "controlled",
+      "view": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+    },
+    "source": "all_handover_fixtures_and_delivery_orders_roundtrip_both_checkpoints_and_append",
+    "status": {
+      "account_authority_applied": true,
+      "account_control": {
+        "account": 41,
+        "origin": "https://source.example"
+      },
+      "authority": "source-account",
+      "claim": "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66",
+      "controller": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "deciding_claim": "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66",
+      "event": "jve1:5f95ef27e969d9a8eff8d8653e334ff323c62d4e04b5c4f438a8185d834674e9",
+      "frontier": [
+        "jve1:d83ed52d1507ee41ece9396ee7528c27fd838c03ad1a436ef80cdc72c7d71e66"
+      ],
+      "reasons": [],
+      "state": "active"
+    }
+  },
+  "disputed": {
+    "row": {
+      "account": 41,
+      "certificates": [
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:4017ae8161c35a45b36b0fdb739bd65a841c39334162598964f9b34bd27abf18"
+        },
+        {
+          "claim": "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4",
+          "observations": [
+            "jve1:5cb55f67d325ad777a54971fea159221d00bc6d41f7b720bf37e6719aef6adc3",
+            "jve1:7a1383a98d947e8b98d46494c36b9c72ab652fc5704a632b980894deb2f79d5e"
+          ],
+          "policy": "jve1:4017ae8161c35a45b36b0fdb739bd65a841c39334162598964f9b34bd27abf18"
+        },
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        },
+        {
+          "claim": "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4",
+          "observations": [
+            "jve1:5cb55f67d325ad777a54971fea159221d00bc6d41f7b720bf37e6719aef6adc3",
+            "jve1:7a1383a98d947e8b98d46494c36b9c72ab652fc5704a632b980894deb2f79d5e"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        }
+      ],
+      "chain": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+        "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4"
+      ],
+      "contributions": [
+        {
+          "claims": [
+            "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+            "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4"
+          ],
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:7a1383a98d947e8b98d46494c36b9c72ab652fc5704a632b980894deb2f79d5e"
+          ],
+          "witness": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+        },
+        {
+          "claims": [
+            "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+            "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4"
+          ],
+          "observations": [
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce",
+            "jve1:5cb55f67d325ad777a54971fea159221d00bc6d41f7b720bf37e6719aef6adc3"
+          ],
+          "witness": "ed25519:66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a"
+        }
+      ],
+      "controller_candidates": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+        "jve1:7c21313b90113b729a4eec03972167743306f4228fd9d436b94682011a09c5f4"
+      ],
+      "current_observations": [],
+      "origin": "https://source.example",
+      "reasons": ["controller_dispute"],
+      "snapshot": "",
+      "state": "disputed",
+      "view": "jve1:4017ae8161c35a45b36b0fdb739bd65a841c39334162598964f9b34bd27abf18"
+    },
+    "source": "all_handover_fixtures_and_delivery_orders_roundtrip_both_checkpoints_and_append"
+  },
+  "inherited": {
+    "row": {
+      "account": 41,
+      "certificates": [
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        },
+        {
+          "claim": "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66",
+          "observations": [
+            "jve1:3945dc8275b0ada20ae2944df0484fabf102e9e515b7bd499ffa855a32eec91b",
+            "jve1:85f2300911b4ec4b040a732c1b1c15425895095f9b49762494818998195dfe28"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        }
+      ],
+      "chain": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+        "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66"
+      ],
+      "contributions": [
+        {
+          "claims": [
+            "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66"
+          ],
+          "observations": [
+            "jve1:85f2300911b4ec4b040a732c1b1c15425895095f9b49762494818998195dfe28"
+          ],
+          "witness": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+        },
+        {
+          "claims": [
+            "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66"
+          ],
+          "observations": [
+            "jve1:3945dc8275b0ada20ae2944df0484fabf102e9e515b7bd499ffa855a32eec91b"
+          ],
+          "witness": "ed25519:66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a"
+        }
+      ],
+      "controller_candidates": [
+        "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66"
+      ],
+      "current_observations": [
+        "jve1:3945dc8275b0ada20ae2944df0484fabf102e9e515b7bd499ffa855a32eec91b",
+        "jve1:85f2300911b4ec4b040a732c1b1c15425895095f9b49762494818998195dfe28"
+      ],
+      "origin": "https://source.example",
+      "reasons": [],
+      "snapshot": "",
+      "state": "controlled",
+      "view": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+    },
+    "source": "all_handover_fixtures_and_delivery_orders_roundtrip_both_checkpoints_and_append",
+    "status": {
+      "account_authority_applied": true,
+      "account_control": {
+        "account": 41,
+        "origin": "https://source.example"
+      },
+      "authority": "none",
+      "claim": "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66",
+      "controller": null,
+      "deciding_claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+      "event": "jve1:5f95ef27e969d9a8eff8d8653e334ff323c62d4e04b5c4f438a8185d834674e9",
+      "frontier": [
+        "jve1:e034a26890efcad101b8b2b72f145bbbf59460f407ab44348e250437181769f3"
+      ],
+      "reasons": ["current_authority_lost"],
+      "state": "deprecated"
+    }
+  },
+  "selection_conflict": {
+    "row": {
+      "account": 41,
+      "certificates": [
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:4ecb4e439d4dd36f7c1ac08182b2a3e7d602e5a48e7b733797d740acbcdc3fa9"
+        },
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        }
+      ],
+      "chain": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+      ],
+      "contributions": [
+        {
+          "claims": [
+            "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+          ],
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949"
+          ],
+          "witness": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+        },
+        {
+          "claims": [
+            "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+          ],
+          "observations": [
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "witness": "ed25519:66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a"
+        }
+      ],
+      "controller_candidates": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+      ],
+      "current_observations": [
+        "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+        "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+      ],
+      "origin": "https://source.example",
+      "reasons": [],
+      "snapshot": "",
+      "state": "controlled",
+      "view": "jve1:4ecb4e439d4dd36f7c1ac08182b2a3e7d602e5a48e7b733797d740acbcdc3fa9"
+    },
+    "source": "all_handover_fixtures_and_delivery_orders_roundtrip_both_checkpoints_and_append",
+    "status": {
+      "account_authority_applied": true,
+      "account_control": {
+        "account": 41,
+        "origin": "https://source.example"
+      },
+      "authority": "source-account",
+      "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+      "controller": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "deciding_claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+      "event": "jve1:5f95ef27e969d9a8eff8d8653e334ff323c62d4e04b5c4f438a8185d834674e9",
+      "frontier": [
+        "jve1:90a30321b4d35520c49d62ceb24ee63437e003b5b07195547410dbca36825578"
+      ],
+      "reasons": ["source_selection_conflict"],
+      "state": "unavailable"
+    }
+  },
+  "unavailable_candidate": {
+    "row": {
+      "account": 41,
+      "certificates": [
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:3e851c2f1013423929b17575392aa73d45419f807d78d4d59fafbbfd9bf0aee1",
+            "jve1:a442e428d4eff616257dd8d7390330849c4358bdf8f0dcfce1440807f1356c18"
+          ],
+          "policy": "jve1:d027dad88af0461f5bbfe1aa2337c63bd73c12db28ccf32b302cdb70c9df88e0"
+        },
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        }
+      ],
+      "chain": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+      ],
+      "contributions": [
+        {
+          "claims": [
+            "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+          ],
+          "observations": [
+            "jve1:3e851c2f1013423929b17575392aa73d45419f807d78d4d59fafbbfd9bf0aee1"
+          ],
+          "witness": "ed25519:0b513ad9b4924015ca0902ed079044d3ac5dbec2306f06948c10da8eb6e39f2d"
+        },
+        {
+          "claims": [
+            "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+          ],
+          "observations": [
+            "jve1:a442e428d4eff616257dd8d7390330849c4358bdf8f0dcfce1440807f1356c18"
+          ],
+          "witness": "ed25519:91a28a0b74381593a4d9469579208926afc8ad82c8839b7644359b9eba9a4b3a"
+        }
+      ],
+      "controller_candidates": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5"
+      ],
+      "current_observations": [],
+      "origin": "https://source.example",
+      "reasons": ["historical_guard", "observation_pending"],
+      "snapshot": "",
+      "state": "unavailable",
+      "view": "jve1:d027dad88af0461f5bbfe1aa2337c63bd73c12db28ccf32b302cdb70c9df88e0"
+    },
+    "source": "all_handover_fixtures_and_delivery_orders_roundtrip_both_checkpoints_and_append"
+  },
+  "unavailable_empty": {
+    "row": {
+      "account": 41,
+      "certificates": [
+        {
+          "claim": "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+          "observations": [
+            "jve1:0033ff9bc29406e2c362eab1edb2bffa73cc56a5551363f61a84fb7807f78949",
+            "jve1:42d062b4da4a1bf038f610dd4d15bb669c9b02ad7230da0ce69f53e8f3d2b1ce"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        },
+        {
+          "claim": "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66",
+          "observations": [
+            "jve1:3945dc8275b0ada20ae2944df0484fabf102e9e515b7bd499ffa855a32eec91b",
+            "jve1:85f2300911b4ec4b040a732c1b1c15425895095f9b49762494818998195dfe28"
+          ],
+          "policy": "jve1:d35592ad38db5065c8ab84f7a684d87f12276160c24dce75301f7a235adfa0ba"
+        }
+      ],
+      "chain": [
+        "jve1:734645c59801360a1b4e763514acd666aacd81266c2d4c1fd3e79b30e44343f5",
+        "jve1:a2c2c300f45da59deb8d1a69f60654872777702c37b06835cb80cdb1d51d6d66"
+      ],
+      "contributions": [
+        {
+          "claims": [],
+          "observations": [],
+          "witness": "ed25519:0b513ad9b4924015ca0902ed079044d3ac5dbec2306f06948c10da8eb6e39f2d"
+        },
+        {
+          "claims": [],
+          "observations": [],
+          "witness": "ed25519:91a28a0b74381593a4d9469579208926afc8ad82c8839b7644359b9eba9a4b3a"
+        }
+      ],
+      "controller_candidates": [],
+      "current_observations": [],
+      "origin": "https://source.example",
+      "reasons": ["historical_guard", "policy_history_unavailable"],
+      "snapshot": "",
+      "state": "unavailable",
+      "view": "jve1:d027dad88af0461f5bbfe1aa2337c63bd73c12db28ccf32b302cdb70c9df88e0"
+    },
+    "source": "all_handover_fixtures_and_delivery_orders_roundtrip_both_checkpoints_and_append"
+  },
+  "unclaimed_empty": {
+    "row": {
+      "account": 41,
+      "certificates": [],
+      "chain": [],
+      "contributions": [
+        {
+          "claims": [],
+          "observations": [],
+          "witness": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c"
+        },
+        {
+          "claims": [],
+          "observations": [],
+          "witness": "ed25519:66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a"
+        }
+      ],
+      "controller_candidates": [],
+      "current_observations": [],
+      "origin": "https://no-publications.example",
+      "reasons": [],
+      "snapshot": "",
+      "state": "unclaimed",
+      "view": "jve1:b429ecbd4ea7dca15ab8c6ff3b25cb66f3ab5e8513ca67caf1596cde443c1fa7"
+    },
+    "source": "account_references_distinguish_origins_and_import_kinds"
+  }
+}

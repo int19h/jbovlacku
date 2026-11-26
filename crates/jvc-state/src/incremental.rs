@@ -346,7 +346,7 @@ impl EvaluatedState {
             ));
         }
         let mut writer = BudgetWriter {
-            hash: jvc_core::HashWriter::new(b"jvc-ranking-state-v1\n", max_bytes),
+            hash: jvc_core::HashWriter::new(b"jvc-ranking-state-v2\n", max_bytes),
             check: &mut within_deadline,
             remaining: 256 * 1024,
         };
@@ -357,7 +357,7 @@ impl EvaluatedState {
                 &saved_options,
                 self.prepared.nodes.as_ref(),
                 self.prepared.event_limit_exceeded,
-                &self.evaluation,
+                export::RankingSourceEvaluation(&self.evaluation),
             ),
         )
         .map_err(|e| jvc_core::Error::new("resource_unavailable", e.to_string()))?;
@@ -8186,7 +8186,7 @@ mod rebuild_tests {
         assert!(advanced.ranking_index.borrow().is_none());
     }
     #[test]
-    fn source_stream_pins_sorted_value_maps_and_matches_previous_bytes() {
+    fn source_stream_pins_sorted_value_maps_and_normalized_bytes() {
         // Do not enable serde_json/preserve_order without changing the binding contract.
         let value: Value = serde_json::from_str(r#"{"z":0,"é":{"z":1,"a":2},"a":3}"#).unwrap();
         assert_eq!(
@@ -8198,14 +8198,14 @@ mod rebuild_tests {
             &state.prepared.options,
             state.prepared.nodes.as_ref(),
             state.prepared.event_limit_exceeded,
-            &state.evaluation,
+            export::RankingSourceEvaluation(&state.evaluation),
         ))
         .unwrap();
         let (binding, count) = state.ranking_source_binding(bytes.len()).unwrap();
         assert_eq!(count, bytes.len());
         assert_eq!(
             binding,
-            jvc_core::hash_id("sha256:", b"jvc-ranking-state-v1\n", &bytes)
+            jvc_core::hash_id("sha256:", b"jvc-ranking-state-v2\n", &bytes)
         );
         assert_eq!(
             state
@@ -8721,10 +8721,7 @@ mod rebuild_tests {
         full_prepared.add_host_verified_record(record.clone());
         let full = full_prepared.clone().into_state();
         assert_eq!(fast.consumed_work(), full.consumed_work());
-        assert_eq!(
-            serde_json::to_value(fast.evaluation()).unwrap(),
-            serde_json::to_value(full.evaluation()).unwrap()
-        );
+        assert_eq!(fast.evaluation(), full.evaluation());
         assert_eq!(fast.evaluation().available, full.evaluation().available);
         assert_eq!(
             fast.evaluation().reasons.contains("resource_unavailable"),
@@ -9783,7 +9780,6 @@ mod rebuild_tests {
         full_exact_prepared.add_host_verified_record(appended_pub.clone());
         let full_exact = full_exact_prepared.into_state();
         assert!(full_exact.evaluation().available);
-        let full_exact_json = serde_json::to_value(full_exact.evaluation()).unwrap();
 
         prepared_open.options.limits.traversal = Some(tight_limit);
         let prepared_tight = prepared_open;
@@ -9795,7 +9791,6 @@ mod rebuild_tests {
         let full_tight = full_tight_prepared.into_state();
         assert!(!full_tight.evaluation().available);
         assert_whole_evaluation_refusal(full_tight.evaluation());
-        let full_tight_json = serde_json::to_value(full_tight.evaluation()).unwrap();
 
         let records: Vec<HostVerifiedRecord> = prepared_tight
             .nodes
@@ -9912,14 +9907,12 @@ mod rebuild_tests {
                                     && adv_e.evaluation().available
                                     && adv_e.consumed_work() == full_exact.consumed_work()
                                     && adv_e.remaining_work == full_exact.remaining_work
-                                    && serde_json::to_value(adv_e.evaluation()).unwrap()
-                                        == full_exact_json;
+                                    && adv_e.evaluation() == full_exact.evaluation();
                                 let ok_tight = adv_t.statistics().rebuilt
                                     && !adv_t.evaluation().available
                                     && adv_t.consumed_work() == full_tight.consumed_work()
                                     && adv_t.remaining_work == full_tight.remaining_work
-                                    && serde_json::to_value(adv_t.evaluation()).unwrap()
-                                        == full_tight_json;
+                                    && adv_t.evaluation() == full_tight.evaluation();
                                 if ok_exact && ok_tight {
                                     deleted_rebuilt += 1;
                                 } else {
@@ -10008,14 +10001,12 @@ mod rebuild_tests {
                                     && adv_e.evaluation().available
                                     && adv_e.consumed_work() == full_exact.consumed_work()
                                     && adv_e.remaining_work == full_exact.remaining_work
-                                    && serde_json::to_value(adv_e.evaluation()).unwrap()
-                                        == full_exact_json;
+                                    && adv_e.evaluation() == full_exact.evaluation();
                                 let ok_tight = adv_t.statistics().rebuilt
                                     && !adv_t.evaluation().available
                                     && adv_t.consumed_work() == full_tight.consumed_work()
                                     && adv_t.remaining_work == full_tight.remaining_work
-                                    && serde_json::to_value(adv_t.evaluation()).unwrap()
-                                        == full_tight_json;
+                                    && adv_t.evaluation() == full_tight.evaluation();
                                 if ok_exact && ok_tight {
                                     nulled_rebuilt += 1;
                                 } else {
@@ -11792,8 +11783,7 @@ mod rebuild_tests {
                                     == full_after.evaluation().available
                                     && after.consumed_work() == full_after.consumed_work()
                                     && after.remaining_work == full_after.remaining_work
-                                    && serde_json::to_value(after.evaluation()).unwrap()
-                                        == serde_json::to_value(full_after.evaluation()).unwrap();
+                                    && after.evaluation() == full_after.evaluation();
                                 let next_cp_ok =
                                     after.checkpoint("after").ok().is_some_and(|cp| {
                                         EvaluatedState::restore_host_checkpoint(&cp, "after")
@@ -12734,8 +12724,7 @@ mod rebuild_tests {
                 if state.evaluation().available != full_state.evaluation().available
                     || state.consumed_work() != full_state.consumed_work()
                     || state.remaining_work != full_state.remaining_work
-                    || serde_json::to_value(state.evaluation()).unwrap()
-                        != serde_json::to_value(full_state.evaluation()).unwrap()
+                    || state.evaluation() != full_state.evaluation()
                 {
                     failures.push(format!(
                         "seq={seq} ({fixture_name}) step={step} op={op}: state mismatch work={}/{} avail={}/{}",

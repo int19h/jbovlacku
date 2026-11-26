@@ -249,6 +249,9 @@ test("Node judgment forks share unchanged state and match full evaluation after 
       assert.deepEqual(child.state, full.state);
       assert.notDeepEqual(child.state, parent.state);
       assert.equal(child.state.publications, parent.state.publications);
+      assert.equal(child.state.state_export_version, 2);
+      assert.equal(child.state.accounts, parent.state.accounts);
+      assert.equal(child.state.account_controls, parent.state.account_controls);
       assert.equal(
         child.state.publication_statuses,
         parent.state.publication_statuses,

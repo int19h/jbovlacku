@@ -1,4 +1,4 @@
-use jvc_state::{EvaluatedState, EvaluationOptions, Limits, PreparedEvaluationInput};
+use jvc_state::{EvaluatedState, EvaluationOptions, Limits, PreparedEvaluationInput, StateExport};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -119,7 +119,7 @@ struct Boundary<'a> {
     name: &'a str,
     limits: &'a Limits,
     remaining_work: usize,
-    evaluation: &'a jvc_state::Evaluation,
+    evaluation: StateExport<'a>,
 }
 
 fn boundary(output: &str, name: &str, state: &EvaluatedState, limits: &Limits) {
@@ -129,7 +129,7 @@ fn boundary(output: &str, name: &str, state: &EvaluatedState, limits: &Limits) {
             name,
             limits,
             remaining_work: remaining_work(state),
-            evaluation: state.evaluation(),
+            evaluation: StateExport::new(state.evaluation()),
         },
     );
 }
@@ -403,4 +403,21 @@ fn main() {
     let state = build_state(&wire, limits.clone());
     assert!(!state.evaluation().available);
     boundary(output, "traversal-refuse", &state, &limits);
+}
+
+#[test]
+fn boundary_files_use_state_export() {
+    let input: Wire =
+        serde_json::from_slice(include_bytes!("../tests/invalid-overlay.json")).unwrap();
+    let limits = Limits::default();
+    let state = build_state(&input, limits.clone());
+    let output = tempfile::tempdir().unwrap();
+    boundary(output.path().to_str().unwrap(), "refuse", &state, &limits);
+    let bytes = std::fs::read(output.path().join("boundary-refuse.json")).unwrap();
+    let saved: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        saved["evaluation"],
+        jvc_runtime::evaluate_bytes(include_bytes!("../tests/invalid-overlay.json")).unwrap()
+    );
+    assert_eq!(saved["remaining_work"], remaining_work(&state));
 }

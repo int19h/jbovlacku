@@ -1,3 +1,4 @@
+import { statusFixture, statusFixtures } from "./status-fixture.ts";
 import { expectRichText } from "./rich-helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
@@ -446,11 +447,10 @@ test("word pages show tied layers, deprecated and unavailable definitions, and n
     rafsi: [],
     assignments: [],
     layers: [[ids[2], ids[1]], [ids[0]]],
-    statuses: ids.map((event: string, index: number) => ({
-      event,
-      state:
-        index === 0 ? "deprecated" : index === 3 ? "unavailable" : "active",
-    })),
+    status_version: 2,
+    statuses: statusFixtures(ids, (index) =>
+      index === 0 ? "deprecated" : index === 3 ? "unavailable" : "active",
+    ),
     unavailable_scores: [ids[3]],
     scores: ids.slice(0, 3).map(score),
   };
@@ -578,7 +578,8 @@ test("hostile imported attribution and text stay literal, and the source details
     rafsi: [],
     assignments: [],
     layers: [[id]],
-    statuses: [{ event: id, state: "active" }],
+    status_version: 2,
+    statuses: [statusFixture(id)],
     unavailable_scores: [],
     scores: [
       {
@@ -667,7 +668,8 @@ test("mixed-language definitions keep their language attributes, and navigation 
     rafsi: [],
     assignments: [],
     layers: [[id]],
-    statuses: [{ event: id, state: "active" }],
+    status_version: 2,
+    statuses: [statusFixture(id)],
     unavailable_scores: [],
     scores: [
       {
@@ -913,7 +915,8 @@ test("a literal circled character in a search preview stays literal text", async
     word: { language: "jbo", spelling: "brodatest" },
     definitions: [id],
     scores: [],
-    statuses: [{ event: id, state: "active" }],
+    status_version: 2,
+    statuses: [statusFixture(id)],
     layers: [[id]],
     unavailable_scores: [],
   });

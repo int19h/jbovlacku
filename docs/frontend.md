@@ -1843,10 +1843,14 @@ This endpoint reports the server's known branches, not proof of complete device 
 They retrieve and authenticate headers before using those references for signing or a handover.
 
 Account-control queries require a canonical HTTPS origin and a positive numeric account ID. Invalid inputs return HTTP 400.
-AccountControlResponse contains exactly snapshot, view, origin, account, state, controller_candidates, contributions, certificates, chain, and reasons.
+AccountControlResponse contains exactly snapshot, view, origin, account, row_present, state, controller_candidates, contributions, certificates, chain, current_observations, and reasons.
+Row_present is true when the evaluation has a row for the requested account. It is false for an absent account, which returns unclaimed with empty lists.
+An unclaimed row can also exist in the evaluation. Its row_present is true.
 State is unclaimed, controlled, disputed, or unavailable. Controlled identifies one selected period, not a promise that its key can still issue commands.
 
-Controller_candidates is the sorted candidate claim list. Contributions uses the witness_contributions shape defined below.
+Controller_candidates is the sorted candidate claim list. Contributions contains rows with exactly witness, claims, and observations.
+Each row identifies a current witness group and gives its claims and maximal retained observations. The response sorts rows by witness identity.
+Current_observations gives one selected observation per current witness group for the unique claim. An unclaimed account has an empty current_observations list.
 Certificates is sorted by policy ID and then claim ID. Each entry contains exactly policy, claim, and observations.
 Observations contains one usable present observation per witness group of that policy, with event IDs sorted and duplicate-free.
 
@@ -1854,7 +1858,8 @@ Chain contains the sorted distinct claim IDs needed to interpret the candidate c
 The response includes evidence for current eligibility, closure, and any historical availability guard that affects its result.
 With only historical evidence, state is unavailable and controller_candidates is empty. Reasons includes policy_history_unavailable.
 
-PublicationStatus then has unavailable state and null claim, deciding_claim, and controller. Its authority is none.
+When the account pass applies to a publication, its PublicationStatus then has unavailable state and null claim, deciding_claim, and controller. Its authority is none.
+The account pass applies only when account_authority_applied is true. A publication outside the pass keeps its own status. An example is an imported definition under a view that disables account authority.
 A pending certified candidate also gives unavailable selection, with reason claim_pending. Its known candidate IDs remain visible.
 State unclaimed requires no current or historical certificate. It preserves the initial active default.
 
@@ -1958,13 +1963,14 @@ PublicationStatus = {
   event: event-ID,
   state: "active" | "deprecated" | "conflicted" | "uncertain" | "unavailable",
   frontier: [event-ID], reasons: [code-string],
-  controller_candidates: [event-ID], deciding_claim: event-ID | null,
-  witness_contributions: [{witness: identity-string, claims: [event-ID], observations: [event-ID]}],
+  deciding_claim: event-ID | null,
+  account_control: {origin: canonical-HTTPS-origin, account: positive-integer} | null,
+  account_authority_applied: boolean,
   authority: "native" | "source-account" | "none" | "uncertain",
-  controller: identity-string | null, claim: event-ID | null, observations: [event-ID]
+  controller: identity-string | null, claim: event-ID | null
 }
 WordResponse = {
-  snapshot: ID, view: event-ID, calculation: Calculation | null,
+  status_version: 2, snapshot: ID, view: event-ID, calculation: Calculation | null,
   word: WordObject | null, definitions: [candidate-ID], rafsi: [event-ID],
   virtuals: [VirtualReference], virtual_statuses: [VirtualStatus],
   assignments: [{id: rafsi-pair-ID, claims: [event-ID], status: pair-status}],
@@ -2060,21 +2066,31 @@ Assignment status is `eligible`, `inactive`, or `unknown`, with distinct pair sc
 Statuses contains one entry for each returned signed definition, sorted by event ID. It uses the response's exact snapshot and view.
 Frontier lists the deciding maximal status actions, or their union during a controller dispute. Event-ID arrays are sorted and duplicate-free.
 
-Controller_candidates contains the candidate period claim IDs. Deciding_claim names the period that supplies the value, or null for a default, dispute, or unavailable selection.
-Each candidate claim exposes its signed previous and carry fields through the ordinary event API. The client fetches these records to inspect inheritance.
-Witness_contributions identifies each current witness group, its contributed claims, and the maximal retained observations that explain those contributions.
-
-It sorts by witness identity. A full certificate can also require older observations, exposed through the account-control endpoint.
+Deciding_claim names the period that supplies the publication status decision. An inherited decision can name an earlier period than claim.
+Deciding_claim is null for a default, dispute, or unavailable account decision.
+A conflict between selected revisions of the same source record can make the publication unavailable and leave deciding_claim visible. The revisions can occur in one selection or in several selections.
 Reasons uses stable codes, including controller_dispute, binding_unavailable, witness_history_incomplete, policy_history_unavailable, carry_history_pending, current_authority_lost, and claim_pending.
 Authority describes permission for a new command independently of the displayed state. A dispute or lost controller authority disables commands.
 
 Controller identifies the unique retained controlling identity group when available. Otherwise it is null.
 Claim names the unique selected controller period even when its key authority is unavailable. It is null during a controller dispute or when no eligible controller is selected.
-Observations gives one usable certificate observation per current witness group for that unique claim, sorted by event ID.
+Native status uses a null account_control and a false account_authority_applied. Its claim and deciding_claim are null. Its controller follows native author rules.
 
+An attributed import refers to its account only when that account has a row in this evaluation. The reference carries the origin and account number.
+Account_authority_applied is true if the account pass applies the enabled policy to an imported definition. A missing controller does not make this flag false.
+With a disabled policy, an attributed import still refers to the account row. Its account_authority_applied is false.
+
+For evidence, request /account-control on demand with the reference and the word response snapshot and view. Reuse the result for that exact account and pin. Concurrent readers share the request. A reader can cancel its own wait.
+If a non-null reference receives row_present false, report an inconsistent export.
+The prototype browser checks only part of the rules that an account row and its join with a status meet. Issue #188 tracks the full rule set that checkpoint restore applies.
+If the snapshot expires, show that the evidence is unavailable for that request. Use the publication state alone to show a status badge.
+Read contributions from the account row whenever a reference exists. Read controller_candidates and current_observations only when account_authority_applied is true.
+Elsewhere those lists are empty. A null reference gives empty lists. A missing referenced row makes the export inconsistent.
+Each candidate claim links to its signed previous and carry fields through the ordinary event API.
+
+The current observation list and each certificate's observation list contain sorted, distinct event IDs. Certificates can refer to older witness policies.
 Choose a causally maximal matching present observation for each group. If several agree, use the smallest event ID for representation only.
 The choice of equivalent evidence never orders claims or status values.
-Native status uses empty controller_candidates, witness_contributions, and observations, with null claim and deciding_claim. Its controller follows native author rules.
 
 An uncertain or unavailable definition status receives no numerical Score. Its ID appears in unavailable_scores instead.
 All server-derived fields remain assertions until recomputed. An API response alone never proves account control or authorizes a signature.

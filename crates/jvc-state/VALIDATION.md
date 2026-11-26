@@ -1,7 +1,7 @@
 # State validation
 
-The state test suite passes 97 tests. It includes H01 through H48 and 49 additional regressions.
-The native suite finishes in 24.66 seconds on the development machine with two test threads. The tests use real authenticated signatures and canonical bodies.
+The state test suite includes the handover cases H01 through H48 and additional regressions.
+The tests use real authenticated signatures and canonical bodies.
 Each handover case uses four delivery orders, duplicate delivery, and reconstruction from serialized envelopes.
 The suite samples delivery orders. It does not enumerate every possible permutation.
 
@@ -40,9 +40,12 @@ The crate passes native and standalone wasm32-unknown-unknown build checks.
 CI installs Rustfmt and Clippy on the pinned 1.99.0 toolchain.
 The toolchain file selects the minimal profile, which does not include these components.
 
-The generated parity corpus contains 353 inputs from all 97 test names. It includes every handover case and the large history tests.
-Native expected outputs equal the Chromium WebAssembly outputs for all 353 inputs. The parity runner finishes in 12.810 seconds on the development machine.
+The parity corpus has one input for each case that the state and runtime tests generate. It includes every handover case and the large history tests.
+The parity runner requires that the native expected output equals the Chromium WebAssembly output for every input.
 The comparison includes the complete evaluator result, publication status fields, and account certificate fields.
+Parity uses state export version 2. Each account control row owns the witness evidence that its publications reference.
+The concentrated fixtures cover 250, 500, and 1,000 imports that share one account.
+
 The corpus comes from the same native fixture builders. It contains no separate implementation of expected state rules.
 
 The parity runner writes `_wasm-report.json` into the selected corpus directory.
@@ -55,7 +58,7 @@ Use a new corpus directory for each run, so old cases cannot enter the compariso
 mkdir -p .cache
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 export JVC_STATE_PARITY_DIR="$(mktemp -d "$PWD/.cache/state-parity.XXXXXX")"
-cargo test -p jvc-state --locked --jobs 2 -- --test-threads=2
+cargo test -p jvc-state -p jvc-runtime --locked --jobs 2 -- --test-threads=2
 npm run build:core
 node scripts/test-state-parity.mjs
 ```

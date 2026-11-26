@@ -122,3 +122,9 @@ The fixture places at most one judged target in the requested context.
 Process CPU and peak memory include fixture construction.
 The resolver timer excludes it.
 These synthetic results do not establish HTTP latency or live dictionary capacity.
+
+## State export
+
+State export version 2 stores each account's contributions in account_controls. An attributed publication carries an account reference if the evaluation has a row for its account. The reference applies only to the snapshot and view of that evaluation.
+The export preserves selected current observations separately from historical certificates. Checkpoints keep their own format.
+`Publication` has no serializer, because its fields repeat the account evidence. `Evaluation::export_publications` writes the publication map in the version 2 form.

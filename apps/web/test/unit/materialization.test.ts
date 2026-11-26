@@ -48,6 +48,7 @@ const response = () => ({
   rafsi: [],
   assignments: [],
   scores: [],
+  status_version: 2,
   statuses: [],
   layers: [],
   unavailable_scores: [],
