@@ -221,10 +221,12 @@ impl<'a> Scopes<'a> {
 /// just before the gap and another range that starts at it.
 ///
 /// The index is input handling. It is not charged to the work meter
-/// or to the fast-path eligibility fuel. Its construction is one pass
-/// over the retained records and their stored range lists, with a
-/// constant number of steps per record, per scope incidence and per
-/// stored range. A graph builds it at most once, before its first
+/// or to the fast-path eligibility fuel. Its construction is linear
+/// work: one pass over the retained records to collect scopes, then
+/// either the direct scan, which visits at most `2(H + U)` ranges, or
+/// at most three reads of each distinct stored range list. `H` counts
+/// scope incidences and `U` counts distinct stored ranges. A graph
+/// builds it at most once, before its first
 /// eligible append. A later append on the same layout reuses it. A
 /// rebuilt graph builds a new one, and that rebuild already does
 /// linear work over the same records. So the guard adds at most a
@@ -279,8 +281,10 @@ impl JoinIndex {
         }
 
         // The direct path visits each scope's ranges. Repeated wide
-        // handles can make that sum large, so the common path visits
-        // each distinct handle once instead.
+        // handles can make that sum large. The common path instead
+        // reads each distinct handle's ranges once to find candidate
+        // gaps, and twice more to place the touches if any candidate
+        // exists. So it visits at most three times the distinct ranges.
         let direct = scopes.repeated_ranges <= 2 * (scopes.incidences + scopes.unique_ranges);
         // Zero means that no issuer gap starts at this position.
         let mut gap_at = vec![0u32; graph.space.len()];

@@ -60,7 +60,9 @@ pub(super) fn layout_edge_reads() -> usize {
 pub(super) type PricedUnion = (u8, BTreeSet<String>);
 #[cfg(test)]
 thread_local! {
-    /// While set, the operands of every priced temporary union.
+    /// While set, the operands of every `maxima` call with at least
+    /// three stored operands and every carry prefix with at least two
+    /// present heads. Smaller unions cannot form a priced join.
     static PRICED_UNIONS: std::cell::RefCell<Option<Vec<PricedUnion>>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -309,7 +311,11 @@ impl MixedRanges {
         let starts = space.block_starts().skip(1);
         let mut greatest_end = 0;
         let marks: Vec<_> = if interval_bytes.zip(dense_bytes).is_some_and(|(a, b)| a <= b) {
-            let mut intervals: Vec<_> = self.positions().collect();
+            // Reserve the known count first. Collecting a flattened
+            // iterator could grow the vector past it.
+            let mut intervals = Vec::with_capacity(self.ranges);
+            intervals.extend(self.positions());
+            debug_assert_eq!(intervals.len(), self.ranges);
             sort_interval_starts(&mut intervals);
             let mut intervals = intervals.into_iter().peekable();
             starts
@@ -348,6 +354,11 @@ fn mixed_range_units(ranges: usize) -> usize {
 /// Four stable byte passes over unsigned interval starts.
 fn sort_interval_starts(intervals: &mut Vec<(u32, u32)>) {
     let mut scratch = vec![(0, 0); intervals.len()];
+    #[cfg(test)]
+    SPARSE_BUFFER_BYTES.with(|bytes| {
+        let slots = intervals.capacity() + scratch.capacity();
+        bytes.set(slots * std::mem::size_of::<(u32, u32)>());
+    });
     for shift in [0, 8, 16, 24] {
         let bucket = |first: u32| ((first >> shift) & 255) as usize;
         let mut offsets = [0; 256];
@@ -373,6 +384,8 @@ fn sort_interval_starts(intervals: &mut Vec<(u32, u32)>) {
 thread_local! {
     static BOUNDARY_RANGE_VISITS: Cell<usize> = const { Cell::new(0) };
     static BOUNDARY_UNITS: Cell<usize> = const { Cell::new(0) };
+    /// Capacity of both sparse sort buffers in the last sort, in bytes.
+    static SPARSE_BUFFER_BYTES: Cell<usize> = const { Cell::new(0) };
 }
 
 /// The appended-rank index cached on a graph: the appended-record
@@ -562,7 +575,7 @@ impl Graph {
     ///
     /// This test is fast-path eligibility work over retained state. It
     /// does not take units from the work meter or from the eligibility
-    /// fuel. The temporary join index costs one linear pass per graph
+    /// fuel. The temporary join index costs linear work once per graph
     /// build (see `joins::JoinIndex`). The appended-closure check reads
     /// at most the records appended since the last rebuild, which the
     /// rebase limit bounds.
@@ -2439,6 +2452,35 @@ mod tests {
         assert!(graph.boundary.stored.is_none());
         assert_eq!(BOUNDARY_RANGE_VISITS.with(Cell::get), visits);
         assert_eq!(BOUNDARY_UNITS.with(Cell::get), units);
+    }
+
+    /// Six one-range mixed closures among 24 records sit exactly at the
+    /// sparse bound of four bytes per record. Both buffers must hold
+    /// one slot per range, so they reserve 96 bytes in all.
+    #[test]
+    fn sparse_boundary_buffers_reserve_one_slot_per_range() {
+        let mut history = BTreeMap::new();
+        let mut transfer = node("jve1:transfer", "a", &[], "identity.transfer");
+        transfer.action = CompactValue::from(&json!({"kind":"identity.transfer","successor":"b"}));
+        let mut accept = node("jve1:accept", "b", &[], "identity.accept");
+        accept.action =
+            CompactValue::from(&json!({"kind":"identity.accept","transfer":"jve1:transfer"}));
+        let first = node("jve1:first", "b", &["jve1:accept"], "identity.merge");
+        let second = node("jve1:second", "b", &["jve1:first"], "identity.merge");
+        for record in [transfer, accept, first, second] {
+            history.insert(record.id.clone(), record);
+        }
+        for i in 0..20 {
+            let root = node(&format!("jve1:z{i:02}"), "z", &[], "identity.merge");
+            history.insert(root.id.clone(), root);
+        }
+        SPARSE_BUFFER_BYTES.with(|bytes| bytes.set(0));
+        let graph = Graph::new(history, &Limits::default());
+        assert!(!graph.resource.get());
+        assert!(graph.boundary.has_mixed);
+        let bytes = SPARSE_BUFFER_BYTES.with(Cell::get);
+        assert_eq!(bytes, 6 * 16);
+        assert!(bytes <= 4 * graph.space.len());
     }
 
     #[test]

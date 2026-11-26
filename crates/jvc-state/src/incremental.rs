@@ -4876,9 +4876,11 @@ mod rebuild_tests {
         assert_eq!(state.prepared.nodes, graph.nodes);
     }
 
-    /// A fresh evaluation that records every priced temporary union.
-    /// Each one must stay in one issuer block or lie inside one
-    /// collected scope. Returns the count of scoped unions.
+    /// A fresh evaluation that records the priced temporary unions that
+    /// can form a join (see `graph::record_priced_unions`). If the graph
+    /// exists and its resource flag is clear, each one must stay in one
+    /// issuer block or lie inside one collected scope. Returns the count
+    /// of scoped unions.
     fn fresh_checked(prepared: &PreparedEvaluationInput) -> (EvaluatedState, usize) {
         let (state, unions) = graph::record_priced_unions(|| prepared.clone().into_state());
         let scoped = state
@@ -6243,7 +6245,7 @@ mod rebuild_tests {
         assert_eq!(graph::join_index_builds(), builds + 1);
         let mut full = unshared(&prepared);
         full.add_record(&judgment, None);
-        assert_same_as_fresh(&next, &unshared(&full).into_state());
+        assert_same_as_fresh(&next, &fresh_checked(&unshared(&full)).0);
 
         // Later appends and a fork reuse the index of the layout.
         let (later, _) = signed(
@@ -6253,7 +6255,7 @@ mod rebuild_tests {
             json!({"kind":"judgment.set","target":target,"value":"bless"}),
         );
         full.add_record(&later, None);
-        let fresh = full.into_state();
+        let (fresh, _) = fresh_checked(&full);
         for state in [next.clone(), next] {
             let mut delta = PreparedEvaluationInput::new(prepared.options.clone());
             delta.add_record(&later, None);
@@ -6288,7 +6290,7 @@ mod rebuild_tests {
             let mut input = unshared(&prepared);
             input.options.limits.traversal = Some(limit);
             full.options.limits.traversal = Some(limit);
-            let fresh = unshared(&full).into_state();
+            let (fresh, _) = fresh_checked(&unshared(&full));
             assert_eq!(fresh.evaluation().available, limit >= work);
             let live = unshared(&input).into_state();
             assert!(live.evaluation().available);
@@ -11182,7 +11184,7 @@ mod rebuild_tests {
                 )
                 .unwrap()
                 .advance(delta(), &[]);
-                let full = prepared.clone().into_state();
+                let (full, _) = fresh_checked(&prepared);
                 for (path, state) in [
                     ("live", &live),
                     ("restored full checkpoint", &restored_full),
