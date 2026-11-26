@@ -32,6 +32,7 @@ import {
   LONE_SURROGATE,
   PACKAGE_RAFSI_LIMIT,
   savedRow,
+  savedRowListCache,
 } from "./saved-package.ts";
 import {
   getManifest,
@@ -74,11 +75,12 @@ export function createPackageWordIndex(identify: typeof wordId = wordId) {
         indexes.set(pkg, index);
         return index;
       }
+      const checkedLists = savedRowListCache();
       for (const entry of pkg.entries) {
         let row;
         let id;
         try {
-          row = savedRow(entry, pkg.version, language);
+          row = savedRow(entry, pkg.version, language, checkedLists);
           id = identify(row.word);
         } catch {
           index.invalidEntries++;

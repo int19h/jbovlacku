@@ -135,10 +135,24 @@ const GLOSS_FIELDS = ["language", "text", "sense"];
  * must carry the issuer and the rafsi list (with no lone surrogates). A row
  * that fails raises `PackageValidationError`.
  */
+/** Per-package validated list cache so shared row lists are checked once. */
+export interface SavedRowListCache {
+  selmaho: Set<unknown>;
+  glosses: Set<unknown>;
+  rafsi: Set<unknown>;
+}
+
+export const savedRowListCache = (): SavedRowListCache => ({
+  selmaho: new Set(),
+  glosses: new Set(),
+  rafsi: new Set(),
+});
+
 export function savedRow(
   entry: unknown,
   version: 1 | 2 | undefined,
   language: string,
+  checkedLists?: SavedRowListCache,
 ): PackageEntry {
   if (!isRecord(entry)) throw new PackageValidationError();
   const { word, classification, glosses } = entry;
@@ -156,20 +170,29 @@ export function savedRow(
     fields(classification, CLASSIFICATION_FIELDS) &&
     lexicalKinds.includes(classification.kind) &&
     Array.isArray(classification.selmaho);
-  if (usable)
-    usable = !anyItem(
-      (classification as { selmaho: unknown[] }).selmaho,
-      (item) => typeof item !== "string",
-    );
-  if (usable)
-    usable = !anyItem(
-      glosses as unknown[],
-      (gloss) =>
-        !fields(gloss, GLOSS_FIELDS) ||
-        !languageTag(gloss.language) ||
-        typeof gloss.text !== "string" ||
-        !(gloss.sense === null || typeof gloss.sense === "string"),
-    );
+  if (usable) {
+    const selmaho = (classification as { selmaho: unknown[] }).selmaho;
+    if (!checkedLists?.selmaho.has(selmaho)) {
+      usable = !anyItem(selmaho, (item) => typeof item !== "string");
+      if (usable && checkedLists && selmaho.length >= 4)
+        checkedLists.selmaho.add(selmaho);
+    }
+  }
+  if (usable) {
+    const glossList = glosses as unknown[];
+    if (!checkedLists?.glosses.has(glossList)) {
+      usable = !anyItem(
+        glossList,
+        (gloss) =>
+          !fields(gloss, GLOSS_FIELDS) ||
+          !languageTag(gloss.language) ||
+          typeof gloss.text !== "string" ||
+          !(gloss.sense === null || typeof gloss.sense === "string"),
+      );
+      if (usable && checkedLists && glossList.length >= 4)
+        checkedLists.glosses.add(glossList);
+    }
+  }
   if (usable && version === 2) {
     const rafsi = entry.rafsi;
     usable =
@@ -179,11 +202,17 @@ export function savedRow(
       rafsi.length <= PACKAGE_RAFSI_LIMIT &&
       (entry.rafsi_complete === undefined ||
         typeof entry.rafsi_complete === "boolean");
-    if (usable)
-      usable = !anyItem(
-        rafsi as unknown[],
-        (item) => typeof item !== "string" || LONE_SURROGATE.test(item),
-      );
+    if (usable) {
+      const rafsiList = rafsi as unknown[];
+      if (!checkedLists?.rafsi.has(rafsiList)) {
+        usable = !anyItem(
+          rafsiList,
+          (item) => typeof item !== "string" || LONE_SURROGATE.test(item),
+        );
+        if (usable && checkedLists && rafsiList.length >= 4)
+          checkedLists.rafsi.add(rafsiList);
+      }
+    }
   } else if (usable)
     for (const name of V2_ONLY) if (Object.hasOwn(entry, name)) usable = false;
   if (!usable) throw new PackageValidationError();

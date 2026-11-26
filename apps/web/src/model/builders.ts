@@ -21,6 +21,7 @@ import {
   PackageValidationError,
   savedPackage,
   savedRow,
+  savedRowListCache,
   savedWordId,
 } from "../data/saved-package.ts";
 import {
@@ -477,8 +478,9 @@ export function inventoryFromPackage(
   const gismu = new Map<string, string>();
   const incomplete = new Map<string, string>();
   let hasClaims = false;
+  const checkedLists = savedRowListCache();
   for (const row of pkg.entries) {
-    const entry = savedRow(row, pkg.version, language);
+    const entry = savedRow(row, pkg.version, language, checkedLists);
     const id = savedWordId({ language: "jbo", spelling: entry.word.spelling });
     const kind = (entry.classification as { kind?: string } | null)?.kind;
     if (kind === "gismu") gismu.set(id, entry.word.spelling);

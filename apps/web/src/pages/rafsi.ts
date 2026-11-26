@@ -28,6 +28,7 @@ import {
   PackageValidationError,
   savedPackage,
   savedRow,
+  savedRowListCache,
   savedSpellingChecks,
   savedWordId,
 } from "../data/saved-package.ts";
@@ -94,8 +95,11 @@ async function packageFor(
   if (cached) {
     if (cached.version === 2) return { pkg: cached, fresh: false };
     const spellings = savedSpellingChecks();
+    const checkedLists = savedRowListCache();
     for (const row of cached.entries)
-      spellings.add(savedRow(row, cached.version, language).word.spelling);
+      spellings.add(
+        savedRow(row, cached.version, language, checkedLists).word.spelling,
+      );
     spellings.finish();
   }
   return fallback && { pkg: fallback, fresh: true };
@@ -145,8 +149,9 @@ export async function wordsWithRafsi(
       // any row that the search returns, and the worker accepts some rafsi
       // that the core cannot read.
       let incomplete = false;
+      const checkedLists = savedRowListCache();
       for (const row of pkg.entries) {
-        const entry = savedRow(row, pkg.version, language);
+        const entry = savedRow(row, pkg.version, language, checkedLists);
         if (isV2(entry) && entry.rafsi_complete === false) incomplete = true;
       }
       result = await searchPackage(pkg, language, [rafsi], {
@@ -677,8 +682,14 @@ async function resolvePair(
         // A failed download can leave a candidate from a checked prefix.
         found = undefined;
         const spellings = savedSpellingChecks();
+        const checkedLists = savedRowListCache();
         for (const row of loaded.pkg.entries) {
-          const entry = savedRow(row, loaded.pkg.version, language);
+          const entry = savedRow(
+            row,
+            loaded.pkg.version,
+            language,
+            checkedLists,
+          );
           if (isV2(entry) && !found && entry.rafsi.length)
             match(entry, savedWordId(entry.word));
           else spellings.add(entry.word.spelling);

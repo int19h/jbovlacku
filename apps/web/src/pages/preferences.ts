@@ -27,6 +27,7 @@ import {
   PackageValidationError,
   savedPackage,
   savedRow,
+  savedRowListCache,
   savedSpellingChecks,
 } from "../data/saved-package.ts";
 import type { Preferences } from "../data/store.ts";
@@ -662,8 +663,11 @@ async function preferencesBody(context: RenderContext, app: App) {
         checks.push(() => {
           try {
             const spellings = savedSpellingChecks();
+            const checkedLists = savedRowListCache();
             for (const entry of pkg.entries)
-              spellings.add(savedRow(entry, pkg.version, key).word.spelling);
+              spellings.add(
+                savedRow(entry, pkg.version, key, checkedLists).word.spelling,
+              );
             spellings.finish();
             detail.textContent = `${plural(pkg.entries.length, "definition")} · snapshot ${pkg.snapshot.slice(7, 19)}… · version ${pkg.version ?? 1}${
               pkg.downgrade
