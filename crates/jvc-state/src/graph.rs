@@ -57,6 +57,34 @@ pub(super) fn layout_edge_reads() -> usize {
 }
 #[cfg(test)]
 thread_local! {
+    /// While set, the operands of every priced temporary union: the
+    /// closure mode and the stored records whose ranges it can read.
+    static PRICED_UNIONS: std::cell::RefCell<Option<Vec<(u8, BTreeSet<String>)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn record_priced_unions<T>(run: impl FnOnce() -> T) -> (T, Vec<(u8, BTreeSet<String>)>) {
+    let previous = PRICED_UNIONS.with(|unions| unions.replace(Some(Vec::new())));
+    let value = run();
+    let unions = PRICED_UNIONS
+        .with(|unions| unions.replace(previous))
+        .unwrap();
+    (value, unions)
+}
+#[cfg(test)]
+fn record_priced_union(mode: u8, operands: BTreeSet<String>, minimum: usize) {
+    if operands.len() >= minimum {
+        PRICED_UNIONS.with(|unions| {
+            if let Some(unions) = unions.borrow_mut().as_mut() {
+                unions.push((mode, operands));
+            }
+        });
+    }
+}
+#[cfg(test)]
+pub(super) use joins::{assert_priced_unions_in_scopes, builds as join_index_builds};
+#[cfg(test)]
+thread_local! {
     static CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
 }
 #[cfg(test)]
@@ -529,27 +557,30 @@ impl Graph {
     }
 
     /// Tests an insertion after the issuer's current block.
-    pub fn splits_layout(&self, coordinate: u32, issuer: &str) -> Option<bool> {
+    ///
+    /// This test is fast-path eligibility work over retained state. It
+    /// does not take units from the work meter or from the eligibility
+    /// fuel. The temporary join index costs one linear pass per graph
+    /// build (see `joins::JoinIndex`). The appended-closure check reads
+    /// at most the records appended since the last rebuild, which the
+    /// rebase limit bounds.
+    pub fn splits_layout(&self, coordinate: u32, issuer: &str) -> bool {
         if self.boundary.crosses(coordinate) {
-            return Some(true);
+            return true;
         }
         if let Some(index) = &self.join_index {
             // The first admitted append, even at an outer end, must
             // leave an index bound to the original positioned layout.
-            if index.get().is_none() {
-                let built = joins::JoinIndex::build(self)?;
-                let _ = index.set(built);
-            }
-            if index.get().unwrap().splits(self, coordinate)? {
-                return Some(true);
+            if index
+                .get_or_init(|| joins::JoinIndex::build(self))
+                .splits(coordinate)
+            {
+                return true;
             }
         }
         let Some(mixed) = &self.appended_mixed else {
-            return Some(false);
+            return false;
         };
-        if !self.charge(self.appended_rank.len() + 2 * mixed.len()) {
-            return None;
-        }
 
         let mut left = (coordinate > 0).then(|| self.space.id_at_ref(coordinate - 1));
         let mut right =
@@ -569,7 +600,7 @@ impl Graph {
                 right = Some(id);
             }
         }
-        Some(left.zip(right).is_some_and(|(left, right)| {
+        left.zip(right).is_some_and(|(left, right)| {
             mixed.iter().any(|(id, mode)| {
                 let cache = if *mode == 1 {
                     &self.structural
@@ -579,7 +610,13 @@ impl Graph {
                 let ids = &cache[id].ids;
                 ids.contains(left) && ids.contains(right)
             })
-        }))
+        })
+    }
+
+    /// Whether the graph can build a join index, and whether it has.
+    #[cfg(test)]
+    pub(crate) fn join_index_built(&self) -> Option<bool> {
+        self.join_index.as_ref().map(|index| index.get().is_some())
     }
 
     pub fn mixed_copy_units(&self, node: &Node) -> usize {
@@ -775,6 +812,15 @@ impl Graph {
             1 => &self.structural,
             _ => &self.accepted,
         };
+        #[cfg(test)]
+        {
+            // Each present head reads the accumulator of the present
+            // heads before it. The last present head is never read.
+            let mut present: Vec<&String> =
+                heads.iter().filter(|id| cache.contains_key(*id)).collect();
+            present.pop();
+            record_priced_union(mode, present.into_iter().cloned().collect(), 2);
+        }
         let mut result = self.empty_closure();
         for id in heads {
             let Some(c) = cache.get(id) else {
@@ -1460,6 +1506,17 @@ impl Graph {
         } else {
             &self.accepted
         };
+        // With two operands, every read sees an empty set or one stored
+        // closure. Only three or more can form a priced join.
+        #[cfg(test)]
+        record_priced_union(
+            if structural { 1 } else { 2 },
+            ids.iter()
+                .filter(|id| cache.contains_key(*id))
+                .cloned()
+                .collect(),
+            3,
+        );
         let mut unknown: BTreeSet<String> = BTreeSet::new();
         let mut groups: BTreeMap<usize, Vec<(&String, &Closure)>> = BTreeMap::new();
         for id in ids {
@@ -2471,21 +2528,18 @@ mod tests {
         let gap = graph.next_block_start("a");
         assert!(graph.boundary.has_mixed);
         assert!(graph.boundary.stored.is_none());
-        assert_eq!(graph.splits_layout(gap, "b"), Some(false));
+        assert!(!graph.splits_layout(gap, "b"));
         graph.append_ordinary(left.clone());
-        assert_eq!(graph.splits_layout(gap, "b"), Some(true));
-        assert_eq!(graph.splits_layout(0, "0"), Some(false));
-        assert_eq!(
-            graph.splits_layout(graph.space.len() as u32, "z"),
-            Some(false)
-        );
+        assert!(graph.splits_layout(gap, "b"));
+        assert!(!graph.splits_layout(0, "0"));
+        assert!(!graph.splits_layout(graph.space.len() as u32, "z"));
 
         let mut graph = Graph::new(history, &limits);
-        assert_eq!(graph.splits_layout(gap, "c"), Some(false));
+        assert!(!graph.splits_layout(gap, "c"));
         graph.append_ordinary(node("jve1:between", "c", &[], "identity.merge"));
         graph.append_ordinary(left);
-        assert_eq!(graph.splits_layout(gap, "b"), Some(false));
-        assert_eq!(graph.splits_layout(gap, "c"), Some(false));
+        assert!(!graph.splits_layout(gap, "b"));
+        assert!(!graph.splits_layout(gap, "c"));
     }
 
     #[test]
