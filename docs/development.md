@@ -436,7 +436,7 @@ This rebuild incorporates the new IDs into the ancestor layout.
 It reports `layout_split` if the parents leave out any of the issuer history.
 It also reports `layout_split` if the insertion splits a stored range or separates adjacent ranges in a priced union.
 The same guard covers status, carry, register, and account evidence merges.
-If the guard cannot prove the gap safe within the eligibility budget, the evaluator reports `work_budget` and rebuilds.
+The guard is input handling. It takes no units from the work budget or from the append eligibility allowance.
 A rebuild uses the full work budget to decide availability.
 
 Judgment updates can return a patch of at most 1 MiB for the exact parent session.

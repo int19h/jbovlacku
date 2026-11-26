@@ -51,7 +51,11 @@ The guard covers status, carry, register, and account evidence merges.
 The evaluator builds this guard before the first eligible append to a fresh layout.
 It skips the guard if there are no semantic acceptances or claims with at least three carry entries.
 A live state and both checkpoint restores derive the guard from the positioned records.
-The guard uses the append eligibility budget. If this budget runs out, the evaluator tries a full rebuild.
+Building the guard is one linear pass over the retained records and their stored ranges.
+Under the input handling rule above, the budget does not charge it, and it takes no units from the append eligibility allowance.
+A graph builds the guard at most once, and later appends on the same layout reuse it.
+A rebuilt graph builds a new guard, and the rebuild already does linear work over the same records.
+A gap test reads only the scopes of the ranges that end or start at that gap, and it saves its answer for the layout.
 Temporary join marks add no work to the full evaluation price.
 
 When a full evaluation exceeds its work budget, it returns an empty `resource_unavailable` result.

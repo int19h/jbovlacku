@@ -78,12 +78,18 @@ A failed graph build stops before the index scans the ranges.
 A merge scope contains the records that can contribute to one priced union.
 A test compares both kinds of scope index with direct membership at every issuer gap.
 If repeated wide operands would make the direct scan too large, the index reads each distinct range list once.
-At a candidate gap, it tests both neighbors against the original scopes.
-A partial answer cannot admit an append.
+At a candidate gap, it reads the scopes of the ranges that end or start at that gap.
+The build and the gap tests are input handling. They take no units from the work budget or the eligibility allowance.
 
-The signed carry, native status, and historical witness tests compare fresh evaluation, live append, and both restored appends.
+The signed tests compare fresh evaluation, live append, and both restored appends for these merges: carry, native status, historical witness, command authority, authorized claims, and import status periods.
 They use the exact fresh cost, one unit below it, and one unit above it.
 All paths refuse below the cost and agree on results, work, and ancestry bytes at the cost or above it.
+In each test, every priced `maxima` and carry union of the fresh evaluation stays in one issuer block or lies in one collected scope.
+The same check runs on every fresh evaluation that the append differential tests compare against.
+
+Two tests add one transfer and its acceptance to many root judgments from distinct keys.
+With 30,000 judgments, the next root judgment stays incremental at the default budget.
+With 2,000 judgments and an explicit limit equal to the fresh cost, the live append and both restored appends stay incremental.
 
 ## Wide predecessor lists
 
