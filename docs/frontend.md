@@ -316,7 +316,9 @@ Later reads in that page fail until the page reloads.
 `LocalStore.listPackages` reads all stored packages without revision markers and supplies no reuse evidence.
 A missing legacy revision supplies no reuse evidence.
 A page uses a freshly read package only after the package header, storage-key language tag, and every row pass validation for that language. No whole-package verdict is persisted in storage.
-Main-thread page readers and the search worker enforce the same package and row rules (including exact field sets, strictly ascending event order, version 2 attribution shapes, `search_status` and `search_view` pairing, spelling checks, dense list shapes, and rafsi claim limits), with only the worker and client transfer applying a request budget.
+Settings, the rafsi pair route, the saved version 1 check in rafsi package loading, the `/rafsi` and `/claim` lookups, the Meaning typed-word check, and the wizard conflict inventory apply the full package and row rules on the main thread without a request budget. Those rules include exact field sets, strictly ascending event order, version 2 attribution shapes, `search_status` and `search_view` pairing, spelling checks, dense list shapes, and rafsi claim limits.
+Search and Meaning nearby check only the package header, storage-key language tag, dense list shapes, and row field shapes on the main thread during client transfer (lujvo part lookup searches a package that already passed the wizard inventory).
+The search worker then applies the full package and row rules (including spellings, rafsi claim limits, exact field sets, strictly ascending event order, and `search_status` and `search_view` pairing) under the request budget after the list-shape pass before returning results.
 A failed download leaves the saved package and revision unchanged.
 
 A package save reads the revision before its download starts. It writes only when that revision is still the current one, and the check and the write are one transaction. So a save never overwrites a Remove or another save that finished after it started. A Remove always wins over a save that started earlier.
