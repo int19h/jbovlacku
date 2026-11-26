@@ -426,3 +426,64 @@ test("Signer.publish returns the saved record after a failed outcome save", asyn
   );
   assert.equal(posts, 1);
 });
+
+/** The browser reports offline while the server stays reachable. */
+function setOnline(t: TestContext, online: boolean) {
+  const nav = globalThis.navigator as { onLine: boolean };
+  nav.onLine = online;
+  t.after(() => {
+    nav.onLine = true;
+  });
+}
+
+for (const action of ["Try now", "Stop and Resume"] as const) {
+  for (const lookup of ["refused", "error"] as const) {
+    test(`${action} after an unsaved refusal of a never sent record looks up the receipt first (${lookup} answer)`, async (t) => {
+      let lookupError = false;
+      const f = fixture(t, ["self"], (_peer, kind) => {
+        if (kind === "post")
+          return Response.json(receiptFor(f.item), { status: 201 });
+        if (lookupError) return json(500, { message: "Server error" });
+        return Response.json(
+          receiptFor(f.item, { admission: "refused", reasons: ["test"] }),
+        );
+      });
+      // A refused receipt while the browser reports offline. Its save fails.
+      setOnline(t, false);
+      let failures = 1;
+      f.control.failWrite = (_current, next) =>
+        next.peers.self.state === "refused" && failures-- > 0;
+      await assert.rejects(f.engine.tryNow(f.item.id), {
+        name: "QuotaExceededError",
+      });
+      assert.equal(f.peer().state, "queued");
+      assert.equal(f.peer().sendStarted, undefined);
+      setOnline(t, true);
+      lookupError = lookup === "error";
+      const explicit = async () => {
+        if (action === "Try now") await f.engine.tryNow(f.item.id);
+        else {
+          await f.engine.stop(f.item.id);
+          await f.engine.resume(f.item.id);
+        }
+      };
+      await explicit();
+      assert.deepEqual(f.log, ["0:self:receipt", "0:self:receipt"]);
+      if (lookup === "refused") {
+        assert.equal(f.peer().state, "refused");
+        return;
+      }
+      // The error answer is not a server answer about the record. The
+      // saved outcome keeps the receipt lookup for the next attempt.
+      assert.equal(f.peer().state, "unknown");
+      lookupError = false;
+      await explicit();
+      assert.deepEqual(f.log, [
+        "0:self:receipt",
+        "0:self:receipt",
+        "0:self:receipt",
+      ]);
+      assert.equal(f.peer().state, "refused");
+    });
+  }
+}

@@ -869,14 +869,21 @@ export class DeliveryEngine {
     if (running) return running;
     this.recordRetryAt.delete(id);
     if (explicit) {
-      // Try now and Resume retry a refused record. An unsaved refusal
-      // gives way to them in the same way as a saved one. An unsaved
+      // Try now and Resume retry a refused record. As resume() does for a
+      // saved refusal, an unsaved refusal becomes an unsaved unknown
+      // outcome. Its next attempt still asks for the receipt first, and
+      // the normal rules then decide whether it sends. An unsaved
       // acceptance or open verification stays, so the record is never
       // sent again after the server took it.
-      const unsaved = this.unsavedOutcomes.get(id);
-      for (const [peerId, entry] of unsaved ?? [])
-        if (entry.outcome.state === "refused") unsaved!.delete(peerId);
-      if (unsaved?.size === 0) this.unsavedOutcomes.delete(id);
+      for (const entry of this.unsavedOutcomes.get(id)?.values() ?? [])
+        if (entry.outcome.state === "refused")
+          entry.outcome = {
+            ...entry.outcome,
+            state: "unknown",
+            nextAttempt: Date.now(),
+            error: "A server refused this record before. It is retried.",
+            failure: null,
+          };
     }
     const work = this.deliverNow(id, explicit)
       .catch((error) => {
@@ -1031,6 +1038,9 @@ export class DeliveryEngine {
         : undefined;
     const attempts =
       Math.max(peer.attempts, unsaved?.outcome.attempts ?? 0) + 1;
+    // The state that the attempt follows. An unsaved outcome stands in for
+    // the stored state, so the rules match those after a working save.
+    const effective = unsaved?.outcome.state ?? peer.state;
     const fetchVariant = (id: string) =>
       objectBytes(`/events/${encodeURIComponent(id)}`, 20480, {
         peer: target,
@@ -1084,7 +1094,7 @@ export class DeliveryEngine {
       ) {
         let receipt: Receipt | undefined;
         const neverSent =
-          peer.state === "queued" && peer.sendStarted === undefined;
+          effective === "queued" && peer.sendStarted === undefined;
         try {
           receipt = await getReceipt(item.id, { peer: target });
         } catch (error) {
@@ -1151,7 +1161,7 @@ export class DeliveryEngine {
           peers: {
             ...stored.peers,
             [peerId]:
-              current.state === "queued"
+              current.state === "queued" && effective === "queued"
                 ? { ...current, ...mark }
                 : {
                     ...current,
@@ -1181,9 +1191,9 @@ export class DeliveryEngine {
       if (error instanceof RequestError && !posted)
         return {
           state:
-            peer.state === "refused" || peer.sendStarted !== undefined
+            effective === "refused" || peer.sendStarted !== undefined
               ? "unknown"
-              : peer.state,
+              : effective,
           attempts,
           lastAttempt: started,
           nextAttempt: started + backoff(attempts, error.retryAfterMs),

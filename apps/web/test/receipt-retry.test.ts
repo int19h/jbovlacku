@@ -420,13 +420,13 @@ const signatureVariants = () =>
     ),
   ) as Transport[];
 
-type SaveFailure = "outcome" | "unknown" | "verification";
+type SaveFailure = "outcome" | "unknown" | "refused" | "verification";
 
 /**
  * Queues one record in its own database and starts a delivery engine that
  * stays open in the page. IndexedDB aborts up to `failures` outbox writes of
- * the record that match `fail`. The send mark of a first send stays queued,
- * so "outcome" fails every write except that mark.
+ * the record that match `fail`. "outcome" fails every outcome write and
+ * leaves send mark writes, which carry their attempt ID.
  */
 async function startEngine(
   page: Page,
@@ -468,11 +468,15 @@ async function startEngine(
       Object.assign(item.peers.self, options.peer ?? {});
       await store.queueGroup([item]);
       let failed = 0;
-      const matches = (peer: { state: string; verifyReceipt?: boolean }) =>
+      const matches = (peer: {
+        state: string;
+        verifyReceipt?: boolean;
+        sendAttempt?: string;
+      }) =>
         options.fail === "outcome"
-          ? peer.state !== "queued"
-          : options.fail === "unknown"
-            ? peer.state === "unknown"
+          ? peer.state !== "queued" && peer.sendAttempt === undefined
+          : options.fail === "unknown" || options.fail === "refused"
+            ? peer.state === options.fail
             : peer.verifyReceipt === true;
       const put = IDBObjectStore.prototype.put;
       IDBObjectStore.prototype.put = function (value, key) {
@@ -948,4 +952,68 @@ test("a judgment whose outcome save fails still reports a saved record", async (
   const rows = await readOutbox(page);
   expect(rows).toHaveLength(1);
   expect(rows[0].transport).toBe(posts[0]);
+});
+
+test("Try now after an unsaved refusal of a never sent record looks up the receipt first", async ({
+  page,
+}) => {
+  await page.goto("/about");
+  await expect(page.locator("main h1")).toBeAttached();
+  const { posts, lookups } = deliveryRequests(page);
+  await page.route("**/api/v1/receipts/*", async (route) => {
+    const id = decodeURIComponent(
+      new URL(route.request().url()).pathname.split("/").at(-1)!,
+    );
+    await route.fulfill({
+      json: {
+        id,
+        admission: "refused",
+        interpretation: "effective",
+        body_status: "present",
+        body_hash: null,
+        envelope_hash: null,
+        cursor: "x.1",
+        snapshot: null,
+        view: "jve1:" + "a".repeat(64),
+        reasons: ["test"],
+      },
+    });
+  });
+  // The browser reports offline, but the server answers.
+  await page.evaluate(() => {
+    let online = false;
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      get: () => online,
+    });
+    Object.assign(window, {
+      setReportedOnline: (value: boolean) => {
+        online = value;
+      },
+    });
+  });
+  const { item, result, failed } = await startEngine(page, {
+    database: "unsaved-refusal-offline",
+    fail: "refused",
+    failures: 1,
+  });
+  expect(result).not.toBe("saved");
+  expect(failed).toBe(1);
+  expect(lookups).toEqual([item.id]);
+  expect((await storedPeer(page, "unsaved-refusal-offline")).state).toBe(
+    "queued",
+  );
+  await page.evaluate(async (id) => {
+    const target = window as unknown as {
+      setReportedOnline(value: boolean): void;
+      unsavedEngine: { tryNow(id: string): Promise<unknown> };
+    };
+    target.setReportedOnline(true);
+    await target.unsavedEngine.tryNow(id);
+  }, item.id);
+  expect(lookups).toEqual([item.id, item.id]);
+  expect(posts).toEqual([]);
+  expect((await storedPeer(page, "unsaved-refusal-offline")).state).toBe(
+    "refused",
+  );
 });

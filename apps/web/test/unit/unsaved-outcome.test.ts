@@ -249,8 +249,9 @@ test("a failed outcome save keeps the Retry-After of the unsaved outcome", async
       ? Response.json({ message: "Not found" }, { status: 404 })
       : busy("600"),
   );
-  // The send mark carries no state change for a first send. Fail the outcome.
-  f.control.failWrite = (next) => next.state !== "queued";
+  // Fail the outcome writes. A send mark write carries its attempt ID.
+  f.control.failWrite = (next) =>
+    next.state !== "queued" && next.sendAttempt === undefined;
   await assert.rejects(f.engine.tryNow(f.item.id), {
     name: "QuotaExceededError",
   });
@@ -267,7 +268,8 @@ test("a failed outcome save keeps the growing backoff of the unsaved outcome", a
       ? Response.json({ message: "Not found" }, { status: 404 })
       : busy(),
   );
-  f.control.failWrite = (next) => next.state !== "queued";
+  f.control.failWrite = (next) =>
+    next.state !== "queued" && next.sendAttempt === undefined;
   await f.engine.tick();
   for (let i = 0; i < 8; i++) await f.advance(15_000);
   assert.deepEqual(
