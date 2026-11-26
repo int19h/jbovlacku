@@ -780,15 +780,18 @@ export function getWord(
   if (snapshot) query.set("snapshot", snapshot);
   if (view) query.set("view", view);
   if (options.reviewers) query.set("reviewers", "1");
-  const key = `${options.peer?.id ?? "self"}|${id}|${query}`;
-  if (options.fresh) wordCache.delete(key);
+  // The request options are copied too, so the peer and signal stay the
+  // ones that the cache key names after the materialization wait.
+  const request = { ...options };
+  const key = `${request.peer?.id ?? "self"}|${id}|${query}`;
+  if (request.fresh) wordCache.delete(key);
   let pending = wordCache.get(key);
   if (!pending) {
     pending = (async () => {
-      if (options.fresh && !snapshot) await waitForMaterialization(options);
+      if (request.fresh && !snapshot) await waitForMaterialization(request);
       return api<unknown>(
         `/words/${encodeURIComponent(id)}${query.size ? `?${query}` : ""}`,
-        options,
+        request,
       );
     })().then((value) => {
       const word = validateWord(value, id);
@@ -1046,33 +1049,83 @@ export async function getPublicationEvidence(
   pin: EvidencePin,
   options: RequestOptions = {},
 ) {
-  const account = status.account_control
-    ? await getAccountControl(status.account_control, pin, options)
+  // Read the publication once, before the network wait. A caller that
+  // changes its object while the request runs cannot change this join.
+  const publication = {
+    reference: status.account_control
+      ? {
+          origin: status.account_control.origin,
+          account: status.account_control.account,
+        }
+      : null,
+    applied: status.account_authority_applied,
+    state: status.state,
+    claim: status.claim,
+    deciding: status.deciding_claim,
+    frontier: status.frontier.length,
+    pending: status.reasons.includes("carry_or_authority_pending"),
+  };
+  const account = publication.reference
+    ? await getAccountControl(publication.reference, pin, options)
     : null;
   if (account && !account.row_present)
     throw new Error("The publication refers to missing account evidence.");
-  // The account pass copies the account's selected period into the status
-  // claim (accounts.rs:819, restore check incremental.rs:2799). Only a
-  // controlled row has a selected period, its sole candidate. A deciding
-  // claim can name an inherited period, so it is not compared.
-  if (
-    account &&
-    status.account_authority_applied &&
-    status.claim !==
-      (account.state === "controlled" ? account.controller_candidates[0] : null)
-  )
+  if (account && publication.applied && !appliedJoin(publication, account))
     throw new Error(
       "The publication and its account evidence name different periods.",
     );
   return {
     witness_contributions: account?.contributions ?? [],
-    controller_candidates: status.account_authority_applied
+    controller_candidates: publication.applied
       ? (account?.controller_candidates ?? [])
       : [],
-    observations: status.account_authority_applied
+    observations: publication.applied
       ? (account?.current_observations ?? [])
       : [],
   };
+}
+/**
+ * Whether an applied status agrees with its account row. The browser checks
+ * of account rows are partial. Issue #188 tracks the full rule set that
+ * checkpoint restore applies.
+ */
+function appliedJoin(
+  publication: {
+    state: string;
+    claim: string | null;
+    deciding: string | null;
+    frontier: number;
+    pending: boolean;
+  },
+  account: AccountControlResponse,
+): boolean {
+  // The account pass copies the account's selected period into the status
+  // claim (accounts.rs:819, restore check incremental.rs:2799). Only a
+  // controlled row has a selected period, its sole candidate.
+  const period =
+    account.state === "controlled" ? account.controller_candidates[0] : null;
+  if (publication.claim !== period) return false;
+  // An unavailable account makes the publication unavailable before any
+  // period decides it (accounts.rs:833, incremental.rs:2816).
+  if (
+    account.state === "unavailable" &&
+    (publication.state !== "unavailable" || publication.frontier > 0)
+  )
+    return false;
+  // Each frontier action names a period in the account chain. With one
+  // candidate and no pending carry, that period is the deciding claim, and
+  // it can be an inherited, earlier period (accounts.rs:844,
+  // incremental.rs:2856 to 2865). A source-selection conflict can still
+  // make the publication unavailable after that decision.
+  const decides =
+    !publication.pending &&
+    account.controller_candidates.length === 1 &&
+    publication.frontier > 0;
+  if (!decides) return publication.deciding === null;
+  return (
+    publication.deciding !== null &&
+    account.chain.includes(publication.deciding)
+  );
 }
 export function forgetWord(id: string) {
   for (const key of [...wordCache.keys()])
@@ -1202,6 +1255,13 @@ export async function remoteSearch(
   // Read the pin once: the context values, or the preferred view.
   const pinnedSnapshot = context ? context.snapshot : null;
   const pinnedView = context ? context.view : preferredView;
+  // An explicit context pins both values. A missing one would let the
+  // server choose it, so the request does not start. A null context still
+  // finds the current snapshot.
+  if (context && (!hashId(pinnedSnapshot) || !eventId(pinnedView)))
+    throw new Error(
+      "The search context is incomplete. Start a new search to retry.",
+    );
   if (pinnedSnapshot) params.set("snapshot", pinnedSnapshot);
   if (pinnedView) params.set("view", pinnedView);
   if (after) params.set("after", after);
@@ -1289,16 +1349,18 @@ export async function getIdentity(
   options: RequestOptions & { snapshot?: string; fresh?: boolean } = {},
 ): Promise<IdentityResponse> {
   if (!identityId(identity)) throw new Error("The identity is invalid.");
-  // Read the snapshot pin once, for the URL and the answer check.
-  const snapshot = options.snapshot || null;
-  if (options.fresh && !snapshot) await waitForMaterialization(options);
+  // Read the snapshot pin and the request options once, for the URL, the
+  // request after the materialization wait, and the answer check.
+  const request = { ...options };
+  const snapshot = request.snapshot || null;
+  if (request.fresh && !snapshot) await waitForMaterialization(request);
   const params = new URLSearchParams();
   if (snapshot) params.set("snapshot", snapshot);
   if (preferredView) params.set("view", preferredView);
   const query = params.size ? `?${params}` : "";
   const value = await api<unknown>(
     `/identities/${encodeURIComponent(identity)}${query}`,
-    options,
+    request,
   );
   if (
     !isObject(value) ||

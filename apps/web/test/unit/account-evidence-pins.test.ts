@@ -16,6 +16,15 @@ const {
   remoteDraftSearch,
   getAccountControl,
 } = await import("../../src/data/api.ts");
+import { readFileSync } from "node:fs";
+
+/** Rows and statuses copied from real evaluator output (state export version 2). */
+const evaluated = JSON.parse(
+  readFileSync(
+    new URL("./fixtures/evaluator-account-rows.json", import.meta.url),
+    "utf8",
+  ),
+) as Record<string, { source: string; row: any; status?: any }>;
 
 const id = (prefix: string, digit: string) => `${prefix}:${digit.repeat(64)}`;
 const word = id("jvw1", "0");
@@ -391,49 +400,6 @@ const freshPeer = () => ({
   },
 });
 
-test("account rows that the evaluator can write pass", () => {
-  const rows: Record<string, unknown>[] = [
-    controlledRow(),
-    { ...controlledRow(), certificates: [] },
-    {
-      state: "disputed",
-      controller_candidates: [claim, other],
-      contributions: [
-        group(1, [claim], [obs("a")]),
-        group(2, [other], [obs("c")]),
-      ],
-    },
-    {
-      state: "disputed",
-      controller_candidates: [claim, other],
-      contributions: [group(1, [claim, other], [obs("a"), obs("b")])],
-    },
-    {
-      state: "unclaimed",
-      controller_candidates: [claim],
-      contributions: [group(1, [claim], [obs("a")]), group(2, [], [])],
-    },
-    { state: "unclaimed", contributions: [group(1, [], [])] },
-    { state: "unclaimed" },
-    {
-      state: "unavailable",
-      controller_candidates: [claim],
-      contributions: [group(1, [claim], [obs("a")])],
-    },
-    {
-      state: "unavailable",
-      controller_candidates: [claim, other],
-      contributions: [
-        group(1, [claim], [obs("a")]),
-        group(2, [other], [obs("c")]),
-      ],
-    },
-    { state: "unavailable" },
-  ];
-  for (const row of rows)
-    assert.doesNotThrow(() => checkRow(row), JSON.stringify(row));
-});
-
 test("account rows that the evaluator cannot write fail", () => {
   const base = controlledRow();
   const [first, second] = base.contributions;
@@ -560,80 +526,10 @@ test("account rows that the evaluator cannot write fail", () => {
     assert.throws(() => checkRow(row), /invalid account evidence/, name);
 });
 
-test("evidence for an applied status names the account's selected period", async () => {
-  const applied = {
-    ...status,
-    authority: "source-account",
-    controller,
-    claim,
-  };
-  serve(() => accountRow(controlledRow()));
-  const evidence = await getPublicationEvidence(
-    applied as never,
-    pinFor,
-    freshPeer(),
-  );
-  assert.deepEqual(evidence.controller_candidates, [claim]);
-  assert.deepEqual(evidence.observations, [obs("a"), obs("c")]);
-  // A status for another period than the controller.
-  serve(() => accountRow(controlledRow()));
-  await assert.rejects(
-    getPublicationEvidence(
-      { ...applied, claim: other } as never,
-      pinFor,
-      freshPeer(),
-    ),
-    /different periods/,
-  );
-  // A status without a period while the account has a controller.
-  serve(() => accountRow(controlledRow()));
-  await assert.rejects(
-    getPublicationEvidence(
-      { ...applied, authority: "none", controller: null, claim: null } as never,
-      pinFor,
-      freshPeer(),
-    ),
-    /different periods/,
-  );
-  // A status with a period while the account has no controller.
-  const disputed = {
-    state: "disputed",
-    controller_candidates: [claim, other],
-    contributions: [
-      group(1, [claim], [obs("a")]),
-      group(2, [other], [obs("c")]),
-    ],
-  };
-  serve(() => accountRow(disputed));
-  await assert.rejects(
-    getPublicationEvidence(
-      { ...applied, authority: "none", controller: null } as never,
-      pinFor,
-      freshPeer(),
-    ),
-    /different periods/,
-  );
-  // An inherited deciding claim may differ from the period.
-  serve(() => accountRow(controlledRow()));
-  await getPublicationEvidence(
-    { ...applied, deciding_claim: other } as never,
-    pinFor,
-    freshPeer(),
-  );
-  // Without the account pass, the status claim is not compared.
-  serve(() => accountRow(disputed));
-  const unapplied = await getPublicationEvidence(
-    { ...status, account_authority_applied: false } as never,
-    pinFor,
-    freshPeer(),
-  );
-  assert.deepEqual(unapplied.observations, []);
-  assert.equal(unapplied.witness_contributions.length, 2);
-});
-
 test("account and word reads keep the pin that they sent", async () => {
+  const real = realRow("controlled");
   // A caller changes its pin while the account request runs.
-  const pin = { snapshot, view };
+  const pin = { snapshot, view: real.pin.view };
   let release!: () => void;
   const held = new Promise<void>((resolve) => (release = resolve));
   const requests: URL[] = [];
@@ -642,30 +538,27 @@ test("account and word reads keep the pin that they sent", async () => {
     requests.push(url);
     await held;
     return new Response(
-      JSON.stringify(
-        accountRow({ ...controlledRow(), snapshot: otherSnapshot }),
-      ),
+      JSON.stringify({ ...real.row, snapshot: otherSnapshot }),
     );
   }) as typeof fetch;
-  const peer = freshPeer();
-  const pending = getAccountControl(account, pin, peer);
+  const pending = getAccountControl(real.key, pin, freshPeer());
   (pin as { snapshot: string }).snapshot = otherSnapshot;
   release();
   await assert.rejects(pending, /invalid account evidence/);
   assert.equal(requests[0].searchParams.get("snapshot"), snapshot);
 
   // A caller cannot change the shared answer for later readers.
-  serve(() => accountRow(controlledRow()));
+  serve(() => real.row);
   const shared = freshPeer();
-  const first = await getAccountControl(account, { snapshot, view }, shared);
+  const first = await getAccountControl(real.key, real.pin, shared);
   assert.throws(() => {
     (first as { snapshot: string }).snapshot = otherSnapshot;
   });
   assert.throws(() => (first.current_observations as string[]).pop());
   assert.throws(() => (first.contributions[0].observations as string[]).pop());
-  const second = await getAccountControl(account, { snapshot, view }, shared);
+  const second = await getAccountControl(real.key, { ...real.pin }, shared);
   assert.equal(second.snapshot, snapshot);
-  assert.deepEqual(second.current_observations, [obs("a"), obs("c")]);
+  assert.deepEqual(second.current_observations, real.row.current_observations);
 
   // A word read keeps its snapshot option, and callers get separate copies.
   const options = { snapshot, view, fresh: true };
@@ -705,4 +598,203 @@ test("account and word reads keep the pin that they sent", async () => {
   const identityRead = getIdentity(controller, identityOptions);
   identityOptions.snapshot = otherSnapshot;
   await assert.rejects(identityRead, /invalid identity response/);
+});
+
+/** A real row as the account endpoint sends it, with its key and pin. */
+function realRow(name: string) {
+  const { row } = structuredClone(evaluated[name]);
+  return {
+    row: { ...row, snapshot, row_present: true },
+    key: { origin: row.origin, account: row.account },
+    pin: { snapshot, view: row.view },
+  };
+}
+
+test("account rows that the evaluator wrote pass", () => {
+  for (const name of [
+    "controlled",
+    "disputed",
+    "unclaimed_empty",
+    "unavailable_candidate",
+    "unavailable_empty",
+  ]) {
+    const { row, key, pin } = realRow(name);
+    assert.doesNotThrow(() => validateAccountControl(row, key, pin), name);
+  }
+});
+
+/** A real applied status with its real row, served to the evidence reader. */
+function realJoin(name: string) {
+  const { status, row } = structuredClone(evaluated[name]);
+  return {
+    status,
+    row: { ...row, snapshot, row_present: true },
+    pin: { snapshot, view: row.view },
+  };
+}
+async function join(
+  status: unknown,
+  row: unknown,
+  pin: { snapshot: string; view: string },
+) {
+  serve(() => row);
+  return getPublicationEvidence(status as never, pin, freshPeer());
+}
+
+test("evidence joins accept the statuses and rows that the evaluator wrote", async () => {
+  for (const name of [
+    "direct",
+    "inherited",
+    "selection_conflict",
+    "applied_unavailable",
+    "applied_disputed",
+  ]) {
+    const { status, row, pin } = realJoin(name);
+    const evidence = await join(status, row, pin);
+    assert.deepEqual(
+      evidence.controller_candidates,
+      row.controller_candidates,
+      name,
+    );
+    assert.deepEqual(evidence.observations, row.current_observations, name);
+  }
+  // An inherited decision names an earlier period of the chain.
+  const inherited = realJoin("inherited");
+  assert.notEqual(inherited.status.deciding_claim, inherited.status.claim);
+  assert.ok(inherited.status.frontier.length > 0);
+  assert.ok(inherited.row.chain.includes(inherited.status.deciding_claim));
+});
+
+test("evidence joins reject statuses that the account pass cannot write", async () => {
+  const ff = "jve1:" + "f".repeat(64);
+  const cases: [string, string, (status: any) => void][] = [
+    // The status claim is the account's selected period.
+    ["another period", "direct", (s) => (s.claim = ff)],
+    ["no period with a controller", "direct", (s) => (s.claim = null)],
+    [
+      "a period without a controller",
+      "applied_disputed",
+      (s) => (s.claim = ff),
+    ],
+    // A deciding period belongs to the account chain.
+    [
+      "deciding period outside the chain",
+      "inherited",
+      (s) => (s.deciding_claim = ff),
+    ],
+    [
+      "deciding period outside the chain",
+      "direct",
+      (s) => (s.deciding_claim = ff),
+    ],
+    // With one candidate and a frontier, a period decides the status.
+    ["no deciding period", "direct", (s) => (s.deciding_claim = null)],
+    // Without a decision, there is no deciding period.
+    [
+      "deciding period in a dispute",
+      "applied_disputed",
+      (s) => (s.deciding_claim = evaluated.applied_disputed.row.chain[0]),
+    ],
+    ["deciding period without a frontier", "direct", (s) => (s.frontier = [])],
+    // An unavailable account makes the publication unavailable.
+    [
+      "active with an unavailable account",
+      "applied_unavailable",
+      (s) => (s.state = "active"),
+    ],
+    [
+      "frontier with an unavailable account",
+      "applied_unavailable",
+      (s) => (s.frontier = [evaluated.direct.status.frontier[0]]),
+    ],
+  ];
+  for (const [label, name, change] of cases) {
+    const { status, row, pin } = realJoin(name);
+    change(status);
+    await assert.rejects(
+      join(status, row, pin),
+      /different periods/,
+      `${label} (${name})`,
+    );
+  }
+});
+
+test("the evidence reader uses the publication that it received", async () => {
+  const { status, row, pin } = realJoin("direct");
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  globalThis.fetch = (async () => {
+    await held;
+    return new Response(JSON.stringify(row));
+  }) as typeof fetch;
+  const caller = structuredClone(status);
+  const pending = getPublicationEvidence(caller, pin, freshPeer());
+  // The caller changes its object while the request runs.
+  caller.account_authority_applied = false;
+  caller.claim = "jve1:" + "f".repeat(64);
+  caller.account_control = null;
+  release();
+  const evidence = await pending;
+  assert.deepEqual(evidence.observations, row.current_observations);
+  assert.deepEqual(evidence.controller_candidates, row.controller_candidates);
+});
+
+test("an explicit search context needs both pins", async () => {
+  const requests = serve(() => ({ snapshot, view, hits: [], next: null }));
+  for (const context of [
+    { snapshot: "", view },
+    { snapshot, view: "" },
+  ])
+    await assert.rejects(
+      remoteSearch("cukta", "en", 10, context, null),
+      /search context is incomplete|invalid search page/,
+      JSON.stringify(context),
+    );
+  assert.equal(requests.length, 0);
+  // A null context still finds the current snapshot.
+  serve(() => ({
+    snapshot: otherSnapshot,
+    view: otherView,
+    hits: [],
+    next: null,
+  }));
+  assert.equal(
+    (await remoteSearch("cukta", "en", 10, null, null)).snapshot,
+    otherSnapshot,
+  );
+});
+
+test("word and identity reads keep the peer that they started with", async () => {
+  const first = {
+    id: "first-peer",
+    base: "http://first.test/api/v1",
+    label: "first",
+  };
+  const second = {
+    id: "second-peer",
+    base: "http://second.test/api/v1",
+    label: "second",
+  };
+  let requests = serve(() => wordResponse({ snapshot, view }));
+  const options = { fresh: true, view, peer: first };
+  const read = getWord(word, options);
+  // The caller changes its options during the materialization wait.
+  options.peer = second;
+  await read;
+  assert.equal(requests[0].host, "first.test");
+  requests = serve(() => ({
+    snapshot,
+    view,
+    identity: controller,
+    actor: controller,
+    successor: null,
+    retired: false,
+    profile: { state: "none", claims: [] },
+    counts: {},
+  }));
+  const identityOptions = { fresh: true, peer: first };
+  const identityRead = getIdentity(controller, identityOptions);
+  identityOptions.peer = second;
+  await identityRead;
+  assert.equal(requests[0].host, "first.test");
 });

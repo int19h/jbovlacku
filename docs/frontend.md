@@ -2082,6 +2082,7 @@ With a disabled policy, an attributed import still refers to the account row. It
 
 For evidence, request /account-control on demand with the reference and the word response snapshot and view. Reuse the result for that exact account and pin. Concurrent readers share the request. A reader can cancel its own wait.
 If a non-null reference receives row_present false, report an inconsistent export.
+The prototype browser checks only part of the rules that an account row and its join with a status meet. Issue #188 tracks the full rule set that checkpoint restore applies.
 If the snapshot expires, show that the evidence is unavailable for that request. Use the publication state alone to show a status badge.
 Read contributions from the account row whenever a reference exists. Read controller_candidates and current_observations only when account_authority_applied is true.
 Elsewhere those lists are empty. A null reference gives empty lists. A missing referenced row makes the export inconsistent.
