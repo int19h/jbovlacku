@@ -4,6 +4,7 @@
  */
 import { describeProfile } from "../model/profiles.ts";
 import {
+  STATE_EXPORT_VERSION,
   canonicalize,
   contentHash,
   inspectBody,
@@ -26,6 +27,9 @@ import {
   languageTag,
   matchKinds,
   wordIdValid,
+  type AccountControlResponse,
+  type AccountKey,
+  type PublicationStatus,
   type ActivityResponse,
   type Capabilities,
   type DefinitionBody,
@@ -573,6 +577,101 @@ const rational = (value: unknown) =>
   String(value.denominator) !== "0";
 const interval = (value: unknown) =>
   Array.isArray(value) && value.length === 2 && value.every(rational);
+function accountKey(value: unknown): value is AccountKey {
+  if (
+    !isObject(value) ||
+    typeof value.origin !== "string" ||
+    typeof value.account !== "number" ||
+    !Number.isSafeInteger(value.account) ||
+    value.account <= 0
+  )
+    return false;
+  try {
+    const url = new URL(value.origin);
+    return url.protocol === "https:" && url.origin === value.origin;
+  } catch {
+    return false;
+  }
+}
+const sortedIds = (value: unknown): value is string[] =>
+  Array.isArray(value) &&
+  value.every((id, i) => eventId(id) && (i === 0 || value[i - 1] < id));
+const codes = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((code) => typeof code === "string");
+const nullableEvent = (value: unknown) => value === null || eventId(value);
+function publicationStatus(value: unknown): value is PublicationStatus {
+  return (
+    isObject(value) &&
+    Object.keys(value).length === 10 &&
+    eventId(value.event) &&
+    typeof value.state === "string" &&
+    ["active", "deprecated", "conflicted", "uncertain", "unavailable"].includes(
+      String(value.state),
+    ) &&
+    sortedIds(value.frontier) &&
+    codes(value.reasons) &&
+    nullableEvent(value.deciding_claim) &&
+    typeof value.authority === "string" &&
+    ["native", "source-account", "none", "uncertain"].includes(
+      String(value.authority),
+    ) &&
+    (value.controller === null || identityId(value.controller)) &&
+    nullableEvent(value.claim) &&
+    typeof value.account_authority_applied === "boolean" &&
+    (value.account_control === null ||
+      (accountKey(value.account_control) &&
+        Object.keys(value.account_control).length === 2)) &&
+    statusAccountFields(value)
+  );
+}
+/**
+ * The account fields that each authority allows. Only the account pass sets
+ * a period, a deciding period or source-account authority, and that pass
+ * runs exactly for the statuses with account_authority_applied.
+ *
+ * | applied | authority      | account_control | controller | claim    | deciding_claim |
+ * | ------- | -------------- | --------------- | ---------- | -------- | -------------- |
+ * | false   | native         | null            | set        | null     | null           |
+ * | false   | none           | null or set     | null       | null     | null           |
+ * | false   | uncertain      | null            | null       | null     | null           |
+ * | false   | source-account | not allowed     |            |          |                |
+ * | true    | source-account | set             | set        | set      | null or set    |
+ * | true    | none           | set             | null       | null/set | null or set    |
+ * | true    | uncertain      | set             | null/set   | set if a controller, else null/set | null or set |
+ * | true    | native         | not allowed     |            |          |                |
+ */
+function statusAccountFields(value: Record<string, unknown>): boolean {
+  const reference = value.account_control !== null;
+  const controller = value.controller !== null;
+  const claim = value.claim !== null;
+  if (!value.account_authority_applied) {
+    if (claim || value.deciding_claim !== null) return false;
+    switch (value.authority) {
+      case "native":
+        return !reference && controller;
+      case "none":
+        return !controller;
+      case "uncertain":
+        // Only the native pass gives uncertain authority without the
+        // account pass, and native publications have no account.
+        return !reference && !controller;
+      default:
+        return false;
+    }
+  }
+  if (!reference) return false;
+  switch (value.authority) {
+    case "source-account":
+      return controller && claim;
+    case "none":
+      return !controller;
+    case "uncertain":
+      // The pass sets a controller only with its period.
+      return !controller || claim;
+    default:
+      return false;
+  }
+}
 export function validateWord(value: unknown, id: string): WordResponse {
   const invalid = () =>
     new Error("The server returned an invalid word response.");
@@ -580,6 +679,7 @@ export function validateWord(value: unknown, id: string): WordResponse {
     !isObject(value) ||
     !hashId(value.snapshot) ||
     !eventId(value.view) ||
+    value.status_version !== STATE_EXPORT_VERSION ||
     !(
       value.word === null ||
       (isObject(value.word) &&
@@ -593,11 +693,20 @@ export function validateWord(value: unknown, id: string): WordResponse {
     !Array.isArray(value.assignments) ||
     !Array.isArray(value.scores) ||
     !Array.isArray(value.statuses) ||
+    !value.statuses.every(publicationStatus) ||
     !Array.isArray(value.layers) ||
     !Array.isArray(value.unavailable_scores) ||
     !(value.calculation === null || isObject(value.calculation))
   )
     throw invalid();
+  if (value.statuses.length !== value.definitions.length) throw invalid();
+  const definitions = new Set(value.definitions);
+  let previous = "";
+  for (const status of value.statuses) {
+    if (status.event <= previous || !definitions.delete(status.event))
+      throw invalid();
+    previous = status.event;
+  }
   for (const score of value.scores) {
     if (
       !isObject(score) ||
@@ -678,6 +787,16 @@ export function getPreferredView(): string | null {
   return preferredView;
 }
 const wordCache = new Map<string, Promise<WordResponse>>();
+/**
+ * A copy of request options for a reader that waits before its request. The
+ * peer is copied as well, so a caller that changes its peer object during
+ * the wait cannot send the request to another endpoint.
+ */
+function fixedRequest<T extends RequestOptions>(options: T): T {
+  return options.peer
+    ? { ...options, peer: { ...options.peer } }
+    : { ...options };
+}
 export function getWord(
   id: string,
   options: RequestOptions & {
@@ -687,29 +806,364 @@ export function getWord(
     reviewers?: boolean;
   } = {},
 ) {
-  const query = new URLSearchParams();
-  if (options.snapshot) query.set("snapshot", options.snapshot);
+  // Read the pin once. The URL, the cache key and the answer check all use
+  // these values, even if the caller changes its options later.
+  const snapshot = options.snapshot || null;
   const view = options.view ?? preferredView;
+  const query = new URLSearchParams();
+  if (snapshot) query.set("snapshot", snapshot);
   if (view) query.set("view", view);
   if (options.reviewers) query.set("reviewers", "1");
-  const key = `${options.peer?.id ?? "self"}|${id}|${query}`;
-  if (options.fresh) wordCache.delete(key);
+  // The request options and the peer are copied too, so the endpoint stays
+  // the one that the cache key names after the materialization wait.
+  const request = fixedRequest(options);
+  const peer = request.peer ?? selfPeer;
+  const key = `${peer.id}|${peer.base}|${id}|${query}`;
+  if (request.fresh) wordCache.delete(key);
   let pending = wordCache.get(key);
   if (!pending) {
     pending = (async () => {
-      if (options.fresh && !options.snapshot)
-        await waitForMaterialization(options);
+      if (request.fresh && !snapshot) await waitForMaterialization(request);
       return api<unknown>(
         `/words/${encodeURIComponent(id)}${query.size ? `?${query}` : ""}`,
-        options,
+        request,
       );
-    })().then((value) => validateWord(value, id));
+    })().then((value) => {
+      const word = validateWord(value, id);
+      // A pinned read must answer for that pin. Otherwise its evidence
+      // links would name another snapshot or view.
+      if (
+        (snapshot && word.snapshot !== snapshot) ||
+        (view && word.view !== view)
+      )
+        throw new Error(
+          "The server answered the word request for another snapshot or view.",
+        );
+      return word;
+    });
     wordCache.set(key, pending);
     pending.catch(() => wordCache.delete(key));
     // Word responses change with new admissions. Keep them briefly.
     setTimeout(() => wordCache.delete(key), 15000);
   }
-  return pending;
+  // Each caller gets its own copy, so no caller can change the cached
+  // answer that a later reader of the same pin receives.
+  return pending.then((word) => structuredClone(word));
+}
+type EvidencePin = Readonly<Pick<WordResponse, "snapshot" | "view">>;
+
+export function validateAccountControl(
+  value: unknown,
+  account: AccountKey,
+  pin: EvidencePin,
+): AccountControlResponse {
+  if (
+    !isObject(value) ||
+    Object.keys(value).length !== 12 ||
+    typeof value.row_present !== "boolean" ||
+    value.snapshot !== pin.snapshot ||
+    value.view !== pin.view ||
+    value.origin !== account.origin ||
+    value.account !== account.account ||
+    typeof value.state !== "string" ||
+    !["unclaimed", "controlled", "disputed", "unavailable"].includes(
+      String(value.state),
+    ) ||
+    !sortedIds(value.controller_candidates) ||
+    !sortedIds(value.current_observations) ||
+    !sortedIds(value.chain) ||
+    !codes(value.reasons) ||
+    !Array.isArray(value.contributions) ||
+    !value.contributions.every(
+      (row, i, rows) =>
+        isObject(row) &&
+        Object.keys(row).length === 3 &&
+        identityId(row.witness) &&
+        (i === 0 || rows[i - 1].witness < row.witness) &&
+        sortedIds(row.claims) &&
+        sortedIds(row.observations),
+    ) ||
+    !Array.isArray(value.certificates) ||
+    !value.certificates.every(
+      (row, i, rows) =>
+        isObject(row) &&
+        Object.keys(row).length === 3 &&
+        eventId(row.policy) &&
+        eventId(row.claim) &&
+        sortedIds(row.observations) &&
+        (i === 0 ||
+          rows[i - 1].policy < row.policy ||
+          (rows[i - 1].policy === row.policy && rows[i - 1].claim < row.claim)),
+    ) ||
+    !accountRowFields(value as unknown as AccountRowShape) ||
+    (!value.row_present &&
+      (value.state !== "unclaimed" ||
+        value.contributions.length > 0 ||
+        value.certificates.length > 0 ||
+        value.controller_candidates.length > 0 ||
+        value.current_observations.length > 0 ||
+        value.chain.length > 0 ||
+        value.reasons.length > 0))
+  )
+    throw new Error("The server returned invalid account evidence.");
+  return value as unknown as AccountControlResponse;
+}
+
+interface AccountRowShape {
+  state: string;
+  controller_candidates: string[];
+  current_observations: string[];
+  chain: string[];
+  contributions: { claims: string[]; observations: string[] }[];
+  certificates: { observations: string[] }[];
+}
+/**
+ * The rules that every account row of an available evaluation meets. Each
+ * rule names the restore check in crates/jvc-state/src/incremental.rs that
+ * guarantees it. Each contribution row is one current witness group.
+ *
+ * | state       | controller_candidates | contributions               | current_observations                |
+ * | ----------- | --------------------- | --------------------------- | ----------------------------------- |
+ * | controlled  | exactly 1             | 1 or more, each claims [c]  | first observation of each group     |
+ * | disputed    | 2 or more             | any                         | empty                               |
+ * | unclaimed   | 0 or 1                | not unanimous for one claim | empty                               |
+ * | unavailable | any                   | any                         | empty                               |
+ *
+ * In every state, the candidates are the union of the group claims, each
+ * group claim comes from that group's observations, no observation belongs
+ * to two groups, and every certificate has observations. A controlled row
+ * has its candidate in the chain.
+ */
+function accountRowFields(row: AccountRowShape): boolean {
+  const groups = row.contributions;
+  // incremental.rs:3155: a group's claims are the claims of its own
+  // observations, so a group with claims has observations, and each
+  // observation names one claim.
+  if (
+    groups.some(
+      (group) =>
+        group.claims.length > group.observations.length ||
+        (group.observations.length > 0 && group.claims.length === 0),
+    )
+  )
+    return false;
+  // incremental.rs:3135: each observation is issued by its group's witness
+  // actor, so no observation belongs to two groups.
+  const observations = groups.flatMap((group) => group.observations);
+  if (new Set(observations).size !== observations.length) return false;
+  // incremental.rs:3165: the candidates are the union of the group claims.
+  const claimed = [...new Set(groups.flatMap((group) => group.claims))].sort();
+  if (
+    claimed.length !== row.controller_candidates.length ||
+    claimed.some((claim, i) => claim !== row.controller_candidates[i])
+  )
+    return false;
+  // incremental.rs:3221: every certificate has observations.
+  if (row.certificates.some((certificate) => !certificate.observations.length))
+    return false;
+  // incremental.rs:3263: an available account has a controller exactly
+  // when every group claims the same single candidate.
+  const unanimous =
+    row.controller_candidates.length === 1 &&
+    groups.length > 0 &&
+    groups.every((group) => group.claims.length === 1);
+  if (row.state !== "unavailable" && unanimous !== (row.state === "controlled"))
+    return false;
+  // incremental.rs:3168: more than one candidate is a dispute, unless the
+  // account is unavailable.
+  if (row.state === "disputed" && row.controller_candidates.length < 2)
+    return false;
+  if (row.state === "unclaimed" && row.controller_candidates.length > 1)
+    return false;
+  if (row.state !== "controlled") return row.current_observations.length === 0;
+  // incremental.rs:3210: the controller belongs to the chain.
+  if (!row.chain.includes(row.controller_candidates[0])) return false;
+  // incremental.rs:3300: the selection is the first maximal observation of
+  // each group, as a sorted set.
+  const selected = [
+    ...new Set(groups.map((group) => group.observations[0])),
+  ].sort();
+  return (
+    selected.length === row.current_observations.length &&
+    selected.every((id, i) => id === row.current_observations[i])
+  );
+}
+
+type AccountPinCache = Map<string, Promise<AccountControlResponse>>;
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const item of Object.values(value)) deepFreeze(item);
+  }
+  return value;
+}
+
+// Any reader that holds its pin keeps the shared cache for that pin alive.
+const ownedAccountPins = new WeakMap<EvidencePin, Set<AccountPinCache>>();
+const accountPins = new Map<string, WeakRef<AccountPinCache>>();
+const expiredAccountPins = new FinalizationRegistry<{
+  key: string;
+  reference: WeakRef<AccountPinCache>;
+}>(({ key, reference }) => {
+  if (accountPins.get(key) === reference) accountPins.delete(key);
+});
+
+function accountPinCache(
+  peer: Peer,
+  pin: EvidencePin,
+  scope: { snapshot: string; view: string },
+): AccountPinCache {
+  const key = JSON.stringify([peer.id, peer.base, scope.snapshot, scope.view]);
+  let cache = accountPins.get(key)?.deref();
+  if (!cache) {
+    cache = new Map();
+    const reference = new WeakRef(cache);
+    accountPins.set(key, reference);
+    expiredAccountPins.register(cache, { key, reference });
+  }
+  let owned = ownedAccountPins.get(pin);
+  if (!owned) ownedAccountPins.set(pin, (owned = new Set()));
+  owned.add(cache);
+  return cache;
+}
+
+function waitForAccount(
+  pending: Promise<AccountControlResponse>,
+  signal: AbortSignal | null | undefined,
+): Promise<AccountControlResponse> {
+  if (!signal) return pending;
+  return new Promise((resolve, reject) => {
+    const cancel = () => reject(signal.reason);
+    signal.addEventListener("abort", cancel, { once: true });
+    void pending.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", cancel);
+    });
+  });
+}
+
+export function getAccountControl(
+  account: AccountKey,
+  pin: EvidencePin,
+  options: RequestOptions = {},
+): Promise<AccountControlResponse> {
+  // Read the account and the pin once. The URL, the cache key and the
+  // answer check all use these copies, even if the caller changes its
+  // objects while the request runs.
+  const target = { origin: account?.origin, account: account?.account };
+  const scope = { snapshot: pin?.snapshot, view: pin?.view };
+  if (!accountKey(target) || !hashId(scope.snapshot) || !eventId(scope.view)) {
+    return Promise.reject(new Error("The account evidence link is invalid."));
+  }
+  const exact = scope as { snapshot: string; view: string };
+  const { signal, ...request } = options;
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  const cache = accountPinCache(request.peer ?? selfPeer, pin, exact);
+  const key = target.origin + "#" + target.account;
+  let pending = cache.get(key);
+  if (!pending) {
+    const query = new URLSearchParams({
+      origin: target.origin,
+      account: String(target.account),
+      snapshot: exact.snapshot,
+      view: exact.view,
+    });
+    // Every reader of this pin shares the answer, so it is frozen,
+    // including its nested evidence lists.
+    pending = api<unknown>(`/account-control?${query}`, request).then((value) =>
+      deepFreeze(validateAccountControl(value, target, exact)),
+    );
+    cache.set(key, pending);
+    void pending.catch(() => cache.delete(key));
+  }
+  return waitForAccount(pending, signal);
+}
+
+export async function getPublicationEvidence(
+  status: PublicationStatus,
+  pin: EvidencePin,
+  options: RequestOptions = {},
+) {
+  // Read the publication once, before the network wait. A caller that
+  // changes its object while the request runs cannot change this join.
+  const publication = {
+    reference: status.account_control
+      ? {
+          origin: status.account_control.origin,
+          account: status.account_control.account,
+        }
+      : null,
+    applied: status.account_authority_applied,
+    state: status.state,
+    claim: status.claim,
+    deciding: status.deciding_claim,
+    frontier: status.frontier.length,
+    pending: status.reasons.includes("carry_or_authority_pending"),
+  };
+  const account = publication.reference
+    ? await getAccountControl(publication.reference, pin, options)
+    : null;
+  if (account && !account.row_present)
+    throw new Error("The publication refers to missing account evidence.");
+  const disagreement =
+    account && publication.applied ? appliedJoin(publication, account) : null;
+  if (disagreement) throw new Error(disagreement);
+  return {
+    witness_contributions: account?.contributions ?? [],
+    controller_candidates: publication.applied
+      ? (account?.controller_candidates ?? [])
+      : [],
+    observations: publication.applied
+      ? (account?.current_observations ?? [])
+      : [],
+  };
+}
+/**
+ * How an applied status disagrees with its account row, or null when it
+ * agrees. The browser checks of account rows are partial. Issue #188 tracks
+ * the full rule set that checkpoint restore applies.
+ */
+function appliedJoin(
+  publication: {
+    state: string;
+    claim: string | null;
+    deciding: string | null;
+    frontier: number;
+    pending: boolean;
+  },
+  account: AccountControlResponse,
+): string | null {
+  // The account pass copies the account's selected period into the status
+  // claim (accounts.rs:819, restore check incremental.rs:2799). Only a
+  // controlled row has a selected period, its sole candidate.
+  const period =
+    account.state === "controlled" ? account.controller_candidates[0] : null;
+  if (publication.claim !== period)
+    return "The publication and its account evidence name different periods.";
+  // An unavailable account makes the publication unavailable before any
+  // period decides it (accounts.rs:833, incremental.rs:2816).
+  if (
+    account.state === "unavailable" &&
+    (publication.state !== "unavailable" || publication.frontier > 0)
+  )
+    return "The publication status does not show that its account evidence is unavailable.";
+  // Each frontier action names a period in the account chain. With one
+  // candidate and no pending carry, that period is the deciding claim, and
+  // it can be an inherited, earlier period (accounts.rs:844,
+  // incremental.rs:2856 to 2865). A source-selection conflict can still
+  // make the publication unavailable after that decision.
+  const decides =
+    !publication.pending &&
+    account.controller_candidates.length === 1 &&
+    publication.frontier > 0;
+  if (
+    decides
+      ? publication.deciding === null ||
+        !account.chain.includes(publication.deciding)
+      : publication.deciding !== null
+  )
+    return "The publication's deciding period does not match its account evidence.";
+  return null;
 }
 export function forgetWord(id: string) {
   for (const key of [...wordCache.keys()])
@@ -836,10 +1290,18 @@ export async function remoteSearch(
   if (options.retired) params.set("retired", "1");
   if (options.literal) params.set("literal", "1");
   if (options.group) params.set("group", options.group);
-  if (context) {
-    params.set("snapshot", context.snapshot);
-    params.set("view", context.view);
-  } else if (preferredView) params.set("view", preferredView);
+  // Read the pin once: the context values, or the preferred view.
+  const pinnedSnapshot = context ? context.snapshot : null;
+  const pinnedView = context ? context.view : preferredView;
+  // An explicit context pins both values. A missing one would let the
+  // server choose it, so the request does not start. A null context still
+  // finds the current snapshot.
+  if (context && (!hashId(pinnedSnapshot) || !eventId(pinnedView)))
+    throw new Error(
+      "The search context is incomplete. Start a new search to retry.",
+    );
+  if (pinnedSnapshot) params.set("snapshot", pinnedSnapshot);
+  if (pinnedView) params.set("view", pinnedView);
   if (after) params.set("after", after);
   const result = draftBody
     ? await api<unknown>("/search", {
@@ -856,8 +1318,8 @@ export async function remoteSearch(
     !isObject(result) ||
     !hashId(result.snapshot) ||
     !eventId(result.view) ||
-    (context &&
-      (result.snapshot !== context.snapshot || result.view !== context.view)) ||
+    (pinnedSnapshot && result.snapshot !== pinnedSnapshot) ||
+    (pinnedView && result.view !== pinnedView) ||
     !(result.next === null || validCursor(result.next)) ||
     !(
       result.all_lojban === undefined || typeof result.all_lojban === "boolean"
@@ -925,18 +1387,23 @@ export async function getIdentity(
   options: RequestOptions & { snapshot?: string; fresh?: boolean } = {},
 ): Promise<IdentityResponse> {
   if (!identityId(identity)) throw new Error("The identity is invalid.");
-  if (options.fresh && !options.snapshot) await waitForMaterialization(options);
+  // Read the snapshot pin and the request options once, for the URL, the
+  // request after the materialization wait, and the answer check.
+  const request = fixedRequest(options);
+  const snapshot = request.snapshot || null;
+  if (request.fresh && !snapshot) await waitForMaterialization(request);
   const params = new URLSearchParams();
-  if (options.snapshot) params.set("snapshot", options.snapshot);
+  if (snapshot) params.set("snapshot", snapshot);
   if (preferredView) params.set("view", preferredView);
   const query = params.size ? `?${params}` : "";
   const value = await api<unknown>(
     `/identities/${encodeURIComponent(identity)}${query}`,
-    options,
+    request,
   );
   if (
     !isObject(value) ||
     !hashId(value.snapshot) ||
+    (snapshot && value.snapshot !== snapshot) ||
     value.identity !== identity ||
     !identityId(value.actor) ||
     !isObject(value.profile) ||

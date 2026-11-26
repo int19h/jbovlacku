@@ -172,8 +172,8 @@ impl Fixture {
     fn bytes(&self) -> Vec<u8> {
         canonical_value(&json!({"events":self.events,"bodies":self.bodies,"selected_view":self.selected_view,"import_selections":{},"overlay":self.overlay,"limits":self.limits})).unwrap()
     }
-    fn legacy_state_output(&self) -> Value {
-        let evaluation = jvc_state::evaluate(&jvc_state::EvaluationInput {
+    fn expected_state_output(&self) -> Value {
+        let state = jvc_state::EvaluatedState::from_input(&jvc_state::EvaluationInput {
             events: self
                 .events
                 .iter()
@@ -189,13 +189,29 @@ impl Fixture {
             import_selections: BTreeMap::new(),
             limits: self.limits.clone(),
         });
-        let mut value = serde_json::to_value(&evaluation).unwrap();
+        let evaluation = state.evaluation();
+        let mut saved: Value =
+            serde_json::from_slice(&state.checkpoint("oracle").unwrap()).unwrap();
+        let mut value = saved["evaluation"].take();
+        value["state_export_version"] = json!(2);
+        for publication in value["publications"].as_object_mut().unwrap().values_mut() {
+            let row = publication.as_object_mut().unwrap();
+            for field in [
+                "observations",
+                "controller_candidates",
+                "witness_contributions",
+            ] {
+                row.remove(field);
+            }
+            row.insert("account_control".into(), Value::Null);
+            row.insert("account_authority_applied".into(), json!(false));
+        }
         value["publication_statuses"] = json!(
             evaluation
                 .publications
                 .keys()
                 .filter_map(
-                    |id| jvc_state::publication_status(&evaluation, id).map(|status| (id, status))
+                    |id| jvc_state::publication_status(evaluation, id).map(|status| (id, status))
                 )
                 .collect::<BTreeMap<_, _>>()
         );
@@ -206,7 +222,7 @@ impl Fixture {
                 .map(|(key, account)| (
                     key,
                     jvc_state::account_control(
-                        &evaluation,
+                        evaluation,
                         "",
                         &account.account.origin,
                         account.account.account
@@ -223,7 +239,7 @@ impl Fixture {
         let streamed = self.streamed_session();
         assert_eq!(
             serde_json::from_str::<Value>(&session.state().unwrap()).unwrap(),
-            self.legacy_state_output()
+            self.expected_state_output()
         );
         assert_eq!(streamed.state().unwrap(), session.state().unwrap());
         assert_eq!(
@@ -1283,7 +1299,8 @@ fn patched_state(
     identity: &str,
 ) -> Value {
     let patch: Value = serde_json::from_str(&session.state_delta()).unwrap();
-    assert_eq!(patch["version"], 1);
+    assert_eq!(patch["version"], parent["state_export_version"]);
+    assert_eq!(patch["version"], 2);
     assert_eq!(patch["base_session"], identity);
     for map in ["receipts", "registers"] {
         parent[map]
@@ -1766,3 +1783,6 @@ mod session_preparation;
 
 #[path = "support/word_results.rs"]
 mod word_results;
+
+#[path = "support/account_export.rs"]
+mod account_export;

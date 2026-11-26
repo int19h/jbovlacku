@@ -1,4 +1,5 @@
 use super::*;
+use std::borrow::Cow;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Authority {
@@ -21,23 +22,25 @@ pub struct WitnessContribution {
     pub claims: BTreeSet<String>,
     pub observations: BTreeSet<String>,
 }
+pub type PublicationStatus = PublicationStatusRef<'static>;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct PublicationStatus {
-    pub event: String,
+pub struct PublicationStatusRef<'a> {
+    pub event: Cow<'a, str>,
     pub state: Status,
-    pub frontier: BTreeSet<String>,
-    pub reasons: BTreeSet<String>,
-    pub controller_candidates: BTreeSet<String>,
+    pub frontier: Cow<'a, BTreeSet<String>>,
+    pub reasons: Cow<'a, BTreeSet<String>>,
     #[serde(deserialize_with = "Option::deserialize")]
-    pub deciding_claim: Option<String>,
-    pub witness_contributions: Vec<WitnessContribution>,
+    pub deciding_claim: Option<Cow<'a, str>>,
     pub authority: Authority,
     #[serde(deserialize_with = "Option::deserialize")]
-    pub controller: Option<String>,
+    pub controller: Option<Cow<'a, str>>,
     #[serde(deserialize_with = "Option::deserialize")]
-    pub claim: Option<String>,
-    pub observations: BTreeSet<String>,
+    pub claim: Option<Cow<'a, str>>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub account_control: Option<Cow<'a, AccountKey>>,
+    pub account_authority_applied: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +54,7 @@ pub struct AccountControl {
     pub contributions: Vec<WitnessContribution>,
     pub certificates: Vec<Certificate>,
     pub chain: BTreeSet<String>,
+    pub current_observations: BTreeSet<String>,
     pub reasons: BTreeSet<String>,
 }
 fn contributions(account: &AccountState) -> Vec<WitnessContribution> {
@@ -69,96 +73,78 @@ fn contributions(account: &AccountState) -> Vec<WitnessContribution> {
         .collect()
 }
 pub fn publication_status(evaluation: &Evaluation, id: &str) -> Option<PublicationStatus> {
-    let p = evaluation.publications.get(id)?;
-    let witness_contributions = p
-        .account
-        .as_ref()
-        .and_then(|a| evaluation.accounts.get(&a.token()))
-        .map(contributions)
-        .unwrap_or_default();
-    Some(PublicationStatus {
-        event: id.into(),
-        state: p.status.clone(),
-        frontier: p.status_frontier.clone(),
-        reasons: p.reasons.clone(),
-        controller_candidates: p.controller_candidates.clone(),
-        deciding_claim: p.deciding_claim.clone(),
-        witness_contributions,
-        authority: p.authority.clone(),
-        controller: p.controller.clone(),
-        claim: p.claim.clone(),
-        observations: p.observations.clone(),
+    let PublicationStatusRef {
+        event,
+        state,
+        frontier,
+        reasons,
+        deciding_claim,
+        authority,
+        controller,
+        claim,
+        account_control,
+        account_authority_applied,
+    } = publication_status_ref(evaluation, id)?;
+    Some(PublicationStatusRef {
+        event: Cow::Owned(event.into_owned()),
+        state,
+        frontier: Cow::Owned(frontier.into_owned()),
+        reasons: Cow::Owned(reasons.into_owned()),
+        deciding_claim: deciding_claim.map(|id| Cow::Owned(id.into_owned())),
+        authority,
+        controller: controller.map(|id| Cow::Owned(id.into_owned())),
+        claim: claim.map(|id| Cow::Owned(id.into_owned())),
+        account_control: account_control.map(|account| Cow::Owned(account.into_owned())),
+        account_authority_applied,
     })
 }
-/// The serialized form of `publication_status`, borrowed from the
-/// evaluation. It writes the same JSON without copying the account's
-/// evidence for each publication, so a full status export does not
-/// clone every observation ID once per publication.
-#[derive(Serialize)]
-pub struct PublicationStatusRef<'a> {
-    event: &'a str,
-    state: &'a Status,
-    frontier: &'a BTreeSet<String>,
-    reasons: &'a BTreeSet<String>,
-    controller_candidates: &'a BTreeSet<String>,
-    deciding_claim: &'a Option<String>,
-    witness_contributions: ContributionsRef<'a>,
-    authority: &'a Authority,
-    controller: &'a Option<String>,
-    claim: &'a Option<String>,
-    observations: &'a BTreeSet<String>,
+
+pub(crate) fn publication_account<'a>(
+    evaluation: &Evaluation,
+    publication: &'a Publication,
+) -> (Option<&'a AccountKey>, bool) {
+    let account = publication
+        .account
+        .as_ref()
+        .filter(|account| evaluation.accounts.contains_key(&account.token()));
+    let applied = account.is_some()
+        && publication.imported
+        && publication.kind == "definition.publish"
+        && evaluation
+            .policy
+            .as_ref()
+            .is_some_and(|policy| policy.view().index("account_authority").as_bool() == Some(true));
+    (account, applied)
 }
-struct ContributionsRef<'a>(Option<&'a AccountState>);
-#[derive(Serialize)]
-struct WitnessContributionRef<'a> {
-    witness: &'a str,
-    claims: &'a BTreeSet<String>,
-    observations: &'a BTreeSet<String>,
-}
-impl Serialize for ContributionsRef<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeSeq;
-        const NONE: &BTreeSet<String> = &BTreeSet::new();
-        let Some(account) = self.0 else {
-            return serializer.serialize_seq(Some(0))?.end();
-        };
-        let mut seq = serializer.serialize_seq(Some(account.contributions.len()))?;
-        for (witness, claims) in account.contributions.iter() {
-            seq.serialize_element(&WitnessContributionRef {
-                witness,
-                claims,
-                observations: account.observation_evidence.get(witness).unwrap_or(NONE),
-            })?;
-        }
-        seq.end()
-    }
-}
+
 pub fn publication_status_ref<'a>(
     evaluation: &'a Evaluation,
     id: &str,
 ) -> Option<PublicationStatusRef<'a>> {
-    let (event, p) = evaluation.publications.get_key_value(id)?;
-    Some(PublicationStatusRef {
-        event,
-        state: &p.status,
-        frontier: &p.status_frontier,
-        reasons: &p.reasons,
-        controller_candidates: &p.controller_candidates,
-        deciding_claim: &p.deciding_claim,
-        witness_contributions: ContributionsRef(
-            p.account
-                .as_ref()
-                .and_then(|a| evaluation.accounts.get(&a.token())),
-        ),
-        authority: &p.authority,
-        controller: &p.controller,
-        claim: &p.claim,
-        observations: &p.observations,
-    })
+    let (event, publication) = evaluation.publications.get_key_value(id)?;
+    Some(status_from_publication(evaluation, event, publication))
 }
+
+pub(crate) fn status_from_publication<'a>(
+    evaluation: &Evaluation,
+    event: &'a str,
+    publication: &'a Publication,
+) -> PublicationStatusRef<'a> {
+    let (account, applied) = publication_account(evaluation, publication);
+    PublicationStatusRef {
+        event: Cow::Borrowed(event),
+        state: publication.status.clone(),
+        frontier: Cow::Borrowed(&publication.status_frontier),
+        reasons: Cow::Borrowed(&publication.reasons),
+        deciding_claim: publication.deciding_claim.as_deref().map(Cow::Borrowed),
+        authority: publication.authority.clone(),
+        controller: publication.controller.as_deref().map(Cow::Borrowed),
+        claim: publication.claim.as_deref().map(Cow::Borrowed),
+        account_control: account.map(Cow::Borrowed),
+        account_authority_applied: applied,
+    }
+}
+
 pub fn account_control(
     evaluation: &Evaluation,
     snapshot: &str,
@@ -199,6 +185,9 @@ pub fn account_control(
         contributions: a.map(contributions).unwrap_or_default(),
         certificates: a.map(|a| a.certificates.clone()).unwrap_or_default(),
         chain: a.map(|a| a.chain.clone()).unwrap_or_default(),
+        current_observations: a
+            .map(|a| a.current_observations.clone())
+            .unwrap_or_default(),
         reasons: if globally_unavailable {
             evaluation.reasons.clone()
         } else {

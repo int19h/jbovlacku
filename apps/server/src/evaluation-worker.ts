@@ -1,3 +1,4 @@
+import { STATE_EXPORT_VERSION } from "../../../packages/core/src/state-export.ts";
 import { parentPort, workerData } from "node:worker_threads";
 import { initializeCore } from "../../../packages/core/src/index.ts";
 import {
@@ -17,7 +18,13 @@ export async function serveEvaluationWorker(beforeFinish?: () => void) {
     const delta = allowDelta ? session!.state_delta() : "null";
     const kind = delta === "null" ? "state" : "delta";
     const bytes = encoder.encode(kind === "state" ? session!.state() : delta);
-    port.postMessage({ id, value: { kind, bytes } }, [bytes.buffer]);
+    port.postMessage(
+      {
+        id,
+        value: { kind, bytes, state_export_version: STATE_EXPORT_VERSION },
+      },
+      [bytes.buffer],
+    );
   };
   try {
     await initializeCore(workerData.wasm);

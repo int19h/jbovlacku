@@ -555,7 +555,7 @@ test("current coverage filters old inert associations and counts stale bindings 
     const provider = mock();
     const current = structuredClone(ctx.evaluation);
     current.receipts[docs[0].event].interpretation = "inert";
-    current.publications[docs[1].event].status = "retired";
+    current.publications[docs[1].event].status = "deprecated";
     const selected = { ...ctx, evaluation: current };
     const options = {
       profile: profileId(profile),

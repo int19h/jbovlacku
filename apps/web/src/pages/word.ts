@@ -517,7 +517,7 @@ export async function wordPage(route: Route, context: RenderContext, app: App) {
   }
   const myJudgmentsFirst = Boolean(own);
   const statusOf = (definition: string) =>
-    word.statuses.find((s) => s?.event === definition)?.state;
+    word.statuses.find((s) => s.event === definition)?.state;
   // The part of the page that depends on scores. It is built once. A
   // settled calculation updates it in place.
   const part = el("div", { class: "word-scored" });

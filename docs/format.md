@@ -2238,6 +2238,10 @@ After replacing witnesses, obtain fresh observations before expecting author con
 A compromised historical witness set can force closure or unavailable status. It cannot install a controller under a different current witness set.
 Recovery uses a fresh certified claim, or an explicit parentless policy reset. Neither recovery happens automatically.
 
+An evaluated account owns its witness evidence. The evidence includes current maximal observations, selected current observations, and certificates under current or historical policies.
+A derived status can refer to this evidence by canonical HTTPS origin and account number. A reference applies only to the evaluation's snapshot and view.
+A disabled account authority policy leaves this evidence available when the account row exists. The exported status still records whether the account authority pass applies.
+
 #### Claim boundaries and inherited history
 
 Carry contains at most 64 distinct event IDs, sorted lexicographically. A null previous requires an empty carry.
@@ -2343,6 +2347,10 @@ General identity succession within one account period retains the section 6 expo
 A fresh claim with carry independently adopts imported status. It does not independently inherit editorial influence or native publication authority.
 
 The evaluator applies explicit resource limits to chains and closures. Exceeding a limit produces resource-unavailable, never a truncated active result.
+
+A derived export keeps each target's frontier, status, reasons, and deciding claim on that publication. It writes the shared witness evidence in the referenced account row.
+The export includes the reference only when that row exists in the same snapshot and view. A reader must resolve the reference within that scope.
+The signed source attribution remains independent of the derived reference.
 
 ### Cross-post markers and management
 

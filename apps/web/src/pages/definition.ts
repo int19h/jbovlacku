@@ -135,7 +135,7 @@ export async function definitionPage(
         !inWord ||
         word.unavailable_scores.includes(id) ||
         !score,
-      status: word?.statuses.find((s) => s?.event === id)?.state,
+      status: word?.statuses.find((s) => s.event === id)?.state,
       calculation: word?.calculation,
       revisions: siblings,
       word,
@@ -172,6 +172,8 @@ export async function definitionPage(
   try {
     const receipt = await getReceipt(id, { signal: context.signal });
     if (!context.live()) return;
+    if (receipt.id !== id)
+      throw new Error("The server returned a receipt for another record.");
     main.append(
       p(
         `This server: admission ${receipt.admission}, interpretation ${receipt.interpretation}, body ${receipt.body_status}${receipt.reasons.length ? ` (${receipt.reasons.join(", ")})` : ""}.`,
