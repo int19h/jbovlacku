@@ -236,10 +236,15 @@ let client: Client | undefined;
 let requestId = 0,
   packageId = 0;
 
+const MAX_STRUCTURE_DEPTH = 32;
+
 function sameStructuredValue(
   incoming: unknown,
   trusted: unknown,
   budget: SearchRequestBudget,
+  activeLeft: Set<object>,
+  activeRight: Set<object>,
+  depth: number,
 ): boolean {
   if (typeof incoming === "string" && typeof trusted === "string") {
     if (incoming.length !== trusted.length) return false;
@@ -247,53 +252,86 @@ function sameStructuredValue(
       budget.reserve(Math.ceil(incoming.length / 64), "prepare");
     return incoming === trusted;
   }
-  if (Object.is(incoming, trusted)) return true;
   if (
     !incoming ||
     !trusted ||
     typeof incoming !== "object" ||
     typeof trusted !== "object"
   )
-    return false;
+    return Object.is(incoming, trusted);
   const isArray = Array.isArray(trusted);
   if (Array.isArray(incoming) !== isArray) return false;
-  if (isArray) {
-    const left = incoming as unknown[];
-    const right = trusted as unknown[];
-    if (left.length !== right.length) return false;
-    const keysA = Reflect.ownKeys(left);
-    const keysB = Reflect.ownKeys(right);
+  if (!isArray) {
+    const protoA = Object.getPrototypeOf(incoming);
+    const protoB = Object.getPrototypeOf(trusted);
+    const plainA = protoA === Object.prototype || protoA === null;
+    const plainB = protoB === Object.prototype || protoB === null;
+    if (!plainA || !plainB) return false;
+  }
+  if (incoming === trusted) return true;
+  if (
+    depth >= MAX_STRUCTURE_DEPTH ||
+    activeLeft.has(incoming) ||
+    activeRight.has(trusted)
+  )
+    return false;
+  activeLeft.add(incoming);
+  activeRight.add(trusted);
+  try {
+    if (isArray) {
+      const left = incoming as unknown[];
+      const right = trusted as unknown[];
+      if (left.length !== right.length) return false;
+      const keysA = Reflect.ownKeys(left);
+      const keysB = Reflect.ownKeys(right);
+      if (keysA.length !== keysB.length) return false;
+      if (keysB.length > 0) budget.reserve(keysB.length, "prepare");
+      const leftRecord = left as unknown as Record<PropertyKey, unknown>;
+      const rightRecord = right as unknown as Record<PropertyKey, unknown>;
+      for (let i = 0; i < keysB.length; i++) {
+        const key = keysB[i];
+        if (key === "length") continue;
+        if (keysA[i] !== key && !Object.hasOwn(left, key)) return false;
+        if (
+          !sameStructuredValue(
+            leftRecord[key],
+            rightRecord[key],
+            budget,
+            activeLeft,
+            activeRight,
+            depth + 1,
+          )
+        )
+          return false;
+      }
+      return true;
+    }
+    const keysA = Reflect.ownKeys(incoming);
+    const keysB = Reflect.ownKeys(trusted);
     if (keysA.length !== keysB.length) return false;
     if (keysB.length > 0) budget.reserve(keysB.length, "prepare");
-    const leftRecord = left as unknown as Record<PropertyKey, unknown>;
-    const rightRecord = right as unknown as Record<PropertyKey, unknown>;
+    const left = incoming as Record<PropertyKey, unknown>;
+    const right = trusted as Record<PropertyKey, unknown>;
     for (let i = 0; i < keysB.length; i++) {
       const key = keysB[i];
-      if (key === "length") continue;
-      if (keysA[i] !== key && !Object.hasOwn(left, key)) return false;
-      if (!sameStructuredValue(leftRecord[key], rightRecord[key], budget))
+      if (keysA[i] !== key && !Object.hasOwn(incoming, key)) return false;
+      if (
+        !sameStructuredValue(
+          left[key],
+          right[key],
+          budget,
+          activeLeft,
+          activeRight,
+          depth + 1,
+        )
+      )
         return false;
     }
     return true;
+  } finally {
+    activeLeft.delete(incoming);
+    activeRight.delete(trusted);
   }
-  const protoA = Object.getPrototypeOf(incoming);
-  const protoB = Object.getPrototypeOf(trusted);
-  const plainA = protoA === Object.prototype || protoA === null;
-  const plainB = protoB === Object.prototype || protoB === null;
-  if (plainA !== plainB) return false;
-  if (!plainA && protoA !== protoB) return false;
-  const keysA = Reflect.ownKeys(incoming);
-  const keysB = Reflect.ownKeys(trusted);
-  if (keysA.length !== keysB.length) return false;
-  if (keysB.length > 0) budget.reserve(keysB.length, "prepare");
-  const left = incoming as Record<PropertyKey, unknown>;
-  const right = trusted as Record<PropertyKey, unknown>;
-  for (let i = 0; i < keysB.length; i++) {
-    const key = keysB[i];
-    if (keysA[i] !== key && !Object.hasOwn(incoming, key)) return false;
-    if (!sameStructuredValue(left[key], right[key], budget)) return false;
-  }
-  return true;
 }
 
 function sameValidatedPackageStructure(
@@ -304,7 +342,14 @@ function sameValidatedPackageStructure(
   if (incoming === trusted) return true;
   if (!incoming || typeof incoming !== "object" || Array.isArray(incoming))
     return false;
-  return sameStructuredValue(incoming, trusted, budget);
+  return sameStructuredValue(
+    incoming,
+    trusted,
+    budget,
+    new Set(),
+    new Set(),
+    0,
+  );
 }
 
 /**

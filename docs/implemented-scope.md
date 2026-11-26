@@ -134,13 +134,13 @@ One work budget (200,000,000 work units) and one deadline (300,000 milliseconds)
 Saved-package validation and search run in a static module worker. Search pages, nearby lookup, and lujvo part lookup share two prepared packages by distinct in-memory identity.
 Local search transfers references for 20 results per group initially. Show all fetches only the remaining results through the 1,000-word browser limit. Displays cap what they render: part lookup shows at most 1,000 entries of one hit and names how many more the hit carries, the rafsi page shows at most 1,000 matching pairs, and the typed-word check shows the first 100 definitions with a Show all action that renders the rest in batches of 50. Actions use the whole set: lujvo Add records every definition and claim of the hit in one synchronous step, and the typed-word Show all renders every remaining definition.
 Nearby lookup ignores late results after meaning or language edits and recovers when the current language package returns.
-Consent allows nearby lookup to use the server when local lookup cannot answer.
+If no local package is usable, or if local search cannot start or cannot prepare the package, consent lets nearby lookup use the server. Overlong queries and search-phase budget limits stay local.
 The panel reports a server search while that request is in progress.
 
 The server prepares lexical indexes during package materialization, before completed snapshots become readable.
 Within one page session, `LocalStore.get` checks durable revision markers and retains at most two language snapshots in memory.
 App writes and deletions write a new revision marker, so this tab's writes, another tab's app writes, and eviction by a third language cause the next read to read fresh from storage even when the snapshot ID is unchanged.
-Page reload clears the session cache, so the next package read after reload reads fresh from storage, and a page checks every row before it uses the package. This catches any raw storage edit that kept the revision marker.
+Page reload clears the session cache, so the next package read after reload reads fresh from storage, and a page checks every row before it uses the package. This catches raw storage edits that kept the revision marker and fail that reader's checks.
 The [search specification](frontend.md#4-search-and-reading) defines the bounds, ranking, and fallback rules.
 
 Local and server search also share bounded pattern matching in WebAssembly.

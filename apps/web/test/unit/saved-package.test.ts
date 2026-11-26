@@ -1268,3 +1268,126 @@ test("selectLujvoSource and signedComponent enforce builder component limits", a
   assert.equal(saved.fitsSavedComponent(hydrated.components[0]), true);
   assert.equal(hydrated.components[1].spelling, "gerku");
 });
+
+test("samePackageStructure rejects non-plain objects with the same prototype (Date and Map)", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const budget = () => new SearchRequestBudget(searchMetrics());
+
+  const dateA = pkg([
+    v2Row({
+      attribution: {
+        source: "jbovlaste",
+        author: "alice",
+        account: null,
+        dates: new Date(0),
+      },
+    }),
+  ]) as never;
+  const dateB = pkg([
+    v2Row({
+      attribution: {
+        source: "jbovlaste",
+        author: "alice",
+        account: null,
+        dates: new Date(86_400_000),
+      },
+    }),
+  ]);
+  assert.equal(samePackageStructure(dateB, dateA, budget()), false);
+  assert.equal(
+    samePackageStructure(structuredClone(dateA), dateA, budget()),
+    false,
+  );
+
+  const mapA = pkg([
+    v2Row({
+      attribution: {
+        source: "jbovlaste",
+        author: "alice",
+        account: null,
+        dates: new Map([["created", "2020-01-01"]]),
+      },
+    }),
+  ]) as never;
+  const mapB = pkg([
+    v2Row({
+      attribution: {
+        source: "jbovlaste",
+        author: "alice",
+        account: null,
+        dates: new Map([["created", "2099-12-31"]]),
+      },
+    }),
+  ]);
+  assert.equal(samePackageStructure(mapB, mapA, budget()), false);
+  assert.equal(
+    samePackageStructure(structuredClone(mapA), mapA, budget()),
+    false,
+  );
+});
+
+test("samePackageStructure rejects cyclic own array properties and cyclic objects without stack overflow", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const budget = () => new SearchRequestBudget(searchMetrics());
+
+  // On stored package lists, the dense-list check rejects the extra own key up front.
+  const cyclicRafsi = ["cuk"];
+  Object.assign(cyclicRafsi, { self: cyclicRafsi });
+  const cyclicRafsiPkg = pkg([v2Row({ rafsi: cyclicRafsi })]) as never;
+  assert.throws(
+    () =>
+      samePackageStructure(
+        structuredClone(cyclicRafsiPkg),
+        structuredClone(cyclicRafsiPkg),
+        budget(),
+      ),
+    saved.PackageValidationError,
+  );
+
+  // Structural equality itself returns false on cyclic own array properties without stack overflow.
+  const cyclicAux = ["a"];
+  Object.assign(cyclicAux, { self: cyclicAux });
+  const cyclicAuxPkg = {
+    ...pkg([v2Row()]),
+    downgrade: cyclicAux,
+  } as never;
+  assert.equal(
+    samePackageStructure(
+      structuredClone(cyclicAuxPkg),
+      structuredClone(cyclicAuxPkg),
+      budget(),
+    ),
+    false,
+  );
+
+  const cyclicDates: Record<string, unknown> = {};
+  cyclicDates.self = cyclicDates;
+  const cyclicObjPkg = pkg([
+    v2Row({
+      attribution: {
+        source: "jbovlaste",
+        author: "alice",
+        account: null,
+        dates: cyclicDates,
+      },
+    }),
+  ]) as never;
+  assert.equal(
+    samePackageStructure(
+      structuredClone(cyclicObjPkg),
+      structuredClone(cyclicObjPkg),
+      budget(),
+    ),
+    false,
+  );
+});
