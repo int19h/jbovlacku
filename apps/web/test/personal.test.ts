@@ -673,7 +673,7 @@ test("an authenticated record that the schema cannot interpret stays inert and n
               ],
               { headers: { "content-type": "application/json" } },
             );
-          else value = { view: viewId };
+          else value = { snapshot: snap.snapshot, view: viewId };
           return new Response(JSON.stringify(value), {
             headers: { "content-type": "application/json" },
           });
@@ -1472,7 +1472,7 @@ test("the Personal view panel completes with available scores when the snapshot 
         }
         if (url.pathname.includes(zeroWord)) {
           const real = await (await toServer()).json();
-          return json({ view: real.view });
+          return json({ snapshot, view: real.view });
         }
         if (url.pathname.includes("/words/")) {
           const real = await (

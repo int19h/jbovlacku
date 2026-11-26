@@ -545,7 +545,10 @@ async function syncProjectedRecords(
         cursor++;
       const index = cursor;
       const after = index > 0 ? events[index - 1] : null;
-      const query = new URLSearchParams({ snapshot, limit: String(PAGE_LIMIT) });
+      const query = new URLSearchParams({
+        snapshot,
+        limit: String(PAGE_LIMIT),
+      });
       if (after) query.set("after", after);
       const page = (await api(`/records?${query}`, {
         ...options,
@@ -726,13 +729,19 @@ async function syncProjectedRecords(
     await store.put("selections", hash, prepared.canonical);
   }
   let view: unknown = getPreferredView() ?? manifest.view;
-  if (view === undefined)
-    view = (
-      (await api(
-        `/words/jvw1:${"0".repeat(64)}?snapshot=${encodeURIComponent(snapshot)}`,
-        options,
-      )) as { view?: unknown }
-    ).view;
+  if (view === undefined) {
+    const answer = (await api(
+      `/words/jvw1:${"0".repeat(64)}?snapshot=${encodeURIComponent(snapshot)}`,
+      options,
+    )) as { snapshot?: unknown; view?: unknown };
+    // The selected view must come from the snapshot this inventory names.
+    if (answer.snapshot !== snapshot)
+      throw new RecordsError(
+        "The server reported its selected view for another snapshot.",
+        "invalid",
+      );
+    view = answer.view;
+  }
   if (!eventId(view) || view === "jve1:" + "0".repeat(64))
     throw new RecordsError(
       "The server did not report its selected view.",

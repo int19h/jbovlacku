@@ -316,10 +316,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             snapshot.apply_retention(&policy)?;
             write_filtered(destination, &snapshot)?;
         }
-        [command, path] if command == "evaluate" => println!(
-            "{}",
-            serde_json::to_string(&jvc_runtime::evaluate_bytes(&read(path, input_limit)?)?)?
-        ),
+        [command, path] if command == "evaluate" => {
+            let mut out = io::BufWriter::new(io::stdout().lock());
+            jvc_runtime::write_evaluation(&read(path, input_limit)?, &mut out)?;
+            out.write_all(b"\n")?;
+            out.flush()?;
+        }
         [command, path] if command == "canonicalize" => {
             io::stdout().write_all(&canonicalize_json(&read(path, input_limit)?)?)?
         }

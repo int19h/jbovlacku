@@ -170,6 +170,12 @@ fn with_synthetic_results(mut state: EvaluatedState, evaluation: Value) -> Evalu
     state.replace_evaluation_for_test(serde_json::from_value(evaluation).unwrap(), overlay);
     state
 }
+/// The evaluation in the checkpoint form that `Evaluation` reads. The
+/// default serializer writes the public export, which it cannot read.
+fn checkpoint_evaluation(state: &EvaluatedState) -> Value {
+    let mut saved: Value = serde_json::from_slice(&state.checkpoint("synthetic").unwrap()).unwrap();
+    saved["evaluation"].take()
+}
 fn synthetic(prototype: &Value, n: usize, grouped: bool, rules: bool) -> EvaluatedState {
     let input = EvaluationInput {
         events: vec![],
@@ -180,7 +186,7 @@ fn synthetic(prototype: &Value, n: usize, grouped: bool, rules: bool) -> Evaluat
         limits: Default::default(),
     };
     let state = EvaluatedState::from_input(&input);
-    let mut evaluation = serde_json::to_value(state.evaluation()).unwrap();
+    let mut evaluation = checkpoint_evaluation(&state);
     let mut publications = serde_json::Map::new();
     let mut trust = Vec::new();
     let mut overlay = Vec::new();
@@ -273,7 +279,7 @@ pub fn small_shapes() -> AllocationCoverage {
 }
 fn small_state(prototype: &Value, n: usize, shape: &str) -> EvaluatedState {
     let state = synthetic(prototype, 0, false, false);
-    let mut evaluation = serde_json::to_value(state.evaluation()).unwrap();
+    let mut evaluation = checkpoint_evaluation(&state);
     let mut publications = serde_json::Map::new();
     let mut trust = Vec::new();
     let mut private = Vec::new();

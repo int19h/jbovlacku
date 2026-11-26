@@ -4,6 +4,8 @@ mod accounts;
 mod ancestors;
 mod api;
 mod arena;
+mod export;
+pub use export::{ExportPublications, STATE_EXPORT_VERSION, StateExport};
 mod graph;
 mod incremental;
 mod policy;
@@ -339,7 +341,11 @@ impl AccountKey {
         format!("{}#{}", self.origin, self.account)
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// A publication as the evaluator holds it. It has no `Serialize`
+/// implementation, because its witness fields repeat the account
+/// evidence. Use `StateExport` or `Evaluation::export_publications` for
+/// the version 2 form, which refers to the account row instead.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Publication {
     pub id: String,
@@ -471,8 +477,7 @@ pub struct Evaluation {
     /// copies one pointer.
     pub overlay: Option<std::rc::Rc<Value>>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EvaluationResults {
     pub receipts: BTreeMap<String, Receipt>,
     pub lifecycle: Lifecycle,
@@ -480,7 +485,6 @@ pub struct EvaluationResults {
     pub accounts: BTreeMap<String, AccountState>,
     pub registers: BTreeMap<String, Register>,
     pub judgments: BTreeMap<String, BTreeMap<String, Judgment>>,
-    #[serde(deserialize_with = "Option::deserialize")]
     pub policy: Option<CompactValue>,
     pub(crate) policies: Vec<CompactValue>,
     pub(crate) policy_history: BTreeMap<String, CompactValue>,
@@ -498,12 +502,13 @@ impl std::ops::DerefMut for Evaluation {
         std::rc::Rc::make_mut(&mut self.results)
     }
 }
+// The default output uses the public projection. Checkpoints use their own writer.
 impl Serialize for Evaluation {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        self.serialize_as(serializer, false)
+        StateExport::new(self).serialize(serializer)
     }
 }
 /// The evaluation as a checkpoint stores it: every publication without
@@ -516,7 +521,8 @@ impl Serialize for CheckpointEvaluation<'_> {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        self.0.serialize_as(serializer, true)
+        self.0
+            .serialize_as(serializer, EvaluationEncoding::Checkpoint)
     }
 }
 struct CheckpointPublications<'a>(&'a BTreeMap<String, Publication>);
@@ -617,11 +623,17 @@ impl<'a> From<&'a Publication> for CheckpointPublication<'a> {
         }
     }
 }
+#[derive(Clone, Copy)]
+enum EvaluationEncoding {
+    Checkpoint,
+    Export,
+    RankingSource,
+}
 impl Evaluation {
     fn serialize_as<S: serde::Serializer>(
         &self,
         serializer: S,
-        checkpoint: bool,
+        encoding: EvaluationEncoding,
     ) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(15))?;
@@ -630,12 +642,19 @@ impl Evaluation {
         map.serialize_entry("reasons", &self.reasons)?;
         map.serialize_entry("receipts", &self.receipts)?;
         map.serialize_entry("lifecycle", &self.lifecycle)?;
-        if checkpoint {
-            map.serialize_entry("publications", &CheckpointPublications(&self.publications))?;
-        } else {
-            map.serialize_entry("publications", &self.publications)?;
+        match encoding {
+            EvaluationEncoding::Checkpoint => {
+                map.serialize_entry("publications", &CheckpointPublications(&self.publications))?;
+            }
+            EvaluationEncoding::Export | EvaluationEncoding::RankingSource => {
+                map.serialize_entry("publications", &export::ExportPublications(self))?;
+            }
         }
-        map.serialize_entry("accounts", &self.accounts)?;
+        if matches!(encoding, EvaluationEncoding::Export) {
+            map.serialize_entry("accounts", &export::ExportAccounts(&self.accounts))?;
+        } else {
+            map.serialize_entry("accounts", &self.accounts)?;
+        }
         map.serialize_entry("registers", &self.registers)?;
         map.serialize_entry("judgments", &self.judgments)?;
         map.serialize_entry("policy", &self.policy)?;
@@ -647,6 +666,7 @@ impl Evaluation {
         map.end()
     }
 }
+// Checkpoint readers use the private, restorable form.
 impl<'de> Deserialize<'de> for Evaluation {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,

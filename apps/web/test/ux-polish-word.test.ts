@@ -1,3 +1,4 @@
+import { statusFixture, statusFixtures } from "./status-fixture.ts";
 import { test, expect, type Page } from "@playwright/test";
 import {
   acceptFirstSignature,
@@ -162,7 +163,8 @@ test("phone language tabs stay on one row and a lujvo without compound evidence 
     rafsi: [],
     assignments: [],
     layers: [ids],
-    statuses: ids.map((event: string) => ({ event, state: "active" })),
+    status_version: 2,
+    statuses: statusFixtures(ids),
     unavailable_scores: [],
     scores: ids.map(zeroScore),
   });
@@ -268,7 +270,8 @@ test("source locators show exactly as signed in the Source disclosure", async ({
     rafsi: [],
     assignments: [],
     layers: [[id]],
-    statuses: [{ event: id, state: "active" }],
+    status_version: 2,
+    statuses: [statusFixture(id)],
     unavailable_scores: [],
     scores: [zeroScore(id)],
   });
@@ -311,7 +314,8 @@ test("a tied layer gives a reason that holds for every kind of layer", async ({
     rafsi: [],
     assignments: [],
     layers: [ids],
-    statuses: ids.map((event: string) => ({ event, state: "active" })),
+    status_version: 2,
+    statuses: statusFixtures(ids),
     unavailable_scores: [],
     scores: ids.map(zeroScore),
   });
@@ -366,10 +370,10 @@ test("the deprecated layer says that its definitions are not ranked against each
     // The ranking puts deprecated definitions last without comparing them.
     // One of them has a clearly higher score than the other.
     layers: [[ids[0]], [ids[1], ids[2]]],
-    statuses: ids.map((event: string, index: number) => ({
-      event,
-      state: index === 0 ? "active" : "deprecated",
-    })),
+    status_version: 2,
+    statuses: statusFixtures(ids, (index) =>
+      index === 0 ? "active" : "deprecated",
+    ),
     unavailable_scores: [],
     scores: [
       zeroScore(ids[0]),
@@ -658,7 +662,8 @@ async function manyLanguages(page: Page) {
     rafsi: [],
     assignments: [],
     layers: [ids],
-    statuses: ids.map((event: string) => ({ event, state: "active" })),
+    status_version: 2,
+    statuses: statusFixtures(ids),
     unavailable_scores: [],
     scores: ids.map(zeroScore),
   });
@@ -1207,10 +1212,8 @@ test("a lujvo with a definition that did not load makes no claim about its compo
     rafsi: [],
     assignments: [],
     layers: [[...ids, missing]],
-    statuses: [...ids, missing].map((event: string) => ({
-      event,
-      state: "active",
-    })),
+    status_version: 2,
+    statuses: statusFixtures([...ids, missing]),
     unavailable_scores: [],
     scores: [...ids, missing].map(zeroScore),
   });
@@ -1492,7 +1495,8 @@ test("a lujvo whose etymology text gives the composition points to it", async ({
     rafsi: [],
     assignments: [],
     layers: [ids],
-    statuses: ids.map((event: string) => ({ event, state: "active" })),
+    status_version: 2,
+    statuses: statusFixtures(ids),
     unavailable_scores: [],
     scores: ids.map(zeroScore),
   });
