@@ -1694,3 +1694,228 @@ test("requirePackageListShapes and savedRowReader check shared selmaho arrays an
   assert.equal(selmahoReads, n);
   assert.equal(dateReads, n);
 });
+
+test("requirePackageListShapes and savedRowReader allocate no cache Sets on ordinary unshared rows", () => {
+  const unshared = pkg(
+    Array.from({ length: 64 }, (_, i) =>
+      v2Row({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        glosses: [{ language: "en", text: "book", sense: null }],
+        rafsi: ["cuk"],
+        classification: { kind: "gismu", selmaho: ["UI"] },
+        attribution: {
+          source: "fixture",
+          author: null,
+          account: null,
+          dates: { created: "2020-01-01" },
+        },
+      }),
+    ),
+  );
+  const NativeSet = globalThis.Set;
+  let setConstructs = 0;
+  globalThis.Set = class CountingSet<T> extends NativeSet<T> {
+    constructor(values?: readonly T[] | Iterable<T> | null) {
+      super(values as any);
+      setConstructs++;
+    }
+  } as unknown as SetConstructor;
+  try {
+    saved.requirePackageListShapes(unshared);
+    const readRow = saved.savedRowReader(unshared as never, "en", undefined, true);
+    for (const row of unshared.entries) readRow(row);
+    const cache = saved.savedRowListCache();
+    for (const row of unshared.entries)
+      saved.requireSavedRowLists(row, undefined, true, cache);
+    assert.deepEqual(cache, {});
+  } finally {
+    globalThis.Set = NativeSet;
+  }
+  assert.equal(setConstructs, 0);
+});
+
+test("samePackageStructure rejects conflicting sharing patterns in linear work across square sizes 8, 16, and 32", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const nativeOwnKeys = Reflect.ownKeys;
+
+  for (const kind of ["dates", "selmaho"] as const) {
+    for (const k of [8, 16, 32]) {
+      const make = (byColumn: boolean) => {
+        const shared = Array.from({ length: k }, () =>
+          kind === "dates"
+            ? Object.fromEntries(
+                Array.from({ length: 4 * k }, (_, j) => [
+                  "k" + j.toString(16).padStart(8, "0"),
+                  "1",
+                ]),
+              )
+            : Array.from({ length: 4 * k }, () => "UI"),
+        );
+        return pkg(
+          Array.from({ length: k * k }, (_, i) => {
+            const value = shared[byColumn ? i % k : Math.floor(i / k)];
+            return v2Row({
+              event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+              glosses: [],
+              rafsi: [],
+              classification: {
+                kind: "gismu",
+                selmaho: kind === "selmaho" ? (value as string[]) : [],
+              },
+              attribution: {
+                source: "fixture",
+                author: null,
+                account: null,
+                dates:
+                  kind === "dates"
+                    ? (value as Record<string, string>)
+                    : {},
+              },
+            });
+          }),
+        );
+      };
+      const pick = (entry: any) =>
+        kind === "dates"
+          ? entry.attribution.dates
+          : entry.classification.selmaho;
+      const byRow = make(false) as never;
+      const byColumn = make(true);
+      const watched = new Set([
+        ...(byRow as any).entries.map(pick),
+        ...(byColumn as any).entries.map(pick),
+      ]);
+      let calls = 0;
+      let keys = 0;
+      Reflect.ownKeys = function (target: object) {
+        const list = nativeOwnKeys(target);
+        if (watched.has(target)) {
+          calls++;
+          keys += list.length;
+        }
+        return list;
+      };
+      let equal: boolean;
+      try {
+        const budget = new SearchRequestBudget(searchMetrics(), {
+          workLimit: 75 * k * k,
+          deadlineMs: Infinity,
+        });
+        equal = samePackageStructure(byColumn, byRow, budget);
+      } finally {
+        Reflect.ownKeys = nativeOwnKeys;
+      }
+      assert.equal(equal, false);
+      // In #176, requirePackageListShapes checks each of the k distinct incoming
+      // selmaho arrays once before structural comparison adds 2 calls.
+      assert.equal(calls, kind === "selmaho" ? k + 2 : 2);
+      assert.equal(
+        keys,
+        kind === "selmaho" ? (k + 2) * (4 * k + 1) : 2 * (4 * k),
+      );
+    }
+  }
+
+  // Deep DAG of small 2-key objects must also finish in linear work without
+  // exponential blowup, and conflicting sharing at different depths must reject.
+  let leafA: Record<string, unknown> = { a: "x", b: "y" };
+  let leafB: Record<string, unknown> = { a: "x", b: "y" };
+  for (let d = 0; d < 20; d++) {
+    leafA = { a: leafA, b: leafA };
+    leafB = { a: leafB, b: leafB };
+  }
+  const dagBudget = new SearchRequestBudget(searchMetrics(), {
+    workLimit: 5_000,
+    deadlineMs: Infinity,
+  });
+  assert.equal(
+    samePackageStructure(
+      pkg([
+        v2Row({
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: leafA as any,
+          },
+        }),
+      ]),
+      pkg([
+        v2Row({
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: leafB as any,
+          },
+        }),
+      ]) as never,
+      dagBudget,
+    ),
+    true,
+  );
+  // Conflicting sharing across different depths.
+  const bigA = Object.fromEntries(
+    Array.from({ length: 32 }, (_, i) => [`k${i}`, "1"]),
+  );
+  const bigB1 = Object.fromEntries(
+    Array.from({ length: 32 }, (_, i) => [`k${i}`, "1"]),
+  );
+  const bigB2 = Object.fromEntries(
+    Array.from({ length: 32 }, (_, i) => [`k${i}`, "1"]),
+  );
+  assert.equal(
+    samePackageStructure(
+      pkg([
+        v2Row({
+          event: "jve1:" + "1".repeat(64),
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: bigA,
+          },
+        }),
+        v2Row({
+          event: "jve1:" + "2".repeat(64),
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: { nested: bigA } as any,
+          },
+        }),
+      ]),
+      pkg([
+        v2Row({
+          event: "jve1:" + "1".repeat(64),
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: bigB1,
+          },
+        }),
+        v2Row({
+          event: "jve1:" + "2".repeat(64),
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: { nested: bigB2 } as any,
+          },
+        }),
+      ]) as never,
+      new SearchRequestBudget(searchMetrics(), {
+        workLimit: 5_000,
+        deadlineMs: Infinity,
+      }),
+    ),
+    false,
+  );
+});

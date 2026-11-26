@@ -240,20 +240,39 @@ let requestId = 0,
   packageId = 0;
 
 const MAX_STRUCTURE_DEPTH = 32;
+/**
+ * Record a container in the one-to-one sharing maps once it has at least
+ * MEMO_OWN_KEYS own keys or its checked subtree reaches MEMO_SUBTREE_WORK
+ * units. Ordinary unshared row sub-objects (word, gloss, short selmaho/rafsi/
+ * dates) stay out of the maps, while any large shared record/array or deep DAG
+ * stays bounded by a constant multiple of the distinct graph size.
+ */
+const MEMO_OWN_KEYS = 24;
+const MEMO_SUBTREE_WORK = 128;
+
+interface StructureState {
+  budget: SearchRequestBudget;
+  leftStack: object[];
+  rightStack: object[];
+  leftToRight: Map<object, object> | undefined;
+  rightToLeft: Map<object, object> | undefined;
+  memoDepths: number;
+  work: number;
+}
 
 function sameStructuredValue(
   incoming: unknown,
   trusted: unknown,
-  budget: SearchRequestBudget,
-  activeLeft: Set<object>,
-  activeRight: Set<object>,
-  matched: WeakMap<object, Set<object>>,
+  state: StructureState,
   depth: number,
 ): boolean {
   if (typeof incoming === "string" && typeof trusted === "string") {
     if (incoming.length !== trusted.length) return false;
-    if (incoming.length > 64)
-      budget.reserve(Math.ceil(incoming.length / 64), "prepare");
+    if (incoming.length > 64) {
+      const units = Math.ceil(incoming.length / 64);
+      state.budget.reserve(units, "prepare");
+      state.work += units;
+    }
     return incoming === trusted;
   }
   if (
@@ -268,83 +287,112 @@ function sameStructuredValue(
   if (!isArray) {
     const protoA = Object.getPrototypeOf(incoming);
     const protoB = Object.getPrototypeOf(trusted);
-    const plainA = protoA === Object.prototype || protoA === null;
-    const plainB = protoB === Object.prototype || protoB === null;
-    if (!plainA || !plainB) return false;
+    if (
+      (protoA !== Object.prototype && protoA !== null) ||
+      (protoB !== Object.prototype && protoB !== null)
+    )
+      return false;
   }
   if (incoming === trusted) return true;
-  if (
-    depth >= MAX_STRUCTURE_DEPTH ||
-    activeLeft.has(incoming) ||
-    activeRight.has(trusted)
-  )
-    return false;
-  if (matched.get(incoming)?.has(trusted)) return true;
-  activeLeft.add(incoming);
-  activeRight.add(trusted);
-  try {
-    if (isArray) {
-      const left = incoming as unknown[];
-      const right = trusted as unknown[];
-      if (left.length !== right.length) return false;
+  if (depth >= MAX_STRUCTURE_DEPTH) return false;
+  const { leftStack, rightStack } = state;
+  for (let i = 0; i < leftStack.length; i++) {
+    if (leftStack[i] === incoming || rightStack[i] === trusted) return false;
+  }
+  const depthBit = 1 << depth;
+  if ((state.memoDepths & depthBit) !== 0) {
+    const mapped = state.leftToRight!.get(incoming);
+    if (mapped !== undefined) return mapped === trusted;
+    if (state.rightToLeft!.has(trusted)) return false;
+  }
+  const workBefore = state.work;
+  leftStack.push(incoming);
+  rightStack.push(trusted);
+  let matched = false;
+  let ownKeyCount = 0;
+  if (isArray) {
+    const left = incoming as unknown[];
+    const right = trusted as unknown[];
+    if (left.length === right.length) {
       const keysA = Reflect.ownKeys(left);
       const keysB = Reflect.ownKeys(right);
-      if (keysA.length !== keysB.length) return false;
-      if (keysB.length > 0) budget.reserve(keysB.length, "prepare");
-      const leftRecord = left as unknown as Record<PropertyKey, unknown>;
-      const rightRecord = right as unknown as Record<PropertyKey, unknown>;
-      for (let i = 0; i < keysB.length; i++) {
-        const key = keysB[i];
-        if (key === "length") continue;
-        if (keysA[i] !== key && !Object.hasOwn(left, key)) return false;
-        if (
-          !sameStructuredValue(
-            leftRecord[key],
-            rightRecord[key],
-            budget,
-            activeLeft,
-            activeRight,
-            matched,
-            depth + 1,
-          )
-        )
-          return false;
+      if (keysA.length === keysB.length) {
+        ownKeyCount = keysB.length;
+        if (ownKeyCount > 0) {
+          state.budget.reserve(ownKeyCount, "prepare");
+          state.work += ownKeyCount;
+        }
+        const leftRecord = left as unknown as Record<PropertyKey, unknown>;
+        const rightRecord = right as unknown as Record<PropertyKey, unknown>;
+        matched = true;
+        for (let i = 0; i < ownKeyCount; i++) {
+          const key = keysB[i];
+          if (key === "length") continue;
+          if (keysA[i] !== key && !Object.hasOwn(left, key)) {
+            matched = false;
+            break;
+          }
+          if (
+            !sameStructuredValue(
+              leftRecord[key],
+              rightRecord[key],
+              state,
+              depth + 1,
+            )
+          ) {
+            matched = false;
+            break;
+          }
+        }
       }
-    } else {
-      const keysA = Reflect.ownKeys(incoming);
-      const keysB = Reflect.ownKeys(trusted);
-      if (keysA.length !== keysB.length) return false;
-      if (keysB.length > 0) budget.reserve(keysB.length, "prepare");
+    }
+  } else {
+    const keysA = Reflect.ownKeys(incoming);
+    const keysB = Reflect.ownKeys(trusted);
+    if (keysA.length === keysB.length) {
+      ownKeyCount = keysB.length;
+      if (ownKeyCount > 0) {
+        state.budget.reserve(ownKeyCount, "prepare");
+        state.work += ownKeyCount;
+      }
       const left = incoming as Record<PropertyKey, unknown>;
       const right = trusted as Record<PropertyKey, unknown>;
-      for (let i = 0; i < keysB.length; i++) {
+      matched = true;
+      for (let i = 0; i < ownKeyCount; i++) {
         const key = keysB[i];
-        if (keysA[i] !== key && !Object.hasOwn(incoming, key)) return false;
-        if (
-          !sameStructuredValue(
-            left[key],
-            right[key],
-            budget,
-            activeLeft,
-            activeRight,
-            matched,
-            depth + 1,
-          )
-        )
-          return false;
+        if (keysA[i] !== key && !Object.hasOwn(incoming, key)) {
+          matched = false;
+          break;
+        }
+        if (!sameStructuredValue(left[key], right[key], state, depth + 1)) {
+          matched = false;
+          break;
+        }
       }
     }
-    let seenRight = matched.get(incoming);
-    if (!seenRight) {
-      seenRight = new Set();
-      matched.set(incoming, seenRight);
-    }
-    seenRight.add(trusted);
-    return true;
-  } finally {
-    activeLeft.delete(incoming);
-    activeRight.delete(trusted);
   }
+  leftStack.pop();
+  rightStack.pop();
+  if (
+    matched &&
+    (ownKeyCount >= MEMO_OWN_KEYS ||
+      state.work - workBefore >= MEMO_SUBTREE_WORK)
+  ) {
+    if (state.leftToRight === undefined) {
+      state.leftToRight = new Map();
+      state.rightToLeft = new Map();
+    }
+    const prevRight = state.leftToRight.get(incoming);
+    if (prevRight !== undefined) {
+      if (prevRight !== trusted) return false;
+    } else {
+      if (state.rightToLeft!.has(trusted)) return false;
+      state.leftToRight.set(incoming, trusted);
+      state.rightToLeft!.set(trusted, incoming);
+    }
+    state.memoDepths |= depthBit;
+  }
+  return matched;
 }
 
 function sameValidatedPackageStructure(
@@ -358,10 +406,15 @@ function sameValidatedPackageStructure(
   return sameStructuredValue(
     incoming,
     trusted,
-    budget,
-    new Set(),
-    new Set(),
-    new WeakMap(),
+    {
+      budget,
+      leftStack: [],
+      rightStack: [],
+      leftToRight: undefined,
+      rightToLeft: undefined,
+      memoDepths: 0,
+      work: 0,
+    },
     0,
   );
 }

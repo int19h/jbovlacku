@@ -921,3 +921,130 @@ for (const kind of ["dates", "selmaho"] as const)
       distinct: true,
     });
   });
+
+for (const kind of ["dates", "selmaho"] as const)
+  test(`conflicting ${kind} sharing across 8, 16, and 32 squares falls back to cold preparation in linear work and passes the 19,200-unit search`, async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const results = await page.evaluate(async (kind) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { searchPackage } = await import(
+        String("/src/data/package-search.ts")
+      );
+      const pick = (entry: any) =>
+        kind === "dates"
+          ? entry.attribution.dates
+          : entry.classification.selmaho;
+      const out = [];
+      for (const k of [8, 16, 32]) {
+        const db = `cross-sharing-${kind}-${k}-${Date.now()}`;
+        const make = (byColumn: boolean) => {
+          const shared = Array.from({ length: k }, () =>
+            kind === "dates"
+              ? Object.fromEntries(
+                  Array.from({ length: 4 * k }, (_, j) => [
+                    "k" + j.toString(16).padStart(8, "0"),
+                    "1",
+                  ]),
+                )
+              : Array.from({ length: 4 * k }, () => "UI"),
+          );
+          return {
+            version: 2 as const,
+            snapshot: "sha256:" + "a".repeat(64),
+            entries: Array.from({ length: k * k }, (_, i) => {
+              const value = shared[byColumn ? i % k : Math.floor(i / k)];
+              return {
+                event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+                word: { language: "jbo" as const, spelling: "cukta" },
+                language: "en",
+                glosses: [],
+                plain_text: "book",
+                classification: {
+                  kind: "gismu" as const,
+                  selmaho: kind === "selmaho" ? (value as string[]) : [],
+                },
+                body: null,
+                issuer: "ed25519:" + "a".repeat(64),
+                notes: false,
+                rafsi: [],
+                attribution: {
+                  source: "fixture",
+                  author: null,
+                  account: null,
+                  dates:
+                    kind === "dates"
+                      ? (value as Record<string, string>)
+                      : {},
+                },
+              };
+            }),
+          };
+        };
+        try {
+          const store = new LocalStore(db);
+          await store.put("packages", "en", make(false));
+          const first = await store.get("packages", "en");
+          const coldPrepared = (await searchPackage(first, "en", [])).prepared;
+
+          // Replace stored value in place while preserving the revision marker.
+          const rawDb = await new Promise<IDBDatabase>((resolve, reject) => {
+            const req = indexedDB.open(db);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+          });
+          await new Promise<void>((resolve, reject) => {
+            const tx = rawDb.transaction("packages", "readwrite");
+            tx.objectStore("packages").put(make(true), "en");
+            tx.oncomplete = () => resolve();
+            tx.onabort = () => reject(tx.error);
+          });
+          rawDb.close();
+
+          const fresh = await new LocalStore(db).get("packages", "en");
+          const watched = new Set([
+            ...first.entries.map(pick),
+            ...fresh.entries.map(pick),
+          ]);
+          const nativeOwnKeys = Reflect.ownKeys;
+          let calls = 0;
+          let keys = 0;
+          let freshPrepared: boolean;
+          Reflect.ownKeys = function (target: object) {
+            const list = nativeOwnKeys(target);
+            if (watched.has(target)) {
+              calls++;
+              keys += list.length;
+            }
+            return list;
+          };
+          try {
+            freshPrepared = (await searchPackage(fresh, "en", [])).prepared;
+          } finally {
+            Reflect.ownKeys = nativeOwnKeys;
+          }
+
+          const again = await new LocalStore(db).get("packages", "en");
+          const boundedPrepared = (
+            await searchPackage(again, "en", [], { workLimit: 75 * k * k })
+          ).prepared;
+          out.push({ k, coldPrepared, freshPrepared, calls, keys, boundedPrepared });
+        } finally {
+          indexedDB.deleteDatabase(db);
+        }
+      }
+      return out;
+    }, kind);
+
+    expect(results).toEqual(
+      [8, 16, 32].map((k) => ({
+        k,
+        coldPrepared: true,
+        freshPrepared: true,
+        calls: kind === "selmaho" ? k + 2 : 2,
+        keys: kind === "selmaho" ? (k + 2) * (4 * k + 1) : 2 * (4 * k),
+        boundedPrepared: false,
+      })),
+    );
+  });

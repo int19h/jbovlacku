@@ -76,18 +76,13 @@ export const PACKAGE_RAFSI_LIMIT = 64;
 const COMPONENT_BYTE_LIMIT = 128;
 
 export interface SavedRowListCache {
-  glosses: Set<unknown>;
-  selmaho: Set<unknown>;
-  rafsi: Set<unknown>;
-  dates: Set<unknown>;
+  glosses?: Set<unknown>;
+  selmaho?: Set<unknown>;
+  rafsi?: Set<unknown>;
+  dates?: Set<unknown>;
 }
 
-export const savedRowListCache = (): SavedRowListCache => ({
-  glosses: new Set(),
-  selmaho: new Set(),
-  rafsi: new Set(),
-  dates: new Set(),
-});
+export const savedRowListCache = (): SavedRowListCache => ({});
 
 /**
  * Check the outer `entries` list and every row's nested lists in one
@@ -99,11 +94,15 @@ export function requirePackageListShapes(pkg: unknown): void {
   if (!isRecord(pkg)) throw new PackageValidationError();
   const { entries } = pkg;
   requireDenseList(entries);
-  const checkedLists = new Set<unknown>();
+  let checkedLists: Set<unknown> | undefined;
   const checkDense = (list: unknown) => {
-    if (checkedLists.has(list)) return;
+    if (Array.isArray(list) && list.length >= 4) {
+      if (checkedLists?.has(list)) return;
+      requireDenseList(list);
+      (checkedLists ??= new Set()).add(list);
+      return;
+    }
     requireDenseList(list);
-    if (list.length >= 4) checkedLists.add(list);
   };
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
@@ -141,10 +140,11 @@ export function requireSavedRowLists(
   if (!listsVerified) {
     if (!Array.isArray(glosses) || glosses.length > PACKAGE_GLOSS_LIMIT)
       throw new PackageValidationError();
-    if (!checked?.glosses.has(glosses)) requireDenseList(glosses);
+    if (glosses.length < 4 || !checked?.glosses?.has(glosses))
+      requireDenseList(glosses);
   }
   const glossList = glosses as unknown[];
-  if (!checked?.glosses.has(glossList)) {
+  if (glossList.length < 4 || !checked?.glosses?.has(glossList)) {
     for (let i = 0; i < glossList.length; i++) {
       const gloss = glossList[i];
       if (
@@ -155,34 +155,43 @@ export function requireSavedRowLists(
       )
         throw new PackageValidationError();
     }
-    if (checked && glossList.length >= 4) checked.glosses.add(glossList);
+    if (checked && glossList.length >= 4)
+      (checked.glosses ??= new Set()).add(glossList);
   }
 
   const { selmaho } = classification;
-  if (!listsVerified && !checked?.selmaho.has(selmaho))
+  if (
+    !listsVerified &&
+    (!Array.isArray(selmaho) ||
+      selmaho.length < 4 ||
+      !checked?.selmaho?.has(selmaho))
+  )
     requireDenseList(selmaho);
   const selmahoList = selmaho as unknown[];
-  if (!checked?.selmaho.has(selmahoList)) {
+  if (selmahoList.length < 4 || !checked?.selmaho?.has(selmahoList)) {
     for (let i = 0; i < selmahoList.length; i++) {
       if (typeof selmahoList[i] !== "string")
         throw new PackageValidationError();
       if (budget && (i + 1) % 64 === 0) budget.ensure(2 + i, "prepare");
     }
-    if (checked && selmahoList.length >= 4) checked.selmaho.add(selmahoList);
+    if (checked && selmahoList.length >= 4)
+      (checked.selmaho ??= new Set()).add(selmahoList);
   }
 
   if (Object.hasOwn(value, "rafsi")) {
     if (!listsVerified) {
       if (!Array.isArray(rafsi) || rafsi.length > PACKAGE_RAFSI_LIMIT)
         throw new PackageValidationError();
-      if (!checked?.rafsi.has(rafsi)) requireDenseList(rafsi);
+      if (rafsi.length < 4 || !checked?.rafsi?.has(rafsi))
+        requireDenseList(rafsi);
     }
     const rafsiList = rafsi as unknown[];
-    if (!checked?.rafsi.has(rafsiList)) {
+    if (rafsiList.length < 4 || !checked?.rafsi?.has(rafsiList)) {
       for (let i = 0; i < rafsiList.length; i++)
         if (!validPackageRafsi(rafsiList[i]))
           throw new PackageValidationError();
-      if (checked && rafsiList.length >= 4) checked.rafsi.add(rafsiList);
+      if (checked && rafsiList.length >= 4)
+        (checked.rafsi ??= new Set()).add(rafsiList);
     }
   }
 
@@ -204,7 +213,7 @@ export function requireSavedRowLists(
     )
       throw new PackageValidationError();
 
-    if (!checked?.dates.has(attribution.dates)) {
+    if (!checked?.dates?.has(attribution.dates)) {
       let count = 0;
       for (const key in attribution.dates) {
         if (!Object.hasOwn(attribution.dates, key)) continue;
@@ -213,7 +222,8 @@ export function requireSavedRowLists(
         count++;
         if (budget && count % 64 === 0) budget.ensure(1 + count, "prepare");
       }
-      if (checked && count >= 4) checked.dates.add(attribution.dates);
+      if (checked && count >= 4)
+        (checked.dates ??= new Set()).add(attribution.dates);
     }
   }
 }
