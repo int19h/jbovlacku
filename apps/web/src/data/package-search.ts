@@ -214,6 +214,8 @@ interface Client {
     number,
     { pkg: CachedPackage; language: string; storageHint?: string }
   >;
+  /** Direct lookup from a retained or preparing package object and language to its key. */
+  byPackage: WeakMap<CachedPackage, Map<string, number>>;
   /** Fresh clones already verified equal to a retained snapshot. */
   aliases: WeakMap<CachedPackage, { key: number; language: string }>;
   pending: Map<
@@ -370,10 +372,15 @@ export function samePackageStructure(
   return sameValidatedPackageStructure(incoming, trusted, budget);
 }
 
-function pruneSnapshots(current: Client): void {
-  for (const key of current.snapshots.keys())
-    if (!current.retained.has(key) && !current.preparingKeys.has(key))
-      current.snapshots.delete(key);
+function dropSnapshot(current: Client, key: number): void {
+  const entry = current.snapshots.get(key);
+  if (!entry) return;
+  current.snapshots.delete(key);
+  const byLang = current.byPackage.get(entry.pkg);
+  if (byLang?.get(entry.language) === key) {
+    byLang.delete(entry.language);
+    if (byLang.size === 0) current.byPackage.delete(entry.pkg);
+  }
 }
 
 function stopWorker(current: Client, error: Error) {
@@ -382,6 +389,7 @@ function stopWorker(current: Client, error: Error) {
   current.preparing.clear();
   current.preparingKeys.clear();
   current.snapshots.clear();
+  current.byPackage = new WeakMap();
   for (const waiting of current.pending.values()) waiting.reject(error);
   current.pending.clear();
   if (client === current) {
@@ -398,9 +406,12 @@ function forgetPreparing(current: Client, request: number): void {
   if (key === undefined) return;
   current.preparing.delete(request);
   const left = (current.preparingKeys.get(key) ?? 1) - 1;
-  if (left <= 0) current.preparingKeys.delete(key);
-  else current.preparingKeys.set(key, left);
-  pruneSnapshots(current);
+  if (left <= 0) {
+    current.preparingKeys.delete(key);
+    if (!current.retained.has(key)) dropSnapshot(current, key);
+  } else {
+    current.preparingKeys.set(key, left);
+  }
 }
 function searchWorker(): Client {
   if (client) return client;
@@ -417,6 +428,7 @@ function searchWorker(): Client {
     preparing: new Map(),
     preparingKeys: new Map(),
     snapshots: new Map(),
+    byPackage: new WeakMap(),
     aliases: new WeakMap(),
   };
   worker.onmessage = ({ data }) => {
@@ -429,11 +441,14 @@ function searchWorker(): Client {
       Number.isSafeInteger(data.cacheRevision) &&
       !stale
     ) {
-      current.retained.clear();
+      const nextRetained = new Set<number>();
       for (const key of data.retained)
-        if (typeof key === "number") current.retained.add(key);
+        if (typeof key === "number") nextRetained.add(key);
+      for (const oldKey of current.retained)
+        if (!nextRetained.has(oldKey) && !current.preparingKeys.has(oldKey))
+          dropSnapshot(current, oldKey);
+      current.retained = nextRetained;
       current.cacheRevision = data.cacheRevision;
-      pruneSnapshots(current);
     }
     if (!data.started) forgetPreparing(current, data.request);
     const waiting = current.pending.get(data.request);
@@ -511,15 +526,17 @@ export async function searchPackage(
   let resolvedPkg: CachedPackage = pkg;
   if (client) {
     // Same acquired snapshot used again in the same language.
-    for (const [candidateKey, entry] of client.snapshots) {
+    const byLang = client.byPackage.get(pkg);
+    const directKey = byLang?.get(language);
+    if (directKey !== undefined) {
       if (
-        entry.pkg === pkg &&
-        entry.language === language &&
-        (client.retained.has(candidateKey) ||
-          client.preparingKeys.has(candidateKey))
+        client.retained.has(directKey) ||
+        client.preparingKeys.has(directKey)
       ) {
-        matchedKey = candidateKey;
-        break;
+        matchedKey = directKey;
+      } else {
+        byLang!.delete(language);
+        if (byLang!.size === 0) client.byPackage.delete(pkg);
       }
     }
     // Fresh clone already verified structurally equal to a retained snapshot.
@@ -539,16 +556,17 @@ export async function searchPackage(
     }
     // Fresh clone with the same durable storage revision: validate all outer
     // and nested list shapes before any budgeted equality or transfer work,
-    // then reuse only after exact structural equality against the validated
-    // snapshot.
+    // then reuse only after exact structural equality against a confirmed
+    // retained snapshot.
     if (matchedKey === undefined) {
       requirePackageListShapes(pkg);
       if (storageHint !== undefined) {
-        for (const [candidateKey, entry] of client.snapshots) {
+        for (const candidateKey of client.retained) {
+          const entry = client.snapshots.get(candidateKey);
           if (
+            entry &&
             entry.language === language &&
             entry.storageHint === storageHint &&
-            client.retained.has(candidateKey) &&
             sameValidatedPackageStructure(pkg, entry.pkg, clientBudget)
           ) {
             matchedKey = candidateKey;
@@ -577,6 +595,12 @@ export async function searchPackage(
         language,
         storageHint,
       });
+      let byLang = current.byPackage.get(resolvedPkg);
+      if (!byLang) {
+        byLang = new Map();
+        current.byPackage.set(resolvedPkg, byLang);
+      }
+      byLang.set(language, key);
       current.preparing.set(request, key);
       current.preparingKeys.set(
         key,

@@ -715,3 +715,109 @@ test("Meaning nearby uses the server after consent when local worker startup fai
   await expect(nearby).toContainText("No close definitions found on");
   expect(serverCalls).toBe(1);
 });
+
+for (const form of ["per-row", "compact"] as const)
+  test(`Search and Settings both reject an array row with ${form} search_status`, async ({
+    page,
+  }) => {
+    await page.route("**/api/**", (route) =>
+      route.fulfill({ status: 503, body: "unavailable" }),
+    );
+    await page.goto("/");
+    await page.evaluate(
+      async ({ baseRow, mode }) => {
+        const { LocalStore } = await import(String("/src/data/store.ts"));
+        const view = "jve1:" + "9".repeat(64);
+        const row =
+          mode === "compact"
+            ? Object.assign([], baseRow, { search_status: "active" })
+            : Object.assign([], baseRow, {
+                search_status: { view, status: "active" },
+              });
+        const pkg =
+          mode === "compact"
+            ? {
+                version: 2,
+                snapshot: "sha256:" + "a".repeat(64),
+                search_view: view,
+                entries: [row],
+              }
+            : {
+                version: 2,
+                snapshot: "sha256:" + "a".repeat(64),
+                entries: [row],
+              };
+        const store = new LocalStore();
+        await store.setPreferences({
+          definitionLanguage: "en",
+          searchMode: "local",
+        });
+        await store.put("packages", "en", pkg);
+      },
+      { baseRow: englishRow, mode: form },
+    );
+
+    await page.goto("/search?lang=en");
+    await expect(page.locator("main")).toContainText(
+      "The saved search package for English is invalid. Searches use this server.",
+    );
+
+    await page.goto("/search?q=cukta&lang=en");
+    await expect(page.locator("main")).toContainText("Search server:");
+    await expect(page.locator("main")).not.toContainText(
+      "the downloaded English package",
+    );
+    await expect(page.locator("main")).not.toContainText("book");
+
+    await page.goto("/preferences");
+    await expect(page.locator("main")).toContainText(
+      "The search package is invalid. Search this server or download another package.",
+    );
+  });
+
+test("Meaning nearby keeps overlong queries local when no local package is usable", async ({
+  page,
+}) => {
+  let serverCalls = 0;
+  await page.route("**/api/v1/search*", async (route) => {
+    serverCalls++;
+    await route.fulfill({
+      json: {
+        snapshot: "sha256:" + "a".repeat(64),
+        view: "jve1:" + "b".repeat(64),
+        hits: [],
+        next: null,
+      },
+    });
+  });
+
+  await page.goto("/new/meaning?lang=en");
+  const meaningBox = page.getByRole("textbox", { name: "Meaning", exact: true });
+  const nearby = page.getByRole("region", { name: "Close in meaning" });
+
+  // Overlong query with no local package shows the local limit error, hides
+  // server consent, and sends zero requests.
+  await meaningBox.fill("a".repeat(4097));
+  await expect(nearby).toContainText(
+    "The search query is too long. Queries accept at most 4096 characters.",
+  );
+  await expect(
+    nearby.getByRole("button", { name: "allow server search" }),
+  ).toHaveCount(0);
+  expect(serverCalls).toBe(0);
+
+  // Even after granting consent for a valid first word ("book"), appending an
+  // overlong second word still stays local and sends no new server request.
+  await meaningBox.fill("book");
+  page.once("dialog", (dialog) => dialog.accept());
+  await nearby.getByRole("button", { name: "allow server search" }).click();
+  await expect(nearby).toContainText("No close definitions found on");
+  expect(serverCalls).toBe(1);
+
+  await meaningBox.fill(`book ${"a".repeat(4097)}`);
+  await expect(nearby).toContainText(
+    "The search query is too long. Queries accept at most 4096 characters.",
+  );
+  await page.waitForTimeout(800);
+  expect(serverCalls).toBe(1);
+});

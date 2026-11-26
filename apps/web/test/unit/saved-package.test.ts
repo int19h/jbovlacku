@@ -1391,3 +1391,138 @@ test("samePackageStructure rejects cyclic own array properties and cyclic object
     false,
   );
 });
+
+test("validateEntry and validateCachedPackage reject an empty array carrying version 2 row fields and search_status", () => {
+  const view = "jve1:" + "9".repeat(64);
+  const perRowArray = Object.assign([], v2Row(), {
+    search_status: { view, status: "active" },
+  });
+  assert.throws(
+    () => search.validateEntry(perRowArray, "en", 2),
+    { message: saved.INVALID_PACKAGE_MESSAGE },
+  );
+  assert.throws(
+    () => search.validateCachedPackage(pkg([perRowArray]), "en"),
+    { message: saved.INVALID_PACKAGE_MESSAGE },
+  );
+
+  const compactArray = Object.assign([], v2Row(), {
+    search_status: "active",
+  });
+  assert.throws(
+    () => search.validateEntry(compactArray, "en", 2, view),
+    { message: saved.INVALID_PACKAGE_MESSAGE },
+  );
+  assert.throws(
+    () =>
+      search.validateCachedPackage(
+        {
+          version: 2,
+          snapshot: "sha256:" + "a".repeat(64),
+          search_view: view,
+          entries: [compactArray],
+        },
+        "en",
+      ),
+    { message: saved.INVALID_PACKAGE_MESSAGE },
+  );
+});
+
+test("searchPackage does not scan unrelated queued transfers during lookup or cleanup", async () => {
+  const pkgSearchUrl = new URL(
+    "../../src/data/package-search.ts",
+    import.meta.url,
+  );
+  pkgSearchUrl.search = "?queued-transfers-test";
+  const { searchPackage } = (await import(pkgSearchUrl.href)) as typeof import(
+    "../../src/data/package-search.ts"
+  );
+  const prevWorker = globalThis.Worker;
+  const prevLocation = (globalThis as { location?: unknown }).location;
+  const queue: Array<{ request: number; key: number }> = [];
+  let workerInstance:
+    | { onmessage?: (event: { data: unknown }) => void; terminate(): void }
+    | undefined;
+  Object.assign(globalThis, {
+    location: new URL("http://127.0.0.1:9970/"),
+    Worker: class {
+      onmessage?: (event: { data: unknown }) => void;
+      constructor() {
+        workerInstance = this;
+      }
+      postMessage(message: { request: number; key: number }) {
+        queue.push(message);
+      }
+      terminate() {}
+    },
+  });
+  const nativeIter = Map.prototype[Symbol.iterator];
+  const nativeKeys = Map.prototype.keys;
+  const isSnapshotMap = (map: Map<unknown, unknown>) => {
+    const first = map.values().next().value as Record<string, unknown> | undefined;
+    return !!first && typeof first === "object" && "pkg" in first && "language" in first;
+  };
+  let finalRequestCandidates = 0;
+  let allAckPruned = 0;
+  let firstAckPruned = -1;
+  try {
+    const requests: Promise<unknown>[] = [];
+    const run = (index: number) =>
+      searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), entries: [] },
+        `en-x-q${index}`,
+        [],
+        { workLimit: 0 },
+      );
+    for (let i = 0; i < 32; i++) requests.push(run(i));
+    Map.prototype[Symbol.iterator] = function* (this: Map<unknown, unknown>) {
+      const count = isSnapshotMap(this);
+      for (const entry of nativeIter.call(this)) {
+        if (count) finalRequestCandidates++;
+        yield entry;
+      }
+    } as unknown as typeof nativeIter;
+    try {
+      requests.push(run(32));
+    } finally {
+      Map.prototype[Symbol.iterator] = nativeIter;
+    }
+    Map.prototype.keys = function* (this: Map<unknown, unknown>) {
+      const count = isSnapshotMap(this);
+      for (const key of nativeKeys.call(this)) {
+        if (count) allAckPruned++;
+        yield key;
+      }
+    } as unknown as typeof nativeKeys;
+    try {
+      const retained: number[] = [];
+      for (const [i, msg] of queue.entries()) {
+        retained.push(msg.key);
+        if (retained.length > 2) retained.shift();
+        workerInstance!.onmessage?.({
+          data: {
+            request: msg.request,
+            retained: [...retained],
+            cacheRevision: i + 1,
+            result: { metrics: {}, prepared: true, hits: [], totals: [] },
+          },
+        });
+        if (i === 0) firstAckPruned = allAckPruned;
+      }
+    } finally {
+      Map.prototype.keys = nativeKeys;
+    }
+    await Promise.all(requests);
+    assert.equal(finalRequestCandidates, 0);
+    assert.equal(firstAckPruned, 0);
+    assert.equal(allAckPruned, 0);
+  } finally {
+    Map.prototype[Symbol.iterator] = nativeIter;
+    Map.prototype.keys = nativeKeys;
+    if (prevWorker === undefined) delete (globalThis as { Worker?: unknown }).Worker;
+    else globalThis.Worker = prevWorker;
+    if (prevLocation === undefined)
+      delete (globalThis as { location?: unknown }).location;
+    else Object.assign(globalThis, { location: prevLocation });
+  }
+});
