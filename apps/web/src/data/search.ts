@@ -211,12 +211,9 @@ export function validateEntry(
   version: 1 | 2 = 1,
   packageView?: string,
 ): string {
-  if (
-    version === 2 &&
-    value &&
-    typeof value === "object" &&
-    "search_status" in value
-  ) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw invalidPackage();
+  if (version === 2 && Object.hasOwn(value, "search_status")) {
     const { search_status, ...base } = value as Record<string, any>;
     if (
       packageView !== undefined

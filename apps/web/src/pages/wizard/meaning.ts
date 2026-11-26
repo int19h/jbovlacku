@@ -1,5 +1,6 @@
 import { CIRCLED, circledPlace } from "../../model/place-glyphs.ts";
 import {
+  SEARCH_QUERY_LENGTH_LIMIT,
   SearchBudgetError,
   SearchQueryTooLongError,
 } from "../../../../../packages/search/src/index.ts";
@@ -658,6 +659,12 @@ export async function meaningPage(
   let serverSearching = false;
   const nearbyQuery = () => meaningQueries(meaning.input.value).join(" ");
   const remoteQuery = () => nearbyQuery().split(" ")[0];
+  const nearbyTooLong = (
+    terms = nearbyTerms(meaning.input.value),
+    query = remoteQuery(),
+  ) =>
+    terms.some((term) => term.length > SEARCH_QUERY_LENGTH_LIMIT) ||
+    query.length > SEARCH_QUERY_LENGTH_LIMIT;
   const consentKey = () => JSON.stringify([remoteQuery(), draft.language]);
   const renderMode = () => {
     modeLabel.replaceChildren();
@@ -672,36 +679,40 @@ export async function meaningPage(
             : nearbySource === "unavailable"
               ? "local package unavailable"
               : "by words";
-      modeLabel.append(text(label + " · "));
-      if (serverSearching) modeLabel.append(text("searching this server"));
-      else if (remoteConsent === consentKey())
-        modeLabel.append(text("server search allowed"));
-      else
-        modeLabel.append(
-          button(
-            "allow server search",
-            async () => {
-              if (remoteConsent !== consentKey()) {
-                const query = remoteQuery();
-                if (!query) return;
-                if (
-                  !confirm(
-                    `Search ${location.host} for ${JSON.stringify(query)} in definition language ${JSON.stringify(draft.language)}? The request sends this query and language.`,
+      if (nearbyTooLong()) {
+        modeLabel.append(text(label));
+      } else {
+        modeLabel.append(text(label + " · "));
+        if (serverSearching) modeLabel.append(text("searching this server"));
+        else if (remoteConsent === consentKey())
+          modeLabel.append(text("server search allowed"));
+        else
+          modeLabel.append(
+            button(
+              "allow server search",
+              async () => {
+                if (remoteConsent !== consentKey()) {
+                  const query = remoteQuery();
+                  if (!query || nearbyTooLong()) return;
+                  if (
+                    !confirm(
+                      `Search ${location.host} for ${JSON.stringify(query)} in definition language ${JSON.stringify(draft.language)}? The request sends this query and language.`,
+                    )
                   )
-                )
-                  return;
-                remoteConsent = consentKey();
-                renderMode();
-                clearTimeout(timer);
-                await nearby();
-              }
-            },
-            {
-              class: "btn btn-quiet",
-              style: "padding:0 6px;font-size:13px",
-            },
-          ),
-        );
+                    return;
+                  remoteConsent = consentKey();
+                  renderMode();
+                  clearTimeout(timer);
+                  await nearby();
+                }
+              },
+              {
+                class: "btn btn-quiet",
+                style: "padding:0 6px;font-size:13px",
+              },
+            ),
+          );
+      }
     }
     if (assistanceVisibility(app, context).enabled)
       modeLabel.append(
@@ -868,13 +879,18 @@ export async function meaningPage(
           }
         }
       }
+      const query = remoteQuery();
+      if (nearbyTooLong(terms, query)) {
+        renderMode();
+        throw new SearchQueryTooLongError();
+      }
       if (remoteConsent !== consentKey()) {
         note.textContent =
           "Download a search package in Settings for local nearby search, or allow a search on this server.";
         return;
       }
       note.textContent = "";
-      const pending = remoteDraftSearch(remoteQuery(), language, 10, {
+      const pending = remoteDraftSearch(query, language, 10, {
         signal: context.signal,
       });
       serverSearching = true;
