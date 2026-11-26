@@ -208,7 +208,12 @@ interface Client {
    */
   snapshots: Map<
     number,
-    { pkg: CachedPackage; language: string; storageHint?: string }
+    {
+      pkg: CachedPackage;
+      language: string;
+      storageHint?: string;
+      distinctSize: number;
+    }
   >;
   /** Direct lookup from a retained or preparing package object and language to its key. */
   byPackage: WeakMap<CachedPackage, Map<string, number>>;
@@ -236,23 +241,61 @@ let requestId = 0,
 
 const MAX_STRUCTURE_DEPTH = 32;
 /**
- * Record a container in the one-to-one sharing maps once it has at least
+ * Hard cap on structural comparison work, as a multiple of the retained
+ * package's distinct size. Any unshared valid package completes well inside
+ * twice its distinct size; a copy whose sharing or extra properties push the
+ * comparison past this cap declines reuse and takes the cold path.
+ */
+export const COMPARISON_WORK_FACTOR = 2;
+/**
+ * Memoize a container pair for content reuse once it has at least
  * MEMO_OWN_KEYS own keys or its checked subtree reaches MEMO_SUBTREE_WORK
- * units. Ordinary unshared row sub-objects (word, gloss, short selmaho/rafsi/
- * dates) stay out of the maps, while any large shared record/array or deep DAG
- * stays bounded by a constant multiple of the distinct graph size.
+ * units. Ordinary unshared row sub-objects stay out of the map, while shared
+ * records/arrays reuse their match without per-object Set allocations.
  */
 const MEMO_OWN_KEYS = 24;
 const MEMO_SUBTREE_WORK = 128;
 
 interface StructureState {
   budget: SearchRequestBudget;
+  workCap: number;
   leftStack: object[];
   rightStack: object[];
-  leftToRight: Map<object, object> | undefined;
-  rightToLeft: Map<object, object> | undefined;
+  matched: Map<object, object> | undefined;
   memoDepths: number;
   work: number;
+}
+
+function stringUnits(value: unknown): number {
+  return typeof value === "string" && value.length > 64
+    ? Math.ceil(value.length / 64)
+    : 0;
+}
+
+/**
+ * Distinct comparison-unit size of an arbitrary value for direct
+ * `samePackageStructure` callers that did not come through `searchPackage`.
+ * Uses `Object.keys` and `Object.getOwnPropertySymbols` so it does not perturb
+ * `Reflect.ownKeys` spies.
+ */
+function distinctStructureSize(
+  value: unknown,
+  seen = new Set<object>(),
+  depth = 0,
+): number {
+  if (typeof value === "string") return stringUnits(value);
+  if (!value || typeof value !== "object") return 0;
+  if (depth >= MAX_STRUCTURE_DEPTH || seen.has(value)) return 0;
+  seen.add(value);
+  const record = value as Record<PropertyKey, unknown>;
+  const names = Object.keys(value);
+  const symbols = Object.getOwnPropertySymbols(value);
+  let total = names.length + symbols.length + (Array.isArray(value) ? 1 : 0);
+  for (let i = 0; i < names.length; i++)
+    total += distinctStructureSize(record[names[i]], seen, depth + 1);
+  for (let i = 0; i < symbols.length; i++)
+    total += distinctStructureSize(record[symbols[i]], seen, depth + 1);
+  return total;
 }
 
 function sameStructuredValue(
@@ -265,6 +308,7 @@ function sameStructuredValue(
     if (incoming.length !== trusted.length) return false;
     if (incoming.length > 64) {
       const units = Math.ceil(incoming.length / 64);
+      if (state.work + units > state.workCap) return false;
       state.budget.reserve(units, "prepare");
       state.work += units;
     }
@@ -295,11 +339,11 @@ function sameStructuredValue(
     if (leftStack[i] === incoming || rightStack[i] === trusted) return false;
   }
   const depthBit = 1 << depth;
-  if ((state.memoDepths & depthBit) !== 0) {
-    const mapped = state.leftToRight!.get(incoming);
-    if (mapped !== undefined) return mapped === trusted;
-    if (state.rightToLeft!.has(trusted)) return false;
-  }
+  if (
+    (state.memoDepths & depthBit) !== 0 &&
+    state.matched!.get(incoming) === trusted
+  )
+    return true;
   const workBefore = state.work;
   leftStack.push(incoming);
   rightStack.push(trusted);
@@ -314,6 +358,11 @@ function sameStructuredValue(
       if (keysA.length === keysB.length) {
         ownKeyCount = keysB.length;
         if (ownKeyCount > 0) {
+          if (state.work + ownKeyCount > state.workCap) {
+            leftStack.pop();
+            rightStack.pop();
+            return false;
+          }
           state.budget.reserve(ownKeyCount, "prepare");
           state.work += ownKeyCount;
         }
@@ -347,6 +396,11 @@ function sameStructuredValue(
     if (keysA.length === keysB.length) {
       ownKeyCount = keysB.length;
       if (ownKeyCount > 0) {
+        if (state.work + ownKeyCount > state.workCap) {
+          leftStack.pop();
+          rightStack.pop();
+          return false;
+        }
         state.budget.reserve(ownKeyCount, "prepare");
         state.work += ownKeyCount;
       }
@@ -373,45 +427,41 @@ function sameStructuredValue(
     (ownKeyCount >= MEMO_OWN_KEYS ||
       state.work - workBefore >= MEMO_SUBTREE_WORK)
   ) {
-    if (state.leftToRight === undefined) {
-      state.leftToRight = new Map();
-      state.rightToLeft = new Map();
-    }
-    const prevRight = state.leftToRight.get(incoming);
-    if (prevRight !== undefined) {
-      if (prevRight !== trusted) return false;
-    } else {
-      if (state.rightToLeft!.has(trusted)) return false;
-      state.leftToRight.set(incoming, trusted);
-      state.rightToLeft!.set(trusted, incoming);
-    }
+    if (state.matched === undefined) state.matched = new Map();
+    state.matched.set(incoming, trusted);
     state.memoDepths |= depthBit;
   }
   return matched;
 }
 
 /**
- * Exact structural equality between a freshly read package clone and a
- * trusted validated snapshot, charged to the request budget. Checks row
- * order, actual own array keys, holes, and all worker fields.
+ * Content equality between a freshly read package clone and a trusted
+ * validated snapshot, charged to the request budget and bounded by a hard
+ * comparison work cap. Checks row order, actual own array keys, holes, and
+ * all worker fields. Reaching `workCap` returns `false` (declining reuse so
+ * the caller takes the cold path) without raising an error.
  */
 export function samePackageStructure(
   incoming: unknown,
   trusted: CachedPackage,
   budget: SearchRequestBudget,
+  workCap?: number,
 ): boolean {
   if (incoming === trusted) return true;
   if (!incoming || typeof incoming !== "object" || Array.isArray(incoming))
     return false;
+  const cap =
+    workCap ??
+    COMPARISON_WORK_FACTOR * Math.max(8, distinctStructureSize(trusted));
   return sameStructuredValue(
     incoming,
     trusted,
     {
       budget,
+      workCap: cap,
       leftStack: [],
       rightStack: [],
-      leftToRight: undefined,
-      rightToLeft: undefined,
+      matched: undefined,
       memoDepths: 0,
       work: 0,
     },
@@ -602,15 +652,21 @@ export async function searchPackage(
       }
     }
     // Fresh clone with the same durable storage revision: reuse only after
-    // exact structural equality against a confirmed retained snapshot.
+    // content equality against a confirmed retained snapshot within the hard
+    // comparison work cap (checking most recently retained snapshots first).
     if (matchedKey === undefined && storageHint !== undefined) {
-      for (const candidateKey of client.retained) {
+      for (const candidateKey of Array.from(client.retained).reverse()) {
         const entry = client.snapshots.get(candidateKey);
         if (
           entry &&
           entry.language === language &&
           entry.storageHint === storageHint &&
-          samePackageStructure(pkg, entry.pkg, clientBudget)
+          samePackageStructure(
+            pkg,
+            entry.pkg,
+            clientBudget,
+            COMPARISON_WORK_FACTOR * entry.distinctSize,
+          )
         ) {
           matchedKey = candidateKey;
           resolvedPkg = entry.pkg;
@@ -630,10 +686,12 @@ export async function searchPackage(
     const request = ++requestId;
     // Announce a transfer without evicting any confirmed warm package.
     if (prepare) {
+      const existing = current.snapshots.get(key);
       current.snapshots.set(key, {
         pkg: resolvedPkg,
         language,
         storageHint,
+        distinctSize: existing?.distinctSize ?? 8,
       });
       let byLang = current.byPackage.get(resolvedPkg);
       if (!byLang) {
@@ -707,13 +765,102 @@ export async function searchPackage(
         // remaining package; the per-entry measurement itself checks the
         // allowance inside large date maps.
         if (prepare) {
+          let distinctSize =
+            8 +
+            stringUnits(resolvedPkg.snapshot) +
+            stringUnits(resolvedPkg.search_view) +
+            stringUnits(resolvedPkg.downgrade);
+          let seenEntries: Set<object> | undefined;
+          let seenCollections: Map<object, number> | undefined;
           for (const entry of resolvedPkg.entries) {
             clientBudget.ensure(1, "prepare");
-            clientBudget.reserve(
-              1 + entryContentUnits(entry, clientBudget, "prepare"),
-              "prepare",
-            );
+            const content = entryContentUnits(entry, clientBudget, "prepare");
+            clientBudget.reserve(1 + content, "prepare");
+            if (!entry || typeof entry !== "object") {
+              distinctSize += 24;
+              continue;
+            }
+            if (seenEntries?.has(entry)) {
+              distinctSize += 1;
+              continue;
+            }
+            if (content >= 16) (seenEntries ??= new Set()).add(entry);
+            let rowSize = 24 + content;
+            const glosses = Array.isArray(entry.glosses) ? entry.glosses : null;
+            if (glosses && glosses.length > 0) {
+              if (glosses.length >= 4) {
+                const prev = seenCollections?.get(glosses);
+                if (prev !== undefined) {
+                  rowSize -= prev;
+                } else {
+                  const glossUnits = Math.min(glosses.length, 8192);
+                  rowSize += 3 * glossUnits;
+                  (seenCollections ??= new Map()).set(glosses, glossUnits);
+                }
+              } else {
+                rowSize += 3 * glosses.length;
+              }
+            }
+            const classification = entry.classification;
+            const selmaho =
+              classification &&
+              typeof classification === "object" &&
+              Array.isArray(classification.selmaho)
+                ? classification.selmaho
+                : null;
+            if (selmaho && selmaho.length >= 4) {
+              const prev = seenCollections?.get(selmaho);
+              if (prev !== undefined) {
+                rowSize -= prev;
+              } else {
+                (seenCollections ??= new Map()).set(selmaho, selmaho.length);
+              }
+            }
+            const rawRafsi = (entry as { rafsi?: unknown }).rafsi;
+            const rafsi = Array.isArray(rawRafsi) ? rawRafsi : null;
+            if (rafsi && rafsi.length >= 4) {
+              const prev = seenCollections?.get(rafsi);
+              if (prev !== undefined) {
+                rowSize -= prev;
+              } else {
+                (seenCollections ??= new Map()).set(
+                  rafsi,
+                  Math.min(rafsi.length, 64),
+                );
+              }
+            }
+            const attribution = (entry as { attribution?: unknown })
+              .attribution;
+            const dates =
+              attribution && typeof attribution === "object"
+                ? (attribution as { dates?: unknown }).dates
+                : undefined;
+            if (dates && typeof dates === "object" && content >= 16) {
+              const prev = seenCollections?.get(dates);
+              if (prev !== undefined) {
+                rowSize -= prev;
+              } else {
+                let dateCount = 0;
+                let dateChars = 0;
+                for (const day in dates as Record<string, unknown>) {
+                  if (!Object.hasOwn(dates, day)) continue;
+                  dateCount++;
+                  dateChars += day.length;
+                  const val = (dates as Record<string, unknown>)[day];
+                  if (typeof val === "string") dateChars += val.length;
+                }
+                if (dateCount >= 4 || dateChars > 64) {
+                  (seenCollections ??= new Map()).set(
+                    dates,
+                    dateCount + Math.floor(dateChars / 64),
+                  );
+                }
+              }
+            }
+            distinctSize += Math.max(24, rowSize);
           }
+          const snapshot = current.snapshots.get(key);
+          if (snapshot) snapshot.distinctSize = distinctSize;
         }
         current.worker.postMessage({
           request,
