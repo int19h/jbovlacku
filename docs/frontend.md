@@ -316,7 +316,10 @@ Later reads in that page fail until the page reloads.
 `LocalStore.listPackages` reads all stored packages without revision markers and supplies no reuse evidence.
 A missing legacy revision supplies no reuse evidence.
 A page uses a freshly read package only after the package header, storage-key language tag, and every row pass validation for that language. No whole-package verdict is persisted in storage.
-Main-thread page readers enforce the shared package and row rules (including spelling checks and lone-surrogate rafsi rejection), and the search worker enforces those same rules plus exact package and row field sets, strictly ascending event order, version 2 attribution shapes, `search_status` and `search_view` pairing, and rejection of non-function own `some` properties on row arrays.
+Settings, the rafsi pair route, the saved version 1 check in rafsi package loading, the Meaning typed-word check, and the wizard conflict inventory scan every row on the main thread against the shared package, storage-key, row, lone-surrogate rafsi, and word-spelling rules before using the package.
+The `/rafsi` and `/claim` lookups scan version 2 rows on the main thread against the shared row rules (including lone-surrogate rafsi rejection) without checking word spellings, and then wait for the search worker.
+Search and Meaning nearby check only the package header and storage-key language tag on the main thread and wait for the search worker (lujvo part lookup searches the package selected by the wizard inventory in the worker).
+The search worker enforces all of the shared package, storage-key, row, lone-surrogate rafsi, and word-spelling rules plus exact package and row field sets, strictly ascending event order, version 2 attribution shapes, `search_status` and `search_view` pairing, and rejection of non-function own `some` properties on row arrays.
 A failed download leaves the saved package and revision unchanged.
 
 A package save reads the revision before its download starts. It writes only when that revision is still the current one, and the check and the write are one transaction. So a save never overwrites a Remove or another save that finished after it started. A Remove always wins over a save that started earlier.
