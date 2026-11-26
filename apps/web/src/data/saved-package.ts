@@ -137,16 +137,12 @@ const GLOSS_FIELDS = ["language", "text", "sense"];
  */
 /** Per-package validated list cache so shared row lists are checked once. */
 export interface SavedRowListCache {
-  selmaho: Set<unknown>;
-  glosses: Set<unknown>;
-  rafsi: Set<unknown>;
+  selmaho?: Set<unknown>;
+  glosses?: Set<unknown>;
+  rafsi?: Set<unknown>;
 }
 
-export const savedRowListCache = (): SavedRowListCache => ({
-  selmaho: new Set(),
-  glosses: new Set(),
-  rafsi: new Set(),
-});
+export const savedRowListCache = (): SavedRowListCache => ({});
 
 export function savedRow(
   entry: unknown,
@@ -172,15 +168,15 @@ export function savedRow(
     Array.isArray(classification.selmaho);
   if (usable) {
     const selmaho = (classification as { selmaho: unknown[] }).selmaho;
-    if (!checkedLists?.selmaho.has(selmaho)) {
+    if (selmaho.length < 4 || !checkedLists?.selmaho?.has(selmaho)) {
       usable = !anyItem(selmaho, (item) => typeof item !== "string");
       if (usable && checkedLists && selmaho.length >= 4)
-        checkedLists.selmaho.add(selmaho);
+        (checkedLists.selmaho ??= new Set()).add(selmaho);
     }
   }
   if (usable) {
     const glossList = glosses as unknown[];
-    if (!checkedLists?.glosses.has(glossList)) {
+    if (glossList.length < 4 || !checkedLists?.glosses?.has(glossList)) {
       usable = !anyItem(
         glossList,
         (gloss) =>
@@ -190,7 +186,7 @@ export function savedRow(
           !(gloss.sense === null || typeof gloss.sense === "string"),
       );
       if (usable && checkedLists && glossList.length >= 4)
-        checkedLists.glosses.add(glossList);
+        (checkedLists.glosses ??= new Set()).add(glossList);
     }
   }
   if (usable && version === 2) {
@@ -204,13 +200,13 @@ export function savedRow(
         typeof entry.rafsi_complete === "boolean");
     if (usable) {
       const rafsiList = rafsi as unknown[];
-      if (!checkedLists?.rafsi.has(rafsiList)) {
+      if (rafsiList.length < 4 || !checkedLists?.rafsi?.has(rafsiList)) {
         usable = !anyItem(
           rafsiList,
           (item) => typeof item !== "string" || LONE_SURROGATE.test(item),
         );
         if (usable && checkedLists && rafsiList.length >= 4)
-          checkedLists.rafsi.add(rafsiList);
+          (checkedLists.rafsi ??= new Set()).add(rafsiList);
       }
     }
   } else if (usable)

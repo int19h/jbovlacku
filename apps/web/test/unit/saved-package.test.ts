@@ -1000,3 +1000,128 @@ test("createPackageWordIndex checks a shared selmaho list once across rows witho
     1,
   );
 });
+
+test("samePackageStructure rejects conflicting sharing patterns in linear work across square sizes 8, 16, and 32", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const nativeOwnKeys = Reflect.ownKeys;
+
+  for (const kind of ["dates", "selmaho"] as const) {
+    for (const k of [8, 16, 32]) {
+      const make = (byColumn: boolean) => {
+        const shared = Array.from({ length: k }, () =>
+          kind === "dates"
+            ? Object.fromEntries(
+                Array.from({ length: 4 * k }, (_, j) => [
+                  "k" + j.toString(16).padStart(8, "0"),
+                  "1",
+                ]),
+              )
+            : Array.from({ length: 4 * k }, () => "UI"),
+        );
+        return pkg(
+          Array.from({ length: k * k }, (_, i) => {
+            const value = shared[byColumn ? i % k : Math.floor(i / k)];
+            return v2Row({
+              event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+              glosses: [],
+              rafsi: [],
+              classification: {
+                kind: "gismu",
+                selmaho: kind === "selmaho" ? (value as string[]) : [],
+              },
+              attribution: {
+                source: "fixture",
+                author: null,
+                account: null,
+                dates:
+                  kind === "dates"
+                    ? (value as Record<string, string>)
+                    : {},
+              },
+            });
+          }),
+        );
+      };
+      const pick = (entry: any) =>
+        kind === "dates"
+          ? entry.attribution.dates
+          : entry.classification.selmaho;
+      const byRow = make(false) as never;
+      const byColumn = make(true);
+      const watched = new Set([
+        ...(byRow as any).entries.map(pick),
+        ...(byColumn as any).entries.map(pick),
+      ]);
+      let calls = 0;
+      let keys = 0;
+      Reflect.ownKeys = function (target: object) {
+        const list = nativeOwnKeys(target);
+        if (watched.has(target)) {
+          calls++;
+          keys += list.length;
+        }
+        return list;
+      };
+      let equal: boolean;
+      try {
+        const budget = new SearchRequestBudget(searchMetrics(), {
+          workLimit: 75 * k * k,
+          deadlineMs: Infinity,
+        });
+        equal = samePackageStructure(byColumn, byRow, budget);
+      } finally {
+        Reflect.ownKeys = nativeOwnKeys;
+      }
+      assert.equal(equal, false);
+      assert.equal(calls, 2);
+      assert.equal(keys, 2 * (kind === "dates" ? 4 * k : 4 * k + 1));
+    }
+  }
+
+  // Deep DAG of small 2-key objects must also finish in linear work without
+  // exponential blowup, and conflicting sharing at different depths must reject.
+  let leafA: Record<string, unknown> = { a: "x", b: "y" };
+  let leafB: Record<string, unknown> = { a: "x", b: "y" };
+  for (let d = 0; d < 24; d++) {
+    leafA = { a: leafA, b: leafA };
+    leafB = { a: leafB, b: leafB };
+  }
+  const dagBudget = new SearchRequestBudget(searchMetrics(), {
+    workLimit: 5_000,
+    deadlineMs: Infinity,
+  });
+  assert.equal(
+    samePackageStructure(
+      { snapshot: "s", entries: [leafA] },
+      { snapshot: "s", entries: [leafB] } as never,
+      dagBudget,
+    ),
+    true,
+  );
+  // Conflicting sharing across different depths (depth 2 vs depth 3).
+  const bigA = Object.fromEntries(
+    Array.from({ length: 32 }, (_, i) => [`k${i}`, "1"]),
+  );
+  const bigB1 = Object.fromEntries(
+    Array.from({ length: 32 }, (_, i) => [`k${i}`, "1"]),
+  );
+  const bigB2 = Object.fromEntries(
+    Array.from({ length: 32 }, (_, i) => [`k${i}`, "1"]),
+  );
+  assert.equal(
+    samePackageStructure(
+      { snapshot: "s", entries: [bigA, { nested: bigA }] },
+      { snapshot: "s", entries: [bigB1, { nested: bigB2 }] } as never,
+      new SearchRequestBudget(searchMetrics(), {
+        workLimit: 5_000,
+        deadlineMs: Infinity,
+      }),
+    ),
+    false,
+  );
+});
