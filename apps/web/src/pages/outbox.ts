@@ -314,15 +314,18 @@ function row(
     parts.push(
       receiptPending
         ? UNCONFIRMED_TEXT
-        : // A timeout keeps its own text. The browser's offline report does
-          // not show that a request that timed out was never sent.
-          !navigator.onLine &&
-            peer.failure !== "unresolved" &&
-            peer.failure !== "timeout" &&
-            peer.state !== "accepted" &&
-            peer.state !== "refused"
-          ? "Waiting for a connection."
-          : describePeer(peer),
+        : app.delivery.unconfirmed(item, peerId)
+          ? // A stopped record has no automatic lookup.
+            app.delivery.describe(item, peerId)
+          : // A timeout keeps its own text. The browser's offline report does
+            // not show that a request that timed out was never sent.
+            !navigator.onLine &&
+              peer.failure !== "unresolved" &&
+              peer.failure !== "timeout" &&
+              peer.state !== "accepted" &&
+              peer.state !== "refused"
+            ? "Waiting for a connection."
+            : describePeer(peer),
     );
     const nextTry = app.delivery.nextTryAt(item, peerId);
     if (navigator.onLine && nextTry !== null)

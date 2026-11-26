@@ -362,7 +362,9 @@ test("a failed publication receipt save reports an unconfirmed outcome", async (
   await expect(saved.getByRole("button", { name: "Try now" })).toBeVisible();
   const [first] = (await readOutbox(page)).sort((a, b) => a.order - b.order);
   expect(first.peers.self.sendAttempt).toEqual(expect.any(String));
-  expect(posts).toEqual([first.transport]);
+  // The tab knows that the server accepted the first record, so the later
+  // records of the group can go ahead. The first record is sent once.
+  expect(posts.filter((post) => post === first.transport)).toHaveLength(1);
   expect(lookups).toEqual([]);
   await page.clock.fastForward(15_000);
   await expect
@@ -930,6 +932,15 @@ test("the outbox summary and saved publication lines show an unconfirmed outcome
     "The result is unconfirmed. The browser will check the receipt again when online.",
   );
   expect(lines.lines.join(" ")).not.toContain("will be sent again");
+
+  // A stopped record keeps the unconfirmed text and promises no lookup.
+  await page.getByRole("button", { name: "Stop retrying" }).click();
+  await expect(
+    page.getByText(
+      "The result is unconfirmed. The browser does not check the receipt while the record is stopped.",
+    ),
+  ).toBeVisible();
+  await expect(page.getByText(/will be sent again/)).toHaveCount(0);
 });
 
 test("a judgment whose outcome save fails still reports a saved record", async ({

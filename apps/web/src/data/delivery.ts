@@ -284,6 +284,9 @@ export function describePeer(peer: PeerDelivery): string {
 /** Text for a recipient whose next attempt looks up the receipt first. */
 export const UNCONFIRMED_TEXT =
   "The result is unconfirmed. The browser will check the receipt again when online.";
+/** The same for a stopped record, which has no automatic lookup. */
+export const STOPPED_UNCONFIRMED_TEXT =
+  "The result is unconfirmed. The browser does not check the receipt while the record is stopped.";
 export type DeliveryListener = (items: OutboxItem[]) => void;
 /** The peer saved with the record for one recipient, or null without saved address evidence. */
 export function savedPeer(item: OutboxItem, peerId: string): Peer | null {
@@ -367,8 +370,8 @@ export class DeliveryEngine {
   private recordRetryAt = new Map<string, number>();
   /** Per recipient, so one recipient's error never shortens another's wait. */
   private peerRetryAt = new Map<string, Map<string, number>>();
-  /** The earliest recipient retry of a record whose attempt just failed. */
-  private failedRetryAt = new Map<string, number>();
+  /** Records whose last failure came from a recipient, not from the record. */
+  private recipientFailed = new Set<string>();
   private unsavedOutcomes = new Map<string, Map<string, UnsavedOutcome>>();
   private listeners = new Set<DeliveryListener>();
   private readErrors = new Map<DeliveryListener, (error: unknown) => void>();
@@ -707,10 +710,35 @@ export class DeliveryEngine {
   isDelivering(id: string): boolean {
     return this.inFlight.has(id);
   }
-  needsReceipt(item: OutboxItem, peerId: string): boolean {
+  /** Recipients that this tab does not know to be accepted, saved or kept. */
+  private unfinished(item: OutboxItem): string[] {
+    return Object.entries(item.peers)
+      .filter(
+        ([peerId, peer]) =>
+          peer.state !== "accepted" &&
+          this.unsavedOutcome(item.id, peerId, peer)?.outcome.state !==
+            "accepted",
+      )
+      .map(([peerId]) => peerId);
+  }
+  /**
+   * The time until which a record waits after a failure: its own failure,
+   * or the earliest failure of a recipient that is not finished.
+   */
+  private failureDelay(item: OutboxItem): number {
+    const now = Date.now();
+    const recipients = this.unfinished(item)
+      .map((peerId) => this.peerRetryAt.get(item.id)?.get(peerId) ?? 0)
+      .filter((at) => at > now);
+    return Math.max(
+      this.recordRetryAt.get(item.id) ?? 0,
+      recipients.length ? Math.min(...recipients) : 0,
+    );
+  }
+  /** True while the outcome for a recipient still needs a receipt check. */
+  unconfirmed(item: OutboxItem, peerId: string): boolean {
     const peer = item.peers[peerId];
     return (
-      !item.stopped &&
       peer.state !== "accepted" &&
       peer.failure !== "unresolved" &&
       (peer.verifyReceipt === true ||
@@ -720,16 +748,26 @@ export class DeliveryEngine {
           !this.isDelivering(item.id)))
     );
   }
+  /** True while automatic delivery will check the receipt for a recipient. */
+  needsReceipt(item: OutboxItem, peerId: string): boolean {
+    return !item.stopped && this.unconfirmed(item, peerId);
+  }
   /** Page text for one recipient. An unconfirmed outcome replaces the stored state. */
   describe(item: OutboxItem, peerId: string): string {
-    return this.needsReceipt(item, peerId)
-      ? UNCONFIRMED_TEXT
+    return this.unconfirmed(item, peerId)
+      ? item.stopped
+        ? STOPPED_UNCONFIRMED_TEXT
+        : UNCONFIRMED_TEXT
       : describePeer(item.peers[peerId]);
   }
   isNotDelivered(item: OutboxItem): boolean {
     return (
       isNotDelivered(item) ||
-      (isActive(item) && this.recordRetryAt.has(item.id)) ||
+      (isActive(item) &&
+        (this.recordRetryAt.has(item.id) ||
+          this.unfinished(item).some((peerId) =>
+            this.peerRetryAt.get(item.id)?.has(peerId),
+          ))) ||
       Object.keys(item.peers).some((peerId) => this.needsReceipt(item, peerId))
     );
   }
@@ -871,11 +909,13 @@ export class DeliveryEngine {
     const work = this.deliverNow(id, explicit)
       .catch((error) => {
         this.scheduleGeneration++;
-        const at =
-          this.failedRetryAt.get(id) ??
-          Date.now() + backoff(1, retryAfterOf(error));
-        this.failedRetryAt.delete(id);
-        this.recordRetryAt.set(id, at);
+        // A recipient failure already set that recipient's own retry time.
+        // Only a failure outside the recipient loop delays the record.
+        if (!this.recipientFailed.delete(id))
+          this.recordRetryAt.set(
+            id,
+            Date.now() + backoff(1, retryAfterOf(error)),
+          );
         throw error;
       })
       .finally(() => {
@@ -896,14 +936,17 @@ export class DeliveryEngine {
     // reachable server still receives the record when the browser
     // reports offline. A network failure decides the outcome below.
     // Earlier records of the same group go first so dependencies arrive in order.
+    // A predecessor that this tab knows to be accepted, saved or not, no
+    // longer holds its dependents back.
     const earlier = (await this.items()).filter(
       (other) =>
         other.group === item!.group &&
         other.order < item!.order &&
-        isActive(other),
+        !other.stopped &&
+        this.unfinished(other).length > 0,
     );
     for (const dependency of earlier) {
-      const delayed = this.recordRetryAt.get(dependency.id) ?? 0;
+      const delayed = this.failureDelay(dependency);
       if (!explicit && delayed > Date.now()) {
         this.recordRetryAt.set(id, delayed);
         return item;
@@ -913,7 +956,6 @@ export class DeliveryEngine {
     item = (await this.fresh(id)) ?? item;
     const now = Date.now();
     let failure: { error: unknown } | undefined;
-    let earliest = Infinity;
     for (const peerId of Object.keys(item.peers)) {
       const current = await this.fresh(id);
       if (!current) return undefined;
@@ -922,7 +964,6 @@ export class DeliveryEngine {
       if (!explicit && (current.stopped || this.dueAt(id, peerId, peer) > now))
         continue;
       const started = Date.now();
-      this.peerRetryAt.get(id)?.delete(peerId);
       // Random, so two attempts that start in the same millisecond differ.
       const attemptId = crypto.randomUUID();
       try {
@@ -934,8 +975,12 @@ export class DeliveryEngine {
           attemptId,
           explicit,
         );
-        // Null means that this attempt sent nothing and has no outcome to save.
-        if (next) await this.saveOutcome(id, peerId, peer, next, attemptId);
+        // Null means that this attempt decided nothing, so the recipient
+        // keeps its retry time. Any outcome replaces it.
+        if (next) {
+          this.peerRetryAt.get(id)?.delete(peerId);
+          await this.saveOutcome(id, peerId, peer, next, attemptId);
+        }
         await this.notify();
       } catch (error) {
         // Other recipients of this record can still have work due.
@@ -944,11 +989,10 @@ export class DeliveryEngine {
         let peers = this.peerRetryAt.get(id);
         if (!peers) this.peerRetryAt.set(id, (peers = new Map()));
         peers.set(peerId, at);
-        earliest = Math.min(earliest, at);
       }
     }
     if (failure) {
-      this.failedRetryAt.set(id, earliest);
+      this.recipientFailed.add(id);
       throw failure.error;
     }
     return this.fresh(id);
@@ -1190,6 +1234,11 @@ export class DeliveryEngine {
       const receipt = await postEvent(item.transport, { peer: target });
       return await settle(receipt);
     } catch (error) {
+      // While the browser reports offline, a network failure before the
+      // POST shows that nothing was sent. The stored outcome, any kept one,
+      // and the retry schedule stay as they are.
+      if (error instanceof TransportError && !posted && !navigator.onLine)
+        return null;
       if (pending) throw error;
       // A failed lookup or read before the POST is not an answer about the
       // record, even when the status is one that refuses a POST. It is
@@ -1229,14 +1278,11 @@ export class DeliveryEngine {
       // made and for one that dropped after the server took the request, so
       // the error cannot show whether a POST arrived. Only a failure before
       // the POST started shows that the record was not sent. While the
-      // browser reports offline, such a failure keeps the stored outcome
-      // and retry schedule. Any other failure, including every timeout or
-      // drop of the POST itself, makes the outcome unknown, and the next
-      // attempt asks for a receipt first. With the browser online, a failed
-      // lookup also makes the outcome unknown, so its retry waits for the
-      // backoff.
-      if (error instanceof TransportError && !posted && !navigator.onLine)
-        return null;
+      // browser reports offline, such a failure returned above. Any other
+      // failure, including every timeout or drop of the POST itself, makes
+      // the outcome unknown, and the next attempt asks for a receipt first.
+      // With the browser online, a failed lookup also makes the outcome
+      // unknown, so its retry waits for the backoff.
       const transport = error instanceof TransportError ? error.kind : null;
       return {
         state: "unknown",
@@ -1303,8 +1349,11 @@ export class DeliveryEngine {
         ]),
       ),
     }));
-    // Resume makes a saved refusal unknown for good. A kept refusal changes
-    // in the same way, after the stored change commits.
+    // After the stored change commits, a kept outcome changes as the saved
+    // row did: a refusal becomes unknown, and every other unfinished
+    // outcome is due now. A kept acceptance stays. Recipient waits from
+    // earlier failures end, as a saved row's retry time does.
+    this.peerRetryAt.delete(id);
     for (const entry of this.unsavedOutcomes.get(id)?.values() ?? [])
       if (entry.outcome.state === "refused")
         entry.outcome = {
@@ -1313,6 +1362,15 @@ export class DeliveryEngine {
           nextAttempt: Date.now(),
           error: "A server refused this record before. Resume retries it.",
           failure: null,
+        };
+      else if (entry.outcome.state !== "accepted")
+        entry.outcome = {
+          ...entry.outcome,
+          nextAttempt: Date.now(),
+          failure:
+            entry.outcome.failure === "unresolved"
+              ? null
+              : entry.outcome.failure,
         };
     try {
       await this.notify();

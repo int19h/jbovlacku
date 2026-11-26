@@ -592,3 +592,253 @@ test("a kept outcome that ended verification decides over a stale stored flag", 
   assert.equal(f.peer().state, "accepted");
   assert.equal(f.row.transport, f.item.transport);
 });
+
+for (const predecessor of ["accepted", "busy"] as const) {
+  test(`a dependent ${predecessor === "accepted" ? "goes ahead of a predecessor with a kept acceptance" : "waits for a predecessor whose outcome save failed"}`, async (t) => {
+    Object.defineProperties(globalThis, {
+      window: { configurable: true, value: new EventTarget() },
+      document: { configurable: true, value: new EventTarget() },
+    });
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000 });
+    const recipients = {
+      self: { origin: "http://self.test", base: "/api/v1", label: "self" },
+    };
+    const profile = (seed: number) =>
+      core.createEvent(
+        new Uint8Array(32).fill(seed),
+        [],
+        "1".repeat(32),
+        { kind: "identity.profile" },
+        { name: `Record ${seed}`, bio: [], links: [] },
+      );
+    const x = outboxItem(profile(21), "chain", 0, recipients);
+    const y = outboxItem(profile(22), "chain", 1, recipients);
+    const records = new Map([
+      [x.id, x],
+      [y.id, y],
+    ]);
+    const name = (id: string) => (id === x.id ? "X" : "Y");
+    const log: string[] = [];
+    t.mock.method(
+      globalThis,
+      "fetch",
+      async (url: string, options?: RequestInit) => {
+        if (options?.method === "POST") {
+          const id = (JSON.parse(options.body as string) as Transport).envelope
+            .id;
+          assert.equal(options.body, records.get(id)!.transport);
+          log.push(`${Date.now() - 10_000}:${name(id)}:post`);
+          return id === x.id && predecessor === "busy"
+            ? json(503, { message: "Busy" })
+            : Response.json(receiptFor(records.get(id)!), { status: 201 });
+        }
+        const id = decodeURIComponent(new URL(url).pathname.split("/").at(-1)!);
+        log.push(`${Date.now() - 10_000}:${name(id)}:receipt`);
+        return id === x.id
+          ? json(503, { message: "Busy" })
+          : Response.json(receiptFor(records.get(id)!));
+      },
+    );
+    let failures = 1;
+    const store = {
+      async get(_store: string, id: string) {
+        return records.get(id);
+      },
+      async list() {
+        return [...records.values()];
+      },
+      async mergeOutbox(id: string, mutate: (s: OutboxItem) => OutboxItem) {
+        const next = mutate(records.get(id)!);
+        if (
+          id === x.id &&
+          next.peers.self.state ===
+            (predecessor === "accepted" ? "accepted" : "unknown") &&
+          next.peers.self.sendAttempt === undefined &&
+          failures-- > 0
+        )
+          throw quota();
+        records.set(id, next);
+        return next;
+      },
+      async discardOutbox() {},
+    };
+    const engine = new DeliveryEngine(store as unknown as LocalStore);
+    await engine.tick();
+    if (predecessor === "busy") {
+      // The failed save delays the predecessor, and its dependent waits.
+      assert.deepEqual(log, ["0:X:post"]);
+      assert.equal(records.get(y.id)!.peers.self.state, "queued");
+      return;
+    }
+    for (let i = 0; i < 4; i++) {
+      await flush();
+      t.mock.timers.tick(15_000);
+      await flush();
+    }
+    assert.ok(log.includes("0:X:post"));
+    assert.equal(log.filter((entry) => entry.endsWith(":X:post")).length, 1);
+    assert.equal(records.get(y.id)!.peers.self.state, "accepted");
+    assert.equal(records.get(y.id)!.transport, y.transport);
+  });
+}
+
+test("offline Resume makes a kept unknown outcome due at once", async (t) => {
+  let ready = false;
+  let offline = false;
+  const f = fixture(t, ["self"], (_peer, kind) => {
+    if (offline) return Promise.reject(new TypeError("offline"));
+    if (kind === "receipt") return json(404, notFound);
+    return ready
+      ? Response.json(receiptFor(f.item), { status: 201 })
+      : json(503, { message: "Busy" });
+  });
+  Object.assign(f.item.peers.self, {
+    state: "unknown",
+    attempts: 4,
+    failure: "server",
+    attempt: "a0",
+  });
+  let failures = 1;
+  f.control.failWrite = (_current, next) =>
+    next.peers.self.sendAttempt === undefined &&
+    next.peers.self.state === "unknown" &&
+    failures-- > 0;
+  await assert.rejects(f.engine.tryNow(f.item.id), {
+    name: "QuotaExceededError",
+  });
+  // The kept outcome waits 240 s after the fifth attempt.
+  assert.equal(f.engine.nextTryAt(f.row, "self"), 250_000);
+  await f.engine.stop(f.item.id);
+  await f.advance(10_000);
+  setOnline(t, false);
+  offline = true;
+  await f.engine.resume(f.item.id);
+  await f.advance(1_000);
+  setOnline(t, true);
+  offline = false;
+  ready = true;
+  (globalThis.window as EventTarget).dispatchEvent(new Event("online"));
+  await flush();
+  await flush();
+  assert.equal(f.peer().state, "accepted");
+  assert.deepEqual(f.log.slice(-2), ["11000:self:receipt", "11000:self:post"]);
+});
+
+for (const action of ["Try now", "Stop and Resume"] as const) {
+  test(`offline ${action} leaves a kept verification and its schedule unchanged`, async (t) => {
+    let envelopes = 0;
+    let offline = false;
+    const f = fixture(t, ["self"], (_peer, kind) => {
+      if (offline) return Promise.reject(new TypeError("offline"));
+      if (kind === "envelope")
+        return ++envelopes === 1
+          ? Promise.reject(new TypeError("dropped"))
+          : new Response(
+              core.canonicalize(
+                core.utf8(JSON.stringify(variants[0].envelope)),
+              ),
+            );
+      return Response.json(
+        receiptFor(f.item, { envelope_hash: variantHash() }),
+        {
+          status: kind === "post" ? 201 : 200,
+        },
+      );
+    });
+    let failures = 1;
+    f.control.failWrite = (_current, next) =>
+      next.peers.self.verifyReceipt === true && failures-- > 0;
+    await assert.rejects(f.engine.tryNow(f.item.id), {
+      name: "QuotaExceededError",
+    });
+    const due = f.engine.nextTryAt(f.row, "self");
+    assert.equal(due, 25_000);
+    setOnline(t, false);
+    offline = true;
+    if (action === "Try now") await f.engine.tryNow(f.item.id);
+    else {
+      await f.engine.stop(f.item.id);
+      await f.engine.resume(f.item.id);
+    }
+    // Try now keeps the schedule. Resume makes the record due now, as it
+    // does for a saved row.
+    assert.equal(
+      f.engine.nextTryAt(f.row, "self"),
+      action === "Try now" ? 25_000 : Date.now(),
+    );
+    setOnline(t, true);
+    offline = false;
+    (globalThis.window as EventTarget).dispatchEvent(new Event("online"));
+    await f.advance(15_000);
+    assert.equal(f.peer().state, "accepted");
+    assert.equal(f.log.filter((entry) => entry.endsWith(":post")).length, 1);
+  });
+}
+
+test("a pending failure on one recipient does not delay another recipient", async (t) => {
+  let envelopes = 0;
+  let limited = false;
+  const f = fixture(t, ["peer1", "peer2"], (peer, kind) => {
+    if (peer === "peer1") {
+      if (kind === "envelope")
+        return ++envelopes === 1
+          ? Promise.reject(new TypeError("dropped"))
+          : new Response(
+              core.canonicalize(
+                core.utf8(JSON.stringify(variants[0].envelope)),
+              ),
+            );
+      if (kind === "receipt" && limited)
+        return json(429, { code: "rate_limited", message: "Wait" }, "600");
+      return Response.json(
+        receiptFor(f.item, { envelope_hash: variantHash() }),
+        {
+          status: kind === "post" ? 201 : 200,
+        },
+      );
+    }
+    if (kind === "receipt") return json(404, notFound);
+    return limited
+      ? Response.json(receiptFor(f.item), { status: 201 })
+      : json(503, { message: "Busy" }, "20");
+  });
+  let failures = 1;
+  f.control.failWrite = (_current, next) =>
+    next.peers.peer1.verifyReceipt === true && failures-- > 0;
+  await f.engine.tick();
+  assert.equal(f.engine.nextTryAt(f.row, "peer2"), 30_000);
+  limited = true;
+  await f.advance(15_000);
+  assert.ok(f.log.includes("15000:peer1:receipt"));
+  assert.equal(f.engine.nextTryAt(f.row, "peer2"), 30_000);
+  await f.advance(5_000);
+  assert.equal(f.peer("peer2").state, "accepted");
+  assert.ok(f.log.includes("20000:peer2:post"));
+});
+
+test("a stopped record with a kept outcome shows unconfirmed text", async (t) => {
+  const f = fixture(t, ["self"], (_peer, kind) => {
+    assert.equal(kind, "receipt");
+    return Response.json(receiptFor(f.item));
+  });
+  Object.assign(f.item.peers.self, {
+    state: "missing-body",
+    attempts: 1,
+    error:
+      "The server stored the signed header without its body. The complete record will be sent again.",
+    attempt: "a0",
+  });
+  let failures = 1;
+  f.control.failWrite = (_current, next) =>
+    next.peers.self.state === "accepted" && failures-- > 0;
+  await assert.rejects(f.engine.tryNow(f.item.id), {
+    name: "QuotaExceededError",
+  });
+  await f.engine.stop(f.item.id);
+  assert.equal(f.row.stopped, true);
+  // No automatic lookup runs while the record is stopped.
+  assert.equal(f.engine.needsReceipt(f.row, "self"), false);
+  const text = f.engine.describe(f.row, "self");
+  assert.match(text, /unconfirmed/);
+  assert.doesNotMatch(text, /will be sent again|check the receipt again/);
+});

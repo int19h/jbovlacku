@@ -337,7 +337,7 @@ test("a missing receipt does not end pending envelope verification on a refused 
   assert.equal(f.saved.transport, f.item.transport);
 });
 
-test("one record's repeated receipt write failure leaves independent records due", async (t) => {
+test("one record's repeated receipt write failure leaves other records due", async (t) => {
   const f = fixture(t);
   const independent = outboxItem(
     signedProfile(10),
@@ -355,7 +355,9 @@ test("one record's repeated receipt write failure leaves independent records due
   f.records.set(dependent.id, dependent);
   f.fail.outcome = 3;
   await f.engine.tick();
-  assert.deepEqual(f.sentIds, [f.item.id, independent.id]);
+  // The tab knows that the server accepted the first record, so its
+  // dependent does not wait for the failed save.
+  assert.deepEqual(f.sentIds, [f.item.id, dependent.id, independent.id]);
   assert.equal(f.records.get(independent.id)?.peers.self.state, "accepted");
   for (let retry = 0; retry < 2; retry++) {
     const count = f.requests.length;
@@ -363,12 +365,12 @@ test("one record's repeated receipt write failure leaves independent records due
     assert.equal(f.requests.length, count);
     await f.advance(1);
     assert.equal(f.requests.at(-1), "receipt");
-    assert.deepEqual(f.sentIds, [f.item.id, independent.id]);
+    assert.deepEqual(f.sentIds, [f.item.id, dependent.id, independent.id]);
   }
   await f.advance(15_000);
   assert.equal(f.saved.peers.self.state, "accepted");
   assert.equal(f.saved.transport, f.item.transport);
-  assert.deepEqual(f.sentIds, [f.item.id, independent.id, dependent.id]);
+  assert.deepEqual(f.sentIds, [f.item.id, dependent.id, independent.id]);
 });
 
 test("an unrepresentable Retry-After falls back to a finite receipt retry", async (t) => {

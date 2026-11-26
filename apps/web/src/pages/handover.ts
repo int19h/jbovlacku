@@ -1001,7 +1001,7 @@ export function renderExisting(
         `${name}: ${Object.entries(item.peers)
           .map(
             ([id, peer]) =>
-              `${savedPeer(item, id)?.label ?? id} ${app.delivery.needsReceipt(item, id) ? "unconfirmed" : peer.state}`,
+              `${savedPeer(item, id)?.label ?? id} ${app.delivery.unconfirmed(item, id) ? "unconfirmed" : peer.state}`,
           )
           .join(", ")}.`,
         "meta",

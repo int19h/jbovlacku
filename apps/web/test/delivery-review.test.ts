@@ -86,6 +86,7 @@ test("outbox updates keep keyboard focus and the retained disclosure open", asyn
       delivery: {
         isNotDelivered,
         needsReceipt: () => false,
+        unconfirmed: () => false,
         nextTryAt: () => null,
         subscribe(fn: typeof listener) {
           listener = fn;
