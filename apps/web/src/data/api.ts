@@ -179,22 +179,23 @@ export async function objectBytes(
   try {
     bytes = await readBounded(response, limit, signal);
   } catch (error) {
-    if ((error as { name?: string } | null)?.name === "QuotaExceededError")
-      throw error;
-    if (options.signal?.aborted) throw error;
-    // An error answer keeps its status and deadline when its body is too
-    // large, interrupted or late. The body is discarded, and the error uses
-    // the plain status message. A damaged body never proves acceptance.
+    const name = (error as { name?: string } | null)?.name;
+    if (name === "QuotaExceededError") throw error;
     if (response.ok) {
-      if ((error as { name?: string } | null)?.name === "TimeoutError")
+      if (name === "TimeoutError")
         throw new TransportError(
           "The server did not answer in time.",
           "timeout",
         );
+      if (options.signal?.aborted) throw error;
       if (error instanceof TypeError)
         throw new TransportError("No connection to the server.", "offline");
       throw error;
     }
+    // An error answer keeps its status and deadline when its body is too
+    // large, interrupted or late. The body is discarded, and the error uses
+    // the plain status message. A damaged body never proves acceptance.
+    if (name !== "TimeoutError" && options.signal?.aborted) throw error;
     bytes = new Uint8Array();
   }
   if (!response.ok) {
