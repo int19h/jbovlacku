@@ -961,7 +961,7 @@ export function handoverStatusLine(
   const accept = summary(state.accept);
   const word = (item: OutboxItem | null, view: ReturnType<typeof summary>) =>
     !item
-      ? "missing from this browser"
+      ? "waiting"
       : view?.accepted
         ? "accepted, saving the receipt"
         : view?.stopped
