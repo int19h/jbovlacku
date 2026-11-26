@@ -821,3 +821,103 @@ test("Meaning nearby keeps overlong queries local when no local package is usabl
   await page.waitForTimeout(800);
   expect(serverCalls).toBe(1);
 });
+
+for (const kind of ["dates", "selmaho"] as const)
+  test(`fresh-read structural reuse compares a shared ${kind} object once across 128 rows within a 10,000-unit budget`, async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const result = await page.evaluate(async (kind) => {
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { searchPackage } = await import(
+        String("/src/data/package-search.ts")
+      );
+      const n = 128;
+      const db = `shared-graph-${kind}-${Date.now()}`;
+      const store = new LocalStore(db);
+      const sharedDates = Object.fromEntries(
+        Array.from({ length: n }, (_, i) => [
+          "k" + i.toString(16).padStart(8, "0"),
+          "1",
+        ]),
+      );
+      const sharedSelmaho = Array.from({ length: n }, () => "UI");
+      const pick = (entry: any) =>
+        kind === "dates"
+          ? entry.attribution.dates
+          : entry.classification.selmaho;
+      const pkg = {
+        version: 2 as const,
+        snapshot: "sha256:" + "a".repeat(64),
+        entries: Array.from({ length: n }, (_, i) => ({
+          event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+          word: { language: "jbo" as const, spelling: "cukta" },
+          language: "en",
+          glosses: [],
+          plain_text: "book",
+          classification: {
+            kind: "gismu" as const,
+            selmaho: kind === "selmaho" ? sharedSelmaho : [],
+          },
+          body: null,
+          issuer: "ed25519:" + "a".repeat(64),
+          notes: false,
+          rafsi: [],
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: kind === "dates" ? sharedDates : {},
+          },
+        })),
+      };
+      try {
+        await store.put("packages", "en", pkg);
+        const first = await store.get("packages", "en");
+        const coldPrepared = (await searchPackage(first, "en", [])).prepared;
+
+        const fresh = await new LocalStore(db).get("packages", "en");
+        const left = pick(first.entries[0]);
+        const right = pick(fresh.entries[0]);
+        let calls = 0;
+        const nativeOwnKeys = Reflect.ownKeys;
+        Reflect.ownKeys = function (target: object) {
+          if (target === left || target === right) calls++;
+          return nativeOwnKeys(target);
+        };
+        let freshPrepared: boolean;
+        try {
+          freshPrepared = (await searchPackage(fresh, "en", [])).prepared;
+        } finally {
+          Reflect.ownKeys = nativeOwnKeys;
+        }
+
+        const again = await new LocalStore(db).get("packages", "en");
+        const boundedPrepared = (
+          await searchPackage(again, "en", [], { workLimit: 10_000 })
+        ).prepared;
+
+        return {
+          coldPrepared,
+          freshPrepared,
+          boundedPrepared,
+          calls,
+          aliasedFirst: pick(first.entries[n - 1]) === left,
+          aliasedFresh: pick(fresh.entries[n - 1]) === right,
+          distinct: left !== right,
+        };
+      } finally {
+        indexedDB.deleteDatabase(db);
+      }
+    }, kind);
+
+    expect(result).toEqual({
+      coldPrepared: true,
+      freshPrepared: false,
+      boundedPrepared: false,
+      calls: kind === "selmaho" ? 3 : 2,
+      aliasedFirst: true,
+      aliasedFresh: true,
+      distinct: true,
+    });
+  });

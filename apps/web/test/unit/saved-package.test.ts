@@ -1526,3 +1526,171 @@ test("searchPackage does not scan unrelated queued transfers during lookup or cl
     else Object.assign(globalThis, { location: prevLocation });
   }
 });
+
+test("samePackageStructure compares shared records and shared arrays once across rows", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const n = 128;
+  for (const kind of ["dates", "selmaho"] as const) {
+    const sharedDates = Object.fromEntries(
+      Array.from({ length: n }, (_, i) => [
+        "k" + i.toString(16).padStart(8, "0"),
+        "1",
+      ]),
+    );
+    const sharedSelmaho = Array.from({ length: n }, () => "UI");
+    const base = pkg(
+      Array.from({ length: n }, (_, i) =>
+        v2Row({
+          event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+          glosses: [],
+          rafsi: [],
+          classification: {
+            kind: "gismu",
+            selmaho: kind === "selmaho" ? sharedSelmaho : [],
+          },
+          attribution: {
+            source: "fixture",
+            author: null,
+            account: null,
+            dates: kind === "dates" ? sharedDates : {},
+          },
+        }),
+      ),
+    ) as never;
+    const copy = structuredClone(base);
+    const leftShared =
+      kind === "dates"
+        ? (base as any).entries[0].attribution.dates
+        : (base as any).entries[0].classification.selmaho;
+    const rightShared =
+      kind === "dates"
+        ? (copy as any).entries[0].attribution.dates
+        : (copy as any).entries[0].classification.selmaho;
+    assert.notEqual(leftShared, rightShared);
+    let calls = 0;
+    const nativeOwnKeys = Reflect.ownKeys;
+    Reflect.ownKeys = function (target: object) {
+      if (target === leftShared || target === rightShared) calls++;
+      return nativeOwnKeys(target);
+    };
+    try {
+      const budget = new SearchRequestBudget(searchMetrics(), {
+        workLimit: 10_000,
+        deadlineMs: Infinity,
+      });
+      assert.equal(samePackageStructure(copy, base, budget), true);
+    } finally {
+      Reflect.ownKeys = nativeOwnKeys;
+    }
+    assert.equal(calls, kind === "selmaho" ? 3 : 2);
+  }
+});
+
+test("createPackageWordIndex checks a shared selmaho list once across rows without mixing field caches", () => {
+  const n = 128;
+  const rawSelmaho = Array.from({ length: n }, () => "UI");
+  let reads = 0;
+  const proxied = new Proxy(rawSelmaho, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && /^\d+$/.test(prop)) reads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const sharedPkg = pkg(
+    Array.from({ length: n }, (_, i) =>
+      v2Row({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        glosses: [],
+        rafsi: [],
+        classification: { kind: "gismu", selmaho: proxied as string[] },
+      }),
+    ),
+  );
+  const index = search.createPackageWordIndex();
+  assert.equal(index.invalidEntryCount(sharedPkg as never, "en"), 0);
+  assert.equal(reads, n);
+
+  // Sharing one array across selmaho (allows lone surrogates) and rafsi
+  // (rejects lone surrogates) must still reject the package.
+  const crossField = ["\ud800", "a", "b", "c"];
+  const mixed = pkg([
+    v2Row({
+      event: "jve1:" + "1".repeat(64),
+      classification: { kind: "gismu", selmaho: crossField },
+      rafsi: [],
+    }),
+    v2Row({
+      event: "jve1:" + "2".repeat(64),
+      classification: { kind: "gismu", selmaho: [] },
+      rafsi: crossField,
+    }),
+  ]);
+  assert.equal(
+    search.createPackageWordIndex().invalidEntryCount(mixed as never, "en"),
+    1,
+  );
+});
+
+test("requirePackageListShapes and savedRowReader check shared selmaho arrays and attribution dates once across rows", () => {
+  const n = 128;
+  const sharedSelmaho = Array.from({ length: n }, () => "UI");
+  const rawDates = Object.fromEntries(
+    Array.from({ length: n }, (_, i) => [
+      "k" + i.toString(16).padStart(8, "0"),
+      "1",
+    ]),
+  );
+  let dateReads = 0;
+  const proxiedDates = new Proxy(rawDates, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && prop.startsWith("k")) dateReads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  let selmahoReads = 0;
+  const proxiedSelmaho = new Proxy(sharedSelmaho, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && /^\d+$/.test(prop)) selmahoReads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const sharedPkg = pkg(
+    Array.from({ length: n }, (_, i) =>
+      v2Row({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        glosses: [],
+        rafsi: [],
+        classification: { kind: "gismu", selmaho: proxiedSelmaho as string[] },
+        attribution: {
+          source: "fixture",
+          author: null,
+          account: null,
+          dates: proxiedDates as Record<string, string>,
+        },
+      }),
+    ),
+  );
+
+  let ownKeysCalls = 0;
+  const nativeOwnKeys = Reflect.ownKeys;
+  Reflect.ownKeys = function (target: object) {
+    if (target === proxiedSelmaho) ownKeysCalls++;
+    return nativeOwnKeys(target);
+  };
+  try {
+    saved.requirePackageListShapes(sharedPkg);
+  } finally {
+    Reflect.ownKeys = nativeOwnKeys;
+  }
+  assert.equal(ownKeysCalls, 1);
+
+  const readRow = saved.savedRowReader(sharedPkg as never, "en", undefined, true);
+  for (const row of sharedPkg.entries) readRow(row);
+  assert.equal(selmahoReads, n);
+  assert.equal(dateReads, n);
+});

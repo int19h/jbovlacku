@@ -3,6 +3,7 @@ import {
   PackageValidationError,
   requirePackageListShapes,
   requireSavedRowLists,
+  savedRowListCache,
 } from "./saved-package.ts";
 export { PackageValidationError };
 import {
@@ -246,6 +247,7 @@ function sameStructuredValue(
   budget: SearchRequestBudget,
   activeLeft: Set<object>,
   activeRight: Set<object>,
+  matched: WeakMap<object, Set<object>>,
   depth: number,
 ): boolean {
   if (typeof incoming === "string" && typeof trusted === "string") {
@@ -277,6 +279,7 @@ function sameStructuredValue(
     activeRight.has(trusted)
   )
     return false;
+  if (matched.get(incoming)?.has(trusted)) return true;
   activeLeft.add(incoming);
   activeRight.add(trusted);
   try {
@@ -301,34 +304,42 @@ function sameStructuredValue(
             budget,
             activeLeft,
             activeRight,
+            matched,
             depth + 1,
           )
         )
           return false;
       }
-      return true;
-    }
-    const keysA = Reflect.ownKeys(incoming);
-    const keysB = Reflect.ownKeys(trusted);
-    if (keysA.length !== keysB.length) return false;
-    if (keysB.length > 0) budget.reserve(keysB.length, "prepare");
-    const left = incoming as Record<PropertyKey, unknown>;
-    const right = trusted as Record<PropertyKey, unknown>;
-    for (let i = 0; i < keysB.length; i++) {
-      const key = keysB[i];
-      if (keysA[i] !== key && !Object.hasOwn(incoming, key)) return false;
-      if (
-        !sameStructuredValue(
-          left[key],
-          right[key],
-          budget,
-          activeLeft,
-          activeRight,
-          depth + 1,
+    } else {
+      const keysA = Reflect.ownKeys(incoming);
+      const keysB = Reflect.ownKeys(trusted);
+      if (keysA.length !== keysB.length) return false;
+      if (keysB.length > 0) budget.reserve(keysB.length, "prepare");
+      const left = incoming as Record<PropertyKey, unknown>;
+      const right = trusted as Record<PropertyKey, unknown>;
+      for (let i = 0; i < keysB.length; i++) {
+        const key = keysB[i];
+        if (keysA[i] !== key && !Object.hasOwn(incoming, key)) return false;
+        if (
+          !sameStructuredValue(
+            left[key],
+            right[key],
+            budget,
+            activeLeft,
+            activeRight,
+            matched,
+            depth + 1,
+          )
         )
-      )
-        return false;
+          return false;
+      }
     }
+    let seenRight = matched.get(incoming);
+    if (!seenRight) {
+      seenRight = new Set();
+      matched.set(incoming, seenRight);
+    }
+    seenRight.add(trusted);
     return true;
   } finally {
     activeLeft.delete(incoming);
@@ -350,6 +361,7 @@ function sameValidatedPackageStructure(
     budget,
     new Set(),
     new Set(),
+    new WeakMap(),
     0,
   );
 }
@@ -669,9 +681,10 @@ export async function searchPackage(
         if (prepare) {
           if (force) requirePackageListShapes(resolvedPkg);
           if (resolvedPkg.entries.length) clientBudget.ensure(1, "prepare");
+          const checkedLists = savedRowListCache();
           for (const entry of resolvedPkg.entries) {
             clientBudget.ensure(1, "prepare");
-            requireSavedRowLists(entry, clientBudget, true);
+            requireSavedRowLists(entry, clientBudget, true, checkedLists);
             clientBudget.reserve(
               1 + entryContentUnits(entry, clientBudget, "prepare"),
               "prepare",

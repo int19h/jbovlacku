@@ -75,6 +75,20 @@ export const PACKAGE_GLOSS_LIMIT = 8192;
 export const PACKAGE_RAFSI_LIMIT = 64;
 const COMPONENT_BYTE_LIMIT = 128;
 
+export interface SavedRowListCache {
+  glosses: Set<unknown>;
+  selmaho: Set<unknown>;
+  rafsi: Set<unknown>;
+  dates: Set<unknown>;
+}
+
+export const savedRowListCache = (): SavedRowListCache => ({
+  glosses: new Set(),
+  selmaho: new Set(),
+  rafsi: new Set(),
+  dates: new Set(),
+});
+
 /**
  * Check the outer `entries` list and every row's nested lists in one
  * unbudgeted pass before any budget charge or content measurement.
@@ -85,19 +99,25 @@ export function requirePackageListShapes(pkg: unknown): void {
   if (!isRecord(pkg)) throw new PackageValidationError();
   const { entries } = pkg;
   requireDenseList(entries);
+  const checkedLists = new Set<unknown>();
+  const checkDense = (list: unknown) => {
+    if (checkedLists.has(list)) return;
+    requireDenseList(list);
+    if (list.length >= 4) checkedLists.add(list);
+  };
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     if (!isRecord(entry)) throw new PackageValidationError();
     const { glosses, classification, rafsi } = entry;
     if (!Array.isArray(glosses) || glosses.length > PACKAGE_GLOSS_LIMIT)
       throw new PackageValidationError();
-    requireDenseList(glosses);
+    checkDense(glosses);
     if (!isRecord(classification)) throw new PackageValidationError();
-    requireDenseList(classification.selmaho);
+    checkDense(classification.selmaho);
     if (Object.hasOwn(entry, "rafsi")) {
       if (!Array.isArray(rafsi) || rafsi.length > PACKAGE_RAFSI_LIMIT)
         throw new PackageValidationError();
-      requireDenseList(rafsi);
+      checkDense(rafsi);
     }
   }
 }
@@ -107,6 +127,7 @@ export function requireSavedRowLists(
   value: unknown,
   budget?: SearchRequestBudget,
   listsVerified = false,
+  checked?: SavedRowListCache,
 ): asserts value is Record<string, unknown> {
   if (!isRecord(value)) throw new PackageValidationError();
   const { word, classification, glosses, rafsi, attribution } = value;
@@ -120,37 +141,49 @@ export function requireSavedRowLists(
   if (!listsVerified) {
     if (!Array.isArray(glosses) || glosses.length > PACKAGE_GLOSS_LIMIT)
       throw new PackageValidationError();
-    requireDenseList(glosses);
+    if (!checked?.glosses.has(glosses)) requireDenseList(glosses);
   }
   const glossList = glosses as unknown[];
-  for (let i = 0; i < glossList.length; i++) {
-    const gloss = glossList[i];
-    if (
-      !fields(gloss, GLOSS_FIELDS) ||
-      !languageTag(gloss.language) ||
-      typeof gloss.text !== "string" ||
-      !(gloss.sense === null || typeof gloss.sense === "string")
-    )
-      throw new PackageValidationError();
+  if (!checked?.glosses.has(glossList)) {
+    for (let i = 0; i < glossList.length; i++) {
+      const gloss = glossList[i];
+      if (
+        !fields(gloss, GLOSS_FIELDS) ||
+        !languageTag(gloss.language) ||
+        typeof gloss.text !== "string" ||
+        !(gloss.sense === null || typeof gloss.sense === "string")
+      )
+        throw new PackageValidationError();
+    }
+    if (checked && glossList.length >= 4) checked.glosses.add(glossList);
   }
 
   const { selmaho } = classification;
-  if (!listsVerified) requireDenseList(selmaho);
+  if (!listsVerified && !checked?.selmaho.has(selmaho))
+    requireDenseList(selmaho);
   const selmahoList = selmaho as unknown[];
-  for (let i = 0; i < selmahoList.length; i++) {
-    if (typeof selmahoList[i] !== "string") throw new PackageValidationError();
-    if (budget && (i + 1) % 64 === 0) budget.ensure(2 + i, "prepare");
+  if (!checked?.selmaho.has(selmahoList)) {
+    for (let i = 0; i < selmahoList.length; i++) {
+      if (typeof selmahoList[i] !== "string")
+        throw new PackageValidationError();
+      if (budget && (i + 1) % 64 === 0) budget.ensure(2 + i, "prepare");
+    }
+    if (checked && selmahoList.length >= 4) checked.selmaho.add(selmahoList);
   }
 
   if (Object.hasOwn(value, "rafsi")) {
     if (!listsVerified) {
       if (!Array.isArray(rafsi) || rafsi.length > PACKAGE_RAFSI_LIMIT)
         throw new PackageValidationError();
-      requireDenseList(rafsi);
+      if (!checked?.rafsi.has(rafsi)) requireDenseList(rafsi);
     }
     const rafsiList = rafsi as unknown[];
-    for (let i = 0; i < rafsiList.length; i++)
-      if (!validPackageRafsi(rafsiList[i])) throw new PackageValidationError();
+    if (!checked?.rafsi.has(rafsiList)) {
+      for (let i = 0; i < rafsiList.length; i++)
+        if (!validPackageRafsi(rafsiList[i]))
+          throw new PackageValidationError();
+      if (checked && rafsiList.length >= 4) checked.rafsi.add(rafsiList);
+    }
   }
 
   if (attribution != null) {
@@ -171,12 +204,16 @@ export function requireSavedRowLists(
     )
       throw new PackageValidationError();
 
-    let count = 0;
-    for (const key in attribution.dates) {
-      if (!Object.hasOwn(attribution.dates, key)) continue;
-      if (typeof attribution.dates[key] !== "string")
-        throw new PackageValidationError();
-      if (budget && ++count % 64 === 0) budget.ensure(1 + count, "prepare");
+    if (!checked?.dates.has(attribution.dates)) {
+      let count = 0;
+      for (const key in attribution.dates) {
+        if (!Object.hasOwn(attribution.dates, key)) continue;
+        if (typeof attribution.dates[key] !== "string")
+          throw new PackageValidationError();
+        count++;
+        if (budget && count % 64 === 0) budget.ensure(1 + count, "prepare");
+      }
+      if (checked && count >= 4) checked.dates.add(attribution.dates);
     }
   }
 }
@@ -320,8 +357,9 @@ export function savedRow(
   packageView?: string,
   budget?: SearchRequestBudget,
   listsVerified = false,
+  checked?: SavedRowListCache,
 ): PackageEntry {
-  requireSavedRowLists(entry, budget, listsVerified);
+  requireSavedRowLists(entry, budget, listsVerified, checked);
   if (
     !eventId(entry.event) ||
     entry.language !== language ||
@@ -373,6 +411,7 @@ export function savedRowReader(
   listsVerified = false,
 ) {
   let previous = "";
+  const checked = savedRowListCache();
   return (value: unknown) => {
     const row = savedRow(
       value,
@@ -381,6 +420,7 @@ export function savedRowReader(
       pkg.search_view,
       budget,
       listsVerified,
+      checked,
     );
     if (row.event <= previous) throw new PackageValidationError();
     previous = row.event;
