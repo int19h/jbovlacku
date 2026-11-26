@@ -55,15 +55,17 @@ thread_local! {
 pub(super) fn layout_edge_reads() -> usize {
     LAYOUT_EDGE_READS.with(Cell::get)
 }
+/// A closure mode and the stored records whose ranges a union reads.
+#[cfg(test)]
+pub(super) type PricedUnion = (u8, BTreeSet<String>);
 #[cfg(test)]
 thread_local! {
-    /// While set, the operands of every priced temporary union: the
-    /// closure mode and the stored records whose ranges it can read.
-    static PRICED_UNIONS: std::cell::RefCell<Option<Vec<(u8, BTreeSet<String>)>>> =
+    /// While set, the operands of every priced temporary union.
+    static PRICED_UNIONS: std::cell::RefCell<Option<Vec<PricedUnion>>> =
         const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]
-pub(super) fn record_priced_unions<T>(run: impl FnOnce() -> T) -> (T, Vec<(u8, BTreeSet<String>)>) {
+pub(super) fn record_priced_unions<T>(run: impl FnOnce() -> T) -> (T, Vec<PricedUnion>) {
     let previous = PRICED_UNIONS.with(|unions| unions.replace(Some(Vec::new())));
     let value = run();
     let unions = PRICED_UNIONS
