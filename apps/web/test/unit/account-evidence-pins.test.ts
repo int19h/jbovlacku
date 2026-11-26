@@ -14,6 +14,7 @@ const {
   setPreferredView,
   remoteSearch,
   remoteDraftSearch,
+  getAccountControl,
 } = await import("../../src/data/api.ts");
 
 const id = (prefix: string, digit: string) => `${prefix}:${digit.repeat(64)}`;
@@ -125,49 +126,6 @@ test("the preferred view pins a word read", async () => {
   }
 });
 
-test("an unclaimed account row cannot supply a selected observation", async () => {
-  assert.throws(
-    () =>
-      validateAccountControl(
-        accountRow({ current_observations: [proof] }),
-        account,
-        { snapshot, view },
-      ),
-    /invalid account evidence/,
-  );
-  // An unclaimed row can still carry witness contributions.
-  const contributions = [
-    { witness: controller, claims: [claim], observations: [proof] },
-  ];
-  assert.deepEqual(
-    validateAccountControl(
-      accountRow({ controller_candidates: [claim], contributions }),
-      account,
-      { snapshot, view },
-    ).contributions,
-    contributions,
-  );
-  // A controlled row keeps its selected observation.
-  assert.deepEqual(
-    validateAccountControl(
-      accountRow({
-        state: "controlled",
-        controller_candidates: [claim],
-        current_observations: [proof],
-        contributions,
-      }),
-      account,
-      { snapshot, view },
-    ).current_observations,
-    [proof],
-  );
-  serve(() => accountRow({ current_observations: [proof] }));
-  await assert.rejects(
-    getPublicationEvidence(status as never, { snapshot, view }),
-    /invalid account evidence/,
-  );
-});
-
 test("a native status cannot carry an account reference or account fields", () => {
   const native = {
     ...status,
@@ -217,199 +175,6 @@ test("a pinned identity read rejects an answer for another snapshot", async () =
   assert.equal(
     (await getIdentity(controller, { snapshot })).snapshot,
     snapshot,
-  );
-});
-
-test("only a controlled row with one candidate supplies selected observations", async () => {
-  const pin = { snapshot, view };
-  const other = id("jve1", "9");
-  // One witness group for each list of claims. The groups sort by witness.
-  const groups = (...claims: string[][]) =>
-    claims.map((list, i) => ({
-      witness: id("ed25519", String(i + 1)),
-      claims: list,
-      observations: list.length
-        ? [id("jve1", String.fromCharCode(97 + i))]
-        : [],
-    }));
-  const valid = (overrides: Record<string, unknown>) =>
-    validateAccountControl(accountRow(overrides), account, pin);
-  // Each invalid row breaks one rule and keeps the others.
-  for (const overrides of [
-    // A dispute or an unavailable account selects no controller.
-    {
-      state: "disputed",
-      controller_candidates: [claim, other],
-      contributions: groups([claim], [other]),
-      current_observations: [proof],
-    },
-    {
-      state: "unavailable",
-      controller_candidates: [claim],
-      contributions: groups([claim]),
-      current_observations: [proof],
-    },
-    // The state and the candidate count must agree.
-    {
-      state: "controlled",
-      controller_candidates: [],
-      current_observations: [],
-    },
-    {
-      state: "controlled",
-      controller_candidates: [claim, other],
-      contributions: groups([claim], [other]),
-      current_observations: [proof, other],
-    },
-    {
-      state: "disputed",
-      controller_candidates: [claim],
-      contributions: groups([claim]),
-    },
-    {
-      state: "unclaimed",
-      controller_candidates: [claim, other],
-      contributions: groups([claim], [other]),
-    },
-    // Exactly one selected observation for each current witness group.
-    {
-      state: "controlled",
-      controller_candidates: [claim],
-      contributions: groups([claim]),
-      current_observations: [proof, other],
-    },
-    {
-      state: "controlled",
-      controller_candidates: [claim],
-      contributions: groups([claim]),
-      current_observations: [],
-    },
-    // The candidates are exactly the contributed claims.
-    { state: "disputed", controller_candidates: [claim, other] },
-    {
-      state: "unavailable",
-      controller_candidates: [claim],
-      contributions: groups([claim], [other]),
-    },
-    {
-      state: "unclaimed",
-      controller_candidates: [claim],
-      contributions: groups([]),
-    },
-    // A controller needs every group to claim it alone.
-    {
-      state: "controlled",
-      controller_candidates: [claim],
-      contributions: groups([claim], []),
-      current_observations: [proof, other],
-    },
-    {
-      state: "controlled",
-      controller_candidates: [claim],
-      current_observations: [],
-    },
-  ])
-    assert.throws(
-      () => valid(overrides),
-      /invalid account evidence/,
-      JSON.stringify(overrides),
-    );
-  for (const overrides of [
-    {
-      state: "controlled",
-      controller_candidates: [claim],
-      contributions: groups([claim]),
-      current_observations: [proof],
-    },
-    {
-      state: "controlled",
-      controller_candidates: [claim],
-      contributions: groups([claim], [claim]),
-      current_observations: [proof, other],
-    },
-    {
-      state: "disputed",
-      controller_candidates: [claim, other],
-      contributions: groups([claim, other]),
-    },
-    {
-      state: "disputed",
-      controller_candidates: [claim, other],
-      contributions: groups([claim], [other], []),
-    },
-    {
-      state: "unavailable",
-      controller_candidates: [claim, other],
-      contributions: groups([claim], [other]),
-    },
-    { state: "unavailable" },
-    {
-      state: "unclaimed",
-      controller_candidates: [claim],
-      contributions: groups([claim], []),
-    },
-    { state: "unclaimed", contributions: groups([]) },
-  ])
-    assert.doesNotThrow(() => valid(overrides), JSON.stringify(overrides));
-  serve(() =>
-    accountRow({
-      state: "disputed",
-      controller_candidates: [claim, other],
-      contributions: groups([claim], [other]),
-      current_observations: [proof],
-    }),
-  );
-  await assert.rejects(
-    getPublicationEvidence(status as never, pin),
-    /invalid account evidence/,
-  );
-});
-
-test("an account row agrees with its witness contributions", () => {
-  const pin = { snapshot, view };
-  const other = id("jve1", "9");
-  const row = (overrides: Record<string, unknown>) =>
-    validateAccountControl(accountRow(overrides), account, pin);
-  const witness = (claims: string[]) => ({
-    witness: controller,
-    claims,
-    observations: [proof],
-  });
-  // A controlled row without its selected observation.
-  assert.throws(
-    () =>
-      row({
-        state: "controlled",
-        controller_candidates: [claim],
-        contributions: [witness([claim])],
-        current_observations: [],
-      }),
-    /invalid account evidence/,
-  );
-  // A controlled row whose witness claims another period.
-  assert.throws(
-    () =>
-      row({
-        state: "controlled",
-        controller_candidates: [claim],
-        contributions: [witness([other])],
-        current_observations: [proof],
-      }),
-    /invalid account evidence/,
-  );
-  // A disputed row with no contributions.
-  assert.throws(
-    () => row({ state: "disputed", controller_candidates: [claim, other] }),
-    /invalid account evidence/,
-  );
-  assert.equal(
-    row({
-      state: "controlled",
-      controller_candidates: [claim],
-      contributions: [witness([claim])],
-      current_observations: [proof],
-    }).state,
-    "controlled",
   );
 });
 
@@ -592,4 +357,352 @@ test("status account fields follow the authority and the account pass", () => {
       /invalid word response/,
       JSON.stringify(fields),
     );
+});
+
+const other = id("jve1", "9");
+const obs = (digit: string) => id("jve1", digit);
+const group = (n: number, claims: string[], observations: string[]) => ({
+  witness: id("ed25519", String(n)),
+  claims,
+  observations,
+});
+/** A row as the evaluator writes it for one controller and two witnesses. */
+const controlledRow = (): Record<string, any> => ({
+  state: "controlled",
+  controller_candidates: [claim],
+  chain: [claim],
+  contributions: [
+    group(1, [claim], [obs("a"), obs("b")]),
+    group(2, [claim], [obs("c")]),
+  ],
+  current_observations: [obs("a"), obs("c")],
+  certificates: [{ policy: view, claim, observations: [obs("d")] }],
+});
+const pinFor = { snapshot, view };
+const checkRow = (overrides: Record<string, unknown>) =>
+  validateAccountControl(accountRow(overrides), account, pinFor);
+let peerNumber = 0;
+/** A fresh peer, so the account cache never serves an earlier case. */
+const freshPeer = () => ({
+  peer: {
+    id: `case-${++peerNumber}`,
+    base: "http://local.test/api/v1",
+    label: "case",
+  },
+});
+
+test("account rows that the evaluator can write pass", () => {
+  const rows: Record<string, unknown>[] = [
+    controlledRow(),
+    { ...controlledRow(), certificates: [] },
+    {
+      state: "disputed",
+      controller_candidates: [claim, other],
+      contributions: [
+        group(1, [claim], [obs("a")]),
+        group(2, [other], [obs("c")]),
+      ],
+    },
+    {
+      state: "disputed",
+      controller_candidates: [claim, other],
+      contributions: [group(1, [claim, other], [obs("a"), obs("b")])],
+    },
+    {
+      state: "unclaimed",
+      controller_candidates: [claim],
+      contributions: [group(1, [claim], [obs("a")]), group(2, [], [])],
+    },
+    { state: "unclaimed", contributions: [group(1, [], [])] },
+    { state: "unclaimed" },
+    {
+      state: "unavailable",
+      controller_candidates: [claim],
+      contributions: [group(1, [claim], [obs("a")])],
+    },
+    {
+      state: "unavailable",
+      controller_candidates: [claim, other],
+      contributions: [
+        group(1, [claim], [obs("a")]),
+        group(2, [other], [obs("c")]),
+      ],
+    },
+    { state: "unavailable" },
+  ];
+  for (const row of rows)
+    assert.doesNotThrow(() => checkRow(row), JSON.stringify(row));
+});
+
+test("account rows that the evaluator cannot write fail", () => {
+  const base = controlledRow();
+  const [first, second] = base.contributions;
+  const cases: [string, Record<string, unknown>][] = [
+    // Selected observations exist only for a controller.
+    [
+      "unclaimed selection",
+      { state: "unclaimed", current_observations: [proof] },
+    ],
+    [
+      "disputed selection",
+      {
+        state: "disputed",
+        controller_candidates: [claim, other],
+        contributions: [
+          group(1, [claim], [obs("a")]),
+          group(2, [other], [obs("c")]),
+        ],
+        current_observations: [obs("a")],
+      },
+    ],
+    [
+      "unavailable selection",
+      {
+        state: "unavailable",
+        controller_candidates: [claim],
+        contributions: [group(1, [claim], [obs("a")])],
+        current_observations: [obs("a")],
+      },
+    ],
+    // Candidate counts for each state.
+    [
+      "controlled without a candidate",
+      { ...base, controller_candidates: [], chain: [] },
+    ],
+    [
+      "disputed with one candidate",
+      {
+        state: "disputed",
+        controller_candidates: [claim],
+        contributions: [group(1, [claim], [obs("a")]), group(2, [], [])],
+      },
+    ],
+    [
+      "unclaimed with two candidates",
+      {
+        state: "unclaimed",
+        controller_candidates: [claim, other],
+        contributions: [
+          group(1, [claim], [obs("a")]),
+          group(2, [other], [obs("c")]),
+        ],
+      },
+    ],
+    // The candidates are the union of the group claims.
+    [
+      "disputed without contributions",
+      { state: "disputed", controller_candidates: [claim, other] },
+    ],
+    [
+      "candidate that no group claims",
+      { ...base, controller_candidates: [claim, other] },
+    ],
+    // A group's claims come from its own observations.
+    [
+      "claim without observations",
+      {
+        ...base,
+        contributions: [group(1, [claim], []), second],
+        current_observations: [obs("c")],
+      },
+    ],
+    // Each observation belongs to one witness.
+    [
+      "shared observation",
+      {
+        ...base,
+        contributions: [first, group(2, [claim], [obs("a")])],
+        current_observations: [obs("a")],
+      },
+    ],
+    // An available unanimous set selects its candidate.
+    [
+      "unanimous but unclaimed",
+      { ...base, state: "unclaimed", current_observations: [] },
+    ],
+    // A controller needs every group to claim it alone.
+    [
+      "controlled with an empty group",
+      {
+        ...base,
+        contributions: [first, group(2, [], [])],
+        current_observations: [obs("a")],
+      },
+    ],
+    [
+      "controlled with another period",
+      { ...base, contributions: [first, group(2, [other], [obs("c")])] },
+    ],
+    [
+      "controlled without groups",
+      { ...base, contributions: [], current_observations: [] },
+    ],
+    // The controller belongs to the chain.
+    ["controller outside the chain", { ...base, chain: [] }],
+    // Every certificate has evidence.
+    [
+      "empty certificate",
+      { ...base, certificates: [{ policy: view, claim, observations: [] }] },
+    ],
+    // The selection is the first maximal observation of each group.
+    ["missing selection", { ...base, current_observations: [obs("a")] }],
+    ["no selection", { ...base, current_observations: [] }],
+    [
+      "second observation selected",
+      { ...base, current_observations: [obs("b"), obs("c")] },
+    ],
+    [
+      "selection outside every group",
+      { ...base, current_observations: [obs("a"), obs("e")] },
+    ],
+  ];
+  for (const [name, row] of cases)
+    assert.throws(() => checkRow(row), /invalid account evidence/, name);
+});
+
+test("evidence for an applied status names the account's selected period", async () => {
+  const applied = {
+    ...status,
+    authority: "source-account",
+    controller,
+    claim,
+  };
+  serve(() => accountRow(controlledRow()));
+  const evidence = await getPublicationEvidence(
+    applied as never,
+    pinFor,
+    freshPeer(),
+  );
+  assert.deepEqual(evidence.controller_candidates, [claim]);
+  assert.deepEqual(evidence.observations, [obs("a"), obs("c")]);
+  // A status for another period than the controller.
+  serve(() => accountRow(controlledRow()));
+  await assert.rejects(
+    getPublicationEvidence(
+      { ...applied, claim: other } as never,
+      pinFor,
+      freshPeer(),
+    ),
+    /different periods/,
+  );
+  // A status without a period while the account has a controller.
+  serve(() => accountRow(controlledRow()));
+  await assert.rejects(
+    getPublicationEvidence(
+      { ...applied, authority: "none", controller: null, claim: null } as never,
+      pinFor,
+      freshPeer(),
+    ),
+    /different periods/,
+  );
+  // A status with a period while the account has no controller.
+  const disputed = {
+    state: "disputed",
+    controller_candidates: [claim, other],
+    contributions: [
+      group(1, [claim], [obs("a")]),
+      group(2, [other], [obs("c")]),
+    ],
+  };
+  serve(() => accountRow(disputed));
+  await assert.rejects(
+    getPublicationEvidence(
+      { ...applied, authority: "none", controller: null } as never,
+      pinFor,
+      freshPeer(),
+    ),
+    /different periods/,
+  );
+  // An inherited deciding claim may differ from the period.
+  serve(() => accountRow(controlledRow()));
+  await getPublicationEvidence(
+    { ...applied, deciding_claim: other } as never,
+    pinFor,
+    freshPeer(),
+  );
+  // Without the account pass, the status claim is not compared.
+  serve(() => accountRow(disputed));
+  const unapplied = await getPublicationEvidence(
+    { ...status, account_authority_applied: false } as never,
+    pinFor,
+    freshPeer(),
+  );
+  assert.deepEqual(unapplied.observations, []);
+  assert.equal(unapplied.witness_contributions.length, 2);
+});
+
+test("account and word reads keep the pin that they sent", async () => {
+  // A caller changes its pin while the account request runs.
+  const pin = { snapshot, view };
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://local.test");
+    requests.push(url);
+    await held;
+    return new Response(
+      JSON.stringify(
+        accountRow({ ...controlledRow(), snapshot: otherSnapshot }),
+      ),
+    );
+  }) as typeof fetch;
+  const peer = freshPeer();
+  const pending = getAccountControl(account, pin, peer);
+  (pin as { snapshot: string }).snapshot = otherSnapshot;
+  release();
+  await assert.rejects(pending, /invalid account evidence/);
+  assert.equal(requests[0].searchParams.get("snapshot"), snapshot);
+
+  // A caller cannot change the shared answer for later readers.
+  serve(() => accountRow(controlledRow()));
+  const shared = freshPeer();
+  const first = await getAccountControl(account, { snapshot, view }, shared);
+  assert.throws(() => {
+    (first as { snapshot: string }).snapshot = otherSnapshot;
+  });
+  assert.throws(() => (first.current_observations as string[]).pop());
+  assert.throws(() => (first.contributions[0].observations as string[]).pop());
+  const second = await getAccountControl(account, { snapshot, view }, shared);
+  assert.equal(second.snapshot, snapshot);
+  assert.deepEqual(second.current_observations, [obs("a"), obs("c")]);
+
+  // A word read keeps its snapshot option, and callers get separate copies.
+  const options = { snapshot, view, fresh: true };
+  let answer = wordResponse({ snapshot: otherSnapshot, view });
+  serve(() => answer);
+  const read = getWord(word, options);
+  options.snapshot = otherSnapshot;
+  await assert.rejects(read, /another snapshot or view/);
+  answer = wordResponse({ snapshot, view });
+  serve(() => answer);
+  const one = await getWord(word, { snapshot, view });
+  one.statuses.length = 0;
+  (one as { snapshot: string }).snapshot = otherSnapshot;
+  const two = await getWord(word, { snapshot, view });
+  assert.equal(two.snapshot, snapshot);
+  assert.equal(two.statuses.length, 1);
+
+  // A search keeps its context snapshot.
+  const context = { snapshot, view };
+  serve(() => ({ snapshot: otherSnapshot, view, hits: [], next: null }));
+  const search = remoteSearch("cukta", "en", 10, context, null);
+  context.snapshot = otherSnapshot;
+  await assert.rejects(search, /invalid search page/);
+
+  // An identity read keeps its snapshot option.
+  const identityOptions = { snapshot };
+  serve(() => ({
+    snapshot: otherSnapshot,
+    view,
+    identity: controller,
+    actor: controller,
+    successor: null,
+    retired: false,
+    profile: { state: "none", claims: [] },
+    counts: {},
+  }));
+  const identityRead = getIdentity(controller, identityOptions);
+  identityOptions.snapshot = otherSnapshot;
+  await assert.rejects(identityRead, /invalid identity response/);
 });

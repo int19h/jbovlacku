@@ -772,9 +772,12 @@ export function getWord(
     reviewers?: boolean;
   } = {},
 ) {
-  const query = new URLSearchParams();
-  if (options.snapshot) query.set("snapshot", options.snapshot);
+  // Read the pin once. The URL, the cache key and the answer check all use
+  // these values, even if the caller changes its options later.
+  const snapshot = options.snapshot || null;
   const view = options.view ?? preferredView;
+  const query = new URLSearchParams();
+  if (snapshot) query.set("snapshot", snapshot);
   if (view) query.set("view", view);
   if (options.reviewers) query.set("reviewers", "1");
   const key = `${options.peer?.id ?? "self"}|${id}|${query}`;
@@ -782,8 +785,7 @@ export function getWord(
   let pending = wordCache.get(key);
   if (!pending) {
     pending = (async () => {
-      if (options.fresh && !options.snapshot)
-        await waitForMaterialization(options);
+      if (options.fresh && !snapshot) await waitForMaterialization(options);
       return api<unknown>(
         `/words/${encodeURIComponent(id)}${query.size ? `?${query}` : ""}`,
         options,
@@ -793,7 +795,7 @@ export function getWord(
       // A pinned read must answer for that pin. Otherwise its evidence
       // links would name another snapshot or view.
       if (
-        (options.snapshot && word.snapshot !== options.snapshot) ||
+        (snapshot && word.snapshot !== snapshot) ||
         (view && word.view !== view)
       )
         throw new Error(
@@ -806,7 +808,9 @@ export function getWord(
     // Word responses change with new admissions. Keep them briefly.
     setTimeout(() => wordCache.delete(key), 15000);
   }
-  return pending;
+  // Each caller gets its own copy, so no caller can change the cached
+  // answer that a later reader of the same pin receives.
+  return pending.then((word) => structuredClone(word));
 }
 type EvidencePin = Readonly<Pick<WordResponse, "snapshot" | "view">>;
 
@@ -853,12 +857,7 @@ export function validateAccountControl(
           rows[i - 1].policy < row.policy ||
           (rows[i - 1].policy === row.policy && rows[i - 1].claim < row.claim)),
     ) ||
-    !accountStateFields(
-      String(value.state),
-      value.controller_candidates as string[],
-      value.current_observations as string[],
-      value.contributions as { claims: string[] }[],
-    ) ||
+    !accountRowFields(value as unknown as AccountRowShape) ||
     (!value.row_present &&
       (value.state !== "unclaimed" ||
         value.contributions.length > 0 ||
@@ -872,53 +871,95 @@ export function validateAccountControl(
   return value as unknown as AccountControlResponse;
 }
 
+interface AccountRowShape {
+  state: string;
+  controller_candidates: string[];
+  current_observations: string[];
+  chain: string[];
+  contributions: { claims: string[]; observations: string[] }[];
+  certificates: { observations: string[] }[];
+}
 /**
- * The candidates, contributions and selections that each account state
- * allows. Each contribution row is one current witness group. In every
- * state, the candidates are exactly the claims that the groups contribute.
- * Only a selected controller has selected observations. A controller needs
- * every group to claim it alone, and then each group gives one selection.
+ * The rules that every account row of an available evaluation meets. Each
+ * rule names the restore check in crates/jvc-state/src/incremental.rs that
+ * guarantees it. Each contribution row is one current witness group.
  *
- * | state       | controller_candidates | contributions               | current_observations   |
- * | ----------- | --------------------- | --------------------------- | ---------------------- |
- * | controlled  | exactly 1             | 1 or more, each claims [c]  | exactly one per group  |
- * | disputed    | 2 or more             | any                         | empty                  |
- * | unclaimed   | 0 or 1                | any                         | empty                  |
- * | unavailable | any                   | any                         | empty                  |
+ * | state       | controller_candidates | contributions               | current_observations                |
+ * | ----------- | --------------------- | --------------------------- | ----------------------------------- |
+ * | controlled  | exactly 1             | 1 or more, each claims [c]  | first observation of each group     |
+ * | disputed    | 2 or more             | any                         | empty                               |
+ * | unclaimed   | 0 or 1                | not unanimous for one claim | empty                               |
+ * | unavailable | any                   | any                         | empty                               |
+ *
+ * In every state, the candidates are the union of the group claims, each
+ * group claim comes from that group's observations, no observation belongs
+ * to two groups, and every certificate has observations. A controlled row
+ * has its candidate in the chain.
  */
-function accountStateFields(
-  state: string,
-  candidates: string[],
-  selected: string[],
-  contributions: { claims: string[] }[],
-): boolean {
-  const claimed = [...new Set(contributions.flatMap((row) => row.claims))];
-  claimed.sort();
+function accountRowFields(row: AccountRowShape): boolean {
+  const groups = row.contributions;
+  // incremental.rs:3155: a group's claims are the claims of its own
+  // observations, so a group with claims has observations, and each
+  // observation names one claim.
   if (
-    claimed.length !== candidates.length ||
-    claimed.some((claim, i) => claim !== candidates[i])
+    groups.some(
+      (group) =>
+        group.claims.length > group.observations.length ||
+        (group.observations.length > 0 && group.claims.length === 0),
+    )
   )
     return false;
-  switch (state) {
-    case "controlled":
-      return (
-        candidates.length === 1 &&
-        contributions.length > 0 &&
-        contributions.every(
-          (row) => row.claims.length === 1 && row.claims[0] === candidates[0],
-        ) &&
-        selected.length === contributions.length
-      );
-    case "disputed":
-      return candidates.length >= 2 && selected.length === 0;
-    case "unclaimed":
-      return candidates.length <= 1 && selected.length === 0;
-    default:
-      return selected.length === 0;
-  }
+  // incremental.rs:3135: each observation is issued by its group's witness
+  // actor, so no observation belongs to two groups.
+  const observations = groups.flatMap((group) => group.observations);
+  if (new Set(observations).size !== observations.length) return false;
+  // incremental.rs:3165: the candidates are the union of the group claims.
+  const claimed = [...new Set(groups.flatMap((group) => group.claims))].sort();
+  if (
+    claimed.length !== row.controller_candidates.length ||
+    claimed.some((claim, i) => claim !== row.controller_candidates[i])
+  )
+    return false;
+  // incremental.rs:3221: every certificate has observations.
+  if (row.certificates.some((certificate) => !certificate.observations.length))
+    return false;
+  // incremental.rs:3263: an available account has a controller exactly
+  // when every group claims the same single candidate.
+  const unanimous =
+    row.controller_candidates.length === 1 &&
+    groups.length > 0 &&
+    groups.every((group) => group.claims.length === 1);
+  if (row.state !== "unavailable" && unanimous !== (row.state === "controlled"))
+    return false;
+  // incremental.rs:3168: more than one candidate is a dispute, unless the
+  // account is unavailable.
+  if (row.state === "disputed" && row.controller_candidates.length < 2)
+    return false;
+  if (row.state === "unclaimed" && row.controller_candidates.length > 1)
+    return false;
+  if (row.state !== "controlled") return row.current_observations.length === 0;
+  // incremental.rs:3210: the controller belongs to the chain.
+  if (!row.chain.includes(row.controller_candidates[0])) return false;
+  // incremental.rs:3300: the selection is the first maximal observation of
+  // each group, as a sorted set.
+  const selected = [
+    ...new Set(groups.map((group) => group.observations[0])),
+  ].sort();
+  return (
+    selected.length === row.current_observations.length &&
+    selected.every((id, i) => id === row.current_observations[i])
+  );
 }
 
 type AccountPinCache = Map<string, Promise<AccountControlResponse>>;
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const item of Object.values(value)) deepFreeze(item);
+  }
+  return value;
+}
 
 // Any reader that holds its pin keeps the shared cache for that pin alive.
 const ownedAccountPins = new WeakMap<EvidencePin, Set<AccountPinCache>>();
@@ -930,8 +971,12 @@ const expiredAccountPins = new FinalizationRegistry<{
   if (accountPins.get(key) === reference) accountPins.delete(key);
 });
 
-function accountPinCache(peer: Peer, pin: EvidencePin): AccountPinCache {
-  const key = JSON.stringify([peer.id, peer.base, pin.snapshot, pin.view]);
+function accountPinCache(
+  peer: Peer,
+  pin: EvidencePin,
+  scope: { snapshot: string; view: string },
+): AccountPinCache {
+  const key = JSON.stringify([peer.id, peer.base, scope.snapshot, scope.view]);
   let cache = accountPins.get(key)?.deref();
   if (!cache) {
     cache = new Map();
@@ -964,23 +1009,31 @@ export function getAccountControl(
   pin: EvidencePin,
   options: RequestOptions = {},
 ): Promise<AccountControlResponse> {
-  if (!accountKey(account) || !hashId(pin.snapshot) || !eventId(pin.view)) {
+  // Read the account and the pin once. The URL, the cache key and the
+  // answer check all use these copies, even if the caller changes its
+  // objects while the request runs.
+  const target = { origin: account?.origin, account: account?.account };
+  const scope = { snapshot: pin?.snapshot, view: pin?.view };
+  if (!accountKey(target) || !hashId(scope.snapshot) || !eventId(scope.view)) {
     return Promise.reject(new Error("The account evidence link is invalid."));
   }
+  const exact = scope as { snapshot: string; view: string };
   const { signal, ...request } = options;
   if (signal?.aborted) return Promise.reject(signal.reason);
-  const cache = accountPinCache(request.peer ?? selfPeer, pin);
-  const key = account.origin + "#" + account.account;
+  const cache = accountPinCache(request.peer ?? selfPeer, pin, exact);
+  const key = target.origin + "#" + target.account;
   let pending = cache.get(key);
   if (!pending) {
     const query = new URLSearchParams({
-      origin: account.origin,
-      account: String(account.account),
-      snapshot: pin.snapshot,
-      view: pin.view,
+      origin: target.origin,
+      account: String(target.account),
+      snapshot: exact.snapshot,
+      view: exact.view,
     });
+    // Every reader of this pin shares the answer, so it is frozen,
+    // including its nested evidence lists.
     pending = api<unknown>(`/account-control?${query}`, request).then((value) =>
-      validateAccountControl(value, account, pin),
+      deepFreeze(validateAccountControl(value, target, exact)),
     );
     cache.set(key, pending);
     void pending.catch(() => cache.delete(key));
@@ -998,6 +1051,19 @@ export async function getPublicationEvidence(
     : null;
   if (account && !account.row_present)
     throw new Error("The publication refers to missing account evidence.");
+  // The account pass copies the account's selected period into the status
+  // claim (accounts.rs:819, restore check incremental.rs:2799). Only a
+  // controlled row has a selected period, its sole candidate. A deciding
+  // claim can name an inherited period, so it is not compared.
+  if (
+    account &&
+    status.account_authority_applied &&
+    status.claim !==
+      (account.state === "controlled" ? account.controller_candidates[0] : null)
+  )
+    throw new Error(
+      "The publication and its account evidence name different periods.",
+    );
   return {
     witness_contributions: account?.contributions ?? [],
     controller_candidates: status.account_authority_applied
@@ -1133,9 +1199,10 @@ export async function remoteSearch(
   if (options.retired) params.set("retired", "1");
   if (options.literal) params.set("literal", "1");
   if (options.group) params.set("group", options.group);
-  // The view this request pins: the context view, or the preferred view.
+  // Read the pin once: the context values, or the preferred view.
+  const pinnedSnapshot = context ? context.snapshot : null;
   const pinnedView = context ? context.view : preferredView;
-  if (context) params.set("snapshot", context.snapshot);
+  if (pinnedSnapshot) params.set("snapshot", pinnedSnapshot);
   if (pinnedView) params.set("view", pinnedView);
   if (after) params.set("after", after);
   const result = draftBody
@@ -1153,7 +1220,7 @@ export async function remoteSearch(
     !isObject(result) ||
     !hashId(result.snapshot) ||
     !eventId(result.view) ||
-    (context && result.snapshot !== context.snapshot) ||
+    (pinnedSnapshot && result.snapshot !== pinnedSnapshot) ||
     (pinnedView && result.view !== pinnedView) ||
     !(result.next === null || validCursor(result.next)) ||
     !(
@@ -1222,9 +1289,11 @@ export async function getIdentity(
   options: RequestOptions & { snapshot?: string; fresh?: boolean } = {},
 ): Promise<IdentityResponse> {
   if (!identityId(identity)) throw new Error("The identity is invalid.");
-  if (options.fresh && !options.snapshot) await waitForMaterialization(options);
+  // Read the snapshot pin once, for the URL and the answer check.
+  const snapshot = options.snapshot || null;
+  if (options.fresh && !snapshot) await waitForMaterialization(options);
   const params = new URLSearchParams();
-  if (options.snapshot) params.set("snapshot", options.snapshot);
+  if (snapshot) params.set("snapshot", snapshot);
   if (preferredView) params.set("view", preferredView);
   const query = params.size ? `?${params}` : "";
   const value = await api<unknown>(
@@ -1234,7 +1303,7 @@ export async function getIdentity(
   if (
     !isObject(value) ||
     !hashId(value.snapshot) ||
-    (options.snapshot && value.snapshot !== options.snapshot) ||
+    (snapshot && value.snapshot !== snapshot) ||
     value.identity !== identity ||
     !identityId(value.actor) ||
     !isObject(value.profile) ||

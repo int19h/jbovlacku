@@ -1858,7 +1858,8 @@ Chain contains the sorted distinct claim IDs needed to interpret the candidate c
 The response includes evidence for current eligibility, closure, and any historical availability guard that affects its result.
 With only historical evidence, state is unavailable and controller_candidates is empty. Reasons includes policy_history_unavailable.
 
-PublicationStatus then has unavailable state and null claim, deciding_claim, and controller. Its authority is none.
+When the account pass applies to a publication, its PublicationStatus then has unavailable state and null claim, deciding_claim, and controller. Its authority is none.
+The account pass applies only when account_authority_applied is true. A publication outside the pass keeps its own status. An example is an imported definition under a view that disables account authority.
 A pending certified candidate also gives unavailable selection, with reason claim_pending. Its known candidate IDs remain visible.
 State unclaimed requires no current or historical certificate. It preserves the initial active default.
 
