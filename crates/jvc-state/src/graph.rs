@@ -627,12 +627,23 @@ impl Graph {
         }
     }
     fn dependencies(&self, node: &Node, mode: u8) -> (Vec<String>, BTreeSet<String>, bool, bool) {
+        Self::history_dependencies(&self.nodes, &self.lifecycle, node, mode)
+    }
+
+    /// The last flag says that an accepted transfer adds a parent
+    /// from another issuer.
+    pub(crate) fn history_dependencies(
+        nodes: &BTreeMap<String, Node>,
+        lifecycle: &Lifecycle,
+        node: &Node,
+        mode: u8,
+    ) -> (Vec<String>, BTreeSet<String>, bool, bool) {
         let mut ids = Vec::new();
         let mut missing = BTreeSet::new();
         let mut invalid = false;
         let mut foreign = false;
         for id in &node.previous {
-            match self.nodes.get(id) {
+            match nodes.get(id) {
                 None => {
                     missing.insert(id.clone());
                 }
@@ -643,7 +654,7 @@ impl Graph {
         if mode > 0 && node.semantic && node.kind == "identity.accept" {
             let transfer = node.action.view().index("transfer");
             let transfer = transfer.as_str().unwrap_or_default();
-            match self.nodes.get(transfer) {
+            match nodes.get(transfer) {
                 None => {
                     missing.insert(transfer.into());
                 }
@@ -652,7 +663,7 @@ impl Graph {
                         && t.kind == "identity.transfer"
                         && t.action.view().index("successor").as_str() == Some(&node.issuer) =>
                 {
-                    if mode == 1 || self.lifecycle.successor.get(&t.issuer) == Some(&node.issuer) {
+                    if mode == 1 || lifecycle.successor.get(&t.issuer) == Some(&node.issuer) {
                         ids.push(transfer.into());
                         foreign = t.issuer != node.issuer;
                     }

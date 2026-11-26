@@ -8,7 +8,7 @@ enum Chain {
     Invalid,
     Resource,
 }
-pub(super) fn account(node: &Node) -> Option<AccountKey> {
+pub(crate) fn account(node: &Node) -> Option<AccountKey> {
     Some(AccountKey {
         origin: node.action.view().index("origin").as_str()?.into(),
         account: node.action.view().index("account").as_u64()?,
@@ -98,7 +98,7 @@ fn chain(graph: &Graph, id: &str, a: &AccountKey, depth: usize) -> Chain {
     }
     Chain::Valid(periods)
 }
-fn witnesses(policy: &CompactValue) -> Vec<String> {
+pub(crate) fn witnesses(policy: &CompactValue) -> Vec<String> {
     policy
         .view()
         .index("account_witnesses")

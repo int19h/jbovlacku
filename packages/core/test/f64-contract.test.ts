@@ -82,7 +82,7 @@ test("an admitted float view gives no synchronous exact score", async () => {
     const saved = JSON.parse(
       new TextDecoder().decode(session.checkpoint("f64-contract")),
     );
-    saved.version = "jvc-evaluation-checkpoint-v11";
+    saved.version = "jvc-evaluation-checkpoint-v12";
     assert.throws(() =>
       restoreHostEvaluationSession(utf8(JSON.stringify(saved)), "f64-contract"),
     );
@@ -90,7 +90,7 @@ test("an admitted float view gives no synchronous exact score", async () => {
       new TextDecoder().decode(session.checkpoint("f64-contract", true)),
     );
     assert.equal(result.version, "jvc-evaluation-results-v14");
-    result.version = "jvc-evaluation-results-v11";
+    result.version = "jvc-evaluation-results-v13";
     const compact = extractHostVerifiedRecord(
       utf8(row.envelope),
       utf8(row.body),

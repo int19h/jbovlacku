@@ -472,10 +472,6 @@ fn evaluate_context_with_limit(
     resolve_context::<ExactRows>(evaluation, context, max_refusals)
 }
 type PrivateWeights = BTreeMap<(String, String), Vec<(CompactValue, Rational)>>;
-fn private_trust(evaluation: &Evaluation) -> (Vec<TrustRule>, PrivateWeights) {
-    private_trust_metered(evaluation, &mut |_, _, _, _| Ok(())).unwrap()
-}
-
 fn private_trust_metered(
     evaluation: &Evaluation,
     meter: &mut SetupMeter<'_>,
@@ -510,8 +506,7 @@ fn private_trust_metered(
         trust.push(rule.clone());
     }
     let mut private_weights_by_pair: PrivateWeights = BTreeMap::new();
-    charge_lookup(meter, evaluation.reasons.len(), "invalid_overlay")?;
-    if !evaluation.reasons.contains("invalid_overlay") {
+    if !overlay_context_refused_metered(evaluation, meter)? {
         if let Some(overlay) = &evaluation.overlay {
             charge_lookup(meter, overlay.as_object().map_or(0, |o| o.len()), "trust")?;
             let mut private: BTreeMap<(String, String, String), (CompactValue, BTreeSet<String>)> =
@@ -520,9 +515,15 @@ fn private_trust_metered(
             for rule in overlay["trust"].as_array().into_iter().flatten() {
                 let obj_len = rule.as_object().map_or(0, |o| o.len());
                 charge_lookup(meter, obj_len, "issuer")?;
-                let issuer = resolve(meter, rule["issuer"].as_str().unwrap())?;
+                let issuer = resolve(
+                    meter,
+                    rule["issuer"].as_str().ok_or_else(invalid_index_overlay)?,
+                )?;
                 charge_lookup(meter, obj_len, "subject")?;
-                let subject = resolve(meter, rule["subject"].as_str().unwrap())?;
+                let subject = resolve(
+                    meter,
+                    rule["subject"].as_str().ok_or_else(invalid_index_overlay)?,
+                )?;
                 charge_lookup(meter, obj_len, "scope")?;
                 let scope_value = &rule["scope"];
                 let (raw, scope_bytes) = scope_measure(scope_value, meter)?;
@@ -538,7 +539,7 @@ fn private_trust_metered(
                     scope_value,
                 );
                 charge_lookup(meter, obj_len, "value")?;
-                let value = rule["value"].as_str().unwrap();
+                let value = rule["value"].as_str().ok_or_else(invalid_index_overlay)?;
                 if value == "heed" {
                     charge_lookup(meter, obj_len, "weight")?;
                     let weight = &rule["weight"];
@@ -857,8 +858,7 @@ fn index_private_rules_metered<'e>(
     e: &'e Evaluation,
     meter: &mut SetupMeter<'_>,
 ) -> jvc_core::Result<&'e [Value]> {
-    charge_lookup(meter, e.reasons.len(), "invalid_overlay")?;
-    if e.reasons.contains("invalid_overlay") {
+    if overlay_context_refused_metered(e, meter)? {
         return Ok(&[]);
     }
     let Some(overlay) = &e.overlay else {
@@ -1272,6 +1272,24 @@ fn resolve_context<A: RowArithmetic>(
 ) -> ContextGraph<A::Value> {
     resolve_context_indexed::<A>(evaluation, context, max_refusals, None)
 }
+fn overlay_context_refused(evaluation: &Evaluation) -> bool {
+    evaluation.reasons.contains("invalid_overlay")
+        || evaluation.reasons.contains("resource_unavailable")
+}
+/// Like `overlay_context_refused`, with each reason lookup charged before it runs.
+fn overlay_context_refused_metered(
+    evaluation: &Evaluation,
+    meter: &mut SetupMeter<'_>,
+) -> jvc_core::Result<bool> {
+    for reason in ["invalid_overlay", "resource_unavailable"] {
+        charge_lookup(meter, evaluation.reasons.len(), reason)?;
+        if evaluation.reasons.contains(reason) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn resolve_context_indexed<A: RowArithmetic>(
     evaluation: &Evaluation,
     context: &Context,
@@ -1289,20 +1307,21 @@ fn resolve_context_indexed<A: RowArithmetic>(
                 .map(str::to_owned)
         })
         .unwrap_or_default();
-    if evaluation.reasons.contains("invalid_overlay") {
-        return ContextGraph {
-            calculation,
-            actors: Vec::new(),
-            roots: Vec::new(),
-            rows: Vec::new(),
-            refusals: Vec::new(),
-            blocked: BTreeSet::new(),
-            public_shun_blocked: BTreeSet::new(),
-            private_blocked: BTreeSet::new(),
-            judgments: BTreeMap::new(),
-            available: false,
-            reasons: evaluation.reasons.clone(),
-        };
+    let refusal = |reasons| ContextGraph {
+        calculation: calculation.clone(),
+        actors: Vec::new(),
+        roots: Vec::new(),
+        rows: Vec::new(),
+        refusals: Vec::new(),
+        blocked: BTreeSet::new(),
+        public_shun_blocked: BTreeSet::new(),
+        private_blocked: BTreeSet::new(),
+        judgments: BTreeMap::new(),
+        available: false,
+        reasons,
+    };
+    if overlay_context_refused(evaluation) {
+        return refusal(evaluation.reasons.clone());
     }
     let mut actors = BTreeSet::new();
     let targets = match index {
@@ -1375,7 +1394,12 @@ fn resolve_context_indexed<A: RowArithmetic>(
             &index.private_weights,
         ),
         None => {
-            prepared = private_trust(evaluation);
+            let Ok(rules) = private_trust_metered(evaluation, &mut |_, _, _, _| Ok(())) else {
+                let mut reasons = evaluation.reasons.clone();
+                reasons.insert("invalid_overlay".into());
+                return refusal(reasons);
+            };
+            prepared = rules;
             (prepared.0.iter().collect::<Vec<_>>(), &prepared.1)
         }
     };
@@ -1643,7 +1667,25 @@ fn valid_rational(v: &Value, positive: bool) -> bool {
     let r = Rational::new(BigInt::from(n), BigInt::from(d));
     r.numer() == &BigInt::from(n) && r.denom() == &BigInt::from(d)
 }
-pub(crate) fn valid_overlay(v: &Value, base: &str) -> bool {
+pub(crate) fn overlay_refusal(
+    overlay: Option<&Value>,
+    base: &str,
+    suspended: impl Fn(&str) -> bool,
+) -> Option<&'static str> {
+    let overlay = overlay?;
+    if !valid_overlay(overlay, base) {
+        Some("invalid_overlay")
+    } else if overlay["public_shun_issuer"]
+        .as_str()
+        .is_some_and(suspended)
+    {
+        Some("public_shun_issuer_unavailable")
+    } else {
+        None
+    }
+}
+
+fn valid_overlay(v: &Value, base: &str) -> bool {
     let fields: &[&str] = match v["version"].as_u64() {
         Some(1) => &[
             "version",
