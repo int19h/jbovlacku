@@ -1001,7 +1001,11 @@ impl EvaluatedState {
         } else {
             0
         };
-        if work.saturating_add(lineage_work) > available_work {
+        // The append also pays the boundary setup for a new issuer
+        // block from the graph budget. The mixed-closure range charge
+        // needs the new closures, so only the append can price it.
+        let block_work = graph.new_block_units(&node.issuer);
+        if work.saturating_add(lineage_work).saturating_add(block_work) > available_work {
             return Err("work_budget");
         }
         Ok(work)
@@ -6309,14 +6313,12 @@ mod rebuild_tests {
             ] {
                 let next = path.advance(delta.clone(), &[]);
                 if limit < work {
-                    // The fast price or the append itself runs short.
-                    assert!(
-                        matches!(
-                            next.statistics().reason.as_deref(),
-                            Some("work_budget" | "history_resource_unavailable")
-                        ),
-                        "{name}: {:?}",
-                        next.statistics().reason
+                    // The price check includes the new block's boundary
+                    // setup, so it declines before the append starts.
+                    assert_eq!(
+                        next.statistics().reason.as_deref(),
+                        Some("work_budget"),
+                        "{name}"
                     );
                     assert!(!next.evaluation().available);
                 } else {

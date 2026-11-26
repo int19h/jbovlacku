@@ -615,6 +615,24 @@ impl Graph {
         })
     }
 
+    /// The boundary setup charge that `append_ordinary` adds when a
+    /// record starts a new issuer block in a graph with mixed closures.
+    /// The fast path adds it to its price check, so a short budget
+    /// declines before the append starts.
+    pub(crate) fn new_block_units(&self, issuer: &str) -> usize {
+        if self.boundary.has_mixed
+            && self.issuer_block(issuer).is_none()
+            && !self
+                .appended_ids
+                .iter()
+                .any(|id| self.nodes[id.as_str()].issuer == issuer)
+        {
+            2
+        } else {
+            0
+        }
+    }
+
     /// Whether the graph can build a join index, and whether it has.
     #[cfg(test)]
     pub(crate) fn join_index_built(&self) -> Option<bool> {
