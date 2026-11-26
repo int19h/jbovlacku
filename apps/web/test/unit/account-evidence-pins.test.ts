@@ -140,10 +140,11 @@ test("an unclaimed account row cannot supply a selected observation", async () =
     { witness: controller, claims: [claim], observations: [proof] },
   ];
   assert.deepEqual(
-    validateAccountControl(accountRow({ contributions }), account, {
-      snapshot,
-      view,
-    }).contributions,
+    validateAccountControl(
+      accountRow({ controller_candidates: [claim], contributions }),
+      account,
+      { snapshot, view },
+    ).contributions,
     contributions,
   );
   // A controlled row keeps its selected observation.
@@ -222,21 +223,30 @@ test("a pinned identity read rejects an answer for another snapshot", async () =
 test("only a controlled row with one candidate supplies selected observations", async () => {
   const pin = { snapshot, view };
   const other = id("jve1", "9");
-  const contributions = [
-    { witness: controller, claims: [claim], observations: [proof] },
-  ];
+  // One witness group for each list of claims. The groups sort by witness.
+  const groups = (...claims: string[][]) =>
+    claims.map((list, i) => ({
+      witness: id("ed25519", String(i + 1)),
+      claims: list,
+      observations: list.length
+        ? [id("jve1", String.fromCharCode(97 + i))]
+        : [],
+    }));
   const valid = (overrides: Record<string, unknown>) =>
     validateAccountControl(accountRow(overrides), account, pin);
+  // Each invalid row breaks one rule and keeps the others.
   for (const overrides of [
     // A dispute or an unavailable account selects no controller.
     {
       state: "disputed",
       controller_candidates: [claim, other],
+      contributions: groups([claim], [other]),
       current_observations: [proof],
     },
     {
       state: "unavailable",
       controller_candidates: [claim],
+      contributions: groups([claim]),
       current_observations: [proof],
     },
     // The state and the candidate count must agree.
@@ -248,24 +258,55 @@ test("only a controlled row with one candidate supplies selected observations", 
     {
       state: "controlled",
       controller_candidates: [claim, other],
-      current_observations: [],
+      contributions: groups([claim], [other]),
+      current_observations: [proof, other],
     },
     {
       state: "disputed",
       controller_candidates: [claim],
-      current_observations: [],
+      contributions: groups([claim]),
     },
     {
       state: "unclaimed",
       controller_candidates: [claim, other],
-      current_observations: [],
+      contributions: groups([claim], [other]),
     },
-    // At most one selected observation for each current witness group.
+    // Exactly one selected observation for each current witness group.
     {
       state: "controlled",
       controller_candidates: [claim],
+      contributions: groups([claim]),
       current_observations: [proof, other],
-      contributions,
+    },
+    {
+      state: "controlled",
+      controller_candidates: [claim],
+      contributions: groups([claim]),
+      current_observations: [],
+    },
+    // The candidates are exactly the contributed claims.
+    { state: "disputed", controller_candidates: [claim, other] },
+    {
+      state: "unavailable",
+      controller_candidates: [claim],
+      contributions: groups([claim], [other]),
+    },
+    {
+      state: "unclaimed",
+      controller_candidates: [claim],
+      contributions: groups([]),
+    },
+    // A controller needs every group to claim it alone.
+    {
+      state: "controlled",
+      controller_candidates: [claim],
+      contributions: groups([claim], []),
+      current_observations: [proof, other],
+    },
+    {
+      state: "controlled",
+      controller_candidates: [claim],
+      current_observations: [],
     },
   ])
     assert.throws(
@@ -277,25 +318,98 @@ test("only a controlled row with one candidate supplies selected observations", 
     {
       state: "controlled",
       controller_candidates: [claim],
+      contributions: groups([claim]),
       current_observations: [proof],
-      contributions,
     },
-    { state: "disputed", controller_candidates: [claim, other], contributions },
-    { state: "unavailable", controller_candidates: [claim, other] },
+    {
+      state: "controlled",
+      controller_candidates: [claim],
+      contributions: groups([claim], [claim]),
+      current_observations: [proof, other],
+    },
+    {
+      state: "disputed",
+      controller_candidates: [claim, other],
+      contributions: groups([claim, other]),
+    },
+    {
+      state: "disputed",
+      controller_candidates: [claim, other],
+      contributions: groups([claim], [other], []),
+    },
+    {
+      state: "unavailable",
+      controller_candidates: [claim, other],
+      contributions: groups([claim], [other]),
+    },
     { state: "unavailable" },
-    { state: "unclaimed", controller_candidates: [claim], contributions },
+    {
+      state: "unclaimed",
+      controller_candidates: [claim],
+      contributions: groups([claim], []),
+    },
+    { state: "unclaimed", contributions: groups([]) },
   ])
     assert.doesNotThrow(() => valid(overrides), JSON.stringify(overrides));
   serve(() =>
     accountRow({
       state: "disputed",
       controller_candidates: [claim, other],
+      contributions: groups([claim], [other]),
       current_observations: [proof],
     }),
   );
   await assert.rejects(
     getPublicationEvidence(status as never, pin),
     /invalid account evidence/,
+  );
+});
+
+test("an account row agrees with its witness contributions", () => {
+  const pin = { snapshot, view };
+  const other = id("jve1", "9");
+  const row = (overrides: Record<string, unknown>) =>
+    validateAccountControl(accountRow(overrides), account, pin);
+  const witness = (claims: string[]) => ({
+    witness: controller,
+    claims,
+    observations: [proof],
+  });
+  // A controlled row without its selected observation.
+  assert.throws(
+    () =>
+      row({
+        state: "controlled",
+        controller_candidates: [claim],
+        contributions: [witness([claim])],
+        current_observations: [],
+      }),
+    /invalid account evidence/,
+  );
+  // A controlled row whose witness claims another period.
+  assert.throws(
+    () =>
+      row({
+        state: "controlled",
+        controller_candidates: [claim],
+        contributions: [witness([other])],
+        current_observations: [proof],
+      }),
+    /invalid account evidence/,
+  );
+  // A disputed row with no contributions.
+  assert.throws(
+    () => row({ state: "disputed", controller_candidates: [claim, other] }),
+    /invalid account evidence/,
+  );
+  assert.equal(
+    row({
+      state: "controlled",
+      controller_candidates: [claim],
+      contributions: [witness([claim])],
+      current_observations: [proof],
+    }).state,
+    "controlled",
   );
 });
 
@@ -461,6 +575,14 @@ test("status account fields follow the authority and the account pass", () => {
       controller,
     },
     { ...base, authority: "uncertain", account_authority_applied: true },
+    // After the account pass, a controller always comes with its period.
+    {
+      ...base,
+      authority: "uncertain",
+      account_control: account,
+      account_authority_applied: true,
+      controller,
+    },
   ];
   for (const fields of valid)
     assert.doesNotThrow(() => check(fields), JSON.stringify(fields));

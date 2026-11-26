@@ -613,7 +613,7 @@ function publicationStatus(value: unknown): value is PublicationStatus {
  * | false   | source-account | not allowed     |            |          |                |
  * | true    | source-account | set             | set        | set      | null or set    |
  * | true    | none           | set             | null       | null/set | null or set    |
- * | true    | uncertain      | set             | null/set   | null/set | null or set    |
+ * | true    | uncertain      | set             | null/set   | set if a controller, else null/set | null or set |
  * | true    | native         | not allowed     |            |          |                |
  */
 function statusAccountFields(value: Record<string, unknown>): boolean {
@@ -642,7 +642,8 @@ function statusAccountFields(value: Record<string, unknown>): boolean {
     case "none":
       return !controller;
     case "uncertain":
-      return true;
+      // The pass sets a controller only with its period.
+      return !controller || claim;
     default:
       return false;
   }
@@ -854,9 +855,9 @@ export function validateAccountControl(
     ) ||
     !accountStateFields(
       String(value.state),
-      value.controller_candidates.length,
-      value.current_observations.length,
-      value.contributions.length,
+      value.controller_candidates as string[],
+      value.current_observations as string[],
+      value.contributions as { claims: string[] }[],
     ) ||
     (!value.row_present &&
       (value.state !== "unclaimed" ||
@@ -872,32 +873,48 @@ export function validateAccountControl(
 }
 
 /**
- * The candidate and selection counts that each account state allows. Only a
- * selected controller has selected observations, at most one for each
- * current witness group. Every state can carry witness contributions.
+ * The candidates, contributions and selections that each account state
+ * allows. Each contribution row is one current witness group. In every
+ * state, the candidates are exactly the claims that the groups contribute.
+ * Only a selected controller has selected observations. A controller needs
+ * every group to claim it alone, and then each group gives one selection.
  *
- * | state       | controller_candidates | current_observations       |
- * | ----------- | --------------------- | -------------------------- |
- * | controlled  | exactly 1             | at most one per group      |
- * | disputed    | 2 or more             | empty                      |
- * | unclaimed   | 0 or 1                | empty                      |
- * | unavailable | any                   | empty                      |
+ * | state       | controller_candidates | contributions               | current_observations   |
+ * | ----------- | --------------------- | --------------------------- | ---------------------- |
+ * | controlled  | exactly 1             | 1 or more, each claims [c]  | exactly one per group  |
+ * | disputed    | 2 or more             | any                         | empty                  |
+ * | unclaimed   | 0 or 1                | any                         | empty                  |
+ * | unavailable | any                   | any                         | empty                  |
  */
 function accountStateFields(
   state: string,
-  candidates: number,
-  selected: number,
-  groups: number,
+  candidates: string[],
+  selected: string[],
+  contributions: { claims: string[] }[],
 ): boolean {
+  const claimed = [...new Set(contributions.flatMap((row) => row.claims))];
+  claimed.sort();
+  if (
+    claimed.length !== candidates.length ||
+    claimed.some((claim, i) => claim !== candidates[i])
+  )
+    return false;
   switch (state) {
     case "controlled":
-      return candidates === 1 && selected <= groups;
+      return (
+        candidates.length === 1 &&
+        contributions.length > 0 &&
+        contributions.every(
+          (row) => row.claims.length === 1 && row.claims[0] === candidates[0],
+        ) &&
+        selected.length === contributions.length
+      );
     case "disputed":
-      return candidates >= 2 && selected === 0;
+      return candidates.length >= 2 && selected.length === 0;
     case "unclaimed":
-      return candidates <= 1 && selected === 0;
+      return candidates.length <= 1 && selected.length === 0;
     default:
-      return selected === 0;
+      return selected.length === 0;
   }
 }
 
