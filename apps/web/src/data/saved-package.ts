@@ -265,13 +265,17 @@ const PACKAGE_FIELDS = ["snapshot", "entries"];
 const VERSIONED_PACKAGE_FIELDS = [...PACKAGE_FIELDS, "version"];
 
 /** Read a package header. An absent value gives null. */
-export function savedPackage(value: unknown): CachedPackage | null {
+export function savedPackage(
+  value: unknown,
+  language?: string,
+): CachedPackage | null {
   if (value === undefined) return null;
   if (!isRecord(value)) throw new PackageValidationError();
   const versioned = Object.hasOwn(value, "version");
   const hasView = Object.hasOwn(value, "search_view");
   const hasDowngrade = Object.hasOwn(value, "downgrade");
   if (
+    (language !== undefined && !languageTag(language)) ||
     !fields(
       value,
       versioned ? VERSIONED_PACKAGE_FIELDS : PACKAGE_FIELDS,

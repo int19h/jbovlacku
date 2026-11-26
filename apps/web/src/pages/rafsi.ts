@@ -92,8 +92,17 @@ async function packageFor(
   // package raises PackageValidationError.
   const cached = savedPackage(
     await app.store.get("packages", language).catch(() => undefined),
+    language,
   );
-  if (cached?.version === 2) return { pkg: cached, fresh: false };
+  if (cached) {
+    if (cached.version === 2) return { pkg: cached, fresh: false };
+    requirePackageListShapes(cached);
+    const readRow = savedRowReader(cached, language, undefined, true);
+    const spellings = savedSpellingChecks();
+    for (const row of cached.entries)
+      spellings.add(readRow(row).word.spelling);
+    spellings.finish();
+  }
   return fallback && { pkg: fallback, fresh: true };
 }
 interface RafsiWord {

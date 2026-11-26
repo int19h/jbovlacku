@@ -410,6 +410,7 @@ test("a rafsi with a lone surrogate fails in both readers", () => {
   // A surrogate pair is well-formed and stays usable.
   const paired = pkg([v2Row({ rafsi: ["😀"] })]);
   assert.equal(readAll(paired), paired);
+  assert.equal(workerAccepts(paired), true);
 });
 
 test("an event or row language with a lone surrogate is unusable", () => {
@@ -1058,7 +1059,29 @@ test("savedRafsiClaims and savedSpellingChecks do not hide invalid rows behind a
   );
 });
 
-test("samePackageStructure rejects non-plain attribution.dates objects and accepts null-prototype plain objects", async () => {
+test("validateCachedPackage and createPackageWordIndex reject lone-surrogate rafsi and invalid empty-package language keys", () => {
+  const loneSurrogate = pkg([v2Row({ rafsi: ["\ud800"] })]);
+  assert.throws(
+    () => search.validateCachedPackage(loneSurrogate, "en"),
+    { message: saved.INVALID_PACKAGE_MESSAGE },
+  );
+
+  const empty = pkg([]);
+  assert.throws(
+    () => saved.savedPackage(empty, "EN"),
+    saved.PackageValidationError,
+  );
+  assert.throws(
+    () => search.validateCachedPackage(empty, "EN"),
+    { message: saved.INVALID_PACKAGE_MESSAGE },
+  );
+  assert.equal(
+    search.createPackageWordIndex().invalidEntryCount(empty as never, "EN"),
+    1,
+  );
+});
+
+test("samePackageStructure rejects extra array keys, compares own array values, rejects non-plain attribution.dates, and accepts null-prototype plain objects", async () => {
   const { samePackageStructure } = await import(
     "../../src/data/package-search.ts"
   );
@@ -1066,6 +1089,50 @@ test("samePackageStructure rejects non-plain attribution.dates objects and accep
     "../../../../packages/search/src/index.ts"
   );
   const budget = () => new SearchRequestBudget(searchMetrics());
+
+  // List-shape rules reject extra own properties on stored package lists.
+  const nonEmptyOne = pkg([
+    v2Row({ rafsi: Object.assign(["cuk"], { tag: "one" }) }),
+  ]) as never;
+  const nonEmptyTwo = pkg([
+    v2Row({ rafsi: Object.assign(["cuk"], { tag: "two" }) }),
+  ]);
+  assert.throws(
+    () => samePackageStructure(nonEmptyTwo, nonEmptyOne, budget()),
+    saved.PackageValidationError,
+  );
+  const emptyWithKey = pkg([
+    v2Row({ rafsi: Object.assign([], { tag: "one" }) }),
+  ]) as never;
+  assert.throws(
+    () =>
+      samePackageStructure(structuredClone(emptyWithKey), emptyWithKey, budget()),
+    saved.PackageValidationError,
+  );
+
+  // Structural equality itself compares non-index own array property values
+  // and accepts identical clones of empty arrays carrying own properties.
+  const nonEmptyAuxOne = {
+    ...pkg([v2Row()]),
+    downgrade: Object.assign(["a"], { tag: "one" }),
+  } as never;
+  const nonEmptyAuxTwo = {
+    ...pkg([v2Row()]),
+    downgrade: Object.assign(["a"], { tag: "two" }),
+  };
+  assert.equal(
+    samePackageStructure(nonEmptyAuxTwo, nonEmptyAuxOne, budget()),
+    false,
+  );
+  const emptyAux = {
+    ...pkg([v2Row()]),
+    downgrade: Object.assign([], { tag: "one" }),
+  } as never;
+  assert.equal(
+    samePackageStructure(structuredClone(emptyAux), emptyAux, budget()),
+    true,
+  );
+
   const base = pkg([
     v2Row({
       attribution: {

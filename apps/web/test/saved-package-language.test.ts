@@ -549,3 +549,169 @@ test("Search does not claim browser storage is unavailable when one package read
   );
   await expect(main).not.toContainText("Browser storage is unavailable");
 });
+
+test("rafsi routes reject a saved version 1 package with an invalid row", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    await store.setPreferences({
+      definitionLanguage: "en",
+      searchMode: "local",
+    });
+    await store.put("packages", "en", {
+      version: 1,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: [null],
+    });
+  });
+  const pair = await cuktaPair(page);
+  await page.route("**/api/v1/manifest*", (route) => route.abort());
+  await page.goto("/rafsi/cuk");
+  await expect(page.locator("main")).toContainText(
+    "The search package is invalid. Search this server or download another package.",
+  );
+  await page.goto(`/rafsi-pair/${encodeURIComponent(pair)}`);
+  await expect(page.locator("main")).toContainText(
+    "The search package is invalid. Search this server or download another package.",
+  );
+});
+
+test("LocalStore.get keeps a cross-tab refreshed language as most recently used", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const dbName = "store-lru-refresh-r7";
+    const reader = new LocalStore(dbName);
+    const writer = new LocalStore(dbName);
+    const makePkg = (lang: string, text: string) => ({
+      version: 2,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: [
+        {
+          event: "jve1:" + "1".repeat(64),
+          word: { language: "jbo", spelling: "cukta" },
+          language: lang,
+          glosses: [{ language: lang, text, sense: null }],
+          plain_text: text,
+          classification: { kind: "gismu", selmaho: [] },
+          body: null,
+          issuer: "ed25519:" + "a".repeat(64),
+          notes: false,
+          rafsi: ["cuk"],
+          rafsi_complete: true,
+          attribution: null,
+        },
+      ],
+    });
+    await writer.put("packages", "en", makePkg("en", "book 1"));
+    await writer.put("packages", "fr", makePkg("fr", "livre"));
+    await writer.put("packages", "jbo", makePkg("jbo", "cukta"));
+
+    await reader.get("packages", "en");
+    await reader.get("packages", "fr");
+    // Cross-tab update refreshes "en" to a new revision.
+    await writer.put("packages", "en", makePkg("en", "book 2"));
+    await reader.get("packages", "en");
+    // Reading a third language must evict "fr" (LRU) and keep "en" (MRU).
+    await reader.get("packages", "jbo");
+
+    const reads: string[] = [];
+    const original = IDBObjectStore.prototype.get;
+    IDBObjectStore.prototype.get = function (
+      this: IDBObjectStore,
+      key: IDBValidKey | IDBKeyRange,
+    ) {
+      if (this.name === "packages") reads.push(String(key));
+      return original.call(this, key);
+    };
+    try {
+      reads.length = 0;
+      await reader.get("packages", "en");
+      const readsOnEn = [...reads];
+      reads.length = 0;
+      await reader.get("packages", "fr");
+      const readsOnFr = [...reads];
+      return { readsOnEn, readsOnFr };
+    } finally {
+      IDBObjectStore.prototype.get = original;
+    }
+  });
+  expect(result).toEqual({
+    readsOnEn: [],
+    readsOnFr: ["fr"],
+  });
+});
+
+test("Meaning typed-word check picks up a cross-tab package download on the same visit", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const store = new LocalStore();
+    await store.setPreferences({
+      definitionLanguage: "en",
+      searchMode: "local",
+    });
+    await store.delete("packages", "en");
+  });
+  await page.goto("/new/meaning?lang=en");
+  const wordBox = page.getByRole("textbox", { name: "Lojban word", exact: true });
+  const typedRegion = page.getByRole("region", { name: "Typed word" });
+  await wordBox.fill("broda");
+  await expect(typedRegion).toContainText(
+    "No usable local package is available for this language.",
+  );
+
+  // Another tab downloads and saves an English package defining cukta.
+  await page.evaluate(async (row) => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    await new LocalStore().put("packages", "en", {
+      version: 2,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries: [row],
+    });
+  }, englishRow);
+
+  await wordBox.fill("cukta");
+  await expect(typedRegion).toContainText("Already exists:");
+  await expect(typedRegion).toContainText("cukta");
+  await expect(typedRegion).toContainText("Local package for en");
+});
+
+test("Meaning nearby uses the server after consent when local worker startup fails", async ({
+  page,
+}) => {
+  await savePackages(page, { en: [englishRow] });
+  let serverCalls = 0;
+  await page.route("**/package-search-worker.ts*", (route) => route.abort());
+  await page.route("**/api/v1/search*", async (route) => {
+    serverCalls++;
+    await route.fulfill({
+      json: {
+        snapshot: "sha256:" + "a".repeat(64),
+        view: "jve1:" + "b".repeat(64),
+        hits: [],
+        next: null,
+      },
+    });
+  });
+
+  await page.goto("/new/meaning?lang=en");
+  const nearby = page.getByRole("region", { name: "Close in meaning" });
+  await page
+    .getByRole("textbox", { name: "Meaning", exact: true })
+    .fill("book");
+  await expect(nearby).toContainText("Local search could not start");
+  expect(serverCalls).toBe(0);
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await nearby.getByRole("button", { name: "allow server search" }).click();
+  await expect(nearby).toContainText("No close definitions found on");
+  expect(serverCalls).toBe(1);
+});

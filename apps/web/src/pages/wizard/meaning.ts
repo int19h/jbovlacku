@@ -341,15 +341,12 @@ export async function meaningPage(
   left.append(typedStatus);
   let typedConsent: string | null = null;
   let typedRequest = 0;
-  const typedPackages = new Map<
-    string,
-    Promise<CachedPackage | null | "invalid">
-  >();
   const typedKey = () =>
     JSON.stringify([typedWord(draft.spelling), draft.language]);
   const checkTypedWord = async () => {
     const request = ++typedRequest;
     const key = typedKey();
+    const language = draft.language;
     if (typedConsent !== key) typedConsent = null;
     typedStatus.replaceChildren();
     const spelling = typedWord(draft.spelling);
@@ -362,19 +359,16 @@ export async function meaningPage(
       typedStatus.append(p(diagnostic, "meta"));
     const valid = () =>
       context.live() && request === typedRequest && key === typedKey();
-    if (!typedPackages.has(draft.language))
-      typedPackages.set(
-        draft.language,
-        app.store
-          .get("packages", draft.language)
-          .catch(() => undefined)
-          .then(savedPackage)
-          .catch((error: unknown) => {
-            if (!(error instanceof PackageValidationError)) throw error;
-            return "invalid" as const;
-          }),
-      );
-    const typedPackage = await typedPackages.get(draft.language);
+    let typedPackage: CachedPackage | null | "invalid" = null;
+    try {
+      const stored = await app.store
+        .get("packages", language)
+        .catch(() => undefined);
+      typedPackage = savedPackage(stored, language);
+    } catch (error) {
+      if (!(error instanceof PackageValidationError)) throw error;
+      typedPackage = "invalid";
+    }
     if (!valid()) return;
     // An unusable package shows the message and counts as no package, so
     // the server check below stays available.
@@ -830,7 +824,7 @@ export async function meaningPage(
           return undefined;
         });
         if (!current()) return;
-        pkg = savedPackage(stored);
+        pkg = savedPackage(stored, language);
         nearbySource = pkg ? "pending" : read ? "missing" : "unavailable";
       } catch (error) {
         localFailure(error);
@@ -861,14 +855,15 @@ export async function meaningPage(
           if (error instanceof PackageValidationError) {
             localFailure(error);
             renderMode();
-          } else {
-            if (
-              error instanceof SearchQueryTooLongError ||
-              (error instanceof SearchBudgetError && error.phase === "search")
-            ) {
-              nearbySource = "local";
-              renderMode();
-            }
+          } else if (
+            error instanceof SearchQueryTooLongError ||
+            (error instanceof SearchBudgetError && error.phase === "search")
+          ) {
+            nearbySource = "local";
+            renderMode();
+            throw error;
+          } else if (remoteConsent !== consentKey()) {
+            // Keep non-validation local failures local until explicit consent.
             throw error;
           }
         }
@@ -878,6 +873,7 @@ export async function meaningPage(
           "Download a search package in Settings for local nearby search, or allow a search on this server.";
         return;
       }
+      note.textContent = "";
       const pending = remoteDraftSearch(remoteQuery(), language, 10, {
         signal: context.signal,
       });

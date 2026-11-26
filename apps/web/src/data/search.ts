@@ -76,6 +76,11 @@ export function createPackageWordIndex(identify: typeof wordId = wordId) {
     let index = indexes.get(pkg);
     if (index?.language !== language) {
       index = { language, words: new Map(), invalidEntries: 0 };
+      if (!languageTag(language)) {
+        index.invalidEntries = 1;
+        indexes.set(pkg, index);
+        return index;
+      }
       try {
         requireDenseList(pkg.entries);
       } catch (error) {
@@ -226,7 +231,7 @@ export function validateCachedPackage(
   language: string,
   budget?: SearchRequestBudget,
 ): asserts value is CachedPackage {
-  const pkg = savedPackage(value);
+  const pkg = savedPackage(value, language);
   if (!pkg) throw invalidPackage();
   requirePackageListShapes(pkg);
   if (pkg.entries.length) budget?.ensure(1, "prepare");

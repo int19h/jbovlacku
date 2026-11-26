@@ -260,21 +260,18 @@ function sameStructuredValue(
   if (isArray) {
     const left = incoming as unknown[];
     const right = trusted as unknown[];
-    const len = right.length;
-    if (left.length !== len) return false;
-    if (len > 0) budget.reserve(len, "prepare");
+    if (left.length !== right.length) return false;
     const keysA = Reflect.ownKeys(left);
     const keysB = Reflect.ownKeys(right);
     if (keysA.length !== keysB.length) return false;
-    if (len === 0) return keysA.length === 1 && keysA[0] === "length" && keysB[0] === "length";
-    for (let i = 0; i < keysA.length; i++)
-      if (keysA[i] !== keysB[i] && !Object.hasOwn(right, keysA[i]))
-        return false;
-    for (let i = 0; i < len; i++) {
-      const hasLeft = Object.hasOwn(left, i);
-      const hasRight = Object.hasOwn(right, i);
-      if (hasLeft !== hasRight) return false;
-      if (hasRight && !sameStructuredValue(left[i], right[i], budget))
+    if (keysB.length > 0) budget.reserve(keysB.length, "prepare");
+    const leftRecord = left as unknown as Record<PropertyKey, unknown>;
+    const rightRecord = right as unknown as Record<PropertyKey, unknown>;
+    for (let i = 0; i < keysB.length; i++) {
+      const key = keysB[i];
+      if (key === "length") continue;
+      if (keysA[i] !== key && !Object.hasOwn(left, key)) return false;
+      if (!sameStructuredValue(leftRecord[key], rightRecord[key], budget))
         return false;
     }
     return true;
