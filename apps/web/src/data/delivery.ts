@@ -868,23 +868,6 @@ export class DeliveryEngine {
     const running = this.inFlight.get(id);
     if (running) return running;
     this.recordRetryAt.delete(id);
-    if (explicit) {
-      // Try now and Resume retry a refused record. As resume() does for a
-      // saved refusal, an unsaved refusal becomes an unsaved unknown
-      // outcome. Its next attempt still asks for the receipt first, and
-      // the normal rules then decide whether it sends. An unsaved
-      // acceptance or open verification stays, so the record is never
-      // sent again after the server took it.
-      for (const entry of this.unsavedOutcomes.get(id)?.values() ?? [])
-        if (entry.outcome.state === "refused")
-          entry.outcome = {
-            ...entry.outcome,
-            state: "unknown",
-            nextAttempt: Date.now(),
-            error: "A server refused this record before. It is retried.",
-            failure: null,
-          };
-    }
     const work = this.deliverNow(id, explicit)
       .catch((error) => {
         this.scheduleGeneration++;
@@ -949,6 +932,7 @@ export class DeliveryEngine {
           peer,
           started,
           attemptId,
+          explicit,
         );
         // Null means that this attempt sent nothing and has no outcome to save.
         if (next) await this.saveOutcome(id, peerId, peer, next, attemptId);
@@ -1013,6 +997,7 @@ export class DeliveryEngine {
     peer: PeerDelivery,
     started: number,
     attemptId: string,
+    explicit: boolean,
   ): Promise<PeerDelivery | null> {
     const target = savedPeer(item, peerId);
     if (!target)
@@ -1023,7 +1008,24 @@ export class DeliveryEngine {
         failure: "unresolved",
         attempt: attemptId,
       };
-    const unsaved = this.unsavedOutcome(item.id, peerId, peer);
+    const kept0 = this.unsavedOutcome(item.id, peerId, peer);
+    // An explicit attempt retries a refused record. For a saved refusal it
+    // rewrites nothing first and the attempt asks for the receipt. So for
+    // this attempt only, a kept refusal counts as unknown. If the attempt
+    // decides nothing, the kept refusal stays.
+    const unsaved =
+      kept0 && explicit && kept0.outcome.state === "refused"
+        ? {
+            ...kept0,
+            outcome: {
+              ...kept0.outcome,
+              state: "unknown" as const,
+              nextAttempt: started,
+              error: "A server refused this record before. It is retried.",
+              failure: null,
+            },
+          }
+        : kept0;
     // Every unsaved outcome makes this attempt look up the receipt first.
     // After an unsaved acceptance, refusal or open verification, a failed
     // lookup sends nothing. Any other unsaved outcome follows the normal
@@ -1038,9 +1040,12 @@ export class DeliveryEngine {
         : undefined;
     const attempts =
       Math.max(peer.attempts, unsaved?.outcome.attempts ?? 0) + 1;
-    // The state that the attempt follows. An unsaved outcome stands in for
-    // the stored state, so the rules match those after a working save.
-    const effective = unsaved?.outcome.state ?? peer.state;
+    // The state that every decision below follows. An unsaved outcome
+    // stands in for the stored row, so the rules match those after a
+    // working save. Only the merge rules read the stored row itself.
+    const shown = unsaved?.outcome ?? peer;
+    const effective = shown.state;
+    const verifying = shown.verifyReceipt === true;
     const fetchVariant = (id: string) =>
       objectBytes(`/events/${encodeURIComponent(id)}`, 20480, {
         peer: target,
@@ -1085,16 +1090,16 @@ export class DeliveryEngine {
       // shows that the POST was never sent. No peer is rewritten first.
       if (
         unsaved ||
-        peer.verifyReceipt ||
-        peer.state === "unknown" ||
-        peer.state === "missing-body" ||
-        peer.state === "refused" ||
-        peer.sendStarted !== undefined ||
+        verifying ||
+        effective === "unknown" ||
+        effective === "missing-body" ||
+        effective === "refused" ||
+        shown.sendStarted !== undefined ||
         !navigator.onLine
       ) {
         let receipt: Receipt | undefined;
         const neverSent =
-          effective === "queued" && peer.sendStarted === undefined;
+          effective === "queued" && shown.sendStarted === undefined;
         try {
           receipt = await getReceipt(item.id, { peer: target });
         } catch (error) {
@@ -1109,8 +1114,7 @@ export class DeliveryEngine {
             !(error instanceof TransportError) &&
             !(error instanceof DOMException && error.name === "AbortError");
           if (notFound && kept) return kept;
-          if (pending || peer.verifyReceipt || (!notFound && !answered))
-            throw error;
+          if (pending || verifying || (!notFound && !answered)) throw error;
         }
         if (receipt) {
           const settled = await settle(receipt);
@@ -1156,15 +1160,18 @@ export class DeliveryEngine {
           return stored;
         maySend = true;
         const mark = { sendAttempt: attemptId, sendStarted: started };
+        // A send starts only after verification ended or never began, so
+        // the mark drops a stale stored flag.
+        const { verifyReceipt: _ended, ...base } = current;
         return {
           ...stored,
           peers: {
             ...stored.peers,
             [peerId]:
               current.state === "queued" && effective === "queued"
-                ? { ...current, ...mark }
+                ? { ...base, ...mark }
                 : {
-                    ...current,
+                    ...base,
                     state: "unknown",
                     attempts: Math.max(current.attempts, attempts),
                     lastAttempt: started,
@@ -1191,7 +1198,7 @@ export class DeliveryEngine {
       if (error instanceof RequestError && !posted)
         return {
           state:
-            effective === "refused" || peer.sendStarted !== undefined
+            effective === "refused" || shown.sendStarted !== undefined
               ? "unknown"
               : effective,
           attempts,
@@ -1199,9 +1206,9 @@ export class DeliveryEngine {
           nextAttempt: started + backoff(attempts, error.retryAfterMs),
           error: `${error.message}${error.code ? ` (${error.code})` : ""}`,
           failure: "server",
-          receipt: peer.receipt,
+          receipt: shown.receipt,
           attempt: attemptId,
-          ...(peer.verifyReceipt ? { verifyReceipt: true } : {}),
+          ...(verifying ? { verifyReceipt: true } : {}),
         };
       if (error instanceof RequestError) {
         const refused = REFUSAL_STATUSES.includes(error.status);
@@ -1214,7 +1221,7 @@ export class DeliveryEngine {
             : started + backoff(attempts, error.retryAfterMs),
           error: `${error.message}${error.code ? ` (${error.code})` : ""}`,
           failure: refused ? "refused" : "server",
-          receipt: peer.receipt,
+          receipt: shown.receipt,
           attempt: attemptId,
         };
       }
@@ -1238,9 +1245,9 @@ export class DeliveryEngine {
         nextAttempt: started + backoff(attempts, null),
         error: error instanceof Error ? error.message : "Delivery is unknown.",
         failure: transport ?? "server",
-        receipt: peer.receipt,
+        receipt: shown.receipt,
         attempt: attemptId,
-        ...(peer.verifyReceipt ? { verifyReceipt: true } : {}),
+        ...(verifying ? { verifyReceipt: true } : {}),
       };
     }
   }
@@ -1296,6 +1303,17 @@ export class DeliveryEngine {
         ]),
       ),
     }));
+    // Resume makes a saved refusal unknown for good. A kept refusal changes
+    // in the same way, after the stored change commits.
+    for (const entry of this.unsavedOutcomes.get(id)?.values() ?? [])
+      if (entry.outcome.state === "refused")
+        entry.outcome = {
+          ...entry.outcome,
+          state: "unknown",
+          nextAttempt: Date.now(),
+          error: "A server refused this record before. Resume retries it.",
+          failure: null,
+        };
     try {
       await this.notify();
       await this.deliver(id, true);

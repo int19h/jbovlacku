@@ -1017,3 +1017,70 @@ test("Try now after an unsaved refusal of a never sent record looks up the recei
     "refused",
   );
 });
+
+test("Try now that decides nothing keeps an unsaved refusal", async ({
+  page,
+}) => {
+  await page.goto("/about");
+  await expect(page.locator("main h1")).toBeAttached();
+  await freeze(page);
+  const { posts, lookups } = deliveryRequests(page);
+  await page.route("**/api/v1/events", (route) =>
+    route.fulfill({
+      status: 409,
+      json: { code: "refused", message: "Refused.", event: null, field: null },
+    }),
+  );
+  let offline = false;
+  await page.route("**/api/v1/receipts/*", (route) =>
+    offline
+      ? route.abort("internetdisconnected")
+      : route.fulfill({ status: 404, json: { message: "Not found" } }),
+  );
+  await page.evaluate(() => {
+    let online = true;
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      get: () => online,
+    });
+    Object.assign(window, {
+      setReportedOnline: (value: boolean) => {
+        online = value;
+        if (value) window.dispatchEvent(new Event("online"));
+      },
+    });
+  });
+  const { item, result, failed } = await startEngine(page, {
+    database: "unsaved-refusal-try-offline",
+    fail: "refused",
+    failures: 1,
+  });
+  expect(result).not.toBe("saved");
+  expect(failed).toBe(1);
+  expect(posts).toEqual([item.transport]);
+  // Try now while the browser reports offline. The lookup fails at the
+  // network level, so the attempt decides nothing.
+  offline = true;
+  await page.evaluate(async (id) => {
+    const target = window as unknown as {
+      setReportedOnline(value: boolean): void;
+      unsavedEngine: { tryNow(id: string): Promise<unknown> };
+    };
+    target.setReportedOnline(false);
+    await target.unsavedEngine.tryNow(id);
+  }, item.id);
+  offline = false;
+  await page.evaluate(() =>
+    (
+      window as unknown as { setReportedOnline(value: boolean): void }
+    ).setReportedOnline(true),
+  );
+  await page.clock.fastForward(15_000);
+  await expect
+    .poll(
+      async () => (await storedPeer(page, "unsaved-refusal-try-offline")).state,
+    )
+    .toBe("refused");
+  expect(posts).toEqual([item.transport]);
+  expect(lookups.length).toBeGreaterThanOrEqual(2);
+});

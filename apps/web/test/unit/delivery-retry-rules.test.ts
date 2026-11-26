@@ -133,9 +133,11 @@ function fixture(
   );
   const control = {
     failWrite: (_current: OutboxItem, _next: OutboxItem): boolean => false,
+    failRead: (): boolean => false,
   };
   const store = {
     async get(_store: string, id: string) {
+      if (control.failRead()) throw quota();
       return records.get(id);
     },
     async list() {
@@ -487,3 +489,106 @@ for (const action of ["Try now", "Stop and Resume"] as const) {
     });
   }
 }
+
+/** Valid envelope bytes of a different record, and their hash. */
+function otherEnvelope() {
+  const bytes = core.canonicalize(
+    core.utf8(
+      JSON.stringify(
+        core.createEvent(
+          new Uint8Array(32).fill(3),
+          [],
+          "1".repeat(32),
+          { kind: "identity.profile" },
+          { name: "Other", bio: [], links: [] },
+        ).envelope,
+      ),
+    ),
+  );
+  return { bytes, hash: core.contentHash(core.utf8(bytes)) };
+}
+
+for (const stop of ["an offline lookup", "a failed record read"] as const) {
+  test(`Try now that ends with ${stop} keeps an unsaved refusal`, async (t) => {
+    let offline = false;
+    const f = fixture(t, ["self"], (_peer, kind) => {
+      if (kind === "post") return json(409, refused);
+      if (offline) return Promise.reject(new TypeError("offline"));
+      return json(404, notFound);
+    });
+    let failures = 1;
+    f.control.failWrite = (_current, next) =>
+      next.peers.self.state === "refused" && failures-- > 0;
+    await assert.rejects(f.engine.tryNow(f.item.id), {
+      name: "QuotaExceededError",
+    });
+    assert.ok(f.peer().sendAttempt);
+    if (stop === "an offline lookup") {
+      // The lookup fails while the browser reports offline, so the attempt
+      // decides nothing.
+      setOnline(t, false);
+      offline = true;
+      await f.engine.tryNow(f.item.id);
+      setOnline(t, true);
+      offline = false;
+    } else {
+      let reads = 1;
+      f.control.failRead = () => reads-- > 0;
+      await assert.rejects(f.engine.tryNow(f.item.id), {
+        name: "QuotaExceededError",
+      });
+    }
+    (globalThis.window as EventTarget).dispatchEvent(new Event("online"));
+    for (let i = 0; i < 8; i++) await f.advance(15_000);
+    // The kept refusal pauses sends. Its lookup only saves the refusal.
+    assert.deepEqual(
+      f.log.filter((entry) => entry.endsWith(":post")),
+      ["0:self:post"],
+    );
+    assert.equal(f.peer().state, "refused");
+  });
+}
+
+test("a kept outcome that ended verification decides over a stale stored flag", async (t) => {
+  const other = otherEnvelope();
+  let found = true;
+  const f = fixture(t, ["self"], (_peer, kind) => {
+    if (kind === "envelope") return new Response(other.bytes);
+    if (!found)
+      return kind === "post"
+        ? Response.json(receiptFor(f.item), { status: 201 })
+        : json(404, notFound);
+    return Response.json(receiptFor(f.item, { envelope_hash: other.hash }), {
+      status: kind === "post" ? 201 : 200,
+    });
+  });
+  Object.assign(f.item.peers.self, {
+    state: "unknown",
+    attempts: 1,
+    verifyReceipt: true,
+    sendAttempt: "a0",
+    sendStarted: 1,
+    attempt: "a0",
+  });
+  // The proved mismatch ends verification. Its save fails once.
+  let failures = 1;
+  f.control.failWrite = (_current, next) =>
+    next.peers.self.sendAttempt === undefined && failures-- > 0;
+  await assert.rejects(f.engine.tryNow(f.item.id), {
+    name: "QuotaExceededError",
+  });
+  assert.deepEqual(f.log, [
+    "0:self:receipt",
+    "0:self:envelope",
+    "0:self:post",
+    "0:self:envelope",
+  ]);
+  // The send mark does not carry the ended verification.
+  assert.equal(f.peer().verifyReceipt, undefined);
+  // A 404 now permits the identical retry, as after a working save.
+  found = false;
+  await f.engine.tryNow(f.item.id);
+  assert.deepEqual(f.log.slice(4), ["0:self:receipt", "0:self:post"]);
+  assert.equal(f.peer().state, "accepted");
+  assert.equal(f.row.transport, f.item.transport);
+});

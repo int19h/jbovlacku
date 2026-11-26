@@ -1262,6 +1262,13 @@ test("two tabs that publish the same reviewed revision keep one group, and a new
   await expect(
     page.getByRole("region", { name: "Saved publication" }),
   ).toContainText("Saved. Not delivered yet.");
+  // Let the first tab finish its sends, so that no record holds only its
+  // send mark when the second tab reads the outbox.
+  await expect
+    .poll(async () =>
+      (await outboxRecords(page)).map((record: any) => record.state),
+    )
+    .toEqual(["unknown", "unknown", "unknown", "unknown"]);
   const first = await outboxRecords(page);
   expect(first).toHaveLength(4);
   // The second tab's commit finds the revision already published and shows that group.
