@@ -667,55 +667,70 @@ test("evidence joins accept the statuses and rows that the evaluator wrote", asy
 
 test("evidence joins reject statuses that the account pass cannot write", async () => {
   const ff = "jve1:" + "f".repeat(64);
-  const cases: [string, string, (status: any) => void][] = [
+  const period = /name different periods/;
+  const availability = /does not show that its account evidence is unavailable/;
+  const deciding = /deciding period does not match its account evidence/;
+  const cases: [string, string, RegExp, (status: any) => void][] = [
     // The status claim is the account's selected period.
-    ["another period", "direct", (s) => (s.claim = ff)],
-    ["no period with a controller", "direct", (s) => (s.claim = null)],
+    ["another period", "direct", period, (s) => (s.claim = ff)],
+    ["no period with a controller", "direct", period, (s) => (s.claim = null)],
     [
       "a period without a controller",
       "applied_disputed",
+      period,
       (s) => (s.claim = ff),
     ],
     // A deciding period belongs to the account chain.
     [
       "deciding period outside the chain",
       "inherited",
+      deciding,
       (s) => (s.deciding_claim = ff),
     ],
     [
       "deciding period outside the chain",
       "direct",
+      deciding,
       (s) => (s.deciding_claim = ff),
     ],
     // With one candidate and a frontier, a period decides the status.
-    ["no deciding period", "direct", (s) => (s.deciding_claim = null)],
+    [
+      "no deciding period",
+      "direct",
+      deciding,
+      (s) => (s.deciding_claim = null),
+    ],
     // Without a decision, there is no deciding period.
     [
       "deciding period in a dispute",
       "applied_disputed",
+      deciding,
       (s) => (s.deciding_claim = evaluated.applied_disputed.row.chain[0]),
     ],
-    ["deciding period without a frontier", "direct", (s) => (s.frontier = [])],
+    [
+      "deciding period without a frontier",
+      "direct",
+      deciding,
+      (s) => (s.frontier = []),
+    ],
     // An unavailable account makes the publication unavailable.
     [
       "active with an unavailable account",
       "applied_unavailable",
+      availability,
       (s) => (s.state = "active"),
     ],
     [
       "frontier with an unavailable account",
       "applied_unavailable",
+      availability,
       (s) => (s.frontier = [evaluated.direct.status.frontier[0]]),
     ],
   ];
-  for (const [label, name, change] of cases) {
+  for (const [label, name, message, change] of cases) {
     const { status, row, pin } = realJoin(name);
     change(status);
-    await assert.rejects(
-      join(status, row, pin),
-      /different periods/,
-      `${label} (${name})`,
-    );
+    await assert.rejects(join(status, row, pin), message, `${label} (${name})`);
   }
 });
 
@@ -797,4 +812,74 @@ test("word and identity reads keep the peer that they started with", async () =>
   identityOptions.peer = second;
   await identityRead;
   assert.equal(requests[0].host, "first.test");
+});
+
+test("word and identity reads keep the endpoint of their peer", async () => {
+  const servers = {
+    "first.test": id("sha256", "1"),
+    "second.test": id("sha256", "2"),
+  } as Record<string, string>;
+  const requests: URL[] = [];
+  const identityAnswer = (answer: string) => ({
+    snapshot: answer,
+    view,
+    identity: controller,
+    actor: controller,
+    successor: null,
+    retired: false,
+    profile: { state: "none", claims: [] },
+    counts: {},
+  });
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://local.test");
+    requests.push(url);
+    const answer = servers[url.host];
+    return new Response(
+      JSON.stringify(
+        url.pathname.includes("/identities/")
+          ? identityAnswer(answer)
+          : wordResponse({ snapshot: answer, view }),
+      ),
+    );
+  }) as typeof fetch;
+  const peer = (host: string) => ({
+    id: "same-peer-id",
+    base: `http://${host}/api/v1`,
+    label: host,
+  });
+  // A caller changes its peer's base during the materialization wait.
+  const moving = peer("first.test");
+  const read = getWord(word, { fresh: true, view, peer: moving });
+  moving.base = "http://second.test/api/v1";
+  assert.equal((await read).snapshot, servers["first.test"]);
+  assert.deepEqual(
+    requests.map((url) => url.host),
+    ["first.test"],
+  );
+  // A later read for the first server gets the first server's answer.
+  const again = await getWord(word, { view, peer: peer("first.test") });
+  assert.equal(again.snapshot, servers["first.test"]);
+
+  // Two peers with the same ID and different bases do not share answers.
+  requests.length = 0;
+  const other = await getWord(word, { view, peer: peer("second.test") });
+  assert.equal(other.snapshot, servers["second.test"]);
+  assert.deepEqual(
+    requests.map((url) => url.host),
+    ["second.test"],
+  );
+
+  // An identity read keeps its peer's base across the same wait.
+  requests.length = 0;
+  const identityPeer = peer("first.test");
+  const identityRead = getIdentity(controller, {
+    fresh: true,
+    peer: identityPeer,
+  });
+  identityPeer.base = "http://second.test/api/v1";
+  assert.equal((await identityRead).snapshot, servers["first.test"]);
+  assert.deepEqual(
+    requests.map((url) => url.host),
+    ["first.test"],
+  );
 });

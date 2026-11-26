@@ -763,6 +763,16 @@ export function getPreferredView(): string | null {
   return preferredView;
 }
 const wordCache = new Map<string, Promise<WordResponse>>();
+/**
+ * A copy of request options for a reader that waits before its request. The
+ * peer is copied as well, so a caller that changes its peer object during
+ * the wait cannot send the request to another endpoint.
+ */
+function fixedRequest<T extends RequestOptions>(options: T): T {
+  return options.peer
+    ? { ...options, peer: { ...options.peer } }
+    : { ...options };
+}
 export function getWord(
   id: string,
   options: RequestOptions & {
@@ -780,10 +790,11 @@ export function getWord(
   if (snapshot) query.set("snapshot", snapshot);
   if (view) query.set("view", view);
   if (options.reviewers) query.set("reviewers", "1");
-  // The request options are copied too, so the peer and signal stay the
-  // ones that the cache key names after the materialization wait.
-  const request = { ...options };
-  const key = `${request.peer?.id ?? "self"}|${id}|${query}`;
+  // The request options and the peer are copied too, so the endpoint stays
+  // the one that the cache key names after the materialization wait.
+  const request = fixedRequest(options);
+  const peer = request.peer ?? selfPeer;
+  const key = `${peer.id}|${peer.base}|${id}|${query}`;
   if (request.fresh) wordCache.delete(key);
   let pending = wordCache.get(key);
   if (!pending) {
@@ -1070,10 +1081,9 @@ export async function getPublicationEvidence(
     : null;
   if (account && !account.row_present)
     throw new Error("The publication refers to missing account evidence.");
-  if (account && publication.applied && !appliedJoin(publication, account))
-    throw new Error(
-      "The publication and its account evidence name different periods.",
-    );
+  const disagreement =
+    account && publication.applied ? appliedJoin(publication, account) : null;
+  if (disagreement) throw new Error(disagreement);
   return {
     witness_contributions: account?.contributions ?? [],
     controller_candidates: publication.applied
@@ -1085,9 +1095,9 @@ export async function getPublicationEvidence(
   };
 }
 /**
- * Whether an applied status agrees with its account row. The browser checks
- * of account rows are partial. Issue #188 tracks the full rule set that
- * checkpoint restore applies.
+ * How an applied status disagrees with its account row, or null when it
+ * agrees. The browser checks of account rows are partial. Issue #188 tracks
+ * the full rule set that checkpoint restore applies.
  */
 function appliedJoin(
   publication: {
@@ -1098,20 +1108,21 @@ function appliedJoin(
     pending: boolean;
   },
   account: AccountControlResponse,
-): boolean {
+): string | null {
   // The account pass copies the account's selected period into the status
   // claim (accounts.rs:819, restore check incremental.rs:2799). Only a
   // controlled row has a selected period, its sole candidate.
   const period =
     account.state === "controlled" ? account.controller_candidates[0] : null;
-  if (publication.claim !== period) return false;
+  if (publication.claim !== period)
+    return "The publication and its account evidence name different periods.";
   // An unavailable account makes the publication unavailable before any
   // period decides it (accounts.rs:833, incremental.rs:2816).
   if (
     account.state === "unavailable" &&
     (publication.state !== "unavailable" || publication.frontier > 0)
   )
-    return false;
+    return "The publication status does not show that its account evidence is unavailable.";
   // Each frontier action names a period in the account chain. With one
   // candidate and no pending carry, that period is the deciding claim, and
   // it can be an inherited, earlier period (accounts.rs:844,
@@ -1121,11 +1132,14 @@ function appliedJoin(
     !publication.pending &&
     account.controller_candidates.length === 1 &&
     publication.frontier > 0;
-  if (!decides) return publication.deciding === null;
-  return (
-    publication.deciding !== null &&
-    account.chain.includes(publication.deciding)
-  );
+  if (
+    decides
+      ? publication.deciding === null ||
+        !account.chain.includes(publication.deciding)
+      : publication.deciding !== null
+  )
+    return "The publication's deciding period does not match its account evidence.";
+  return null;
 }
 export function forgetWord(id: string) {
   for (const key of [...wordCache.keys()])
@@ -1351,7 +1365,7 @@ export async function getIdentity(
   if (!identityId(identity)) throw new Error("The identity is invalid.");
   // Read the snapshot pin and the request options once, for the URL, the
   // request after the materialization wait, and the answer check.
-  const request = { ...options };
+  const request = fixedRequest(options);
   const snapshot = request.snapshot || null;
   if (request.fresh && !snapshot) await waitForMaterialization(request);
   const params = new URLSearchParams();
