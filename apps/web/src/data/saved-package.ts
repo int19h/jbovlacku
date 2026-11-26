@@ -20,7 +20,8 @@
  * `validateEntry`). The worker enforces every page rule (including lone
  * surrogate checks on `rafsi` and storage-key language tags) and also checks
  * what no page reads first: exact field sets, strictly ascending event order,
- * version 2 attribution, and `search_status` and `search_view` pairing. The
+ * version 2 attribution, `search_status` and `search_view` pairing, and
+ * rejection of non-function own `some` properties on row arrays. The
  * core checks each spelling where a page derives the word ID.
  *
  * This module has no server or browser-storage dependency, so models and

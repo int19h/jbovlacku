@@ -316,7 +316,7 @@ Later reads in that page fail until the page reloads.
 `LocalStore.listPackages` reads all stored packages without revision markers and supplies no reuse evidence.
 A missing legacy revision supplies no reuse evidence.
 A page uses a freshly read package only after the package header, storage-key language tag, and every row pass validation for that language. No whole-package verdict is persisted in storage.
-Main-thread page readers enforce the shared package and row rules (including spelling checks and lone-surrogate rafsi rejection), and the search worker enforces those same rules plus exact package and row field sets, strictly ascending event order, version 2 attribution shapes, and `search_status` and `search_view` pairing.
+Main-thread page readers enforce the shared package and row rules (including spelling checks and lone-surrogate rafsi rejection), and the search worker enforces those same rules plus exact package and row field sets, strictly ascending event order, version 2 attribution shapes, `search_status` and `search_view` pairing, and rejection of non-function own `some` properties on row arrays.
 A failed download leaves the saved package and revision unchanged.
 
 A package save reads the revision before its download starts. It writes only when that revision is still the current one, and the check and the write are one transaction. So a save never overwrites a Remove or another save that finished after it started. A Remove always wins over a save that started earlier.
@@ -326,7 +326,7 @@ A rafsi lookup downloads the current package for each of its languages. When bro
 One static module worker validates and searches saved packages outside the main thread.
 Download hashing and entry checks retain their existing download path.
 It retains two prepared packages by distinct in-memory identity. Within one page session, repeated queries on a retained snapshot reuse its prepared index directly with no new full IndexedDB read and no structural comparison while that snapshot remains in the two-entry caches. A distinct fresh clone with the same durable revision shares that preparation only after exact structural equality against the trusted snapshot succeeds within the request budget, including row order, own array keys, holes, and worker fields. Otherwise the incoming copy is validated and prepared under a new in-memory identity.
-Page reload closes that worker and clears the session package cache. The first search after reload reads, transfers, validates, and prepares the saved package again, catching any out-of-band storage edit made while an earlier page stayed open.
+Page reload closes that worker and clears the session package cache. The first search after reload reads, transfers, validates, and prepares the saved package again, catching out-of-band storage edits made while an earlier page stayed open that fail validation.
 
 Nearby lookup in the meaning step and part lookup in the lujvo builder use the same worker and prepared index.
 Each nearby call reads the package for its current language, including an empty meaning. A missing package never disables later local lookups.
