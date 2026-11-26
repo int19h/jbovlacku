@@ -456,7 +456,13 @@ function row(
   const stop = button(
     "Stop retrying",
     async () => {
-      await app.delivery.stop(item.id);
+      // A Stop that did not save leaves automatic delivery active. Say so.
+      try {
+        await app.delivery.stop(item.id);
+      } catch (error) {
+        app.announce(`Stop did not take effect. ${describe(error)}`);
+        return;
+      }
       app.announce(
         "Stopped. The signed record and its receipts stay in this browser. Stop affects only this record. Records that depend on it keep their own state; use the controls on their rows. This does not retract a public record or cancel a request already in flight.",
       );

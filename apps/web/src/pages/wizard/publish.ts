@@ -829,11 +829,20 @@ export async function publishPage(
             bindSaved();
             app.own.invalidate();
             renderSaved(signed.items);
+            // Each saved record gets its own explicit turn. The first
+            // failure is reported after the others had theirs.
             const results: OutboxItem[] = [];
+            let failure: { error: unknown } | undefined;
             for (const item of signed.items) {
-              const delivered = await app.delivery.deliver(item.id, true);
+              const delivered = await app.delivery
+                .deliver(item.id, true)
+                .catch((error) => {
+                  failure ??= { error };
+                  return undefined;
+                });
               results.push(delivered ?? item);
             }
+            if (failure) throw failure.error;
             if (!context.live()) return;
             const definitionAccepted = results.some(
               (item) =>
@@ -939,14 +948,16 @@ export async function publishPage(
 export function savedGroupState(
   items: OutboxItem[],
   delivery: App["delivery"],
+  expected = items.length,
 ) {
   const views = new Map(items.map((item) => [item, delivery.view(item)]));
   const unfinished = items.filter((item) => !views.get(item)!.delivered);
   const pending = unfinished.map((item) => views.get(item)!);
+  // A saved ID whose row is gone is no evidence of delivery.
+  const missing = Math.max(0, expected - items.length);
   const saving = pending.some((view) => view.saving);
-  const unconfirmed = pending.some((view) => view.unconfirmed);
-  const stopped = pending.some((view) => view.stopped);
-  const failed = pending.some((view) => view.notDelivered);
+  const unconfirmed = pending.filter((view) => view.unconfirmed);
+  const failed = missing > 0 || pending.some((view) => view.notDelivered);
   const sending = !failed && pending.some((view) => view.sending);
   const labels = labelIndex(items);
   return {
@@ -955,30 +966,34 @@ export function savedGroupState(
     sending,
     headline: !items.length
       ? "Saved. Delivery state unavailable."
-      : sending
-        ? "Saved. Sending."
-        : saving
-          ? "Saved. A delivery result still needs saving."
-          : unconfirmed
-            ? "Saved. Outcome unconfirmed."
-            : unfinished.length
-              ? failed
-                ? "Saved. Not delivered yet."
-                : "Saved. Waiting to send."
-              : "Published.",
+      : missing
+        ? "Saved. Some records are missing here."
+        : sending
+          ? "Saved. Sending."
+          : saving
+            ? "Saved. A delivery result still needs saving."
+            : unconfirmed.length
+              ? "Saved. Outcome unconfirmed."
+              : unfinished.length
+                ? failed
+                  ? "Saved. Not delivered yet."
+                  : "Saved. Waiting to send."
+                : "Published.",
     explanation: !items.length
       ? "This browser could not find these signed records in its outbox. Open Not delivered to check them."
-      : sending
-        ? `All ${items.length} signed records are saved in this browser. Their first delivery is in progress.`
-        : saving
-          ? "A server answered, but this browser could not save that answer yet. It keeps the exact signed bytes and keeps trying to save the answer."
-          : unconfirmed
-            ? stopped
-              ? "This browser keeps the exact signed bytes. Automatic delivery is stopped, so it does not check the receipt until you resume."
-              : "This browser keeps the exact signed bytes and will check the receipt again when online."
-            : unfinished.length
-              ? `${unfinished.length} of ${items.length} signed records have unfinished delivery. This browser keeps their exact bytes. Publishing again would create a second definition. Use the saved records to continue delivery.`
-              : `All ${items.length} signed records were accepted.`,
+      : missing
+        ? `${missing} of ${expected} signed records of this publication are no longer in this browser's outbox. This page cannot confirm their delivery.`
+        : sending
+          ? `All ${items.length} signed records are saved in this browser. Their first delivery is in progress.`
+          : saving
+            ? "This browser could not save a delivery result yet. It keeps the exact signed bytes and keeps trying to save the result. Publishing again would create a second definition. Use the saved records to continue delivery."
+            : unconfirmed.length
+              ? unconfirmed.every((view) => view.stopped)
+                ? "This browser keeps the exact signed bytes. Automatic delivery is stopped, so it does not check the receipt until you resume or try now. Publishing again would create a second definition. Use the saved records to continue delivery."
+                : "This browser keeps the exact signed bytes and will check the receipt again when online. Publishing again would create a second definition. Use the saved records to continue delivery."
+              : unfinished.length
+                ? `${unfinished.length} of ${items.length} signed records have unfinished delivery. This browser keeps their exact bytes. Publishing again would create a second definition. Use the saved records to continue delivery.`
+                : `All ${items.length} signed records were accepted.`,
     lines: items.map((item) => {
       const label = resolvedLabel(item, labels);
       return `${label.action} ${label.subject}: ${Object.values(
@@ -1026,7 +1041,7 @@ function savedPublicationView(
         : null;
     const action = focused?.dataset.savedAction;
     const items = currentItems ?? [];
-    const state = savedGroupState(items, app.delivery);
+    const state = savedGroupState(items, app.delivery, ids.length);
     const headline = readFailed
       ? "Saved publication could not be read."
       : !currentItems
@@ -1111,13 +1126,21 @@ function savedPublicationView(
   };
   const retry = async () => {
     if (retrying || readFailed || !currentItems || !live()) return;
-    const unfinished = savedGroupState(currentItems, app.delivery).unfinished;
+    const unfinished = savedGroupState(
+      currentItems,
+      app.delivery,
+      ids.length,
+    ).unfinished;
     retrying = true;
     paint();
     try {
-      for (const item of unfinished) await app.delivery.tryNow(item.id);
-    } catch (error) {
-      app.announce(describe(error));
+      // Each record gets its turn. A failure of one does not skip the rest.
+      let failure: { error: unknown } | undefined;
+      for (const item of unfinished)
+        await app.delivery.tryNow(item.id).catch((error) => {
+          failure ??= { error };
+        });
+      if (failure) app.announce(describe(failure.error));
     } finally {
       await refresh();
       retrying = false;

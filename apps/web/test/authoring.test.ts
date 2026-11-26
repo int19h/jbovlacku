@@ -751,7 +751,7 @@ test("a requested rafsi claim is signed even when every lookup fails, and a know
     .getByRole("button", { name: "Publish", exact: true })
     .click();
   const saved = page.getByRole("region", { name: "Saved publication" });
-  await expect(saved).toContainText("Saved. Not delivered yet.");
+  await expect(saved).toContainText("Saved. Outcome unconfirmed.");
   const records = await outboxRecords(page);
   expect(records.map((r: any) => r.kind).sort()).toEqual(
     [
@@ -829,7 +829,7 @@ test("after the group is saved, a lost delivery response offers delivery of the 
   await unlock.getByRole("button", { name: "Unlock" }).click();
   await acceptFirstSignature(page);
   const saved = page.getByRole("region", { name: "Saved publication" });
-  await expect(saved).toContainText("Saved. Not delivered yet.");
+  await expect(saved).toContainText("Saved. Outcome unconfirmed.");
   await expect(saved).toContainText(
     "Publishing again would create a second definition",
   );
@@ -976,7 +976,7 @@ test("a fully disconnected author signs a complete definition into storage and l
     .getByRole("button", { name: "Publish", exact: true })
     .click();
   const saved = page.getByRole("region", { name: "Saved publication" });
-  await expect(saved).toContainText("Saved. Not delivered yet.");
+  await expect(saved).toContainText("Saved. Outcome unconfirmed.");
   // Keep the whole first attempt disconnected before restoring manual delivery.
   await expect
     .poll(() =>
@@ -1173,7 +1173,7 @@ test("a failure right after the group commits still recovers the same group afte
     .getByRole("button", { name: "Publish", exact: true })
     .click();
   const saved = page.getByRole("region", { name: "Saved publication" });
-  await expect(saved).toContainText("Saved. Not delivered yet.");
+  await expect(saved).toContainText("Saved. Outcome unconfirmed.");
   await expect(
     saved.getByRole("button", { name: "Try now", exact: true }),
   ).toBeVisible();
@@ -1216,7 +1216,7 @@ test("a failure right after the group commits still recovers the same group afte
   ).toBeVisible();
   await expect(
     page.getByRole("region", { name: "Saved publication" }),
-  ).toContainText("Saved. Not delivered yet.");
+  ).toContainText("Saved. Outcome unconfirmed.");
   await expect(
     page.getByRole("button", { name: "Publish", exact: true }),
   ).toHaveCount(0);
@@ -1261,7 +1261,7 @@ test("two tabs that publish the same reviewed revision keep one group, and a new
     .click();
   await expect(
     page.getByRole("region", { name: "Saved publication" }),
-  ).toContainText("Saved. Not delivered yet.");
+  ).toContainText("Saved. Outcome unconfirmed.");
   // Let the first tab finish its sends, so that no record holds only its
   // send mark when the second tab reads the outbox.
   await expect
@@ -1288,7 +1288,7 @@ test("two tabs that publish the same reviewed revision keep one group, and a new
   );
   await expect(
     other.getByRole("region", { name: "Saved publication" }),
-  ).toContainText("Saved. Not delivered yet.");
+  ).toContainText("Saved. Outcome unconfirmed.");
   await expect(
     other
       .locator("aside")
@@ -1398,7 +1398,7 @@ test("a second tab that navigates after the first tab publishes does not bring t
     .click();
   await expect(
     page.getByRole("region", { name: "Saved publication" }),
-  ).toContainText("Saved. Not delivered yet.");
+  ).toContainText("Saved. Outcome unconfirmed.");
   const committed = await draftState(page);
   expect(committed.revision).toBeNull();
   expect(committed.last?.revision).toBe(revision);
@@ -3273,7 +3273,7 @@ test("a held first publication shows neutral progress until the send fails", asy
   } finally {
     release();
   }
-  await expect(saved).toContainText("Saved. Not delivered yet.");
+  await expect(saved).toContainText("Saved. Outcome unconfirmed.");
   await expect(saved.getByRole("button", { name: "Try now" })).toBeVisible();
   await expect(
     page.getByRole("link", { name: "4 not delivered" }),
@@ -3335,7 +3335,7 @@ for (const outcome of ["failure", "acceptance"] as const) {
       release();
     }
     if (outcome === "failure") {
-      await expect(saved).toContainText("Saved. Not delivered yet.");
+      await expect(saved).toContainText("Saved. Outcome unconfirmed.");
       await expect(
         saved.getByRole("button", { name: "Try now", exact: true }),
       ).toBeVisible();

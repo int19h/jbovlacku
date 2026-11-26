@@ -199,16 +199,16 @@ export class Signer {
     // leaves the records in the outbox, where the retry loop continues.
     // The caller still gets the saved items, so it updates its view and
     // does not offer to sign the same change again.
+    // Each record gets its own explicit turn. A failure of an earlier
+    // record holds only the recipients that still depend on it.
     const results: OutboxItem[] = [];
-    let failed = false;
     for (const item of signed.items) {
       let delivered: OutboxItem | undefined;
-      if (!failed)
-        try {
-          delivered = await this.delivery.deliver(item.id, true);
-        } catch {
-          failed = true;
-        }
+      try {
+        delivered = await this.delivery.deliver(item.id, true);
+      } catch {
+        // The record stays in the outbox with its own retry.
+      }
       if (!delivered)
         delivered = await this.session.store
           .get<OutboxItem>("outbox", item.id)

@@ -169,7 +169,9 @@ function harness(
           ? (JSON.parse(options!.body as string) as Transport).envelope.id
           : decodeURIComponent(parsed.pathname.split("/").at(-1)!);
       const row = records.get(id);
-      if (row && engine.peerView(row, peer).status.startsWith("saving"))
+      // The guard reads the harness's own record of failed outcome writes,
+      // never the engine's page view.
+      if (failedOutcomes.has(`${id}|${peer}`))
         violations.push(`${kind} to ${peer} with a pending write`);
       if (kind === "post") {
         assert.equal(options!.body, row!.transport);
@@ -184,6 +186,7 @@ function harness(
     },
   );
   const writes: { id: string; next: OutboxItem; failed: boolean }[] = [];
+  const failedOutcomes = new Map<string, string>();
   const store = {
     async get(_store: string, id: string) {
       if (control.failRead()) throw quota();
@@ -200,6 +203,18 @@ function harness(
       const next = mutate(current);
       const failed = control.failWrite(id, next);
       writes.push({ id, next, failed });
+      for (const [peer, after] of Object.entries(next.peers)) {
+        const before = current.peers[peer];
+        if (JSON.stringify(before) === JSON.stringify(after)) continue;
+        const mark =
+          after.sendAttempt !== undefined &&
+          after.sendAttempt !== before?.sendAttempt;
+        if (mark) continue;
+        const key = `${id}|${peer}`;
+        if (failed && after.attempt) failedOutcomes.set(key, after.attempt);
+        else if (!failed && failedOutcomes.get(key) === after.attempt)
+          failedOutcomes.delete(key);
+      }
       if (failed) throw quota();
       records.set(id, next);
       return next;
@@ -597,12 +612,8 @@ for (const phase of ["receipt", "envelope"] as const)
     await f.engine.tick();
     assert.equal(f.peer().state, "unknown");
     assert.equal(f.peer().nextAttempt, 10_000 + 30_000);
-    // An open check is a receipt check on the page. An unknown result is
-    // a try there, and the attempt itself looks up the receipt first.
-    assert.equal(
-      f.engine.peerView(f.row(), "self").next?.kind,
-      phase === "envelope" ? "receipt" : "send",
-    );
+    // Both an open check and an unknown result look up the receipt next.
+    assert.equal(f.engine.peerView(f.row(), "self").next?.kind, "receipt");
     broken = false;
     await f.run(30_000);
     assert.equal(f.peer().state, "accepted");
@@ -621,14 +632,14 @@ test("fault: a POST that fails before headers leaves an unknown outcome with a l
         : Response.json(receiptFor(f.item));
   await f.engine.tick();
   assert.equal(f.peer().state, "unknown");
-  assert.equal(f.engine.peerView(f.row(), "self").next?.kind, "send");
+  assert.equal(f.engine.peerView(f.row(), "self").next?.kind, "receipt");
   broken = false;
   await f.run(15_000);
   assert.deepEqual(f.log(), ["0:post", "15000:receipt"]);
   assert.equal(f.peer().state, "accepted");
 });
 for (const status of [201, 429])
-  test(`fault: an interrupted ${status} body ${status === 201 ? "leaves the outcome unknown" : "keeps its Retry-After"}`, async (t) => {
+  test(`fault: an interrupted ${status} body leaves the outcome unknown and keeps its Retry-After`, async (t) => {
     const f = harness(t);
     f.control.respond = (request) => {
       if (request.kind !== "post") return Response.json(receiptFor(f.item));
@@ -646,7 +657,7 @@ for (const status of [201, 429])
     await f.engine.tick();
     assert.equal(f.peer().state, "unknown");
     // A damaged body never proves acceptance.
-    assert.equal(f.peer().nextAttempt, status === 201 ? 25_000 : 610_000);
+    assert.equal(f.peer().nextAttempt, 610_000);
   });
 test("fault: a listener error after the outcome commit stops nothing", async (t) => {
   const f = harness(t);

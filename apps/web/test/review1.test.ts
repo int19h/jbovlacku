@@ -42,7 +42,8 @@ test("a receipt with a missing or wrong hash leaves delivery unknown on POST and
     "does not name the stored envelope",
   );
   // Receipt lookup answers with a wrong envelope hash. The variant check fetches the
-  // real envelope, whose hash differs from the claim, so delivery stays unknown.
+  // real envelope, whose hash differs from the claim. Those bytes prove nothing, so
+  // receipt verification stays open and nothing is sent again.
   await page.unroute("**/api/v1/events");
   await page.route("**/api/v1/receipts/**", async (route) => {
     const response = await route.fetch();
@@ -52,8 +53,10 @@ test("a receipt with a missing or wrong hash leaves delivery unknown on POST and
       json: { ...receipt, envelope_hash: "sha256:" + "0".repeat(64) },
     });
   });
-  await page.route("**/api/v1/events", (route) =>
-    route.fulfill({
+  let resent = 0;
+  await page.route("**/api/v1/events", (route) => {
+    resent++;
+    return route.fulfill({
       status: 500,
       json: {
         code: "test",
@@ -61,8 +64,8 @@ test("a receipt with a missing or wrong hash leaves delivery unknown on POST and
         event: null,
         field: null,
       },
-    }),
-  );
+    });
+  });
   await page.getByRole("link", { name: "1 not delivered" }).click();
   await page.getByRole("button", { name: "Try now" }).click();
   await expect
@@ -70,9 +73,13 @@ test("a receipt with a missing or wrong hash leaves delivery unknown on POST and
     .toBe(2);
   items = await outboxItems(page);
   expect(items[0].peers.self.state).toBe("unknown");
-  expect(items[0].peers.self.error).toContain("No resend during this step");
+  expect(items[0].peers.self.verifyReceipt).toBe(true);
+  expect(items[0].peers.self.error).toContain(
+    "could not read or verify the envelope",
+  );
+  expect(resent).toBe(0);
   // A lookup receipt with the right envelope hash but a wrong body status for a
-  // bodiless judgment is also not accepted.
+  // bodiless judgment proves nothing either. The check stays open.
   await page.unroute("**/api/v1/receipts/**");
   await page.route("**/api/v1/receipts/**", async (route) => {
     const response = await route.fetch();
@@ -88,7 +95,11 @@ test("a receipt with a missing or wrong hash leaves delivery unknown on POST and
     .toBe(3);
   items = await outboxItems(page);
   expect(items[0].peers.self.state).toBe("unknown");
-  expect(items[0].peers.self.error).toContain("No resend during this step");
+  expect(items[0].peers.self.verifyReceipt).toBe(true);
+  expect(items[0].peers.self.error).toContain(
+    "reports a body for a record that has none",
+  );
+  expect(resent).toBe(0);
   // The real receipt completes delivery without a second POST.
   await page.unroute("**/api/v1/receipts/**");
   let posted = 0;
@@ -276,7 +287,9 @@ test("automatic delivery follows each peer's own schedule while an explicit retr
   await page.getByRole("link", { name: "1 not delivered" }).click();
   await expect(page.getByText(/mirror:/)).toBeVisible();
   await page.getByRole("button", { name: "Try now" }).click();
-  await expect(page.getByRole("status")).toContainText("Still not delivered.");
+  await expect(page.getByRole("status")).toContainText(
+    "Delivery is unconfirmed.",
+  );
   expect(mirrorPosts).toBe(2);
   items = await outboxItems(page);
   expect(items[0].peers.self.attempts).toBe(1);
@@ -457,7 +470,9 @@ test("retries use the address saved with the record after the peer preference ch
   await page.getByRole("link", { name: "1 not delivered" }).click();
   await expect(page.getByText(/mirror:/)).toBeVisible();
   await page.getByRole("button", { name: "Try now" }).click();
-  await expect(page.getByRole("status")).toContainText("Still not delivered.");
+  await expect(page.getByRole("status")).toContainText(
+    "Delivery is unconfirmed.",
+  );
   expect(hits.replacement).toBe(0);
   expect(hits.mirror).toBeGreaterThanOrEqual(2);
   items = await outboxItems(page);

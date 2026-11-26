@@ -33,7 +33,7 @@ import {
   type HandoverRecord,
   type PeerKnowledge,
 } from "../data/lifecycle.ts";
-import { savedPeer } from "../data/delivery.ts";
+import { isFinished, savedPeer } from "../data/delivery.ts";
 import type { Envelope } from "../model/types.ts";
 import type { KeyBackup, OutboxItem, SavedRecipient } from "../data/store.ts";
 import type { Peer } from "../data/api.ts";
@@ -73,9 +73,8 @@ export async function handoverState(
   const items = await app.delivery.items();
   const transfer = items.find((i) => i.id === record.transfer) ?? null;
   const accept = items.find((i) => i.id === record.accept) ?? null;
-  const done = (item: OutboxItem | null) =>
-    item !== null &&
-    Object.values(item.peers).every((peer) => peer.state === "accepted");
+  // A row without recipients is no evidence of delivery.
+  const done = (item: OutboxItem | null) => item !== null && isFinished(item);
   return {
     transfer,
     accept,
@@ -725,6 +724,9 @@ export async function handoverPage(
         await app.delivery.invalidate();
         void app.delivery
           .deliver(record.transfer, true)
+          .catch(() => {})
+          // The acceptance gets its own turn. Group order still holds it
+          // where it depends on an unfinished transfer.
           .then(() => app.delivery.deliver(record.accept, true))
           .catch(() => {});
         navigate("/identity");
@@ -891,6 +893,9 @@ export async function handoverPage(
         await app.delivery.invalidate();
         void app.delivery
           .deliver(record.transfer, true)
+          .catch(() => {})
+          // The acceptance gets its own turn. Group order still holds it
+          // where it depends on an unfinished transfer.
           .then(() => app.delivery.deliver(record.accept, true))
           .catch(() => {});
         navigate("/identity");
@@ -954,23 +959,33 @@ export function handoverStatusLine(
     item ? delivery.view(item) : null;
   const transfer = summary(state.transfer);
   const accept = summary(state.accept);
-  const word = (view: ReturnType<typeof summary>) =>
-    view?.accepted
-      ? "accepted, saving the receipt"
-      : view?.unconfirmed
-        ? "unconfirmed"
-        : "waiting";
+  const word = (item: OutboxItem | null, view: ReturnType<typeof summary>) =>
+    !item
+      ? "missing from this browser"
+      : view?.accepted
+        ? "accepted, saving the receipt"
+        : view?.stopped
+          ? "stopped"
+          : Object.values(view?.peers ?? {}).some(
+                (peer) =>
+                  peer.status === "refused" || peer.status === "saving-refused",
+              )
+            ? "refused"
+            : view?.unconfirmed
+              ? "unconfirmed"
+              : "waiting";
   return state.transferDone && state.acceptDone
     ? "Handover complete. The new key is active, and the old key is retired."
     : transfer?.accepted && accept?.accepted
       ? "Both events were accepted. This browser still needs to save a receipt."
       : state.transferDone
-        ? `Old key retired, acceptance ${word(accept)}.`
+        ? `Old key retired, acceptance ${word(state.accept, accept)}.`
         : state.acceptDone
-          ? `Acceptance delivered, transfer ${word(transfer)}.`
-          : word(transfer) === "waiting" && word(accept) === "waiting"
+          ? `Acceptance delivered, transfer ${word(state.transfer, transfer)}.`
+          : word(state.transfer, transfer) === "waiting" &&
+              word(state.accept, accept) === "waiting"
             ? "Old key retired locally. Both events are waiting to upload."
-            : `Old key retired locally. Transfer ${word(transfer)}, acceptance ${word(accept)}.`;
+            : `Old key retired locally. Transfer ${word(state.transfer, transfer)}, acceptance ${word(state.accept, accept)}.`;
 }
 
 export function renderExisting(
@@ -993,8 +1008,18 @@ export function renderExisting(
     try {
       state = await handoverState(app, record);
     } catch {
-      // A failed read keeps the last shown state. It must not cancel an
-      // older successful read that is still to be shown.
+      // A failed read keeps the last shown state with a notice. It must not
+      // cancel an older successful read that is still to be shown.
+      if (box.isConnected && mine > shownGeneration) {
+        box.querySelector("[data-handover-read-error]")?.remove();
+        box.prepend(
+          el("p", {
+            class: "small notice",
+            "data-handover-read-error": "",
+            text: "This browser could not read the handover records. The last known state stays below.",
+          }),
+        );
+      }
       return;
     }
     // Show the most recent successful result. Only a result that a newer

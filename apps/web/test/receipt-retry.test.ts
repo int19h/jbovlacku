@@ -353,7 +353,7 @@ test("a failed publication receipt save reports a result that still needs saving
   await expect(saved).toContainText(
     "Saved. A delivery result still needs saving.",
   );
-  await expect(saved).toContainText("could not save that answer yet");
+  await expect(saved).toContainText("could not save a delivery result yet");
   await expect(saved).toContainText(
     "The server accepted this record. This browser still needs to save the receipt.",
   );
@@ -720,7 +720,9 @@ test("the outbox shows a proved receipt mismatch after pending verification", as
       );
       return {
         other,
-        hash: core.contentHash(core.utf8(canonical(variants[0].envelope))),
+        // The receipt names the other, authenticated envelope. Only bytes
+        // that match the named hash and verify prove a mismatch.
+        hash: core.contentHash(core.utf8(other)),
       };
     },
     { corePath, variants },
@@ -1399,6 +1401,7 @@ test("the stopped publication, an empty group and the handover headline read one
         transfer: row,
         accept: {
           ...row,
+          stopped: false,
           id: "jve1:" + "d".repeat(64),
           peers: {
             self: {
@@ -1433,4 +1436,181 @@ test("the stopped publication, an empty group and the handover headline read one
   expect(texts.pendingAccept).toBe(
     "Old key retired locally. Transfer accepted, saving the receipt, acceptance waiting.",
   );
+});
+
+test("a failed Stop on the outbox says that it did not take effect", async ({
+  page,
+}) => {
+  await page.goto("/outbox");
+  await expect(page.getByText("No unfinished records.")).toBeVisible();
+  await page.route("**/api/v1/events", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({ status: 503, json: { message: "Busy." } })
+      : route.continue(),
+  );
+  await queueProfile(page);
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect(
+    page.getByRole("button", { name: "Stop retrying" }),
+  ).toBeVisible();
+  // Abort the next write that sets the stop flag.
+  await page.evaluate(() => {
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value, key) {
+      const request = put.call(this, value, key);
+      if (this.name === "outbox" && value?.stopped === true) {
+        IDBObjectStore.prototype.put = put;
+        this.transaction.abort();
+      }
+      return request;
+    };
+  });
+  await page.getByRole("button", { name: "Stop retrying" }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "Stop did not take effect.",
+  );
+  expect((await readOutbox(page))[0].stopped).toBe(false);
+});
+
+test("publication and handover summaries need every member and every recipient", async ({
+  page,
+}) => {
+  await page.goto("/about");
+  await expect(page.locator("main h1")).toBeAttached();
+  const texts = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { outboxItem } = await import(String("/src/data/lifecycle.ts"));
+    const { savedGroupState } = await import(
+      String("/src/pages/wizard/publish.ts")
+    );
+    const { handoverStatusLine } = await import(
+      String("/src/pages/handover.ts")
+    );
+    const engine = new DeliveryEngine(new LocalStore("summary-members"));
+    const make = (seed: number, state: string, stopped = false) => {
+      const item = outboxItem(
+        core.createEvent(
+          new Uint8Array(32).fill(seed),
+          [],
+          "1".repeat(32),
+          { kind: "identity.profile" },
+          { name: `Member ${seed}`, bio: [], links: [] },
+        ),
+        "members",
+        seed,
+        { self: { origin: location.origin, base: "/api/v1", label: "self" } },
+      );
+      Object.assign(item.peers.self, {
+        state,
+        nextAttempt: state === "refused" ? null : Date.now(),
+        failure: state === "refused" ? "refused" : null,
+      });
+      item.stopped = stopped;
+      return item;
+    };
+    const accepted = make(1, "accepted");
+    const empty = { ...make(2, "queued"), peers: {} };
+    return {
+      // Two saved IDs, one surviving accepted row.
+      missing: savedGroupState([accepted], engine, 2),
+      emptyPeers: handoverStatusLine(engine, {
+        transfer: empty,
+        accept: { ...empty, id: "jve1:" + "e".repeat(64) },
+        transferDone: false,
+        acceptDone: false,
+      }),
+      refused: handoverStatusLine(engine, {
+        transfer: make(3, "refused"),
+        accept: make(4, "refused"),
+        transferDone: false,
+        acceptDone: false,
+      }),
+      stopped: handoverStatusLine(engine, {
+        transfer: make(5, "queued", true),
+        accept: make(6, "queued", true),
+        transferDone: false,
+        acceptDone: false,
+      }),
+      mixed: savedGroupState(
+        [
+          make(7, "unknown", true),
+          {
+            ...make(8, "unknown"),
+            peers: {
+              self: {
+                ...make(8, "unknown").peers.self,
+                verifyReceipt: true,
+              },
+            },
+          },
+        ],
+        engine,
+      ),
+    };
+  }, corePath);
+  expect(texts.missing.headline).toBe("Saved. Some records are missing here.");
+  expect(texts.missing.explanation).toContain("1 of 2 signed records");
+  expect(texts.emptyPeers).not.toContain("Handover complete");
+  expect(texts.refused).toBe(
+    "Old key retired locally. Transfer refused, acceptance refused.",
+  );
+  expect(texts.stopped).toBe(
+    "Old key retired locally. Transfer stopped, acceptance stopped.",
+  );
+  expect(texts.mixed.headline).toBe("Saved. Outcome unconfirmed.");
+  expect(texts.mixed.explanation).toContain(
+    "This browser keeps the exact signed bytes and will check the receipt again when online.",
+  );
+});
+
+test("a pending missing-address result does not say that a server answered", async ({
+  page,
+}) => {
+  await page.goto("/about");
+  await expect(page.locator("main h1")).toBeAttached();
+  const state = await page.evaluate(async (corePath) => {
+    const core = await import(corePath);
+    await core.initializeCore();
+    const { DeliveryEngine } = await import(String("/src/data/delivery.ts"));
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { outboxItem } = await import(String("/src/data/lifecycle.ts"));
+    const { savedGroupState } = await import(
+      String("/src/pages/wizard/publish.ts")
+    );
+    const store = new LocalStore("missing-address");
+    const item = outboxItem(
+      core.createEvent(
+        new Uint8Array(32).fill(9),
+        [],
+        "1".repeat(32),
+        { kind: "identity.profile" },
+        { name: "No address", bio: [], links: [] },
+      ),
+      "address",
+      0,
+      { self: { origin: location.origin, base: "/api/v1", label: "self" } },
+    );
+    item.recipients = {};
+    await store.queueGroup([item]);
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value, key) {
+      const request = put.call(this, value, key);
+      if (
+        this.name === "outbox" &&
+        value?.peers?.self?.failure === "unresolved"
+      )
+        this.transaction.abort();
+      return request;
+    };
+    const engine = new DeliveryEngine(store);
+    await engine.tryNow(item.id).catch(() => {});
+    IDBObjectStore.prototype.put = put;
+    const [row] = await store.list("outbox");
+    return savedGroupState([row as never], engine);
+  }, corePath);
+  expect(state.explanation).not.toContain("A server answered");
+  expect(state.lines.join(" ")).toContain("not configured in this record");
 });
