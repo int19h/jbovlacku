@@ -44,6 +44,8 @@ A graph with only local closures skips this index. A failed graph build skips it
 An append keeps the base boundary marks.
 It also tests the current neighbors against mixed closures that earlier appends added.
 The evaluator rebuilds if the insertion splits a stored range.
+An append pays the same index charges as a fresh build for its new mixed closures and for a new issuer block.
+The fast path checks the block charge before the append starts.
 
 A merge scope contains the records that can contribute to one priced union.
 An append also rebuilds if it separates adjacent ranges from different operands in one scope.
