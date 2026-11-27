@@ -409,7 +409,7 @@ The command holds the same exclusive data directory lock as the server and loade
 A repeat run skips records with the current extraction format version.
 Ordinary startup also fills missing compact rows as evaluation needs them.
 The [trust boundaries](frontend.md#trust-boundaries) cover damage to the server's derived state, including compact rows that the server rebuilds from original bytes.
-Damage to original objects, private records, or the receipt journal needs a restore from a trusted backup.
+Damage to original objects or the receipt journal needs a restore from a trusted backup.
 
 The persistent checkpoint stores evaluated results separately from these private records.
 Checkpoint restoration loads record inputs from the compact store. A core or view change discards results and keeps those records.

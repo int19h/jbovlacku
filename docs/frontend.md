@@ -70,13 +70,15 @@ Long calculations use bounded jobs and explicit resource errors. Job execution n
 A home server is a server that the client trusts for computed answers.
 The origin that supplies the client code is a home server. A server that the client is configured to read dictionary answers from is also a home server.
 Under static hosting, the client trusts the files at the origin that supplies the code.
-A configured delivery peer is another peer, even though the client reads receipts and own-history scans from it.
+A configured delivery peer that is not also a home server is another peer. This holds for the receipts and own-history scans that the client reads from it.
 A client check cannot protect a reader against a malicious code origin, because that origin can supply different client code.
 The reader also trusts each server that they choose for dictionary reading. A reader who does not trust a server uses another server or runs one.
 
 The client accepts every answer that a home server computes. Examples are word and search responses, scores, publication and virtual statuses, account evidence, search packages, virtual previews, identity summaries, and receipts.
 The client does not need to recompute or cross-check these answers to check the server.
 A home-server answer can have a valid shape and still hold content that the server's own code cannot produce. A finding that needs such content is not a defect.
+The shape of an answer is its field types, its required fields, and the references between parts of that one answer.
+A reference to a part that the answer does not hold is a wrong shape. The page then shows that part as unavailable.
 The client checks the shape of each answer that it processes or renders. An answer with a wrong shape must not crash the page.
 A proxy error or a version mismatch can cause such an answer. A crash on a wrong shape is a defect.
 
@@ -120,7 +122,8 @@ Damage to the server's original records needs a restore from a trusted backup.
 
 A deliberate edit of browser storage can give wrong results only to the person who made it.
 Anything that such a browser sends to a server is untrusted input at the server API.
-Other sections require more checks of a program's own storage, for example the saved package checks and the semantic index checks. Those checks and their failure handling are allowed.
+Other sections require more checks of a program's own storage. Examples are the saved package checks and the semantic index checks.
+Those checks and their failure handling are allowed.
 This section takes precedence over them. A finding about a missing check of that kind is not a defect.
 
 Checks against untrusted input belong at the places where that input enters a program.
