@@ -1985,8 +1985,8 @@ test("samePackageStructure treats equal content with different sharing as equal 
     );
   }
 
-  // Four-depth amplification graph must stop at the per-row cap and
-  // decline reuse instead of spending 123,918 units.
+  // Four-depth amplification graph wrapped in a package row exercises the
+  // per-row step cap and declines reuse instead of spending 123,918 units.
   const leaf = fields(14);
   const small = Object.fromEntries(
     Array.from({ length: 8 }, (_, i) => [`s${i}`, leaf]),
@@ -2008,17 +2008,31 @@ test("samePackageStructure treats equal content with different sharing as equal 
       },
     }),
   ]);
-  const clone = structuredClone(foldedPkg);
-  const budget = new SearchRequestBudget(searchMetrics(), {
+  const rowBudget = new SearchRequestBudget(searchMetrics(), {
     workLimit: 82_688,
     deadlineMs: Infinity,
   });
-  const equal = samePackageStructure(clone, foldedPkg as never, budget);
-  assert.equal(equal, false);
-  assert.ok(
-    budget.snapshot().spent <= 2_000,
-    `expected cap stop <= 2000 units, spent ${budget.snapshot().spent}`,
+  assert.equal(
+    samePackageStructure(structuredClone(foldedPkg), foldedPkg as never, rowBudget),
+    false,
   );
+  assert.ok(
+    rowBudget.snapshot().spent <= 20,
+    `expected per-row cap stop <= 20 units, spent ${rowBudget.snapshot().spent}`,
+  );
+
+  // A direct non-package root without entries is rejected up front by
+  // requirePackageListShapes before spending any budget.
+  const directBudget = new SearchRequestBudget(searchMetrics(), {
+    workLimit: 82_688,
+    deadlineMs: Infinity,
+  });
+  assert.throws(
+    () =>
+      samePackageStructure(structuredClone(root), root as never, directBudget),
+    saved.PackageValidationError,
+  );
+  assert.equal(directBudget.snapshot().spent, 0);
 });
 
 test("requireSavedRowLists skips Object.getOwnPropertySymbols on cached attribution dates", () => {
@@ -2161,4 +2175,56 @@ test("samePackageStructure requires exact container prototypes and accepts unmod
       `${label} fresh clone must compare as equal`,
     );
   }
+});
+
+test("samePackageStructure charges zero units for empty v1 and v2 packages and only row units for populated packages", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { entryContentUnits, SearchRequestBudget, searchMetrics } =
+    await import("../../../../packages/search/src/index.ts");
+  const snapshot = "sha256:" + "a".repeat(64);
+  const searchView = "jve1:" + "b".repeat(64);
+  const emptyPackages = [
+    ["v1-empty", { version: 1 as const, snapshot, entries: [] }],
+    [
+      "v2-empty-with-view",
+      { version: 2 as const, snapshot, search_view: searchView, entries: [] },
+    ],
+    [
+      "v1-empty-with-downgrade",
+      {
+        version: 1 as const,
+        snapshot,
+        downgrade: "x".repeat(200),
+        entries: [],
+      },
+    ],
+  ] as const;
+
+  for (const [label, base] of emptyPackages) {
+    const b = new SearchRequestBudget(searchMetrics(), {
+      workLimit: 0,
+      deadlineMs: Infinity,
+    });
+    assert.equal(
+      samePackageStructure(structuredClone(base), base as never, b),
+      true,
+      `${label} must match at workLimit 0`,
+    );
+    assert.equal(b.snapshot().spent, 0, `${label} must spend 0 units`);
+  }
+
+  // One-row package charges only the row's own content units, not the header.
+  const oneRow = pkg([v2Row()]);
+  const expectedRowUnits = 1 + entryContentUnits(oneRow.entries[0]);
+  const exactBudget = new SearchRequestBudget(searchMetrics(), {
+    workLimit: expectedRowUnits,
+    deadlineMs: Infinity,
+  });
+  assert.equal(
+    samePackageStructure(structuredClone(oneRow), oneRow as never, exactBudget),
+    true,
+  );
+  assert.equal(exactBudget.snapshot().spent, expectedRowUnits);
 });
