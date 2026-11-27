@@ -688,38 +688,95 @@ export function selectLujvoCandidate(
   draft.step = Math.max(draft.step, 4) as Draft["step"];
 }
 
+interface IndexedSourceRow {
+  index: number;
+  entry: CachedPackage["entries"][number];
+}
+
+interface PackageSourceIndex {
+  byPlain: Map<string, IndexedSourceRow[]>;
+  byGismuPrefix: Map<string, Set<string>>;
+  byRafsi: Map<string, Set<string>>;
+}
+
+// Package entry lists are immutable; index stripped headwords, gismu prefixes,
+// and listed rafsi once per list so multi-part reconstruction and re-renders
+// never rescan the package.
+const packageSourceIndexes = new WeakMap<
+  readonly CachedPackage["entries"][number][],
+  PackageSourceIndex
+>();
+
+function sourceIndexFor(
+  entries: readonly CachedPackage["entries"][number][],
+): PackageSourceIndex {
+  let index = packageSourceIndexes.get(entries);
+  if (index) return index;
+  const byPlain = new Map<string, IndexedSourceRow[]>();
+  const byGismuPrefix = new Map<string, Set<string>>();
+  const byRafsi = new Map<string, Set<string>>();
+  const addKey = (map: Map<string, Set<string>>, key: string, plain: string) => {
+    let set = map.get(key);
+    if (!set) {
+      set = new Set();
+      map.set(key, set);
+    }
+    set.add(plain);
+  };
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const plain = stripAcuteAccents(entry.word.spelling);
+    let list = byPlain.get(plain);
+    if (!list) {
+      list = [];
+      byPlain.set(plain, list);
+    }
+    list.push({ index: i, entry });
+    if (entry.classification.kind === "gismu")
+      addKey(byGismuPrefix, plain.slice(0, 4), plain);
+    if ("issuer" in entry) {
+      for (const rafsi of (entry as PackageEntryV2).rafsi)
+        addKey(byRafsi, rafsi, plain);
+    }
+  }
+  index = { byPlain, byGismuPrefix, byRafsi };
+  packageSourceIndexes.set(entries, index);
+  return index;
+}
+
 /** Possible source words remain choices. Dictionary order grants no source authority. */
 export function sourceOptions(
   part: RecoveredPart,
   cached: CachedPackage | null,
   wholeWord = false,
 ) {
-  const entries = cached?.entries ?? [];
+  const entries = cached?.entries;
+  if (!entries?.length) return [];
+  const index = sourceIndexFor(entries);
   const matchedPlains = new Set<string>();
-  for (const entry of entries) {
-    const listed =
-      !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
-    const plain = stripAcuteAccents(entry.word.spelling);
-    if (wholeWord && plain !== part.text) continue;
-    if (
-      !wholeWord &&
-      plain !== part.text &&
-      !(
-        entry.classification.kind === "gismu" && plain.slice(0, 4) === part.text
-      ) &&
-      !listed.includes(part.text)
-    )
-      continue;
-    matchedPlains.add(plain);
+  if (index.byPlain.has(part.text)) matchedPlains.add(part.text);
+  if (!wholeWord) {
+    if (part.text.length === 4) {
+      const prefixes = index.byGismuPrefix.get(part.text);
+      if (prefixes) for (const plain of prefixes) matchedPlains.add(plain);
+    }
+    const rafsiMatches = index.byRafsi.get(part.text);
+    if (rafsiMatches) for (const plain of rafsiMatches) matchedPlains.add(plain);
   }
   if (!matchedPlains.size) return [];
+  const matchedRows: IndexedSourceRow[] = [];
+  for (const plain of matchedPlains) {
+    const rows = index.byPlain.get(plain);
+    if (rows) for (let i = 0; i < rows.length; i++) matchedRows.push(rows[i]);
+  }
+  if (matchedPlains.size > 1) matchedRows.sort((a, b) => a.index - b.index);
   // Group all rows that share a canonical word ID before enforcing the 128-byte
   // component spelling limit, so an over-long alias does not drop its claims
   // when another alias of the same word fits.
   const words = new Map<string, LujvoComponentState>();
-  for (const entry of entries) {
+  for (let i = 0; i < matchedRows.length; i++) {
+    const entry = matchedRows[i].entry;
     const spelling = entry.word.spelling;
-    if (!matchedPlains.has(stripAcuteAccents(spelling))) continue;
     const listed =
       !wholeWord && "issuer" in entry ? (entry as PackageEntryV2).rafsi : [];
     const identity = wordId(entry.word);

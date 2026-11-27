@@ -99,13 +99,21 @@ async function countWordIds(page: Page) {
     const response = await route.fetch();
     const source = await response.text();
     const marker = "function runtime_word_identifier(bytes) {";
+    const batchMarker = "function word_id_spellings(spellings) {";
     expect(source).toContain(marker);
+    expect(source).toContain(batchMarker);
     await route.fulfill({
       response,
-      body: source.replace(
-        marker,
-        marker + "globalThis.wordIdCalls = (globalThis.wordIdCalls ?? 0) + 1;",
-      ),
+      body: source
+        .replace(
+          marker,
+          marker + "globalThis.wordIdCalls = (globalThis.wordIdCalls ?? 0) + 1;",
+        )
+        .replace(
+          batchMarker,
+          batchMarker +
+            'globalThis.wordIdBatchCalls = (globalThis.wordIdBatchCalls ?? 0) + 1; globalThis.wordIdBatchSpellings = (globalThis.wordIdBatchSpellings ?? 0) + (spellings ? spellings.split("\\0").length : 0);',
+        ),
     });
   });
   await page.route("**/api/v1/words/**", (route) => route.abort());
@@ -129,7 +137,13 @@ test("a saved pair uses word IDs only when it needs an identity", async ({
   await expect(
     page.locator('main a[href="/word/cukta?lang=en"]').first(),
   ).toBeVisible();
-  expect(await page.evaluate(() => (globalThis as any).wordIdCalls)).toBe(2);
+  expect(
+    await page.evaluate(() => ({
+      single: (globalThis as any).wordIdCalls ?? 0,
+      batches: (globalThis as any).wordIdBatchCalls ?? 0,
+      batchedSpellings: (globalThis as any).wordIdBatchSpellings ?? 0,
+    })),
+  ).toEqual({ single: 1, batches: 1, batchedSpellings: 1 });
 });
 
 test("a 30,000-row saved pair makes zero extra word-ID calls and enforces legal and illegal fallback batches", async ({
@@ -173,8 +187,14 @@ test("a 30,000-row saved pair makes zero extra word-ID calls and enforces legal 
   await expect(
     page.locator('main a[href="/word/cukta?lang=en"]').first(),
   ).toBeVisible();
-  // One ID for matching row 0 and one for pairCard; zero for the 29,999 tail rows.
-  expect(await page.evaluate(() => (globalThis as any).wordIdCalls)).toBe(2);
+  // One batched ID for matching row 0 and one single ID for pairCard; zero for the 29,999 tail rows.
+  expect(
+    await page.evaluate(() => ({
+      single: (globalThis as any).wordIdCalls ?? 0,
+      batches: (globalThis as any).wordIdBatchCalls ?? 0,
+      batchedSpellings: (globalThis as any).wordIdBatchSpellings ?? 0,
+    })),
+  ).toEqual({ single: 1, batches: 1, batchedSpellings: 1 });
 
   // Now place an illegal fallback spelling in the final partial batch after 130 legal fallbacks.
   await page.evaluate(
@@ -1281,7 +1301,7 @@ test("unmodified shared-collection clones keep warm reuse, and long-string cross
 
     // Equal-content k=32 crossed square of 4x2048-char selmaho arrays.
     // Reuses warm index under default budget; refuses with SearchBudgetError
-    // below per-reference comparison cost (100,000 < 139,267).
+    // below per-reference comparison cost (100,000 < 139,264).
     const e1aDb = `e1a-${Date.now()}`;
     let e1aWarmPrepared = true;
     let e1aLowLimitError = "";

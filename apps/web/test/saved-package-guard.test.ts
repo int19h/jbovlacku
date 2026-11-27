@@ -2328,3 +2328,152 @@ test("saved shapes reject non-plain attribution dates on warm reuse and enforce 
   });
   expect(savedClaims).toEqual([]);
 });
+
+test("lujvo ordinary Add selects a fitting alias spelling in either row order and keeps grouped definitions and claims", async ({
+  page,
+}) => {
+  const shortSpelling = "ba".repeat(43) + "n";
+  const longSpelling = "bá".repeat(43) + "n";
+  const snapshot = "sha256:" + "a".repeat(64);
+  const view = "jve1:" + "b".repeat(64);
+  const hashJson = async (text: string) => {
+    const { createHash } = await import("node:crypto");
+    return "sha256:" + createHash("sha256").update(text).digest("hex");
+  };
+  const makeEntry = async (spelling: string, index: number, text: string) => ({
+    event: "jve1:" + index.toString(16).padStart(64, "0"),
+    word: { language: "jbo" as const, spelling },
+    language: "en",
+    glosses: [{ language: "en", text, sense: null }],
+    plain_text: text,
+    classification: { kind: "cmevla" as const, selmaho: [] as string[] },
+    body: await hashJson(`example-${index}`),
+    rafsi: ["bab"],
+    rafsi_complete: true,
+    attribution: null,
+    notes: false,
+    issuer: "ed25519:" + "a".repeat(64),
+    search_status: "active" as const,
+  });
+
+  for (const [label, spellings] of [
+    ["long-first", [longSpelling, shortSpelling]],
+    ["short-first", [shortSpelling, longSpelling]],
+    ["long-only", [longSpelling]],
+  ] as const) {
+    const rows = await Promise.all(
+      spellings.map((sp, idx) =>
+        makeEntry(sp, idx + 1, idx === 0 ? "first shared book" : "second shared book"),
+      ),
+    );
+    const partBody = JSON.stringify(rows);
+    const partHash = await hashJson(partBody);
+    const pkgBody = JSON.stringify({
+      version: 2,
+      language: "en",
+      snapshot,
+      search_view: view,
+      parts: [
+        { hash: partHash, bytes: Buffer.byteLength(partBody), count: rows.length },
+      ],
+    });
+    const pkgHash = await hashJson(pkgBody);
+    const descriptor = {
+      version: 2,
+      language: "en",
+      hash: pkgHash,
+      bytes: Buffer.byteLength(pkgBody),
+    };
+
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      const body = path.endsWith("/manifest")
+        ? JSON.stringify({
+            snapshot,
+            view,
+            packages: [],
+            package_versions: [descriptor],
+          })
+        : path.endsWith("/packages/en")
+          ? pkgBody
+          : path.includes("/package-parts/")
+            ? partBody
+            : null;
+      await route.fulfill({
+        status: body ? 200 : 503,
+        contentType: "application/json",
+        body: body ?? "{}",
+      });
+    });
+
+    await page.goto("/");
+    await page.evaluate(async () => {
+      const { downloadPackage } = await import(String("/src/data/search.ts"));
+      const { LocalStore } = await import(String("/src/data/store.ts"));
+      const { newDraft } = await import(String("/src/model/draft.ts"));
+      const got = await downloadPackage("en");
+      const store = new LocalStore();
+      await store.put("packages", "en", got);
+      await store.put(
+        "drafts",
+        "current",
+        newDraft({ kind: "lujvo", meaning: "keep this meaning", step: 3 }),
+      );
+    });
+
+    await page.goto("/new/lujvo");
+    await page.getByLabel("Add a part").fill(shortSpelling);
+    const list = page.getByRole("list", { name: "Matching words" });
+    await list.locator("li").first().waitFor();
+
+    if (label === "long-only") {
+      await expect(
+        list.getByText("This spelling exceeds the builder limit of 128 bytes."),
+      ).toBeVisible();
+      await expect(
+        list.getByRole("button", { name: `Add ${shortSpelling}`, exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        list.getByRole("button", {
+          name: `Add ${shortSpelling} as entered`,
+          exact: true,
+        }),
+      ).toBeVisible();
+    } else {
+      const addButton = list.getByRole("button", {
+        name: `Add ${shortSpelling}`,
+        exact: true,
+      });
+      await expect(addButton, label).toBeVisible();
+      await expect(
+        list.getByText("This spelling exceeds the builder limit of 128 bytes."),
+        label,
+      ).toHaveCount(0);
+      await addButton.click();
+      await expect
+        .poll(
+          async () =>
+            page.evaluate(async () => {
+              const { LocalStore } = await import(String("/src/data/store.ts"));
+              const draft = (await new LocalStore().get(
+                "drafts",
+                "current",
+              )) as any;
+              const component = draft.lujvo?.components?.[0];
+              return {
+                spelling: component?.spelling,
+                definitions: component?.definitions?.length ?? 0,
+                claims: component?.claims?.map((c: any) => c.rafsi) ?? [],
+              };
+            }),
+          { message: label },
+        )
+        .toEqual({
+          spelling: shortSpelling,
+          definitions: 2,
+          claims: ["bab"],
+        });
+    }
+  }
+});

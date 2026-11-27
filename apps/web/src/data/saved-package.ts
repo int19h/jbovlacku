@@ -30,6 +30,23 @@ export class PackageValidationError extends Error {
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+function hasCleanPrototypes(): boolean {
+  for (const _ in Object.prototype) return false;
+  for (const _ in Array.prototype) return false;
+  return true;
+}
+
+const structuredPackages = new WeakSet<object>();
+
+/**
+ * Mark a package object freshly deserialized by IndexedDB structured clone.
+ * Structured deserialization creates arrays and plain objects with enumerable
+ * own string keys only, never Symbol keys or extra non-enumerable properties.
+ */
+export function markStructuredPackage(value: unknown): void {
+  if (isRecord(value)) structuredPackages.add(value);
+}
+
 /** Whether a value is an object with exactly these own fields. The worker uses the same test. */
 export function fields(
   value: unknown,
@@ -44,10 +61,100 @@ export function fields(
   return true;
 }
 
-function isDateMap(value: unknown): value is Record<string, unknown> {
+function fieldsExact(
+  value: unknown,
+  names: readonly string[],
+  cleanProto: boolean,
+): value is Record<string, any> {
   if (!isRecord(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  if (cleanProto && Object.getPrototypeOf(value) === Object.prototype) {
+    let i = 0;
+    for (const key in value) {
+      if (key !== names[i++]) return fields(value, names);
+    }
+    return i === names.length;
+  }
+  return fields(value, names);
+}
+
+// Keep one `for..in` site per hot object shape so JS engines do not go
+// megamorphic across entry, word, classification, gloss, attribution, and account.
+function fieldsExact2(
+  value: unknown,
+  names: readonly string[],
+  cleanProto: boolean,
+): value is Record<string, any> {
+  if (!isRecord(value)) return false;
+  if (cleanProto && Object.getPrototypeOf(value) === Object.prototype) {
+    let i = 0;
+    for (const key in value) {
+      if (key !== names[i++]) return fields(value, names);
+    }
+    return i === 2;
+  }
+  return fields(value, names);
+}
+
+function fieldsExactClass(
+  value: unknown,
+  cleanProto: boolean,
+): value is Record<string, any> {
+  if (!isRecord(value)) return false;
+  if (cleanProto && Object.getPrototypeOf(value) === Object.prototype) {
+    let i = 0;
+    for (const key in value) {
+      if (key !== CLASSIFICATION_FIELDS[i++])
+        return fields(value, CLASSIFICATION_FIELDS);
+    }
+    return i === 2;
+  }
+  return fields(value, CLASSIFICATION_FIELDS);
+}
+
+function fieldsExactGloss(
+  value: unknown,
+  cleanProto: boolean,
+): value is Record<string, any> {
+  if (!isRecord(value)) return false;
+  if (cleanProto && Object.getPrototypeOf(value) === Object.prototype) {
+    let i = 0;
+    for (const key in value) {
+      if (key !== GLOSS_FIELDS[i++]) return fields(value, GLOSS_FIELDS);
+    }
+    return i === 3;
+  }
+  return fields(value, GLOSS_FIELDS);
+}
+
+function fieldsExactAttribution(
+  value: unknown,
+  cleanProto: boolean,
+): value is Record<string, any> {
+  if (!isRecord(value)) return false;
+  if (cleanProto && Object.getPrototypeOf(value) === Object.prototype) {
+    let i = 0;
+    for (const key in value) {
+      if (key !== ATTRIBUTION_FIELDS[i++])
+        return fields(value, ATTRIBUTION_FIELDS);
+    }
+    return i === 4;
+  }
+  return fields(value, ATTRIBUTION_FIELDS);
+}
+
+function fieldsExactAccount(
+  value: unknown,
+  cleanProto: boolean,
+): value is Record<string, any> {
+  if (!isRecord(value)) return false;
+  if (cleanProto && Object.getPrototypeOf(value) === Object.prototype) {
+    let i = 0;
+    for (const key in value) {
+      if (key !== ACCOUNT_FIELDS[i++]) return fields(value, ACCOUNT_FIELDS);
+    }
+    return i === 2;
+  }
+  return fields(value, ACCOUNT_FIELDS);
 }
 
 /** A stored array must have only its own elements and its intrinsic length. */
@@ -64,12 +171,50 @@ function isDenseList(value: unknown): value is unknown[] {
   return keys.length === value.length + 1 && keys[value.length] === "length";
 }
 
+const SMALL_INDICES = Array.from({ length: 65 }, (_, i) => String(i));
+
+/**
+ * Dense-list check for an array deserialized by IndexedDB structured clone when
+ * `Object.prototype` and `Array.prototype` have no enumerable properties.
+ * Inspects actual own keys so sparse lengths, holes, and extra own properties
+ * all fail in proportion to supplied keys.
+ */
+function isDenseStructuredArray(value: unknown[]): boolean {
+  const len = value.length;
+  if (len === 0) {
+    for (const _ in value) return false;
+    return true;
+  }
+  const keys = Object.keys(value);
+  return (
+    keys.length === len &&
+    keys[len - 1] === (len <= 64 ? SMALL_INDICES[len - 1] : String(len - 1))
+  );
+}
+
+function isDenseArray(value: unknown[], structured: boolean): boolean {
+  if (structured) return isDenseStructuredArray(value);
+  const keys = Reflect.ownKeys(value);
+  return keys.length === value.length + 1 && keys[value.length] === "length";
+}
+
+/** Check the outer `entries` list of a package before a single-pass direct row walk. */
+export function requireSavedEntriesList(pkg: unknown): void {
+  if (!isRecord(pkg)) throw new PackageValidationError();
+  const { entries } = pkg;
+  if (
+    !Array.isArray(entries) ||
+    !isDenseArray(entries, structuredPackages.has(pkg) && hasCleanPrototypes())
+  )
+    throw new PackageValidationError();
+}
+
 const WORD_FIELDS = ["language", "spelling"];
 const CLASSIFICATION_FIELDS = ["kind", "selmaho"];
-const GLOSS_FIELDS = ["language", "text", "sense"];
-const ATTRIBUTION_FIELDS = ["source", "author", "account", "dates"];
-const ACCOUNT_FIELDS = ["origin", "account"];
-const LEGACY_STATUS_FIELDS = ["view", "status"];
+const GLOSS_FIELDS = ["language", "sense", "text"];
+const ATTRIBUTION_FIELDS = ["account", "author", "dates", "source"];
+const ACCOUNT_FIELDS = ["account", "origin"];
+const LEGACY_STATUS_FIELDS = ["status", "view"];
 
 export const PACKAGE_GLOSS_LIMIT = 8192;
 export const PACKAGE_RAFSI_LIMIT = 64;
@@ -92,31 +237,41 @@ export const savedRowListCache = (): SavedRowListCache => ({});
  */
 export function requirePackageListShapes(pkg: unknown): void {
   if (!isRecord(pkg)) throw new PackageValidationError();
+  const structured = structuredPackages.has(pkg) && hasCleanPrototypes();
   const { entries } = pkg;
-  requireDenseList(entries);
+  if (!Array.isArray(entries) || !isDenseArray(entries, structured))
+    throw new PackageValidationError();
   let checkedLists: Set<unknown> | undefined;
-  const checkDense = (list: unknown) => {
-    if (Array.isArray(list) && list.length >= 4) {
-      if (checkedLists?.has(list)) return;
-      requireDenseList(list);
-      (checkedLists ??= new Set()).add(list);
-      return;
-    }
-    requireDenseList(list);
-  };
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     if (!isRecord(entry)) throw new PackageValidationError();
     const { glosses, classification, rafsi } = entry;
     if (!Array.isArray(glosses) || glosses.length > PACKAGE_GLOSS_LIMIT)
       throw new PackageValidationError();
-    checkDense(glosses);
+    if (glosses.length < 4) {
+      if (!isDenseArray(glosses, structured)) throw new PackageValidationError();
+    } else if (!checkedLists?.has(glosses)) {
+      if (!isDenseArray(glosses, structured)) throw new PackageValidationError();
+      (checkedLists ??= new Set()).add(glosses);
+    }
     if (!isRecord(classification)) throw new PackageValidationError();
-    checkDense(classification.selmaho);
+    const selmaho = classification.selmaho;
+    if (!Array.isArray(selmaho)) throw new PackageValidationError();
+    if (selmaho.length < 4) {
+      if (!isDenseArray(selmaho, structured)) throw new PackageValidationError();
+    } else if (!checkedLists?.has(selmaho)) {
+      if (!isDenseArray(selmaho, structured)) throw new PackageValidationError();
+      (checkedLists ??= new Set()).add(selmaho);
+    }
     if (Object.hasOwn(entry, "rafsi")) {
       if (!Array.isArray(rafsi) || rafsi.length > PACKAGE_RAFSI_LIMIT)
         throw new PackageValidationError();
-      checkDense(rafsi);
+      if (rafsi.length < 4) {
+        if (!isDenseArray(rafsi, structured)) throw new PackageValidationError();
+      } else if (!checkedLists?.has(rafsi)) {
+        if (!isDenseArray(rafsi, structured)) throw new PackageValidationError();
+        (checkedLists ??= new Set()).add(rafsi);
+      }
     }
   }
 }
@@ -127,84 +282,78 @@ export function requireSavedRowLists(
   budget?: SearchRequestBudget,
   listsVerified = false,
   checked?: SavedRowListCache,
+  glossLanguageHint?: { value: string },
+  cleanProto = false,
+  structured = false,
 ): asserts value is Record<string, unknown> {
   if (!isRecord(value)) throw new PackageValidationError();
   const { word, classification, glosses, rafsi, attribution } = value;
   if (
-    !fields(word, WORD_FIELDS) ||
+    !fieldsExact2(word, WORD_FIELDS, cleanProto) ||
     typeof word.spelling !== "string" ||
-    !fields(classification, CLASSIFICATION_FIELDS)
+    !fieldsExactClass(classification, cleanProto)
   )
     throw new PackageValidationError();
 
-  if (!listsVerified) {
-    if (!Array.isArray(glosses) || glosses.length > PACKAGE_GLOSS_LIMIT)
+  if (!Array.isArray(glosses) || glosses.length > PACKAGE_GLOSS_LIMIT)
+    throw new PackageValidationError();
+  if (glosses.length < 4 || !checked?.glosses?.has(glosses)) {
+    if (!listsVerified && !isDenseArray(glosses, structured))
       throw new PackageValidationError();
-    if (glosses.length < 4 || !checked?.glosses?.has(glosses))
-      requireDenseList(glosses);
-  }
-  const glossList = glosses as unknown[];
-  if (glossList.length < 4 || !checked?.glosses?.has(glossList)) {
-    for (let i = 0; i < glossList.length; i++) {
-      const gloss = glossList[i];
+    for (let i = 0; i < glosses.length; i++) {
+      const gloss = glosses[i];
       if (
-        !fields(gloss, GLOSS_FIELDS) ||
-        !languageTag(gloss.language) ||
+        !fieldsExactGloss(gloss, cleanProto) ||
+        (glossLanguageHint && gloss.language === glossLanguageHint.value
+          ? false
+          : !languageTag(gloss.language)) ||
         typeof gloss.text !== "string" ||
         !(gloss.sense === null || typeof gloss.sense === "string")
       )
         throw new PackageValidationError();
+      if (glossLanguageHint && gloss.language !== glossLanguageHint.value)
+        glossLanguageHint.value = gloss.language;
     }
-    if (checked && glossList.length >= 4)
-      (checked.glosses ??= new Set()).add(glossList);
+    if (checked && glosses.length >= 4)
+      (checked.glosses ??= new Set()).add(glosses);
   }
 
   const { selmaho } = classification;
-  if (
-    !listsVerified &&
-    (!Array.isArray(selmaho) ||
-      selmaho.length < 4 ||
-      !checked?.selmaho?.has(selmaho))
-  )
-    requireDenseList(selmaho);
-  const selmahoList = selmaho as unknown[];
-  if (selmahoList.length < 4 || !checked?.selmaho?.has(selmahoList)) {
-    for (let i = 0; i < selmahoList.length; i++) {
-      if (typeof selmahoList[i] !== "string")
-        throw new PackageValidationError();
+  if (!Array.isArray(selmaho)) throw new PackageValidationError();
+  if (selmaho.length < 4 || !checked?.selmaho?.has(selmaho)) {
+    if (!listsVerified && !isDenseArray(selmaho, structured))
+      throw new PackageValidationError();
+    for (let i = 0; i < selmaho.length; i++) {
+      if (typeof selmaho[i] !== "string") throw new PackageValidationError();
       if (budget && (i + 1) % 64 === 0) budget.ensure(2 + i, "prepare");
     }
-    if (checked && selmahoList.length >= 4)
-      (checked.selmaho ??= new Set()).add(selmahoList);
+    if (checked && selmaho.length >= 4)
+      (checked.selmaho ??= new Set()).add(selmaho);
   }
 
   if (Object.hasOwn(value, "rafsi")) {
-    if (!listsVerified) {
-      if (!Array.isArray(rafsi) || rafsi.length > PACKAGE_RAFSI_LIMIT)
+    if (!Array.isArray(rafsi) || rafsi.length > PACKAGE_RAFSI_LIMIT)
+      throw new PackageValidationError();
+    if (rafsi.length < 4 || !checked?.rafsi?.has(rafsi)) {
+      if (!listsVerified && !isDenseArray(rafsi, structured))
         throw new PackageValidationError();
-      if (rafsi.length < 4 || !checked?.rafsi?.has(rafsi))
-        requireDenseList(rafsi);
-    }
-    const rafsiList = rafsi as unknown[];
-    if (rafsiList.length < 4 || !checked?.rafsi?.has(rafsiList)) {
-      for (let i = 0; i < rafsiList.length; i++)
-        if (!validPackageRafsi(rafsiList[i]))
-          throw new PackageValidationError();
-      if (checked && rafsiList.length >= 4)
-        (checked.rafsi ??= new Set()).add(rafsiList);
+      for (let i = 0; i < rafsi.length; i++)
+        if (!validPackageRafsi(rafsi[i])) throw new PackageValidationError();
+      if (checked && rafsi.length >= 4)
+        (checked.rafsi ??= new Set()).add(rafsi);
     }
   }
 
   if (attribution != null) {
     if (
-      !fields(attribution, ATTRIBUTION_FIELDS) ||
+      !fieldsExactAttribution(attribution, cleanProto) ||
       typeof attribution.source !== "string" ||
       !(
         attribution.author === null || typeof attribution.author === "string"
       ) ||
       !(
         attribution.account === null ||
-        (fields(attribution.account, ACCOUNT_FIELDS) &&
+        (fieldsExactAccount(attribution.account, cleanProto) &&
           typeof attribution.account.origin === "string" &&
           Number.isSafeInteger(attribution.account.account))
       )
@@ -212,21 +361,31 @@ export function requireSavedRowLists(
       throw new PackageValidationError();
 
     if (!checked?.dates?.has(attribution.dates)) {
-      if (
-        !isDateMap(attribution.dates) ||
-        Object.getOwnPropertySymbols(attribution.dates).length !== 0
-      )
+      const dates = attribution.dates;
+      if (!isRecord(dates)) throw new PackageValidationError();
+      const proto = Object.getPrototypeOf(dates);
+      if (proto !== Object.prototype && proto !== null)
+        throw new PackageValidationError();
+      if (!structured && Object.getOwnPropertySymbols(dates).length !== 0)
         throw new PackageValidationError();
       let count = 0;
-      for (const key in attribution.dates) {
-        if (!Object.hasOwn(attribution.dates, key)) continue;
-        if (typeof attribution.dates[key] !== "string")
-          throw new PackageValidationError();
-        count++;
-        if (budget && count % 64 === 0) budget.ensure(1 + count, "prepare");
+      if (cleanProto && proto === Object.prototype) {
+        for (const key in dates) {
+          if (typeof dates[key] !== "string")
+            throw new PackageValidationError();
+          count++;
+          if (budget && count % 64 === 0) budget.ensure(1 + count, "prepare");
+        }
+      } else {
+        for (const key in dates) {
+          if (!Object.hasOwn(dates, key)) continue;
+          if (typeof dates[key] !== "string")
+            throw new PackageValidationError();
+          count++;
+          if (budget && count % 64 === 0) budget.ensure(1 + count, "prepare");
+        }
       }
-      if (checked && count >= 4)
-        (checked.dates ??= new Set()).add(attribution.dates);
+      if (checked && count >= 4) (checked.dates ??= new Set()).add(dates);
     }
   }
 }
@@ -351,16 +510,107 @@ export function savedPackage(
 }
 
 const V1_FIELDS = [
-  "event",
-  "word",
-  "language",
-  "glosses",
-  "plain_text",
-  "classification",
   "body",
+  "classification",
+  "event",
+  "glosses",
+  "language",
+  "plain_text",
+  "word",
 ];
-const V2_FIELDS = [...V1_FIELDS, "issuer", "notes", "rafsi", "attribution"];
-const STATUS = ["active", "retired", "ineligible"];
+const V2_FIELDS = [
+  "attribution",
+  "body",
+  "classification",
+  "event",
+  "glosses",
+  "issuer",
+  "language",
+  "notes",
+  "plain_text",
+  "rafsi",
+  "word",
+];
+const V2_FIELDS_COMPLETE = [
+  "attribution",
+  "body",
+  "classification",
+  "event",
+  "glosses",
+  "issuer",
+  "language",
+  "notes",
+  "plain_text",
+  "rafsi",
+  "rafsi_complete",
+  "word",
+];
+const V2_FIELDS_STATUS = [
+  "attribution",
+  "body",
+  "classification",
+  "event",
+  "glosses",
+  "issuer",
+  "language",
+  "notes",
+  "plain_text",
+  "rafsi",
+  "search_status",
+  "word",
+];
+const V2_FIELDS_BOTH = [
+  "attribution",
+  "body",
+  "classification",
+  "event",
+  "glosses",
+  "issuer",
+  "language",
+  "notes",
+  "plain_text",
+  "rafsi",
+  "rafsi_complete",
+  "search_status",
+  "word",
+];
+const LEXICAL_KINDS = new Set<string>(lexicalKinds);
+const STATUSES = new Set<string>(["active", "retired", "ineligible"]);
+
+interface RowReaderHints {
+  languageValidated: boolean;
+  viewValidated: boolean;
+  cleanProto: boolean;
+  structured: boolean;
+  issuerA: string;
+  issuerB: string;
+  validIssuers?: Set<string>;
+  glossLanguage: { value: string };
+}
+
+function checkIssuerWithHints(
+  issuer: unknown,
+  hints?: RowReaderHints,
+): boolean {
+  if (hints) {
+    if (
+      (issuer === hints.issuerA && hints.issuerA !== "") ||
+      (issuer === hints.issuerB && hints.issuerB !== "") ||
+      (typeof issuer === "string" && hints.validIssuers?.has(issuer))
+    )
+      return true;
+  }
+  if (!identityId(issuer)) return false;
+  if (hints) {
+    if (hints.issuerA === "") hints.issuerA = issuer;
+    else if (hints.issuerB === "") hints.issuerB = issuer;
+    else {
+      const set = (hints.validIssuers ??= new Set());
+      if (set.size < 64) set.add(issuer);
+    }
+  }
+  return true;
+}
 
 /** Check one package row. The worker and direct readers use the same rule. */
 export function savedRow(
@@ -371,28 +621,46 @@ export function savedRow(
   budget?: SearchRequestBudget,
   listsVerified = false,
   checked?: SavedRowListCache,
+  hints?: RowReaderHints,
 ): PackageEntry {
-  requireSavedRowLists(entry, budget, listsVerified, checked);
+  const cleanProto = hints?.cleanProto ?? false;
+  const structured = hints?.structured ?? false;
+  requireSavedRowLists(
+    entry,
+    budget,
+    listsVerified,
+    checked,
+    hints?.glossLanguage,
+    cleanProto,
+    structured,
+  );
   if (
     !eventId(entry.event) ||
     entry.language !== language ||
-    !languageTag(entry.language) ||
+    (!hints?.languageValidated && !languageTag(entry.language)) ||
     (entry.word as Record<string, unknown>).language !== "jbo" ||
     typeof entry.plain_text !== "string" ||
     !(entry.body === null || hashId(entry.body)) ||
-    !lexicalKinds.includes(
+    !LEXICAL_KINDS.has(
       (entry.classification as PackageEntry["classification"]).kind,
     )
   )
     throw new PackageValidationError();
   if (version === 2) {
     const hasStatus = Object.hasOwn(entry, "search_status");
-    const extra =
-      Number(hasStatus) + Number(Object.hasOwn(entry, "rafsi_complete"));
+    const hasComplete = Object.hasOwn(entry, "rafsi_complete");
+    const v2Names = hasStatus
+      ? hasComplete
+        ? V2_FIELDS_BOTH
+        : V2_FIELDS_STATUS
+      : hasComplete
+        ? V2_FIELDS_COMPLETE
+        : V2_FIELDS;
     const status = entry.search_status;
+    const issuerOk = checkIssuerWithHints(entry.issuer, hints);
     if (
-      !fields(entry, V2_FIELDS, extra) ||
-      !identityId(entry.issuer) ||
+      !fieldsExact(entry, v2Names, cleanProto) ||
+      !issuerOk ||
       typeof entry.notes !== "boolean" ||
       !Array.isArray(entry.rafsi) ||
       entry.attribution === undefined ||
@@ -402,18 +670,169 @@ export function savedRow(
       ) ||
       (packageView !== undefined
         ? !hasStatus ||
-          !eventId(packageView) ||
-          !STATUS.includes(status as string)
+          (!hints?.viewValidated && !eventId(packageView)) ||
+          typeof status !== "string" ||
+          !STATUSES.has(status)
         : hasStatus &&
-          (!fields(status, LEGACY_STATUS_FIELDS) ||
+          (!fieldsExact(status, LEGACY_STATUS_FIELDS, cleanProto) ||
             !eventId(status.view) ||
-            !STATUS.includes(status.status)))
+            typeof status.status !== "string" ||
+            !STATUSES.has(status.status)))
     )
       throw new PackageValidationError();
-  } else if (!fields(entry, V1_FIELDS) || packageView !== undefined) {
+  } else if (
+    !fieldsExact(entry, V1_FIELDS, cleanProto) ||
+    packageView !== undefined
+  ) {
     throw new PackageValidationError();
   }
   return entry as unknown as PackageEntry;
+}
+
+const OBJECT_PROTO = Object.prototype;
+
+/**
+ * Single-pass fast path for canonical version 2 rows deserialized by IndexedDB
+ * when `Object.prototype` and `Array.prototype` have no enumerable properties.
+ * Non-empty structured objects that match an exact own key set cannot be built-in
+ * exotic objects (IndexedDB does not serialize expando properties onto Date, Map,
+ * Set, RegExp, or typed arrays); `attribution.dates` may be empty so its prototype
+ * is still checked explicitly. Returns `false` for any non-canonical or invalid
+ * shape so the caller runs the full `savedRow` check.
+ */
+function validateStructuredV2Row(
+  entry: unknown,
+  language: string,
+  checked: SavedRowListCache,
+  hints: RowReaderHints,
+): entry is PackageEntryV2 {
+  if (!isRecord(entry)) return false;
+  let kIdx = 0;
+  for (const key in entry) {
+    if (key !== V2_FIELDS_BOTH[kIdx++]) return false;
+  }
+  if (kIdx !== 13) return false;
+  if (
+    !eventId(entry.event) ||
+    entry.language !== language ||
+    typeof entry.plain_text !== "string" ||
+    !(entry.body === null || hashId(entry.body)) ||
+    typeof entry.notes !== "boolean" ||
+    typeof entry.rafsi_complete !== "boolean" ||
+    (entry.search_status !== "active" &&
+      (typeof entry.search_status !== "string" ||
+        !STATUSES.has(entry.search_status))) ||
+    !checkIssuerWithHints(entry.issuer, hints)
+  )
+    return false;
+
+  const word = entry.word;
+  if (!isRecord(word)) return false;
+  kIdx = 0;
+  for (const key in word) {
+    if (key !== WORD_FIELDS[kIdx++]) return false;
+  }
+  if (kIdx !== 2 || word.language !== "jbo" || typeof word.spelling !== "string")
+    return false;
+
+  const classification = entry.classification;
+  if (!isRecord(classification)) return false;
+  kIdx = 0;
+  for (const key in classification) {
+    if (key !== CLASSIFICATION_FIELDS[kIdx++]) return false;
+  }
+  if (
+    kIdx !== 2 ||
+    typeof classification.kind !== "string" ||
+    !LEXICAL_KINDS.has(classification.kind)
+  )
+    return false;
+
+  const selmaho = classification.selmaho;
+  if (!Array.isArray(selmaho)) return false;
+  if (selmaho.length < 4 || !checked.selmaho?.has(selmaho)) {
+    if (!isDenseStructuredArray(selmaho)) return false;
+    for (let i = 0; i < selmaho.length; i++)
+      if (typeof selmaho[i] !== "string") return false;
+    if (selmaho.length >= 4) (checked.selmaho ??= new Set()).add(selmaho);
+  }
+
+  const glosses = entry.glosses;
+  if (!Array.isArray(glosses) || glosses.length > PACKAGE_GLOSS_LIMIT)
+    return false;
+  if (glosses.length < 4 || !checked.glosses?.has(glosses)) {
+    if (!isDenseStructuredArray(glosses)) return false;
+    const glossHint = hints.glossLanguage;
+    for (let i = 0; i < glosses.length; i++) {
+      const gloss = glosses[i];
+      if (!isRecord(gloss)) return false;
+      kIdx = 0;
+      for (const key in gloss) {
+        if (key !== GLOSS_FIELDS[kIdx++]) return false;
+      }
+      if (
+        kIdx !== 3 ||
+        typeof gloss.text !== "string" ||
+        !(gloss.sense === null || typeof gloss.sense === "string")
+      )
+        return false;
+      if (gloss.language !== glossHint.value) {
+        if (!languageTag(gloss.language)) return false;
+        glossHint.value = gloss.language;
+      }
+    }
+    if (glosses.length >= 4) (checked.glosses ??= new Set()).add(glosses);
+  }
+
+  const rafsi = entry.rafsi;
+  if (!Array.isArray(rafsi) || rafsi.length > PACKAGE_RAFSI_LIMIT) return false;
+  if (rafsi.length < 4 || !checked.rafsi?.has(rafsi)) {
+    if (!isDenseStructuredArray(rafsi)) return false;
+    for (let i = 0; i < rafsi.length; i++)
+      if (!validPackageRafsi(rafsi[i])) return false;
+    if (rafsi.length >= 4) (checked.rafsi ??= new Set()).add(rafsi);
+  }
+
+  const attribution = entry.attribution;
+  if (attribution !== null) {
+    if (!isRecord(attribution)) return false;
+    kIdx = 0;
+    for (const key in attribution) {
+      if (key !== ATTRIBUTION_FIELDS[kIdx++]) return false;
+    }
+    if (
+      kIdx !== 4 ||
+      typeof attribution.source !== "string" ||
+      !(attribution.author === null || typeof attribution.author === "string")
+    )
+      return false;
+    const account = attribution.account;
+    if (account !== null) {
+      if (!isRecord(account)) return false;
+      kIdx = 0;
+      for (const key in account) {
+        if (key !== ACCOUNT_FIELDS[kIdx++]) return false;
+      }
+      if (
+        kIdx !== 2 ||
+        typeof account.origin !== "string" ||
+        !Number.isSafeInteger(account.account)
+      )
+        return false;
+    }
+    const dates = attribution.dates;
+    if (!checked.dates?.has(dates)) {
+      if (!isRecord(dates) || Object.getPrototypeOf(dates) !== OBJECT_PROTO)
+        return false;
+      let count = 0;
+      for (const key in dates) {
+        if (typeof dates[key] !== "string") return false;
+        count++;
+      }
+      if (count >= 4) (checked.dates ??= new Set()).add(dates);
+    }
+  }
+  return true;
 }
 
 /** Read rows in event order. Each package starts a new reader. */
@@ -425,16 +844,42 @@ export function savedRowReader(
 ) {
   let previous = "";
   const checked = savedRowListCache();
+  const languageValid = languageTag(language);
+  const viewValid =
+    pkg.search_view !== undefined && eventId(pkg.search_view);
+  const cleanProto = hasCleanPrototypes();
+  const structured = cleanProto && structuredPackages.has(pkg);
+  const fastStructuredV2 =
+    structured &&
+    !listsVerified &&
+    budget === undefined &&
+    pkg.version === 2 &&
+    languageValid &&
+    viewValid;
+  const hints: RowReaderHints = {
+    languageValidated: languageValid,
+    viewValidated: viewValid,
+    cleanProto,
+    structured,
+    issuerA: "",
+    issuerB: "",
+    glossLanguage: { value: languageValid ? language : "" },
+  };
   return (value: unknown) => {
-    const row = savedRow(
-      value,
-      pkg.version,
-      language,
-      pkg.search_view,
-      budget,
-      listsVerified,
-      checked,
-    );
+    const row =
+      fastStructuredV2 &&
+      validateStructuredV2Row(value, language, checked, hints)
+        ? value
+        : savedRow(
+            value,
+            pkg.version,
+            language,
+            pkg.search_view,
+            budget,
+            listsVerified,
+            checked,
+            hints,
+          );
     if (row.event <= previous) throw new PackageValidationError();
     previous = row.event;
     return row;
@@ -483,15 +928,15 @@ export function checkSavedWord(word: {
     throw new PackageValidationError();
 }
 
-/** Check rafsi claim unions by canonical core word ID in small core batches. */
-export function savedRafsiClaims() {
-  const countRafsi = savedRafsiUnion();
+/** Resolve canonical word IDs for saved rows in small core batches. */
+export function savedWordIdBatcher<T>(onItem: (item: T, id: string) => void) {
   const ids = new Map<string, string>();
-  const pending: { spelling: string; entry: PackageEntryV2 }[] = [];
+  const pendingSpellings: string[] = [];
+  const pendingItems: T[] = [];
   const needed: string[] = [];
   const queued = new Set<string>();
   const flush = () => {
-    if (!pending.length) return;
+    if (!pendingItems.length) return;
     if (needed.length) {
       let resolved: string[];
       try {
@@ -503,31 +948,54 @@ export function savedRafsiClaims() {
       needed.length = 0;
       queued.clear();
     }
-    for (let i = 0; i < pending.length; i++) {
-      const item = pending[i];
-      countRafsi(ids.get(item.spelling)!, item.entry);
+    for (let i = 0; i < pendingItems.length; i++) {
+      onItem(pendingItems[i], ids.get(pendingSpellings[i])!);
     }
-    pending.length = 0;
+    pendingSpellings.length = 0;
+    pendingItems.length = 0;
   };
   return {
-    add(entry: PackageEntryV2) {
-      if (!entry.rafsi.length) return;
-      const { spelling } = entry.word;
+    add(spelling: string, item: T) {
       const known = ids.get(spelling);
       if (known !== undefined) {
-        countRafsi(known, entry);
+        if (!pendingItems.length) {
+          onItem(item, known);
+          return;
+        }
+        pendingSpellings.push(spelling);
+        pendingItems.push(item);
+        if (pendingItems.length === 2048) flush();
         return;
       }
       if (wordSpellingStatus(spelling) === "invalid")
         throw new PackageValidationError();
-      pending.push({ spelling, entry });
+      pendingSpellings.push(spelling);
+      pendingItems.push(item);
       if (!queued.has(spelling)) {
         queued.add(spelling);
         needed.push(spelling);
       }
-      if (needed.length === 128 || pending.length === 128) flush();
+      if (needed.length === 512 || pendingItems.length === 2048) flush();
     },
     finish: flush,
+  };
+}
+
+/** Check rafsi claim unions by canonical core word ID in small core batches. */
+export function savedRafsiClaims(
+  onEntry?: (entry: PackageEntryV2, id: string) => void,
+) {
+  const countRafsi = savedRafsiUnion();
+  const batch = savedWordIdBatcher<PackageEntryV2>((entry, id) => {
+    countRafsi(id, entry);
+    onEntry?.(entry, id);
+  });
+  return {
+    add(entry: PackageEntryV2) {
+      if (!entry.rafsi.length) return;
+      batch.add(entry.word.spelling, entry);
+    },
+    finish: batch.finish,
   };
 }
 

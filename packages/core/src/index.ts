@@ -208,11 +208,14 @@ export function wordIdSpellings(spellings: string[]): string[] {
   if (spellings.length === 0) return [];
   for (let i = 0; i < spellings.length; i++) {
     const spelling = spellings[i];
-    if (
-      typeof spelling !== "string" ||
-      !spelling.length ||
-      /[\0\p{Cs}]/u.test(spelling)
-    )
+    if (typeof spelling !== "string" || !spelling.length)
+      throw new Error("invalid word spelling");
+    let nonAscii = 0;
+    for (let j = 0; j < spelling.length; j++) {
+      const code = spelling.charCodeAt(j);
+      nonAscii |= (code - 1) | (127 - code);
+    }
+    if (nonAscii < 0 && /[\0\p{Cs}]/u.test(spelling))
       throw new Error("invalid word spelling");
   }
   return wasm.word_id_spellings(spellings.join("\0")).split("\0");

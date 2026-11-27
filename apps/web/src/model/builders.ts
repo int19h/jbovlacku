@@ -25,13 +25,14 @@ import {
   requirePackageListShapes,
   savedRowReader,
   savedSpellingChecks,
-  savedWordIdCache,
+  savedWordIdBatcher,
 } from "../data/saved-package.ts";
 import {
   languageTag,
   type Compound,
   type Formation,
   type FormationSource,
+  type PackageEntry,
   type RichText,
 } from "./types.ts";
 import { textToRichText } from "./richtext.ts";
@@ -464,7 +465,7 @@ export function savedInventory(saved: SavedPackages): SavedInventory {
  * `savedPackage`. All outer and nested list shapes pass
  * `requirePackageListShapes`, each row passes `savedRowReader`, claims pass
  * `savedRafsiUnion`, gismu, claim, and incomplete-rafsi rows derive canonical
- * IDs through `savedWordIdCache`, and remaining rows pass
+ * IDs in core batches through `savedWordIdBatcher`, and remaining rows pass
  * `savedSpellingChecks`. Any failure raises `PackageValidationError`.
  */
 export function inventoryFromPackage(
@@ -487,33 +488,45 @@ export function inventoryFromPackage(
   requirePackageListShapes(pkg);
   const readRow = savedRowReader(pkg, language, undefined, true);
   const countRafsi = savedRafsiUnion();
-  const wordIdOf = savedWordIdCache();
+  const wordIds = savedWordIdBatcher<{
+    entry: PackageEntry;
+    isGismu: boolean;
+    rafsiList: readonly string[];
+    isIncomplete: boolean;
+  }>(({ entry, isGismu, rafsiList, isIncomplete }, id) => {
+    if (rafsiList.length > 0) countRafsi(id, entry);
+    if (isGismu) gismu.set(id, entry.word.spelling);
+    if (isIncomplete) incomplete.set(id, entry.word.spelling);
+    for (const rafsi of rafsiList) {
+      const pair = rafsiPairId(id, rafsi);
+      claims.set(pair, {
+        rafsi,
+        word: id,
+        spelling: entry.word.spelling,
+        pair,
+      });
+    }
+  });
   const spellings = savedSpellingChecks();
   for (const row of pkg.entries) {
     const entry = readRow(row);
-    const kind = entry.classification.kind;
+    const isGismu = entry.classification.kind === "gismu";
     const isVersion2 = isV2(entry);
     const rafsiList = isVersion2 ? entry.rafsi : [];
     const isIncomplete = isVersion2 && entry.rafsi_complete === false;
     if (isVersion2) hasClaims = true;
-    if (kind === "gismu" || rafsiList.length > 0 || isIncomplete) {
-      const id = wordIdOf(entry.word.spelling);
-      if (rafsiList.length > 0) countRafsi(id, entry);
-      if (kind === "gismu") gismu.set(id, entry.word.spelling);
-      if (isIncomplete) incomplete.set(id, entry.word.spelling);
-      for (const rafsi of rafsiList) {
-        const pair = rafsiPairId(id, rafsi);
-        claims.set(pair, {
-          rafsi,
-          word: id,
-          spelling: entry.word.spelling,
-          pair,
-        });
-      }
+    if (isGismu || rafsiList.length > 0 || isIncomplete) {
+      wordIds.add(entry.word.spelling, {
+        entry,
+        isGismu,
+        rafsiList,
+        isIncomplete,
+      });
     } else {
       spellings.add(entry.word.spelling);
     }
   }
+  wordIds.finish();
   spellings.finish();
   return {
     snapshot: pkg.snapshot,

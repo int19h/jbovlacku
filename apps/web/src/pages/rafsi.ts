@@ -28,11 +28,10 @@ import {
   PackageValidationError,
   savedPackage,
   savedRafsiClaims,
-  savedRafsiUnion,
   requirePackageListShapes,
+  requireSavedEntriesList,
   savedRowReader,
   savedSpellingChecks,
-  savedWordIdCache,
 } from "../data/saved-package.ts";
 import { getWord, loadRecord } from "../data/api.ts";
 import type { PackageEntryV2, RafsiBody } from "../model/types.ts";
@@ -57,6 +56,7 @@ async function packageFor(
   language: string,
   signal: AbortSignal,
   onVersion2Entry?: PackageDownloadOptions["onVersion2Entry"],
+  coreReady?: Promise<boolean>,
 ): Promise<{ pkg: CachedPackage; fresh: boolean } | null> {
   let fallback: CachedPackage | null = null;
   // The package state when this visit started. A package that the user
@@ -65,14 +65,22 @@ async function packageFor(
   let expected: string | undefined;
   let removed = false;
   if (app.session.storageAvailable) {
-    expected = await app.store
-      .packageRevisionOf(language)
-      .catch(() => undefined);
-    removed =
-      expected !== undefined &&
-      !(await app.store.keys("packages").catch(() => [] as string[])).includes(
-        language,
-      );
+    if (typeof app.store.packageState === "function") {
+      const state = await app.store
+        .packageState(language)
+        .catch(() => ({ revision: undefined, present: true }));
+      expected = state.revision;
+      removed = expected !== undefined && !state.present;
+    } else {
+      expected = await app.store
+        .packageRevisionOf(language)
+        .catch(() => undefined);
+      removed =
+        expected !== undefined &&
+        !(
+          await app.store.keys("packages").catch(() => [] as string[])
+        ).includes(language);
+    }
   }
   // Prefer the server's current package so new claims appear. Fall back to the cache.
   try {
@@ -96,6 +104,7 @@ async function packageFor(
   );
   if (cached) {
     if (cached.version === 2) return { pkg: cached, fresh: false };
+    if (coreReady && !(await coreReady)) return null;
     requirePackageListShapes(cached);
     const readRow = savedRowReader(cached, language, undefined, true);
     const spellings = savedSpellingChecks();
@@ -665,6 +674,7 @@ async function resolvePair(
   app: App,
   pair: string,
   signal: AbortSignal,
+  coreReady?: Promise<boolean>,
 ): Promise<RafsiWord | null> {
   const preferred = app.session.preferences.definitionLanguage;
   // An unusable package does not hide a usable package of another
@@ -681,24 +691,23 @@ async function resolvePair(
             break;
           }
       };
-      const loaded = await packageFor(app, language, signal, match);
+      const loaded = await packageFor(app, language, signal, match, coreReady);
+      if (coreReady && !(await coreReady)) return null;
       if (!loaded || loaded.pkg.version !== 2) return null;
       if (!loaded.fresh) {
         // A failed download can leave a candidate from a checked prefix.
         found = undefined;
-        requirePackageListShapes(loaded.pkg);
-        const readRow = savedRowReader(loaded.pkg, language, undefined, true);
-        const countRafsi = savedRafsiUnion();
-        const wordIdOf = savedWordIdCache();
+        requireSavedEntriesList(loaded.pkg);
+        const readRow = savedRowReader(loaded.pkg, language);
+        const claims = savedRafsiClaims(match);
         const spellings = savedSpellingChecks();
-        for (const row of loaded.pkg.entries) {
-          const entry = readRow(row);
-          if (isV2(entry) && entry.rafsi.length) {
-            const id = wordIdOf(entry.word.spelling);
-            countRafsi(id, entry);
-            match(entry, id);
-          } else spellings.add(entry.word.spelling);
+        const entries = loaded.pkg.entries;
+        for (let i = 0; i < entries.length; i++) {
+          const entry = readRow(entries[i]) as PackageEntryV2;
+          if (entry.rafsi.length) claims.add(entry);
+          else spellings.add(entry.word.spelling);
         }
+        claims.finish();
         spellings.finish();
       }
       return found ?? null;
@@ -709,11 +718,13 @@ async function resolvePair(
     }
   }
   const first = await pick(preferred);
+  if (coreReady && !(await coreReady)) return null;
   if (first) return first;
   if (app.session.storageAvailable)
     for (const key of await app.store.keys("packages").catch(() => [])) {
       if (key === preferred) continue;
       const other = await pick(key);
+      if (coreReady && !(await coreReady)) return null;
       if (other) return other;
     }
   if (invalid) throw invalid;
@@ -724,19 +735,24 @@ export async function rafsiPairPage(
   route: Route,
   context: RenderContext,
   app: App,
+  coreReady?: Promise<boolean>,
 ) {
   const { main } = context;
   main.className = "surface-word";
   const pair = (route.segments[1] ?? "").trim();
-  context.title("Rafsi pair");
   if (!/^jvr1:[0-9a-f]{64}$/.test(pair)) {
+    if (coreReady && !(await coreReady)) return;
+    if (!context.live()) return;
+    context.title("Rafsi pair");
     main.append(
       el("h1", { class: "page", text: "Rafsi pair unavailable" }),
       p("This link does not name a rafsi pair ID.", "notice"),
     );
     return;
   }
-  const found = await resolvePair(app, pair, context.signal);
+  context.title("Rafsi pair");
+  const found = await resolvePair(app, pair, context.signal, coreReady);
+  if (coreReady && !(await coreReady)) return;
   if (!context.live()) return;
   if (!found) {
     main.append(

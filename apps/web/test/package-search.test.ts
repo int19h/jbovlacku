@@ -548,22 +548,109 @@ test("download, saved cache, and search worker retain the package view once", as
   expect(result.downgrade).toBeNull();
 });
 
-test("a zero-unit transfer walks no rows or attribution dates", async ({ page }) => {
-  // The review input: 100 valid version-2 entries with 128 attribution
-  // dates each. A request with workLimit 0 must refuse before walking any
-  // date map on the page thread, while the default budget still returns
-  // the one hit with all 100 entries.
+test("a zero-unit transfer checks list shapes first and walks no attribution dates", async ({ page }) => {
+  // 100 valid version-2 entries with 128 attribution dates each. The unbudgeted
+  // list-shape pass checks all 100 rows before the first budget check, and then
+  // workLimit 0 refuses before inspecting any attribution date map, while the
+  // default budget inspects the date maps and returns one hit with 100 entries.
   await page.goto("/");
   const result = await page.evaluate(async () => {
     const { searchPackage } = await import(
       String("/src/data/package-search.ts")
     );
-    const dates = () =>
-      Object.fromEntries(
-        Array.from({ length: 128 }, (_, index) => [
-          `d${index}`,
-          "2020-01-01",
-        ]),
+    let dateOwnKeys = 0;
+    let dateReads = 0;
+    const proxiedDates = () =>
+      new Proxy(
+        Object.fromEntries(
+          Array.from({ length: 128 }, (_, index) => [
+            `d${index}`,
+            "2020-01-01",
+          ]),
+        ),
+        {
+          ownKeys(target) {
+            dateOwnKeys++;
+            return Reflect.ownKeys(target);
+          },
+          get(target, prop, receiver) {
+            if (typeof prop === "string" && prop.startsWith("d")) dateReads++;
+            return Reflect.get(target, prop, receiver);
+          },
+        },
+      );
+    const rawEntries = Array.from({ length: 100 }, (_, index) => ({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "broda" },
+      language: "en",
+      glosses: [],
+      plain_text: "book",
+      classification: { kind: "gismu", selmaho: [] },
+      body: null,
+      issuer: "ed25519:" + "a".repeat(64),
+      notes: false,
+      rafsi: [],
+      attribution: {
+        source: "test",
+        author: null,
+        account: null,
+        dates: proxiedDates(),
+      },
+    }));
+    let rowReads = 0;
+    const entries = new Proxy(rawEntries, {
+      get(target, prop, receiver) {
+        if (typeof prop === "string" && /^\d+$/.test(prop)) rowReads++;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const pkg = { snapshot: "sha256:" + "a".repeat(64), version: 2, entries };
+    try {
+      await searchPackage(pkg as never, "en", ["book"], { workLimit: 0 });
+      return { refused: false, rowReads, dateOwnKeys, dateReads };
+    } catch (error) {
+      return {
+        refused: true,
+        constructor: (error as Error).constructor.name,
+        phase: (error as { phase?: string }).phase ?? null,
+        rowReads,
+        dateOwnKeys,
+        dateReads,
+      };
+    }
+  });
+  expect(result).toEqual({
+    refused: true,
+    constructor: "SearchBudgetError",
+    phase: "prepare",
+    rowReads: 100,
+    dateOwnKeys: 0,
+    dateReads: 0,
+  });
+  const spyControl = await page.evaluate(async () => {
+    const { searchPackage } = await import(
+      String("/src/data/package-search.ts")
+    );
+    let dateOwnKeys = 0;
+    let dateReads = 0;
+    const proxiedDates = () =>
+      new Proxy(
+        Object.fromEntries(
+          Array.from({ length: 128 }, (_, index) => [
+            `d${index}`,
+            "2020-01-01",
+          ]),
+        ),
+        {
+          ownKeys(target) {
+            dateOwnKeys++;
+            return Reflect.ownKeys(target);
+          },
+          get(target, prop, receiver) {
+            if (typeof prop === "string" && prop.startsWith("d")) dateReads++;
+            return Reflect.get(target, prop, receiver);
+          },
+        },
       );
     const entries = Array.from({ length: 100 }, (_, index) => ({
       event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
@@ -576,55 +663,41 @@ test("a zero-unit transfer walks no rows or attribution dates", async ({ page })
       issuer: "ed25519:" + "a".repeat(64),
       notes: false,
       rafsi: [],
-      attribution: { source: "test", author: null, account: null, dates: dates() },
+      attribution: {
+        source: "test",
+        author: null,
+        account: null,
+        dates: proxiedDates(),
+      },
     }));
-    const pkg = { snapshot: "sha256:" + "a".repeat(64), version: 2, entries };
-    const maps = new WeakSet<object>(
-      entries.map((entry) => entry.attribution.dates),
-    );
-    let visits = 0;
-    let pairs = 0;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const original: any = Object.entries;
-    const hooked = function (obj: object): [string, unknown][] {
-      const result = original(obj) as [string, unknown][];
-      if (maps.has(obj)) {
-        visits++;
-        pairs += result.length;
-      }
-      return result;
-    };
-    Object.entries = hooked as typeof Object.entries;
     try {
-      try {
-        await searchPackage(pkg as never, "en", ["book"], { workLimit: 0 });
-        return { refused: false, visits, pairs };
-      } catch (error) {
-        return {
-          refused: true,
-          constructor: (error as Error).constructor.name,
-          visits,
-          pairs,
-        };
-      }
-    } finally {
-      Object.entries = original;
+      await searchPackage(
+        { snapshot: "sha256:" + "a".repeat(64), version: 2, entries } as never,
+        "en",
+        ["book"],
+        { workLimit: 50 },
+      );
+      return { refused: false, dateChecked: dateOwnKeys > 0 && dateReads > 0 };
+    } catch (error) {
+      return {
+        refused: true,
+        constructor: (error as Error).constructor.name,
+        dateChecked: dateOwnKeys > 0 && dateReads > 0,
+      };
     }
   });
-  expect(result.refused).toBe(true);
-  expect(result.constructor).toBe("SearchBudgetError");
-  expect(result.visits).toBe(0);
-  expect(result.pairs).toBe(0);
+  expect(spyControl).toEqual({
+    refused: true,
+    constructor: "SearchBudgetError",
+    dateChecked: true,
+  });
   const control = await page.evaluate(async () => {
     const { searchPackage } = await import(
       String("/src/data/package-search.ts")
     );
-    const dates = () =>
+    const plainDates = () =>
       Object.fromEntries(
-        Array.from({ length: 128 }, (_, index) => [
-          `d${index}`,
-          "2020-01-01",
-        ]),
+        Array.from({ length: 128 }, (_, index) => [`d${index}`, "2020-01-01"]),
       );
     const entries = Array.from({ length: 100 }, (_, index) => ({
       event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
@@ -637,14 +710,22 @@ test("a zero-unit transfer walks no rows or attribution dates", async ({ page })
       issuer: "ed25519:" + "a".repeat(64),
       notes: false,
       rafsi: [],
-      attribution: { source: "test", author: null, account: null, dates: dates() },
+      attribution: {
+        source: "test",
+        author: null,
+        account: null,
+        dates: plainDates(),
+      },
     }));
     const hits = await searchPackage(
       { snapshot: "sha256:" + "a".repeat(64), version: 2, entries } as never,
       "en",
       ["book"],
     );
-    return { hits: hits.hits[0].length, entries: hits.hits[0][0]?.entries.length };
+    return {
+      hits: hits.hits[0].length,
+      entries: hits.hits[0][0]?.entries.length,
+    };
   });
   expect(control).toEqual({ hits: 1, entries: 100 });
 });

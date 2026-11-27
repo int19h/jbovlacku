@@ -398,8 +398,14 @@ export async function lujvoPage(
     }
     if (!current()) return;
     for (const hit of hits) {
-      const entry = hit.entries[0];
-      const fits = fitsComponentSpelling(hit.word.spelling);
+      const fittingEntry = hit.entries.find((row) =>
+        fitsComponentSpelling(row.word.spelling),
+      );
+      const entry = fittingEntry ?? hit.entries[0];
+      const displaySpelling = fittingEntry
+        ? fittingEntry.word.spelling
+        : hit.word.spelling;
+      const fits = Boolean(fittingEntry);
       const kind =
         (entry.classification as { kind?: string } | null)?.kind ?? "other";
       // The request bounds hits, not the entries inside each hit: one word
@@ -427,7 +433,7 @@ export async function lujvoPage(
         editLujvoRows(state, (rows) =>
           rows.push({
             id: componentId(),
-            spelling: hit.word.spelling,
+            spelling: displaySpelling,
             kind,
             // A specific definition is recorded only when the author chooses one below.
             definition: null,
@@ -448,7 +454,7 @@ export async function lujvoPage(
       };
       const item = el("li", { class: "similar-item" });
       item.append(
-        el("span", { class: "hw", lang: "jbo", text: hit.word.spelling }),
+        el("span", { class: "hw", lang: "jbo", text: displaySpelling }),
         text(` ${kindLabel(kind)}`, "meta"),
         text(
           ` · ${
@@ -472,7 +478,7 @@ export async function lujvoPage(
         fits
           ? button("Add", pushPart, {
               class: "btn btn-quiet",
-              "aria-label": `Add ${hit.word.spelling}`,
+              "aria-label": `Add ${displaySpelling}`,
             })
           : p("This spelling exceeds the builder limit of 128 bytes.", "meta"),
       );
@@ -489,17 +495,28 @@ export async function lujvoPage(
     } catch {
       // An invalid query stays editable and cannot supply a component identity.
     }
+    const enteredSpelling = analysis.normalized
+      ? stripAcuteAccents(query) !== query && analysis.kind === "cmevla"
+        ? normalizeAcuteDisplay(query)
+        : analysis.normalized
+      : null;
+    const hasExactHit =
+      queryIdentity !== null && hits.some((h) => h.word_id === queryIdentity);
+    const hasUsableExactHit =
+      queryIdentity !== null &&
+      hits.some(
+        (h) =>
+          h.word_id === queryIdentity &&
+          h.entries.some((row) => fitsComponentSpelling(row.word.spelling)),
+      );
     if (
-      analysis.normalized &&
+      enteredSpelling &&
       queryIdentity &&
       (stripAcuteAccents(query) === query || analysis.kind !== "unknown") &&
-      !hits.some((h) => wordId(h.word) === queryIdentity)
+      !hasUsableExactHit &&
+      (!hasExactHit || fitsComponentSpelling(enteredSpelling))
     ) {
       const item = el("li", { class: "similar-item" });
-      const enteredSpelling =
-        stripAcuteAccents(query) !== query && analysis.kind === "cmevla"
-          ? normalizeAcuteDisplay(query)
-          : analysis.normalized;
       const kind =
         analysis.kind === "fuhivla"
           ? "fuhivla"

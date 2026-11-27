@@ -2228,3 +2228,182 @@ test("samePackageStructure charges zero units for empty v1 and v2 packages and o
   );
   assert.equal(exactBudget.snapshot().spent, expectedRowUnits);
 });
+
+test("savedRafsiClaims invokes an optional callback with batched canonical word IDs", async () => {
+  const { wordId } = await import("../../../../packages/core/src/index.ts");
+  const seen: { spelling: string; id: string }[] = [];
+  const claims = (saved.savedRafsiClaims as any)(
+    (entry: { word: { spelling: string } }, id: string) => {
+      seen.push({ spelling: entry.word.spelling, id });
+    },
+  );
+  // Queue 520 distinct spellings plus a duplicate to span a batch flush and a cache hit.
+  const rows = [
+    ...Array.from({ length: 520 }, (_, i) =>
+      v2Row({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        word: { language: "jbo", spelling: `djan${String.fromCharCode(97 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))}n` },
+        classification: { kind: "cmevla", selmaho: [] },
+        rafsi: ["dja"],
+      }),
+    ),
+    v2Row({
+      event: "jve1:" + (521).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling: "djanaan" },
+      classification: { kind: "cmevla", selmaho: [] },
+      rafsi: ["djb"],
+    }),
+  ];
+  for (const row of rows) claims.add(row);
+  claims.finish();
+  assert.equal(seen.length, 521);
+  assert.equal(seen[0].id, wordId({ language: "jbo", spelling: "djanaan" }));
+  assert.equal(seen[520].id, seen[0].id);
+});
+
+test("typedLujvoState and sourceOptions read each package row once across matched parts and preserve alias order", async () => {
+  const { sourceOptions, typedLujvoState } = await import(
+    "../../src/model/typed-headword.ts"
+  );
+  const makeRow = (
+    spelling: string,
+    index: number,
+    rafsi: string[],
+    kind: "gismu" | "cmevla",
+    plain_text = "shared book",
+  ) =>
+    v2Row({
+      event: "jve1:" + (index + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo", spelling },
+      classification: { kind, selmaho: [] },
+      plain_text,
+      rafsi,
+    });
+  const many = [
+    makeRow("cukta", 0, ["cku"], "gismu"),
+    makeRow("zbasu", 1, ["zba"], "gismu"),
+    ...Array.from({ length: 998 }, (_, i) =>
+      makeRow(
+        "djan" +
+          String.fromCharCode(
+            97 + (i % 26),
+            97 + (Math.floor(i / 26) % 26),
+            97 + Math.floor(i / 676),
+          ) +
+          "n",
+        i + 2,
+        [],
+        "cmevla",
+      ),
+    ),
+  ];
+  let reads = 0;
+  const entries = new Proxy(many, {
+    get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const cached = pkg(entries as any) as any;
+  const state = typedLujvoState(
+    "ckuzba",
+    [
+      { text: "cku", kind: "rafsi", join_before: null },
+      { text: "zba", kind: "rafsi", join_before: "" },
+    ],
+    cached,
+  );
+  assert.deepEqual(
+    state.components.map((c) => c.spelling),
+    ["cukta", "zbasu"],
+  );
+  assert.ok(
+    reads <= 1_000,
+    `expected at most 1,000 row reads across two matched parts, got ${reads}`,
+  );
+  // Repeat lookups on the same immutable package (e.g. renderRows) read no rows again.
+  const again = sourceOptions(
+    { text: "cku", kind: "rafsi", join_before: null },
+    cached,
+  );
+  assert.equal(again.length, 1);
+  assert.equal(again[0].spelling, "cukta");
+  assert.equal(reads, 1_000);
+
+  // Alias rows keep first-occurrence definition order and select a fitting display spelling.
+  const shortSpelling = "ba".repeat(43) + "n";
+  const longSpelling = "bá".repeat(43) + "n";
+  for (const order of [
+    [longSpelling, shortSpelling],
+    [shortSpelling, longSpelling],
+  ]) {
+    const aliasPkg = pkg([
+      makeRow(order[0], 0, ["bab"], "cmevla", "first def"),
+      makeRow(order[1], 1, ["bab"], "cmevla", "second def"),
+    ]) as any;
+    const options = sourceOptions(
+      { text: "bab", kind: "core", join_before: null },
+      aliasPkg,
+    );
+    assert.equal(options.length, 1);
+    assert.equal(options[0].spelling, shortSpelling);
+    assert.deepEqual(
+      options[0].definitions?.map((d) => d.summary),
+      ["first def", "second def"],
+    );
+  }
+});
+
+test("structured-cloned packages keep exact dense-list, plain-date, and hex ID checks", () => {
+  const gloss = v1Row().glosses[0];
+  const valid = pkg([v2Row()]);
+  saved.markStructuredPackage(valid);
+  saved.requireSavedEntriesList(valid);
+  const readValid = saved.savedRowReader(valid as any, "en");
+  assert.equal(readValid(valid.entries[0]), valid.entries[0]);
+
+  for (const bad of [
+    pkg(Object.assign([v2Row()], { "01": 0 })),
+    pkg(new Array(0xffffffff)),
+    pkg([v2Row({ glosses: [, gloss] })]),
+    pkg([v2Row({ rafsi: Object.assign(["cuk"], { includes: 1 }) })]),
+    pkg([
+      v2Row({ rafsi: Object.assign(new Array(2), { 0: "cuk", foo: true }) }),
+    ]),
+    pkg([
+      v2Row({
+        classification: { kind: "gismu", selmaho: Object.assign([], { join: 2 }) },
+      }),
+    ]),
+    pkg([
+      v2Row({
+        attribution: {
+          source: "test",
+          author: null,
+          account: null,
+          dates: new Date() as any,
+        },
+      }),
+    ]),
+    pkg([
+      v2Row({
+        attribution: {
+          source: "test",
+          author: null,
+          account: null,
+          dates: new Map() as any,
+        },
+      }),
+    ]),
+    pkg([v2Row({ event: "jve1:" + "A".repeat(64) })]),
+    pkg([v2Row({ body: "sha256:" + "é" + "0".repeat(63) })]),
+    pkg([v2Row({ issuer: "ed25519:" + "0".repeat(63) + "g" })]),
+  ]) {
+    saved.markStructuredPackage(bad);
+    assert.throws(() => {
+      saved.requireSavedEntriesList(bad);
+      const read = saved.savedRowReader(bad as any, "en");
+      for (const row of bad.entries) read(row);
+    }, saved.PackageValidationError);
+  }
+});

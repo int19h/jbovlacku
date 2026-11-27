@@ -5,6 +5,7 @@
 import {
   canonicalize,
   contentHash,
+  initializeCore,
   wordId,
 } from "../../../../packages/core/src/browser.ts";
 import {
@@ -389,6 +390,7 @@ async function downloadEntries(
     MANIFEST_BYTE_LIMIT,
     { ...options, signal },
   );
+  await initializeCore();
   if (raw.length !== advertised.bytes || contentHash(raw) !== advertised.hash)
     throw new Error(
       "The search package hash did not match. Search this server or download another package.",
