@@ -4,6 +4,8 @@ mod accounts;
 mod ancestors;
 mod api;
 mod arena;
+mod export;
+pub use export::{ExportPublications, STATE_EXPORT_VERSION, StateExport};
 mod graph;
 mod incremental;
 mod policy;
@@ -53,8 +55,9 @@ pub struct EvaluationOptions {
     pub selected_view: String,
     pub import_selections: BTreeMap<String, Vec<String>>,
     /// Shared, so that cloning options or a state copies one pointer.
-    #[serde(deserialize_with = "Option::deserialize")]
+    #[serde(default)]
     pub overlay: Option<std::rc::Rc<Value>>,
+    #[serde(default)]
     pub limits: Limits,
 }
 /// The default budget before selections: `base` plus the record and
@@ -67,19 +70,6 @@ pub(crate) fn default_input_budget(base: usize, records: usize, predecessors: us
 /// The number of `previous` IDs over all records, for the default budget.
 pub(crate) fn predecessor_edges(nodes: &BTreeMap<String, graph::Node>) -> usize {
     nodes.values().map(|node| node.previous.len()).sum()
-}
-impl EvaluationOptions {
-    pub(crate) fn traversal_budget_for_nodes(
-        &self,
-        nodes: &BTreeMap<String, graph::Node>,
-    ) -> usize {
-        let resolved = policy::resolve_referenced_selections(self, nodes);
-        self.limits.traversal_budget_with_selections(
-            nodes.len(),
-            predecessor_edges(nodes),
-            resolved.allowance,
-        )
-    }
 }
 /// An opaque projection held only in the trusted host's private storage.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -261,11 +251,9 @@ pub const DEFAULT_TRAVERSAL_PER_RECORD: usize = 256;
 pub const DEFAULT_TRAVERSAL_PER_PREDECESSOR: usize = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct Limits {
-    #[serde(deserialize_with = "Option::deserialize")]
     pub events: Option<usize>,
-    #[serde(deserialize_with = "Option::deserialize")]
     pub traversal: Option<usize>,
     pub claim_depth: usize,
 }
@@ -339,7 +327,11 @@ impl AccountKey {
         format!("{}#{}", self.origin, self.account)
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// A publication as the evaluator holds it. It has no `Serialize`
+/// implementation, because its witness fields repeat the account
+/// evidence. Use `StateExport` or `Evaluation::export_publications` for
+/// the version 2 form, which refers to the account row instead.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Publication {
     pub id: String,
@@ -471,8 +463,7 @@ pub struct Evaluation {
     /// copies one pointer.
     pub overlay: Option<std::rc::Rc<Value>>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EvaluationResults {
     pub receipts: BTreeMap<String, Receipt>,
     pub lifecycle: Lifecycle,
@@ -480,7 +471,6 @@ pub struct EvaluationResults {
     pub accounts: BTreeMap<String, AccountState>,
     pub registers: BTreeMap<String, Register>,
     pub judgments: BTreeMap<String, BTreeMap<String, Judgment>>,
-    #[serde(deserialize_with = "Option::deserialize")]
     pub policy: Option<CompactValue>,
     pub(crate) policies: Vec<CompactValue>,
     pub(crate) policy_history: BTreeMap<String, CompactValue>,
@@ -498,12 +488,13 @@ impl std::ops::DerefMut for Evaluation {
         std::rc::Rc::make_mut(&mut self.results)
     }
 }
+// The default output uses the public projection. Checkpoints use their own writer.
 impl Serialize for Evaluation {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        self.serialize_as(serializer, false)
+        StateExport::new(self).serialize(serializer)
     }
 }
 /// The evaluation as a checkpoint stores it: every publication without
@@ -516,7 +507,8 @@ impl Serialize for CheckpointEvaluation<'_> {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        self.0.serialize_as(serializer, true)
+        self.0
+            .serialize_as(serializer, EvaluationEncoding::Checkpoint)
     }
 }
 struct CheckpointPublications<'a>(&'a BTreeMap<String, Publication>);
@@ -617,11 +609,17 @@ impl<'a> From<&'a Publication> for CheckpointPublication<'a> {
         }
     }
 }
+#[derive(Clone, Copy)]
+enum EvaluationEncoding {
+    Checkpoint,
+    Export,
+    RankingSource,
+}
 impl Evaluation {
     fn serialize_as<S: serde::Serializer>(
         &self,
         serializer: S,
-        checkpoint: bool,
+        encoding: EvaluationEncoding,
     ) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(15))?;
@@ -630,12 +628,19 @@ impl Evaluation {
         map.serialize_entry("reasons", &self.reasons)?;
         map.serialize_entry("receipts", &self.receipts)?;
         map.serialize_entry("lifecycle", &self.lifecycle)?;
-        if checkpoint {
-            map.serialize_entry("publications", &CheckpointPublications(&self.publications))?;
-        } else {
-            map.serialize_entry("publications", &self.publications)?;
+        match encoding {
+            EvaluationEncoding::Checkpoint => {
+                map.serialize_entry("publications", &CheckpointPublications(&self.publications))?;
+            }
+            EvaluationEncoding::Export | EvaluationEncoding::RankingSource => {
+                map.serialize_entry("publications", &export::ExportPublications(self))?;
+            }
         }
-        map.serialize_entry("accounts", &self.accounts)?;
+        if matches!(encoding, EvaluationEncoding::Export) {
+            map.serialize_entry("accounts", &export::ExportAccounts(&self.accounts))?;
+        } else {
+            map.serialize_entry("accounts", &self.accounts)?;
+        }
         map.serialize_entry("registers", &self.registers)?;
         map.serialize_entry("judgments", &self.judgments)?;
         map.serialize_entry("policy", &self.policy)?;
@@ -647,6 +652,7 @@ impl Evaluation {
         map.end()
     }
 }
+// Checkpoint readers use the private, restorable form.
 impl<'de> Deserialize<'de> for Evaluation {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
@@ -740,23 +746,11 @@ pub(crate) fn overlay_units(overlay: Option<&Value>) -> usize {
     })
 }
 fn apply_overlay(result: &mut Evaluation, suspended: &impl Fn(&str) -> bool) {
-    if result
-        .overlay
-        .as_ref()
-        .is_some_and(|overlay| !policy::valid_overlay(overlay, &result.selected_view))
+    if let Some(reason) =
+        policy::overlay_refusal(result.overlay.as_deref(), &result.selected_view, suspended)
     {
         result.available = false;
-        result.reasons.insert("invalid_overlay".into());
-    } else if result
-        .overlay
-        .as_ref()
-        .and_then(|overlay| overlay["public_shun_issuer"].as_str())
-        .is_some_and(suspended)
-    {
-        result.available = false;
-        result
-            .reasons
-            .insert("public_shun_issuer_unavailable".into());
+        result.reasons.insert(reason.into());
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1040,78 +1034,39 @@ fn publications_for(
                 account: a.index("account").as_u64()?,
             })
         });
-        let mut reasons = BTreeSet::new();
-        let mut eligible = if node.body.is_some() {
-            Eligibility::Eligible
-        } else {
-            reasons.insert("body_unavailable".into());
-            Eligibility::Unknown
-        };
-        if imported {
-            let mut selected = false;
-            let mut unknown = false;
-            if let Some(policy) = &result.policy {
+        let index = if imported {
+            result.policy.as_ref().and_then(|policy| {
                 let index =
                     imports.get_or_insert_with(|| ImportEntries::new(policy, &result.selections));
-                // A scan of every entry charged one unit per entry. The
-                // lookup charges one unit plus one per selection that
-                // holds this publication, and never more than the scan.
-                let containing = index.containing.get(id.as_str());
-                let work = index.entries.min(1 + containing.map_or(0, Vec::len));
-                if work == 0 || graph.charge(work) {
-                    let group = match &source {
-                        Some(source) => index
-                            .by_source
-                            .get(node.issuer.as_str())
-                            .and_then(|sources| sources.get(source.as_str())),
-                        None => index.by_importer.get(node.issuer.as_str()),
-                    };
-                    if let Some(group) = group {
-                        unknown |= group.missing;
-                        for selection in containing.into_iter().flatten() {
-                            if !group.selections.contains(selection) {
-                                continue;
-                            }
-                            if source.is_some() {
-                                selected = true;
-                            } else {
-                                unknown = true;
-                                reasons.insert("source_attribution_pending".into());
-                            }
-                        }
-                    }
-                }
-            } else {
-                unknown = true;
-            }
-            #[cfg(test)]
-            if let Some(policy) = &result.policy
-                && !graph.resource.get()
-            {
-                assert_eq!(
-                    (
-                        selected,
-                        unknown,
-                        reasons.contains("source_attribution_pending")
-                    ),
-                    import_scan(
-                        policy,
-                        &result.selections,
-                        &node.issuer,
-                        id,
-                        source.as_deref()
-                    ),
-                    "import index differs from the entry scan for {id}"
-                );
-            }
-            if !selected {
-                eligible = if unknown {
-                    reasons.insert("import_selection_unavailable".into());
-                    Eligibility::Unknown
-                } else {
-                    Eligibility::NotSelected
-                };
-            }
+                // Charge one lookup plus each selection that contains this publication.
+                let work = index
+                    .entries
+                    .min(1 + index.containing.get(id.as_str()).map_or(0, Vec::len));
+                (work == 0 || graph.charge(work)).then_some(&*index)
+            })
+        } else {
+            None
+        };
+        let (eligible, mut reasons) =
+            publication_eligibility(node, imported, source.as_deref(), index);
+        #[cfg(test)]
+        if imported
+            && let Some(policy) = &result.policy
+            && !graph.resource.get()
+        {
+            let (selected, unknown, pending) = import_scan(
+                policy,
+                &result.selections,
+                &node.issuer,
+                id,
+                source.as_deref(),
+            );
+            assert_eq!(eligible == Eligibility::Eligible, selected);
+            assert_eq!(
+                reasons.contains("import_selection_unavailable"),
+                !selected && unknown
+            );
+            assert_eq!(reasons.contains("source_attribution_pending"), pending);
         }
         let lineage = lineage(graph, node);
         built.push((
@@ -1169,6 +1124,56 @@ fn publications_for(
     for (id, publication) in built {
         result.publications.insert(id, publication);
     }
+}
+
+fn publication_eligibility(
+    node: &graph::Node,
+    imported: bool,
+    source: Option<&str>,
+    imports: Option<&ImportEntries<'_>>,
+) -> (Eligibility, BTreeSet<String>) {
+    let mut reasons = BTreeSet::new();
+    let mut eligibility = if node.body.is_some() {
+        Eligibility::Eligible
+    } else {
+        reasons.insert("body_unavailable".into());
+        Eligibility::Unknown
+    };
+    if imported {
+        let (mut selected, mut unknown) = (false, imports.is_none());
+        if let Some(index) = imports {
+            let group = match source {
+                Some(source) => index
+                    .by_source
+                    .get(&node.issuer)
+                    .and_then(|sources| sources.get(source)),
+                None => index.by_importer.get(&node.issuer),
+            };
+            if let Some(group) = group {
+                unknown = group.missing;
+                for selection in index.containing.get(node.id.as_str()).into_iter().flatten() {
+                    if !group.selections.contains(selection) {
+                        continue;
+                    }
+                    if source.is_some() {
+                        selected = true;
+                    } else {
+                        unknown = true;
+                        reasons.insert("source_attribution_pending".into());
+                    }
+                }
+            }
+        }
+        if !selected {
+            eligibility = if unknown {
+                reasons.insert("import_selection_unavailable".into());
+                Eligibility::Unknown
+            } else {
+                Eligibility::NotSelected
+            };
+        }
+    }
+    (eligibility, reasons)
 }
 
 /// The entry scan that `ImportEntries` replaces: every entry, in order.
@@ -1428,6 +1433,70 @@ fn native_status_for(graph: &graph::Graph, result: &mut Evaluation, only: Option
         };
     }
 }
+enum RegisterKind {
+    Judgment,
+    Trust,
+    Profile,
+    Report,
+    Bridge,
+    Account,
+    Observation,
+}
+impl RegisterKind {
+    fn for_action(kind: &str) -> Option<Self> {
+        match kind {
+            "judgment.set" => Some(Self::Judgment),
+            "trust.set" => Some(Self::Trust),
+            "identity.profile" => Some(Self::Profile),
+            "report.set" => Some(Self::Report),
+            "bridge.set" => Some(Self::Bridge),
+            "account.set" => Some(Self::Account),
+            "account.observe" => Some(Self::Observation),
+            _ => None,
+        }
+    }
+
+    fn key(
+        self,
+        n: &graph::Node,
+        actor: &str,
+        resolve_subject: impl FnOnce(&str) -> String,
+    ) -> String {
+        let action = n.action.view();
+        match self {
+            Self::Judgment => format!(
+                "{actor}|judgment|{}",
+                action.index("target").as_str().unwrap_or_default()
+            ),
+            Self::Trust => format!(
+                "{actor}|trust|{}|{}",
+                resolve_subject(action.index("subject").as_str().unwrap_or_default()),
+                action.index("scope")
+            ),
+            Self::Profile => format!("{actor}|profile"),
+            Self::Report => format!(
+                "{actor}|report|{}|{}",
+                action.index("subject"),
+                action.index("category")
+            ),
+            Self::Bridge => format!(
+                "{actor}|bridge|{}|{}",
+                action.index("origin"),
+                action.index("source_definition")
+            ),
+            Self::Account => format!(
+                "{actor}|account|{}|{}",
+                action.index("origin"),
+                action.index("account")
+            ),
+            Self::Observation => format!(
+                "{actor}|observe|{}|{}",
+                action.index("origin"),
+                action.index("account")
+            ),
+        }
+    }
+}
 fn registers(graph: &graph::Graph, result: &mut Evaluation) {
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (id, n) in graph.nodes.as_ref() {
@@ -1448,49 +1517,10 @@ fn registers(graph: &graph::Graph, result: &mut Evaluation) {
             continue;
         }
         let actor = graph.actor(&n.issuer);
-        let key = match n.kind.as_str() {
-            "judgment.set" => format!(
-                "judgment|{}",
-                n.action.view().index("target").as_str().unwrap_or_default()
-            ),
-            "trust.set" => format!(
-                "trust|{}|{}",
-                graph.actor(
-                    n.action
-                        .view()
-                        .index("subject")
-                        .as_str()
-                        .unwrap_or_default()
-                ),
-                n.action.view().index("scope")
-            ),
-            "identity.profile" => "profile".into(),
-            "report.set" => format!(
-                "report|{}|{}",
-                n.action.view().index("subject"),
-                n.action.view().index("category")
-            ),
-            "bridge.set" => format!(
-                "bridge|{}|{}",
-                n.action.view().index("origin"),
-                n.action.view().index("source_definition")
-            ),
-            "account.set" => format!(
-                "account|{}|{}",
-                n.action.view().index("origin"),
-                n.action.view().index("account")
-            ),
-            "account.observe" => format!(
-                "observe|{}|{}",
-                n.action.view().index("origin"),
-                n.action.view().index("account")
-            ),
-            _ => continue,
-        };
-        groups
-            .entry(format!("{actor}|{key}"))
-            .or_default()
-            .push(id.clone());
+        if let Some(kind) = RegisterKind::for_action(&n.kind) {
+            let key = kind.key(n, &actor, |subject| graph.actor(subject));
+            groups.entry(key).or_default().push(id.clone());
+        }
     }
     let mut scope_arena = None;
     for (key, ids) in groups {
@@ -1606,6 +1636,15 @@ pub(crate) fn rafsi_gate_publication_visits() -> usize {
 }
 
 fn rafsi_gate(result: &mut Evaluation) {
+    for (id, eligibility) in rafsi_eligibilities(result, |p| &p.eligible) {
+        result.publications.get_mut(&id).unwrap().eligible = eligibility;
+    }
+}
+
+fn rafsi_eligibilities<'a>(
+    result: &'a Evaluation,
+    eligibility_of: impl Fn(&'a Publication) -> &'a Eligibility,
+) -> Vec<(String, Eligibility)> {
     let receipts = &result.receipts;
     let effective = |id: &str| {
         receipts
@@ -1624,7 +1663,7 @@ fn rafsi_gate(result: &mut Evaluation) {
         p.kind == "definition.publish"
             && !excluded(&p.id)
             && p.word.is_empty()
-            && p.eligible == Eligibility::Unknown
+            && *eligibility_of(p) == Eligibility::Unknown
     });
     let mut assignments: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut definition_gates: BTreeMap<String, (bool, bool)> = BTreeMap::new();
@@ -1633,7 +1672,7 @@ fn rafsi_gate(result: &mut Evaluation) {
     for (id, p) in &result.publications {
         #[cfg(test)]
         RAFSI_GATE_PUBLICATION_VISITS.with(|count| count.set(count.get() + 1));
-        if p.kind == "definition.publish" && p.eligible != Eligibility::NotSelected {
+        if p.kind == "definition.publish" && *eligibility_of(p) != Eligibility::NotSelected {
             if !effective(id) {
                 // Missing evidence blocks an all-deprecated result. Excluded history does not.
                 if !excluded(id) {
@@ -1644,10 +1683,11 @@ fn rafsi_gate(result: &mut Evaluation) {
             let (active, deprecated) = definition_gates
                 .entry(p.word.clone())
                 .or_insert((false, true));
-            *active |= p.eligible == Eligibility::Eligible
+            *active |= *eligibility_of(p) == Eligibility::Eligible
                 && p.content_available
                 && p.status == Status::Active;
-            *deprecated &= p.eligible == Eligibility::Eligible && p.status == Status::Deprecated;
+            *deprecated &=
+                *eligibility_of(p) == Eligibility::Eligible && p.status == Status::Deprecated;
         }
         if p.kind == "rafsi.publish" {
             if let Some(a) = &p.assignment {
@@ -1666,7 +1706,7 @@ fn rafsi_gate(result: &mut Evaluation) {
             let p = &result.publications[id.as_str()];
             effective(id)
                 && p.content_available
-                && p.eligible == Eligibility::Eligible
+                && *eligibility_of(p) == Eligibility::Eligible
                 && p.status == Status::Active
         });
         let all_claims_deprecated = !retained_claims.is_empty()
@@ -1674,7 +1714,7 @@ fn rafsi_gate(result: &mut Evaluation) {
                 let p = &result.publications[id.as_str()];
                 effective(id)
                     && p.content_available
-                    && p.eligible == Eligibility::Eligible
+                    && *eligibility_of(p) == Eligibility::Eligible
                     && p.status == Status::Deprecated
             });
         let eligibility = if active_claim && active_definition {
@@ -1685,14 +1725,12 @@ fn rafsi_gate(result: &mut Evaluation) {
             Eligibility::Unknown
         };
         for id in ids {
-            if result.publications[id].eligible != Eligibility::NotSelected {
+            if *eligibility_of(&result.publications[id]) != Eligibility::NotSelected {
                 updates.push((id.clone(), eligibility.clone()));
             }
         }
     }
-    for (id, eligibility) in updates {
-        result.publications.get_mut(&id).unwrap().eligible = eligibility;
-    }
+    updates
 }
 
 fn lineage(graph: &graph::Graph, node: &graph::Node) -> BTreeMap<String, String> {
@@ -1768,7 +1806,10 @@ fn assignment_index(publications: &BTreeMap<String, Publication>) -> BTreeMap<St
 /// mapped to the first such publication in ID order. A publication
 /// has a key only when its source account is known and commands with
 /// a controller identity; the key's actor is that identity's actor.
-fn bridge_source_index(graph: &graph::Graph, result: &Evaluation) -> BTreeMap<BridgeKey, String> {
+fn bridge_source_index(
+    result: &Evaluation,
+    actor_of: impl Fn(&str) -> String,
+) -> BTreeMap<BridgeKey, String> {
     let mut index = BTreeMap::new();
     for p in result.publications.values() {
         if !p.imported || p.kind != "definition.publish" {
@@ -1791,7 +1832,7 @@ fn bridge_source_index(graph: &graph::Graph, result: &Evaluation) -> BTreeMap<Br
                 word: p.word.clone(),
                 language: p.language.clone(),
                 origin: account.origin.clone(),
-                actor: graph.actor(controller),
+                actor: actor_of(controller),
             })
             .or_insert_with(|| p.id.clone());
     }
@@ -1913,7 +1954,9 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
                                 actor: graph.actor(&node.issuer),
                             };
                             let linked = bridge_sources
-                                .get_or_insert_with(|| bridge_source_index(graph, result))
+                                .get_or_insert_with(|| {
+                                    bridge_source_index(result, |issuer| graph.actor(issuer))
+                                })
                                 .get(&key);
                             if linked.is_none() {
                                 let r = result.receipts.get_mut(id).unwrap();
@@ -1945,25 +1988,33 @@ fn action_targets_for(graph: &graph::Graph, result: &mut Evaluation, only: Optio
 }
 
 fn reconcile_selections(graph: &graph::Graph, result: &mut Evaluation) {
-    let mut slots: BTreeMap<(String, String, u64), BTreeSet<String>> = BTreeMap::new();
+    let conflicts: Vec<_> =
+        conflicting_selections(result, |p| &p.eligible, |issuer| graph.actor(issuer)).collect();
+    for id in conflicts {
+        let p = result.publications.get_mut(&id).unwrap();
+        p.eligible = Eligibility::Unknown;
+        p.status = Status::Unavailable;
+        p.reasons.insert("source_selection_conflict".into());
+    }
+}
+
+fn conflicting_selections<'a>(
+    result: &'a Evaluation,
+    eligibility_of: impl Fn(&'a Publication) -> &'a Eligibility,
+    actor_of: impl Fn(&str) -> String,
+) -> impl Iterator<Item = String> {
+    let mut slots: BTreeMap<(&str, String, u64), Vec<String>> = BTreeMap::new();
     for p in result.publications.values().filter(|p| {
-        p.imported && p.kind == "definition.publish" && p.eligible == Eligibility::Eligible
+        p.imported && p.kind == "definition.publish" && *eligibility_of(p) == Eligibility::Eligible
     }) {
         if let (Some(source), Some(record)) = (&p.source, p.source_record) {
             slots
-                .entry((source.clone(), graph.actor(&p.issuer), record))
+                .entry((source, actor_of(&p.issuer), record))
                 .or_default()
-                .insert(p.id.clone());
+                .push(p.id.clone());
         }
     }
-    for ids in slots.values().filter(|ids| ids.len() > 1) {
-        for id in ids {
-            let p = result.publications.get_mut(id).unwrap();
-            p.eligible = Eligibility::Unknown;
-            p.status = Status::Unavailable;
-            p.reasons.insert("source_selection_conflict".into());
-        }
-    }
+    slots.into_values().filter(|ids| ids.len() > 1).flatten()
 }
 
 #[cfg(test)]

@@ -493,6 +493,73 @@ fn sealed(mut value: Value) -> Vec<u8> {
 }
 
 #[test]
+fn evaluation_options_use_defaults_for_omitted_limits_and_overlay() {
+    let mut value = json!({"selected_view": id(1), "import_selections": {}});
+    let options: EvaluationOptions = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(options.limits, Limits::default());
+    assert_eq!(options.overlay, None);
+
+    value["limits"] = json!({"traversal": 400});
+    let options: EvaluationOptions = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        options.limits,
+        Limits {
+            traversal: Some(400),
+            ..Limits::default()
+        }
+    );
+    assert_eq!(
+        serde_json::from_str::<Limits>("{}").unwrap(),
+        Limits::default()
+    );
+}
+
+#[test]
+fn checkpoint_options_require_fields_that_evaluation_options_default() {
+    let options: EvaluationOptions =
+        serde_json::from_value(json!({"selected_view": id(1), "import_selections": {}})).unwrap();
+    let state = PreparedEvaluationInput::new(options).into_state();
+    for results_only in [false, true] {
+        let saved = if results_only {
+            state.result_checkpoint("required-options").unwrap()
+        } else {
+            state.checkpoint("required-options").unwrap()
+        };
+        let saved: Value = serde_json::from_slice(&saved).unwrap();
+        for (parent, field) in [
+            ("/options", "overlay"),
+            ("/options", "limits"),
+            ("/options/limits", "events"),
+            ("/options/limits", "traversal"),
+            ("/options/limits", "claim_depth"),
+        ] {
+            let mut edited = saved.clone();
+            edited
+                .pointer_mut(parent)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            let bytes = sealed(edited);
+            let restored = if results_only {
+                EvaluatedState::restore_host_result_checkpoint(&bytes, "required-options", vec![])
+            } else {
+                EvaluatedState::restore_host_checkpoint(&bytes, "required-options")
+            };
+            let Err(error) = restored else {
+                panic!(
+                    "checkpoint accepted missing {parent}/{field} (results_only={results_only})"
+                );
+            };
+            assert!(
+                error.message.contains(&format!("missing field `{field}`")),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
 fn checkpoints_store_each_account_map_once_and_refuse_a_publication_copy() {
     let (records, selections) = account_fixture(8, 8, 40);
     let state = evaluate(&records, &selections, None);
@@ -549,30 +616,59 @@ fn checkpoints_store_each_account_map_once_and_refuse_a_publication_copy() {
 }
 
 #[test]
-fn the_borrowed_status_export_writes_the_same_json_as_the_owned_status() {
-    // Many observations of one claim by one witness, and many claims
-    // observed by many witnesses.
+fn status_exports_resolve_shared_witness_rows() {
     for (claims, witnesses, imports) in [(1, 1, 30), (40, 1, 30), (8, 8, 30)] {
         let (records, selections) = account_fixture(claims, witnesses, imports);
         let state = evaluate(&records, &selections, None);
-        let e = state.evaluation();
-        let mut observations = 0;
-        for id in e.publications.keys() {
-            let owned = publication_status(e, id).unwrap();
-            observations += owned
-                .witness_contributions
-                .iter()
-                .map(|c| c.observations.len())
-                .sum::<usize>();
-            let borrowed = publication_status_ref(e, id).unwrap();
+        let evaluation = state.evaluation();
+        let account = evaluation.accounts.values().next().unwrap();
+        let control = jvc_state::account_control(evaluation, "", ORIGIN, 41);
+        let control_json = serde_json::to_value(&control).unwrap();
+        assert_eq!(
+            control_json["current_observations"],
+            json!(account.current_observations)
+        );
+        for (id, publication) in &evaluation.publications {
+            let owned = serde_json::to_value(publication_status(evaluation, id).unwrap()).unwrap();
+            let borrowed =
+                serde_json::to_value(publication_status_ref(evaluation, id).unwrap()).unwrap();
+            assert_eq!(owned, borrowed, "{id}");
             assert_eq!(
-                serde_json::to_string(&borrowed).unwrap(),
-                serde_json::to_string(&owned).unwrap(),
-                "{id}"
+                borrowed["account_control"],
+                json!({"origin":ORIGIN,"account":41})
             );
+            assert_eq!(borrowed["account_authority_applied"], true);
+            assert!(borrowed.get("witness_contributions").is_none());
+            assert!(borrowed.get("controller_candidates").is_none());
+            assert!(borrowed.get("observations").is_none());
+            assert_eq!(
+                control.controller_candidates,
+                publication.controller_candidates
+            );
+            assert_eq!(
+                control_json["current_observations"],
+                json!(publication.observations)
+            );
+            for contribution in &control.contributions {
+                assert_eq!(
+                    contribution.claims,
+                    account.contributions[&contribution.witness]
+                );
+                assert_eq!(
+                    contribution.observations,
+                    account.observation_evidence[&contribution.witness]
+                );
+            }
         }
-        assert!(observations > 0, "{claims} claims: no exported observation");
-        assert!(publication_status_ref(e, &id(7)).is_none());
+        assert_eq!(
+            control
+                .contributions
+                .iter()
+                .map(|row| row.observations.len())
+                .sum::<usize>(),
+            claims * witnesses
+        );
+        assert!(publication_status_ref(evaluation, &id(7)).is_none());
     }
 }
 

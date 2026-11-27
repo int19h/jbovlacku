@@ -1758,10 +1758,10 @@ mod tests {
             .state
             .ranking_index_bound_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
             .unwrap();
-        // Records walk: 3 overlay field reads. Count walk: 1 reasons
-        // read, 1 overlay trust read, 7 rule validation reads, and 6
+        // Records walk: 3 overlay field reads. Count walk: 2 reasons
+        // reads, 1 overlay trust read, 7 rule validation reads, and 6
         // bound reads (value, issuer, subject, scope, 2 key_actor).
-        assert_eq!(jvc_state::setup_lookup_calls(), 18);
+        assert_eq!(jvc_state::setup_lookup_calls(), 19);
     }
     #[test]
     fn long_stored_key_overlay_and_rule_lookups_are_charged() {
@@ -2620,11 +2620,12 @@ mod tests {
             .state
             .ensure_ranking_index_metered(&mut |w, e, k, c| meter.charge(w, e, k, c))
             .unwrap();
-        // Construction makes exactly 37 charged lookup calls for this
+        // Construction makes exactly 39 charged lookup calls for this
         // fixture, one of them the charge taken before the retained
         // rules' `contains_key` read. Removing that charge drops the
-        // count to 36 and fails this test.
-        assert_eq!(jvc_state::setup_lookup_calls(), 37);
+        // count to 38 and fails this test. Each of the two reason
+        // checks makes two of these calls.
+        assert_eq!(jvc_state::setup_lookup_calls(), 39);
     }
     #[test]
     fn unavailable_float_skips_the_records_walk() {

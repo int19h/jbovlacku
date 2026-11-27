@@ -370,13 +370,19 @@ The shared raw Wasm artifact still contains host exports. The facade and source 
 No API route exports the private compact records as verification evidence.
 The server reconstructs exact canonical envelope text from each stored header, event ID, and decoded SSHSIG blob.
 Admission requires canonical base64, so this reconstruction preserves every signature variant and snapshot hash.
+The full state export uses state_export_version 2. An attributed publication refers to account_controls if the evaluation has a row for its account. The raw account rows omit copies of that evidence.
+Judgment patches use the same version. A reader requests full state if the patch does not match its parent.
+
 Cold evaluation and checkpoint restore fill the envelope cache from these private fields.
 The first admission after a restart needs no retained envelope reads.
 
 An extraction format or body-validation change requires another projection of existing data.
 Compact extraction version 8 and semantic extraction version 5 also admit the signed float calculation profile.
 They retain the current acute-accent word identity and body rules.
-Evaluation checkpoint version 2 rejects state derived under the earlier profile schema.
+Restore requires the current checkpoint format for the saved state.
+The full checkpoint tag is `jvc-evaluation-checkpoint-v13`. The results checkpoint tag is `jvc-evaluation-results-v14`.
+Both restore paths derive the layout guard from records before they admit an append.
+The evaluator defines the full and results format versions in [incremental.rs](../crates/jvc-state/src/incremental.rs).
 Earlier derived rows require backfill before reuse. Original signed records remain unchanged.
 Missing or older compact records trigger a parse-only backfill from private original bytes.
 Backfill does not repeat signature checks, body hashing, or canonical JSON checks.
@@ -402,7 +408,8 @@ The command requires an existing data directory and coordinator database before 
 The command holds the same exclusive data directory lock as the server and loader.
 A repeat run skips records with the current extraction format version.
 Ordinary startup also fills missing compact rows as evaluation needs them.
-Storage damage is outside this trust model. Restore private records and original objects from a trusted backup after such damage.
+The [trust boundaries](frontend.md#trust-boundaries) cover damage to the server's derived state, including compact rows that the server rebuilds from original bytes.
+Damage to original objects or the receipt journal needs a restore from a trusted backup.
 
 The persistent checkpoint stores evaluated results separately from these private records.
 Checkpoint restoration loads record inputs from the compact store. A core or view change discards results and keeps those records.
@@ -426,8 +433,15 @@ An unavailable restored base also constructs ancestry once.
 The rebuilt evaluation and work budget match full evaluation. Diagnostic statistics omit discarded incremental work.
 An unavailable base reports `base_unavailable`.
 
-Forks share immutable ancestor payloads. After 64 appended records, a rebuild incorporates the new IDs into the ancestor universe.
-The evaluator retains the full logical work charge. Uncertain work at an ancestor-width boundary forces a rebuild.
+Forks share immutable ancestor payloads. A local append charges any copies it makes of shared structures.
+Earlier copy charges stay in the work total until a full rebuild.
+After 64 records have used the fast path, the next eligible record triggers a rebuild and reports `ancestry_rebase`.
+This rebuild incorporates the new IDs into the ancestor layout.
+It reports `layout_split` if the parents leave out any of the issuer history.
+It also reports `layout_split` if the insertion splits a stored range or separates adjacent ranges in a priced union.
+The same guard covers status, carry, register, and account evidence merges.
+The guard is input handling. It takes no units from the work budget or from the append eligibility allowance.
+A rebuild uses the full work budget to decide availability.
 
 Judgment updates can return a patch of at most 1 MiB for the exact parent session.
 The facade applies that patch to immutable result maps. Other changes return the full result.
@@ -1307,6 +1321,16 @@ After that review passes, the change gets at least one independent review before
 
 Each review must name the exact commit or complete working diff under review.
 A later substantive change requires a new review of the affected behavior.
+
+Judge findings against the [trust boundaries](frontend.md#trust-boundaries).
+A finding that needs a malicious home server is not a defect.
+A finding that needs a shape-valid home-server answer with content that its own code cannot produce is not a defect. A crash on a wrong shape is a defect.
+A finding that needs a deliberate edit of a program's own storage is not a defect.
+If a browser with edited storage can crash a server, the finding is a defect.
+If it can change what a server stores or serves for other readers, except through records that pass admission, the finding is a defect.
+A finding about input at one of the entry points that the trust boundaries list remains in scope.
+A race between tabs, workers, or concurrent requests remains in scope.
+Unsafe rendering of record content that other people wrote remains in scope, even when a home server relays it.
 
 Resolve review findings and rerun the relevant tests before handoff.
 Run thorough tests before local acceptance tests.

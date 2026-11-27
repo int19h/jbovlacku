@@ -1,4 +1,4 @@
-use jvc_state::{EvaluatedState, EvaluationOptions, Limits, PreparedEvaluationInput};
+use jvc_state::{EvaluatedState, EvaluationOptions, Limits, PreparedEvaluationInput, StateExport};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -119,7 +119,7 @@ struct Boundary<'a> {
     name: &'a str,
     limits: &'a Limits,
     remaining_work: usize,
-    evaluation: &'a jvc_state::Evaluation,
+    evaluation: StateExport<'a>,
 }
 
 fn boundary(output: &str, name: &str, state: &EvaluatedState, limits: &Limits) {
@@ -129,7 +129,7 @@ fn boundary(output: &str, name: &str, state: &EvaluatedState, limits: &Limits) {
             name,
             limits,
             remaining_work: remaining_work(state),
-            evaluation: state.evaluation(),
+            evaluation: StateExport::new(state.evaluation()),
         },
     );
 }
@@ -170,6 +170,62 @@ fn preparation_boundary(session: &jvc_runtime::EvaluationSession, word: &str, un
             }
         }
     }
+}
+
+fn add_preparation_bounds(
+    bounds: &mut Value,
+    session: &jvc_runtime::EvaluationSession,
+    state: &EvaluatedState,
+    word: &str,
+) {
+    let baseline_policy = jvc_runtime::RankingPreparationPolicy {
+        core_binding: format!("sha256:{}", "a".repeat(64)),
+        limits: Default::default(),
+    };
+    let Ok(baseline_descriptor) = session.ranking_descriptor_native(&baseline_policy) else {
+        return;
+    };
+    if !baseline_descriptor.available {
+        return;
+    }
+    let baseline_request = jvc_runtime::RankingPreparationRequest {
+        owner_session: baseline_descriptor.owner_session,
+        descriptor_binding: baseline_descriptor.binding,
+        word: word.into(),
+    };
+    let Ok(baseline_preparation) = session.prepare_ranking_native(&baseline_request) else {
+        return;
+    };
+    let context_bounds = baseline_preparation
+        .contexts
+        .iter()
+        .map(|prepared| {
+            let bound = state.ranking_context_bound(&prepared.context).unwrap();
+            json!({
+                "context": prepared.context,
+                "bound": {
+                    "actors": bound.actors,
+                    "edges": bound.edges,
+                    "refusals": bound.refusals,
+                    "judgments": bound.judgments,
+                    "targets": bound.targets,
+                    "trust_rules": bound.trust_rules,
+                    "public_rules": bound.public_rules,
+                    "roots": bound.roots,
+                    "exclusions": bound.exclusions,
+                    "suspensions": bound.suspensions,
+                    "overlay_entries": bound.overlay_entries,
+                    "pairs_squared": bound.pairs_squared,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let charged_units = baseline_preparation.usage.charged_units;
+    assert!(charged_units > 0);
+    bounds["approximate_context_bounds"] = json!(context_bounds);
+    bounds["ranking_preparation_baseline"] = summary_json(&baseline_preparation);
+    bounds["ranking_work_accept"] = preparation_boundary(session, word, charged_units);
+    bounds["ranking_work_refuse"] = preparation_boundary(session, word, charged_units - 1);
 }
 
 fn main() {
@@ -214,17 +270,22 @@ fn main() {
         .values()
         .map(|publication| publication["word"].as_str().unwrap().to_owned())
         .collect::<BTreeSet<_>>();
-    let first_word = words.first().unwrap().clone();
+    let first_word = words.first();
+    let float_profile =
+        state_json["policy"]["calculation"].as_str() == Some(jvc_rank::approximate::ALGORITHM);
     if !bounds_only {
         let mut rankings = std::io::BufWriter::new(
             std::fs::File::create(format!("{output}/rankings.ndjson")).unwrap(),
         );
-        for word in &words {
-            let result = session.rank(word).unwrap();
-            rankings.write_all(word.as_bytes()).unwrap();
-            rankings.write_all(b"\t").unwrap();
-            rankings.write_all(result.as_bytes()).unwrap();
-            rankings.write_all(b"\n").unwrap();
+        // The rank endpoint serves exact profiles. Float views use preparation below.
+        if !float_profile {
+            for word in &words {
+                let result = session.rank(word).unwrap();
+                rankings.write_all(word.as_bytes()).unwrap();
+                rankings.write_all(b"\t").unwrap();
+                rankings.write_all(result.as_bytes()).unwrap();
+                rankings.write_all(b"\n").unwrap();
+            }
         }
         rankings.flush().unwrap();
     }
@@ -298,70 +359,20 @@ fn main() {
     let source_records = bounds_state.ranking_source_records().unwrap();
     bounds_state.ensure_ranking_index().unwrap();
     let index_counts = bounds_state.ranking_index_counts().unwrap();
-    let mut approximate_checkpoint: Value = serde_json::from_slice(&checkpoint).unwrap();
-    approximate_checkpoint["evaluation"]["policy"]["calculation"] =
-        json!(jvc_rank::approximate::ALGORITHM);
-    let preparation_session = jvc_runtime::EvaluationSession::restore_host_checkpoint(
-        &serde_json::to_vec(&approximate_checkpoint).unwrap(),
-        "record-arena-golden",
-    )
-    .unwrap();
-    let baseline_policy = jvc_runtime::RankingPreparationPolicy {
-        core_binding: format!("sha256:{}", "a".repeat(64)),
-        limits: Default::default(),
-    };
-    let baseline_descriptor = preparation_session
-        .ranking_descriptor_native(&baseline_policy)
-        .unwrap();
-    let baseline_request = jvc_runtime::RankingPreparationRequest {
-        owner_session: baseline_descriptor.owner_session,
-        descriptor_binding: baseline_descriptor.binding,
-        word: first_word.clone(),
-    };
-    let baseline_preparation = preparation_session
-        .prepare_ranking_native(&baseline_request)
-        .unwrap();
-    let context_bounds = baseline_preparation
-        .contexts
-        .iter()
-        .map(|prepared| {
-            let bound = bounds_state
-                .ranking_context_bound(&prepared.context)
-                .unwrap();
-            json!({
-                "context": prepared.context,
-                "bound": {
-                    "actors": bound.actors,
-                    "edges": bound.edges,
-                    "refusals": bound.refusals,
-                    "judgments": bound.judgments,
-                    "targets": bound.targets,
-                    "trust_rules": bound.trust_rules,
-                    "public_rules": bound.public_rules,
-                    "roots": bound.roots,
-                    "exclusions": bound.exclusions,
-                    "suspensions": bound.suspensions,
-                    "overlay_entries": bound.overlay_entries,
-                    "pairs_squared": bound.pairs_squared,
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    let charged_units = baseline_preparation.usage.charged_units;
-    assert!(charged_units > 0);
-    write_json(
-        format!("{output}/bounds.json"),
-        json!({
-            "word": first_word,
-            "ranking_index_bound": ranking_bound,
-            "ranking_source_records": source_records,
-            "ranking_index_counts": index_counts,
-            "approximate_context_bounds": context_bounds,
-            "ranking_preparation_baseline": summary_json(&baseline_preparation),
-            "ranking_work_accept": preparation_boundary(&preparation_session, &first_word, charged_units),
-            "ranking_work_refuse": preparation_boundary(&preparation_session, &first_word, charged_units - 1),
-        }),
-    );
+    let mut bounds = json!({
+        "word": first_word,
+        "ranking_index_bound": ranking_bound,
+        "ranking_source_records": source_records,
+        "ranking_index_counts": index_counts,
+        "approximate_context_bounds": [],
+        "ranking_preparation_baseline": null,
+        "ranking_work_accept": null,
+        "ranking_work_refuse": null,
+    });
+    if let Some(word) = first_word {
+        add_preparation_bounds(&mut bounds, &restored, &bounds_state, word);
+    }
+    write_json(format!("{output}/bounds.json"), bounds);
     if counts_only {
         return;
     }
@@ -392,4 +403,21 @@ fn main() {
     let state = build_state(&wire, limits.clone());
     assert!(!state.evaluation().available);
     boundary(output, "traversal-refuse", &state, &limits);
+}
+
+#[test]
+fn boundary_files_use_state_export() {
+    let input: Wire =
+        serde_json::from_slice(include_bytes!("../tests/invalid-overlay.json")).unwrap();
+    let limits = Limits::default();
+    let state = build_state(&input, limits.clone());
+    let output = tempfile::tempdir().unwrap();
+    boundary(output.path().to_str().unwrap(), "refuse", &state, &limits);
+    let bytes = std::fs::read(output.path().join("boundary-refuse.json")).unwrap();
+    let saved: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        saved["evaluation"],
+        jvc_runtime::evaluate_bytes(include_bytes!("../tests/invalid-overlay.json")).unwrap()
+    );
+    assert_eq!(saved["remaining_work"], remaining_work(&state));
 }

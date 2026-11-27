@@ -1114,11 +1114,29 @@ fn exact_status_and_account_api_expose_committed_evidence() {
     f.handover("deprecated");
     let result = evaluate_observed(&f.input);
     let status = jvc_state::publication_status(&result, &f.d).unwrap();
-    assert_eq!(status.claim, Some(f.cb.clone()));
-    assert_eq!(status.deciding_claim, Some(f.ca.clone()));
+    assert_eq!(status.claim.as_deref(), Some(f.cb.as_str()));
+    assert_eq!(status.deciding_claim.as_deref(), Some(f.ca.as_str()));
     assert!(status.frontier.contains(&f.old));
     assert_eq!(status.authority, jvc_state::Authority::SourceAccount);
     let account = jvc_state::account_control(&result, "snapshot", ORIGIN, 41);
+    let status = serde_json::to_value(status).unwrap();
+    assert_eq!(
+        status["account_control"],
+        json!({"origin":ORIGIN,"account":41})
+    );
+    assert_eq!(status["account_authority_applied"], true);
+    let selected = serde_json::to_value(&account).unwrap();
+    assert_eq!(
+        selected["current_observations"],
+        json!(result.publications[&f.d].observations)
+    );
+    let historical = account
+        .certificates
+        .iter()
+        .find(|certificate| certificate.claim == f.ca)
+        .unwrap();
+    assert_ne!(historical.observations, account.current_observations);
+
     assert_eq!(account.state, "controlled");
     assert!(account.chain.contains(&f.ca));
     assert!(account.certificates.iter().any(|c| c.claim == f.cb));
@@ -1934,6 +1952,15 @@ fn assert_checkpoint_roundtrip_and_append(
         expected_state.consumed_work(),
         "{label} after_res consumed_work"
     );
+    let expected_export =
+        serde_json::to_string(&jvc_state::StateExport::new(expected_state.evaluation())).unwrap();
+    for actual in [after_full.evaluation(), after_res.evaluation()] {
+        assert_eq!(
+            serde_json::to_string(&jvc_state::StateExport::new(actual)).unwrap(),
+            expected_export,
+            "{label}"
+        );
+    }
     HANDOVER_ROUNDTRIP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -1964,26 +1991,7 @@ fn evaluate_observed(input: &EvaluationInput) -> Evaluation {
             .map(|(id, b)| (id.clone(), String::from_utf8(b.clone()).unwrap()))
             .collect();
         let wire = json!({"events":events,"bodies":bodies,"selected_view":input.selected_view,"import_selections":input.import_selections,"overlay":input.overlay,"limits":input.limits});
-        let mut expected = serde_json::to_value(&result).unwrap();
-        expected["publication_statuses"] = json!(
-                result
-                    .publications
-                    .keys()
-                    .filter_map(
-                        |id| jvc_state::publication_status(&result, id).map(|s| (id.clone(), s))
-                    )
-                    .collect::<BTreeMap<_, _>>()
-            );
-        expected["account_controls"] = json!(
-            result
-                .accounts
-                .iter()
-                .map(|(key, a)| (
-                    key.clone(),
-                    jvc_state::account_control(&result, "", &a.account.origin, a.account.account)
-                ))
-                .collect::<BTreeMap<_, _>>()
-        );
+        let expected = serde_json::to_value(jvc_state::StateExport::new(&result)).unwrap();
         let name = std::thread::current()
             .name()
             .unwrap_or("unnamed")
@@ -3143,5 +3151,128 @@ fn all_handover_fixtures_and_delivery_orders_roundtrip_both_checkpoints_and_appe
     assert!(
         count >= 2500,
         "expected >= 2500 round-tripped states, got {count}"
+    );
+}
+
+#[test]
+fn account_references_distinguish_origins_and_import_kinds() {
+    let mut fixture = Fixture::new();
+    let original = fixture.d.clone();
+    let body: Value = serde_json::from_slice(&fixture.input.bodies[&original]).unwrap();
+    let word = body["word"].clone();
+    let word_id = word_id(&word).unwrap();
+    let mut other = body.clone();
+    other["legacy"]["record"]["id"] = json!(2);
+    other["legacy"]["attribution"]["author_account"]["origin"] = json!("https://other.example");
+    let other = fixture.event(9, vec![], json!({
+        "kind":"definition.publish","word":word_id,"language":"en","parents":[],"origin":"import"
+    }), Some(other));
+    let mut anonymous = body.clone();
+    anonymous["legacy"]["record"]["id"] = json!(3);
+    anonymous["legacy"]["attribution"]["author_account"] = Value::Null;
+    let anonymous = fixture.event(9, vec![], json!({
+        "kind":"definition.publish","word":word_id,"language":"en","parents":[],"origin":"import"
+    }), Some(anonymous));
+    let (native, pair) = rafsi(&mut fixture, 9);
+    let imported_rafsi = fixture.event(
+        9,
+        vec![],
+        json!({
+            "kind":"rafsi.publish","word":word_id,"assignment":pair,"origin":"import"
+        }),
+        Some(json!({
+            "word":word,"rafsi":"kla","rationale":[],"sources":[],"legacy":body["legacy"]
+        })),
+    );
+    fixture.event(
+        3,
+        vec![],
+        json!({
+            "kind":"account.set","origin":"https://no-publications.example","account":41,
+            "value":"claim","previous":null,"carry":[]
+        }),
+        None,
+    );
+    fixture.view(vec![10, 11], vec![]);
+    let result = evaluate_observed(&fixture.input);
+    let export = serde_json::to_value(jvc_state::StateExport::new(&result)).unwrap();
+    assert_eq!(export["state_export_version"], 2);
+    assert_eq!(export["accounts"].as_object().unwrap().len(), 3);
+    assert_eq!(export["account_controls"].as_object().unwrap().len(), 3);
+    for (id, expected, applied) in [
+        (&original, Some(ORIGIN), true),
+        (&other, Some("https://other.example"), true),
+        (&anonymous, None, false),
+        (&native, None, false),
+        (&imported_rafsi, Some(ORIGIN), false),
+    ] {
+        let key = expected
+            .map(|origin| json!({"origin":origin,"account":41}))
+            .unwrap_or_default();
+        let flattened = &export["publications"][id];
+        for row in [flattened, &export["publication_statuses"][id]] {
+            assert_eq!(row["account_control"], key);
+            assert_eq!(row["account_authority_applied"], applied);
+        }
+        assert_eq!(flattened["account"], json!(result.publications[id].account));
+    }
+    for (token, account) in &result.accounts {
+        let raw = &export["accounts"][token];
+        assert_eq!(raw["historical"], json!(account.historical));
+        assert_eq!(raw["closed"], json!(account.closed));
+        assert_eq!(raw["missing"], json!(account.missing));
+        assert_eq!(export["account_controls"][token]["snapshot"], "");
+    }
+    assert_eq!(
+        export["account_controls"]["https://no-publications.example#41"]["state"],
+        "unclaimed"
+    );
+}
+/// True when `T` implements `Serialize`. An inherent associated constant
+/// wins over the trait fallback only when its bound holds.
+struct SerializeProbe<T>(std::marker::PhantomData<T>);
+trait NoSerialize {
+    const SERIALIZES: bool = false;
+}
+impl<T> NoSerialize for SerializeProbe<T> {}
+impl<T: serde::Serialize> SerializeProbe<T> {
+    #[allow(dead_code)]
+    const SERIALIZES: bool = true;
+}
+#[test]
+fn publication_map_serializes_only_with_account_references() {
+    const {
+        assert!(SerializeProbe::<jvc_state::AccountKey>::SERIALIZES);
+        assert!(
+            !SerializeProbe::<jvc_state::Publication>::SERIALIZES,
+            "a raw publication serializer would repeat the account evidence"
+        );
+    }
+    let mut f = Fixture::new();
+    let newer = f.publish_after(1, vec![f.d.clone()]);
+    let d = f.d.clone();
+    chunk_policy(&mut f, vec![(9, vec![d.clone()]), (9, vec![newer.clone()])]);
+    let result = evaluate_observed(&f.input);
+    let export = serde_json::to_value(jvc_state::StateExport::new(&result)).unwrap();
+    let publications = serde_json::to_value(result.export_publications()).unwrap();
+    assert_eq!(publications, export["publications"]);
+    let reference = json!({"origin": ORIGIN, "account": 41});
+    for id in [d, newer] {
+        let row = &publications[&id];
+        assert_eq!(row["account_control"], reference);
+        for field in [
+            "witness_contributions",
+            "controller_candidates",
+            "observations",
+        ] {
+            assert!(row.get(field).is_none(), "{id} has {field}");
+        }
+    }
+    let token = format!("{ORIGIN}#41");
+    assert!(
+        !export["account_controls"][&token]["contributions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
 }

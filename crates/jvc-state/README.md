@@ -26,10 +26,47 @@ Exclusions and local blocks remove shares after normalization. They do not incre
 `publication_status` and `account_control` expose the frontend status and certificate fields directly.
 
 The ancestry cache uses exact intervals over a topological layout. Records of one issuer occupy a contiguous block of layout positions. Same-issuer parents come before their children, records in or below a cycle keep lexical order at the end of the block, and each closure is a sorted list of disjoint position ranges.
-Its global work budget counts logical work across graph construction and the evaluator's inner loops: records, dependency edges, propagated missing IDs, range unions, maxima range comparisons and signatures, successor and continuity walks, retention and cutoff checks, policy and selection scans, account claim and certificate loops, and publication and receipt passes. A `jvr1:` judgment or a managed `bridge.set` finds its publication with one lookup in an index. Each evaluation builds that index on first use, in one pass that reads every publication once. That pass is input handling, and the budget does not charge it. Later lookups in the same evaluation reuse the index. An append to a fork still charges the copy of every publication, as for any shared result. One layout pass charges per record and per dependency edge once. A dependency setup pass and a closure construction pass charge those units for each of the three link modes, plus lifecycle, closure, and evaluator loop charges on the same terms.
+Its global work budget counts logical work across graph construction and the evaluator's inner loops: records, dependency edges, propagated missing IDs, range unions, maxima range comparisons and signatures, successor and continuity walks, retention and cutoff checks, policy and selection scans, account claim and certificate loops, and publication and receipt passes. A `jvr1:` judgment or a managed `bridge.set` finds its publication with one lookup in an index. Each evaluation builds that index on first use, in one pass that reads every publication once. That pass is input handling, and the budget does not charge it. Later lookups in the same evaluation reuse the index. One layout pass charges per record and per dependency edge once. A dependency setup pass and a closure construction pass charge those units for each of the three link modes, plus lifecycle, closure, and evaluator loop charges on the same terms.
 The count charges the exact interval layout and evaluator loop iterations. It counts no bitset words or pointer sizes, so the same input charges the same total in native and Wasm builds.
 One linear pass or copy per operation over state that the host already supplied and keeps is input handling, and the budget does not count it. That state is the retained records, the record arena, a retained overlay, inherited import selections, and option strings. Nothing in the evaluator bounds this retained state beyond the size of the input that supplied it. `Limits.events` does not limit retention: a state over the quota still keeps its records, and only its evaluation is refused.
-Evaluation stops as soon as the budget runs out. The evaluator does not publish confident partial state from that run.
+A fast-path append also charges each shared structure it copies before a write.
+This includes the map of publications.
+A fork can therefore consume more work than a fresh evaluation of the same records.
+Later appends keep those charges until a full rebuild.
+
+An issuer boundary is the gap between two issuer blocks.
+A mixed closure contains records from more than one issuer.
+The boundary index charges one unit per stored mixed closure and two per range in those closures.
+It counts shared caches once and counts ranges as in a fresh layout.
+If at least one mixed closure exists, the index also charges two units per issuer block.
+A graph with only local closures skips this index. A failed graph build skips it as well.
+
+An append keeps the base boundary marks.
+It also tests the current neighbors against mixed closures that earlier appends added.
+The evaluator rebuilds if the insertion splits a stored range.
+An append pays the same index charges as a fresh build for its new mixed closures and for a new issuer block.
+The fast path checks the block charge before the append starts.
+
+A merge scope contains the records that can contribute to one priced union.
+An append also rebuilds if it separates adjacent ranges from different operands in one scope.
+The guard covers status, carry, register, and account evidence merges.
+The evaluator builds this guard before the first eligible append to a fresh layout.
+It skips the guard if there are no semantic acceptances or claims with at least three carry entries.
+A live state and both checkpoint restores derive the guard from the positioned records.
+Building the guard is linear work. It makes a table of the retained records.
+If a claim has at least three carry entries, one pass indexes the record IDs. Another pass groups the records into scopes.
+Let H count the scope memberships, U count the distinct stored ranges, and W sum the ranges over every membership.
+If W is at most 2(H + U), the build scans the ranges of each scope.
+Otherwise it reads each distinct stored range list once to find candidate gaps, and twice more if at least one candidate exists.
+Under the input handling rule above, the budget does not charge it, and it takes no units from the append eligibility allowance.
+A graph builds the guard at most once, and later appends on the same layout reuse it.
+A rebuilt graph builds a new guard, and the rebuild already does linear work over the same records.
+An empty guard answers a gap test at once. A guard from the scan searches a sorted list of marks.
+A guard from the common path answers a gap that is not a candidate at once. At a candidate gap, the first test reads the scope lists of the ranges that end or start there and saves the answer for the layout. Later tests at that gap read no lists.
+Temporary join marks add no work to the full evaluation price.
+
+When a full evaluation exceeds its work budget, it returns an empty `resource_unavailable` result.
+Some linear passes can still run after a charge fails.
 Range metadata has a hard cap. A history past the cap returns `resource_unavailable` at any budget. The cap counts the range storage that the closures the graph keeps would have in a fresh full build of the same records. Those closures are the ones in the ancestry caches and the compromise cutoffs. In that layout, a closure with at most one range is stored inline and counts nothing, and a closure with more ranges counts 16 bytes plus 8 bytes per range. A live state keeps its original layout and holds appended records separately, so one of its closures can hold a different number of ranges than the count assumes. A live append still charges each new closure at its range count in a fresh layout, which is why a live state and a restored state report the same total. Temporary sets do not count: the unions inside one closure computation, `maxima` merges and carry closures. The cap is 64 MiB plus 1,024 bytes per record (`67,108,864 + 1,024 * records`). A record that a session appends raises the cap by its own 1,024 bytes, as a full evaluation of the same records would. No limit or host setting changes the cap. Because the cap grows with the record count, padding a history with plain records lets a larger part whose ranges grow faster than linearly evaluate. Each padding record raises the cap by 1,024 bytes, so the extra room is linear in the input, and the design accepts it. A padding record can raise the counted storage by more than 1,024 bytes when its key sorts between two blocks that existing closures join, because it splits the ranges of those closures. These figures assume that the old key's history and the successor's history are each a single chain without side branches. For other histories the count follows the number of ranges in each closure, under the per-closure rule. For example, take a key whose block comes right before its successor's block, with the transfer last in the old block and the acceptance first in the successor's block. One root record whose key sorts between those two keys then adds 2,112 bytes to a history in which the successor signs its acceptance and 32 more records. For example, two chains of one key whose record IDs alternate evaluate alone up to 1,913 pairs, with 46.5 MiB resident. Next to a 300,000-record plain chain of another key they evaluate up to 5,437 pairs, where the work budget refuses the next pair. That state keeps 689.5 MiB resident, and the plain chain alone keeps 431.4 MiB. The cap is computed in 64-bit arithmetic. On a 32-bit target it stops at 4 GiB minus 1 byte from 4,128,768 records, and a 32-bit build runs out of memory before its count of kept storage reaches that value.
 Each stored range costs 8 bytes. A fragmented history (for example interleaved chains of one issuer) can therefore use more ancestry memory than the old bitset representation, and an input past the cap returns `resource_unavailable` where the old representation still evaluated it. Results are unchanged for every input under the cap when the work budget covers the work.
 The default work budget is `10,000,000 + 256 * records + 16 * predecessors + selection_ids`.
@@ -90,3 +127,9 @@ The fixture places at most one judged target in the requested context.
 Process CPU and peak memory include fixture construction.
 The resolver timer excludes it.
 These synthetic results do not establish HTTP latency or live dictionary capacity.
+
+## State export
+
+State export version 2 stores each account's contributions in account_controls. An attributed publication carries an account reference if the evaluation has a row for its account. The reference applies only to the snapshot and view of that evaluation.
+The export preserves selected current observations separately from historical certificates. Checkpoints keep their own format.
+`Publication` has no serializer, because its fields repeat the account evidence. `Evaluation::export_publications` writes the publication map in the version 2 form.

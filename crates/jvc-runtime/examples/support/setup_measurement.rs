@@ -161,13 +161,20 @@ fn measure(name: &str, state: EvaluatedState) -> [usize; 2] {
     );
     allocations.nodes
 }
-fn seal_checkpoint(mut saved: Value) -> Vec<u8> {
-    saved.as_object_mut().unwrap().remove("digest");
-    let mut bytes = serde_json::to_vec(&saved).unwrap();
-    let digest = jvc_core::hash_id("sha256:", b"", &bytes);
-    bytes.pop();
-    bytes.extend_from_slice(format!(",\"digest\":\"{digest}\"}}").as_bytes());
-    bytes
+fn with_synthetic_results(mut state: EvaluatedState, evaluation: Value) -> EvaluatedState {
+    // These fixtures measure ranking indexes without corresponding records.
+    let overlay = evaluation
+        .get("overlay")
+        .filter(|value| !value.is_null())
+        .cloned();
+    state.replace_evaluation_for_test(serde_json::from_value(evaluation).unwrap(), overlay);
+    state
+}
+/// The evaluation in the checkpoint form that `Evaluation` reads. The
+/// default serializer writes the public export, which it cannot read.
+fn checkpoint_evaluation(state: &EvaluatedState) -> Value {
+    let mut saved: Value = serde_json::from_slice(&state.checkpoint("synthetic").unwrap()).unwrap();
+    saved["evaluation"].take()
 }
 fn synthetic(prototype: &Value, n: usize, grouped: bool, rules: bool) -> EvaluatedState {
     let input = EvaluationInput {
@@ -179,7 +186,7 @@ fn synthetic(prototype: &Value, n: usize, grouped: bool, rules: bool) -> Evaluat
         limits: Default::default(),
     };
     let state = EvaluatedState::from_input(&input);
-    let mut saved: Value = serde_json::from_slice(&state.checkpoint("synthetic").unwrap()).unwrap();
+    let mut evaluation = checkpoint_evaluation(&state);
     let mut publications = serde_json::Map::new();
     let mut trust = Vec::new();
     let mut overlay = Vec::new();
@@ -205,16 +212,14 @@ fn synthetic(prototype: &Value, n: usize, grouped: bool, rules: bool) -> Evaluat
             overlay.push(json!({"issuer":actor,"subject":subject,"scope":scope,"value":"heed","weight":{"numerator":1,"denominator":10}}));
         }
     }
-    saved["evaluation"]["publications"] = Value::Object(publications);
+    evaluation["publications"] = Value::Object(publications);
     // These trusted synthetic verdicts measure index lookup counts.
-    saved["evaluation"]["judgments"] = Value::Object(judgments);
-    saved["evaluation"]["trust"] = json!(trust);
+    evaluation["judgments"] = Value::Object(judgments);
+    evaluation["trust"] = json!(trust);
     if rules {
-        let o = json!({"version":2,"trust":overlay,"blocked":[],"root_changes":[],"public_shun_issuer":null});
-        saved["evaluation"]["overlay"] = o.clone();
-        saved["options"]["overlay"] = o;
+        evaluation["overlay"] = json!({"version":2,"trust":overlay,"blocked":[],"root_changes":[],"public_shun_issuer":null});
     }
-    EvaluatedState::restore_host_checkpoint(&seal_checkpoint(saved), "synthetic").unwrap()
+    with_synthetic_results(state, evaluation)
 }
 #[derive(Default)]
 pub struct AllocationCoverage {
@@ -274,7 +279,7 @@ pub fn small_shapes() -> AllocationCoverage {
 }
 fn small_state(prototype: &Value, n: usize, shape: &str) -> EvaluatedState {
     let state = synthetic(prototype, 0, false, false);
-    let mut saved: Value = serde_json::from_slice(&state.checkpoint("synthetic").unwrap()).unwrap();
+    let mut evaluation = checkpoint_evaluation(&state);
     let mut publications = serde_json::Map::new();
     let mut trust = Vec::new();
     let mut private = Vec::new();
@@ -338,12 +343,10 @@ fn small_state(prototype: &Value, n: usize, shape: &str) -> EvaluatedState {
             }
         }
     }
-    saved["evaluation"]["publications"] = json!(publications);
-    saved["evaluation"]["trust"] = json!(trust);
-    let overlay = json!({"version":2,"trust":private,"blocked":[],"root_changes":[],"public_shun_issuer":null});
-    saved["evaluation"]["overlay"] = overlay.clone();
-    saved["options"]["overlay"] = overlay;
-    EvaluatedState::restore_host_checkpoint(&seal_checkpoint(saved), "synthetic").unwrap()
+    evaluation["publications"] = json!(publications);
+    evaluation["trust"] = json!(trust);
+    evaluation["overlay"] = json!({"version":2,"trust":private,"blocked":[],"root_changes":[],"public_shun_issuer":null});
+    with_synthetic_results(state, evaluation)
 }
 
 pub fn run() {

@@ -1,3 +1,13 @@
+import type {
+  PublicationStatus,
+  STATE_EXPORT_VERSION,
+} from "../../../../packages/core/src/browser.ts";
+export type {
+  AccountControl,
+  AccountControlResponse,
+  AccountKey,
+  PublicationStatus,
+} from "../../../../packages/core/src/browser.ts";
 /** Shared record and API shapes. Field names follow the format and frontend specifications. */
 import type { Interval, Rational } from "../lib/format.ts";
 
@@ -325,20 +335,8 @@ export interface PackageEntryV2 extends PackageEntry {
     dates: Record<string, string>;
   } | null;
 }
-export interface PublicationStatus {
-  event: string;
-  state: "active" | "deprecated" | "conflicted" | "uncertain" | "unavailable";
-  frontier: string[];
-  reasons: string[];
-  controller_candidates: string[];
-  deciding_claim: string | null;
-  witness_contributions: unknown[];
-  authority: "native" | "source-account" | "none" | "uncertain";
-  controller: string | null;
-  claim: string | null;
-  observations: string[];
-}
 export interface WordResponse {
+  status_version: typeof STATE_EXPORT_VERSION;
   snapshot: string;
   view: string;
   calculation: Calculation | null;

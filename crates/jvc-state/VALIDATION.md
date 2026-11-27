@@ -1,7 +1,7 @@
 # State validation
 
-The state test suite passes 97 tests. It includes H01 through H48 and 49 additional regressions.
-The native suite finishes in 24.66 seconds on the development machine with two test threads. The tests use real authenticated signatures and canonical bodies.
+The state test suite includes the handover cases H01 through H48 and additional regressions.
+The tests use real authenticated signatures and canonical bodies.
 Each handover case uses four delivery orders, duplicate delivery, and reconstruction from serialized envelopes.
 The suite samples delivery orders. It does not enumerate every possible permutation.
 
@@ -40,9 +40,12 @@ The crate passes native and standalone wasm32-unknown-unknown build checks.
 CI installs Rustfmt and Clippy on the pinned 1.99.0 toolchain.
 The toolchain file selects the minimal profile, which does not include these components.
 
-The generated parity corpus contains 353 inputs from all 97 test names. It includes every handover case and the large history tests.
-Native expected outputs equal the Chromium WebAssembly outputs for all 353 inputs. The parity runner finishes in 12.810 seconds on the development machine.
+The parity corpus has one input for each case that the state and runtime tests generate. It includes every handover case and the large history tests.
+The parity runner requires that the native expected output equals the Chromium WebAssembly output for every input.
 The comparison includes the complete evaluator result, publication status fields, and account certificate fields.
+Parity uses state export version 2. Each account control row owns the witness evidence that its publications reference.
+The concentrated fixtures cover 250, 500, and 1,000 imports that share one account.
+
 The corpus comes from the same native fixture builders. It contains no separate implementation of expected state rules.
 
 The parity runner writes `_wasm-report.json` into the selected corpus directory.
@@ -55,7 +58,7 @@ Use a new corpus directory for each run, so old cases cannot enter the compariso
 mkdir -p .cache
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 export JVC_STATE_PARITY_DIR="$(mktemp -d "$PWD/.cache/state-parity.XXXXXX")"
-cargo test -p jvc-state --locked --jobs 2 -- --test-threads=2
+cargo test -p jvc-state -p jvc-runtime --locked --jobs 2 -- --test-threads=2
 npm run build:core
 node scripts/test-state-parity.mjs
 ```
@@ -66,6 +69,36 @@ Set `JVC_CHROMIUM` if the browser executable is outside Playwright's normal cach
 
 The pure evaluator performs no peer retrieval. Service code owns retrieval deadlines and transport admission.
 A complete supplied inventory cannot prove that no remote branch is hidden.
+
+## Issuer gaps
+
+A mixed closure contains records from more than one issuer.
+The stored range index charges one unit per mixed closure and two units per range in those closures.
+If any mixed closure exists, it also charges two units per issuer block.
+The index counts shared caches once. Local closures add no charge.
+A failed graph build stops before the index scans the ranges.
+
+A merge scope contains the records that can contribute to one priced union.
+A test compares both kinds of scope index with direct membership at every issuer gap.
+Let H count the scope memberships, U count the distinct stored ranges, and W sum the ranges over every membership.
+If W is at most 2(H + U), the index scans the ranges of each scope and stores sorted marks.
+Otherwise it reads each distinct range list once to find candidate gaps.
+If at least one candidate gap exists, it reads each distinct range list twice more to record which ranges end or start at each candidate gap.
+The first query at a candidate gap reads the scope lists of those ranges and saves its answer. Later queries at that gap read no lists.
+A query at another gap, or on an empty index, reads no lists.
+The build and the gap tests are input handling. They take no units from the work budget or the eligibility allowance.
+
+The signed tests compare fresh evaluation, live append, and both restored appends for these merges: carry, native status, historical witness, command authority, authorized claims, and import status periods.
+They use the default budget, the exact fresh cost, one unit below it, and one unit above it.
+All paths refuse below the cost and agree on results, work, and ancestry bytes at the cost or above it.
+The check records the IDs of each `maxima` call that names at least three distinct stored records.
+Each carry closure adds at most one set: its present heads without the last present occurrence, kept if at least two distinct heads remain.
+Each recorded union must stay in one issuer block or lie in one collected scope.
+The signed merge tests and the append comparisons that use `fresh_checked` test recorded unions when the reference graph exists and its resource flag is clear.
+
+Two tests add one transfer and its acceptance to many root judgments from distinct keys.
+With 30,000 judgments, the next root judgment stays incremental at the default budget.
+With 2,000 judgments and an explicit limit equal to the fresh cost, the live append and both restored appends stay incremental.
 
 ## Wide predecessor lists
 

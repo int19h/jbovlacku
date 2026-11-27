@@ -348,7 +348,7 @@ Multiple first events at the proposed successor also freeze continuity. A succes
 Cycles and a successor that already acted independently never establish continuity.
 
 Continuity depends on the current known inventory. A later-discovered transfer or independent successor branch can withdraw previously inferred continuity.
-The client must recompute inherited authority and disclose the change. Arrival dates never select which branch deserves continuity.
+The evaluator recomputes inherited authority, and the client discloses the change. Arrival dates never select which branch deserves continuity.
 A later old-key transfer does not override an earlier one. It is evidence of conflicting transfer use.
 
 These conservative rules permit denial of service by a stolen old key. Conflicting evidence prevents the evaluator from selecting an arbitrary successor.
@@ -857,7 +857,7 @@ This complete body omits unused optional fields. Pretty-printed examples become 
 A virtual definition is computed content with an independent judgment target.
 It has no publication event, stored definition body, signer, signature, or independently controlled status.
 The shared core implements `place-conversion-v1` in Rust and WebAssembly. Its native and WebAssembly builds must produce the same content and ID.
-Clients authenticate the exact base publication before computing its content. Server-derived previews retain their ordinary assertion status.
+A client authenticates the exact base publication before it computes the content itself. A home server's previews are trusted answers, as the [trust boundaries](frontend.md#trust-boundaries) state.
 
 A virtual descriptor contains exactly `base`, `conversion`, and `rule`:
 
@@ -1663,10 +1663,10 @@ A virtual row has no event, issuer, stored body hash, or independently claimed c
 Its `word` is the canonical converted word. Its `base_word` preserves the exact base spelling.
 Aliases remain page placements established by morphology. They never alter a target or merge word identities.
 
-A consumer resolves the descriptor's exact base event and authenticates its body against that event's signed content descriptor.
+A consumer that receives a package from another peer resolves the descriptor's exact base event and authenticates its body against that event's signed content descriptor.
 The authenticated hash must equal `base_body`. The descriptor must reproduce the row's virtual target.
 The consumer recomputes the converted word, language, text, frame, and glosses under `place-conversion-v1`.
-Disagreement makes the row unusable. Missing or withheld evidence makes its coverage unavailable, rather than authenticating the server's assertion.
+Disagreement makes the row unusable. Missing or withheld evidence makes its coverage unavailable. The consumer never accepts the other peer's row as it stands.
 Admission of a derived row never grants base eligibility, imports content into an accepted selection, or supplies editorial influence.
 
 Version 3 retains structured frame content and enough base and rafsi evidence for the declared morphology coverage.
@@ -1679,7 +1679,7 @@ Pattern search scans stored headwords and rafsi without expanding virtual conver
 
 Earlier packages without those fields do not supply conversion coverage. They require reconstruction from retained base records, not guessed field upgrades.
 The client exposes incomplete coverage and never uploads a local query silently to compensate.
-Derived package hashes authenticate package bytes, not the truth of their content. Signed base records remain the evidence for recomputation.
+Derived package hashes authenticate package bytes, not the truth of their content. For a package from another peer, signed base records remain the evidence for recomputation.
 Virtual lookup requires its descriptor as well as its ID. An ID alone does not reveal the base preimage.
 Immutable event APIs remain restricted to signed `jve1:` events. A virtual lookup returns a derived candidate, never an invented signed event.
 
@@ -2238,6 +2238,10 @@ After replacing witnesses, obtain fresh observations before expecting author con
 A compromised historical witness set can force closure or unavailable status. It cannot install a controller under a different current witness set.
 Recovery uses a fresh certified claim, or an explicit parentless policy reset. Neither recovery happens automatically.
 
+An evaluated account owns its witness evidence. The evidence includes current maximal observations, selected current observations, and certificates under current or historical policies.
+A derived status can refer to this evidence by canonical HTTPS origin and account number. A reference applies only to the evaluation's snapshot and view.
+A disabled account authority policy leaves this evidence available when the account row exists. The exported status still records whether the account authority pass applies.
+
 #### Claim boundaries and inherited history
 
 Carry contains at most 64 distinct event IDs, sorted lexicographically. A null previous requires an empty carry.
@@ -2343,6 +2347,10 @@ General identity succession within one account period retains the section 6 expo
 A fresh claim with carry independently adopts imported status. It does not independently inherit editorial influence or native publication authority.
 
 The evaluator applies explicit resource limits to chains and closures. Exceeding a limit produces resource-unavailable, never a truncated active result.
+
+A derived export keeps each target's frontier, status, reasons, and deciding claim on that publication. It writes the shared witness evidence in the referenced account row.
+The export includes the reference only when that row exists in the same snapshot and view. A reader must resolve the reference within that scope.
+The signed source attribution remains independent of the derived reference.
 
 ### Cross-post markers and management
 

@@ -56,7 +56,7 @@ The first write after restart reconstructs retained envelopes from private event
 A versioned golden fixture guards extraction changes. Undecodable derived rows emit diagnostics and trigger parse-only repair.
 The SQL loader stages changed projections in bounded batches and commits them with accepted events.
 
-The [development guide](development.md#initial-lensisku-data) explains the trust assumption and the offline backfill command.
+The [trust boundaries](frontend.md#trust-boundaries) state the trust assumption. The [development guide](development.md#initial-lensisku-data) explains the offline backfill command.
 
 The evaluated checkpoint contains results and search packages. Its record inputs come from the separate compact store on restore.
 The adapter uses separate Node worker threads for completed reads and new evaluation.
@@ -511,6 +511,9 @@ Mocked capacity tests cover two 59,129-input index runs, 8,192 assistance histor
 Mocked tests cover provider validation, caller departure, unknown charges, deadlines, and interrupted reservations after restart.
 The host can create fresh application profiles and derive bounded `definition-json-v1` and `literal-query-v1` inputs.
 Separate private semantic rows retain complete interpreted evidence and bind each input to its original event and body hash.
+The full state export and word status responses use version 2. Account evidence lives in each account's control row.
+A publication can refer to that row even when its view disables account authority. The word page reads only the local status for badges.
+
 Admission commits semantic rows and compact evaluation rows together. Evaluation and checkpoint restore never load semantic rows.
 Recipe inputs preserve literal imported markers and mathematics. They exclude top-level notes, etymology, and import evidence.
 The codecs encode unit vectors as little-endian float32.
