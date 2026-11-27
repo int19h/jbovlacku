@@ -68,42 +68,48 @@ Long calculations use bounded jobs and explicit resource errors. Job execution n
 ### Trust boundaries
 
 A home server is a server that the client trusts for computed answers.
-The origin that supplies the client code is a home server. Each server that the reader selects to read from is also a home server.
+The origin that supplies the client code is a home server. A server that the client is configured to read dictionary answers from is also a home server.
 Under static hosting, the client trusts the files at the origin that supplies the code.
-A writable peer that only receives submissions is not a home server.
-A client check cannot protect a reader against a malicious home server, because that server can supply different client code.
-A reader who does not trust a server uses another server or runs one.
+A configured delivery peer is another peer, even though the client reads receipts and own-history scans from it.
+A client check cannot protect a reader against a malicious code origin, because that origin can supply different client code.
+The reader also trusts each server that they choose for dictionary reading. A reader who does not trust a server uses another server or runs one.
 
 The client accepts every answer that a home server computes. Examples are word and search responses, scores, publication and virtual statuses, account evidence, search packages, virtual previews, identity summaries, and receipts.
 The client does not need to recompute or cross-check these answers to check the server.
-A finding that needs a home server to send an answer that its own code cannot produce is not a defect. A malicious home server is one example.
-The client still checks each answer for the shape that it needs to process and render it, so that a faulty answer cannot crash the page.
+A home-server answer can have a valid shape and still hold content that the server's own code cannot produce. A finding that needs such content is not a defect.
+The client checks the shape of each answer that it processes or renders. An answer with a wrong shape must not crash the page.
+A proxy error or a version mismatch can cause such an answer. A crash on a wrong shape is a defect.
 
 Trust in a home server covers its computed answers. It does not cover the content of records that it relays.
 Other people wrote that content. The client renders and parses it as untrusted text, in the same way as provider output.
 
-When the client reads raw signed records, it verifies the event ID, the canonical JSON, the header signature, and the body hash and byte length. It does this for records from a home server too, because signed records move between peers.
+When the client reads raw signed records, it verifies the event ID, the canonical JSON, the header signature, and the body hash and byte length.
+It does this for records from a home server too, because signed records move between peers.
 Within one evaluated read and its follow-up requests, such as pagination and account evidence, the client keeps one snapshot and one view.
 A page that combines separate sources labels the snapshot and view of each source and never mixes them silently.
 These rules protect against cache and request races in the client. They are not checks of the server.
 
 The client does not trust data from other peers. It accepts a signed record from another peer only after it verifies that record.
-It treats an unsigned answer from another peer as that peer's claim, and it fetches and verifies the records that such an answer lists.
+It treats an unsigned answer from another peer as that peer's claim.
+Before the client uses a record that such an answer names, it fetches and verifies that record.
 A multi-page scan of another peer keeps the snapshot that its first page found.
 
 Local ranking for the personal view exists to keep private trust choices on the device. It is not a check of the home server.
 The optional site-view comparison, “Recompute from records,” helps a reader inspect scores. A malicious home server can defeat it.
 
-A server has no home server, and it trusts no other server.
-It admits records from a peer through record admission and recomputes every digest. It does not accept another server's evaluated state.
-An operator can trust a vector producer by configuration. That trust covers vector values only. The receiving server still applies the artifact checks at entry.
+A server has no home server, and it trusts no other server's evaluated state.
+It admits records from a peer through record admission and recomputes every digest.
+An operator can trust a vector producer or a peer's embedding cache by configuration. That trust covers vector values only. The receiving server still applies the artifact checks at entry.
 
 Each program trusts the storage that it and its own tools write.
 For the browser, this storage is the storage of the app origin, such as IndexedDB and service-worker caches, in all tabs, workers, and builds.
-For the server, this storage is its data directory and its configured object store. The server, the offline loader, and the backfill command write this storage under the same lock.
+For the server, this storage is its data directory and its configured object store.
+The server, the offline loader, the backfill command, and the semantic indexing command write this storage under the same lock.
 Code that can change that storage can also read or replace the signing keys and the other data in it. So a check against a deliberate edit protects nothing.
 A program does not check its own storage for deliberate edits.
-It checks the version of each stored format that can change between builds. It checks integrity where a partial write or corruption can give a wrong result without an error. SQLite and IndexedDB transactions already give this protection for their own writes.
+It checks the version of each stored format that can change between builds.
+It checks integrity where a partial write or corruption can give a wrong result without an error.
+SQLite and IndexedDB transactions prevent partial writes. They do not detect later corruption.
 Races between tabs, workers, or concurrent requests over the same storage are ordinary defects. This rule does not cover them.
 
 If a check fails on a derived or downloaded item, the program discards that item and gets it again.
@@ -114,12 +120,14 @@ Damage to the server's original records needs a restore from a trusted backup.
 
 A deliberate edit of browser storage can give wrong results only to the person who made it.
 Anything that such a browser sends to a server is untrusted input at the server API.
-Where another section requires more checks of a program's own storage, those checks are allowed. A finding about a missing check of that kind is not a defect.
+Other sections require more checks of a program's own storage, for example the saved package checks and the semantic index checks. Those checks and their failure handling are allowed.
+This section takes precedence over them. A finding about a missing check of that kind is not a defect.
 
 Checks against untrusted input belong at the places where that input enters a program.
-These places are record admission, peer exchange, client requests to other peers, and imports.
-They also include files, links, and URL parameters that a user opens, requests to the server API, and responses to the server's outbound requests.
-Command-line tools apply the same checks to the carrier files, directories, and dumps that they read.
+These places are record admission, peer exchange, responses from other peers, and imports.
+They also include files, links, URL parameters, and pasted text that a user supplies, and requests to the server API.
+They also include responses to outbound requests from the server or the browser, such as AI providers and the Lensisku bridge.
+Command-line tools apply the same checks to the carrier files, directories, Git repositories, and dumps that they read.
 
 ### Service contracts
 
@@ -2137,11 +2145,10 @@ Account_authority_applied is true if the account pass applies the enabled policy
 With a disabled policy, an attributed import still refers to the account row. Its account_authority_applied is false.
 
 For evidence, request /account-control on demand with the reference and the word response snapshot and view. Reuse the result for that exact account and pin. Concurrent readers share the request. A reader can cancel its own wait.
-If a non-null reference receives row_present false, report an inconsistent export.
 The browser accepts account rows and statuses from its home server. It checks only the fields that it needs to render them.
 If the snapshot expires, show that the evidence is unavailable for that request. Use the publication state alone to show a status badge.
 Read contributions from the account row whenever a reference exists. Read controller_candidates and current_observations only when account_authority_applied is true.
-Elsewhere those lists are empty. A null reference gives empty lists. A missing referenced row makes the export inconsistent.
+Elsewhere those lists are empty. A null reference gives empty lists.
 Each candidate claim links to its signed previous and carry fields through the ordinary event API.
 
 The current observation list and each certificate's observation list contain sorted, distinct event IDs. Certificates can refer to older witness policies.

@@ -1666,7 +1666,7 @@ Aliases remain page placements established by morphology. They never alter a tar
 A consumer that receives a package from another peer resolves the descriptor's exact base event and authenticates its body against that event's signed content descriptor.
 The authenticated hash must equal `base_body`. The descriptor must reproduce the row's virtual target.
 The consumer recomputes the converted word, language, text, frame, and glosses under `place-conversion-v1`.
-Disagreement makes the row unusable. Missing or withheld evidence makes its coverage unavailable, rather than authenticating the server's assertion.
+Disagreement makes the row unusable. Missing or withheld evidence makes its coverage unavailable. The consumer never accepts the other peer's row as it stands.
 Admission of a derived row never grants base eligibility, imports content into an accepted selection, or supplies editorial influence.
 
 Version 3 retains structured frame content and enough base and rafsi evidence for the declared morphology coverage.
