@@ -207,13 +207,16 @@ export function requireSavedRowLists(
         (fields(attribution.account, ACCOUNT_FIELDS) &&
           typeof attribution.account.origin === "string" &&
           Number.isSafeInteger(attribution.account.account))
-      ) ||
-      !isDateMap(attribution.dates) ||
-      Object.getOwnPropertySymbols(attribution.dates).length !== 0
+      )
     )
       throw new PackageValidationError();
 
     if (!checked?.dates?.has(attribution.dates)) {
+      if (
+        !isDateMap(attribution.dates) ||
+        Object.getOwnPropertySymbols(attribution.dates).length !== 0
+      )
+        throw new PackageValidationError();
       let count = 0;
       for (const key in attribution.dates) {
         if (!Object.hasOwn(attribution.dates, key)) continue;

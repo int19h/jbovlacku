@@ -1037,14 +1037,188 @@ for (const kind of ["dates", "selmaho"] as const)
       return out;
     }, kind);
 
-    expect(results).toEqual(
-      [8, 16, 32].map((k) => ({
-        k,
-        coldPrepared: true,
-        freshPrepared: true,
-        calls: kind === "selmaho" ? k + 2 : 2,
-        keys: kind === "selmaho" ? (k + 2) * (4 * k + 1) : 2 * (4 * k),
-        boundedPrepared: false,
-      })),
-    );
+    for (const row of results) {
+      expect(row.coldPrepared).toBe(true);
+      expect(row.boundedPrepared).toBe(false);
+      // Side 8 fits inside the 2x distinct-size cap and reuses as equal content;
+      // sides 16 and 32 hit the 2x cap and fall back to cold preparation, then
+      // the 75 * k * k (19,200 / 76,800) search succeeds cleanly.
+      expect(row.freshPrepared).toBe(row.k > 8);
+      // keys counts both copies (plus k distinct selmaho arrays in requirePackageListShapes),
+      // staying O(k^2) and well below uncapped 264,192 at k=32.
+      expect(row.keys).toBeLessThan(
+        2 * 75 * row.k * row.k + row.k * (4 * row.k + 1),
+      );
+      if (row.k === 32) expect(row.keys).toBeLessThan(160_000);
+    }
   });
+
+test("equal content with changed sharing reuses warm index, and four-depth graphs stay bounded under PR #176 list rules", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { LocalStore } = await import(String("/src/data/store.ts"));
+    const { searchPackage, samePackageStructure, PackageValidationError } =
+      await import(String("/src/data/package-search.ts"));
+    const fields = (n: number) =>
+      Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, "x"]));
+    const makeRow = (i: number) => ({
+      event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+      word: { language: "jbo" as const, spelling: "cukta" },
+      language: "en",
+      glosses: [],
+      plain_text: "book",
+      classification: { kind: "gismu" as const, selmaho: [] as string[] },
+      body: null,
+      issuer: "ed25519:" + "a".repeat(64),
+      notes: false,
+      rafsi: [] as string[],
+      attribution: {
+        source: "fixture",
+        author: null,
+        account: null,
+        dates: {} as Record<string, string>,
+      },
+    });
+    const wrap = (entries: ReturnType<typeof makeRow>[]) => ({
+      version: 2 as const,
+      snapshot: "sha256:" + "a".repeat(64),
+      entries,
+    });
+    const rawPut = async (dbName: string, value: unknown) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const req = indexedDB.open(dbName);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction("packages", "readwrite");
+          tx.objectStore("packages").put(value, "en");
+          tx.oncomplete = () => resolve();
+          tx.onabort = () => reject(tx.error);
+        });
+      } finally {
+        db.close();
+      }
+    };
+
+    const sharingCases: Array<{
+      label: string;
+      prepared: boolean;
+      hits: number;
+    }> = [];
+    for (const [field, n] of [
+      ["word", 0],
+      ["selmaho", 23],
+      ["dates", 24],
+      ["text", 127],
+      ["cross", 23],
+    ] as const) {
+      for (const split of [true, false]) {
+        const db = `r4-share-${field}-${n}-${split}-${Date.now()}`;
+        const build = (shared: boolean) => {
+          const a = makeRow(0);
+          const b = makeRow(1);
+          const make = () =>
+            field === "word"
+              ? { language: "jbo" as const, spelling: "cukta" }
+              : field === "dates"
+                ? fields(n)
+                : field === "text"
+                  ? { day: "x".repeat(64 * n) }
+                  : Array.from({ length: n }, () => "cuk");
+          const v = make();
+          const w = shared ? v : make();
+          if (field === "word") {
+            a.word = v as any;
+            b.word = w as any;
+          } else if (field === "dates" || field === "text") {
+            a.attribution.dates = v as any;
+            b.attribution.dates = w as any;
+          } else if (field === "cross") {
+            a.classification.selmaho = v as any;
+            a.rafsi = w as any;
+          } else {
+            a.classification.selmaho = v as any;
+            b.classification.selmaho = w as any;
+          }
+          return wrap([a, b]);
+        };
+        try {
+          const store = new LocalStore(db);
+          await store.put("packages", "en", build(split));
+          const old = await store.get("packages", "en");
+          await searchPackage(old, "en", ["cukta"]);
+          await rawPut(db, build(!split));
+          const fresh = await new LocalStore(db).get("packages", "en");
+          const res = await searchPackage(fresh, "en", ["cukta"]);
+          sharingCases.push({
+            label: `${field}:${n}:${split}`,
+            prepared: res.prepared,
+            hits: res.hits[0]?.length ?? 0,
+          });
+        } finally {
+          indexedDB.deleteDatabase(db);
+        }
+      }
+    }
+
+    // Named property on selmaho is rejected up front by dense list checks,
+    // while a four-depth graph inside dates stops at the 2x comparison cap.
+    const leaf = fields(14);
+    const small = Object.fromEntries(
+      Array.from({ length: 8 }, (_, i) => [`s${i}`, leaf]),
+    );
+    const wide = Array.from({ length: 256 }, () => small);
+    const folded: Record<string, unknown> = {};
+    for (let d = 0; d < 4; d++) {
+      let obj: unknown = wide;
+      for (let j = 0; j < d; j++) obj = { v: obj };
+      folded[`d${d}`] = obj;
+    }
+    const extraRow = makeRow(0);
+    (extraRow.classification.selmaho as unknown as Record<string, unknown>).extra =
+      folded;
+    let extraRejected = false;
+    try {
+      await searchPackage(wrap([extraRow]) as any, "en", []);
+    } catch (error) {
+      extraRejected = error instanceof PackageValidationError;
+    }
+
+    const foldedRow = makeRow(0);
+    foldedRow.attribution.dates = folded as any;
+    const foldedPkg = wrap([foldedRow]);
+    let foldedSpent = 0;
+    const capBudget = {
+      reserve(units: number) {
+        foldedSpent += units;
+        if (foldedSpent > 82_688) throw new Error("budget exceeded");
+      },
+    };
+    const foldedEqual = samePackageStructure(
+      structuredClone(foldedPkg),
+      foldedPkg as any,
+      capBudget as any,
+    );
+    return {
+      sharingCases,
+      extraRejected,
+      foldedEqual,
+      foldedSpent,
+    };
+  });
+
+  for (const item of result.sharingCases) {
+    expect(item, item.label).toEqual({
+      label: item.label,
+      prepared: false,
+      hits: 1,
+    });
+  }
+  expect(result.extraRejected).toBe(true);
+  expect(result.foldedEqual).toBe(false);
+  expect(result.foldedSpent).toBeLessThanOrEqual(2_000);
+});

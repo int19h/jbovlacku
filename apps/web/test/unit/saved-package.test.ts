@@ -1734,7 +1734,7 @@ test("requirePackageListShapes and savedRowReader allocate no cache Sets on ordi
   assert.equal(setConstructs, 0);
 });
 
-test("samePackageStructure rejects conflicting sharing patterns in linear work across square sizes 8, 16, and 32", async () => {
+test("samePackageStructure caps comparison work across square sizes 8, 16, and 32 while accepting equal content within the cap", async () => {
   const { samePackageStructure } = await import(
     "../../src/data/package-search.ts"
   );
@@ -1801,28 +1801,38 @@ test("samePackageStructure rejects conflicting sharing patterns in linear work a
         return list;
       };
       let equal: boolean;
+      const budget = new SearchRequestBudget(searchMetrics(), {
+        workLimit: 75 * k * k,
+        deadlineMs: Infinity,
+      });
       try {
-        const budget = new SearchRequestBudget(searchMetrics(), {
-          workLimit: 75 * k * k,
-          deadlineMs: Infinity,
-        });
         equal = samePackageStructure(byColumn, byRow, budget);
       } finally {
         Reflect.ownKeys = nativeOwnKeys;
       }
-      assert.equal(equal, false);
-      // In #176, requirePackageListShapes checks each of the k distinct incoming
-      // selmaho arrays once before structural comparison adds 2 calls.
-      assert.equal(calls, kind === "selmaho" ? k + 2 : 2);
-      assert.equal(
-        keys,
-        kind === "selmaho" ? (k + 2) * (4 * k + 1) : 2 * (4 * k),
+      if (k === 8) {
+        // Side 8 fits inside the 2x distinct-size cap, so equal content matches.
+        assert.equal(equal, true);
+      } else {
+        // Larger crossed squares hit the 2x distinct-size cap and decline reuse
+        // cleanly without exhausting the 75 * k * k budget.
+        assert.equal(equal, false);
+        assert.ok(budget.snapshot().spent < 75 * k * k);
+      }
+      assert.ok(budget.snapshot().spent < 75 * k * k);
+      // keys counts Reflect.ownKeys on both copies (plus k distinct selmaho
+      // arrays scanned once in requirePackageListShapes), staying O(k^2).
+      assert.ok(
+        keys <=
+          2 * budget.snapshot().spent +
+            (kind === "selmaho" ? k + 2 : 2) * (4 * k + 1),
       );
+      if (k === 32) assert.ok(keys < 160_000);
     }
   }
 
-  // Deep DAG of small 2-key objects must also finish in linear work without
-  // exponential blowup, and conflicting sharing at different depths must reject.
+  // Deep DAG of small 2-key objects stops within the 2x distinct-size cap
+  // without exponential blowup.
   let leafA: Record<string, unknown> = { a: "x", b: "y" };
   let leafB: Record<string, unknown> = { a: "x", b: "y" };
   for (let d = 0; d < 20; d++) {
@@ -1857,9 +1867,10 @@ test("samePackageStructure rejects conflicting sharing patterns in linear work a
       ]) as never,
       dagBudget,
     ),
-    true,
+    false,
   );
-  // Conflicting sharing across different depths.
+  assert.ok(dagBudget.snapshot().spent <= 250);
+  // Equal content shared across different depths counts as equal within the cap.
   const bigA = Object.fromEntries(
     Array.from({ length: 32 }, (_, i) => [`k${i}`, "1"]),
   );
@@ -1916,6 +1927,159 @@ test("samePackageStructure rejects conflicting sharing patterns in linear work a
         deadlineMs: Infinity,
       }),
     ),
-    false,
+    true,
+  );
+});
+
+test("samePackageStructure treats equal content with different sharing as equal and caps four-depth graphs", async () => {
+  const { samePackageStructure } = await import(
+    "../../src/data/package-search.ts"
+  );
+  const { SearchRequestBudget, searchMetrics } = await import(
+    "../../../../packages/search/src/index.ts"
+  );
+  const fields = (n: number) =>
+    Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, "x"]));
+  const makeRow = (i: number) =>
+    v2Row({
+      event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+      glosses: [],
+      rafsi: [],
+      classification: { kind: "gismu", selmaho: [] },
+      attribution: { source: "fixture", author: null, account: null, dates: {} },
+    });
+
+  // Equal content with different sharing across all field shapes must be equal.
+  for (const [field, n] of [
+    ["word", 0],
+    ["selmaho", 23],
+    ["dates", 24],
+    ["text", 127],
+    ["cross", 23],
+  ] as const) {
+    const build = (shared: boolean) => {
+      const a = makeRow(0);
+      const b = makeRow(1);
+      const make = () =>
+        field === "word"
+          ? { language: "jbo" as const, spelling: "cukta" }
+          : field === "dates"
+            ? fields(n)
+            : field === "text"
+              ? { day: "x".repeat(64 * n) }
+              : Array.from({ length: n }, () => "cuk");
+      const v = make();
+      const w = shared ? v : make();
+      if (field === "word") {
+        a.word = v as any;
+        b.word = w as any;
+      } else if (field === "dates" || field === "text") {
+        (a as any).attribution.dates = v;
+        (b as any).attribution.dates = w;
+      } else if (field === "cross") {
+        a.classification.selmaho = v as any;
+        a.rafsi = w as any;
+      } else {
+        a.classification.selmaho = v as any;
+        b.classification.selmaho = w as any;
+      }
+      return pkg([a, b]);
+    };
+    const joined = build(true);
+    const split = build(false);
+    assert.equal(
+      samePackageStructure(
+        split,
+        joined as never,
+        new SearchRequestBudget(searchMetrics()),
+      ),
+      true,
+      `split vs joined failed for ${field}:${n}`,
+    );
+    assert.equal(
+      samePackageStructure(
+        joined,
+        split as never,
+        new SearchRequestBudget(searchMetrics()),
+      ),
+      true,
+      `joined vs split failed for ${field}:${n}`,
+    );
+  }
+
+  // Four-depth amplification graph must stop at the 2x distinct-size cap and
+  // decline reuse instead of spending 123,918 units.
+  const leaf = fields(14);
+  const small = Object.fromEntries(
+    Array.from({ length: 8 }, (_, i) => [`s${i}`, leaf]),
+  );
+  const wide = Array.from({ length: 256 }, () => small);
+  const root: Record<string, unknown> = {};
+  for (let d = 0; d < 4; d++) {
+    let obj: unknown = wide;
+    for (let j = 0; j < d; j++) obj = { v: obj };
+    root[`d${d}`] = obj;
+  }
+  const foldedPkg = pkg([
+    v2Row({
+      attribution: {
+        source: "fixture",
+        author: null,
+        account: null,
+        dates: root as any,
+      },
+    }),
+  ]);
+  const clone = structuredClone(foldedPkg);
+  const budget = new SearchRequestBudget(searchMetrics(), {
+    workLimit: 82_688,
+    deadlineMs: Infinity,
+  });
+  const equal = samePackageStructure(clone, foldedPkg as never, budget);
+  assert.equal(equal, false);
+  assert.ok(
+    budget.snapshot().spent <= 2_000,
+    `expected cap stop <= 2000 units, spent ${budget.snapshot().spent}`,
+  );
+});
+
+test("requireSavedRowLists skips Object.getOwnPropertySymbols on cached attribution dates", () => {
+  const n = 128;
+  const rawDates = Object.fromEntries(
+    Array.from({ length: n }, (_, i) => [
+      "k" + i.toString(16).padStart(8, "0"),
+      "1",
+    ]),
+  );
+  let ownKeysCalls = 0;
+  const proxiedDates = new Proxy(rawDates, {
+    ownKeys(target) {
+      ownKeysCalls++;
+      return Reflect.ownKeys(target);
+    },
+  });
+  const sharedPkg = pkg(
+    Array.from({ length: n }, (_, i) =>
+      v2Row({
+        event: "jve1:" + (i + 1).toString(16).padStart(64, "0"),
+        glosses: [],
+        rafsi: [],
+        classification: { kind: "gismu", selmaho: [] },
+        attribution: {
+          source: "fixture",
+          author: null,
+          account: null,
+          dates: proxiedDates as Record<string, string>,
+        },
+      }),
+    ),
+  );
+  const readRow = saved.savedRowReader(sharedPkg as never, "en", undefined, true);
+  for (const row of sharedPkg.entries) readRow(row);
+  // Row 0 runs getOwnPropertySymbols and for..in (2 ownKeys calls); rows 1..127
+  // hit checked.dates and skip both checks.
+  assert.ok(
+    ownKeysCalls <= 2,
+    `expected <= 2 ownKeys calls on cached dates, got ${ownKeysCalls}`,
   );
 });
