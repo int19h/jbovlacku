@@ -65,6 +65,29 @@ Static hosting supports reading, local signing, drafts, and deterministic word b
 Persistent shared submissions require a writable peer or file export. The app remains usable with AI and semantic search disabled.
 Long calculations use bounded jobs and explicit resource errors. Job execution never changes the signed format.
 
+### Trust boundaries
+
+The home server is the server that supplies the client code. The client trusts its home server.
+A client check cannot protect a reader against a malicious home server, because that server can supply different client code.
+A reader who does not trust a server uses another server or runs one.
+
+The client accepts evaluated state, account evidence, statuses, and search answers from its home server. It does not recompute them to check the server.
+The client still verifies record signatures, because signed records move between peers.
+The client also keeps each page on one snapshot and one view. This rule protects against cache and request races in the client, not against the server.
+
+Data from other peers is not trusted. The client verifies its signatures and binds each answer to the snapshot and view that the client requested.
+
+Local ranking for the personal view exists to keep private trust choices on the device. It is not a check of the home server.
+
+Each program trusts the storage that only it writes. The browser trusts its own IndexedDB data, and the server trusts its own data directory and checkpoints.
+Code that can change that storage can also read or replace the keys and the data in it. So a check against a deliberate edit protects nothing.
+A reader of its own storage needs only a version check and an integrity check that detects corruption or a partial write.
+If a check fails, the reader discards the stored item and gets it again. The browser downloads the item again, and the server rebuilds its state from its records.
+A deliberate edit of local storage can give wrong results to the person who made it. It must not crash the server or harm other readers.
+
+Checks against untrusted input belong at the places where that input enters a program.
+These places are record admission, peer exchange, imports, files that a user opens, and requests to the server API.
+
 ### Service contracts
 
 | Port                  | Required behavior                                                                                |

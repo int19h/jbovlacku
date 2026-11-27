@@ -1321,6 +1321,11 @@ After that review passes, the change gets at least one independent review before
 Each review must name the exact commit or complete working diff under review.
 A later substantive change requires a new review of the affected behavior.
 
+Judge findings against the [trust boundaries](frontend.md#trust-boundaries).
+A finding that needs a malicious home server, or a deliberate edit of a program's own storage, is not a defect.
+If such input crashes the server or harms other readers, it is a defect.
+A finding about data from other peers, record admission, imports, user files, or server API requests remains in scope.
+
 Resolve review findings and rerun the relevant tests before handoff.
 Run thorough tests before local acceptance tests.
 Provide the reviewed revision, server commands, fixture locations, and expected outcomes for local acceptance tests.
